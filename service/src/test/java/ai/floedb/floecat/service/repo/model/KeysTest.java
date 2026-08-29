@@ -114,6 +114,17 @@ class KeysTest {
   }
 
   @Test
+  void affinityQualifiedIndexesEncodeDisabledAffinityAsReservedSegment() {
+    assertTrue(Keys.reconcileDirtyParentPointerPrefix("").contains("/_none_/"));
+    assertTrue(Keys.reconcileCancellationCleanupPointerPrefix("").contains("/_none_/"));
+    assertTrue(Keys.reconcileCanonicalQuarantinePointerPrefix("acct", "").contains("/_none_/"));
+    assertTrue(Keys.reconcileJobByStatePointerPrefix("", "JS_RUNNING").contains("/_none_/"));
+    assertTrue(Keys.reconcileTerminalRetentionPointerPrefix("acct", "").contains("/_none_/"));
+    assertTrue(Keys.reconcileJobLeaseExpiryPointerPrefix("").contains("/_none_/"));
+    assertTrue(Keys.reconcileJobBlobCleanupPointerPrefix("acct", "").contains("/_none_/"));
+  }
+
+  @Test
   void reconcileLeaseKeyEncodesAccountAndJobIds() {
     assertEquals(
         "/accounts/acct%2Blegacy/reconcile/job-leases/by-id/job%25legacy",

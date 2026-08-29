@@ -41,6 +41,7 @@ import java.util.TreeMap;
  */
 public record ReconcileWorkerAffinity(String value) {
   public static final String ATTRIBUTE = "floecat.worker-affinity";
+  public static final String DISABLED_STORAGE_KEY_SEGMENT = "_none_";
   public static final ReconcileWorkerAffinity DISABLED = new ReconcileWorkerAffinity("");
 
   /**
@@ -84,6 +85,11 @@ public record ReconcileWorkerAffinity(String value) {
     return !value.isEmpty();
   }
 
+  /** A non-blank key segment for affinity-qualified storage indexes. */
+  public String storageKeySegment() {
+    return enabled() ? value : DISABLED_STORAGE_KEY_SEGMENT;
+  }
+
   public boolean matches(ReconcileExecutionPolicy policy) {
     return equals(fromPolicy(policy));
   }
@@ -110,6 +116,11 @@ public record ReconcileWorkerAffinity(String value) {
   }
 
   private static String normalize(String value) {
-    return value == null ? "" : value.trim();
+    String normalized = value == null ? "" : value.trim();
+    if (DISABLED_STORAGE_KEY_SEGMENT.equals(normalized)) {
+      throw new IllegalArgumentException(
+          "worker affinity '" + DISABLED_STORAGE_KEY_SEGMENT + "' is reserved");
+    }
+    return normalized;
   }
 }

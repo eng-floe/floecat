@@ -471,7 +471,9 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     }
     int limit = Math.max(1, pageSize);
     String token = pageToken == null ? "" : pageToken;
-    var page = jobIndexBackend.listGlobalStateEntries(effectiveState, limit, token);
+    var page =
+        jobIndexBackend.listGlobalStateEntries(
+            indexes.workerAffinity(), effectiveState, limit, token);
     List<StoredReconcileJob> out = new ArrayList<>(page.entries().size());
     for (JobIndexEntrySnapshot ptr : page.entries()) {
       readCurrentRecordFromStateIndexPointer(
@@ -487,7 +489,10 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     String token = pageToken == null ? "" : pageToken;
     var page =
         jobIndexBackend.listGlobalStateEntries(
-            ReconcileJobIndexes.STATS_CLEANUP_PENDING_INDEX_STATE, limit, token);
+            indexes.workerAffinity(),
+            ReconcileJobIndexes.STATS_CLEANUP_PENDING_INDEX_STATE,
+            limit,
+            token);
     List<StoredReconcileJob> out = new ArrayList<>(page.entries().size());
     for (JobIndexEntrySnapshot ptr : page.entries()) {
       readCurrentRecordFromIndexPointer(ptr)

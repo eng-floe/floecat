@@ -336,9 +336,16 @@ control plane rejects blank or mismatched requests, and the leased job echoes th
 worker-side validation. Lease-bound RPCs also reject jobs owned by another cohort.
 
 The ready queue affinity-qualifies execution-class, execution-lane, job-kind, and pinned-executor
-index slices. The semantic execution policy and `pinnedExecutorId` remain unchanged; only the
-derived index filter is qualified. This prevents an older control plane that does not understand
-affinity from discovering versioned work through the corresponding raw filtered slices.
+index slices. Lease expiry, global maintenance state, dirty-parent projection, cancellation
+cleanup, terminal retention, canonical quarantine, and job-blob cleanup use affinity-qualified
+prefixes. The global maintenance-state slice drives accepted-finalizer publication and abandoned
+stats cleanup; user-facing job listings continue to use the cohort-blind per-account indexes and
+root summaries. These distinct prefixes prevent an older control plane that does not understand
+affinity from discovering new-cohort work through its legacy maintenance scans.
+
+Snapshot coverage claims remain under their shared account prefix, but their semantics hash
+includes the server-stamped worker affinity. Requests from different cohorts therefore create
+different claims and never coalesce coverage by mutating another cohort's queued job.
 
 Upgrades use separate draining cohorts. The old unversioned deployment continues serving its old
 workers and drains unversioned trees. The new deployment and workers use the same non-empty

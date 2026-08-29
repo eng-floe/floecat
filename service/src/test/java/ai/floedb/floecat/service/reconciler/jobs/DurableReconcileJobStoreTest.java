@@ -506,7 +506,9 @@ class DurableReconcileJobStoreTest {
   @Test
   void stateIndexConvergesWhenCanonicalJobIsGone() {
     String missingCanonical = Keys.reconcileJobPointerById(ACCOUNT_ID, "missing-job");
-    String stateKey = Keys.reconcileJobByStatePointer("JS_QUEUED", 1L, ACCOUNT_ID, "missing-job");
+    String stateKey =
+        Keys.reconcileJobByStatePointer(
+            WORKER_AFFINITY, "JS_QUEUED", 1L, ACCOUNT_ID, "missing-job");
     assertTrue(
         store.jobIndexBackend.compareAndSetBatch(
             new ReconcileJobIndexStore.JobIndexWriteBatch(
@@ -6247,6 +6249,57 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void snapshotCoverageClaimsDoNotCoalesceAcrossWorkerAffinities() {
+    ReconcileScope tableScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));
+    ReconcileScope fileScope = captureScope(Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    List<String> tableCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, tableScope);
+    List<String> fileCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, fileScope);
+
+    System.setProperty("floecat.reconciler.worker-affinity", "cohort-a");
+    try {
+      store.init();
+      String first =
+          store.enqueueSnapshotPlan(
+              ACCOUNT_ID,
+              CONNECTOR_ID,
+              false,
+              CaptureMode.CAPTURE_ONLY,
+              tableScope,
+              contentTask("revision-1", "", tableCoverage),
+              ReconcileExecutionPolicy.defaults(),
+              "",
+              "");
+
+      System.setProperty("floecat.reconciler.worker-affinity", "cohort-b");
+      store.init();
+      String second =
+          store.enqueueSnapshotPlan(
+              ACCOUNT_ID,
+              CONNECTOR_ID,
+              false,
+              CaptureMode.CAPTURE_ONLY,
+              fileScope,
+              contentTask("revision-1", "", fileCoverage),
+              ReconcileExecutionPolicy.defaults(),
+              "",
+              "");
+
+      assertNotEquals(first, second);
+      assertEquals(
+          tableCoverage,
+          store.get(ACCOUNT_ID, first).orElseThrow().snapshotTask.requestedCoverage());
+      assertEquals(
+          fileCoverage,
+          store.get(ACCOUNT_ID, second).orElseThrow().snapshotTask.requestedCoverage());
+    } finally {
+      System.clearProperty("floecat.reconciler.worker-affinity");
+      store.init();
+    }
+  }
+
+  @Test
   void terminalSnapshotCoverageClaimOwnerDoesNotContaminateReplacement() {
     ReconcileScope tableScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));
     ReconcileScope fileScope = captureScope(Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
@@ -6916,6 +6969,31 @@ class DurableReconcileJobStoreTest {
         store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch, intent));
     assertEquals(intent, store.snapshotFinalizeCommitIntent(finalizerJobId).orElseThrow());
     assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
+    StoredReconcileJob storedFinalizer =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, finalizerJobId));
+    String publicationKey =
+        Keys.reconcileJobByStatePointer(
+            WORKER_AFFINITY, "JS_RUNNING", storedFinalizer.createdAtMs, ACCOUNT_ID, finalizerJobId);
+    assertTrue(store.jobIndexBackend.loadIndexEntry(publicationKey).isPresent());
+    assertTrue(
+        store
+            .jobIndexBackend
+            .loadIndexEntry(
+                Keys.reconcileJobByStatePointer(
+                    "other-affinity",
+                    "JS_RUNNING",
+                    storedFinalizer.createdAtMs,
+                    ACCOUNT_ID,
+                    finalizerJobId))
+            .isEmpty());
+    assertTrue(
+        store
+            .jobIndexBackend
+            .loadIndexEntry(
+                String.format(
+                    "/accounts/by-id/reconcile/jobs/by-state/JS_RUNNING/%019d/%s/%s",
+                    storedFinalizer.createdAtMs, ACCOUNT_ID, finalizerJobId))
+            .isEmpty());
 
     store.jobIndexStore.mutateByJobIdReturningRecord(
         finalizerJobId,
@@ -8299,8 +8377,9 @@ class DurableReconcileJobStoreTest {
     }
 
     @Override
-    public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
-      return delegate.listGlobalStateEntries(state, limit, pageToken);
+    public JobIndexQueryPage listGlobalStateEntries(
+        ReconcileWorkerAffinity workerAffinity, String state, int limit, String pageToken) {
+      return delegate.listGlobalStateEntries(workerAffinity, state, limit, pageToken);
     }
 
     @Override
@@ -8375,8 +8454,9 @@ class DurableReconcileJobStoreTest {
     }
 
     @Override
-    public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
-      return delegate.listGlobalStateEntries(state, limit, pageToken);
+    public JobIndexQueryPage listGlobalStateEntries(
+        ReconcileWorkerAffinity workerAffinity, String state, int limit, String pageToken) {
+      return delegate.listGlobalStateEntries(workerAffinity, state, limit, pageToken);
     }
 
     @Override

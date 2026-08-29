@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.model;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -64,6 +65,10 @@ public final class Keys {
       throw new IllegalArgumentException("key arg '" + name + "' is null/blank");
     }
     return v;
+  }
+
+  private static String affinitySegment(String workerAffinity) {
+    return ReconcileWorkerAffinity.of(workerAffinity).storageKeySegment();
   }
 
   private static long reqNonNegative(String name, long v) {
@@ -1288,13 +1293,13 @@ public final class Keys {
   }
 
   public static String reconcileDirtyParentPointerPrefix(String workerAffinity) {
-    String affinity = req("worker_affinity", workerAffinity);
+    String affinity = affinitySegment(workerAffinity);
     return reconcileDirtyParentPointerRootPrefix() + encode(affinity) + "/";
   }
 
   public static String reconcileDirtyParentPointer(
       String workerAffinity, String accountId, String parentJobId) {
-    String affinity = req("worker_affinity", workerAffinity);
+    String affinity = affinitySegment(workerAffinity);
     String tid = req("account_id", accountId);
     String pid = req("parent_job_id", parentJobId);
     return reconcileDirtyParentPointerPrefix(affinity) + encode(tid) + "/" + encode(pid);
@@ -1307,7 +1312,7 @@ public final class Keys {
   }
 
   public static String reconcileCancellationCleanupPointerPrefix(String workerAffinity) {
-    String affinity = req("worker_affinity", workerAffinity);
+    String affinity = affinitySegment(workerAffinity);
     return reconcileCancellationCleanupPointerRootPrefix() + encode(affinity) + "/";
   }
 
@@ -1377,15 +1382,27 @@ public final class Keys {
   }
 
   public static String reconcileCanonicalQuarantinePointer(
-      String accountId, String canonicalKeyHash) {
+      String accountId, String workerAffinity, String canonicalKeyHash) {
     String tid = req("account_id", accountId);
+    String affinity = affinitySegment(workerAffinity);
     String hash = req("canonical_key_hash", canonicalKeyHash);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-quarantine/canonical/" + encode(hash);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/gc-quarantine-by-worker-affinity/"
+        + encode(affinity)
+        + "/canonical/"
+        + encode(hash);
   }
 
-  public static String reconcileCanonicalQuarantinePointerPrefix(String accountId) {
+  public static String reconcileCanonicalQuarantinePointerPrefix(
+      String accountId, String workerAffinity) {
     String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-quarantine/canonical/";
+    String affinity = affinitySegment(workerAffinity);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/gc-quarantine-by-worker-affinity/"
+        + encode(affinity)
+        + "/canonical/";
   }
 
   public static String reconcileJobByParentPointer(
@@ -1427,22 +1444,28 @@ public final class Keys {
   }
 
   public static String reconcileJobByStatePointerPrefix() {
-    return "/accounts/by-id/reconcile/jobs/by-state/";
+    return "/accounts/by-id/reconcile/jobs/by-state-by-worker-affinity/";
   }
 
-  public static String reconcileJobByStatePointerPrefix(String state) {
+  public static String reconcileJobByStatePointerPrefix(String workerAffinity, String state) {
+    String affinity = affinitySegment(workerAffinity);
     String jobState = req("state", state);
-    return reconcileJobByStatePointerPrefix() + encode(jobState) + "/";
+    return reconcileJobByStatePointerPrefix() + encode(affinity) + "/" + encode(jobState) + "/";
   }
 
   public static String reconcileJobByStatePointer(
-      String state, long sortableTimestampMs, String accountId, String jobId) {
+      String workerAffinity,
+      String state,
+      long sortableTimestampMs,
+      String accountId,
+      String jobId) {
     String jobState = req("state", state);
     long ts = reqNonNegative("sortable_timestamp_ms", sortableTimestampMs);
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
     return String.format(
-        "%s%019d/%s/%s", reconcileJobByStatePointerPrefix(jobState), ts, encode(tid), encode(jid));
+        "%s%019d/%s/%s",
+        reconcileJobByStatePointerPrefix(workerAffinity, jobState), ts, encode(tid), encode(jid));
   }
 
   public static String reconcileJobByAccountStatePointerPrefix(String accountId) {
@@ -1463,17 +1486,24 @@ public final class Keys {
         "%s%019d/%s", reconcileJobByAccountStatePointerPrefix(accountId, state), ts, encode(jid));
   }
 
-  public static String reconcileTerminalRetentionPointerPrefix(String accountId) {
+  public static String reconcileTerminalRetentionPointerPrefix(
+      String accountId, String workerAffinity) {
     String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/terminal-retention/";
+    String affinity = affinitySegment(workerAffinity);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/terminal-retention-by-worker-affinity/"
+        + encode(affinity)
+        + "/";
   }
 
   public static String reconcileTerminalRetentionPointer(
-      String accountId, long terminalAtMs, String jobId) {
+      String accountId, String workerAffinity, long terminalAtMs, String jobId) {
     String jid = req("job_id", jobId);
     long ts = reqNonNegative("terminal_at_ms", terminalAtMs);
     return String.format(
-        "%s%019d/%s", reconcileTerminalRetentionPointerPrefix(accountId), ts, encode(jid));
+        "%s%019d/%s",
+        reconcileTerminalRetentionPointerPrefix(accountId, workerAffinity), ts, encode(jid));
   }
 
   public static String reconcileJobByConnectorStatePointerPrefix(
@@ -1533,7 +1563,7 @@ public final class Keys {
   }
 
   public static String reconcileJobLeaseExpiryPointerPrefix(String workerAffinity) {
-    String affinity = req("worker_affinity", workerAffinity);
+    String affinity = affinitySegment(workerAffinity);
     return reconcileJobLeaseExpiryPointerRootPrefix() + encode(affinity) + "/";
   }
 
@@ -1791,15 +1821,28 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/jobs/" + encode(jid) + "/";
   }
 
-  public static String reconcileJobBlobCleanupPointer(String accountId, String jobId) {
+  public static String reconcileJobBlobCleanupPointer(
+      String accountId, String workerAffinity, String jobId) {
     String tid = req("account_id", accountId);
+    String affinity = affinitySegment(workerAffinity);
     String jid = req("job_id", jobId);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-blob-cleanup/" + encode(jid);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/gc-blob-cleanup-by-worker-affinity/"
+        + encode(affinity)
+        + "/"
+        + encode(jid);
   }
 
-  public static String reconcileJobBlobCleanupPointerPrefix(String accountId) {
+  public static String reconcileJobBlobCleanupPointerPrefix(
+      String accountId, String workerAffinity) {
     String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-blob-cleanup/";
+    String affinity = affinitySegment(workerAffinity);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/gc-blob-cleanup-by-worker-affinity/"
+        + encode(affinity)
+        + "/";
   }
 
   /**

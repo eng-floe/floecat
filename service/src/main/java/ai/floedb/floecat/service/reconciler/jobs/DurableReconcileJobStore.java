@@ -302,7 +302,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       jobIndexes = new ReconcileJobIndexes();
     }
     jobIndexes.bind(
-        pointerStore, DurableReconcileJobStore::requiresReadyPointer, this::readyPointerKeys);
+        pointerStore,
+        DurableReconcileJobStore::requiresReadyPointer,
+        this::readyPointerKeys,
+        workerAffinity);
     return jobIndexes;
   }
 
@@ -785,7 +788,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     cleanupExpiredSnapshotCoverageClaims(spec.accountId, System.currentTimeMillis());
     ReconcileScope scope = spec.scope == null ? ReconcileScope.empty() : spec.scope;
     ReconcileExecutionPolicy policy =
-        spec.executionPolicy == null ? ReconcileExecutionPolicy.defaults() : spec.executionPolicy;
+        workerAffinity.applyTo(
+            spec.executionPolicy == null
+                ? ReconcileExecutionPolicy.defaults()
+                : spec.executionPolicy);
     String semantics =
         ReconcileSnapshotContentState.fingerprint(
             Map.of(
@@ -2633,8 +2639,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           || !executionLane.equals(record.executionPolicy().lane())) {
         continue;
       }
-      // The by-state index is global. Publishing another cohort's accepted finalizer would commit
-      // its result under this deployment's semantics, so only this cohort's intents are drained.
+      // Discovery is affinity-partitioned. Keep this record check as defense in depth so a
+      // misplaced index row cannot publish another cohort's accepted finalizer.
       if (!workerAffinity.matches(record.executionPolicy())) {
         continue;
       }

@@ -34,6 +34,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.HashMap;
@@ -366,13 +367,34 @@ class DynamoReconcileJobIndexBackendTest {
     DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
     backend.bind(() -> dynamoDb, TABLE);
 
-    backend.listTerminalRetentionEntries(ACCOUNT_ID, 1_234L, 25, "");
+    backend.listTerminalRetentionEntries(
+        ACCOUNT_ID, ReconcileWorkerAffinity.of("reconciler-v1"), 1_234L, 25, "");
 
     ArgumentCaptor<QueryRequest> queryCaptor = ArgumentCaptor.forClass(QueryRequest.class);
     verify(dynamoDb).query(queryCaptor.capture());
     QueryRequest query = queryCaptor.getValue();
     assertEquals("#pk = :pk AND #sk <= :maxSk", query.keyConditionExpression());
+    assertEquals(
+        "reconcile-job-terminal-retention/acct-1/reconciler-v1",
+        query.expressionAttributeValues().get(":pk").s());
     assertEquals("0000000000000001234/\uffff", query.expressionAttributeValues().get(":maxSk").s());
+  }
+
+  @Test
+  void globalStateQueryUsesWorkerAffinityPartition() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.query(any(QueryRequest.class))).thenReturn(QueryResponse.builder().build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+
+    backend.listGlobalStateEntries(
+        ReconcileWorkerAffinity.of("reconciler-v1"), "JS_RUNNING", 25, "");
+
+    ArgumentCaptor<QueryRequest> queryCaptor = ArgumentCaptor.forClass(QueryRequest.class);
+    verify(dynamoDb).query(queryCaptor.capture());
+    assertEquals(
+        "reconcile-job-state/reconciler-v1/JS_RUNNING",
+        queryCaptor.getValue().expressionAttributeValues().get(":pk").s());
   }
 
   @Test

@@ -52,6 +52,7 @@ final class JobIndexBackendSupport {
   private static final String PARENT_SEGMENT_PLACEHOLDER = "__parent__";
   private static final String CONNECTOR_SEGMENT_PLACEHOLDER = "__connector__";
   private static final String STATE_SEGMENT_PLACEHOLDER = "__state__";
+  private static final String AFFINITY_SEGMENT_PLACEHOLDER = "__affinity__";
   private static final String ACCOUNT_ROOT_PREFIX = stripLeadingSlash(Keys.accountRootPrefix());
   private static final String CANONICAL_JOB_MARKER =
       accountScopedMarker(Keys.reconcileJobPointerByIdPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
@@ -84,8 +85,10 @@ final class JobIndexBackendSupport {
   private static final String DEDUPE_MARKER =
       accountScopedMarker(Keys.reconcileDedupePointerPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
   private static final String TERMINAL_RETENTION_MARKER =
-      accountScopedMarker(
-          Keys.reconcileTerminalRetentionPointerPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
+      accountScopedMarkerBefore(
+          Keys.reconcileTerminalRetentionPointerPrefix(
+              ACCOUNT_SEGMENT_PLACEHOLDER, AFFINITY_SEGMENT_PLACEHOLDER),
+          AFFINITY_SEGMENT_PLACEHOLDER);
 
   private JobIndexBackendSupport() {}
 
@@ -199,14 +202,18 @@ final class JobIndexBackendSupport {
       return null;
     }
     String remainder = normalized.substring(GLOBAL_STATE_PREFIX.length());
-    String[] parts = remainder.split("/", 4);
-    if (parts.length != 4) {
+    String[] parts = remainder.split("/", 5);
+    if (parts.length != 5) {
       return null;
     }
-    if (parts[0].isBlank() || parts[1].isBlank() || parts[2].isBlank() || parts[3].isBlank()) {
+    if (parts[0].isBlank()
+        || parts[1].isBlank()
+        || parts[2].isBlank()
+        || parts[3].isBlank()
+        || parts[4].isBlank()) {
       return null;
     }
-    return new GlobalStateKey(pointerKey, parts[0], parts[1], parts[2], parts[3]);
+    return new GlobalStateKey(pointerKey, parts[0], parts[1], parts[2], parts[3], parts[4]);
   }
 
   static AccountStateKey parseAccountStateKey(String pointerKey) {
@@ -291,20 +298,21 @@ final class JobIndexBackendSupport {
     }
     String accountSegment = normalized.substring(ACCOUNT_ROOT_PREFIX.length(), markerIndex);
     String remainder = normalized.substring(markerIndex + TERMINAL_RETENTION_MARKER.length());
-    String[] parts = remainder.split("/", 2);
+    String[] parts = remainder.split("/", 3);
     if (accountSegment.isBlank()
         || isReservedAccountSegment(accountSegment)
-        || parts.length != 2
+        || parts.length != 3
         || parts[0].isBlank()
-        || parts[1].isBlank()) {
+        || parts[1].isBlank()
+        || parts[2].isBlank()) {
       return null;
     }
     try {
-      Long.parseLong(parts[0]);
+      Long.parseLong(parts[1]);
     } catch (NumberFormatException ignored) {
       return null;
     }
-    return new TerminalRetentionKey(pointerKey, accountSegment, parts[0], parts[1]);
+    return new TerminalRetentionKey(pointerKey, accountSegment, parts[0], parts[1], parts[2]);
   }
 
   static DedupeKey parseDedupePrefix(String prefix) {
@@ -339,8 +347,8 @@ final class JobIndexBackendSupport {
     return key == null ? "" : connectorPartitionKey(key);
   }
 
-  static String globalStatePartitionKey(String state) {
-    var key = parseGlobalStatePrefix(Keys.reconcileJobByStatePointerPrefix(state));
+  static String globalStatePartitionKey(String workerAffinity, String state) {
+    var key = parseGlobalStatePrefix(Keys.reconcileJobByStatePointerPrefix(workerAffinity, state));
     return key == null ? "" : globalStatePartitionKey(key);
   }
 
@@ -362,9 +370,10 @@ final class JobIndexBackendSupport {
     return key == null ? "" : dedupePartitionKey(key);
   }
 
-  static String terminalRetentionPartitionKey(String accountId) {
+  static String terminalRetentionPartitionKey(String accountId, String workerAffinity) {
     var key =
-        parseTerminalRetentionKey(Keys.reconcileTerminalRetentionPointer(accountId, 0L, "__job__"));
+        parseTerminalRetentionKey(
+            Keys.reconcileTerminalRetentionPointer(accountId, workerAffinity, 0L, "__job__"));
     return key == null ? "" : terminalRetentionPartitionKey(key);
   }
 
@@ -417,7 +426,7 @@ final class JobIndexBackendSupport {
   }
 
   static String globalStatePartitionKey(GlobalStateKey key) {
-    return "reconcile-job-state/" + key.stateSegment();
+    return "reconcile-job-state/" + key.affinitySegment() + "/" + key.stateSegment();
   }
 
   static String globalStateSortKey(GlobalStateKey key) {
@@ -454,7 +463,7 @@ final class JobIndexBackendSupport {
   }
 
   static String terminalRetentionPartitionKey(TerminalRetentionKey key) {
-    return "reconcile-job-terminal-retention/" + key.accountSegment();
+    return "reconcile-job-terminal-retention/" + key.accountSegment() + "/" + key.affinitySegment();
   }
 
   static String terminalRetentionSortKey(TerminalRetentionKey key) {
@@ -535,14 +544,15 @@ final class JobIndexBackendSupport {
     if (!normalized.startsWith(GLOBAL_STATE_PREFIX) || !normalized.endsWith("/")) {
       return null;
     }
-    String stateSegment =
-        normalized.substring(GLOBAL_STATE_PREFIX.length(), normalized.length() - 1);
-    if (stateSegment.isBlank()) {
+    String remainder = normalized.substring(GLOBAL_STATE_PREFIX.length(), normalized.length() - 1);
+    String[] parts = remainder.split("/", 2);
+    if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
       return null;
     }
     return new GlobalStateKey(
         prefix + "0000000000000000000/__acct__/__job__",
-        stateSegment,
+        parts[0],
+        parts[1],
         "0000000000000000000",
         "__acct__",
         "__job__");
@@ -644,6 +654,7 @@ final class JobIndexBackendSupport {
 
   record GlobalStateKey(
       String pointerKey,
+      String affinitySegment,
       String stateSegment,
       String timestampSegment,
       String accountSegment,
@@ -667,5 +678,9 @@ final class JobIndexBackendSupport {
   record DedupeKey(String pointerKey, String accountSegment, String hashSegment) {}
 
   record TerminalRetentionKey(
-      String pointerKey, String accountSegment, String timestampSegment, String jobSegment) {}
+      String pointerKey,
+      String accountSegment,
+      String affinitySegment,
+      String timestampSegment,
+      String jobSegment) {}
 }

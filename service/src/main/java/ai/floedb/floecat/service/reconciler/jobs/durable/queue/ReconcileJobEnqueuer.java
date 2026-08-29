@@ -325,6 +325,8 @@ public class ReconcileJobEnqueuer {
             effectiveJobKind,
             effectiveSnapshotTask,
             spec.captureMode == CaptureMode.CAPTURE_ONLY);
+    // Affinity is part of the dedupe identity. Keep this application before dedupeKey() so two
+    // cohorts cannot dedupe against work that only the other cohort can lease.
     ReconcileExecutionPolicy policy =
         workerAffinity.applyTo(
             spec.executionPolicy == null

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -334,8 +335,11 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   @Override
   public JobIndexQueryPage listTerminalRetentionEntries(
-      String accountId, int limit, String pageToken) {
-    return listPointers(Keys.reconcileTerminalRetentionPointerPrefix(accountId), limit, pageToken);
+      String accountId, ReconcileWorkerAffinity workerAffinity, int limit, String pageToken) {
+    return listPointers(
+        Keys.reconcileTerminalRetentionPointerPrefix(accountId, workerAffinity.value()),
+        limit,
+        pageToken);
   }
 
   @Override
@@ -353,8 +357,10 @@ public class MemoryReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   @Override
-  public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
-    return listPointers(Keys.reconcileJobByStatePointerPrefix(state), limit, pageToken);
+  public JobIndexQueryPage listGlobalStateEntries(
+      ReconcileWorkerAffinity workerAffinity, String state, int limit, String pageToken) {
+    return listPointers(
+        Keys.reconcileJobByStatePointerPrefix(workerAffinity.value(), state), limit, pageToken);
   }
 
   @Override
