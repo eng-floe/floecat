@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.util;
 import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
@@ -84,6 +85,20 @@ public class TestDataResetterTest {
     TestDataResetter resetter = resetter(ptr, new FakeBlobStore());
     resetter.wipeAll();
     assertTrue(ptr.isEmpty());
+  }
+
+  @Test
+  void wipeAll_removes_fences_for_an_account_already_deleted() {
+    FakePointerStore ptr = new FakePointerStore();
+    String fence = Keys.accountDeletionFenceShards("deleted-account").getFirst();
+    ptr.putPointer(fence, 1L);
+    ptr.putPointer("/other/keep", 1L);
+
+    TestDataResetter resetter = resetter(ptr, new FakeBlobStore());
+    resetter.wipeAll();
+
+    assertFalse(ptr.containsKey(fence));
+    assertTrue(ptr.containsKey("/other/keep"));
   }
 
   @Test

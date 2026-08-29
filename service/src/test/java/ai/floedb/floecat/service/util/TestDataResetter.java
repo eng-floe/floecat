@@ -21,6 +21,7 @@ import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJo
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.storage.spi.PointerStoreKeys;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -82,6 +83,9 @@ public class TestDataResetter {
       }
       ptr.deleteByPrefix("/accounts/");
       ptr.deleteByPrefix("accounts/");
+      if (!"dynamodb".equalsIgnoreCase(kvMode)) {
+        ptr.deleteByPrefix(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PREFIX);
+      }
       if (memoryReconcileJobIndexBackend != null && memoryReconcileJobIndexBackend.isResolvable()) {
         memoryReconcileJobIndexBackend.get().clearInMemoryState();
       }
