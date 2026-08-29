@@ -1969,6 +1969,9 @@ Per-file S3 range readers are closed by their consumers.</p>
   <code>/api/2.1/unity-catalog/temporary-table-credentials</code>, so point this at the 2.1 route for an OSS
   endpoint -- otherwise vending returns <code>NOT_FOUND</code> against it. Every other Unity operation is 2.1
   on both. Response-body suppression on that path follows whatever route is configured.</li>
+<li><code>floecat.unity.max-response-bytes</code> (system property) – Cap on a single Unity Catalog response
+  body, default 32 MiB. A larger body is refused as <code>INVALID_RESPONSE</code> rather than buffered, since
+  a connector URI is tenant-supplied. Raise it for a catalog whose listing pages exceed the default.</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
 <li><code>stats.ndv.*</code> – Sampling knobs identical to the Iceberg connector.</li>
 <li>Authentication-specific options (<code>auth.scheme</code>, <code>auth.properties</code>) – <code>auth.scheme=oauth2</code>
