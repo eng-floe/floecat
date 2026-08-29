@@ -1988,6 +1988,9 @@ Per-file S3 range readers are closed by their consumers.</p>
   <code>/api/2.1/unity-catalog/temporary-table-credentials</code>, so point this at the 2.1 route for an OSS
   endpoint -- otherwise vending returns <code>NOT_FOUND</code> against it. Every other Unity operation is 2.1
   on both. Response-body suppression on that path follows whatever route is configured.</li>
+<li><code>floecat.unity.max-response-bytes</code> (system property) – Cap on a single Unity Catalog response
+  body, default 32 MiB. A larger body is refused as <code>INVALID_RESPONSE</code> rather than buffered, since
+  a connector URI is tenant-supplied. Raise it for a catalog whose listing pages exceed the default.</li>
 <li><code>databricks.access-delegation=vended-credentials</code> – Explicitly enables table-scoped temporary
   AWS credentials from Unity Catalog when no storage authority matches the table. The Databricks
   metastore must allow external access and the caller needs <code>EXTERNAL USE SCHEMA</code> on the parent
