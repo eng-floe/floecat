@@ -75,6 +75,20 @@ class StatsRepositoryTargetStorageTest {
   private static final ResourceId TABLE_ID =
       ResourceId.newBuilder().setAccountId("a").setId("t").setKind(ResourceKind.RK_TABLE).build();
 
+  private static void installAccountDeletionFence(InMemoryPointerStore pointers, String accountId) {
+    List<PointerStore.CasOp> creates = new ArrayList<>();
+    String markerKey = Keys.accountDeletionMarker(accountId);
+    creates.add(
+        new PointerStore.CasUpsert(
+            markerKey, 0L, PointerReferences.opaqueMarkerPointer(markerKey, "deleting", 1L)));
+    for (String shardKey : Keys.accountDeletionFenceShards(accountId)) {
+      creates.add(
+          new PointerStore.CasUpsert(
+              shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
+    }
+    assertThat(pointers.compareAndSetBatch(creates)).isTrue();
+  }
+
   @Test
   void targetStatsWriteDeletesBlobWhenAccountFenceWinsPublicationRace() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
@@ -96,9 +110,7 @@ class StatsRepositoryTargetStorageTest {
             if (uri.startsWith(Keys.tableBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()))
                 && installFence.compareAndSet(true, false)) {
               racedBlob.set(uri);
-              String fence = Keys.accountDeletionMarker(TABLE_ID.getAccountId());
-              pointers.compareAndSet(
-                  fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "deleting", 1L));
+              installAccountDeletionFence(pointers, TABLE_ID.getAccountId());
             }
           }
         };
@@ -1399,9 +1411,7 @@ class StatsRepositoryTargetStorageTest {
           public void put(String uri, byte[] bytes, String contentType) {
             super.put(uri, bytes, contentType);
             if (preexistingBlob.equals(uri) && installFence.compareAndSet(true, false)) {
-              String fence = Keys.accountDeletionMarker(TABLE_ID.getAccountId());
-              pointers.compareAndSet(
-                  fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "deleting", 1L));
+              installAccountDeletionFence(pointers, TABLE_ID.getAccountId());
             }
           }
         };

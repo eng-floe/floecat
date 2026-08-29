@@ -136,8 +136,16 @@ class TransactionIntentApplierSupportTest {
     var support = newSupport(pointers, blobs);
     String targetKey = "/accounts/acct/custom/key-1";
     String markerKey = Keys.accountDeletionMarker("acct");
-    pointers.compareAndSet(
-        markerKey, 0L, PointerReferences.opaqueMarkerPointer(markerKey, "deleting", 1L));
+    List<ai.floedb.floecat.storage.spi.PointerStore.CasOp> creates = new ArrayList<>();
+    creates.add(
+        new ai.floedb.floecat.storage.spi.PointerStore.CasUpsert(
+            markerKey, 0L, PointerReferences.opaqueMarkerPointer(markerKey, "deleting", 1L)));
+    for (String shardKey : Keys.accountDeletionFenceShards("acct")) {
+      creates.add(
+          new ai.floedb.floecat.storage.spi.PointerStore.CasUpsert(
+              shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
+    }
+    assertTrue(pointers.compareAndSetBatch(creates));
     TransactionIntent intent =
         TransactionIntent.newBuilder()
             .setAccountId("acct")
@@ -184,9 +192,18 @@ class TransactionIntentApplierSupportTest {
     intentRepo.create(intent);
     String markerKey = Keys.accountDeletionMarker(accountId);
     pointers.beforeBatch(
-        () ->
-            pointers.compareAndSet(
-                markerKey, 0L, PointerReferences.opaqueMarkerPointer(markerKey, "deleting", 1L)));
+        () -> {
+          List<ai.floedb.floecat.storage.spi.PointerStore.CasOp> creates = new ArrayList<>();
+          creates.add(
+              new ai.floedb.floecat.storage.spi.PointerStore.CasUpsert(
+                  markerKey, 0L, PointerReferences.opaqueMarkerPointer(markerKey, "deleting", 1L)));
+          for (String shardKey : Keys.accountDeletionFenceShards(accountId)) {
+            creates.add(
+                new ai.floedb.floecat.storage.spi.PointerStore.CasUpsert(
+                    shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
+          }
+          pointers.compareAndSetBatch(creates);
+        });
     Transaction appliedTxn =
         currentTxn.toBuilder()
             .setState(TransactionState.TS_APPLIED)

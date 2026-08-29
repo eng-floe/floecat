@@ -42,8 +42,16 @@ class MarkerStoreTest {
             .setId("catalog")
             .setKind(ResourceKind.RK_CATALOG)
             .build();
-    String fence = Keys.accountDeletionMarker("acct");
-    pointers.compareAndSet(fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "acct", 1L));
+    String marker = Keys.accountDeletionMarker("acct");
+    String writeKey = Keys.catalogChildrenMarker("acct", "catalog");
+    String gate = Keys.accountDeletionFenceShard("acct", writeKey);
+    assertTrue(
+        pointers.compareAndSetBatch(
+            List.of(
+                new PointerStore.CasUpsert(
+                    marker, 0L, PointerReferences.opaqueMarkerPointer(marker, "deleting", 1L)),
+                new PointerStore.CasUpsert(
+                    gate, 0L, PointerReferences.opaqueMarkerPointer(gate, "deleting", 1L)))));
 
     markers.bumpCatalogMarker(catalogId);
 

@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
@@ -354,6 +355,7 @@ public class TransactionIntentApplierSupport {
 
   private ApplyOutcome appendAccountDeletionFenceChecks(
       List<TransactionIntent> intents, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
+    Set<String> fencedAccounts = new HashSet<>();
     for (TransactionIntent intent : intents) {
       if (intent == null || intent.getAccountId().isBlank()) {
         return ApplyOutcome.conflict(
@@ -363,12 +365,11 @@ public class TransactionIntentApplierSupport {
             null,
             null);
       }
-      String markerKey = Keys.accountDeletionMarker(intent.getAccountId());
-      if (pointerStore.get(markerKey).isPresent()) {
-        return accountDeletionConflict(intent.getAccountId());
-      }
-      if (touchedKeys.add(markerKey)) {
-        ops.add(new PointerStore.CasCheckAbsent(markerKey));
+      if (fencedAccounts.add(intent.getAccountId())) {
+        PointerStore.CasCheckAbsent check =
+            AccountDeletionFence.checkForAccountWrite(
+                intent.getAccountId(), intent.getTargetPointerKey());
+        if (touchedKeys.add(check.key())) ops.add(check);
       }
     }
     return ApplyOutcome.applied();

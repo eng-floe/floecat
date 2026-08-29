@@ -14,6 +14,7 @@ import ai.floedb.floecat.service.repo.model.CatalogOverlayKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta;
@@ -104,7 +105,7 @@ public class CatalogOverlayRepository {
     return pointerStore.compareAndSetBatch(
         List.of(
             new PointerStore.CasCheck(canonical, expectedPointerVersion),
-            new PointerStore.CasCheckAbsent(Keys.accountDeletionMarker(overlayId.getAccountId())),
+            AccountDeletionFence.checkForAccountWrite(overlayId.getAccountId(), fence),
             new PointerStore.CasUpsert(
                 fence, 0L, PointerReferences.opaqueMarkerPointer(fence, fence, 1L))));
   }

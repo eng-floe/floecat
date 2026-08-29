@@ -576,7 +576,6 @@ public class CatalogOverlayReconciler {
             Keys.catalogIntegrationPointerById(accountId, integration.getResourceId().getId()),
             integrationMeta.getPointerVersion()),
         Set.of(
-            Keys.accountDeletionMarker(accountId),
             Keys.catalogOverlayDeletionMarker(accountId, overlay.getResourceId().getId()),
             Keys.catalogIntegrationDeletionMarker(accountId, integration.getResourceId().getId())),
         Map.of());

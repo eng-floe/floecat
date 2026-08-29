@@ -14,6 +14,7 @@ import ai.floedb.floecat.service.repo.model.CatalogIntegrationKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta;
@@ -157,8 +158,7 @@ public class CatalogIntegrationRepository {
     return pointerStore.compareAndSetBatch(
         List.of(
             new PointerStore.CasCheck(canonical, expectedPointerVersion),
-            new PointerStore.CasCheckAbsent(
-                Keys.accountDeletionMarker(integrationId.getAccountId())),
+            AccountDeletionFence.checkForAccountWrite(integrationId.getAccountId(), fence),
             new PointerStore.CasUpsert(
                 fence, 0L, PointerReferences.opaqueMarkerPointer(fence, fence, 1L))));
   }

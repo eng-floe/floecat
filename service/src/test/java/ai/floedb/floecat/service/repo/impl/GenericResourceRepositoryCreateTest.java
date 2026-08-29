@@ -83,9 +83,16 @@ class GenericResourceRepositoryCreateTest {
 
   private void installAccountDeletionFence(String accountId) {
     String key = Keys.accountDeletionMarker(accountId);
-    assertThat(
-            ptr.compareAndSet(key, 0L, PointerReferences.opaqueMarkerPointer(key, "deleting", 1L)))
-        .isTrue();
+    List<PointerStore.CasOp> creates = new ArrayList<>();
+    creates.add(
+        new PointerStore.CasUpsert(
+            key, 0L, PointerReferences.opaqueMarkerPointer(key, "deleting", 1L)));
+    for (String shardKey : Keys.accountDeletionFenceShards(accountId)) {
+      creates.add(
+          new PointerStore.CasUpsert(
+              shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
+    }
+    assertThat(ptr.compareAndSetBatch(creates)).isTrue();
   }
 
   @Test

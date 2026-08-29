@@ -395,12 +395,11 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           K resourceKey = schema.keyFromValue.apply(value);
           String accountDeletionMarker = Keys.accountDeletionMarker(resourceKey.accountId());
-          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
-            throw accountDeletionInProgress(resourceKey);
-          }
           PreparedCreate prepared = prepareCreate(value);
           Set<String> effectiveRequiredAbsent = new HashSet<>(conditions.requiredAbsent());
-          effectiveRequiredAbsent.add(accountDeletionMarker);
+          effectiveRequiredAbsent.add(
+              Keys.accountDeletionFenceShard(
+                  resourceKey.accountId(), prepared.canonicalPointerKey));
           List<PointerStore.CasOp> ops =
               new ArrayList<>(
                   prepared.ops.size()
@@ -700,17 +699,13 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           List<String> pointerKeys = new ArrayList<>(uniqueKeys);
 
           String accountDeletionMarker = Keys.accountDeletionMarker(key.accountId());
-          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
-            cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
-            throw accountDeletionInProgress(key);
-          }
           List<PointerStore.CasOp> ops = new ArrayList<>(pointerKeys.size() + 1);
           for (String pointerKey : pointerKeys) {
             ops.add(
                 new PointerStore.CasUpsert(
                     pointerKey, 0L, reserve(pointerKey, blobUri, value, blobBytes)));
           }
-          ops.add(new PointerStore.CasCheckAbsent(accountDeletionMarker));
+          ops.add(AccountDeletionFence.checkForAccountWrite(key.accountId(), canonicalPointer));
 
           if (mutationPointerStore.compareAndSetBatch(ops)) {
             healCanonicalBlobIfMissing(blobUri, value);
@@ -990,9 +985,6 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           K key = schema.keyFromValue.apply(updatedValue);
           String accountDeletionMarker = Keys.accountDeletionMarker(key.accountId());
-          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
-            throw accountDeletionInProgress(key);
-          }
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
           PreparedUpdate prepared = prepareUpdate(updatedValue, expectedCanonicalVersion);
           String blobUri = prepared.blobUri;
@@ -1001,8 +993,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           List<PointerStore.CasOp> ops = new ArrayList<>(prepared.ops);
           Pointer committedCanonical = prepared.committedCanonical;
           addPointerConditions(requiredPointerVersions, requiredAbsentPointers, batchedKeys, ops);
-          if (batchedKeys.add(accountDeletionMarker)) {
-            ops.add(new PointerStore.CasCheckAbsent(accountDeletionMarker));
+          String accountDeletionFence =
+              Keys.accountDeletionFenceShard(key.accountId(), canonicalPointer);
+          if (batchedKeys.add(accountDeletionFence)) {
+            ops.add(new PointerStore.CasCheckAbsent(accountDeletionFence));
           }
           addMarkerAdvances(markerVersions, batchedKeys, ops, "update");
           for (PointerStore.CasOp companion : companions) {
@@ -1118,10 +1112,6 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             throw new IllegalArgumentException("replacement cannot cross accounts");
           }
           String accountDeletionMarker = Keys.accountDeletionMarker(currentKey.accountId());
-          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
-            throw accountDeletionInProgress(currentKey);
-          }
-
           String currentCanonical = schema.canonicalPointerForKey.apply(currentKey);
           String replacementCanonical = schema.canonicalPointerForKey.apply(replacementKey);
           if (currentCanonical.equals(replacementCanonical)) {
@@ -1207,8 +1197,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
           addPointerDeletes(pointerVersionsToDelete, batchedKeys, ops);
           addPointerConditions(requiredPointerVersions, requiredAbsentPointers, batchedKeys, ops);
-          if (batchedKeys.add(accountDeletionMarker)) {
-            ops.add(new PointerStore.CasCheckAbsent(accountDeletionMarker));
+          String accountDeletionFence =
+              Keys.accountDeletionFenceShard(currentKey.accountId(), currentCanonical);
+          if (batchedKeys.add(accountDeletionFence)) {
+            ops.add(new PointerStore.CasCheckAbsent(accountDeletionFence));
           }
           addMarkerAdvances(markerVersions, batchedKeys, ops, "replacement");
           for (PointerStore.CasOp companion : companions) {

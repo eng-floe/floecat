@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.catalog.impl;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -64,15 +65,13 @@ public class RootResyncQueue {
   public void enqueue(ResourceId tableId) {
     String key = Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId());
     String fenceKey = Keys.accountDeletionMarker(tableId.getAccountId());
+    var writerGate = AccountDeletionFence.checkForAccountWrite(tableId.getAccountId(), key);
     RuntimeException lastFailure = null;
     for (int attempt = 0; attempt < ENQUEUE_ATTEMPTS; attempt++) {
       try {
-        if (pointerStore.get(fenceKey).isPresent()) {
-          return;
-        }
         if (pointerStore.compareAndSetBatch(
             List.of(
-                new PointerStore.CasCheckAbsent(fenceKey),
+                writerGate,
                 new PointerStore.CasUpsert(key, 0L, PointerReferences.blobPointer(key, "", 1L))))) {
           return;
         }
@@ -85,7 +84,7 @@ public class RootResyncQueue {
         }
         if (pointerStore.compareAndSetBatch(
             List.of(
-                new PointerStore.CasCheckAbsent(fenceKey),
+                writerGate,
                 new PointerStore.CasUpsert(
                     key,
                     existing.getVersion(),
