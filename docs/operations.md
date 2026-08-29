@@ -148,6 +148,29 @@ affinity, route each worker fleet only to its matching control plane, and retire
 after its active trees have drained. A new deployment does not adopt, migrate, or lease the old
 cohort's jobs.
 
+Before deploying affinity-qualified maintenance indexes, stop new reconcile requests and drain the
+old deployment completely. Wait for all non-terminal trees and leases to finish, publish every
+accepted snapshot-finalize intent, complete pending stats cleanup, and allow terminal retention,
+canonical quarantine, and blob cleanup queues to drain. The replaced legacy discovery prefixes
+are:
+
+- `/accounts/by-id/reconcile/job-leases/by-expiry/`
+- `/accounts/by-id/reconcile/jobs/by-state/`
+- `/accounts/{account_id}/reconcile/jobs/terminal-retention/`
+- `/accounts/{account_id}/reconcile/jobs/gc-quarantine/canonical/`
+- `/accounts/{account_id}/reconcile/jobs/gc-blob-cleanup/`
+
+Remove remaining legacy markers only after confirming their referenced jobs have no active lease,
+accepted publication intent, or pending cleanup. There is no fallback scan or migration between
+the old and affinity-qualified prefixes. Do not start mixed-version queue sharing until the legacy
+queues are drained: old deployments scan those prefixes without cohort checks, while new
+deployments intentionally cannot discover work stranded there.
+
+This drain is mandatory. Lease-expiry work may eventually be recreated by a planner, but terminal
+retention, canonical quarantine, and blob-cleanup rows are not recreated. Leaving those rows on a
+legacy prefix permanently leaks the corresponding job records or blobs unless they are cleaned up
+manually.
+
 Worker gRPC auth boundary:
 
 - Remote reconcile workers authenticate to `ReconcileExecutorControl` with an explicit bearer

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.model;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -64,6 +65,10 @@ public final class Keys {
       throw new IllegalArgumentException("key arg '" + name + "' is null/blank");
     }
     return v;
+  }
+
+  private static String affinitySegment(String workerAffinity) {
+    return ReconcileWorkerAffinity.of(workerAffinity).storageKeySegment();
   }
 
   private static long reqNonNegative(String name, long v) {
@@ -1288,26 +1293,37 @@ public final class Keys {
   }
 
   public static String reconcileDirtyParentPointerPrefix(String workerAffinity) {
-    String affinity = req("worker_affinity", workerAffinity);
+    String affinity = affinitySegment(workerAffinity);
     return reconcileDirtyParentPointerRootPrefix() + encode(affinity) + "/";
   }
 
   public static String reconcileDirtyParentPointer(
       String workerAffinity, String accountId, String parentJobId) {
-    String affinity = req("worker_affinity", workerAffinity);
+    String affinity = affinitySegment(workerAffinity);
     String tid = req("account_id", accountId);
     String pid = req("parent_job_id", parentJobId);
     return reconcileDirtyParentPointerPrefix(affinity) + encode(tid) + "/" + encode(pid);
   }
 
-  public static String reconcileCancellationCleanupPointerPrefix() {
-    return "/accounts/by-id/reconcile/jobs/cancellation-cleanup/";
+  public static String reconcileCancellationCleanupPointerRootPrefix() {
+    // This namespace deliberately does not descend from the legacy "cancellation-cleanup/" prefix.
+    // Older deployments scan that entire prefix and act on markers for job trees they do not own.
+    return "/accounts/by-id/reconcile/jobs/cancellation-cleanup-by-worker-affinity/";
   }
 
-  public static String reconcileCancellationCleanupPointer(String accountId, String rootJobId) {
+  public static String reconcileCancellationCleanupPointerPrefix(String workerAffinity) {
+    String affinity = affinitySegment(workerAffinity);
+    return reconcileCancellationCleanupPointerRootPrefix() + encode(affinity) + "/";
+  }
+
+  public static String reconcileCancellationCleanupPointer(
+      String workerAffinity, String accountId, String rootJobId) {
     String tid = req("account_id", accountId);
     String jid = req("root_job_id", rootJobId);
-    return reconcileCancellationCleanupPointerPrefix() + encode(tid) + "/" + encode(jid);
+    return reconcileCancellationCleanupPointerPrefix(workerAffinity)
+        + encode(tid)
+        + "/"
+        + encode(jid);
   }
 
   public static String reconcileJobProjectionPointer(String accountId, String jobId) {
@@ -1366,15 +1382,27 @@ public final class Keys {
   }
 
   public static String reconcileCanonicalQuarantinePointer(
-      String accountId, String canonicalKeyHash) {
+      String accountId, String workerAffinity, String canonicalKeyHash) {
     String tid = req("account_id", accountId);
+    String affinity = affinitySegment(workerAffinity);
     String hash = req("canonical_key_hash", canonicalKeyHash);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-quarantine/canonical/" + encode(hash);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/gc-quarantine-by-worker-affinity/"
+        + encode(affinity)
+        + "/canonical/"
+        + encode(hash);
   }
 
-  public static String reconcileCanonicalQuarantinePointerPrefix(String accountId) {
+  public static String reconcileCanonicalQuarantinePointerPrefix(
+      String accountId, String workerAffinity) {
     String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-quarantine/canonical/";
+    String affinity = affinitySegment(workerAffinity);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/gc-quarantine-by-worker-affinity/"
+        + encode(affinity)
+        + "/canonical/";
   }
 
   public static String reconcileJobByParentPointer(
@@ -1416,22 +1444,28 @@ public final class Keys {
   }
 
   public static String reconcileJobByStatePointerPrefix() {
-    return "/accounts/by-id/reconcile/jobs/by-state/";
+    return "/accounts/by-id/reconcile/jobs/by-state-by-worker-affinity/";
   }
 
-  public static String reconcileJobByStatePointerPrefix(String state) {
+  public static String reconcileJobByStatePointerPrefix(String workerAffinity, String state) {
+    String affinity = affinitySegment(workerAffinity);
     String jobState = req("state", state);
-    return reconcileJobByStatePointerPrefix() + encode(jobState) + "/";
+    return reconcileJobByStatePointerPrefix() + encode(affinity) + "/" + encode(jobState) + "/";
   }
 
   public static String reconcileJobByStatePointer(
-      String state, long sortableTimestampMs, String accountId, String jobId) {
+      String workerAffinity,
+      String state,
+      long sortableTimestampMs,
+      String accountId,
+      String jobId) {
     String jobState = req("state", state);
     long ts = reqNonNegative("sortable_timestamp_ms", sortableTimestampMs);
     String tid = req("account_id", accountId);
     String jid = req("job_id", jobId);
     return String.format(
-        "%s%019d/%s/%s", reconcileJobByStatePointerPrefix(jobState), ts, encode(tid), encode(jid));
+        "%s%019d/%s/%s",
+        reconcileJobByStatePointerPrefix(workerAffinity, jobState), ts, encode(tid), encode(jid));
   }
 
   public static String reconcileJobByAccountStatePointerPrefix(String accountId) {
@@ -1452,17 +1486,24 @@ public final class Keys {
         "%s%019d/%s", reconcileJobByAccountStatePointerPrefix(accountId, state), ts, encode(jid));
   }
 
-  public static String reconcileTerminalRetentionPointerPrefix(String accountId) {
+  public static String reconcileTerminalRetentionPointerPrefix(
+      String accountId, String workerAffinity) {
     String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/terminal-retention/";
+    String affinity = affinitySegment(workerAffinity);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/terminal-retention-by-worker-affinity/"
+        + encode(affinity)
+        + "/";
   }
 
   public static String reconcileTerminalRetentionPointer(
-      String accountId, long terminalAtMs, String jobId) {
+      String accountId, String workerAffinity, long terminalAtMs, String jobId) {
     String jid = req("job_id", jobId);
     long ts = reqNonNegative("terminal_at_ms", terminalAtMs);
     return String.format(
-        "%s%019d/%s", reconcileTerminalRetentionPointerPrefix(accountId), ts, encode(jid));
+        "%s%019d/%s",
+        reconcileTerminalRetentionPointerPrefix(accountId, workerAffinity), ts, encode(jid));
   }
 
   public static String reconcileJobByConnectorStatePointerPrefix(
@@ -1513,14 +1554,23 @@ public final class Keys {
     return accountRootPrefix(tid) + "reconcile/job-leases/by-id/";
   }
 
-  public static String reconcileJobLeaseExpiryPointerPrefix() {
-    return "/accounts/by-id/reconcile/job-leases/by-expiry/";
+  public static String reconcileJobLeaseExpiryPointerRootPrefix() {
+    // This namespace deliberately does not descend from the legacy "by-expiry/" prefix. Lease
+    // reclamation mutates whatever it finds here, and older deployments scan the whole prefix
+    // without knowing which cohort owns the job -- so they requeue work another deployment is
+    // still publishing. Keying the index by cohort makes those entries unreachable to them.
+    return "/accounts/by-id/reconcile/job-leases/by-expiry-by-worker-affinity/";
+  }
+
+  public static String reconcileJobLeaseExpiryPointerPrefix(String workerAffinity) {
+    String affinity = affinitySegment(workerAffinity);
+    return reconcileJobLeaseExpiryPointerRootPrefix() + encode(affinity) + "/";
   }
 
   public static String reconcileJobLeaseExpiryPointer(
-      long expiresAtMs, String accountId, String jobId) {
+      String workerAffinity, long expiresAtMs, String accountId, String jobId) {
     long expiresAt = reqPositive("expires_at_ms", expiresAtMs);
-    return reconcileJobLeaseExpiryPointerPrefix()
+    return reconcileJobLeaseExpiryPointerPrefix(workerAffinity)
         + String.format("%019d", expiresAt)
         + reconcileJobLeaseExpiryPointerSuffix(accountId, jobId);
   }
@@ -1771,15 +1821,28 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/jobs/" + encode(jid) + "/";
   }
 
-  public static String reconcileJobBlobCleanupPointer(String accountId, String jobId) {
+  public static String reconcileJobBlobCleanupPointer(
+      String accountId, String workerAffinity, String jobId) {
     String tid = req("account_id", accountId);
+    String affinity = affinitySegment(workerAffinity);
     String jid = req("job_id", jobId);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-blob-cleanup/" + encode(jid);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/gc-blob-cleanup-by-worker-affinity/"
+        + encode(affinity)
+        + "/"
+        + encode(jid);
   }
 
-  public static String reconcileJobBlobCleanupPointerPrefix(String accountId) {
+  public static String reconcileJobBlobCleanupPointerPrefix(
+      String accountId, String workerAffinity) {
     String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid) + "/reconcile/jobs/gc-blob-cleanup/";
+    String affinity = affinitySegment(workerAffinity);
+    return "/accounts/"
+        + encode(tid)
+        + "/reconcile/jobs/gc-blob-cleanup-by-worker-affinity/"
+        + encode(affinity)
+        + "/";
   }
 
   /**

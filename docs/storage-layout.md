@@ -167,20 +167,20 @@ Reconcile job pointers:
 /accounts/{account_id}/reconcile/jobs/by-id/{job_id}
 /accounts/by-id/reconcile/jobs/by-id/{job_id}
 /accounts/{account_id}/reconcile/finalized-snapshots/by-id/{table_id}/{snapshot_id:019d}
-/accounts/by-id/reconcile/jobs/dirty-parents/{account_id}/{parent_job_id}
-/accounts/by-id/reconcile/jobs/cancellation-cleanup/{account_id}/{root_job_id}
+/accounts/by-id/reconcile/jobs/dirty-parents-by-worker-affinity/{worker_affinity}/{account_id}/{parent_job_id}
+/accounts/by-id/reconcile/jobs/cancellation-cleanup-by-worker-affinity/{worker_affinity}/{account_id}/{root_job_id}
 /accounts/{account_id}/reconcile/jobs/projections/by-id/{job_id}
 /accounts/{account_id}/reconcile/jobs/root-summaries/by-account/{sortable_job_token}
 /accounts/{account_id}/reconcile/jobs/root-summaries/by-connector/{connector_id}/{sortable_job_token}
-/accounts/{account_id}/reconcile/jobs/gc-quarantine/canonical/{canonical_key_hash}
+/accounts/{account_id}/reconcile/jobs/gc-quarantine-by-worker-affinity/{worker_affinity}/canonical/{canonical_key_hash}
 /accounts/{account_id}/reconcile/jobs/by-parent/{parent_job_id}/{job_id}
 /accounts/{account_id}/reconcile/jobs/by-connector/{connector_id}/{sortable_job_token}
-/accounts/by-id/reconcile/jobs/by-state/{state}/{sortable_timestamp:019d}/{account_id}/{job_id}
+/accounts/by-id/reconcile/jobs/by-state-by-worker-affinity/{worker_affinity}/{state}/{sortable_timestamp:019d}/{account_id}/{job_id}
 /accounts/{account_id}/reconcile/jobs/by-state/{state}/{sortable_timestamp:019d}/{job_id}
-/accounts/{account_id}/reconcile/jobs/terminal-retention/{terminal_timestamp:019d}/{job_id}
+/accounts/{account_id}/reconcile/jobs/terminal-retention-by-worker-affinity/{worker_affinity}/{terminal_timestamp:019d}/{job_id}
 /accounts/{account_id}/reconcile/jobs/by-connector-state/{connector_id}/{state}/{sortable_timestamp:019d}/{job_id}
 /accounts/{account_id}/reconcile/job-leases/by-id/{job_id}
-/accounts/by-id/reconcile/job-leases/by-expiry/{expiry_timestamp:019d}/accounts/{account_id}/jobs/{job_id}
+/accounts/by-id/reconcile/job-leases/by-expiry-by-worker-affinity/{worker_affinity}/{expiry_timestamp:019d}/accounts/{account_id}/jobs/{job_id}
 /accounts/by-id/reconcile/jobs/ready/{due_timestamp:019d}/{account_id}/{lane_key}/{job_id}
 /accounts/by-id/reconcile/jobs/ready/by-execution-class/{execution_class}/{due_timestamp:019d}/{account_id}/{job_id}
 /accounts/by-id/reconcile/jobs/ready/by-execution-lane/{execution_lane}/{due_timestamp:019d}/{account_id}/{job_id}
@@ -190,8 +190,12 @@ Reconcile job pointers:
 /accounts/{account_id}/reconcile/snapshot-owners/{table_id}/{snapshot_id:019d}
 /accounts/{account_id}/reconcile/snapshot-coverage-claims/{connector_id}/{source_namespace}/{source_table}/{table_id}/{snapshot_id:019d}/{source_revision}/{semantics_hash}
 /accounts/{account_id}/reconcile/lanes/{lane_key}
-/accounts/{account_id}/reconcile/jobs/gc-blob-cleanup/{job_id}
+/accounts/{account_id}/reconcile/jobs/gc-blob-cleanup-by-worker-affinity/{worker_affinity}/{job_id}
 ```
+
+Affinity-qualified indexes encode an absent or disabled affinity as the reserved `_none_` segment;
+operators cannot configure `_none_` as a named affinity. Production startup still requires a
+non-blank configured affinity.
 
 Constraint storage semantics:
 

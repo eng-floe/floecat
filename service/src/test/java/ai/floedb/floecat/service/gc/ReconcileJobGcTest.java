@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
@@ -51,6 +52,8 @@ import org.junit.jupiter.api.Test;
 class ReconcileJobGcTest {
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "conn-1";
+  private static final ReconcileWorkerAffinity WORKER_AFFINITY =
+      ReconcileWorkerAffinity.of("reconciler-v1");
   private static final String INLINE_JOB_STATE_PREFIX = "inline:reconcile-job:";
 
   private PointerStore pointers;
@@ -72,7 +75,7 @@ class ReconcileJobGcTest {
     jobIndexBackend.bind(pointers);
     gc.pointerStore = pointers;
     gc.jobIndexes = new ReconcileJobIndexes();
-    gc.jobIndexes.bind(pointers, ignored -> false, ignored -> java.util.List.of());
+    gc.jobIndexes.bind(pointers, ignored -> false, ignored -> java.util.List.of(), WORKER_AFFINITY);
     ReconcilePayloadStore payloadStore = new ReconcilePayloadStore();
     payloadStore.bind(blobs, pointers, mapper);
     gc.jobIndexStore = new NativeReconcileJobIndexStore();
@@ -125,14 +128,50 @@ class ReconcileJobGcTest {
     assertTrue(pointers.get(Keys.reconcileJobLookupPointerById(jobId)).isEmpty());
     assertTrue(pointers.get(dedupePointer).isEmpty());
     assertTrue(pointers.get(readyPointer).isEmpty());
-    assertTrue(pointers.get(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, jobId)).isPresent());
+    assertTrue(
+        pointers
+            .get(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, WORKER_AFFINITY.value(), jobId))
+            .isPresent());
     assertTrue(blobs.head(historyBlob).isPresent());
 
     var blobResult = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
     assertTrue(blobResult.blobDeleted() >= 1);
-    assertTrue(pointers.get(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, jobId)).isEmpty());
+    assertTrue(
+        pointers
+            .get(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, WORKER_AFFINITY.value(), jobId))
+            .isEmpty());
     assertFalse(blobs.head(historyBlob).isPresent());
+  }
+
+  @Test
+  void terminalRetentionOnlyConsumesItsWorkerAffinityNamespace() {
+    System.setProperty("floecat.gc.reconcile-jobs.retention-ms", "0");
+    String jobId = "job-affinity-retention";
+    StoredReconcileJob record =
+        storedJob(
+            jobId,
+            "JS_SUCCEEDED",
+            System.currentTimeMillis() - 10_000L,
+            "",
+            hashValue("affinity-retention"),
+            "");
+    putNativeJobIndexRows(record);
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+
+    gc.jobIndexes.bind(
+        pointers,
+        ignored -> false,
+        ignored -> java.util.List.of(),
+        ReconcileWorkerAffinity.of("other-affinity"));
+    gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertTrue(pointers.get(canonicalKey).isPresent());
+
+    gc.jobIndexes.bind(pointers, ignored -> false, ignored -> java.util.List.of(), WORKER_AFFINITY);
+    gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertTrue(pointers.get(canonicalKey).isEmpty());
   }
 
   @Test
@@ -142,7 +181,8 @@ class ReconcileJobGcTest {
     for (int i = 0; i < 101; i++) {
       blobs.put(blobPrefix + "object-" + i, new byte[] {(byte) i}, "application/octet-stream");
     }
-    String markerKey = Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, jobId);
+    String markerKey =
+        Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, WORKER_AFFINITY.value(), jobId);
     pointers.compareAndSet(
         markerKey,
         0L,
@@ -160,6 +200,37 @@ class ReconcileJobGcTest {
     assertEquals(1, second.blobDeleted());
     assertTrue(pointers.get(markerKey).isEmpty());
     assertTrue(blobs.list(blobPrefix, 1, "").keys().isEmpty());
+  }
+
+  @Test
+  void blobCleanupOnlyConsumesItsWorkerAffinityNamespace() {
+    String jobId = "job-other-affinity";
+    String blobPrefix = Keys.reconcileJobBlobPrefix(ACCOUNT_ID, jobId);
+    String blobKey = blobPrefix + "object";
+    blobs.put(blobKey, new byte[] {1}, "application/octet-stream");
+    String markerKey =
+        Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, WORKER_AFFINITY.value(), jobId);
+    pointers.compareAndSet(
+        markerKey,
+        0L,
+        PointerReferences.opaqueMarkerPointer(
+            markerKey, ReconcileJobGc.encodeBlobCleanupMarker(blobPrefix, ""), 1L));
+
+    gc.jobIndexes.bind(
+        pointers,
+        ignored -> false,
+        ignored -> java.util.List.of(),
+        ReconcileWorkerAffinity.of("other-affinity"));
+    gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertTrue(pointers.get(markerKey).isPresent());
+    assertTrue(blobs.head(blobKey).isPresent());
+
+    gc.jobIndexes.bind(pointers, ignored -> false, ignored -> java.util.List.of(), WORKER_AFFINITY);
+    gc.runAccountSlice(ACCOUNT_ID, "", "");
+
+    assertTrue(pointers.get(markerKey).isEmpty());
+    assertTrue(blobs.head(blobKey).isEmpty());
   }
 
   @Test
@@ -181,7 +252,8 @@ class ReconcileJobGcTest {
           new byte[] {(byte) i},
           "application/octet-stream");
     }
-    String markerKey = Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, jobId);
+    String markerKey =
+        Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, WORKER_AFFINITY.value(), jobId);
     pointers.compareAndSet(
         markerKey,
         0L,
@@ -213,8 +285,10 @@ class ReconcileJobGcTest {
         };
     gc.blobStore = blobs;
     blobs.put(healthyPrefix + "object", new byte[] {1}, "application/octet-stream");
-    String failingMarker = Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, "job-a-failing");
-    String healthyMarker = Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, "job-b-healthy");
+    String failingMarker =
+        Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, WORKER_AFFINITY.value(), "job-a-failing");
+    String healthyMarker =
+        Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, WORKER_AFFINITY.value(), "job-b-healthy");
     pointers.compareAndSet(
         failingMarker,
         0L,
@@ -259,7 +333,12 @@ class ReconcileJobGcTest {
         jobIndexBackend
             .loadIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, childJobId))
             .isPresent());
-    assertTrue(pointers.get(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, childJobId)).isEmpty());
+    assertTrue(
+        pointers
+            .get(
+                Keys.reconcileJobBlobCleanupPointer(
+                    ACCOUNT_ID, WORKER_AFFINITY.value(), childJobId))
+            .isEmpty());
     assertTrue(blobs.head(childPayload).isPresent());
     assertTrue(
         jobIndexBackend
@@ -288,7 +367,11 @@ class ReconcileJobGcTest {
             .loadIndexEntry(Keys.reconcileJobPointerById(ACCOUNT_ID, childJobId))
             .isEmpty());
     assertTrue(
-        pointers.get(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, childJobId)).isPresent());
+        pointers
+            .get(
+                Keys.reconcileJobBlobCleanupPointer(
+                    ACCOUNT_ID, WORKER_AFFINITY.value(), childJobId))
+            .isPresent());
   }
 
   @Test
@@ -374,7 +457,8 @@ class ReconcileJobGcTest {
             ""));
     String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, "missing-canonical");
     String markerKey =
-        Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, hashValue(canonicalKey));
+        Keys.reconcileCanonicalQuarantinePointer(
+            ACCOUNT_ID, WORKER_AFFINITY.value(), hashValue(canonicalKey));
     putQuarantineMarker(markerKey, canonicalKey, 1L, "inline:reconcile-job:not-valid");
 
     var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
@@ -597,7 +681,8 @@ class ReconcileJobGcTest {
     JobIndexEntrySnapshot claimed = jobIndexBackend.loadIndexEntry(canonicalKey).orElseThrow();
     assertTrue(claimed.cleanupLocked());
     String markerKey =
-        Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, hashValue(canonicalKey));
+        Keys.reconcileCanonicalQuarantinePointer(
+            ACCOUNT_ID, WORKER_AFFINITY.value(), hashValue(canonicalKey));
     putQuarantineMarker(markerKey, canonicalKey, claimed.version(), claimed.blobUri());
 
     var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
@@ -647,7 +732,8 @@ class ReconcileJobGcTest {
     assertTrue(jobIndexBackend.loadIndexEntry(canonicalKey).orElseThrow().cleanupLocked());
     JobIndexEntrySnapshot claimed = jobIndexBackend.loadIndexEntry(canonicalKey).orElseThrow();
     putQuarantineMarker(
-        Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, hashValue(canonicalKey)),
+        Keys.reconcileCanonicalQuarantinePointer(
+            ACCOUNT_ID, WORKER_AFFINITY.value(), hashValue(canonicalKey)),
         canonicalKey,
         claimed.version(),
         claimed.blobUri());
@@ -710,7 +796,9 @@ class ReconcileJobGcTest {
     String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
     putPointer(canonicalKey, "inline:reconcile-job:not-valid");
     putPointer(Keys.reconcileJobLookupPointerById(jobId), canonicalKey);
-    putPointer(Keys.reconcileTerminalRetentionPointer(ACCOUNT_ID, 0L, jobId), canonicalKey);
+    putPointer(
+        Keys.reconcileTerminalRetentionPointer(ACCOUNT_ID, WORKER_AFFINITY.value(), 0L, jobId),
+        canonicalKey);
 
     var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
@@ -726,12 +814,15 @@ class ReconcileJobGcTest {
     String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
     putPointer(canonicalKey, "inline:reconcile-job:not-valid");
     putPointer(Keys.reconcileJobLookupPointerById(jobId), canonicalKey);
-    putPointer(Keys.reconcileTerminalRetentionPointer(ACCOUNT_ID, 0L, jobId), canonicalKey);
+    putPointer(
+        Keys.reconcileTerminalRetentionPointer(ACCOUNT_ID, WORKER_AFFINITY.value(), 0L, jobId),
+        canonicalKey);
 
     var first = gc.runAccountSlice(ACCOUNT_ID, "", "");
 
     String markerKey =
-        Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, hashValue(canonicalKey));
+        Keys.reconcileCanonicalQuarantinePointer(
+            ACCOUNT_ID, WORKER_AFFINITY.value(), hashValue(canonicalKey));
     assertEquals(1, first.canonicalQuarantined());
     assertTrue(pointers.get(markerKey).isPresent());
 
@@ -770,7 +861,8 @@ class ReconcileJobGcTest {
     String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
     JobIndexEntrySnapshot canonical = jobIndexBackend.loadIndexEntry(canonicalKey).orElseThrow();
     String markerKey =
-        Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, hashValue(canonicalKey));
+        Keys.reconcileCanonicalQuarantinePointer(
+            ACCOUNT_ID, WORKER_AFFINITY.value(), hashValue(canonicalKey));
     putQuarantineMarker(markerKey, canonicalKey, canonical.version(), canonical.blobUri());
 
     var result = gc.runAccountSlice(ACCOUNT_ID, "", "");
@@ -804,7 +896,8 @@ class ReconcileJobGcTest {
                 canonicalKey, corruptReference, readable.getVersion() + 1L)));
     Pointer corrupt = pointers.get(canonicalKey).orElseThrow();
     String markerKey =
-        Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, hashValue(canonicalKey));
+        Keys.reconcileCanonicalQuarantinePointer(
+            ACCOUNT_ID, WORKER_AFFINITY.value(), hashValue(canonicalKey));
     String markerPayload =
         corrupt.getVersion()
             + "\n"
@@ -840,7 +933,8 @@ class ReconcileJobGcTest {
       String jobId = "job-quarantine-marker-page-" + i;
       String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
       String markerKey =
-          Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, hashValue(canonicalKey));
+          Keys.reconcileCanonicalQuarantinePointer(
+              ACCOUNT_ID, WORKER_AFFINITY.value(), hashValue(canonicalKey));
       markerKeys.add(markerKey);
       canonicalByMarker.put(markerKey, canonicalKey);
     }
@@ -888,7 +982,8 @@ class ReconcileJobGcTest {
     for (int i = 0; i < 2; i++) {
       String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, "retained-" + i);
       String markerKey =
-          Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, hashValue(canonicalKey));
+          Keys.reconcileCanonicalQuarantinePointer(
+              ACCOUNT_ID, WORKER_AFFINITY.value(), hashValue(canonicalKey));
       markerKeys.add(markerKey);
       canonicalByMarker.put(markerKey, canonicalKey);
       pointers.compareAndSet(
@@ -933,7 +1028,8 @@ class ReconcileJobGcTest {
     String blobPrefix = Keys.reconcileJobBlobPrefix(ACCOUNT_ID, cleanupJobId);
     String blobUri = blobPrefix + "history";
     blobs.put(blobUri, new byte[] {1}, "application/octet-stream");
-    String markerKey = Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, cleanupJobId);
+    String markerKey =
+        Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, WORKER_AFFINITY.value(), cleanupJobId);
     pointers.compareAndSet(
         markerKey,
         0L,
@@ -1005,7 +1101,9 @@ class ReconcileJobGcTest {
             .isEmpty());
     assertTrue(
         jobIndexBackend
-            .loadIndexEntry(Keys.reconcileJobByStatePointer("JS_SUCCEEDED", now, ACCOUNT_ID, jobId))
+            .loadIndexEntry(
+                Keys.reconcileJobByStatePointer(
+                    WORKER_AFFINITY.value(), "JS_SUCCEEDED", now, ACCOUNT_ID, jobId))
             .isEmpty());
     assertTrue(
         jobIndexBackend
@@ -1215,7 +1313,9 @@ class ReconcileJobGcTest {
             .isEmpty());
     assertTrue(
         jobIndexBackend
-            .loadIndexEntry(Keys.reconcileJobByStatePointer("JS_SUCCEEDED", now, ACCOUNT_ID, jobId))
+            .loadIndexEntry(
+                Keys.reconcileJobByStatePointer(
+                    WORKER_AFFINITY.value(), "JS_SUCCEEDED", now, ACCOUNT_ID, jobId))
             .isEmpty());
     assertTrue(
         jobIndexBackend
@@ -1305,7 +1405,9 @@ class ReconcileJobGcTest {
             .isPresent());
     assertTrue(
         jobIndexBackend
-            .loadIndexEntry(Keys.reconcileJobByStatePointer("JS_SUCCEEDED", now, ACCOUNT_ID, jobId))
+            .loadIndexEntry(
+                Keys.reconcileJobByStatePointer(
+                    WORKER_AFFINITY.value(), "JS_SUCCEEDED", now, ACCOUNT_ID, jobId))
             .isPresent());
     assertTrue(
         jobIndexBackend
@@ -1378,7 +1480,7 @@ class ReconcileJobGcTest {
 
           @Override
           public JobIndexQueryPage listGlobalStateEntries(
-              String state, int limit, String pageToken) {
+              ReconcileWorkerAffinity workerAffinity, String state, int limit, String pageToken) {
             return new JobIndexQueryPage(java.util.List.of(), "");
           }
 
@@ -1498,6 +1600,8 @@ class ReconcileJobGcTest {
     record.dedupeKeyHash = dedupeKeyHash;
     record.readyPointerKey = readyPointerKey;
     record.laneKey = "lane-native";
+    record.executionAttributes =
+        java.util.Map.of(ReconcileWorkerAffinity.ATTRIBUTE, WORKER_AFFINITY.value());
     return record;
   }
 
@@ -1551,7 +1655,11 @@ class ReconcileJobGcTest {
     writes.add(
         new ReconcileJobIndexStore.JobIndexUpsert(
             Keys.reconcileJobByStatePointer(
-                record.state, record.createdAtMs, record.accountId, record.jobId),
+                WORKER_AFFINITY.value(),
+                record.state,
+                record.createdAtMs,
+                record.accountId,
+                record.jobId),
             0L,
             canonicalKey,
             PointerReferenceKind.PRK_POINTER_KEY));
@@ -1599,7 +1707,11 @@ class ReconcileJobGcTest {
               String.format("%019d-%s", Long.MAX_VALUE - record.createdAtMs, record.jobId)));
       cleanupIndexKeys.add(
           Keys.reconcileJobByStatePointer(
-              record.state, record.createdAtMs, record.accountId, record.jobId));
+              WORKER_AFFINITY.value(),
+              record.state,
+              record.createdAtMs,
+              record.accountId,
+              record.jobId));
       cleanupIndexKeys.add(
           Keys.reconcileJobByAccountStatePointer(
               record.accountId, record.state, record.createdAtMs, record.jobId));
@@ -1759,9 +1871,9 @@ class ReconcileJobGcTest {
 
     @Override
     public ReconcileJobIndexBackend.JobIndexQueryPage listTerminalRetentionEntries(
-        String accountId, int limit, String pageToken) {
+        String accountId, ReconcileWorkerAffinity workerAffinity, int limit, String pageToken) {
       lastCanonicalLimit = limit;
-      return super.listTerminalRetentionEntries(accountId, limit, pageToken);
+      return super.listTerminalRetentionEntries(accountId, workerAffinity, limit, pageToken);
     }
 
     @Override
@@ -1787,9 +1899,9 @@ class ReconcileJobGcTest {
 
     @Override
     public ReconcileJobIndexBackend.JobIndexQueryPage listTerminalRetentionEntries(
-        String accountId, int limit, String pageToken) {
+        String accountId, ReconcileWorkerAffinity workerAffinity, int limit, String pageToken) {
       ReconcileJobIndexBackend.JobIndexQueryPage page =
-          super.listTerminalRetentionEntries(accountId, limit, pageToken);
+          super.listTerminalRetentionEntries(accountId, workerAffinity, limit, pageToken);
       clock.addAndGet(100L);
       return page;
     }
@@ -1913,8 +2025,8 @@ class ReconcileJobGcTest {
 
     @Override
     public JobIndexQueryPage listTerminalRetentionEntries(
-        String accountId, int limit, String pageToken) {
-      return delegate.listTerminalRetentionEntries(accountId, limit, pageToken);
+        String accountId, ReconcileWorkerAffinity workerAffinity, int limit, String pageToken) {
+      return delegate.listTerminalRetentionEntries(accountId, workerAffinity, limit, pageToken);
     }
 
     @Override
@@ -1935,8 +2047,9 @@ class ReconcileJobGcTest {
     }
 
     @Override
-    public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
-      return delegate.listGlobalStateEntries(state, limit, pageToken);
+    public JobIndexQueryPage listGlobalStateEntries(
+        ReconcileWorkerAffinity workerAffinity, String state, int limit, String pageToken) {
+      return delegate.listGlobalStateEntries(workerAffinity, state, limit, pageToken);
     }
 
     @Override
@@ -1991,8 +2104,8 @@ class ReconcileJobGcTest {
 
     @Override
     public JobIndexQueryPage listTerminalRetentionEntries(
-        String accountId, int limit, String pageToken) {
-      return delegate.listTerminalRetentionEntries(accountId, limit, pageToken);
+        String accountId, ReconcileWorkerAffinity workerAffinity, int limit, String pageToken) {
+      return delegate.listTerminalRetentionEntries(accountId, workerAffinity, limit, pageToken);
     }
 
     @Override
@@ -2013,8 +2126,9 @@ class ReconcileJobGcTest {
     }
 
     @Override
-    public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
-      return delegate.listGlobalStateEntries(state, limit, pageToken);
+    public JobIndexQueryPage listGlobalStateEntries(
+        ReconcileWorkerAffinity workerAffinity, String state, int limit, String pageToken) {
+      return delegate.listGlobalStateEntries(workerAffinity, state, limit, pageToken);
     }
 
     @Override

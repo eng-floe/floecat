@@ -122,8 +122,8 @@ import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 @TestProfile(ReconcileJobStoreControlPlaneProfile.class)
 class DurableReconcileJobStoreTest {
   private static final String ACCOUNT_ID = "acct-1";
-  private static final String CONNECTOR_ID = "conn-1";
   private static final String WORKER_AFFINITY = "reconciler-v1";
+  private static final String CONNECTOR_ID = "conn-1";
 
   private static DynamoDbClient sharedDynamoDbClient;
   private static DynamoDbAsyncClient sharedDynamoDbAsyncClient;
@@ -227,6 +227,74 @@ class DurableReconcileJobStoreTest {
       System.clearProperty("floecat.reconciler.worker-affinity");
       store.init();
     }
+  }
+
+  @Test
+  void leaseReclamationCannotReachAnotherCohortsExpiredJob() {
+    // Regression: the lease-expiry index was one global prefix keyed only by timestamp, account
+    // and job. A deployment sharing the durable queue scanned every entry in it and reclaimed
+    // whatever it found, so an older deployment requeued jobs ("Lease expired; requeued") that
+    // another deployment was still finalizing. Execution lanes did not help: they qualify ready
+    // leasing, not lease-expiry maintenance.
+    String jobId =
+        store.enqueuePlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "tbl"),
+            ReconcileExecutionPolicy.defaults(),
+            "");
+    var lease = leaseJob(jobId);
+    store.markRunning(jobId, lease.leaseEpoch, 100L, "executor-1");
+    configureLeaseRenewGraceMs(0L);
+    expireLease(jobId);
+
+    String canonicalPointerKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    long nowMs = System.currentTimeMillis();
+    ReconcileLeaseStore.LeaseExpiryEntry ownEntry =
+        leaseManager().scanExpiredLeasePointersPage(nowMs, 100, "").entries().stream()
+            .filter(entry -> canonicalPointerKey.equals(entry.canonicalPointerKey()))
+            .findFirst()
+            .orElseThrow();
+
+    System.setProperty("floecat.reconciler.worker-affinity", "other-cohort");
+    try {
+      store.init();
+      ReconcileLeaseStore otherCohort = leaseManager();
+      configureLeaseRenewGraceMs(0L);
+
+      // The expiry row lives in its owning cohort's slice, so another cohort never reads it.
+      assertTrue(
+          otherCohort.scanExpiredLeasePointersPage(nowMs, 100, "").entries().stream()
+              .noneMatch(entry -> canonicalPointerKey.equals(entry.canonicalPointerKey())));
+
+      // Handed the owning cohort's entry directly, the key round trip rejects it.
+      otherCohort.reclaimExpiredLease(ownEntry, nowMs);
+      assertEquals("JS_RUNNING", readStoredRecord(canonicalPointerKey).state);
+
+      // And an entry that does resolve inside this cohort's slice -- a job restamped to another
+      // cohort while its expiry row survives -- is still refused, because reclamation mutates
+      // job state and the job's own policy says which cohort owns it.
+      var liveLease = otherCohort.loadLease(ACCOUNT_ID, jobId).orElseThrow();
+      ReconcileLeaseStore.LeaseExpiryEntry misfiledEntry =
+          new ReconcileLeaseStore.LeaseExpiryEntry(
+              otherCohort.leaseExpiryPointerKey(liveLease.expiresAtMs, ACCOUNT_ID, jobId),
+              canonicalPointerKey);
+      otherCohort.reclaimExpiredLease(misfiledEntry, nowMs);
+      assertEquals("JS_RUNNING", readStoredRecord(canonicalPointerKey).state);
+    } finally {
+      System.clearProperty("floecat.reconciler.worker-affinity");
+      store.init();
+    }
+
+    // The owning cohort still reclaims its own expired lease.
+    ReconcileLeaseStore owningCohort = leaseManager();
+    configureLeaseRenewGraceMs(0L);
+    owningCohort.reclaimExpiredLease(ownEntry, System.currentTimeMillis());
+    StoredReconcileJob requeued = readStoredRecord(canonicalPointerKey);
+    assertEquals("JS_QUEUED", requeued.state);
+    assertEquals("Lease expired; requeued", requeued.message);
   }
 
   @Test
@@ -346,7 +414,8 @@ class DurableReconcileJobStoreTest {
                         PointerReferenceKind.PRK_POINTER_KEY)),
                 ReconcileJobIndexStore.ReadyQueueMutation.empty())));
 
-    String cancellationMarkerKey = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, emptyJobId);
+    String cancellationMarkerKey =
+        Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, emptyJobId);
     String cancellationPayload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -437,7 +506,9 @@ class DurableReconcileJobStoreTest {
   @Test
   void stateIndexConvergesWhenCanonicalJobIsGone() {
     String missingCanonical = Keys.reconcileJobPointerById(ACCOUNT_ID, "missing-job");
-    String stateKey = Keys.reconcileJobByStatePointer("JS_QUEUED", 1L, ACCOUNT_ID, "missing-job");
+    String stateKey =
+        Keys.reconcileJobByStatePointer(
+            WORKER_AFFINITY, "JS_QUEUED", 1L, ACCOUNT_ID, "missing-job");
     assertTrue(
         store.jobIndexBackend.compareAndSetBatch(
             new ReconcileJobIndexStore.JobIndexWriteBatch(
@@ -2533,7 +2604,9 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId))
+            .get(
+                Keys.reconcileCancellationCleanupPointer(
+                    WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
             .isEmpty());
 
     StoredReconcileJob table =
@@ -2549,7 +2622,9 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId))
+            .get(
+                Keys.reconcileCancellationCleanupPointer(
+                    WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
             .isEmpty());
   }
 
@@ -5555,7 +5630,8 @@ class DurableReconcileJobStoreTest {
 
     store.cancel(ACCOUNT_ID, connectorJobId, "Cancelled");
 
-    String cleanupKey = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId);
+    String cleanupKey =
+        Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
     assertTrue(store.pointerStore.get(cleanupKey).isPresent());
 
     runCancellationMaintenance();
@@ -5634,12 +5710,14 @@ class DurableReconcileJobStoreTest {
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId))
+            .get(
+                Keys.reconcileCancellationCleanupPointer(
+                    WORKER_AFFINITY, ACCOUNT_ID, connectorJobId))
             .isEmpty());
     assertTrue(
         store
             .pointerStore
-            .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, tableJobId))
+            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, tableJobId))
             .isEmpty());
     assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
   }
@@ -5709,7 +5787,8 @@ class DurableReconcileJobStoreTest {
             false,
             CaptureMode.METADATA_AND_CAPTURE,
             ReconcileScope.empty());
-    String key = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId);
+    String key =
+        Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -5728,6 +5807,49 @@ class DurableReconcileJobStoreTest {
     assertEquals("", request.childPageToken());
     assertFalse(request.delegatedNonTerminalSeen());
     assertFalse(request.blockingNonTerminalSeen());
+  }
+
+  @Test
+  void cancellationMaintenanceRejectsMisfiledMarkerForAnotherAffinity() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_CANCELLING";
+                      current.message = "Cancelling";
+                      current.executionAttributes =
+                          ReconcileWorkerAffinity.of("other-affinity")
+                              .applyTo(current.executionPolicy())
+                              .attributes();
+                      return current;
+                    }));
+
+    String key =
+        Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
+    String payload =
+        ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
+            new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
+                ACCOUNT_ID, connectorJobId, "", false, false, false));
+    assertTrue(
+        store.pointerStore.compareAndSet(
+            key, 0L, PointerReferences.opaqueMarkerPointer(key, payload, 1L)));
+
+    runCancellationMaintenance();
+
+    assertTrue(store.pointerStore.get(key).isEmpty());
+    assertEquals("JS_CANCELLING", store.getLeaseView(connectorJobId).orElseThrow().state);
   }
 
   @Test
@@ -5757,7 +5879,8 @@ class DurableReconcileJobStoreTest {
                       current.nextAttemptAtMs = 0L;
                       return current;
                     }));
-    String key = Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId);
+    String key =
+        Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, ACCOUNT_ID, connectorJobId);
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -6123,6 +6246,57 @@ class DurableReconcileJobStoreTest {
     assertEquals(
         ReconcileSnapshotContentState.unionCoverage(firstCoverage, secondCoverage),
         store.get(ACCOUNT_ID, first).orElseThrow().snapshotTask.requestedCoverage());
+  }
+
+  @Test
+  void snapshotCoverageClaimsDoNotCoalesceAcrossWorkerAffinities() {
+    ReconcileScope tableScope = captureScope(Set.of(ReconcileCapturePolicy.Output.TABLE_STATS));
+    ReconcileScope fileScope = captureScope(Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
+    List<String> tableCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, tableScope);
+    List<String> fileCoverage =
+        ReconcileSnapshotContentState.coverage(CaptureMode.CAPTURE_ONLY, fileScope);
+
+    System.setProperty("floecat.reconciler.worker-affinity", "cohort-a");
+    try {
+      store.init();
+      String first =
+          store.enqueueSnapshotPlan(
+              ACCOUNT_ID,
+              CONNECTOR_ID,
+              false,
+              CaptureMode.CAPTURE_ONLY,
+              tableScope,
+              contentTask("revision-1", "", tableCoverage),
+              ReconcileExecutionPolicy.defaults(),
+              "",
+              "");
+
+      System.setProperty("floecat.reconciler.worker-affinity", "cohort-b");
+      store.init();
+      String second =
+          store.enqueueSnapshotPlan(
+              ACCOUNT_ID,
+              CONNECTOR_ID,
+              false,
+              CaptureMode.CAPTURE_ONLY,
+              fileScope,
+              contentTask("revision-1", "", fileCoverage),
+              ReconcileExecutionPolicy.defaults(),
+              "",
+              "");
+
+      assertNotEquals(first, second);
+      assertEquals(
+          tableCoverage,
+          store.get(ACCOUNT_ID, first).orElseThrow().snapshotTask.requestedCoverage());
+      assertEquals(
+          fileCoverage,
+          store.get(ACCOUNT_ID, second).orElseThrow().snapshotTask.requestedCoverage());
+    } finally {
+      System.clearProperty("floecat.reconciler.worker-affinity");
+      store.init();
+    }
   }
 
   @Test
@@ -6795,6 +6969,31 @@ class DurableReconcileJobStoreTest {
         store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch, intent));
     assertEquals(intent, store.snapshotFinalizeCommitIntent(finalizerJobId).orElseThrow());
     assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
+    StoredReconcileJob storedFinalizer =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, finalizerJobId));
+    String publicationKey =
+        Keys.reconcileJobByStatePointer(
+            WORKER_AFFINITY, "JS_RUNNING", storedFinalizer.createdAtMs, ACCOUNT_ID, finalizerJobId);
+    assertTrue(store.jobIndexBackend.loadIndexEntry(publicationKey).isPresent());
+    assertTrue(
+        store
+            .jobIndexBackend
+            .loadIndexEntry(
+                Keys.reconcileJobByStatePointer(
+                    "other-affinity",
+                    "JS_RUNNING",
+                    storedFinalizer.createdAtMs,
+                    ACCOUNT_ID,
+                    finalizerJobId))
+            .isEmpty());
+    assertTrue(
+        store
+            .jobIndexBackend
+            .loadIndexEntry(
+                String.format(
+                    "/accounts/by-id/reconcile/jobs/by-state/JS_RUNNING/%019d/%s/%s",
+                    storedFinalizer.createdAtMs, ACCOUNT_ID, finalizerJobId))
+            .isEmpty());
 
     store.jobIndexStore.mutateByJobIdReturningRecord(
         finalizerJobId,
@@ -6816,6 +7015,27 @@ class DurableReconcileJobStoreTest {
         finalizerJobId,
         record -> {
           record.executionLane = "";
+          return record;
+        });
+    assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
+
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        finalizerJobId,
+        record -> {
+          record.executionAttributes =
+              ReconcileWorkerAffinity.of("other-affinity")
+                  .applyTo(record.executionPolicy())
+                  .attributes();
+          return record;
+        });
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        finalizerJobId,
+        record -> {
+          record.executionAttributes =
+              ReconcileWorkerAffinity.of(WORKER_AFFINITY)
+                  .applyTo(record.executionPolicy())
+                  .attributes();
           return record;
         });
     assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
@@ -8157,8 +8377,9 @@ class DurableReconcileJobStoreTest {
     }
 
     @Override
-    public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
-      return delegate.listGlobalStateEntries(state, limit, pageToken);
+    public JobIndexQueryPage listGlobalStateEntries(
+        ReconcileWorkerAffinity workerAffinity, String state, int limit, String pageToken) {
+      return delegate.listGlobalStateEntries(workerAffinity, state, limit, pageToken);
     }
 
     @Override
@@ -8233,8 +8454,9 @@ class DurableReconcileJobStoreTest {
     }
 
     @Override
-    public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
-      return delegate.listGlobalStateEntries(state, limit, pageToken);
+    public JobIndexQueryPage listGlobalStateEntries(
+        ReconcileWorkerAffinity workerAffinity, String state, int limit, String pageToken) {
+      return delegate.listGlobalStateEntries(workerAffinity, state, limit, pageToken);
     }
 
     @Override

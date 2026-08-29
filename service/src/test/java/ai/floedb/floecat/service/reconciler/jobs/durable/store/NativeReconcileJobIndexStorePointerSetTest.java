@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
@@ -44,6 +45,8 @@ class NativeReconcileJobIndexStorePointerSetTest {
   private static final String ACCOUNT_ID = "acct-1";
   private static final String CONNECTOR_ID = "connector-1";
   private static final String JOB_ID = "job-1";
+  private static final ReconcileWorkerAffinity WORKER_AFFINITY =
+      ReconcileWorkerAffinity.of("reconciler-v1");
 
   private InMemoryPointerStore pointers;
   private MemoryReconcileJobIndexBackend backend;
@@ -55,7 +58,7 @@ class NativeReconcileJobIndexStorePointerSetTest {
     pointers = new InMemoryPointerStore();
     backend = new MemoryReconcileJobIndexBackend(pointers);
     indexes = new ReconcileJobIndexes();
-    indexes.bind(pointers, ignored -> false, ignored -> List.of());
+    indexes.bind(pointers, ignored -> false, ignored -> List.of(), WORKER_AFFINITY);
     ReconcilePayloadStore payloadStore = new ReconcilePayloadStore();
     payloadStore.bind(new InMemoryBlobStore(), pointers, new ObjectMapper());
     store = new NativeReconcileJobIndexStore();
@@ -181,7 +184,9 @@ class NativeReconcileJobIndexStorePointerSetTest {
   @Test
   void stateIndexReadIgnoresBestEffortOrphanDeleteFailure() {
     String missingCanonical = Keys.reconcileJobPointerById(ACCOUNT_ID, "missing-job");
-    String stateKey = Keys.reconcileJobByStatePointer("JS_QUEUED", 1L, ACCOUNT_ID, "missing-job");
+    String stateKey =
+        Keys.reconcileJobByStatePointer(
+            WORKER_AFFINITY.value(), "JS_QUEUED", 1L, ACCOUNT_ID, "missing-job");
     assertTrue(
         pointers.compareAndSet(
             stateKey, 0L, PointerReferences.pointerKeyPointer(stateKey, missingCanonical, 1L)));
@@ -294,12 +299,62 @@ class NativeReconcileJobIndexStorePointerSetTest {
     terminal.finishedAtMs = 200L;
     terminal.updatedAtMs = 300L;
     String expected =
-        Keys.reconcileTerminalRetentionPointer(ACCOUNT_ID, terminal.finishedAtMs, JOB_ID);
+        Keys.reconcileTerminalRetentionPointer(
+            ACCOUNT_ID, WORKER_AFFINITY.value(), terminal.finishedAtMs, JOB_ID);
 
     assertEquals(expected, indexes.terminalRetentionPointerKey(terminal));
 
     terminal.updatedAtMs = 400L;
     assertEquals(expected, indexes.terminalRetentionPointerKey(terminal));
+  }
+
+  @Test
+  void autonomousMaintenanceKeysArePartitionedByWorkerAffinity() {
+    ReconcileJobIndexes otherIndexes = new ReconcileJobIndexes();
+    otherIndexes.bind(
+        pointers,
+        ignored -> false,
+        ignored -> List.of(),
+        ReconcileWorkerAffinity.of("reconciler-v2"));
+    StoredReconcileJob running = record("JS_RUNNING");
+    StoredReconcileJob terminal = record("JS_SUCCEEDED");
+    terminal.finishedAtMs = 200L;
+    StoredReconcileJob otherRunning = record("JS_RUNNING");
+    otherRunning.executionAttributes =
+        java.util.Map.of(ReconcileWorkerAffinity.ATTRIBUTE, "reconciler-v2");
+    StoredReconcileJob otherTerminal = record("JS_SUCCEEDED");
+    otherTerminal.finishedAtMs = 200L;
+    otherTerminal.executionAttributes =
+        java.util.Map.of(ReconcileWorkerAffinity.ATTRIBUTE, "reconciler-v2");
+
+    assertFalse(
+        indexes
+            .statePointerPrefix("JS_RUNNING")
+            .equals(otherIndexes.statePointerPrefix("JS_RUNNING")));
+    assertFalse(
+        indexes.statePointerKey(running).equals(otherIndexes.statePointerKey(otherRunning)));
+    assertFalse(
+        indexes
+            .terminalRetentionPointerKey(terminal)
+            .equals(otherIndexes.terminalRetentionPointerKey(otherTerminal)));
+    assertFalse(
+        Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, WORKER_AFFINITY.value(), JOB_ID)
+            .equals(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, "reconciler-v2", JOB_ID)));
+    assertFalse(
+        Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, WORKER_AFFINITY.value(), "hash")
+            .equals(Keys.reconcileCanonicalQuarantinePointer(ACCOUNT_ID, "reconciler-v2", "hash")));
+  }
+
+  @Test
+  void uncohortedRecordsUseDisabledAffinityStorageSlice() {
+    StoredReconcileJob running = record("JS_RUNNING");
+    running.executionAttributes = java.util.Map.of();
+    StoredReconcileJob terminal = record("JS_SUCCEEDED");
+    terminal.finishedAtMs = 200L;
+    terminal.executionAttributes = java.util.Map.of();
+
+    assertTrue(indexes.statePointerKey(running).contains("/_none_/"));
+    assertTrue(indexes.terminalRetentionPointerKey(terminal).contains("/_none_/"));
   }
 
   @Test
@@ -692,6 +747,8 @@ class NativeReconcileJobIndexStorePointerSetTest {
       record.finishedAtMs = 100L;
     }
     record.dedupeKeyHash = "hash-1";
+    record.executionAttributes =
+        java.util.Map.of(ReconcileWorkerAffinity.ATTRIBUTE, WORKER_AFFINITY.value());
     record.connectorIndexPointerKey =
         Keys.reconcileJobByConnectorPointer(ACCOUNT_ID, CONNECTOR_ID, "token-1");
     return record;

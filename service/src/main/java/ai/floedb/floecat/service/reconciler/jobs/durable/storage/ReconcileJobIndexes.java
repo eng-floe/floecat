@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.storage;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -33,14 +34,18 @@ public class ReconcileJobIndexes {
   private PointerStore pointerStore;
   private Predicate<StoredReconcileJob> requiresReadyPointer;
   private Function<StoredReconcileJob, List<String>> readyPointerKeys;
+  private ReconcileWorkerAffinity workerAffinity = ReconcileWorkerAffinity.DISABLED;
 
   public void bind(
       PointerStore pointerStore,
       Predicate<StoredReconcileJob> requiresReadyPointer,
-      Function<StoredReconcileJob, List<String>> readyPointerKeys) {
+      Function<StoredReconcileJob, List<String>> readyPointerKeys,
+      ReconcileWorkerAffinity workerAffinity) {
     this.pointerStore = pointerStore;
     this.requiresReadyPointer = requiresReadyPointer;
     this.readyPointerKeys = readyPointerKeys;
+    this.workerAffinity =
+        workerAffinity == null ? ReconcileWorkerAffinity.DISABLED : workerAffinity;
   }
 
   public String parentPointerKey(String accountId, String parentJobId, String jobId) {
@@ -82,15 +87,21 @@ public class ReconcileJobIndexes {
   }
 
   public String statePointerPrefix(String state) {
-    return Keys.reconcileJobByStatePointerPrefix(state);
+    return Keys.reconcileJobByStatePointerPrefix(workerAffinity.value(), state);
   }
 
   public String statePointerKey(StoredReconcileJob record) {
     if (!hasStateIndex(record)) {
       return "";
     }
+    ReconcileWorkerAffinity recordAffinity =
+        ReconcileWorkerAffinity.fromPolicy(record.executionPolicy());
     return Keys.reconcileJobByStatePointer(
-        record.state, Math.max(0L, record.createdAtMs), record.accountId, record.jobId);
+        recordAffinity.value(),
+        record.state,
+        Math.max(0L, record.createdAtMs),
+        record.accountId,
+        record.jobId);
   }
 
   public List<String> statePointerKeys(StoredReconcileJob record) {
@@ -120,7 +131,10 @@ public class ReconcileJobIndexes {
         || blank(record.jobId)) {
       return "";
     }
+    ReconcileWorkerAffinity recordAffinity =
+        ReconcileWorkerAffinity.fromPolicy(record.executionPolicy());
     return Keys.reconcileJobByStatePointer(
+        recordAffinity.value(),
         STATS_CLEANUP_PENDING_INDEX_STATE,
         Math.max(0L, record.createdAtMs),
         record.accountId,
@@ -192,7 +206,14 @@ public class ReconcileJobIndexes {
       return "";
     }
     long terminalAtMs = record.finishedAtMs;
-    return Keys.reconcileTerminalRetentionPointer(record.accountId, terminalAtMs, record.jobId);
+    ReconcileWorkerAffinity recordAffinity =
+        ReconcileWorkerAffinity.fromPolicy(record.executionPolicy());
+    return Keys.reconcileTerminalRetentionPointer(
+        record.accountId, recordAffinity.value(), terminalAtMs, record.jobId);
+  }
+
+  public ReconcileWorkerAffinity workerAffinity() {
+    return workerAffinity;
   }
 
   private static boolean isTerminalState(String state) {

@@ -230,7 +230,7 @@ public class ReconcileJobGc {
       String jobPageStartToken = jobToken;
       var page =
           jobIndexBackend.listTerminalRetentionEntries(
-              accountId, retentionCutoffMs, limit, jobToken);
+              accountId, jobIndexes.workerAffinity(), retentionCutoffMs, limit, jobToken);
       var pointers = page.entries();
       jobToken = page.nextPageToken();
       if (pointers.isEmpty()) {
@@ -245,7 +245,8 @@ public class ReconcileJobGc {
         long terminalAtMs =
             parseTimestampFromOrderedPointer(
                 retentionEntry.pointerKey(),
-                Keys.reconcileTerminalRetentionPointerPrefix(accountId));
+                Keys.reconcileTerminalRetentionPointerPrefix(
+                    accountId, jobIndexes.workerAffinity().value()));
         if (terminalAtMs == INVALID_ORDERED_POINTER_MS) {
           if (deleteJobIndexPointerIfOwned(retentionEntry.pointerKey(), retentionEntry.blobUri())) {
             ptrDeleted++;
@@ -291,7 +292,9 @@ public class ReconcileJobGc {
           if (record == null) {
             String markerKey =
                 Keys.reconcileCanonicalQuarantinePointer(
-                    accountId, hashValue(canonical.pointerKey()));
+                    accountId,
+                    jobIndexes.workerAffinity().value(),
+                    hashValue(canonical.pointerKey()));
             boolean markerAlreadyExisted =
                 pointerStore != null && pointerStore.get(markerKey).isPresent();
             ReconcileJobIndexStore.JobWritePlan<String> deletePlan =
@@ -382,7 +385,8 @@ public class ReconcileJobGc {
       StringBuilder next = new StringBuilder();
       var markers =
           pointerStore.listPointersByPrefix(
-              Keys.reconcileCanonicalQuarantinePointerPrefix(accountId),
+              Keys.reconcileCanonicalQuarantinePointerPrefix(
+                  accountId, jobIndexes.workerAffinity().value()),
               limit,
               canonicalQuarantineToken,
               next);
@@ -539,7 +543,8 @@ public class ReconcileJobGc {
       return null;
     }
     String markerKey =
-        Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey()));
+        Keys.reconcileCanonicalQuarantinePointer(
+            accountId, jobIndexes.workerAffinity().value(), hashValue(canonical.pointerKey()));
     long firstSeenMs = nowMs;
     Pointer marker = pointerStore == null ? null : pointerStore.get(markerKey).orElse(null);
     String markerPayload = quarantineMarkerPayload(canonical, nowMs);
@@ -692,7 +697,8 @@ public class ReconcileJobGc {
     var pointerDeletes = new java.util.ArrayList<PointerStore.CasOp>();
     appendPointerDeleteIfPresent(
         pointerDeletes,
-        Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey())));
+        Keys.reconcileCanonicalQuarantinePointer(
+            accountId, jobIndexes.workerAffinity().value(), hashValue(canonical.pointerKey())));
     appendBlobCleanupMarker(pointerDeletes, accountId, jobId);
     String projectionPointerKey = Keys.reconcileJobProjectionPointer(accountId, jobId);
     appendPointerDeleteIfPresent(pointerDeletes, projectionPointerKey);
@@ -743,7 +749,8 @@ public class ReconcileJobGc {
     var pointerDeletes = new java.util.ArrayList<PointerStore.CasOp>();
     appendPointerDeleteIfPresent(
         pointerDeletes,
-        Keys.reconcileCanonicalQuarantinePointer(accountId, hashValue(canonical.pointerKey())));
+        Keys.reconcileCanonicalQuarantinePointer(
+            accountId, jobIndexes.workerAffinity().value(), hashValue(canonical.pointerKey())));
     appendBlobCleanupMarker(pointerDeletes, accountId, jobId);
     if (record != null) {
       appendPointerDeleteIfPresent(
@@ -886,7 +893,8 @@ public class ReconcileJobGc {
     if (pointerOps == null || pointerStore == null || jobId == null || jobId.isBlank()) {
       return;
     }
-    String markerKey = Keys.reconcileJobBlobCleanupPointer(accountId, jobId);
+    String markerKey =
+        Keys.reconcileJobBlobCleanupPointer(accountId, jobIndexes.workerAffinity().value(), jobId);
     Pointer marker =
         PointerReferences.opaqueMarkerPointer(
             markerKey,
@@ -905,7 +913,8 @@ public class ReconcileJobGc {
     }
     List<Pointer> markers =
         pointerStore.listPointersByPrefix(
-            Keys.reconcileJobBlobCleanupPointerPrefix(accountId),
+            Keys.reconcileJobBlobCleanupPointerPrefix(
+                accountId, jobIndexes.workerAffinity().value()),
             maxPrefixes,
             "",
             new StringBuilder());
@@ -1017,6 +1026,14 @@ public class ReconcileJobGc {
     stored.laneKey = text(record, "laneKey");
     stored.executionClass = text(record, "executionClass");
     stored.executionLane = text(record, "executionLane");
+    JsonNode executionAttributes = record.get("executionAttributes");
+    if (executionAttributes != null && executionAttributes.isObject()) {
+      java.util.TreeMap<String, String> attributes = new java.util.TreeMap<>();
+      executionAttributes
+          .properties()
+          .forEach(entry -> attributes.put(entry.getKey(), entry.getValue().asText("")));
+      stored.executionAttributes = java.util.Map.copyOf(attributes);
+    }
     stored.pinnedExecutorId = text(record, "pinnedExecutorId");
     stored.jobKind = text(record, "jobKind");
     stored.readyPointerKey = text(record, "readyPointerKey");

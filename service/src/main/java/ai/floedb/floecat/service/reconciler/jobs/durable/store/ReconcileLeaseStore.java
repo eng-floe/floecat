@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobExecutionLoader;
@@ -68,7 +69,8 @@ public interface ReconcileLeaseStore {
       Predicate<String> isTerminalState,
       BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved,
       int maxAttempts,
-      IntToLongFunction backoffMs);
+      IntToLongFunction backoffMs,
+      ReconcileWorkerAffinity workerAffinity);
 
   Optional<LeasedJob> leaseCanonical(
       String canonicalPointerKey,

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
 import java.util.Optional;
@@ -68,7 +69,9 @@ public interface ReconcileLeaseBackend {
 
   Optional<LeaseOwnerSnapshot> loadOwner(String ownerKey);
 
-  ReconcileLeaseStore.LeaseExpiryScanPage scanExpiredLeaseEntries(int limit, String pageToken);
+  /** Scans only the given cohort's slice of the lease-expiry index. */
+  ReconcileLeaseStore.LeaseExpiryScanPage scanExpiredLeaseEntries(
+      ReconcileWorkerAffinity workerAffinity, int limit, String pageToken);
 
   default boolean compareAndSetBatch(
       ReconcileJobIndexStore.JobIndexWriteBatch jobIndexBatch, LeaseWriteBatch leaseBatch) {

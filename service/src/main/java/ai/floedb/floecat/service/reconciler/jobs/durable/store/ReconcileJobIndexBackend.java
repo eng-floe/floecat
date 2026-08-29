@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
 import java.util.Optional;
@@ -172,13 +173,17 @@ public interface ReconcileJobIndexBackend {
   JobIndexQueryPage listDedupeEntries(String accountId, int limit, String pageToken);
 
   default JobIndexQueryPage listTerminalRetentionEntries(
-      String accountId, int limit, String pageToken) {
+      String accountId, ReconcileWorkerAffinity workerAffinity, int limit, String pageToken) {
     return new JobIndexQueryPage(List.of(), "");
   }
 
   default JobIndexQueryPage listTerminalRetentionEntries(
-      String accountId, long cutoffMs, int limit, String pageToken) {
-    return listTerminalRetentionEntries(accountId, limit, pageToken);
+      String accountId,
+      ReconcileWorkerAffinity workerAffinity,
+      long cutoffMs,
+      int limit,
+      String pageToken) {
+    return listTerminalRetentionEntries(accountId, workerAffinity, limit, pageToken);
   }
 
   JobIndexQueryPage listParentEntries(
@@ -187,7 +192,8 @@ public interface ReconcileJobIndexBackend {
   JobIndexQueryPage listConnectorEntries(
       String accountId, String connectorId, int limit, String pageToken);
 
-  JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken);
+  JobIndexQueryPage listGlobalStateEntries(
+      ReconcileWorkerAffinity workerAffinity, String state, int limit, String pageToken);
 
   JobIndexQueryPage listAccountStateEntries(
       String accountId, String state, int limit, String pageToken);

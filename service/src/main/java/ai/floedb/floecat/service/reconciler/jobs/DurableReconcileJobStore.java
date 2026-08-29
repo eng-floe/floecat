@@ -302,7 +302,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       jobIndexes = new ReconcileJobIndexes();
     }
     jobIndexes.bind(
-        pointerStore, DurableReconcileJobStore::requiresReadyPointer, this::readyPointerKeys);
+        pointerStore,
+        DurableReconcileJobStore::requiresReadyPointer,
+        this::readyPointerKeys,
+        workerAffinity);
     return jobIndexes;
   }
 
@@ -379,7 +382,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         DurableReconcileJobStore::isTerminalState,
         DurableReconcileJobStore::assertImmutableJobIdentityPreserved,
         maxAttempts,
-        this::backoffMs);
+        this::backoffMs,
+        workerAffinity);
     return leaseStore;
   }
 
@@ -569,6 +573,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         pointerStore,
         this::cleanupCancellationRoot,
         this::isObsoleteCancellationCleanupRoot,
+        Keys.reconcileCancellationCleanupPointerPrefix(workerAffinity.value()),
         readyScanLimit);
     return cancellationMaintenanceService;
   }
@@ -783,7 +788,10 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     cleanupExpiredSnapshotCoverageClaims(spec.accountId, System.currentTimeMillis());
     ReconcileScope scope = spec.scope == null ? ReconcileScope.empty() : spec.scope;
     ReconcileExecutionPolicy policy =
-        spec.executionPolicy == null ? ReconcileExecutionPolicy.defaults() : spec.executionPolicy;
+        workerAffinity.applyTo(
+            spec.executionPolicy == null
+                ? ReconcileExecutionPolicy.defaults()
+                : spec.executionPolicy);
     String semantics =
         ReconcileSnapshotContentState.fingerprint(
             Map.of(
@@ -2631,6 +2639,11 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           || !executionLane.equals(record.executionPolicy().lane())) {
         continue;
       }
+      // Discovery is affinity-partitioned. Keep this record check as defense in depth so a
+      // misplaced index row cannot publish another cohort's accepted finalizer.
+      if (!workerAffinity.matches(record.executionPolicy())) {
+        continue;
+      }
       SnapshotFinalizeCommitIntent intent = snapshotFinalizeCommitIntent(record);
       if (intent != null) {
         intents.add(intent);
@@ -3329,7 +3342,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (effectiveAccountId.isBlank() || effectiveRootJobId.isBlank()) {
       return false;
     }
-    String key = Keys.reconcileCancellationCleanupPointer(effectiveAccountId, effectiveRootJobId);
+    String key =
+        Keys.reconcileCancellationCleanupPointer(
+            workerAffinity.value(), effectiveAccountId, effectiveRootJobId);
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -3406,6 +3421,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     if (loaded == null
         || loaded.record == null
         || !accountId.equals(blankToEmpty(loaded.record.accountId))
+        || !workerAffinity.matches(loaded.record.executionPolicy())
         || !isCancellationState(loaded.record.state)) {
       return null;
     }
@@ -3776,7 +3792,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         && pointerStore
             .get(
                 Keys.reconcileCancellationCleanupPointer(
-                    parent.record.accountId, parent.record.jobId))
+                    workerAffinity.value(), parent.record.accountId, parent.record.jobId))
             .isEmpty()) {
       return;
     }

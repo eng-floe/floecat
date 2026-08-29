@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.repo.model.Keys;
 
 final class LeaseBackendSupport {
@@ -24,7 +25,8 @@ final class LeaseBackendSupport {
   static final String LEASE_POINTER_PREFIX = Keys.accountRootPrefix();
   static final String LEASE_POINTER_MARKER =
       accountScopedMarker(Keys.reconcileJobLeasePointerByIdPrefix(ACCOUNT_SEGMENT_PLACEHOLDER));
-  static final String LEASE_EXPIRY_POINTER_PREFIX = Keys.reconcileJobLeaseExpiryPointerPrefix();
+  static final String LEASE_EXPIRY_POINTER_ROOT_PREFIX =
+      Keys.reconcileJobLeaseExpiryPointerRootPrefix();
   private static final String LEASE_EXPIRY_SUFFIX_MARKER =
       Keys.reconcileJobLeaseExpiryPointerSuffix(
           ACCOUNT_SEGMENT_PLACEHOLDER, JOB_SEGMENT_PLACEHOLDER);
@@ -34,7 +36,7 @@ final class LeaseBackendSupport {
   static final String LEASE_SORT_PREFIX = "job/";
   static final String LEASE_OWNER_PARTITION_PREFIX = "reconcile-lease-owner/";
   static final String LEASE_OWNER_SORT_KEY = "owner";
-  static final String LEASE_EXPIRY_PARTITION_KEY = "reconcile-lease-expiry";
+  static final String LEASE_EXPIRY_PARTITION_PREFIX = "reconcile-lease-expiry/";
   static final String LEASE_EXPIRY_PAGE_TOKEN_PREFIX = "rjlx:";
   static final String KIND_LEASE_ENTRY = "ReconcileJobLease";
   static final String KIND_LEASE_OWNER_ENTRY = "ReconcileJobLeaseOwner";
@@ -66,11 +68,19 @@ final class LeaseBackendSupport {
 
   static LeaseExpiryPointerKey parseLeaseExpiryPointerKey(String pointerKey) {
     String normalized = stripLeadingSlash(pointerKey);
-    String normalizedPrefix = stripLeadingSlash(LEASE_EXPIRY_POINTER_PREFIX);
+    String normalizedPrefix = stripLeadingSlash(LEASE_EXPIRY_POINTER_ROOT_PREFIX);
     if (!normalized.startsWith(normalizedPrefix)) {
       return null;
     }
-    String remainder = normalized.substring(normalizedPrefix.length());
+    // <affinity>/<expiry>/accounts/<account>/jobs/<job>. The affinity segment is percent-encoded
+    // by Keys, so it never contains a separator of its own.
+    String cohortRemainder = normalized.substring(normalizedPrefix.length());
+    int affinitySlash = cohortRemainder.indexOf('/');
+    if (affinitySlash < 0) {
+      return null;
+    }
+    String affinitySegment = cohortRemainder.substring(0, affinitySlash);
+    String remainder = cohortRemainder.substring(affinitySlash + 1);
     int slash = remainder.indexOf('/');
     if (slash < 0) {
       return null;
@@ -83,13 +93,15 @@ final class LeaseBackendSupport {
     }
     String accountSegment = suffix.substring(Keys.accountRootPrefix().length(), jobsMarker);
     String jobSegment = suffix.substring(jobsMarker + LEASE_EXPIRY_JOBS_MARKER.length());
-    if (expiryToken.isBlank()
+    if (affinitySegment.isBlank()
+        || expiryToken.isBlank()
         || accountSegment.isBlank()
         || Keys.isReservedAccountDirectorySegment(accountSegment)
         || jobSegment.isBlank()) {
       return null;
     }
-    return new LeaseExpiryPointerKey(pointerKey, expiryToken, accountSegment, jobSegment);
+    return new LeaseExpiryPointerKey(
+        pointerKey, affinitySegment, expiryToken, accountSegment, jobSegment);
   }
 
   static String leasePartitionKey(LeasePointerKey key) {
@@ -107,9 +119,22 @@ final class LeaseBackendSupport {
     return Keys.reconcileJobLeasePointerById(accountId, jobId);
   }
 
+  /**
+   * Partitions the lease-expiry index by cohort so a deployment's reclaim scan cannot even read
+   * another cohort's entries, rather than reading them and declining to act.
+   */
+  static String leaseExpiryPartitionKey(String workerAffinitySegment) {
+    return LEASE_EXPIRY_PARTITION_PREFIX + workerAffinitySegment;
+  }
+
+  static String leaseExpiryPartitionKeyFor(ReconcileWorkerAffinity workerAffinity) {
+    return leaseExpiryPartitionKey(Keys.encodeSegment(workerAffinity.value()));
+  }
+
   static String leaseExpirySortKey(LeaseExpiryPointerKey key) {
     String normalized = stripLeadingSlash(key.pointerKey());
-    String normalizedPrefix = stripLeadingSlash(LEASE_EXPIRY_POINTER_PREFIX);
+    String normalizedPrefix =
+        stripLeadingSlash(LEASE_EXPIRY_POINTER_ROOT_PREFIX) + key.affinitySegment() + "/";
     if (normalized.startsWith(normalizedPrefix)) {
       return normalized.substring(normalizedPrefix.length());
     }
@@ -152,7 +177,11 @@ final class LeaseBackendSupport {
   record LeasePointerKey(String pointerKey, String accountSegment, String jobSegment) {}
 
   record LeaseExpiryPointerKey(
-      String pointerKey, String expiryToken, String accountSegment, String jobSegment) {}
+      String pointerKey,
+      String affinitySegment,
+      String expiryToken,
+      String accountSegment,
+      String jobSegment) {}
 
   private static String accountScopedMarker(String keysPrefix) {
     String normalized = stripLeadingSlash(keysPrefix);

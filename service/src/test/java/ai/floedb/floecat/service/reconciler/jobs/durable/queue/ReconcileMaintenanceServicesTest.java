@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeasedJob;
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobLease;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.queue.ReconcileProjectionMaintenanceService.RefreshResult;
@@ -51,6 +52,8 @@ class ReconcileMaintenanceServicesTest {
   private static final String WORKER_AFFINITY = "reconciler-v1";
   private static final String DIRTY_PARENT_PREFIX =
       Keys.reconcileDirtyParentPointerPrefix(WORKER_AFFINITY);
+  private static final String CANCELLATION_CLEANUP_PREFIX =
+      Keys.reconcileCancellationCleanupPointerPrefix(WORKER_AFFINITY);
 
   @Test
   void projectionMaintenanceOnlyConsumesItsWorkerAffinityNamespace() {
@@ -403,12 +406,15 @@ class ReconcileMaintenanceServicesTest {
               true, "", false, false, false);
         },
         (request, deadlineMs) -> false,
+        CANCELLATION_CLEANUP_PREFIX,
         10);
 
     service.runCancellationMaintenanceOnce(200L);
 
     Pointer marker =
-        pointerStore.get(Keys.reconcileCancellationCleanupPointer("acct", "root")).orElseThrow();
+        pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, "acct", "root"))
+            .orElseThrow();
     assertTrue(marker.getBlobUri().contains("child-token-1"));
     assertTrue(marker.getBlobUri().contains("true\nfalse"));
 
@@ -416,7 +422,42 @@ class ReconcileMaintenanceServicesTest {
 
     assertEquals(List.of("", "child-token-1"), cursors);
     assertTrue(
-        pointerStore.get(Keys.reconcileCancellationCleanupPointer("acct", "root")).isEmpty());
+        pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, "acct", "root"))
+            .isEmpty());
+  }
+
+  @Test
+  void cancellationCleanupOnlyConsumesItsWorkerAffinityNamespace() {
+    PointerStore pointerStore = new TestPointerStore();
+    ReconcileCancellationMaintenanceService service = new ReconcileCancellationMaintenanceService();
+    List<String> cleanedRoots = new ArrayList<>();
+
+    putCancellationMarker(pointerStore, WORKER_AFFINITY, "acct", "own-root");
+    putCancellationMarker(pointerStore, "other-affinity", "acct", "other-root");
+
+    service.bind(
+        pointerStore,
+        (request, childPageSize, deadlineMs) -> {
+          cleanedRoots.add(request.rootJobId());
+          return new ReconcileCancellationMaintenanceService.CancellationCleanupResult(
+              true, "", false, false, false);
+        },
+        (request, deadlineMs) -> false,
+        CANCELLATION_CLEANUP_PREFIX,
+        10);
+
+    service.runCancellationMaintenanceOnce(200L);
+
+    assertEquals(List.of("own-root"), cleanedRoots);
+    assertTrue(
+        pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, "acct", "own-root"))
+            .isEmpty());
+    assertTrue(
+        pointerStore
+            .get(Keys.reconcileCancellationCleanupPointer("other-affinity", "acct", "other-root"))
+            .isPresent());
   }
 
   @Test
@@ -424,7 +465,7 @@ class ReconcileMaintenanceServicesTest {
     PointerStore pointerStore = new TestPointerStore();
     ReconcileCancellationMaintenanceService service = new ReconcileCancellationMaintenanceService();
     AtomicInteger calls = new AtomicInteger();
-    String key = Keys.reconcileCancellationCleanupPointer("acct", "root");
+    String key = Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, "acct", "root");
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -439,6 +480,7 @@ class ReconcileMaintenanceServicesTest {
               true, "", false, false, false);
         },
         (request, deadlineMs) -> false,
+        CANCELLATION_CLEANUP_PREFIX,
         10);
 
     service.runCancellationMaintenanceOnce(200L);
@@ -452,7 +494,7 @@ class ReconcileMaintenanceServicesTest {
     PointerStore pointerStore = new TestPointerStore();
     ReconcileCancellationMaintenanceService service = new ReconcileCancellationMaintenanceService();
     AtomicInteger calls = new AtomicInteger();
-    String key = Keys.reconcileCancellationCleanupPointer("acct", "missing-root");
+    String key = Keys.reconcileCancellationCleanupPointer(WORKER_AFFINITY, "acct", "missing-root");
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -467,6 +509,7 @@ class ReconcileMaintenanceServicesTest {
               true, "", false, false, false);
         },
         (request, deadlineMs) -> true,
+        CANCELLATION_CLEANUP_PREFIX,
         10);
 
     Object stats = cleanupCancellationMarkers(service, System.currentTimeMillis() + 200L);
@@ -517,7 +560,12 @@ class ReconcileMaintenanceServicesTest {
 
   private static void putCancellationMarker(
       PointerStore pointerStore, String accountId, String rootJobId) {
-    String key = Keys.reconcileCancellationCleanupPointer(accountId, rootJobId);
+    putCancellationMarker(pointerStore, WORKER_AFFINITY, accountId, rootJobId);
+  }
+
+  private static void putCancellationMarker(
+      PointerStore pointerStore, String workerAffinity, String accountId, String rootJobId) {
+    String key = Keys.reconcileCancellationCleanupPointer(workerAffinity, accountId, rootJobId);
     String payload =
         ReconcileCancellationMaintenanceService.cancellationCleanupPayload(
             new ReconcileCancellationMaintenanceService.CancellationCleanupRequest(
@@ -724,7 +772,8 @@ class ReconcileMaintenanceServicesTest {
         Predicate<String> isTerminalState,
         BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved,
         int maxAttempts,
-        IntToLongFunction backoffMs) {}
+        IntToLongFunction backoffMs,
+        ReconcileWorkerAffinity workerAffinity) {}
 
     @Override
     public Optional<LeasedJob> leaseCanonical(

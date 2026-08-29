@@ -21,6 +21,7 @@ import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_PARTITION_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_SORT_KEY;
 import static ai.floedb.floecat.storage.kv.KvAttributes.ATTR_VERSION;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
@@ -246,11 +247,12 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   @Override
   public JobIndexQueryPage listTerminalRetentionEntries(
-      String accountId, int limit, String pageToken) {
+      String accountId, ReconcileWorkerAffinity workerAffinity, int limit, String pageToken) {
     if (blank(accountId)) {
       return new JobIndexQueryPage(List.of(), "");
     }
-    String partitionKey = JobIndexBackendSupport.terminalRetentionPartitionKey(accountId);
+    String partitionKey =
+        JobIndexBackendSupport.terminalRetentionPartitionKey(accountId, workerAffinity.value());
     return blank(partitionKey)
         ? new JobIndexQueryPage(List.of(), "")
         : listIndexPointers(
@@ -259,11 +261,16 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
 
   @Override
   public JobIndexQueryPage listTerminalRetentionEntries(
-      String accountId, long cutoffMs, int limit, String pageToken) {
+      String accountId,
+      ReconcileWorkerAffinity workerAffinity,
+      long cutoffMs,
+      int limit,
+      String pageToken) {
     if (blank(accountId)) {
       return new JobIndexQueryPage(List.of(), "");
     }
-    String partitionKey = JobIndexBackendSupport.terminalRetentionPartitionKey(accountId);
+    String partitionKey =
+        JobIndexBackendSupport.terminalRetentionPartitionKey(accountId, workerAffinity.value());
     String maximumSortKey = String.format("%019d/\uffff", Math.max(0L, cutoffMs));
     return blank(partitionKey)
         ? new JobIndexQueryPage(List.of(), "")
@@ -302,11 +309,13 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   @Override
-  public JobIndexQueryPage listGlobalStateEntries(String state, int limit, String pageToken) {
+  public JobIndexQueryPage listGlobalStateEntries(
+      ReconcileWorkerAffinity workerAffinity, String state, int limit, String pageToken) {
     if (blank(state)) {
       return new JobIndexQueryPage(List.of(), "");
     }
-    String partitionKey = JobIndexBackendSupport.globalStatePartitionKey(state);
+    String partitionKey =
+        JobIndexBackendSupport.globalStatePartitionKey(workerAffinity.value(), state);
     return blank(partitionKey)
         ? new JobIndexQueryPage(List.of(), "")
         : listIndexPointers(

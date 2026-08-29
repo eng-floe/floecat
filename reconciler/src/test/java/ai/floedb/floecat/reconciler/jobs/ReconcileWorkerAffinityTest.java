@@ -16,6 +16,7 @@
 package ai.floedb.floecat.reconciler.jobs;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -64,6 +65,21 @@ class ReconcileWorkerAffinityTest {
         .isEqualTo(ReconcileWorkerAffinity.of("ci-branch"));
     assertThat(ReconcileWorkerAffinity.fromPolicy(ReconcileExecutionPolicy.defaults()))
         .isEqualTo(ReconcileWorkerAffinity.DISABLED);
+  }
+
+  @Test
+  void usesReservedStorageSegmentForDisabledAffinity() {
+    assertThat(ReconcileWorkerAffinity.DISABLED.storageKeySegment())
+        .isEqualTo(ReconcileWorkerAffinity.DISABLED_STORAGE_KEY_SEGMENT);
+    assertThat(ReconcileWorkerAffinity.of("ci-branch").storageKeySegment()).isEqualTo("ci-branch");
+  }
+
+  @Test
+  void reservedStorageSegmentCannotBeConfiguredAsAffinity() {
+    assertThatThrownBy(
+            () -> ReconcileWorkerAffinity.of(ReconcileWorkerAffinity.DISABLED_STORAGE_KEY_SEGMENT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("reserved");
   }
 
   @Test
