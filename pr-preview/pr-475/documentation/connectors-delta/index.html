@@ -1964,7 +1964,7 @@ Per-file S3 range readers are closed by their consumers.</p>
   <em>literals</em>: a hostname is never resolved during validation, deliberately, because a resolver in
   the gate would disagree with the resolution the HTTP client performs at connect time. A hostname
   pointing at a private address is therefore out of scope here and belongs to network policy.</li>
-<li><code>unity.credentials-path</code> – Route for temporary-table-credential vending. Defaults to the
+<li><code>unity.temporary-table-vend-path</code> – Route for temporary-table-credential vending. Defaults to the
   Databricks path <code>/api/2.0/unity-catalog/temporary-table-credentials</code>. OSS Unity Catalog 0.6.0
   and later serve the otherwise-compatible operation under
   <code>/api/2.1/unity-catalog/temporary-table-credentials</code>, so point this at the 2.1 route for an OSS
