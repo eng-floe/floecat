@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Map;
@@ -66,7 +67,9 @@ public class CurrentSnapshotPointerService {
     }
     switch (result) {
       case TABLE_MISSING -> throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
-      case CONFLICT -> throw GrpcErrors.aborted(corr, Map.of("id", tableId.getId()));
+      case CONFLICT ->
+          throw new BaseResourceRepository.AbortRetryableException(
+              "current snapshot pointer changed for table " + tableId.getId());
       default -> {}
     }
     rootWriter.commitSnapshotEntry(tableId, candidate.getSnapshotId());
@@ -78,6 +81,11 @@ public class CurrentSnapshotPointerService {
       // later finalize to attach that generation ref, so reconcile it now through the finalize
       // path: a no-op when the gate is off, when the candidate is not yet finalized (its own
       // finalize will publish it), or when the root entry already carries the ref.
+      //
+      // A failed publication leaves a durable root-resync marker before propagating. A retry that
+      // now observes UNCHANGED still skips this synchronous publication, so visibility may converge
+      // on the GC cadence. Removing the guard would close that window at the cost of an extra root
+      // read and commit attempt for every snapshot write; keep that measurable trade separate.
       rootWriter.commitStatsGeneration(tableId, candidate.getSnapshotId());
     }
   }

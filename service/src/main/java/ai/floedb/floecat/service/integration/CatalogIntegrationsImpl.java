@@ -65,6 +65,7 @@ import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
@@ -417,56 +418,52 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                     }
                   }
                   var result =
-                      runIdempotentCreate(
+                      MutationOps.createProtoRecoverable(
+                          pc.getAccountId(),
+                          "CreateCatalogIntegration",
+                          key,
+                          () -> fingerprint,
                           () ->
-                              MutationOps.createProtoRecoverable(
-                                  pc.getAccountId(),
-                                  "CreateCatalogIntegration",
-                                  key,
-                                  () -> fingerprint,
-                                  () ->
-                                      randomResourceId(
-                                          pc.getAccountId(), ResourceKind.RK_CATALOG_INTEGRATION),
-                                  (reservedId, completion) -> {
-                                    var recovered = integrations.getByIdWithMeta(reservedId);
-                                    if (recovered.isPresent()) {
-                                      throw new BaseResourceRepository.AbortRetryableException(
-                                          "integration exists before its idempotency receipt committed");
-                                    }
-                                    credentialStore.store(
-                                        reservedId,
-                                        preparedAuthentication
-                                            .authentication()
-                                            .getCredentialGeneration(),
-                                        preparedAuthentication.credentials());
-                                    try {
-                                      var created =
-                                          createOrReplace(
-                                              reservedId,
-                                              name,
-                                              spec.getType(),
-                                              uri,
-                                              properties,
-                                              preparedAuthentication.authentication(),
-                                              CreateMode.CM_ERROR_IF_EXISTS,
-                                              true,
-                                              completion,
-                                              now,
-                                              corr);
-                                      return new IdempotencyGuard.CommittedCreate<>(
-                                          created.row().value(),
-                                          created.row().value().getResourceId(),
-                                          created.row().meta());
-                                    } catch (RuntimeException definiteFailure) {
-                                      cleanupPrepared(reservedId, preparedAuthentication);
-                                      throw definiteFailure;
-                                    }
-                                  },
-                                  idempotencyStore,
-                                  now,
-                                  idempotencyTtlSeconds(),
-                                  this::correlationId,
-                                  CatalogIntegration::parseFrom));
+                              randomResourceId(
+                                  pc.getAccountId(), ResourceKind.RK_CATALOG_INTEGRATION),
+                          (reservedId, completion) -> {
+                            var recovered = integrations.getByIdWithMeta(reservedId);
+                            if (recovered.isPresent()) {
+                              throw new BaseResourceRepository.AbortRetryableException(
+                                  "integration exists before its idempotency receipt committed");
+                            }
+                            credentialStore.store(
+                                reservedId,
+                                preparedAuthentication.authentication().getCredentialGeneration(),
+                                preparedAuthentication.credentials());
+                            try {
+                              var created =
+                                  createOrReplace(
+                                      reservedId,
+                                      name,
+                                      spec.getType(),
+                                      uri,
+                                      properties,
+                                      preparedAuthentication.authentication(),
+                                      CreateMode.CM_ERROR_IF_EXISTS,
+                                      true,
+                                      completion,
+                                      now,
+                                      corr);
+                              return new IdempotencyGuard.CommittedCreate<>(
+                                  created.row().value(),
+                                  created.row().value().getResourceId(),
+                                  created.row().meta());
+                            } catch (RuntimeException definiteFailure) {
+                              cleanupPrepared(reservedId, preparedAuthentication);
+                              throw definiteFailure;
+                            }
+                          },
+                          idempotencyStore,
+                          now,
+                          idempotencyTtlSeconds(),
+                          this::correlationId,
+                          CatalogIntegration::parseFrom);
                   return CreateCatalogIntegrationResponse.newBuilder()
                       .setIntegration(result.body)
                       .setMeta(result.meta)
@@ -568,9 +565,12 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
               : integrations.createWithMetaAndCompletion(
                   desired,
                   row ->
-                      completion.prepare(
-                          new IdempotencyGuard.CommittedCreate<>(
-                              row.value(), row.value().getResourceId(), row.meta())));
+                      (PointerStore.CasUpsert)
+                          completion
+                              .prepareOps(
+                                  new IdempotencyGuard.CommittedCreate<>(
+                                      row.value(), row.value().getResourceId(), row.meta()))
+                              .getFirst());
       return new CreateOutcome(created, true);
     } catch (BaseResourceRepository.NameConflictException conflict) {
       if (reservedIdentity) {

@@ -346,29 +346,25 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
               lease.jobId,
               lease.pinnedExecutorId));
     }
-    return runIdempotentCreate(
-                () ->
-                    MutationOps.createProto(
-                        principalContext.getAccountId(),
-                        "SubmitLeasedPlanTableResult",
-                        planTableChunkIdempotencyKey(
-                            jobId, leaseEpoch, stagedChunk.getChunkIndex()),
-                        () -> requestBytes,
-                        () -> {
-                          if (!childSpecs.isEmpty()) {
-                            ReconcileJobStore.BulkEnqueueResult enqueueResult =
-                                jobs.bulkEnqueue(childSpecs);
-                            enqueueResult.requireAllSucceeded("table snapshot child enqueue");
-                          }
-                          return new IdempotencyGuard.CreateResult<>(
-                              stagedChunk, connectorId(lease));
-                        },
-                        ignored -> MutationMeta.getDefaultInstance(),
-                        idempotencyStore,
-                        nowTs(),
-                        idempotencyTtlSeconds(),
-                        principalContext::getCorrelationId,
-                        SubmitLeasedPlanTableResultRequest.Chunk::parseFrom))
+    return MutationOps.createProtoConvergentEffects(
+                principalContext.getAccountId(),
+                "SubmitLeasedPlanTableResult",
+                planTableChunkIdempotencyKey(jobId, leaseEpoch, stagedChunk.getChunkIndex()),
+                () -> requestBytes,
+                () -> {
+                  if (!childSpecs.isEmpty()) {
+                    ReconcileJobStore.BulkEnqueueResult enqueueResult =
+                        jobs.bulkEnqueue(childSpecs);
+                    enqueueResult.requireAllSucceeded("table snapshot child enqueue");
+                  }
+                  return new IdempotencyGuard.CreateResult<>(stagedChunk, connectorId(lease));
+                },
+                ignored -> MutationMeta.getDefaultInstance(),
+                idempotencyStore,
+                nowTs(),
+                idempotencyTtlSeconds(),
+                principalContext::getCorrelationId,
+                SubmitLeasedPlanTableResultRequest.Chunk::parseFrom)
             .body
         != null;
   }
@@ -863,29 +859,26 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         existingFileGroupKeys.add(fileGroupKey);
       }
     }
-    return runIdempotentCreate(
-                () ->
-                    MutationOps.createProto(
-                        principalContext.getAccountId(),
-                        "SubmitLeasedPlanSnapshotResult",
-                        planSnapshotChunkIdempotencyKey(
-                            jobId, leaseEpoch, stagedChunk.getChunkIndex()),
-                        () -> requestBytes,
-                        () -> {
-                          if (!childSpecs.isEmpty()) {
-                            ReconcileJobStore.BulkEnqueueResult enqueueResult =
-                                jobs.bulkEnqueue(childSpecs);
-                            enqueueResult.requireAllSucceeded("snapshot file-group child enqueue");
-                          }
-                          return new IdempotencyGuard.CreateResult<>(
-                              stagedChunk, tableId(lease, durableSnapshotTask));
-                        },
-                        ignored -> MutationMeta.getDefaultInstance(),
-                        idempotencyStore,
-                        nowTs(),
-                        idempotencyTtlSeconds(),
-                        principalContext::getCorrelationId,
-                        SubmitLeasedPlanSnapshotResultRequest.Chunk::parseFrom))
+    return MutationOps.createProtoConvergentEffects(
+                principalContext.getAccountId(),
+                "SubmitLeasedPlanSnapshotResult",
+                planSnapshotChunkIdempotencyKey(jobId, leaseEpoch, stagedChunk.getChunkIndex()),
+                () -> requestBytes,
+                () -> {
+                  if (!childSpecs.isEmpty()) {
+                    ReconcileJobStore.BulkEnqueueResult enqueueResult =
+                        jobs.bulkEnqueue(childSpecs);
+                    enqueueResult.requireAllSucceeded("snapshot file-group child enqueue");
+                  }
+                  return new IdempotencyGuard.CreateResult<>(
+                      stagedChunk, tableId(lease, durableSnapshotTask));
+                },
+                ignored -> MutationMeta.getDefaultInstance(),
+                idempotencyStore,
+                nowTs(),
+                idempotencyTtlSeconds(),
+                principalContext::getCorrelationId,
+                SubmitLeasedPlanSnapshotResultRequest.Chunk::parseFrom)
             .body
         != null;
   }

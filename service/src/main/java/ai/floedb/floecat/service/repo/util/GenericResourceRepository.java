@@ -867,6 +867,21 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         updatedValue, expectedCanonicalVersion, PointerConditions.none());
   }
 
+  /**
+   * Atomically updates a resource and publishes caller-supplied completion operations in the same
+   * pointer transaction. The factory receives the exact body and metadata that will commit.
+   */
+  public Optional<MutationMeta> updateWithCompletion(
+      T updatedValue,
+      long expectedCanonicalVersion,
+      Function<ResourceWithMeta<T>, List<PointerStore.CasOp>> completionFactory) {
+    return updateWithMetaWhilePointersMatchAndBumpMarkers(
+        updatedValue,
+        expectedCanonicalVersion,
+        PointerConditions.none(),
+        Objects.requireNonNull(completionFactory));
+  }
+
   private record PreparedUpdate(
       String blobUri,
       Pointer committedCanonical,
@@ -1000,6 +1015,16 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       long expectedCanonicalVersion,
       PointerConditions conditions,
       List<PointerStore.CasOp> companions) {
+    List<PointerStore.CasOp> stableCompanions = List.copyOf(companions);
+    return updateWithMetaWhilePointersMatchAndBumpMarkers(
+        updatedValue, expectedCanonicalVersion, conditions, ignored -> stableCompanions);
+  }
+
+  private Optional<MutationMeta> updateWithMetaWhilePointersMatchAndBumpMarkers(
+      T updatedValue,
+      long expectedCanonicalVersion,
+      PointerConditions conditions,
+      Function<ResourceWithMeta<T>, List<PointerStore.CasOp>> completionFactory) {
     Map<String, Long> requiredPointerVersions = conditions.requiredVersions();
     Set<String> requiredAbsentPointers = conditions.requiredAbsent();
     Map<String, Long> markerVersions = conditions.markerVersions();
@@ -1022,6 +1047,16 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             ops.add(new PointerStore.CasCheckAbsent(accountDeletionFence));
           }
           addMarkerAdvances(markerVersions, batchedKeys, ops, "update");
+          MutationMeta committedMeta =
+              committedMeta(
+                  Optional.of(committedCanonical),
+                  canonicalPointer,
+                  blobUri,
+                  Timestamps.fromMillis(clock.millis()));
+          List<PointerStore.CasOp> companions =
+              completionFactory == null
+                  ? List.of()
+                  : completionFactory.apply(new ResourceWithMeta<>(updatedValue, committedMeta));
           for (PointerStore.CasOp companion : companions) {
             if (!batchedKeys.add(companion.key())) {
               throw new IllegalArgumentException(
@@ -1032,12 +1067,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
           if (mutationPointerStore.compareAndSetBatch(ops)) {
             healCanonicalBlobIfMissing(blobUri, updatedValue);
-            return Optional.of(
-                committedMeta(
-                    Optional.of(committedCanonical),
-                    canonicalPointer,
-                    blobUri,
-                    Timestamps.fromMillis(clock.millis())));
+            return Optional.of(committedMeta);
           }
           if (!pointerConditionsStillMatch(requiredPointerVersions, requiredAbsentPointers))
             return Optional.empty();
@@ -1051,6 +1081,58 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           if (!markerVersionsStillMatch(markerVersions)) return Optional.empty();
           classifyCompanionConflict(companions);
           classifyUpdateConflict(canonicalPointer, expectedCanonicalVersion, blobUri, toAdd);
+          return Optional.empty();
+        });
+  }
+
+  /**
+   * Publishes completion operations while asserting that an already-equal resource still has the
+   * observed canonical version. No resource pointer is advanced on this no-op path.
+   */
+  public Optional<MutationMeta> completeWithMetaIfUnchanged(
+      T currentValue,
+      long expectedCanonicalVersion,
+      Function<ResourceWithMeta<T>, List<PointerStore.CasOp>> completionFactory) {
+    return observeRepository(
+        "complete_if_unchanged",
+        () -> {
+          K key = schema.keyFromValue.apply(currentValue);
+          guardSystemObject(key);
+          String canonicalPointer = schema.canonicalPointerForKey.apply(key);
+          Pointer current = mutationPointerStore.get(canonicalPointer).orElse(null);
+          if (current == null || current.getVersion() != expectedCanonicalVersion) {
+            return Optional.empty();
+          }
+          String blobUri = requireBlobReference(current, canonicalPointer);
+          MutationMeta meta =
+              committedMeta(
+                  Optional.of(current),
+                  canonicalPointer,
+                  blobUri,
+                  Timestamps.fromMillis(clock.millis()));
+          List<PointerStore.CasOp> ops = new ArrayList<>();
+          ops.add(new PointerStore.CasCheck(canonicalPointer, expectedCanonicalVersion));
+          ops.add(
+              new PointerStore.CasCheckAbsent(
+                  Keys.accountDeletionFenceShard(key.accountId(), canonicalPointer)));
+          Set<String> keys = new HashSet<>();
+          keys.add(canonicalPointer);
+          keys.add(Keys.accountDeletionFenceShard(key.accountId(), canonicalPointer));
+          for (PointerStore.CasOp companion :
+              Objects.requireNonNull(completionFactory)
+                  .apply(new ResourceWithMeta<>(currentValue, meta))) {
+            if (!keys.add(companion.key())) {
+              throw new IllegalArgumentException(
+                  "duplicate companion pointer in atomic completion: " + companion.key());
+            }
+            ops.add(companion);
+          }
+          if (mutationPointerStore.compareAndSetBatch(ops)) {
+            return Optional.of(meta);
+          }
+          if (mutationPointerStore.get(Keys.accountDeletionMarker(key.accountId())).isPresent()) {
+            throw accountDeletionInProgress(key);
+          }
           return Optional.empty();
         });
   }

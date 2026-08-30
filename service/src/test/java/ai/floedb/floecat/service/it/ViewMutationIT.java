@@ -377,7 +377,12 @@ class ViewMutationIT {
             .addOutputColumns(defaultCol)
             .build();
 
-    view.createView(CreateViewRequest.newBuilder().setSpec(specA).setIdempotency(key).build());
+    var idempotentRequest =
+        CreateViewRequest.newBuilder().setSpec(specA).setIdempotency(key).build();
+    var first = view.createView(idempotentRequest);
+    var replay = view.createView(idempotentRequest);
+    assertEquals(first.getView(), replay.getView());
+    assertEquals(first.getMeta(), replay.getMeta());
 
     var ex =
         assertThrows(

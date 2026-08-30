@@ -30,8 +30,17 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.common.IdempotencyGuard;
+import ai.floedb.floecat.service.common.IdempotencyInProgressException;
+import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
+import com.google.protobuf.Timestamp;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -39,7 +48,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -75,6 +86,79 @@ class ConstraintRepositoryTest {
     assertTrue(repo.deleteSnapshotConstraints(tableId, 101L));
     assertTrue(repo.getSnapshotConstraints(tableId, 101L).isEmpty());
     assertEquals(0, repo.countSnapshotConstraints(tableId));
+  }
+
+  @Test
+  void parallelReconcileConflictDoesNotPoisonConstraintIdempotencyKey() throws Exception {
+    var rawPointers = new InMemoryPointerStore();
+    var conflictingPointers = new ConflictFirstBatchPointerStore(rawPointers);
+    var rawBlobs = new InMemoryBlobStore();
+    var constraints = new ConstraintRepository(conflictingPointers, rawBlobs);
+    IdempotencyRepository idempotency =
+        new IdempotencyRepositoryImpl(conflictingPointers, rawBlobs);
+    long snapshotId = 777L;
+    var payload =
+        constraintsForSnapshot(
+            tableId, snapshotId, List.of(definition("pk_incident", ConstraintType.CT_PRIMARY_KEY)));
+    byte[] request = payload.toByteArray();
+    Timestamp now = Timestamp.newBuilder().setSeconds(Instant.now().getEpochSecond()).build();
+
+    java.util.concurrent.Callable<String> attempt =
+        () -> {
+          for (int retry = 0; retry < 1000; retry++) {
+            try {
+              return IdempotencyGuard.runOnceCommitted(
+                      tableId.getAccountId(),
+                      "PutTableConstraints",
+                      "parallel-reconcile-key",
+                      request,
+                      tableId,
+                      committer -> {
+                        var put =
+                            constraints.putSnapshotConstraintsWithCompletion(
+                                tableId,
+                                snapshotId,
+                                payload,
+                                resource -> {
+                                  String response = "changed=" + resource.changed();
+                                  return committer.prepareOps(
+                                      new IdempotencyGuard.CommittedCreate<>(
+                                          response, tableId, resource.meta()));
+                                });
+                        return new IdempotencyGuard.CommittedCreate<>(
+                            "changed=" + put.changed(), tableId, put.meta());
+                      },
+                      value -> value.getBytes(StandardCharsets.UTF_8),
+                      bytes -> new String(bytes, StandardCharsets.UTF_8),
+                      idempotency,
+                      60,
+                      now,
+                      () -> "corr")
+                  .resource();
+            } catch (IdempotencyInProgressException | StorageTransactionConflictException e) {
+              LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+            }
+          }
+          throw new AssertionError("reconcile retry budget exhausted");
+        };
+
+    try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
+      var first = pool.submit(attempt);
+      var second = pool.submit(attempt);
+      assertEquals("changed=true", first.get(5, TimeUnit.SECONDS));
+      assertEquals("changed=true", second.get(5, TimeUnit.SECONDS));
+    }
+
+    assertTrue(constraints.getSnapshotConstraints(tableId, snapshotId).isPresent());
+    var receipt =
+        idempotency
+            .get(
+                Keys.idempotencyKey(
+                    tableId.getAccountId(), "PutTableConstraints", "parallel-reconcile-key"))
+            .orElseThrow();
+    assertEquals(
+        ai.floedb.floecat.storage.rpc.IdempotencyRecord.Status.SUCCEEDED, receipt.getStatus());
+    assertEquals("changed=true", receipt.getPayload().toStringUtf8());
   }
 
   @Test
@@ -469,5 +553,22 @@ class ConstraintRepositoryTest {
               .build());
     }
     return builder.build();
+  }
+
+  private static final class ConflictFirstBatchPointerStore
+      extends RepoTestPointerStores.DelegatingPointerStore {
+    private final AtomicBoolean conflict = new AtomicBoolean(true);
+
+    private ConflictFirstBatchPointerStore(PointerStore delegate) {
+      super(delegate);
+    }
+
+    @Override
+    public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+      if (conflict.compareAndSet(true, false)) {
+        throw new StorageTransactionConflictException("injected reconcile conflict", null);
+      }
+      return super.compareAndSetBatch(ops);
+    }
   }
 }

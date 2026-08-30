@@ -56,6 +56,7 @@ public class TableRootWriter {
   private final SnapshotRepository snapshots;
   private final ConstraintRepository constraints;
   private final StatsStore statsStore;
+  private final RootResyncQueue rootResyncQueue;
 
   @Inject
   public TableRootWriter(
@@ -64,13 +65,15 @@ public class TableRootWriter {
       TableRepository tables,
       SnapshotRepository snapshots,
       ConstraintRepository constraints,
-      StatsStore statsStore) {
+      StatsStore statsStore,
+      RootResyncQueue rootResyncQueue) {
     this.roots = roots;
     this.committer = committer;
     this.tables = tables;
     this.snapshots = snapshots;
     this.constraints = constraints;
     this.statsStore = statsStore;
+    this.rootResyncQueue = rootResyncQueue;
   }
 
   /**
@@ -183,36 +186,54 @@ public class TableRootWriter {
    * their pinned root references, so a new generation becomes visible when it lands here — stats
    * are deterministic at a given pointer for a query's lifetime. Every stats write is
    * floecat-mediated (floescan submits through the leased reconcile protocol, other engines via
-   * PutTargetStats), so the root stays in sync with the stats family.
+   * PutTargetStats), so the root stays in sync with the stats family. If publication fails after
+   * the stats mutation is durable, a re-drive marker is recorded before the original failure is
+   * rethrown: acknowledgement still follows visibility, while the marker guarantees eventual
+   * convergence if the caller does not retry.
    */
   public void commitStatsGeneration(ResourceId tableId, long snapshotId) {
     if (!StatsVisibilityGate.gateOnFinalize(statsStore)) {
       return;
     }
-    committer.commit(
-        tableId,
-        current -> {
-          // Read the active generation INSIDE the mutator: concurrent activations race, and a
-          // ref captured before a lost CAS could land last, leaving the root referencing a
-          // superseded generation forever. Re-reading per attempt makes the last commit reflect
-          // the last published generation.
-          BlobRef generationRef =
-              statsStore
-                  .activeStatsGeneration(tableId, snapshotId)
-                  .map(uri -> BlobRef.newBuilder().setUri(uri).build())
-                  .orElse(null);
-          // Read /snapshots/current INSIDE the mutator (like the resync): the finalize advances
-          // currency only when this snapshot IS the committed current, so a lost CAS must re-read
-          // the authoritative selection per attempt rather than a value captured before the winner.
-          Long committedCurrentSnapshotId =
-              snapshots
-                  .latestRegisteredSnapshotPointer(tableId)
-                  .map(CurrentSnapshotPointer::getSnapshotId)
-                  .orElse(null);
-          return TableRootMutations.setStatsGeneration(
-                  roots, tableId, snapshotId, generationRef, committedCurrentSnapshotId)
-              .apply(current);
-        });
+    try {
+      committer.commit(
+          tableId,
+          current -> {
+            // Read the active generation INSIDE the mutator: concurrent activations race, and a
+            // ref captured before a lost CAS could land last, leaving the root referencing a
+            // superseded generation forever. Re-reading per attempt makes the last commit reflect
+            // the last published generation.
+            BlobRef generationRef =
+                statsStore
+                    .activeStatsGeneration(tableId, snapshotId)
+                    .map(uri -> BlobRef.newBuilder().setUri(uri).build())
+                    .orElse(null);
+            // Read /snapshots/current INSIDE the mutator (like the resync): the finalize advances
+            // currency only when this snapshot IS the committed current, so a lost CAS must re-read
+            // the authoritative selection per attempt rather than a value captured before the
+            // winner.
+            Long committedCurrentSnapshotId =
+                snapshots
+                    .latestRegisteredSnapshotPointer(tableId)
+                    .map(CurrentSnapshotPointer::getSnapshotId)
+                    .orElse(null);
+            return TableRootMutations.setStatsGeneration(
+                    roots, tableId, snapshotId, generationRef, committedCurrentSnapshotId)
+                .apply(current);
+          });
+    } catch (RuntimeException publicationFailure) {
+      try {
+        rootResyncQueue.enqueue(tableId);
+      } catch (RuntimeException markerFailure) {
+        publicationFailure.addSuppressed(markerFailure);
+        LOG.errorf(
+            publicationFailure,
+            "stats generation root commit for table %s failed AND its re-drive marker could not"
+                + " be recorded; the root stays divergent until the table's next write",
+            tableId.getId());
+      }
+      throw publicationFailure;
+    }
   }
 
   /**
@@ -227,6 +248,20 @@ public class TableRootWriter {
             tableId,
             snapshotId,
             BlobRefs.refFrom(constraints.metaForSafe(tableId, snapshotId))));
+  }
+
+  /**
+   * Publishes constraints derived from an already-durable constraints-family mutation. Failure is
+   * absorbed so the caller can leave a durable root-resync marker.
+   */
+  public boolean commitConstraintsFromCommittedState(ResourceId tableId, long snapshotId) {
+    return absorb(
+        tableId,
+        "constraints commit",
+        () -> {
+          commitConstraints(tableId, snapshotId);
+          return true;
+        });
   }
 
   /**

@@ -214,41 +214,66 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                         .build();
                   }
 
+                  var existingForIdempotency = accountRepo.getByName(normName);
                   var result =
-                      runIdempotentCreate(
+                      MutationOps.createProtoRecoverable(
+                          idempotencyAccount,
+                          "CreateAccount",
+                          idempotencyKey,
+                          () -> fingerprint,
                           () ->
-                              MutationOps.createProto(
-                                  idempotencyAccount,
-                                  "CreateAccount",
-                                  idempotencyKey,
-                                  () -> fingerprint,
-                                  () -> {
-                                    try {
-                                      accountRepo.create(desiredAccount);
-                                    } catch (BaseResourceRepository.NameConflictException nce) {
-                                      var existingOpt = accountRepo.getByName(normName);
-                                      if (existingOpt.isPresent()) {
-                                        var existingSpec = specFromAccount(existingOpt.get());
-                                        if (Arrays.equals(
-                                            fingerprint, canonicalFingerprint(existingSpec))) {
-                                          return new IdempotencyGuard.CreateResult<>(
-                                              existingOpt.get(), existingOpt.get().getResourceId());
-                                        }
-                                      }
-                                      throw GrpcErrors.alreadyExists(
-                                          corr,
-                                          ACCOUNT_ALREADY_EXISTS,
-                                          Map.of("display_name", normName));
-                                    }
-                                    return new IdempotencyGuard.CreateResult<>(
-                                        desiredAccount, resourceId);
-                                  },
-                                  (t) -> accountRepo.metaFor(t.getResourceId()),
-                                  idempotencyStore,
-                                  tsNow,
-                                  idempotencyTtlSeconds(),
-                                  this::correlationId,
-                                  Account::parseFrom));
+                              existingForIdempotency
+                                  .filter(
+                                      existing ->
+                                          Arrays.equals(
+                                              fingerprint,
+                                              canonicalFingerprint(specFromAccount(existing))))
+                                  .map(Account::getResourceId)
+                                  .orElse(resourceId),
+                          (reservedId, committer) -> {
+                            var existingOpt = accountRepo.getByName(normName);
+                            if (existingOpt.isPresent()) {
+                              var existing = existingOpt.get();
+                              if (!existing.getResourceId().equals(reservedId)
+                                  || !Arrays.equals(
+                                      fingerprint,
+                                      canonicalFingerprint(specFromAccount(existing)))) {
+                                throw GrpcErrors.alreadyExists(
+                                    corr, ACCOUNT_ALREADY_EXISTS, Map.of("display_name", normName));
+                              }
+                              var currentMeta = accountRepo.metaFor(reservedId);
+                              var completed =
+                                  accountRepo.completeWithMetaIfUnchanged(
+                                      existing,
+                                      currentMeta.getPointerVersion(),
+                                      resource ->
+                                          committer.prepareOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                              if (completed.isEmpty()) {
+                                throw new BaseResourceRepository.AbortRetryableException(
+                                    "account changed while committing idempotency receipt");
+                              }
+                              return new IdempotencyGuard.CommittedCreate<>(
+                                  existing, reservedId, completed.get());
+                            }
+                            var reserved =
+                                desiredAccount.toBuilder().setResourceId(reservedId).build();
+                            var committed =
+                                accountRepo.createWithCompletion(
+                                    reserved,
+                                    resource ->
+                                        committer.prepareOps(
+                                            new IdempotencyGuard.CommittedCreate<>(
+                                                resource.value(), reservedId, resource.meta())));
+                            return new IdempotencyGuard.CommittedCreate<>(
+                                committed.value(), reservedId, committed.meta());
+                          },
+                          idempotencyStore,
+                          tsNow,
+                          idempotencyTtlSeconds(),
+                          this::correlationId,
+                          Account::parseFrom);
 
                   return CreateAccountResponse.newBuilder()
                       .setAccount(result.body)

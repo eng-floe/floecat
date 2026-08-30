@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 @ApplicationScoped
 public class NamespaceRepository {
@@ -75,6 +76,21 @@ public class NamespaceRepository {
 
   public void create(Namespace namespace) {
     repo.create(namespace);
+  }
+
+  public GenericResourceRepository.ResourceWithMeta<Namespace> createWithCompletion(
+      Namespace namespace,
+      Function<GenericResourceRepository.ResourceWithMeta<Namespace>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.createWithMeta(namespace, completionFactory);
+  }
+
+  public Optional<MutationMeta> completeWithMetaIfUnchanged(
+      Namespace namespace,
+      long expectedPointerVersion,
+      Function<GenericResourceRepository.ResourceWithMeta<Namespace>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.completeWithMetaIfUnchanged(namespace, expectedPointerVersion, completionFactory);
   }
 
   public boolean createWhilePointersMatch(Namespace namespace, PointerConditions conditions) {

@@ -427,46 +427,70 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   }
 
                   var result =
-                      runIdempotentCreate(
-                          () ->
-                              MutationOps.createProto(
-                                  accountId,
-                                  "CreateSnapshot",
-                                  idempotencyKey,
-                                  () -> fingerprint,
-                                  () -> {
-                                    try {
-                                      snapshotRepo.create(snap);
-                                    } catch (BaseResourceRepository.NameConflictException nce) {
-                                      var existing =
-                                          snapshotRepo.getById(tableId, snap.getSnapshotId());
-                                      if (existing.isPresent()) {
-                                        var stored = normalizeSnapshotForComparison(existing.get());
-                                        var incoming = normalizeSnapshotForComparison(snap);
-                                        if (stored.equals(incoming)) {
-                                          maybeAdvanceCurrentSnapshot(
-                                              tableId, existing.get(), corr);
-                                          return new IdempotencyGuard.CreateResult<>(
-                                              existing.get(), existing.get().getTableId());
-                                        }
-                                      }
-                                      throw GrpcErrors.conflict(
-                                          corr,
-                                          SNAPSHOT_MISMATCH,
-                                          Map.of(
-                                              "table_id", tableId.getId(),
-                                              "snapshot_id", Long.toString(snap.getSnapshotId())));
-                                    }
-                                    maybeAdvanceCurrentSnapshot(tableId, snap, corr);
-                                    return new IdempotencyGuard.CreateResult<>(
-                                        snap, snap.getTableId());
-                                  },
-                                  s -> snapshotRepo.metaForSafe(s.getTableId(), s.getSnapshotId()),
-                                  idempotencyStore,
-                                  tsNow,
-                                  idempotencyTtlSeconds(),
-                                  this::correlationId,
-                                  Snapshot::parseFrom));
+                      MutationOps.createProtoRecoverable(
+                          accountId,
+                          "CreateSnapshot",
+                          idempotencyKey,
+                          () -> fingerprint,
+                          snap::getTableId,
+                          (reservedId, committer) -> {
+                            var existing = snapshotRepo.getById(tableId, snap.getSnapshotId());
+                            if (existing.isPresent()) {
+                              var stored = normalizeSnapshotForComparison(existing.get());
+                              var incoming = normalizeSnapshotForComparison(snap);
+                              if (!stored.equals(incoming)) {
+                                throw GrpcErrors.conflict(
+                                    corr,
+                                    SNAPSHOT_MISMATCH,
+                                    Map.of(
+                                        "table_id",
+                                        tableId.getId(),
+                                        "snapshot_id",
+                                        Long.toString(snap.getSnapshotId())));
+                              }
+                              var currentMeta =
+                                  snapshotRepo.metaForSafe(tableId, snap.getSnapshotId());
+                              var completed =
+                                  snapshotRepo.completeWithMetaIfUnchanged(
+                                      existing.get(),
+                                      currentMeta.getPointerVersion(),
+                                      resource ->
+                                          committer.prepareOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                              if (completed.isEmpty()) {
+                                throw new BaseResourceRepository.AbortRetryableException(
+                                    "snapshot changed while committing idempotency receipt");
+                              }
+                              return new IdempotencyGuard.CommittedCreate<>(
+                                  existing.get(), reservedId, completed.get());
+                            }
+                            try {
+                              var committed =
+                                  snapshotRepo.createWithCompletion(
+                                      snap,
+                                      resource ->
+                                          committer.prepareOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                              return new IdempotencyGuard.CommittedCreate<>(
+                                  committed.value(), reservedId, committed.meta());
+                            } catch (BaseResourceRepository.NameConflictException nce) {
+                              throw GrpcErrors.conflict(
+                                  corr,
+                                  SNAPSHOT_MISMATCH,
+                                  Map.of(
+                                      "table_id", tableId.getId(),
+                                      "snapshot_id", Long.toString(snap.getSnapshotId())));
+                            }
+                          },
+                          idempotencyStore,
+                          tsNow,
+                          idempotencyTtlSeconds(),
+                          this::correlationId,
+                          Snapshot::parseFrom);
+
+                  maybeAdvanceCurrentSnapshot(tableId, result.body, corr);
 
                   return CreateSnapshotResponse.newBuilder()
                       .setSnapshot(result.body)

@@ -26,7 +26,9 @@ import ai.floedb.floecat.transaction.rpc.Transaction;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 @ApplicationScoped
 public class TransactionRepository {
@@ -47,6 +49,29 @@ public class TransactionRepository {
 
   public void create(Transaction txn) {
     repo.create(txn);
+  }
+
+  public GenericResourceRepository.ResourceWithMeta<Transaction> createWithCompletion(
+      Transaction txn,
+      Function<GenericResourceRepository.ResourceWithMeta<Transaction>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.createWithMeta(txn, completionFactory);
+  }
+
+  public Optional<MutationMeta> updateWithCompletion(
+      Transaction txn,
+      long expectedPointerVersion,
+      Function<GenericResourceRepository.ResourceWithMeta<Transaction>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.updateWithCompletion(txn, expectedPointerVersion, completionFactory);
+  }
+
+  public Optional<MutationMeta> completeWithMetaIfUnchanged(
+      Transaction txn,
+      long expectedPointerVersion,
+      Function<GenericResourceRepository.ResourceWithMeta<Transaction>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.completeWithMetaIfUnchanged(txn, expectedPointerVersion, completionFactory);
   }
 
   public boolean update(Transaction txn, long expectedPointerVersion) {

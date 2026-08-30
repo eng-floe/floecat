@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
+import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
@@ -76,6 +77,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
   @Inject SnapshotRepository snapshots;
   @Inject StatsStore statsStore;
+  @Inject StatsRepository atomicStatsRepository;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
@@ -389,29 +391,33 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
       String targetKey = StatsTargetIdentity.storageId(targetRecord.getTarget());
       var itemKey = itemIdempotencyKey(next.idempotencyKey(), "target", hashString(targetKey));
-      runIdempotentCreate(
-          () ->
-              MutationOps.createProto(
-                  accountId,
-                  "PutTargetStats",
-                  itemKey,
-                  () -> fingerprint,
-                  () -> {
-                    statsStore.putTargetStats(targetRecord);
-                    statsOrchestrator.invalidateStatsCache(
-                        targetRecord.getTableId(),
-                        targetRecord.getSnapshotId(),
-                        targetRecord.getTarget());
-                    return new IdempotencyGuard.CreateResult<>(targetRecord, next.tableId());
-                  },
-                  rec ->
-                      statsStore.metaForTargetStats(
-                          next.tableId(), next.snapshotId(), rec.getTarget(), tsNow),
-                  idempotencyStore,
-                  tsNow,
-                  idempotencyTtlSeconds(),
-                  this::correlationId,
-                  TargetStatsRecord::parseFrom));
+      var result =
+          MutationOps.commitProto(
+              accountId,
+              "PutTargetStats",
+              itemKey,
+              () -> fingerprint,
+              next.tableId(),
+              committer -> {
+                var committedMeta =
+                    atomicStatsRepository.putTargetStatsWithCompletion(
+                        targetRecord,
+                        tsNow,
+                        meta ->
+                            committer.prepareOps(
+                                new IdempotencyGuard.CommittedCreate<>(
+                                    targetRecord, next.tableId(), meta)));
+                return new IdempotencyGuard.CommittedCreate<>(
+                    targetRecord, next.tableId(), committedMeta);
+              },
+              idempotencyStore,
+              tsNow,
+              idempotencyTtlSeconds(),
+              this::correlationId,
+              TargetStatsRecord::parseFrom);
+
+      statsOrchestrator.invalidateStatsCache(
+          result.body.getTableId(), result.body.getSnapshotId(), result.body.getTarget());
 
       upserted.incrementAndGet();
     }

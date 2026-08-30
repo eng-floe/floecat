@@ -286,18 +286,37 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
               "index_artifact",
               hashString(targetStorageId(item.getRecord().getTarget())));
 
-      MutationOps.createProto(
+      var record = item.getRecord();
+      var contentType =
+          item.getContentType() == null || item.getContentType().isBlank()
+              ? DEFAULT_INDEX_CONTENT_TYPE
+              : item.getContentType();
+      blobStore.put(record.getArtifactUri(), item.getContent().toByteArray(), contentType);
+      var etag =
+          blobStore
+              .head(record.getArtifactUri())
+              .map(h -> h.getEtag())
+              .orElse(record.getContentEtag());
+      var committedItem =
+          item.toBuilder().setRecord(record.toBuilder().setContentEtag(etag)).build();
+
+      MutationOps.commitProto(
           accountId,
           "PutIndexArtifacts",
           itemKey,
           item::toByteArray,
-          () -> {
-            persistItem(item);
-            return new IdempotencyGuard.CreateResult<>(item, next.tableId());
+          next.tableId(),
+          committer -> {
+            var meta =
+                indexArtifacts.putIndexArtifactWithCompletion(
+                    committedItem.getRecord(),
+                    nowTs,
+                    committedMeta ->
+                        committer.prepareOps(
+                            new IdempotencyGuard.CommittedCreate<>(
+                                committedItem, next.tableId(), committedMeta)));
+            return new IdempotencyGuard.CommittedCreate<>(committedItem, next.tableId(), meta);
           },
-          staged ->
-              indexArtifacts.metaForIndexArtifact(
-                  next.tableId(), next.snapshotId(), staged.getRecord().getTarget(), nowTs),
           idempotencyStore,
           nowTs,
           idempotencyTtlSeconds(),

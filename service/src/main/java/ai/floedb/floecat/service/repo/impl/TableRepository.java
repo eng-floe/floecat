@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 @ApplicationScoped
 public class TableRepository {
@@ -67,6 +68,21 @@ public class TableRepository {
 
   public void create(Table table) {
     repo.create(table);
+  }
+
+  public GenericResourceRepository.ResourceWithMeta<Table> createWithCompletion(
+      Table table,
+      Function<GenericResourceRepository.ResourceWithMeta<Table>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.createWithMeta(table, completionFactory);
+  }
+
+  public Optional<MutationMeta> completeWithMetaIfUnchanged(
+      Table table,
+      long expectedPointerVersion,
+      Function<GenericResourceRepository.ResourceWithMeta<Table>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.completeWithMetaIfUnchanged(table, expectedPointerVersion, completionFactory);
   }
 
   public Optional<MutationMeta> createWhilePointersMatch(

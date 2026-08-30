@@ -30,6 +30,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 @ApplicationScoped
 public class StorageAuthorityRepository {
@@ -50,6 +51,25 @@ public class StorageAuthorityRepository {
 
   public void create(StorageAuthority authority) {
     repo.create(authority);
+  }
+
+  public GenericResourceRepository.ResourceWithMeta<StorageAuthority> createWithCompletion(
+      StorageAuthority authority,
+      Function<
+              GenericResourceRepository.ResourceWithMeta<StorageAuthority>,
+              List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.createWithMeta(authority, completionFactory);
+  }
+
+  public Optional<MutationMeta> completeWithMetaIfUnchanged(
+      StorageAuthority authority,
+      long expectedPointerVersion,
+      Function<
+              GenericResourceRepository.ResourceWithMeta<StorageAuthority>,
+              List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.completeWithMetaIfUnchanged(authority, expectedPointerVersion, completionFactory);
   }
 
   public boolean update(StorageAuthority authority, long expectedPointerVersion) {

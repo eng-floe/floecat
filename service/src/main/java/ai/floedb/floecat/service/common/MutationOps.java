@@ -58,39 +58,8 @@ public final class MutationOps {
     T parse(byte[] bytes) throws Exception;
   }
 
-  public static <T> OpResult<T> create(
-      String account,
-      String operationName,
-      String idempotencyKey,
-      Fingerprinter fingerprint,
-      Creator<T> creator,
-      Function<T, MutationMeta> metaOf,
-      Function<T, byte[]> serializer,
-      Function<byte[], T> parser,
-      IdempotencyRepository idemStore,
-      Timestamp now,
-      long ttlSeconds,
-      Supplier<String> corrIdSupplier) {
-
-    var result =
-        IdempotencyGuard.runOnce(
-            account,
-            operationName,
-            idempotencyKey,
-            fingerprint.fingerprint(),
-            creator::create,
-            metaOf,
-            serializer,
-            parser,
-            idemStore,
-            ttlSeconds,
-            now,
-            corrIdSupplier);
-
-    return new OpResult<>(result.resource(), result.meta());
-  }
-
-  public static <T extends Message> OpResult<T> createProto(
+  /** For callbacks whose only durable mutation is the idempotency receipt itself. */
+  public static <T extends Message> OpResult<T> createProtoReceiptOnly(
       String account,
       String operationName,
       String idempotencyKey,
@@ -102,26 +71,62 @@ public final class MutationOps {
       long ttlSeconds,
       Supplier<String> correlationIdSupplier,
       ThrowingParser<T> parser) {
+    var result =
+        IdempotencyGuard.runOnceReceiptOnly(
+            account,
+            operationName,
+            idempotencyKey,
+            fingerprint.fingerprint(),
+            creator::create,
+            metaOf,
+            Message::toByteArray,
+            bytes -> {
+              try {
+                return parser.parse(bytes);
+              } catch (Exception e) {
+                throw new BaseResourceRepository.CorruptionException("idempotency_parse_failed", e);
+              }
+            },
+            idempotencyStore,
+            ttlSeconds,
+            now,
+            correlationIdSupplier);
+    return new OpResult<>(result.resource(), result.meta());
+  }
 
-    return create(
-        account,
-        operationName,
-        idempotencyKey,
-        fingerprint,
-        creator,
-        metaOf,
-        Message::toByteArray,
-        bytes -> {
-          try {
-            return parser.parse(bytes);
-          } catch (Exception e) {
-            throw new BaseResourceRepository.CorruptionException("idempotency_parse_failed", e);
-          }
-        },
-        idempotencyStore,
-        now,
-        ttlSeconds,
-        correlationIdSupplier);
+  public static <T extends Message> OpResult<T> createProtoConvergentEffects(
+      String account,
+      String operationName,
+      String idempotencyKey,
+      Fingerprinter fingerprint,
+      Creator<T> effect,
+      Function<T, MutationMeta> metaOf,
+      IdempotencyRepository idempotencyStore,
+      Timestamp now,
+      long ttlSeconds,
+      Supplier<String> correlationIdSupplier,
+      ThrowingParser<T> parser) {
+    var result =
+        IdempotencyGuard.runOnceConvergentEffects(
+            account,
+            operationName,
+            idempotencyKey,
+            fingerprint.fingerprint(),
+            effect::create,
+            metaOf,
+            Message::toByteArray,
+            bytes -> {
+              try {
+                return parser.parse(bytes);
+              } catch (Exception e) {
+                throw new BaseResourceRepository.CorruptionException("idempotency_parse_failed", e);
+              }
+            },
+            idempotencyStore,
+            ttlSeconds,
+            now,
+            correlationIdSupplier);
+    return new OpResult<>(result.resource(), result.meta());
   }
 
   /** For creators that can find and return an already-committed resource after a retry. */
@@ -149,6 +154,42 @@ public final class MutationOps {
             fingerprint.fingerprint(),
             resourceIdAllocator,
             creator,
+            Message::toByteArray,
+            bytes -> {
+              try {
+                return parser.parse(bytes);
+              } catch (Exception e) {
+                throw new BaseResourceRepository.CorruptionException("idempotency_parse_failed", e);
+              }
+            },
+            idempotencyStore,
+            ttlSeconds,
+            now,
+            correlationIdSupplier);
+    return new OpResult<>(result.resource(), result.meta());
+  }
+
+  /** For known-resource mutations that atomically co-commit their exact success receipt. */
+  public static <T extends Message> OpResult<T> commitProto(
+      String account,
+      String operationName,
+      String idempotencyKey,
+      Fingerprinter fingerprint,
+      ai.floedb.floecat.common.rpc.ResourceId resourceId,
+      Function<IdempotencyGuard.SuccessCommitter<T>, IdempotencyGuard.CommittedCreate<T>> mutation,
+      IdempotencyRepository idempotencyStore,
+      Timestamp now,
+      long ttlSeconds,
+      Supplier<String> correlationIdSupplier,
+      ThrowingParser<T> parser) {
+    var result =
+        IdempotencyGuard.runOnceCommitted(
+            account,
+            operationName,
+            idempotencyKey,
+            fingerprint.fingerprint(),
+            resourceId,
+            mutation,
             Message::toByteArray,
             bytes -> {
               try {

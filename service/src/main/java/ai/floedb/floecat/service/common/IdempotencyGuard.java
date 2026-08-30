@@ -25,6 +25,7 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Duration;
 import com.google.protobuf.Timestamp;
@@ -32,6 +33,7 @@ import com.google.protobuf.util.Timestamps;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiFunction;
@@ -46,7 +48,7 @@ public final class IdempotencyGuard {
 
   @FunctionalInterface
   public interface SuccessCommitter<T> {
-    PointerStore.CasUpsert prepare(CommittedCreate<T> committed);
+    List<PointerStore.CasOp> prepareOps(CommittedCreate<T> committed);
   }
 
   public record Result<T>(T resource, MutationMeta meta) {}
@@ -57,7 +59,9 @@ public final class IdempotencyGuard {
    * Idempotent resource creation with a durable identity reservation. A pending record contains the
    * resource id before the create transaction runs. The creator must publish the immutable success
    * receipt in the same pointer transaction as the resource; retries never reconstruct a receipt
-   * from mutable resource state.
+   * from mutable resource state. A retryable failure deliberately retains the reservation: a later
+   * attempt adopts its stable resource id and reruns the recoverable creator, rather than releasing
+   * and allocating a different identity.
    */
   public static <T> Result<T> runOnceReserved(
       String accountId,
@@ -73,13 +77,7 @@ public final class IdempotencyGuard {
       Timestamp now,
       Supplier<String> corrId) {
     if (idempotencyKey == null || idempotencyKey.isBlank()) {
-      var created =
-          creator.apply(
-              resourceIdAllocator.get(),
-              ignored -> {
-                throw new IllegalStateException(
-                    "idempotency completion requested without an idempotency key");
-              });
+      var created = creator.apply(resourceIdAllocator.get(), ignored -> List.of());
       return new Result<>(created.resource(), created.meta());
     }
 
@@ -147,16 +145,17 @@ public final class IdempotencyGuard {
       Timestamp commitExpiresAt = reservationExpiresAt;
       SuccessCommitter<T> committer =
           created ->
-              store.prepareSuccess(
-                  accountId,
-                  key,
-                  opName,
-                  requestHash,
-                  created.resourceId(),
-                  created.meta(),
-                  serializer.apply(created.resource()),
-                  commitCreatedAt,
-                  commitExpiresAt);
+              List.of(
+                  store.prepareSuccess(
+                      accountId,
+                      key,
+                      opName,
+                      requestHash,
+                      created.resourceId(),
+                      created.meta(),
+                      serializer.apply(created.resource()),
+                      commitCreatedAt,
+                      commitExpiresAt));
       CommittedCreate<T> created = creator.apply(reservedId, committer);
       committed = true;
       var completed = store.get(key);
@@ -196,6 +195,121 @@ public final class IdempotencyGuard {
     }
   }
 
+  /**
+   * Idempotent mutation of a known resource. The callback must publish the prepared success receipt
+   * in the same pointer transaction as its business mutation.
+   */
+  public static <T> Result<T> runOnceCommitted(
+      String accountId,
+      String opName,
+      String idempotencyKey,
+      byte[] requestBytes,
+      ResourceId resourceId,
+      Function<SuccessCommitter<T>, CommittedCreate<T>> mutation,
+      Function<T, byte[]> serializer,
+      Function<byte[], T> parser,
+      IdempotencyRepository store,
+      long ttlSeconds,
+      Timestamp now,
+      Supplier<String> corrId) {
+    if (idempotencyKey == null || idempotencyKey.isBlank()) {
+      throw new IllegalArgumentException("runOnceCommitted requires an idempotency key");
+    }
+
+    String key = Keys.idempotencyKey(accountId, opName, idempotencyKey);
+    String requestHash = sha256B64(requestBytes);
+    Optional<ai.floedb.floecat.storage.rpc.IdempotencyRecord> existing = store.get(key);
+    if (existing.isPresent()) {
+      var replay = existing.get();
+      requireMatchingRequest(replay.getRequestHash(), requestHash, opName, idempotencyKey, corrId);
+      if (replay.getStatus() == ai.floedb.floecat.storage.rpc.IdempotencyRecord.Status.SUCCEEDED) {
+        if (!replay.hasMeta()) {
+          throw new BaseResourceRepository.CorruptionException(
+              "idempotency meta missing for succeeded record: key=" + key, null);
+        }
+        return new Result<>(parser.apply(replay.getPayload().toByteArray()), replay.getMeta());
+      }
+      throw new IdempotencyInProgressException("idempotency record pending: key=" + key);
+    }
+
+    Timestamp expiresAt = expiresAt(now, ttlSeconds);
+    if (!store.createPending(accountId, key, opName, requestHash, resourceId, now, expiresAt)) {
+      var winner = store.get(key);
+      if (winner.isEmpty()) {
+        throw new StorageAbortRetryableException("idempotency record not yet visible: key=" + key);
+      }
+      var replay = winner.get();
+      requireMatchingRequest(replay.getRequestHash(), requestHash, opName, idempotencyKey, corrId);
+      if (replay.getStatus() == ai.floedb.floecat.storage.rpc.IdempotencyRecord.Status.SUCCEEDED) {
+        if (!replay.hasMeta()) {
+          throw new BaseResourceRepository.CorruptionException(
+              "idempotency meta missing for succeeded record: key=" + key, null);
+        }
+        return new Result<>(parser.apply(replay.getPayload().toByteArray()), replay.getMeta());
+      }
+      throw new IdempotencyInProgressException("idempotency record pending: key=" + key);
+    }
+
+    try {
+      SuccessCommitter<T> committer =
+          committed -> {
+            if (!resourceId.equals(committed.resourceId())) {
+              throw new IllegalArgumentException("committed resource identity changed");
+            }
+            return List.of(
+                store.prepareSuccess(
+                    accountId,
+                    key,
+                    opName,
+                    requestHash,
+                    resourceId,
+                    committed.meta(),
+                    serializer.apply(committed.resource()),
+                    now,
+                    expiresAt));
+          };
+      CommittedCreate<T> committed = mutation.apply(committer);
+      if (!resourceId.equals(committed.resourceId())) {
+        throw new IllegalArgumentException("committed resource identity changed");
+      }
+      var completed = store.get(key);
+      if (completed.isPresent()
+          && completed.get().getStatus()
+              == ai.floedb.floecat.storage.rpc.IdempotencyRecord.Status.SUCCEEDED) {
+        var exact = completed.get();
+        requireMatchingRequest(exact.getRequestHash(), requestHash, opName, idempotencyKey, corrId);
+        return new Result<>(parser.apply(exact.getPayload().toByteArray()), exact.getMeta());
+      }
+      deletePendingIfOwned(store, key, opName, requestHash, now, expiresAt, corrId);
+      throw new StorageAbortRetryableException(
+          "atomic mutation returned without an idempotency receipt: key=" + key);
+    } catch (Throwable failure) {
+      var completed = store.get(key);
+      if (completed.isPresent()
+          && completed.get().getStatus()
+              == ai.floedb.floecat.storage.rpc.IdempotencyRecord.Status.SUCCEEDED) {
+        var exact = completed.get();
+        requireMatchingRequest(exact.getRequestHash(), requestHash, opName, idempotencyKey, corrId);
+        if (!exact.hasMeta()) {
+          throw new BaseResourceRepository.CorruptionException(
+              "idempotency meta missing for succeeded record: key=" + key, null);
+        }
+        return new Result<>(parser.apply(exact.getPayload().toByteArray()), exact.getMeta());
+      }
+      // Repository aborts are safe to release only because this helper's callback contract permits
+      // one pointer transaction containing all business mutations and the receipt. They therefore
+      // cannot represent a pre-receipt partial commit.
+      boolean knownAbort =
+          failure instanceof BaseResourceRepository.AbortRetryableException
+              || failure instanceof StorageTransactionConflictException;
+      boolean retryable = failure instanceof StorageAbortRetryableException || knownAbort;
+      if (!retryable || knownAbort) {
+        deletePendingIfOwned(store, key, opName, requestHash, now, expiresAt, corrId);
+      }
+      throw failure;
+    }
+  }
+
   private static void requireMatchingRequest(
       String storedHash,
       String requestHash,
@@ -218,7 +332,11 @@ public final class IdempotencyGuard {
             .build());
   }
 
-  public static <T> Result<T> runOnce(
+  /**
+   * Runs an operation whose callback has no durable side effect. If the receipt transaction is
+   * definitively cancelled, the caller's pending claim is released so an outer retry can rerun it.
+   */
+  public static <T> Result<T> runOnceReceiptOnly(
       String accountId,
       String opName,
       String idempotencyKey,
@@ -231,6 +349,69 @@ public final class IdempotencyGuard {
       long ttlSeconds,
       Timestamp now,
       Supplier<String> corrId) {
+    return executeClaimedEffect(
+        accountId,
+        opName,
+        idempotencyKey,
+        requestBytes,
+        creator,
+        metaExtractor,
+        serializer,
+        parser,
+        store,
+        ttlSeconds,
+        now,
+        corrId,
+        true);
+  }
+
+  /**
+   * Runs an effect whose durable writes have natural deduplication and therefore converge when the
+   * whole callback is repeated. This is intentionally separate from pointer-atomic mutations.
+   */
+  public static <T> Result<T> runOnceConvergentEffects(
+      String accountId,
+      String opName,
+      String idempotencyKey,
+      byte[] requestBytes,
+      Supplier<CreateResult<T>> effect,
+      Function<T, MutationMeta> metaExtractor,
+      Function<T, byte[]> serializer,
+      Function<byte[], T> parser,
+      IdempotencyRepository store,
+      long ttlSeconds,
+      Timestamp now,
+      Supplier<String> corrId) {
+    return executeClaimedEffect(
+        accountId,
+        opName,
+        idempotencyKey,
+        requestBytes,
+        effect,
+        metaExtractor,
+        serializer,
+        parser,
+        store,
+        ttlSeconds,
+        now,
+        corrId,
+        true);
+  }
+
+  private static <T> Result<T> executeClaimedEffect(
+      String accountId,
+      String opName,
+      String idempotencyKey,
+      byte[] requestBytes,
+      Supplier<CreateResult<T>> creator,
+      Function<T, MutationMeta> metaExtractor,
+      Function<T, byte[]> serializer,
+      Function<byte[], T> parser,
+      IdempotencyRepository store,
+      long ttlSeconds,
+      Timestamp now,
+      Supplier<String> corrId,
+      boolean releaseConfirmedAbort) {
     if (idempotencyKey == null || idempotencyKey.isBlank()) {
       var created = creator.get();
       var meta = metaExtractor.apply(created.resource());
@@ -247,6 +428,7 @@ public final class IdempotencyGuard {
     long finalizeSuccessNanos = 0L;
     long getAfterCreatePendingNanos = 0L;
     String outcome = "unknown";
+    String failurePhase = "creator";
 
     long getStartNanos = logTiming ? System.nanoTime() : 0L;
     var existingOpt = store.get(key);
@@ -304,7 +486,7 @@ public final class IdempotencyGuard {
               getAfterCreatePendingNanos,
               creatorNanos,
               finalizeSuccessNanos);
-          throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
+          throw new IdempotencyInProgressException("idempotency record pending: key=" + key);
         }
         default -> {
           logTiming(
@@ -408,7 +590,7 @@ public final class IdempotencyGuard {
               getAfterCreatePendingNanos,
               creatorNanos,
               finalizeSuccessNanos);
-          throw new StorageAbortRetryableException("idempotency record pending: key=" + key);
+          throw new IdempotencyInProgressException("idempotency record pending: key=" + key);
         }
         default -> {
           logTiming(
@@ -433,9 +615,12 @@ public final class IdempotencyGuard {
       if (logTiming) {
         creatorNanos = System.nanoTime() - creatorStartNanos;
       }
+      failurePhase = "meta_extractor";
       var meta = metaExtractor.apply(created.resource());
+      failurePhase = "serializer";
       var payload = serializer.apply(created.resource());
 
+      failurePhase = "finalize_success";
       long finalizeStartNanos = logTiming ? System.nanoTime() : 0L;
       store.finalizeSuccess(
           accountId, key, opName, requestHash, created.resourceId(), meta, payload, now, expiresAt);
@@ -471,8 +656,18 @@ public final class IdempotencyGuard {
       boolean retryable =
           (t instanceof BaseResourceRepository.AbortRetryableException)
               || (t instanceof StorageAbortRetryableException);
-      if (!retryable) {
+      boolean confirmedAbort = t instanceof StorageTransactionConflictException;
+      if (!retryable || (releaseConfirmedAbort && confirmedAbort)) {
+        LOG.warnf(t, "idempotency.callback_failed op=%s key=%s corr=%s", opName, key, corrId.get());
         deletePendingIfOwned(store, key, opName, requestHash, now, expiresAt, corrId);
+      } else {
+        LOG.warnf(
+            t,
+            "idempotency.retryable_failure_retained op=%s key=%s phase=%s corr=%s",
+            opName,
+            key,
+            failurePhase,
+            corrId.get());
       }
       throw t;
     }

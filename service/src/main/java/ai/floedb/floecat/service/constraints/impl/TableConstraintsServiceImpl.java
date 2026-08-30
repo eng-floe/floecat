@@ -43,6 +43,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -79,13 +80,27 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   @Inject IdempotencyRepository idempotencyStore;
   @Inject CatalogGraphView graphView;
   @Inject TableRootWriter rootWriter;
+  @Inject RootResyncQueue rootResyncQueue;
 
   private static final Logger LOG = Logger.getLogger(TableConstraintsServiceImpl.class);
 
-  /** Record the snapshot's (possibly new or removed) constraints bundle on the table root. */
-  private void commitConstraintsToRoot(ResourceId tableId, long snapshotId) {
-    if (rootWriter != null) {
-      rootWriter.commitConstraints(tableId, snapshotId);
+  /**
+   * The constraints mutation is durable; publish its derived root ref or leave a re-drive marker.
+   * Calling this after an idempotency replay is deliberate: replay doubles as a free convergence
+   * pass for a previously absorbed root commit.
+   */
+  void publishCommittedConstraintsToRoot(ResourceId tableId, long snapshotId) {
+    if (rootWriter == null || rootWriter.commitConstraintsFromCommittedState(tableId, snapshotId)) {
+      return;
+    }
+    try {
+      rootResyncQueue.enqueue(tableId);
+    } catch (RuntimeException e) {
+      LOG.errorf(
+          e,
+          "constraints root commit for table %s failed AND its re-drive marker could not be"
+              + " recorded; the root stays divergent until the table's next write",
+          tableId.getId());
     }
   }
 
@@ -201,7 +216,8 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                     boolean changed =
                         constraints.putSnapshotConstraints(
                             request.getTableId(), request.getSnapshotId(), normalized);
-                    commitConstraintsToRoot(request.getTableId(), request.getSnapshotId());
+                    publishCommittedConstraintsToRoot(
+                        request.getTableId(), request.getSnapshotId());
                     var meta =
                         constraints.metaFor(request.getTableId(), request.getSnapshotId(), tsNow);
                     return PutTableConstraintsResponse.newBuilder()
@@ -212,38 +228,47 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                   }
 
                   var result =
-                      runIdempotentCreate(
-                          () ->
-                              MutationOps.createProto(
-                                  accountId,
-                                  "PutTableConstraints",
-                                  idempotencyKey,
-                                  () -> fingerprint,
-                                  () -> {
-                                    boolean changed =
-                                        constraints.putSnapshotConstraints(
-                                            request.getTableId(),
-                                            request.getSnapshotId(),
-                                            normalized);
-                                    commitConstraintsToRoot(
-                                        request.getTableId(), request.getSnapshotId());
-                                    return new IdempotencyGuard.CreateResult<>(
-                                        PutTableConstraintsResponse.newBuilder()
-                                            .setConstraints(normalized)
-                                            .setChanged(changed)
-                                            .build(),
-                                        request.getTableId());
-                                  },
-                                  response ->
-                                      constraints.metaFor(
-                                          request.getTableId(), request.getSnapshotId(), tsNow),
-                                  idempotencyStore,
-                                  tsNow,
-                                  idempotencyTtlSeconds(),
-                                  this::correlationId,
-                                  PutTableConstraintsResponse::parseFrom));
+                      MutationOps.commitProto(
+                          accountId,
+                          "PutTableConstraints",
+                          idempotencyKey,
+                          () -> fingerprint,
+                          request.getTableId(),
+                          committer -> {
+                            var committed =
+                                constraints.putSnapshotConstraintsWithCompletion(
+                                    request.getTableId(),
+                                    request.getSnapshotId(),
+                                    normalized,
+                                    put -> {
+                                      var response =
+                                          PutTableConstraintsResponse.newBuilder()
+                                              .setConstraints(put.constraints())
+                                              .setMeta(put.meta())
+                                              .setChanged(put.changed())
+                                              .build();
+                                      var success =
+                                          new IdempotencyGuard.CommittedCreate<>(
+                                              response, request.getTableId(), put.meta());
+                                      return committer.prepareOps(success);
+                                    });
+                            return new IdempotencyGuard.CommittedCreate<>(
+                                PutTableConstraintsResponse.newBuilder()
+                                    .setConstraints(committed.constraints())
+                                    .setMeta(committed.meta())
+                                    .setChanged(committed.changed())
+                                    .build(),
+                                request.getTableId(),
+                                committed.meta());
+                          },
+                          idempotencyStore,
+                          tsNow,
+                          idempotencyTtlSeconds(),
+                          this::correlationId,
+                          PutTableConstraintsResponse::parseFrom);
 
-                  return result.body.toBuilder().setMeta(result.meta).build();
+                  publishCommittedConstraintsToRoot(request.getTableId(), request.getSnapshotId());
+                  return result.body;
                 }),
             correlationId())
         .onFailure()
@@ -367,10 +392,10 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                     // idempotently before reporting not-found, so a pinned-ref never outlives the
                     // pointer it points at (new pins would copy a stale ref; root-chain GC would
                     // anchor the retired blob).
-                    commitConstraintsToRoot(tableId, snapshotId);
+                    publishCommittedConstraintsToRoot(tableId, snapshotId);
                     throw constraintsBundleNotFound(tableId, snapshotId);
                   }
-                  commitConstraintsToRoot(tableId, snapshotId);
+                  publishCommittedConstraintsToRoot(tableId, snapshotId);
 
                   return DeleteTableConstraintsResponse.newBuilder().setMeta(meta).build();
                 }),
@@ -537,7 +562,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
         }
         SnapshotConstraints created = mutator.apply(SnapshotConstraints.newBuilder().build());
         if (constraints.createSnapshotConstraintsIfAbsent(tableId, snapshotId, created)) {
-          commitConstraintsToRoot(tableId, snapshotId);
+          publishCommittedConstraintsToRoot(tableId, snapshotId);
           return constraints.getSnapshotConstraints(tableId, snapshotId).orElse(created);
         }
         continue;
@@ -554,7 +579,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
         // failed its root commit, leaving the root ref stale. Convergence is idempotent (it reads
         // the live bundle meta; a matching ref no-ops in the committer), so attempt it on this
         // exit path too rather than short-circuiting before the root catches up.
-        commitConstraintsToRoot(tableId, snapshotId);
+        publishCommittedConstraintsToRoot(tableId, snapshotId);
         return current;
       }
       try {
@@ -562,7 +587,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
             constraints.updateSnapshotConstraints(
                 tableId, snapshotId, next, currentMeta.getPointerVersion());
         if (updated) {
-          commitConstraintsToRoot(tableId, snapshotId);
+          publishCommittedConstraintsToRoot(tableId, snapshotId);
           return constraints.getSnapshotConstraints(tableId, snapshotId).orElse(next);
         }
       } catch (BaseResourceRepository.NotFoundException ignore) {

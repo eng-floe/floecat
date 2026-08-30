@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.rpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -30,6 +31,7 @@ import io.vertx.core.Context;
 import io.vertx.core.Vertx;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class BaseServiceImplTest {
@@ -79,13 +81,94 @@ class BaseServiceImplTest {
     }
   }
 
+  @Test
+  void runWithRetryDoesNotRetryAnActiveIdempotencyClaim() {
+    TestServiceImpl service = new TestServiceImpl();
+    AtomicInteger attempts = new AtomicInteger();
+
+    Throwable failure =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            IdempotencyInProgressException.class,
+            () ->
+                service
+                    .withRetry(
+                        () -> {
+                          attempts.incrementAndGet();
+                          throw new IdempotencyInProgressException("pending");
+                        })
+                    .await()
+                    .indefinitely());
+
+    assertEquals("pending", failure.getMessage());
+    assertEquals(1, attempts.get());
+  }
+
+  @Test
+  void runWithRetryRetriesTypedTransientConflicts() {
+    TestServiceImpl service = new TestServiceImpl();
+    AtomicInteger attempts = new AtomicInteger();
+
+    String result =
+        service
+            .withRetry(
+                () -> {
+                  if (attempts.getAndIncrement() == 0) {
+                    throw new BaseResourceRepository.AbortRetryableException("pointer conflict");
+                  }
+                  return "ok";
+                })
+            .await()
+            .indefinitely();
+
+    assertEquals("ok", result);
+    assertEquals(2, attempts.get());
+  }
+
+  @Test
+  void runWithRetryDoesNotRetryAnAbortedStatus() {
+    TestServiceImpl service = new TestServiceImpl();
+    AtomicInteger attempts = new AtomicInteger();
+
+    org.junit.jupiter.api.Assertions.assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .withRetry(
+                    () -> {
+                      attempts.incrementAndGet();
+                      throw io.grpc.Status.ABORTED.asRuntimeException();
+                    })
+                .await()
+                .indefinitely());
+
+    assertEquals(1, attempts.get());
+  }
+
+  @Test
+  void inProgressMapsToAbortedAtTheRpcBoundary() {
+    TestServiceImpl service = new TestServiceImpl();
+
+    StatusRuntimeException mapped =
+        service.map(new IdempotencyInProgressException("pending"), CORRELATION_ID);
+
+    assertEquals(io.grpc.Status.Code.ABORTED, mapped.getStatus().getCode());
+  }
+
   private static final class TestServiceImpl extends BaseServiceImpl {
     StatusRuntimeException repack(StatusRuntimeException ex, String corrId) {
       return toStatus(ex, corrId);
     }
 
+    StatusRuntimeException map(Throwable failure, String corrId) {
+      return toStatus(failure, corrId);
+    }
+
     Uni<Boolean> bodyRunsOnEventLoop() {
       return run(Context::isOnEventLoopThread);
+    }
+
+    <T> Uni<T> withRetry(java.util.function.Supplier<T> supplier) {
+      return runWithRetry(supplier);
     }
   }
 }

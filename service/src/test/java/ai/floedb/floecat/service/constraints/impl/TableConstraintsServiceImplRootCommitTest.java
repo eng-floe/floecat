@@ -32,6 +32,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
@@ -60,6 +61,7 @@ class TableConstraintsServiceImplRootCommitTest {
     service.idempotencyStore = mock(IdempotencyRepository.class);
     service.graphView = mock(CatalogGraphView.class);
     service.rootWriter = mock(TableRootWriter.class);
+    service.rootResyncQueue = mock(RootResyncQueue.class);
     TestPrincipals.stubPrincipal(service.principal, service.authz);
 
     tableId =
@@ -80,6 +82,16 @@ class TableConstraintsServiceImplRootCommitTest {
         .thenReturn(MutationMeta.getDefaultInstance());
     when(service.constraints.metaForSafe(any(), anyLong()))
         .thenReturn(MutationMeta.getDefaultInstance());
+    when(service.rootWriter.commitConstraintsFromCommittedState(any(), anyLong())).thenReturn(true);
+  }
+
+  @Test
+  void absorbedConstraintRootCommitLeavesDurableResyncMarker() {
+    when(service.rootWriter.commitConstraintsFromCommittedState(tableId, 5L)).thenReturn(false);
+
+    service.publishCommittedConstraintsToRoot(tableId, 5L);
+
+    verify(service.rootResyncQueue).enqueue(tableId);
   }
 
   @Test
@@ -98,7 +110,7 @@ class TableConstraintsServiceImplRootCommitTest {
         .await()
         .indefinitely();
 
-    verify(service.rootWriter).commitConstraints(tableId, 5L);
+    verify(service.rootWriter).commitConstraintsFromCommittedState(tableId, 5L);
   }
 
   @Test
@@ -117,7 +129,7 @@ class TableConstraintsServiceImplRootCommitTest {
         .await()
         .indefinitely();
 
-    verify(service.rootWriter).commitConstraints(tableId, 5L);
+    verify(service.rootWriter).commitConstraintsFromCommittedState(tableId, 5L);
   }
 
   @Test
@@ -136,7 +148,7 @@ class TableConstraintsServiceImplRootCommitTest {
         .await()
         .indefinitely();
 
-    verify(service.rootWriter).commitConstraints(tableId, 5L);
+    verify(service.rootWriter).commitConstraintsFromCommittedState(tableId, 5L);
   }
 
   @Test
@@ -159,6 +171,6 @@ class TableConstraintsServiceImplRootCommitTest {
                 .await()
                 .indefinitely());
 
-    verify(service.rootWriter).commitConstraints(tableId, 5L);
+    verify(service.rootWriter).commitConstraintsFromCommittedState(tableId, 5L);
   }
 }

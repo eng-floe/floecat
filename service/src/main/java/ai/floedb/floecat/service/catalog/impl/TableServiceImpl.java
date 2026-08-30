@@ -244,58 +244,96 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     return CreateTableResponse.newBuilder().setTable(table).setMeta(meta).build();
                   }
 
+                  var existingForIdempotency =
+                      tableRepo.getByName(
+                          accountId,
+                          spec.getCatalogId().getId(),
+                          spec.getNamespaceId().getId(),
+                          normName);
                   var result =
-                      runIdempotentCreate(
+                      MutationOps.createProtoRecoverable(
+                          accountId,
+                          "CreateTable",
+                          idempotencyKey,
+                          () -> fingerprint,
                           () ->
-                              MutationOps.createProto(
-                                  accountId,
-                                  "CreateTable",
-                                  idempotencyKey,
-                                  () -> fingerprint,
-                                  () -> {
-                                    try {
-                                      tableRepo.create(table);
-                                    } catch (BaseResourceRepository.NameConflictException nce) {
-                                      var existingOpt =
-                                          tableRepo.getByName(
-                                              accountId,
-                                              spec.getCatalogId().getId(),
-                                              spec.getNamespaceId().getId(),
-                                              normName);
-                                      if (existingOpt.isPresent()) {
-                                        var existingSpec = specFromTable(existingOpt.get());
-                                        if (Arrays.equals(
-                                            fingerprint, canonicalFingerprint(existingSpec))) {
-                                          markerStore.bumpNamespaceMarker(
-                                              existingOpt.get().getNamespaceId());
-                                          metadataGraph.invalidate(
-                                              existingOpt.get().getResourceId());
-                                          topology.evictRelationRefs(
-                                              existingOpt.get().getNamespaceId());
-                                          return new IdempotencyGuard.CreateResult<>(
-                                              existingOpt.get(), existingOpt.get().getResourceId());
-                                        }
-                                      }
-                                      throw GrpcErrors.alreadyExists(
-                                          corr,
-                                          TABLE_ALREADY_EXISTS,
-                                          Map.of(
-                                              "display_name", normName,
-                                              "catalog_id", spec.getCatalogId().getId(),
-                                              "namespace_id", spec.getNamespaceId().getId()));
-                                    }
-                                    markerStore.bumpNamespaceMarker(table.getNamespaceId());
-                                    metadataGraph.invalidate(tableResourceId);
-                                    topology.evictRelationRefs(table.getNamespaceId());
-                                    return new IdempotencyGuard.CreateResult<>(
-                                        table, tableResourceId);
-                                  },
-                                  t -> tableRepo.metaForSafe(t.getResourceId()),
-                                  idempotencyStore,
-                                  tsNow,
-                                  idempotencyTtlSeconds(),
-                                  this::correlationId,
-                                  Table::parseFrom));
+                              existingForIdempotency
+                                  .filter(
+                                      existing ->
+                                          Arrays.equals(
+                                              fingerprint,
+                                              canonicalFingerprint(specFromTable(existing))))
+                                  .map(Table::getResourceId)
+                                  .orElse(tableResourceId),
+                          (reservedId, committer) -> {
+                            var existingOpt =
+                                tableRepo.getByName(
+                                    accountId,
+                                    spec.getCatalogId().getId(),
+                                    spec.getNamespaceId().getId(),
+                                    normName);
+                            if (existingOpt.isPresent()) {
+                              var existing = existingOpt.get();
+                              if (!existing.getResourceId().equals(reservedId)
+                                  || !Arrays.equals(
+                                      fingerprint, canonicalFingerprint(specFromTable(existing)))) {
+                                throw GrpcErrors.alreadyExists(
+                                    corr,
+                                    TABLE_ALREADY_EXISTS,
+                                    Map.of(
+                                        "display_name",
+                                        normName,
+                                        "catalog_id",
+                                        spec.getCatalogId().getId(),
+                                        "namespace_id",
+                                        spec.getNamespaceId().getId()));
+                              }
+                              var currentMeta = tableRepo.metaForSafe(reservedId);
+                              var completed =
+                                  tableRepo.completeWithMetaIfUnchanged(
+                                      existing,
+                                      currentMeta.getPointerVersion(),
+                                      resource ->
+                                          committer.prepareOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                              if (completed.isEmpty()) {
+                                throw new BaseResourceRepository.AbortRetryableException(
+                                    "table changed while committing idempotency receipt");
+                              }
+                              return new IdempotencyGuard.CommittedCreate<>(
+                                  existing, reservedId, completed.get());
+                            }
+                            try {
+                              var reserved = table.toBuilder().setResourceId(reservedId).build();
+                              var committed =
+                                  tableRepo.createWithCompletion(
+                                      reserved,
+                                      resource ->
+                                          committer.prepareOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                              return new IdempotencyGuard.CommittedCreate<>(
+                                  committed.value(), reservedId, committed.meta());
+                            } catch (BaseResourceRepository.NameConflictException nce) {
+                              throw GrpcErrors.alreadyExists(
+                                  corr,
+                                  TABLE_ALREADY_EXISTS,
+                                  Map.of(
+                                      "display_name", normName,
+                                      "catalog_id", spec.getCatalogId().getId(),
+                                      "namespace_id", spec.getNamespaceId().getId()));
+                            }
+                          },
+                          idempotencyStore,
+                          tsNow,
+                          idempotencyTtlSeconds(),
+                          this::correlationId,
+                          Table::parseFrom);
+
+                  markerStore.bumpNamespaceMarker(result.body.getNamespaceId());
+                  metadataGraph.invalidate(result.body.getResourceId());
+                  topology.evictRelationRefs(result.body.getNamespaceId());
 
                   // Parity with the non-idempotent path: record the definition on the root at
                   // create time. Idempotent (the committer no-ops when the ref already matches), so

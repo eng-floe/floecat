@@ -291,6 +291,16 @@ public class TransactionIntentApplierSupport {
       long expectedTransactionPointerVersion,
       List<TransactionIntent> intents,
       TransactionIntentRepository intentRepo) {
+    return applyTransactionAtomically(
+        appliedTransaction, expectedTransactionPointerVersion, intents, intentRepo, List.of());
+  }
+
+  public ApplyOutcome applyTransactionAtomically(
+      Transaction appliedTransaction,
+      long expectedTransactionPointerVersion,
+      List<TransactionIntent> intents,
+      TransactionIntentRepository intentRepo,
+      List<PointerStore.CasOp> completionOps) {
     if (appliedTransaction == null) {
       return ApplyOutcome.retryable("MISSING_TRANSACTION", "applied transaction is required");
     }
@@ -317,7 +327,7 @@ public class TransactionIntentApplierSupport {
       if (cleanupOutcome.status != ApplyStatus.APPLIED) {
         return cleanupOutcome;
       }
-      if (ops.size() > MAX_POINTER_TXN_OPS - 1) {
+      if (ops.size() > MAX_POINTER_TXN_OPS - 1 - completionOps.size()) {
         return ApplyOutcome.conflict(
             "POINTER_TXN_TOO_LARGE",
             "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations",
@@ -332,6 +342,12 @@ public class TransactionIntentApplierSupport {
             appliedTransaction, expectedTransactionPointerVersion, touchedKeys, ops);
     if (txOutcome.status != ApplyStatus.APPLIED) {
       return txOutcome;
+    }
+    for (PointerStore.CasOp completionOp : completionOps) {
+      ApplyOutcome completionOutcome = addOp(completionOp, completionOp.key(), touchedKeys, ops);
+      if (completionOutcome.status != ApplyStatus.APPLIED) {
+        return completionOutcome;
+      }
     }
     if (ops.size() > MAX_POINTER_TXN_OPS) {
       return ApplyOutcome.conflict(

@@ -219,89 +219,117 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           ? request.getIdempotency().getKey()
                           : null;
 
+                  if (!parents.isEmpty()) {
+                    ensurePathChainExists(
+                        accountId, spec.getCatalogId(), parents, tsNow, correlationId);
+                  }
+
+                  var existingForIdempotency =
+                      namespaceRepo.getByPath(accountId, spec.getCatalogId().getId(), fullPath);
+
                   var namespaceProto =
-                      runIdempotentCreate(
+                      MutationOps.createProtoRecoverable(
+                          accountId,
+                          "CreateNamespace",
+                          idempotencyKey,
+                          () -> fingerprint,
                           () ->
-                              MutationOps.createProto(
-                                  accountId,
-                                  "CreateNamespace",
-                                  idempotencyKey,
-                                  () -> fingerprint,
-                                  () -> {
-                                    if (!parents.isEmpty()) {
-                                      ensurePathChainExists(
-                                          accountId,
-                                          spec.getCatalogId(),
-                                          parents,
-                                          tsNow,
-                                          correlationId);
-                                    }
-
-                                    var namespaceId =
-                                        randomResourceId(accountId, ResourceKind.RK_NAMESPACE);
-
-                                    var built =
-                                        Namespace.newBuilder()
-                                            .setResourceId(namespaceId)
-                                            .setDisplayName(display)
-                                            .clearParents()
-                                            .addAllParents(parents)
-                                            .setDescription(spec.getDescription())
-                                            .putAllProperties(spec.getPropertiesMap())
-                                            .setCatalogId(spec.getCatalogId())
-                                            .setCreatedAt(tsNow)
-                                            .build();
-
-                                    try {
-                                      namespaceRepo.create(built);
-                                    } catch (BaseResourceRepository.NameConflictException nce) {
-                                      var existingOpt =
-                                          namespaceRepo.getByPath(
-                                              accountId, spec.getCatalogId().getId(), fullPath);
-                                      if (existingOpt.isPresent()) {
-                                        var existing = existingOpt.get();
+                              existingForIdempotency
+                                  .filter(
+                                      existing -> {
                                         var existingSpec = specFromNamespace(existing);
-                                        var existingFingerprint =
+                                        return Arrays.equals(
+                                            fingerprint,
                                             canonicalFingerprint(
                                                 existing.getCatalogId(),
                                                 existing.getParentsList(),
                                                 existing.getDisplayName(),
-                                                existingSpec);
-                                        if (Arrays.equals(fingerprint, existingFingerprint)) {
-                                          markerStore.bumpCatalogMarker(existing.getCatalogId());
-                                          bumpParentNamespaceMarker(
-                                              accountId,
-                                              existing.getCatalogId(),
-                                              existing.getParentsList());
-                                          metadataGraph.invalidate(existing.getResourceId());
-                                          topology.evictNamespaceRefs(existing.getCatalogId());
-                                          return new IdempotencyGuard.CreateResult<>(
-                                              existing, existing.getResourceId());
-                                        }
-                                      }
-                                      throw GrpcErrors.alreadyExists(
-                                          correlationId,
-                                          GeneratedErrorMessages.MessageKey
-                                              .NAMESPACE_ALREADY_EXISTS,
-                                          Map.of(
-                                              "catalog",
-                                              catalogName,
-                                              "path",
-                                              String.join(".", fullPath)));
-                                    }
-                                    markerStore.bumpCatalogMarker(spec.getCatalogId());
-                                    bumpParentNamespaceMarker(
-                                        accountId, spec.getCatalogId(), parents);
-                                    metadataGraph.invalidate(namespaceId);
-                                    topology.evictNamespaceRefs(spec.getCatalogId());
-                                    return new IdempotencyGuard.CreateResult<>(built, namespaceId);
-                                  },
-                                  (ns) -> namespaceRepo.metaForSafe(ns.getResourceId()),
-                                  idempotencyStore,
-                                  tsNow,
-                                  idempotencyTtlSeconds(),
-                                  this::correlationId,
-                                  Namespace::parseFrom));
+                                                existingSpec));
+                                      })
+                                  .map(Namespace::getResourceId)
+                                  .orElseGet(
+                                      () -> randomResourceId(accountId, ResourceKind.RK_NAMESPACE)),
+                          (reservedId, committer) -> {
+                            var built =
+                                Namespace.newBuilder()
+                                    .setResourceId(reservedId)
+                                    .setDisplayName(display)
+                                    .clearParents()
+                                    .addAllParents(parents)
+                                    .setDescription(spec.getDescription())
+                                    .putAllProperties(spec.getPropertiesMap())
+                                    .setCatalogId(spec.getCatalogId())
+                                    .setCreatedAt(tsNow)
+                                    .build();
+                            var existingOpt =
+                                namespaceRepo.getByPath(
+                                    accountId, spec.getCatalogId().getId(), fullPath);
+                            if (existingOpt.isPresent()) {
+                              var existing = existingOpt.get();
+                              var existingFingerprint =
+                                  canonicalFingerprint(
+                                      existing.getCatalogId(),
+                                      existing.getParentsList(),
+                                      existing.getDisplayName(),
+                                      specFromNamespace(existing));
+                              if (!existing.getResourceId().equals(reservedId)
+                                  || !Arrays.equals(fingerprint, existingFingerprint)) {
+                                throw GrpcErrors.alreadyExists(
+                                    correlationId,
+                                    GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
+                                    Map.of(
+                                        "catalog",
+                                        catalogName,
+                                        "path",
+                                        String.join(".", fullPath)));
+                              }
+                              var currentMeta = namespaceRepo.metaForSafe(reservedId);
+                              var completed =
+                                  namespaceRepo.completeWithMetaIfUnchanged(
+                                      existing,
+                                      currentMeta.getPointerVersion(),
+                                      resource ->
+                                          committer.prepareOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                              if (completed.isEmpty()) {
+                                throw new BaseResourceRepository.AbortRetryableException(
+                                    "namespace changed while committing idempotency receipt");
+                              }
+                              return new IdempotencyGuard.CommittedCreate<>(
+                                  existing, reservedId, completed.get());
+                            }
+                            try {
+                              var committed =
+                                  namespaceRepo.createWithCompletion(
+                                      built,
+                                      resource ->
+                                          committer.prepareOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                              return new IdempotencyGuard.CommittedCreate<>(
+                                  committed.value(), reservedId, committed.meta());
+                            } catch (BaseResourceRepository.NameConflictException nce) {
+                              throw GrpcErrors.alreadyExists(
+                                  correlationId,
+                                  GeneratedErrorMessages.MessageKey.NAMESPACE_ALREADY_EXISTS,
+                                  Map.of(
+                                      "catalog", catalogName, "path", String.join(".", fullPath)));
+                            }
+                          },
+                          idempotencyStore,
+                          tsNow,
+                          idempotencyTtlSeconds(),
+                          this::correlationId,
+                          Namespace::parseFrom);
+
+                  markerStore.bumpCatalogMarker(namespaceProto.body.getCatalogId());
+                  bumpParentNamespaceMarker(
+                      accountId,
+                      namespaceProto.body.getCatalogId(),
+                      namespaceProto.body.getParentsList());
+                  metadataGraph.invalidate(namespaceProto.body.getResourceId());
+                  topology.evictNamespaceRefs(namespaceProto.body.getCatalogId());
 
                   return CreateNamespaceResponse.newBuilder()
                       .setNamespace(namespaceProto.body)

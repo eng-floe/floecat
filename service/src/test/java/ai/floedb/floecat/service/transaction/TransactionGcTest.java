@@ -443,7 +443,8 @@ class TransactionGcTest {
             tables,
             snapshots,
             mock(ai.floedb.floecat.service.repo.impl.ConstraintRepository.class),
-            statsStore);
+            statsStore,
+            null);
 
     var gc = newGc(pointers, blobs);
     inject(gc, "rootWriter", writer);
@@ -486,7 +487,8 @@ class TransactionGcTest {
             tables,
             mock(ai.floedb.floecat.service.repo.impl.SnapshotRepository.class),
             mock(ai.floedb.floecat.service.repo.impl.ConstraintRepository.class),
-            mock(ai.floedb.floecat.stats.spi.StatsStore.class));
+            mock(ai.floedb.floecat.stats.spi.StatsStore.class),
+            null);
 
     var gc = newGc(pointers, blobs);
     inject(gc, "rootWriter", writer);

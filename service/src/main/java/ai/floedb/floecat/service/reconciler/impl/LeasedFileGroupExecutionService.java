@@ -675,25 +675,21 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     String requiredResultId = requireResultId(resultId);
     String effectiveMessage = message == null ? "" : message;
     byte[] requestBytes = failurePayload(requiredResultId, effectiveMessage).toByteArray();
-    return runIdempotentCreate(
+    return MutationOps.createProtoReceiptOnly(
+            principalContext.getAccountId(),
+            "CommitLeasedFileGroupResult",
+            resultIdempotencyKey(jobId, requiredResultId),
+            () -> requestBytes,
             () ->
-                MutationOps.createProto(
-                    principalContext.getAccountId(),
-                    "CommitLeasedFileGroupResult",
-                    resultIdempotencyKey(jobId, requiredResultId),
-                    () -> requestBytes,
-                    () ->
-                        new IdempotencyGuard.CreateResult<>(
-                            CommitLeasedFileGroupResultResponse.newBuilder()
-                                .setAccepted(true)
-                                .build(),
-                            tableId),
-                    ignored -> MutationMeta.getDefaultInstance(),
-                    idempotencyStore,
-                    nowTs(),
-                    idempotencyTtlSeconds(),
-                    principalContext::getCorrelationId,
-                    CommitLeasedFileGroupResultResponse::parseFrom))
+                new IdempotencyGuard.CreateResult<>(
+                    CommitLeasedFileGroupResultResponse.newBuilder().setAccepted(true).build(),
+                    tableId),
+            ignored -> MutationMeta.getDefaultInstance(),
+            idempotencyStore,
+            nowTs(),
+            idempotencyTtlSeconds(),
+            principalContext::getCorrelationId,
+            CommitLeasedFileGroupResultResponse::parseFrom)
         .body
         .getAccepted();
   }
