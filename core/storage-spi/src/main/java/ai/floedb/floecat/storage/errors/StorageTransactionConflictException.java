@@ -16,12 +16,9 @@
 
 package ai.floedb.floecat.storage.errors;
 
-public class StorageAbortRetryableException extends StorageException {
-  public StorageAbortRetryableException(String message) {
-    super(message);
-  }
-
-  public StorageAbortRetryableException(String message, Throwable cause) {
+/** A storage transaction was definitively cancelled without applying any of its mutations. */
+public final class StorageTransactionConflictException extends StorageAbortRetryableException {
+  public StorageTransactionConflictException(String message, Throwable cause) {
     super(message, cause);
   }
 }

@@ -17,6 +17,7 @@ package ai.floedb.floecat.storage.kv.dynamodb;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.kv.KvStore;
@@ -678,7 +679,33 @@ public class DynamoDbKvStoreTest {
   }
 
   @Test
-  void txnWriteCas_returns_false_on_transaction_conflict() {
+  void txnWriteCas_retries_transaction_conflict_then_succeeds() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    handler.setTransactionConflictFailures(2);
+    DynamoDbKvStore store = newStore(handler);
+
+    var ops =
+        List.<KvStore.TxnOp>of(
+            new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
+    assertTrue(store.txnWriteCas(ops).await().indefinitely());
+    assertEquals(3, handler.transactWriteCalls);
+  }
+
+  @Test
+  void txnWriteCas_retries_transaction_conflict_inside_budget_then_succeeds() {
+    FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
+    handler.setTransactionConflictFailures(1);
+    DynamoDbKvStore store = newStore(handler);
+
+    var ops =
+        List.<KvStore.TxnOp>of(
+            new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
+    assertTrue(store.txnWriteCas(ops).await().indefinitely());
+    assertEquals(2, handler.transactWriteCalls);
+  }
+
+  @Test
+  void txnWriteCas_reports_confirmed_abort_when_transaction_conflict_budget_is_exhausted() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
     handler.setCancellationReasonCodes(List.of("TransactionConflict"));
     DynamoDbKvStore store = newStore(handler);
@@ -686,7 +713,10 @@ public class DynamoDbKvStoreTest {
     var ops =
         List.<KvStore.TxnOp>of(
             new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
-    assertFalse(store.txnWriteCas(ops).await().indefinitely());
+    assertThrows(
+        StorageTransactionConflictException.class,
+        () -> store.txnWriteCas(ops).await().indefinitely());
+    assertEquals(DynamoDbKvStore.TRANSACTION_CONFLICT_MAX_RETRIES + 1, handler.transactWriteCalls);
   }
 
   @Test
@@ -724,6 +754,7 @@ public class DynamoDbKvStoreTest {
         List.<KvStore.TxnOp>of(
             new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
     assertFalse(store.txnWriteCas(ops).await().indefinitely());
+    assertEquals(1, handler.transactWriteCalls);
   }
 
   @Test
@@ -822,6 +853,7 @@ public class DynamoDbKvStoreTest {
     private QueryRequest lastQueryRequest;
     private ScanRequest lastScanRequest;
     private int batchWriteCalls;
+    private int transactWriteCalls;
     private boolean tableExists = true;
     private boolean tableActive = true;
     private boolean failScan;
@@ -829,6 +861,7 @@ public class DynamoDbKvStoreTest {
     private boolean failTxnWithNullReasons;
     private boolean wrapTxnFailureInCompletionException;
     private List<String> cancellationReasonCodes;
+    private int transactionConflictFailuresRemaining;
     private int createTableCalls;
     private int deleteTableCalls;
     private int unprocessedCount;
@@ -847,6 +880,10 @@ public class DynamoDbKvStoreTest {
 
     private void setCancellationReasonCodes(List<String> codes) {
       this.cancellationReasonCodes = codes;
+    }
+
+    private void setTransactionConflictFailures(int count) {
+      this.transactionConflictFailuresRemaining = count;
     }
 
     private void setPendingGetFuture(CompletableFuture<GetItemResponse> pendingGetFuture) {
@@ -1053,6 +1090,11 @@ public class DynamoDbKvStoreTest {
 
     private CompletableFuture<TransactWriteItemsResponse> handleTransactWrite(
         TransactWriteItemsRequest req) {
+      transactWriteCalls++;
+      if (transactionConflictFailuresRemaining > 0) {
+        transactionConflictFailuresRemaining--;
+        return failedTransaction("TransactionConflict");
+      }
       if (cancellationReasonCodes != null) {
         return wrapTxnFailureInCompletionException
             ? failedTransactionWrapped(cancellationReasonCodes)
