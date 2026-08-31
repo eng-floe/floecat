@@ -64,6 +64,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
@@ -417,6 +418,11 @@ public abstract class BaseServiceImpl {
    */
   protected void retryWhileFenceLost(String what, BooleanSupplier fencedWrite) {
     FenceRetry.retryWhileFenceLost(what, fencedWrite);
+  }
+
+  /** Runs a value-producing fenced write until it commits and returns its exact result. */
+  protected <T> T retryWhileFenceLost(String what, Supplier<Optional<T>> fencedWrite) {
+    return FenceRetry.retryWhileFenceLost(what, fencedWrite);
   }
   protected static String prettyNamespacePath(List<String> parents, String leaf) {
     var parts = new ArrayList<>(parents);

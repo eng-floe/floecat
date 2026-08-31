@@ -49,11 +49,14 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
+import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
@@ -70,6 +73,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject CatalogRepository catalogRepo;
   @Inject NamespaceRepository namespaceRepo;
   @Inject TableRepository tableRepo;
+  @Inject ViewRepository viewRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
@@ -104,23 +108,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
-  }
-
-  private static boolean isImmediateChildOf(Namespace ns, List<String> parentPath) {
-    return isImmediateChildOf(ns.getParentsList(), parentPath);
-  }
-
-  private static boolean isImmediateChildOf(List<String> nsParentPath, List<String> parentPath) {
-    if (nsParentPath.size() != parentPath.size()) {
-      return false;
-    }
-
-    for (int i = 0; i < parentPath.size(); i++) {
-      if (!nsParentPath.get(i).equals(parentPath.get(i))) {
-        return false;
-      }
-    }
-    return true;
   }
 
   private static ArrayList<String> append(List<String> parents, String last) {
@@ -301,12 +288,19 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                             }
                             try {
                               var committed =
-                                  namespaceRepo.createWithCompletion(
-                                      built,
-                                      resource ->
-                                          committer.prepareSuccessOps(
-                                              new IdempotencyGuard.CommittedCreate<>(
-                                                  resource.value(), reservedId, resource.meta())));
+                                  retryWhileFenceLost(
+                                      "create namespace",
+                                      () ->
+                                          namespaceRepo.createWithCompletionWhilePointersMatch(
+                                              built,
+                                              namespaceCreateFence(
+                                                  spec.getCatalogId(), parents),
+                                              resource ->
+                                                  committer.prepareSuccessOps(
+                                                      new IdempotencyGuard.CommittedCreate<>(
+                                                          resource.value(),
+                                                          reservedId,
+                                                          resource.meta()))));
                               return new IdempotencyGuard.CommittedCreate<>(
                                   committed.value(), reservedId, committed.meta());
                             } catch (BaseResourceRepository.NameConflictException nce) {
@@ -323,11 +317,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           this::correlationId,
                           Namespace::parseFrom);
 
-                  markerStore.bumpCatalogMarker(namespaceProto.body.getCatalogId());
-                  bumpParentNamespaceMarker(
-                      accountId,
-                      namespaceProto.body.getCatalogId(),
-                      namespaceProto.body.getParentsList());
                   metadataGraph.invalidate(namespaceProto.body.getResourceId());
                   topology.evictNamespaceRefs(namespaceProto.body.getCatalogId());
 
@@ -379,9 +368,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               .setCreatedAt(tsNow)
               .build();
       try {
-        namespaceRepo.create(ns);
-        markerStore.bumpCatalogMarker(catalogId);
-        bumpParentNamespaceMarker(accountId, catalogId, parentList);
+        retryWhileFenceLost(
+            "create namespace chain",
+            () ->
+                namespaceRepo.createWhilePointersMatch(
+                    ns, namespaceCreateFence(catalogId, parentList)));
         metadataGraph.invalidate(rid);
         topology.evictNamespaceRefs(catalogId);
       } catch (BaseResourceRepository.NameConflictException nce) {
@@ -462,16 +453,27 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   var conflictInfo =
                       Map.of("catalog", conflictCatalog, "path", String.join(".", conflictPath));
 
+                  // A change to catalog, parents or display name re-keys this namespace, and
+                  // every descendant derives its own key from that same identity. Nothing
+                  // re-derives theirs, so the move would leave them addressable only under a path
+                  // that no longer exists -- silently, with the call returning OK. Relations are
+                  // unaffected by a rename: their key carries the namespace id, not its path. They
+                  // are affected by a catalog move, because the catalog IS in their key.
+                  PointerConditions restructureFence =
+                      restructureFenceOrRefuse(corr, current, desired, nsId);
+
                   try {
-                    boolean ok = namespaceRepo.update(desired, meta.getPointerVersion());
+                    boolean ok =
+                        namespaceRepo
+                            .updateWhilePointersMatch(
+                                desired, meta.getPointerVersion(), restructureFence)
+                            .isPresent();
                     if (!ok) {
-                      var nowMeta = namespaceRepo.metaForSafe(nsId);
-                      throw GrpcErrors.preconditionFailed(
+                      throw MutationOps.lostFenceOrVersionMismatch(
                           corr,
-                          GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
-                          Map.of(
-                              "expected", Long.toString(meta.getPointerVersion()),
-                              "actual", Long.toString(nowMeta.getPointerVersion())));
+                          "namespace restructure",
+                          meta.getPointerVersion(),
+                          namespaceRepo.metaForSafe(nsId).getPointerVersion());
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
                     throw GrpcErrors.alreadyExists(
@@ -493,8 +495,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   var outMeta = namespaceRepo.metaForSafe(nsId);
                   var latest = namespaceRepo.getById(nsId).orElse(desired);
-
-                  bumpParentMoveMarkers(current, desired);
                   return UpdateNamespaceResponse.newBuilder()
                       .setNamespace(latest)
                       .setMeta(outMeta)
@@ -543,68 +543,33 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
                   }
 
-                  long markerVersion = markerStore.namespaceMarkerVersion(namespaceId);
+                  // Sampled BEFORE the checks below. A version read after them is the version a
+                  // concurrent write already moved, so the CAS would confirm that write instead of
+                  // losing to it -- the window this is here to close.
+                  var shapeMarkers = markerStore.namespaceShapeMarkers(namespaceId);
 
-                  if (tableRepo.count(
-                          catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
-                      > 0) {
-                    var pretty =
-                        prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
-                    throw GrpcErrors.conflict(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
-                        Map.of("display_name", pretty));
+                  if (relationCount(catalogId, namespaceId) > 0) {
+                    throw namespaceNotEmpty(correlationId, namespace);
                   }
 
+                  // Checked once each, then fenced. Both markers ride the delete batch below, and
+                  // every writer that adds a child namespace or a relation asserts the matching one
+                  // in its own batch -- the services, the reconciler, and the transaction applier.
+                  // So anything appearing after these checks loses that CAS, or costs this delete
+                  // its own; a second check before the commit would narrow nothing.
                   var parentPath = append(namespace.getParentsList(), namespace.getDisplayName());
-                  if (hasImmediateChildren(
+                  if (namespaceRepo.hasDescendants(
                       catalogId.getAccountId(), catalogId.getId(), parentPath)) {
-                    var pretty =
-                        prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
-                    throw GrpcErrors.conflict(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
-                        Map.of("display_name", pretty));
-                  }
-
-                  if (!markerStore.advanceNamespaceMarker(namespaceId, markerVersion)) {
-                    throw GrpcErrors.preconditionFailed(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
-                        Map.of());
-                  }
-                  var markerAfterAdvance = markerStore.namespaceMarkerVersion(namespaceId);
-                  if (markerAfterAdvance != markerVersion + 1) {
-                    throw GrpcErrors.preconditionFailed(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_CHILDREN_CHANGED,
-                        Map.of());
-                  }
-                  if (tableRepo.count(
-                          catalogId.getAccountId(), catalogId.getId(), namespaceId.getId())
-                      > 0) {
-                    var pretty =
-                        prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
-                    throw GrpcErrors.conflict(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
-                        Map.of("display_name", pretty));
-                  }
-                  if (hasImmediateChildren(
-                      catalogId.getAccountId(), catalogId.getId(), parentPath)) {
-                    var pretty =
-                        prettyNamespacePath(namespace.getParentsList(), namespace.getDisplayName());
-                    throw GrpcErrors.conflict(
-                        correlationId,
-                        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
-                        Map.of("display_name", pretty));
+                    throw namespaceNotEmpty(correlationId, namespace);
                   }
 
                   var meta =
                       MutationOps.deleteWithPreconditions(
                           () -> namespaceRepo.metaFor(namespaceId),
                           request.getPrecondition(),
-                          expected -> namespaceRepo.deleteWithPrecondition(namespaceId, expected),
+                          expected ->
+                              namespaceRepo.deleteWhileShapeUnchanged(
+                                  namespaceId, expected, shapeMarkers),
                           () -> namespaceRepo.metaForSafe(namespaceId),
                           correlationId,
                           "namespace",
@@ -613,9 +578,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   topology.evictRelationRefs(namespaceId);
                   topology.evictNamespaceRefs(catalogId);
                   metadataGraph.invalidate(namespaceId);
-                  markerStore.bumpCatalogMarker(catalogId);
-                  bumpParentNamespaceMarker(
-                      catalogId.getAccountId(), catalogId, namespace.getParentsList());
                   return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
                 }),
             correlationId())
@@ -623,25 +585,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .invoke(L::fail)
         .onItem()
         .invoke(L::ok);
-  }
-
-  private boolean hasImmediateChildren(
-      String accountId, String catalogId, List<String> parentPath) {
-    String cursor = "";
-    while (true) {
-      var next = new StringBuilder();
-      var page = namespaceRepo.list(accountId, catalogId, parentPath, 200, cursor, next);
-      for (var ns : page) {
-        if (isImmediateChildOf(ns, parentPath)) {
-          return true;
-        }
-      }
-      cursor = next.toString();
-      if (cursor.isBlank()) {
-        break;
-      }
-    }
-    return false;
   }
 
   private CatalogSurfaceNamespaces namespaceSurface() {
@@ -783,35 +726,179 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
         .orElse(catalogId.getId());
   }
 
-  private void bumpParentNamespaceMarker(
-      String accountId, ResourceId catalogId, List<String> parentPath) {
-    if (parentPath == null || parentPath.isEmpty()) {
-      return;
+  /**
+   * The create fence, with an absent catalog and an absent parent classified apart.
+   *
+   * <p>They are not alike. A parent namespace's path can be recreated, so a retry can succeed and a
+   * lost fence is the honest answer. A catalog id never recurs, so once its row is gone every
+   * attempt is guaranteed to fail -- reporting that as retryable spends the whole budget and ends
+   * as ABORTED on a request no retry can fix, so it is terminal.
+   *
+   * <p>Terminal is also what releases the idempotency reservation: {@code IdempotencyGuard} deletes
+   * a PENDING record for a non-retryable failure and keeps it for a retryable one. Classifying a
+   * dead catalog as retryable would be what wedges the caller's key until TTL.
+   */
+  private PointerConditions namespaceCreateFence(ResourceId catalogId, List<String> parentPath) {
+    try {
+      return namespaceRepo.createFence(markerStore, catalogId, parentPath);
+    } catch (BaseResourceRepository.NotFoundException absent) {
+      if (absent.kind() == ResourceKind.RK_CATALOG) {
+        throw absent;
+      }
+      throw BaseResourceRepository.AbortRetryableException.lostFence(
+          "the parent was deleted while joining its child set");
     }
-    namespaceRepo
-        .getByPath(accountId, catalogId.getId(), parentPath)
-        .ifPresent(ns -> markerStore.bumpNamespaceMarker(ns.getResourceId()));
   }
 
-  private void bumpParentMoveMarkers(Namespace before, Namespace after) {
-    if (before == null || after == null) {
-      return;
+  /**
+   * A namespace still holds something that would be orphaned by removing or re-keying it.
+   *
+   * <p>Rendered from the full path, so a nested namespace names itself the same way whichever
+   * operation refused it.
+   */
+  private StatusRuntimeException namespaceNotEmpty(String corr, Namespace ns) {
+    return GrpcErrors.conflict(
+        corr,
+        GeneratedErrorMessages.MessageKey.NAMESPACE_NOT_EMPTY,
+        Map.of("display_name", prettyNamespacePath(ns.getParentsList(), ns.getDisplayName())));
+  }
+
+  private int relationCount(ResourceId catalogId, ResourceId namespaceId) {
+    return NamespaceRepository.relationCount(tableRepo, viewRepo, catalogId, namespaceId);
+  }
+
+  /**
+   * The fence for a restructuring update, after refusing the ones that cannot be made safe.
+   *
+   * <p>Order matters and is the whole point. A malformed request is classified first, because
+   * resolving the fence reports a missing parent as a lost fence and a path that never existed
+   * would otherwise burn the retry budget and end as ABORTED. The fence is then sampled before the
+   * emptiness checks, because a version read after them is the version a concurrent write already
+   * moved -- the CAS would confirm that write instead of losing to it.
+   */
+  private PointerConditions restructureFenceOrRefuse(
+      String corr, Namespace current, Namespace desired, ResourceId nsId) {
+    if (!movesDerivedIdentity(current, desired)) {
+      return PointerConditions.none();
+    }
+    var ownPath = append(current.getParentsList(), current.getDisplayName());
+    boolean changesCatalog = changesCatalog(current, desired);
+
+    // A namespace cannot be moved beneath itself: the destination parent resolves to this very
+    // namespace, so parent-exists and no-children both pass, and the write then vacates the path it
+    // just claimed to live under -- stranding itself, with no concurrency involved. Only within one
+    // catalog: the same segments under a different catalog name a different namespace entirely.
+    if (!changesCatalog
+        && desired.getParentsList().size() >= ownPath.size()
+        && desired.getParentsList().subList(0, ownPath.size()).equals(ownPath)) {
+      throw GrpcErrors.invalidArgument(
+          corr,
+          GeneratedErrorMessages.MessageKey.NAMESPACE_PATH_BENEATH_ITSELF,
+          Map.of("path", String.join(".", desired.getParentsList())));
     }
 
-    var beforeCat = before.getCatalogId();
-    var afterCat = after.getCatalogId();
-
-    if (!beforeCat.getId().equals(afterCat.getId())) {
-      markerStore.bumpCatalogMarker(beforeCat);
-      markerStore.bumpCatalogMarker(afterCat);
+    // Sampled before the emptiness checks below: a version read after those is the version a
+    // concurrent write already moved, so the CAS would confirm that write instead of losing to it.
+    //
+    // A destination parent that does not resolve is the caller naming a path that is not there --
+    // NOT_FOUND, not contention. This request is not retried by the fence loop, so reporting it as
+    // retryable would spend the whole budget and end as ABORTED on a request no retry can fix.
+    PointerConditions fence;
+    try {
+      fence = restructureFence(current, desired);
+    } catch (BaseResourceRepository.NotFoundException absent) {
+      // Naming the wrong one sends the caller looking for a namespace when their catalog is what is
+      // gone -- and for a move to a catalog's root the parent path is empty, so it would name
+      // nothing at all. The refusal says which it was, so nothing has to be read back to find out.
+      throw absent.kind() == ResourceKind.RK_CATALOG
+          ? GrpcErrors.notFound(
+              corr,
+              GeneratedErrorMessages.MessageKey.CATALOG,
+              Map.of("id", desired.getCatalogId().getId()))
+          : GrpcErrors.notFound(
+              corr,
+              GeneratedErrorMessages.MessageKey.NAMESPACE,
+              Map.of("id", String.join(".", desired.getParentsList())));
     }
 
-    var beforeParent = before.getParentsList();
-    var afterParent = after.getParentsList();
-
-    if (!beforeParent.equals(afterParent) || !beforeCat.getId().equals(afterCat.getId())) {
-      bumpParentNamespaceMarker(beforeCat.getAccountId(), beforeCat, beforeParent);
-      bumpParentNamespaceMarker(afterCat.getAccountId(), afterCat, afterParent);
+    if (namespaceRepo.hasDescendants(
+        current.getCatalogId().getAccountId(), current.getCatalogId().getId(), ownPath)) {
+      throw namespaceNotEmpty(corr, current);
     }
+    if (changesCatalog && relationCount(current.getCatalogId(), nsId) > 0) {
+      throw namespaceNotEmpty(corr, current);
+    }
+    return fence;
+  }
+
+  /**
+   * The fence for restructuring a namespace: its own child set, and the one it is joining.
+   *
+   * <p>Its own, because its children derive their keys from the identity being changed. The
+   * destination parent's, because the move joins that parent's child set exactly as a create does
+   * -- and without it, renaming a parent and re-parenting a child into it fence different markers
+   * and both commit, leaving the child under a name that no longer exists.
+   */
+  private PointerConditions restructureFence(Namespace current, Namespace desired) {
+    // A rename re-keys only what derives its key from the path, which is the child namespaces. A
+    // catalog move also re-keys every relation, because the catalog is in a relation's key too.
+    boolean changesCatalog = changesCatalog(current, desired);
+
+    // The destination's child set is the same pair a create joins, so it is composed by the same
+    // method rather than rebuilt here. That matters twice over. The catalog half is
+    // UNCONDITIONAL: a same-catalog rename whose destination is the catalog root has an empty
+    // parent path, so the parent half is empty and the catalog's own child set is the only thing
+    // covering that destination -- exactly what the docs claim for a top-level namespace. And
+    // createFence resolves the catalog before the parent, which this path needs: both can be gone,
+    // whichever resolves first is the refusal that surfaces, and reporting a missing NAMESPACE to a
+    // caller whose CATALOG disappeared is the misdirection the classification exists to avoid.
+    // Composed there, that ordering is structural instead of an accident of statement order here.
+    //
+    // createFence uses the repository entry point rather than the create-path translator beside it:
+    // that one reports an absent parent as contention, which is right for a create and wrong here.
+    // A caller who named a path that is not there gets NOT_FOUND, classified in
+    // restructureFenceOrRefuse where the choice is visible.
+    var destination =
+        changesCatalog
+            // Gains the destination catalog a child, exactly as a create does, so it takes the
+            // create's fence -- and a catalog move re-keys the relations too, because the catalog
+            // is in their key.
+            ? namespaceRepo
+                .createFence(markerStore, desired.getCatalogId(), desired.getParentsList())
+                .and(markerStore.relationsFence(current.getResourceId()))
+            // Within one catalog, only the parent's child set changes. NOT the catalog's: its set
+            // of
+            // namespaces is the same set before and after, so a concurrent DeleteCatalog counts
+            // this
+            // namespace and refuses either way -- its emptiness check reads the whole catalog
+            // prefix, which this row never leaves. Asserting the catalog marker anyway would make
+            // every rename contend with sibling creates and cost a concurrent DeleteCatalog its CAS
+            // for a decision it was going to make identically. Reviewed twice in opposite
+            // directions: it is left out because it excludes nothing, not because it is cheaper.
+            : namespaceRepo.childSetFenceForParent(
+                markerStore,
+                desired.getCatalogId().getAccountId(),
+                desired.getCatalogId().getId(),
+                desired.getParentsList());
+
+    return destination.and(markerStore.childNamespacesFence(current.getResourceId()));
+  }
+
+  /** Whether the update moves the namespace to a different catalog. */
+  private static boolean changesCatalog(Namespace current, Namespace desired) {
+    return !current.getCatalogId().getId().equals(desired.getCatalogId().getId());
+  }
+
+  /**
+   * Whether this update moves the key that everything below the namespace derives from.
+   *
+   * <p>A namespace's by-path pointer is built from {@code catalogId + parents + displayName}, so a
+   * change to any of the three re-keys it -- while its children keep pointers under the old path,
+   * because a repository recomputes secondaries only for the row it writes.
+   */
+  private static boolean movesDerivedIdentity(Namespace current, Namespace desired) {
+    return changesCatalog(current, desired)
+        || !current.getParentsList().equals(desired.getParentsList())
+        || !current.getDisplayName().equals(desired.getDisplayName());
   }
 }

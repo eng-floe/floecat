@@ -17,8 +17,10 @@ package ai.floedb.floecat.service.common;
 
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
 
 /**
  * The one retry policy for a write that lost a fence.
@@ -48,10 +50,22 @@ public final class FenceRetry {
    * @param fencedWrite re-samples its own conditions per attempt and returns whether it committed
    */
   public static void retryWhileFenceLost(String what, BooleanSupplier fencedWrite) {
+    retryWhileFenceLost(
+        what, () -> fencedWrite.getAsBoolean() ? Optional.of(Boolean.TRUE) : Optional.empty());
+  }
+
+  /**
+   * Runs a value-producing fenced write until it commits and returns its exact result.
+   *
+   * @param what named in the abort when the budget is spent
+   * @param fencedWrite re-samples its own conditions and returns the committed result, or empty
+   *     when it lost the fence
+   */
+  public static <T> T retryWhileFenceLost(String what, Supplier<Optional<T>> fencedWrite) {
     for (int attempt = 1; ; attempt++) {
-      boolean won;
+      Optional<T> committed;
       try {
-        won = fencedWrite.getAsBoolean();
+        committed = fencedWrite.get();
       } catch (BaseResourceRepository.AbortRetryableException lost) {
         if (attempt > RETRIES) {
           throw lost;
@@ -59,8 +73,8 @@ public final class FenceRetry {
         sleepBackoff(attempt);
         continue;
       }
-      if (won) {
-        return;
+      if (committed.isPresent()) {
+        return committed.get();
       }
       if (attempt > RETRIES) {
         throw BaseResourceRepository.AbortRetryableException.lostFence(
