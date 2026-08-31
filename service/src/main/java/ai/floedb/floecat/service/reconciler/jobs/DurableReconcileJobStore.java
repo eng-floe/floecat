@@ -215,6 +215,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   long leaseAcquireTimeoutMs = DEFAULT_LEASE_ACQUIRE_TIMEOUT_MS;
   private long leaseScanBudgetMs = DEFAULT_LEASE_SCAN_BUDGET_MS;
   private ReconcileWorkerAffinity workerAffinity = ReconcileWorkerAffinity.DISABLED;
+  private String executionLane = "";
   long snapshotCoverageClaimRetentionMs = DEFAULT_SNAPSHOT_COVERAGE_CLAIM_RETENTION_MS;
   private final Map<String, String> snapshotCoverageClaimGcTokens = new ConcurrentHashMap<>();
   volatile Semaphore leaseScanPermits = new Semaphore(DEFAULT_LEASE_MAX_CONCURRENCY, true);
@@ -639,6 +640,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     workerAffinity =
         ReconcileWorkerAffinity.of(
             config.getOptionalValue("floecat.reconciler.worker-affinity", String.class).orElse(""));
+    executionLane =
+        ReconcileExecutionPolicy.normalizeLane(
+            config.getOptionalValue("floecat.reconciler.execution-lane", String.class).orElse(""));
     snapshotCoverageClaimRetentionMs =
         Math.max(
             1_000L,
@@ -2623,7 +2627,8 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     for (StoredReconcileJob record : page.records()) {
       if (record == null
           || record.jobKind() != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
-          || !record.hasPublishableSnapshotFinalizeIntent()) {
+          || !record.hasPublishableSnapshotFinalizeIntent()
+          || !executionLane.equals(record.executionPolicy().lane())) {
         continue;
       }
       SnapshotFinalizeCommitIntent intent = snapshotFinalizeCommitIntent(record);

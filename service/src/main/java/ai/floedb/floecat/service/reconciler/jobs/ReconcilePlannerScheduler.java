@@ -226,7 +226,7 @@ public class ReconcilePlannerScheduler {
         ReconcileExecutionClass.fromString(
             cfg.getOptionalValue("floecat.reconciler.auto.execution-class", String.class)
                 .orElse("DEFAULT")),
-        cfg.getOptionalValue("floecat.reconciler.auto.execution-lane", String.class).orElse(""),
+        cfg.getOptionalValue("floecat.reconciler.execution-lane", String.class).orElse(""),
         java.util.Map.of());
   }
 

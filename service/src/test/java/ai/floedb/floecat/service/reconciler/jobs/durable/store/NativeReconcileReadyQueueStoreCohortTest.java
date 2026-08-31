@@ -24,6 +24,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.LeaseRequest;
 import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.repo.model.Keys;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
@@ -73,11 +74,56 @@ class NativeReconcileReadyQueueStoreCohortTest {
 
     // The regression this guards: overloading pinnedExecutorId collapsed every cohorted job into a
     // single pinned slice and emitted exactly one pointer.
-    assertEquals(4, keys.size());
+    assertEquals(5, keys.size());
     assertTrue(keys.stream().anyMatch(key -> key.contains("by-job-kind")));
     assertTrue(keys.stream().anyMatch(key -> key.contains("by-execution-class")));
     assertTrue(keys.stream().anyMatch(key -> key.contains("by-execution-lane")));
     assertTrue(keys.stream().noneMatch(key -> key.contains("by-pinned-executor")));
+  }
+
+  @Test
+  void executionPolicyLaneAndCanonicalLaneKeyHaveDistinctReadyIndexes() {
+    NativeReconcileReadyQueueStore store = store();
+    ReconcileWorkerAffinity affinity = ReconcileWorkerAffinity.of("ci-branch");
+
+    for (ReconcileJobKind kind :
+        List.of(ReconcileJobKind.EXEC_FILE_GROUP, ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)) {
+      StoredReconcileJob record = record(affinity);
+      record.jobKind = kind.name();
+
+      List<String> keys = store.readyPointerKeys(record);
+      String policyLane = affinity.indexFilterValue(record.executionPolicy().lane());
+      String canonicalLane = affinity.indexFilterValue(record.laneKey);
+      String policyLaneKey =
+          keys.stream()
+              .filter(
+                  key ->
+                      key.startsWith(Keys.reconcileReadyByExecutionLanePointerPrefix(policyLane)))
+              .findFirst()
+              .orElseThrow();
+      String canonicalLaneKey =
+          keys.stream()
+              .filter(
+                  key ->
+                      key.startsWith(
+                          Keys.reconcileReadyByExecutionLanePointerPrefix(canonicalLane)))
+              .findFirst()
+              .orElseThrow();
+
+      assertEquals(2, keys.stream().filter(key -> key.contains("by-execution-lane")).count());
+      assertTrue(readyPointerMatches(store, record, policyLaneKey, policyLane));
+      assertTrue(readyPointerMatches(store, record, canonicalLaneKey, canonicalLane));
+      assertTrue(
+          store.matchesLeaseRequest(
+              record,
+              LeaseRequest.of(Set.of(), Set.of("ci-run"), Set.of(), EnumSet.of(kind))
+                  .withWorkerAffinity(affinity)));
+      assertFalse(
+          store.matchesLeaseRequest(
+              record,
+              LeaseRequest.of(Set.of(), Set.of("other-run"), Set.of(), EnumSet.of(kind))
+                  .withWorkerAffinity(affinity)));
+    }
   }
 
   @Test
@@ -178,6 +224,23 @@ class NativeReconcileReadyQueueStoreCohortTest {
     return keys.stream().filter(key -> key.contains(fragment)).findFirst().orElseThrow();
   }
 
+  private static boolean readyPointerMatches(
+      NativeReconcileReadyQueueStore store,
+      StoredReconcileJob record,
+      String readyPointerKey,
+      String lane) {
+    return store.readyPointerMatchesRecord(
+        new ReconcileReadyQueueStore.ReadyQueueEntry(
+            readyPointerKey,
+            "canonical-1",
+            record.accountId,
+            record.jobId,
+            DUE_AT_MS,
+            ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
+            lane),
+        record);
+  }
+
   private static LeaseRequest request() {
     return LeaseRequest.of(
         Set.of(), Set.of(), Set.of(), EnumSet.of(ReconcileJobKind.PLAN_CONNECTOR));
@@ -196,8 +259,8 @@ class NativeReconcileReadyQueueStoreCohortTest {
     record.jobKind = ReconcileJobKind.PLAN_CONNECTOR.name();
     record.state = "JS_QUEUED";
     record.executionClass = "DEFAULT";
-    record.executionLane = "default";
-    record.laneKey = "default";
+    record.executionLane = "ci-run";
+    record.laneKey = "file-group|table-1|snapshot-1|group-0";
     record.nextAttemptAtMs = DUE_AT_MS;
     record.executionAttributes =
         workerAffinity == null || !workerAffinity.enabled()

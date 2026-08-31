@@ -123,7 +123,7 @@ floecat.reconciler.oidc.client-secret
 floecat.reconciler.oidc.token-refresh-skew-seconds
 floecat.reconciler.oidc.connect-timeout
 floecat.reconciler.auto.execution-class
-floecat.reconciler.auto.execution-lane
+floecat.reconciler.execution-lane
 ```
 
 Recommended split deployment:
@@ -173,9 +173,17 @@ layouts rather than broad generic prefix scans:
 - projection state is separate from queue ownership and is not part of lease/read repair
 
 If `PLAN_CONNECTOR` jobs can be enqueued, at least one enabled executor must support that job kind.
-Planner jobs also need to remain leaseable under the configured execution lane semantics: planner
-executors advertise wildcard lane support, while child planning and file-group execution jobs carry
-the concrete lane policy that remote or local workers enforce later.
+Planner executors lease only the configured execution lane, and child planning, file-group, and
+finalizer jobs preserve that lane. The snapshot-finalizer publication scheduler also requires an
+exact lane match before publishing an accepted result. A blank configured lane matches only
+unlabelled jobs; it is not a wildcard. The `*` token is reserved for internal queue scans and is
+rejected in deployment configuration and job execution policies. The authenticated worker-control
+protocol may carry `*` for an intentional internal scan, but normal executor polling substitutes
+the deployment's configured lane before making that request.
+
+Before renaming a lane or decommissioning its last Floecat instance, stop enqueueing new work on
+that lane and allow its accepted snapshot-finalizer intents to publish. Publication has no
+cross-lane fallback: an accepted intent remains owned by the exact lane recorded on its job.
 
 To scale executors horizontally, add more executor-plane instances. They greedily lease eligible jobs from the shared durable queue, so no leader election is required at the executor layer.
 

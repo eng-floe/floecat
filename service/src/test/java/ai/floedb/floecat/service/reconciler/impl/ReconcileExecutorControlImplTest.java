@@ -247,6 +247,23 @@ class ReconcileExecutorControlImplTest {
   }
 
   @Test
+  void leaseReconcileJobAcceptsInternalWildcardLane() {
+    when(service.jobs.leaseNext(any())).thenReturn(Optional.empty());
+
+    service
+        .leaseReconcileJob(LeaseReconcileJobRequest.newBuilder().addLanes("*").build())
+        .await()
+        .indefinitely();
+
+    verify(service.jobs)
+        .leaseNext(
+            argThat(
+                request ->
+                    request != null
+                        && request.lanes.contains(ReconcileJobStore.LeaseRequest.anyLaneToken())));
+  }
+
+  @Test
   void leaseReconcileJobUsesExecutorAwareLeaseFilterAndMapsLease() {
     ReconcileCapturePolicy capturePolicy =
         ReconcileCapturePolicy.of(

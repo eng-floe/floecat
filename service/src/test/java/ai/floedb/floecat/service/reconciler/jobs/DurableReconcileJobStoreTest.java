@@ -6796,6 +6796,30 @@ class DurableReconcileJobStoreTest {
     assertEquals(intent, store.snapshotFinalizeCommitIntent(finalizerJobId).orElseThrow());
     assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
 
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        finalizerJobId,
+        record -> {
+          record.executionLane = "ci-run-a";
+          return record;
+        });
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+    System.setProperty("floecat.reconciler.execution-lane", "ci-run-a");
+    try {
+      store.init();
+      assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
+    } finally {
+      System.clearProperty("floecat.reconciler.execution-lane");
+      store.init();
+    }
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        finalizerJobId,
+        record -> {
+          record.executionLane = "";
+          return record;
+        });
+    assertEquals(List.of(intent), store.pendingSnapshotFinalizeCommits(100, "").intents());
+
     configureLeaseRenewGraceMs(0L);
     reclaimExpiredLease(finalizerJobId);
 
@@ -7739,6 +7763,9 @@ class DurableReconcileJobStoreTest {
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
                 ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_CLASS,
                 workerAffinity.indexFilterValue(record.executionPolicy().executionClass().name())),
+            new ReconcileReadyQueueBackend.ReadyQueueSlice(
+                ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
+                workerAffinity.indexFilterValue(record.executionPolicy().lane())),
             new ReconcileReadyQueueBackend.ReadyQueueSlice(
                 ReconcileReadyQueueStore.ReadyIndexType.EXECUTION_LANE,
                 workerAffinity.indexFilterValue(record.laneKey)),
