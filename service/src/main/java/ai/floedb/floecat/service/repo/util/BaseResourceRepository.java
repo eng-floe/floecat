@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.util;
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.service.repo.ResourceRepository;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
@@ -125,11 +126,40 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     public AbortRetryableException(String msg) {
       super(msg);
     }
+
+    /**
+     * A fence another writer won. Retryable: the next attempt reads what it now has to contend
+     * with.
+     *
+     * <p>Returns rather than throws, so a caller must write {@code throw lostFence(...)}. A factory
+     * that throws from inside itself makes a bare call compile too, and a bare call does not stop
+     * the write.
+     */
+    public static AbortRetryableException lostFence(String what) {
+      return new AbortRetryableException(what + " lost its fence");
+    }
   }
 
   public static class NotFoundException extends RepoException {
+    private final ResourceKind kind;
+
     public NotFoundException(String msg) {
+      this(ResourceKind.RK_UNSPECIFIED, msg);
+    }
+
+    /**
+     * @param kind what was not found, so a caller composing conditions over several resources can
+     *     tell which one is missing without re-reading to find out. Two halves of one fence can
+     *     fail for reasons a caller classifies differently -- one retryable, one terminal -- and
+     *     without this they are indistinguishable.
+     */
+    public NotFoundException(ResourceKind kind, String msg) {
       super(msg);
+      this.kind = kind;
+    }
+
+    public ResourceKind kind() {
+      return kind;
     }
   }
 

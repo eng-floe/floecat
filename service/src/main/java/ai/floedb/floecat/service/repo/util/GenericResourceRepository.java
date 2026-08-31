@@ -37,6 +37,7 @@ import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -68,6 +69,79 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
     public static PointerConditions none() {
       return new PointerConditions(Map.of(), Set.of(), Map.of());
+    }
+
+    /**
+     * These conditions as CAS operations, for a caller that assembles its own pointer transaction.
+     *
+     * <p>Exists so the transaction applier asserts the protocol rather than re-deriving it. It had
+     * its own copy of the marker keys, the advance shape and the read dependency, which made the
+     * highest-volume relation writer a second source of truth for the delete guard -- and a change
+     * here would have left it behind with no compile-time signal.
+     *
+     * <p>Keys already in {@code touchedKeys} are SKIPPED, not rejected, which is the opposite of
+     * what the repository does with a collision and is right for a different reason. Here a repeat
+     * is the same condition arriving twice -- two intents joining one namespace assert one marker,
+     * and the advance already queued gives the second intent the same guarantee. In the repository
+     * a repeat is a condition landing on a key that mutation already WRITES, which no ordering can
+     * satisfy. Same key twice, different situations.
+     *
+     * @param touchedKeys keys already in the batch; extended with the keys this adds
+     */
+    public List<PointerStore.CasOp> toCasOps(Set<String> touchedKeys) {
+      var ops = new ArrayList<PointerStore.CasOp>();
+      for (var required : requiredVersions.entrySet()) {
+        if (touchedKeys.add(required.getKey())) {
+          ops.add(new PointerStore.CasCheck(required.getKey(), required.getValue()));
+        }
+      }
+      for (String key : requiredAbsent) {
+        if (touchedKeys.add(key)) {
+          ops.add(new PointerStore.CasCheckAbsent(key));
+        }
+      }
+      for (var marker : markerVersions.entrySet()) {
+        if (touchedKeys.add(marker.getKey())) {
+          ops.add(
+              new PointerStore.CasUpsert(
+                  marker.getKey(),
+                  marker.getValue(),
+                  PointerReferences.opaqueMarkerPointer(
+                      marker.getKey(), marker.getKey(), marker.getValue() + 1L)));
+        }
+      }
+      return ops;
+    }
+
+    /**
+     * These conditions and another's, in one batch. For a write that must satisfy two invariants at
+     * once -- its own resource fence, and the shape of something it is joining.
+     *
+     * <p>Two samples of the same key must agree. Silently keeping either one would be the same
+     * defect this whole mechanism exists to avoid: the later sample may already reflect the write
+     * being fenced out, so preferring it makes the CAS confirm that writer instead of losing to it,
+     * and preferring the earlier one makes a condition the caller never asked for.
+     */
+    public PointerConditions and(PointerConditions other) {
+      var versions = mergeAgreeing(requiredVersions, other.requiredVersions(), "pointer version");
+      var absent = new LinkedHashSet<>(requiredAbsent);
+      absent.addAll(other.requiredAbsent());
+      var markers = mergeAgreeing(markerVersions, other.markerVersions(), "marker version");
+      return new PointerConditions(versions, absent, markers);
+    }
+
+    private static Map<String, Long> mergeAgreeing(
+        Map<String, Long> left, Map<String, Long> right, String what) {
+      var merged = new LinkedHashMap<>(left);
+      right.forEach(
+          (key, version) -> {
+            Long existing = merged.putIfAbsent(key, version);
+            if (existing != null && !existing.equals(version)) {
+              throw new IllegalArgumentException(
+                  "conflicting " + what + " for " + key + ": " + existing + " and " + version);
+            }
+          });
+      return merged;
     }
   }
 
@@ -411,7 +485,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                       + markerVersions.size());
           ops.addAll(prepared.ops);
           Set<String> batchedKeys = new HashSet<>(prepared.pointerKeys);
-          addPointerConditions(requiredPointerVersions, effectiveRequiredAbsent, batchedKeys, ops);
+          addPointerConditions(
+              requiredPointerVersions, effectiveRequiredAbsent, batchedKeys, ops, "create");
           addMarkerAdvances(markerVersions, batchedKeys, ops, "create");
           MutationMeta committedMeta =
               committedMeta(
@@ -482,20 +557,41 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   private record CreateCommit(
       boolean conditionsMatched, Pointer canonicalPointer, MutationMeta meta) {}
 
+  /**
+   * Adds each read dependency to the same batch, rejecting a collision rather than dropping it.
+   *
+   * <p>Rejected for the reason {@link #addMarkerAdvances} rejects it: the batch is atomic and a
+   * store refuses two operations on one key, so a condition that collides with a pointer this
+   * mutation already writes cannot be enforced. Skipping it silently would hand the caller a fenced
+   * write that ignores part of its fence -- which is the failure this mechanism exists to prevent,
+   * and it would be invisible.
+   *
+   * <p>Note for whoever composes the next fence: this throws {@link IllegalArgumentException},
+   * which the service layer maps to gRPC INVALID_ARGUMENT -- a "do not retry" answer. That is right
+   * for what this is, a composition that can never be satisfied whatever the concurrency, and wrong
+   * for anything transient. A condition that CAN legitimately name a key the same mutation writes
+   * does not belong here: it belongs in the write's own expected version, which is already
+   * enforced.
+   */
   private static void addPointerConditions(
       Map<String, Long> requiredPointerVersions,
       Set<String> requiredAbsentPointers,
       Set<String> batchedKeys,
-      List<PointerStore.CasOp> ops) {
+      List<PointerStore.CasOp> ops,
+      String operation) {
     for (var required : requiredPointerVersions.entrySet()) {
-      if (batchedKeys.add(required.getKey())) {
-        ops.add(new PointerStore.CasCheck(required.getKey(), required.getValue()));
+      if (!batchedKeys.add(required.getKey())) {
+        throw new IllegalArgumentException(
+            "duplicate pointer in atomic " + operation + ": " + required.getKey());
       }
+      ops.add(new PointerStore.CasCheck(required.getKey(), required.getValue()));
     }
     for (String pointerKey : requiredAbsentPointers) {
-      if (batchedKeys.add(pointerKey)) {
-        ops.add(new PointerStore.CasCheckAbsent(pointerKey));
+      if (!batchedKeys.add(pointerKey)) {
+        throw new IllegalArgumentException(
+            "duplicate pointer in atomic " + operation + ": " + pointerKey);
       }
+      ops.add(new PointerStore.CasCheckAbsent(pointerKey));
     }
   }
 
@@ -1042,7 +1138,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           Set<String> batchedKeys = new HashSet<>(prepared.batchedKeys);
           List<PointerStore.CasOp> ops = new ArrayList<>(prepared.ops);
           Pointer committedCanonical = prepared.committedCanonical;
-          addPointerConditions(requiredPointerVersions, requiredAbsentPointers, batchedKeys, ops);
+          addPointerConditions(
+              requiredPointerVersions, requiredAbsentPointers, batchedKeys, ops, "update");
           String accountDeletionFence =
               Keys.accountDeletionFenceShard(key.accountId(), canonicalPointer);
           if (batchedKeys.add(accountDeletionFence)) {
@@ -1325,7 +1422,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           addPointerDeletes(pointerVersionsToDelete, batchedKeys, ops);
-          addPointerConditions(requiredPointerVersions, requiredAbsentPointers, batchedKeys, ops);
+          addPointerConditions(
+              requiredPointerVersions, requiredAbsentPointers, batchedKeys, ops, "delete");
           String accountDeletionFence =
               Keys.accountDeletionFenceShard(currentKey.accountId(), currentCanonical);
           if (batchedKeys.add(accountDeletionFence)) {
@@ -1440,8 +1538,6 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       PointerConditions conditions,
       Map<String, Long> pointerVersionsToDelete,
       List<PointerStore.CasOp> companions) {
-    Map<String, Long> requiredPointerVersions = conditions.requiredVersions();
-    Set<String> requiredAbsentPointers = conditions.requiredAbsent();
     return observeRepository(
         "delete_with_precondition",
         () -> {
@@ -1456,8 +1552,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                 canonicalPointer,
                 expectedCanonicalVersion,
                 secondaryPointersReferencingBlob(key, canonicalPointer, blobUri),
-                requiredPointerVersions,
-                requiredAbsentPointers,
+                conditions,
                 pointerVersionsToDelete,
                 companions)) {
               return false;
@@ -1476,8 +1571,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
               canonicalPointer,
               expectedCanonicalVersion,
               new HashSet<>(schema.secondaryPointersFromValue.apply(currentValue).values()),
-              requiredPointerVersions,
-              requiredAbsentPointers,
+              conditions,
               pointerVersionsToDelete,
               companions)) {
             return false;
@@ -1496,8 +1590,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         canonicalPointer,
         expectedCanonicalVersion,
         currentSecondary,
-        Map.of(),
-        Set.of(),
+        PointerConditions.none(),
         Map.of(),
         List.of());
   }
@@ -1553,12 +1646,19 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return List.copyOf(ops);
   }
 
+  /**
+   * Deletes a resource's pointers in one batch, under the caller's conditions.
+   *
+   * <p>Takes {@code conditions} whole rather than its three collections separately: they are all
+   * keyed by pointer and two of them share a type, so positionally they are interchangeable to the
+   * compiler and a dropped or transposed one is silent -- a fenced delete that ignores its fence
+   * still succeeds.
+   */
   private boolean deleteAtomically(
       String canonicalPointer,
       long expectedCanonicalVersion,
       Set<String> currentSecondary,
-      Map<String, Long> requiredPointerVersions,
-      Set<String> requiredAbsentPointers,
+      PointerConditions conditions,
       Map<String, Long> pointerVersionsToDelete,
       List<PointerStore.CasOp> companions) {
     Set<String> batchedKeys = new HashSet<>();
@@ -1580,7 +1680,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     }
 
     addPointerDeletes(pointerVersionsToDelete, batchedKeys, ops);
-    addPointerConditions(requiredPointerVersions, requiredAbsentPointers, batchedKeys, ops);
+    addPointerConditions(
+        conditions.requiredVersions(), conditions.requiredAbsent(), batchedKeys, ops, "delete");
+    addMarkerAdvances(conditions.markerVersions(), batchedKeys, ops, "delete");
     for (PointerStore.CasOp companion : companions) {
       if (!batchedKeys.add(companion.key())) {
         throw new IllegalArgumentException(

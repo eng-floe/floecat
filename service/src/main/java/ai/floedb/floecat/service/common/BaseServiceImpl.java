@@ -30,6 +30,7 @@ import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageConflictException;
@@ -80,10 +81,10 @@ public abstract class BaseServiceImpl {
 
   protected final Clock clock = Clock.systemUTC();
 
-  protected static final Duration BACKOFF_MIN = Duration.ofMillis(5);
-  protected static final Duration BACKOFF_MAX = Duration.ofMillis(200);
-  protected static final double JITTER = 0.5;
-  protected static final int RETRIES = 8;
+  protected static final Duration BACKOFF_MIN = FenceRetry.BACKOFF_MIN;
+  protected static final Duration BACKOFF_MAX = FenceRetry.BACKOFF_MAX;
+  protected static final double JITTER = FenceRetry.JITTER;
+  protected static final int RETRIES = FenceRetry.RETRIES;
 
   @ConfigProperty(name = "floecat.idempotency.ttl-seconds", defaultValue = "900")
   protected long idempotencyTtlSeconds;
@@ -373,6 +374,50 @@ public abstract class BaseServiceImpl {
     return UUID.randomUUID().toString();
   }
 
+  /**
+   * Samples a namespace fence, reporting an already-deleted namespace as the caller's NOT_FOUND.
+   *
+   * <p>These fences resolve the namespace's own pointer, so a namespace that is already gone is
+   * reported by the fence rather than by the eligibility check that would otherwise have caught it
+   * -- and the fence's message is internal repository text, with no message key and no id. Every
+   * fenced relation write needs the same translation, so it lives here rather than being restated
+   * at each of them.
+   *
+   * @param corr correlation id for the error
+   * @param namespaceId the namespace whose absence is being reported
+   * @param fence samples the conditions; may throw {@link BaseResourceRepository.NotFoundException}
+   */
+  protected GenericResourceRepository.PointerConditions namespaceFenceOrNotFound(
+      String corr,
+      ResourceId namespaceId,
+      Supplier<GenericResourceRepository.PointerConditions> fence) {
+    try {
+      return fence.get();
+    } catch (BaseResourceRepository.NotFoundException gone) {
+      throw GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", namespaceId.getId()));
+    }
+  }
+
+  /**
+   * Runs a fenced write, re-reading the fence and retrying while another writer keeps winning it.
+   *
+   * <p>Resolved here rather than thrown to the caller. An idempotent create keeps its PENDING
+   * reservation on a retryable failure and {@code runOnce} cannot reclaim one -- only {@code
+   * runOnceReserved} can -- so unwinding a lost fence through that layer strands the idempotency
+   * key until its TTL, and the client's retry with the same key meets the same wall. Losing a fence
+   * means another writer changed the shape being joined, which is a local condition answered
+   * locally, on the same budget and backoff as every other contended write here.
+   *
+   * <p>A fence can also be lost by throwing rather than by returning false: resolving the fence may
+   * find the parent it was going to fence on already deleted. That is the same condition and is
+   * retried the same way, so it does not escape to the layer this exists to protect.
+   *
+   * @param fencedWrite resolves the fence and attempts the write, returning false when the fence
+   *     was lost. It must resolve the fence on each call, or every attempt repeats a stale version.
+   */
+  protected void retryWhileFenceLost(String what, BooleanSupplier fencedWrite) {
+    FenceRetry.retryWhileFenceLost(what, fencedWrite);
+  }
   protected static String prettyNamespacePath(List<String> parents, String leaf) {
     var parts = new ArrayList<>(parents);
     parts.add(leaf);

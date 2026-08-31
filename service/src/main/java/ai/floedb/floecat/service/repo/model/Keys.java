@@ -1994,10 +1994,25 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/catalogs/" + encode(cid) + "/markers/children";
   }
 
+  /**
+   * Advances when this namespace's set of child NAMESPACES changes.
+   *
+   * <p>Separate from the relations marker because the operations that care about each are
+   * different: a rename re-keys only what derives its key from this namespace's path, which is its
+   * child namespaces -- a relation carries the namespace id instead. One shared marker would make
+   * every rename contend with ordinary table traffic.
+   */
   public static String namespaceChildrenMarker(String accountId, String namespaceId) {
     String tid = req("account_id", accountId);
     String nid = req("namespace_id", namespaceId);
     return "/accounts/" + encode(tid) + "/namespaces/" + encode(nid) + "/markers/children";
+  }
+
+  /** Advances when the set of relations -- tables and views -- in this namespace changes. */
+  public static String namespaceRelationsMarker(String accountId, String namespaceId) {
+    String tid = req("account_id", accountId);
+    String nid = req("namespace_id", namespaceId);
+    return "/accounts/" + encode(tid) + "/namespaces/" + encode(nid) + "/markers/relations";
   }
 
   /**
