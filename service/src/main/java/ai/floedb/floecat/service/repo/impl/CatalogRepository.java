@@ -23,7 +23,7 @@ import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
-import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -31,7 +31,6 @@ import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
@@ -96,15 +95,19 @@ public class CatalogRepository {
         expectedPointerVersion);
   }
 
-  public boolean deleteWithPreconditionAndOverlayMarker(
-      ResourceId catalogId, long expectedPointerVersion, long expectedMarkerVersion) {
-    String marker = Keys.catalogOverlaysMarker(catalogId.getAccountId(), catalogId.getId());
+  /**
+   * Deletes the catalog under child-set markers the caller sampled before its emptiness checks.
+   *
+   * <p>Takes them already split, so nothing here decodes a convention. They arrive as a value
+   * because the caller samples them before the checks they guard.
+   */
+  public boolean deleteWhileChildSetsUnchanged(
+      ResourceId catalogId, long expectedPointerVersion, MarkerStore.MarkerRemoval markers) {
     return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
         new CatalogKey(catalogId.getAccountId(), catalogId.getId()),
         expectedPointerVersion,
-        new PointerConditions(
-            Map.of(), expectedMarkerVersion == 0L ? Set.of(marker) : Set.of(), Map.of()),
-        expectedMarkerVersion == 0L ? Map.of() : Map.of(marker, expectedMarkerVersion));
+        markers.conditions(),
+        markers.toDelete());
   }
 
   public Optional<Catalog> getById(ResourceId catalogResourceId) {

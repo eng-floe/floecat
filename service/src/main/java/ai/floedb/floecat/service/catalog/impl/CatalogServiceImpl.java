@@ -369,8 +369,9 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                   authz.require(principalContext, "catalog.write");
                   var id = request.getCatalogId();
                   catalogSurfaceWritePolicy().requireDeletableCatalog(id, correlationId);
-                  long markerVersion = markerStore.catalogMarkerVersion(id);
-                  long overlayMarkerVersion = markerStore.catalogOverlaysMarkerVersion(id);
+
+                  // Sampled before the emptiness checks below -- see catalogChildSetMarkers.
+                  var childSetMarkers = markerStore.catalogChildSetMarkers(id);
 
                   MutationMeta meta;
                   try {
@@ -396,7 +397,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                         Map.of("dependent_overlays", Integer.toString(dependentOverlays)));
                   }
 
-                  if (namespaceRepo.count(id.getAccountId(), id.getId(), List.of()) > 0) {
+                  if (namespaceRepo.countConsistent(id.getAccountId(), id.getId(), List.of()) > 0) {
                     var currentCatalog = catalogRepo.getById(id).orElse(null);
                     var displayName =
                         (currentCatalog != null && !currentCatalog.getDisplayName().isBlank())
@@ -406,23 +407,20 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                         correlationId, CATALOG_NOT_EMPTY, Map.of("display_name", displayName));
                   }
 
-                  if (!markerStore.advanceCatalogMarker(id, markerVersion)) {
-                    throw GrpcErrors.preconditionFailed(
-                        correlationId, CATALOG_CHILDREN_CHANGED, Map.of());
-                  }
-
                   var out =
                       MutationOps.deleteWithPreconditions(
                           () -> meta,
                           request.getPrecondition(),
                           expected -> {
                             boolean deleted =
-                                catalogRepo.deleteWithPreconditionAndOverlayMarker(
-                                    id, expected, overlayMarkerVersion);
+                                catalogRepo.deleteWhileChildSetsUnchanged(
+                                    id, expected, childSetMarkers);
                             if (!deleted
                                 && catalogRepo.metaForSafe(id).getPointerVersion() == expected) {
-                              throw new BaseResourceRepository.AbortRetryableException(
-                                  "catalog overlays changed during deletion");
+                              // The row did not move, so what failed was a child-set assertion:
+                              // a namespace or an overlay landed after the checks above.
+                              throw BaseResourceRepository.AbortRetryableException.lostFence(
+                                  "catalog delete");
                             }
                             return deleted;
                           },
