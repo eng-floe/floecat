@@ -20,12 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -350,6 +352,7 @@ class TransactionIntentApplierSupportTest {
     String accountId = "acct";
     String catalogId = "cat-1";
     String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
     String tableId = "table-1";
     String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
     String byIdKey = Keys.tablePointerById(accountId, tableId);
@@ -406,6 +409,7 @@ class TransactionIntentApplierSupportTest {
     String accountId = "acct";
     String catalogId = "cat-1";
     String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
     String tableAId = "table-a";
     String tableBId = "table-b";
 
@@ -742,6 +746,7 @@ class TransactionIntentApplierSupportTest {
     String accountId = "acct";
     String catalogId = "cat-1";
     String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
     String tableId = "table-1";
     String byIdKey = Keys.tablePointerById(accountId, tableId);
     String relationKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "orders");
@@ -784,6 +789,132 @@ class TransactionIntentApplierSupportTest {
     assertEquals(tableId, pointers.get(relationKey).orElseThrow().getResourceId().getId());
   }
 
+  /**
+   * A transactional table create must advance its namespace's relation marker inside the same
+   * pointer batch.
+   *
+   * <p>Exclusion between this batch and a DeleteNamespace batch is only key overlap.
+   * DeleteNamespace asserts that marker to prove the namespace holds nothing; if this batch never
+   * touches the key, the two share none, neither can lose to the other, and the delete commits
+   * while the table lands -- leaving a table addressable under a namespace id that no longer
+   * exists.
+   *
+   * <p>Asserted as participation because that is the deterministic half: the marker moving is what
+   * a concurrent delete contends with.
+   */
+  @Test
+  void applyTransactionAdvancesTheNamespaceRelationMarkerOnTableCreate() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
+    String tableId = "table-1";
+    String markerKey = Keys.namespaceRelationsMarker(accountId, namespaceId);
+    long before = pointers.get(markerKey).map(Pointer::getVersion).orElse(0L);
+
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .build();
+    String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(Keys.tablePointerById(accountId, tableId))
+            .setBlobUri(blobUri)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertTrue(
+        pointers.get(markerKey).map(Pointer::getVersion).orElse(0L) > before,
+        "a transactional table create must advance the namespace's relation marker, or a namespace"
+            + " delete cannot exclude it");
+  }
+
+  /**
+   * A table intent whose namespace is already gone is refused, not applied.
+   *
+   * <p>The one branch of the join that is not the happy path, and nothing covered it before or
+   * after the applier moved onto the shared fence -- where "already gone" changed from a
+   * version-zero read to a caught NotFoundException. Applying anyway would put a table under a
+   * namespace that no longer exists, which is the whole point of the read dependency.
+   */
+  @Test
+  void applyTransactionRefusesATableWhoseNamespaceIsAlreadyGone() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String tableId = "table-1";
+    // Deliberately no seedNamespace: the namespace has no canonical pointer.
+    Table table =
+        Table.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(tableId)
+                    .setKind(ResourceKind.RK_TABLE))
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId("cat-1")
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId("ns-gone")
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .build();
+    String blobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    blobs.put(blobUri, table.toByteArray(), "application/x-protobuf");
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(Keys.tablePointerById(accountId, tableId))
+            .setBlobUri(blobUri)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("NAMESPACE_NOT_FOUND", outcome.errorCode());
+    assertTrue(
+        pointers.get(Keys.tablePointerById(accountId, tableId)).isEmpty(),
+        "nothing is written for a table whose namespace is gone");
+  }
+
   @Test
   void applyTransactionRejectsTableCreateWhenViewHoldsRelationName() throws Exception {
     var pointers = new InMemoryPointerStore();
@@ -795,6 +926,7 @@ class TransactionIntentApplierSupportTest {
     String accountId = "acct";
     String catalogId = "cat-1";
     String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
     String relationKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "orders");
 
     // A view already owns the shared relation-name claim for "orders".
@@ -851,6 +983,88 @@ class TransactionIntentApplierSupportTest {
         pointers.get(byIdKey).isEmpty(), "table by-id pointer must not be created on conflict");
   }
 
+  /**
+   * An update that leaves a table in the container it is already counted in moves no marker.
+   *
+   * <p>The applier used to assert on every table upsert, so a schema edit, a property change or an
+   * idempotent replay contended on the namespace's relation marker with every other table commit
+   * into that namespace -- and, once the commit path grew a local retry, burned that budget. The
+   * relation set is unchanged, so a concurrent namespace delete counts this table and refuses
+   * either way. Creates still assert: see the marker-advance test above.
+   */
+  @Test
+  void applyTransactionDoesNotAdvanceTheMarkerForAnUpdateThatStaysPut() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+
+    String accountId = "acct";
+    String catalogId = "cat-1";
+    String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
+    String markerKey = Keys.namespaceRelationsMarker(accountId, namespaceId);
+
+    ResourceId tableRid =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("table-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    Table current =
+        Table.newBuilder()
+            .setResourceId(tableRid)
+            .setCatalogId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(catalogId)
+                    .setKind(ResourceKind.RK_CATALOG))
+            .setNamespaceId(
+                ResourceId.newBuilder()
+                    .setAccountId(accountId)
+                    .setId(namespaceId)
+                    .setKind(ResourceKind.RK_NAMESPACE))
+            .setDisplayName("orders")
+            .build();
+    String byIdKey = Keys.tablePointerById(accountId, tableRid.getId());
+    String nameKey = Keys.tablePointerByName(accountId, catalogId, namespaceId, "orders");
+    String claimKey = Keys.relationPointerByName(accountId, catalogId, namespaceId, "orders");
+    String currentBlob = "/accounts/acct/tables/table-1/table/current.pb";
+    blobs.put(currentBlob, current.toByteArray(), "application/x-protobuf");
+    pointers.compareAndSet(byIdKey, 0L, PointerReferences.blobPointer(byIdKey, currentBlob, 1L));
+    pointers.compareAndSet(nameKey, 0L, PointerReferences.blobPointer(nameKey, currentBlob, 1L));
+    pointers.compareAndSet(
+        claimKey,
+        0L,
+        PointerReferences.blobPointer(claimKey, currentBlob, 1L).toBuilder()
+            .setResourceId(tableRid)
+            .build());
+
+    // Same catalog, same namespace, same name: only the schema changes.
+    Table next = current.toBuilder().setSchemaJson("{\"type\":\"struct\"}").build();
+    String nextBlob = "/accounts/acct/tables/table-1/table/next.pb";
+    blobs.put(nextBlob, next.toByteArray(), "application/x-protobuf");
+
+    long markerBefore = pointers.get(markerKey).map(Pointer::getVersion).orElse(0L);
+
+    TransactionIntent intent =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId("tx-1")
+            .setTargetPointerKey(byIdKey)
+            .setBlobUri(nextBlob)
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+
+    var outcome = support.applyTransactionBestEffort(List.of(intent), intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertEquals(
+        markerBefore,
+        pointers.get(markerKey).map(Pointer::getVersion).orElse(0L),
+        "the relation set did not change, so nothing should contend on its marker");
+  }
+
   @Test
   void applyTransactionMovesRelationClaimOnRename() throws Exception {
     var pointers = new InMemoryPointerStore();
@@ -862,6 +1076,7 @@ class TransactionIntentApplierSupportTest {
     String accountId = "acct";
     String catalogId = "cat-1";
     String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
     ResourceId tableRid =
         ResourceId.newBuilder()
             .setAccountId(accountId)
@@ -929,6 +1144,11 @@ class TransactionIntentApplierSupportTest {
     inject(support, "pointerStore", pointerStore);
     inject(support, "blobStore", blobStore);
     inject(support, "graphView", permissiveGraphView());
+    // A real MarkerStore over the same pointer store: the applier asserts the shared protocol now,
+    // so the fence it emits has to be the one MarkerStore builds, not a stub of it.
+    var markerStore = new MarkerStore();
+    inject(markerStore, "pointerStore", pointerStore);
+    inject(support, "markerStore", markerStore);
     return support;
   }
 
@@ -1007,6 +1227,19 @@ class TransactionIntentApplierSupportTest {
         };
       }
     };
+  }
+
+  /**
+   * Seeds the namespace row a table intent joins.
+   *
+   * <p>A table intent asserts the namespace's canonical pointer in its own batch, so a namespace
+   * that was never created reads as deleted and the intent is refused. Only the pointer's presence
+   * and version matter to that assertion.
+   */
+  private static void seedNamespace(
+      InMemoryPointerStore pointers, String accountId, String namespaceId) {
+    String key = Keys.namespacePointerById(accountId, namespaceId);
+    pointers.compareAndSet(key, 0L, PointerReferences.opaqueMarkerPointer(key, namespaceId, 1L));
   }
 
   private static void inject(Object target, String field, Object value) throws Exception {

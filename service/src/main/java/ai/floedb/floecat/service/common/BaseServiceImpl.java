@@ -424,6 +424,11 @@ public abstract class BaseServiceImpl {
   protected <T> T retryWhileFenceLost(String what, Supplier<Optional<T>> fencedWrite) {
     return FenceRetry.retryWhileFenceLost(what, fencedWrite);
   }
+
+  protected void sleepBackoff(int attempts) {
+    FenceRetry.sleepBackoff(attempts);
+  }
+
   protected static String prettyNamespacePath(List<String> parents, String leaf) {
     var parts = new ArrayList<>(parents);
     parts.add(leaf);

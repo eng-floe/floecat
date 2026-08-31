@@ -27,6 +27,9 @@ import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
@@ -90,6 +93,7 @@ public class TransactionIntentApplierSupport {
   @Inject BlobStore blobStore;
   @Inject CatalogGraphView graphView;
   @Inject CatalogRepository catalogRepo;
+  @Inject MarkerStore markerStore;
 
   public boolean isTableByIdPointer(String pointerKey) {
     return pointerKey != null && pointerKey.contains("/tables/by-id/");
@@ -490,6 +494,17 @@ public class TransactionIntentApplierSupport {
     if (targetValidation.status != ApplyStatus.APPLIED) {
       return targetValidation;
     }
+    // The row being replaced, read before the fence because the fence depends on it: a relation
+    // that stays in the container it is already counted in changes no namespace's relation set.
+    Table currentTable = current == null ? null : readTable(current.getBlobUri());
+    if (current != null && currentTable == null) {
+      return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "old name pointer table missing");
+    }
+    // Sampled before the eligibility check below, not after. That check is what the conditions
+    // guard, and a version read after it is the version a concurrent namespace delete already
+    // moved -- so the CAS would confirm that delete instead of losing to it.
+    NamespaceJoin namespaceJoin = readNamespaceJoin(currentTable, nextTable);
+
     ApplyOutcome writeEligibility =
         validateTableWriteEligibility(
             nextTable, /* checkExistingTable= */ current != null, /* checkTargetScope= */ true);
@@ -541,11 +556,17 @@ public class TransactionIntentApplierSupport {
       return newClaimOutcome;
     }
 
-    if (current != null) {
-      Table oldTable = readTable(current.getBlobUri());
-      if (oldTable == null) {
-        return ApplyOutcome.retryable("NAME_POINTER_READ_FAILED", "old name pointer table missing");
-      }
+    // Putting a table in this namespace changes its relation set, so both conditions ride this
+    // batch. Exclusion here is only key overlap: a DeleteNamespace asserts the relation marker to
+    // prove the namespace empty, and without it the two batches share no key -- neither can lose to
+    // the other, and the delete commits while this table lands.
+    ApplyOutcome joinOutcome = addNamespaceJoin(namespaceJoin, touchedKeys, ops);
+    if (joinOutcome.status != ApplyStatus.APPLIED) {
+      return joinOutcome;
+    }
+
+    if (currentTable != null) {
+      Table oldTable = currentTable;
       String oldNameKey =
           Keys.tablePointerByName(
               oldTable.getResourceId().getAccountId(),
@@ -930,6 +951,72 @@ public class TransactionIntentApplierSupport {
     Pointer next =
         PointerReferences.blobPointer(key, nextBlobUri, ptr.getVersion() + 1L, owner, "");
     return addOp(new PointerStore.CasUpsert(key, ptr.getVersion(), next), key, touchedKeys, ops);
+  }
+
+  /** A sampled namespace join, or the fact that the namespace it needed is already gone. */
+  private record NamespaceJoin(PointerConditions conditions, boolean namespaceGone) {
+    static final NamespaceJoin NOTHING_TO_JOIN = new NamespaceJoin(null, false);
+    static final NamespaceJoin GONE = new NamespaceJoin(null, true);
+  }
+
+  /**
+   * Samples what this table write has to assert about its namespace.
+   *
+   * <p>The conditions come from {@link MarkerStore}, not from keys derived here. This is the
+   * highest-volume relation writer, and a second copy of the marker key, the advance shape and the
+   * read dependency would make it a second source of truth for the delete guard -- one that a
+   * change to the protocol would leave behind with no compile-time signal.
+   *
+   * <p>It also applies the same policy as every other writer, rather than asserting on every
+   * upsert. A relation that stays in the container it is already counted in -- a schema edit, a
+   * property change, an idempotent replay, a rename inside one namespace -- changes no namespace's
+   * relation set, so there is nothing for a delete to be excluded from. Asserting anyway made
+   * unrelated table commits into one namespace contend on a hot key and burn the retry budget for
+   * no guard.
+   *
+   * <p>An already-deleted namespace is reported when the ops are emitted rather than here, so that
+   * the eligibility checks between the two keep the precedence they had.
+   */
+  private NamespaceJoin readNamespaceJoin(Table currentTable, Table nextTable) {
+    ResourceId to = nextTable.getNamespaceId();
+    if (to == null || to.getAccountId().isBlank() || to.getId().isBlank()) {
+      return NamespaceJoin.NOTHING_TO_JOIN;
+    }
+    try {
+      if (currentTable == null) {
+        return new NamespaceJoin(markerStore.relationCreateFence(to), false);
+      }
+      boolean changesCatalog =
+          !currentTable.getCatalogId().getId().equals(nextTable.getCatalogId().getId());
+      return new NamespaceJoin(
+          markerStore.relationMoveFence(currentTable.getNamespaceId(), to, changesCatalog), false);
+    } catch (BaseResourceRepository.NotFoundException gone) {
+      return NamespaceJoin.GONE;
+    }
+  }
+
+  /**
+   * Emits the namespace join into this batch.
+   *
+   * <p>The marker is advanced, which is what a namespace delete racing this batch loses to. The
+   * namespace's canonical pointer is only checked, which is what refuses a batch whose namespace
+   * was already deleted -- the marker cannot catch that, because a read afterwards returns the
+   * post-delete version and matches it. The existence check this path performs resolves through a
+   * per-process cached graph that another instance's delete does not invalidate.
+   *
+   * <p>Once per batch for each key: a second intent joining the same namespace gets the same
+   * guarantee from the advance already queued, and two CAS ops on one key are rejected outright.
+   */
+  private ApplyOutcome addNamespaceJoin(
+      NamespaceJoin join, Set<String> touchedKeys, List<PointerStore.CasOp> ops) {
+    if (join.namespaceGone()) {
+      return ApplyOutcome.conflict(
+          "NAMESPACE_NOT_FOUND", "namespace no longer exists", null, null, null);
+    }
+    if (join.conditions() != null) {
+      ops.addAll(join.conditions().toCasOps(touchedKeys));
+    }
+    return ApplyOutcome.applied();
   }
 
   private ApplyOutcome buildOwnedRelationClaimDeleteOp(
