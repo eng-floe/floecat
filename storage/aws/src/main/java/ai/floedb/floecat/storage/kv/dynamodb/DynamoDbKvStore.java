@@ -45,7 +45,7 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   private static final Logger LOG = Logger.getLogger(DynamoDbKvStore.class);
   static final int DELETE_BATCH_LIMIT = Integer.getInteger("floedb.floecat.delete.batch.size", 25);
   static final int TRANSACTION_CONFLICT_MAX_RETRIES =
-      Integer.getInteger("floedb.floecat.transaction-conflict.max-retries", 2);
+      Math.max(0, Integer.getInteger("floedb.floecat.transaction-conflict.max-retries", 8));
   private static final long TRANSACTION_CONFLICT_BASE_DELAY_MS = 10L;
   private static final long TRANSACTION_CONFLICT_MAX_DELAY_MS = 250L;
   private final AsyncDynamoCaller ddb;
@@ -745,6 +745,9 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
               long delayMs =
                   ThreadLocalRandom.current()
                       .nextLong(TRANSACTION_CONFLICT_BASE_DELAY_MS, exponentialDelayMs + 1L);
+              LOG.debugf(
+                  "DynamoDB transaction conflict; retrying table=%s failed_attempt=%d max_attempts=%d backoff_ms=%d",
+                  table, conflictAttempt + 1, TRANSACTION_CONFLICT_MAX_RETRIES + 1, delayMs);
               return Uni.createFrom()
                   .voidItem()
                   .onItem()

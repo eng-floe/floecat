@@ -694,14 +694,14 @@ public class DynamoDbKvStoreTest {
   @Test
   void txnWriteCas_retries_transaction_conflict_inside_budget_then_succeeds() {
     FakeDynamoDbHandler handler = new FakeDynamoDbHandler();
-    handler.setTransactionConflictFailures(1);
+    handler.setTransactionConflictFailures(DynamoDbKvStore.TRANSACTION_CONFLICT_MAX_RETRIES);
     DynamoDbKvStore store = newStore(handler);
 
     var ops =
         List.<KvStore.TxnOp>of(
             new KvStore.TxnPut(record("pk1", "sk1", "K", "v", 1L, Map.of()), 0L));
     assertTrue(store.txnWriteCas(ops).await().indefinitely());
-    assertEquals(2, handler.transactWriteCalls);
+    assertEquals(DynamoDbKvStore.TRANSACTION_CONFLICT_MAX_RETRIES + 1, handler.transactWriteCalls);
   }
 
   @Test
