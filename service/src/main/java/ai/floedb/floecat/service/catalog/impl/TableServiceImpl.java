@@ -55,6 +55,7 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -226,7 +227,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
                     try {
-                      tableRepo.create(table);
+                      retryWhileFenceLost(
+                          "create table", () -> createTableFenced(spec, table, writePolicy, corr));
                     } catch (BaseResourceRepository.NameConflictException nce) {
                       throw GrpcErrors.alreadyExists(
                           corr,
@@ -236,7 +238,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "catalog_id", spec.getCatalogId().getId(),
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
-                    markerStore.bumpNamespaceMarker(table.getNamespaceId());
+                    // The namespace's relation marker advanced inside the create batch above.
                     metadataGraph.invalidate(tableResourceId);
                     topology.evictRelationRefs(table.getNamespaceId());
                     var meta = tableRepo.metaForSafe(tableResourceId);
@@ -307,12 +309,18 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                             try {
                               var reserved = table.toBuilder().setResourceId(reservedId).build();
                               var committed =
-                                  tableRepo.createWithCompletion(
-                                      reserved,
-                                      resource ->
-                                          committer.prepareSuccessOps(
-                                              new IdempotencyGuard.CommittedCreate<>(
-                                                  resource.value(), reservedId, resource.meta())));
+                                  retryWhileFenceLost(
+                                      "create table",
+                                      () ->
+                                          tableRepo.createWithCompletionWhilePointersMatch(
+                                              reserved,
+                                              tableCreateFence(spec, reserved, writePolicy, corr),
+                                              resource ->
+                                                  committer.prepareSuccessOps(
+                                                      new IdempotencyGuard.CommittedCreate<>(
+                                                          resource.value(),
+                                                          reservedId,
+                                                          resource.meta()))));
                               return new IdempotencyGuard.CommittedCreate<>(
                                   committed.value(), reservedId, committed.meta());
                             } catch (BaseResourceRepository.NameConflictException nce) {
@@ -331,7 +339,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           this::correlationId,
                           Table::parseFrom);
 
-                  markerStore.bumpNamespaceMarker(result.body.getNamespaceId());
                   metadataGraph.invalidate(result.body.getResourceId());
                   topology.evictRelationRefs(result.body.getNamespaceId());
 
@@ -396,6 +403,26 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
 
                   var desired = applyTableSpecPatch(current, spec, mask, corr);
+                  // Sampled before the destination namespace is checked, not after. A namespace
+                  // delete committing between the two moves the marker, and a version read after it
+                  // is that writer's version -- so the CAS would confirm the delete instead of
+                  // losing to it, landing this relation in a namespace that is gone. The read
+                  // dependency on the destination's own pointer refuses one that already finished.
+                  // Translated for the same reason a create is: a destination deleted a moment ago
+                  // is reported by the fence, whose message is internal.
+                  final var fromNamespace = current.getNamespaceId();
+                  final var toNamespace = desired.getNamespaceId();
+                  // A catalog-only change still re-keys the relation, because its by-name key and
+                  // the count behind the fence both carry the catalog.
+                  final boolean changesCatalog =
+                      !current.getCatalogId().getId().equals(desired.getCatalogId().getId());
+                  PointerConditions relationsFence =
+                      namespaceFenceOrNotFound(
+                          corr,
+                          toNamespace,
+                          () ->
+                              markerStore.relationMoveFence(
+                                  fromNamespace, toNamespace, changesCatalog));
                   var writePolicy = catalogSurfaceWritePolicy();
                   var desiredNamespace =
                       writePolicy.requireWritableNamespace(
@@ -434,7 +461,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           "namespace_id", desired.getNamespaceId().getId());
 
                   try {
-                    boolean ok = tableRepo.update(desired, meta.getPointerVersion());
+                    boolean ok =
+                        tableRepo
+                            .updateWhilePointersMatch(
+                                desired, meta.getPointerVersion(), relationsFence)
+                            .isPresent();
                     if (!ok) {
                       throw tableUpdateConflict(
                           corr,
@@ -456,8 +487,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                   if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
                     topology.evictRelationRefs(desired.getNamespaceId());
-                    markerStore.bumpNamespaceMarker(current.getNamespaceId());
-                    markerStore.bumpNamespaceMarker(desired.getNamespaceId());
                   }
 
                   var outMeta = tableRepo.metaForSafe(tableId);
@@ -496,7 +525,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                   try {
                     existing = tableRepo.getById(tableId).orElse(null);
                   } catch (BaseResourceRepository.CorruptionException ignore) {
-                    // marker bump is best-effort; allow delete to proceed even if blob is missing
+                    // Read for the delete's relation fence. A missing blob leaves no namespace id
+                    // to fence on, and the delete still has to clean the pointer up.
                   }
 
                   MutationMeta meta;
@@ -512,9 +542,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                         correlationId, safe, request.getPrecondition());
                     topology.evict(tableId);
                     metadataGraph.invalidate(tableId);
-                    if (existing != null) {
-                      markerStore.bumpNamespaceMarker(existing.getNamespaceId());
-                    }
                     purgeSnapshotsAndStats(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   } catch (BaseResourceRepository.CorruptionException corrupt) {
@@ -525,17 +552,17 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    if (!tableRepo.deleteWithPrecondition(tableId, safe.getPointerVersion())) {
-                      if (callerCares) {
-                        throw GrpcErrors.preconditionFailed(
-                            correlationId,
-                            VERSION_MISMATCH,
-                            Map.of(
-                                "expected",
-                                Long.toString(safe.getPointerVersion()),
-                                "actual",
-                                Long.toString(tableRepo.metaForSafe(tableId).getPointerVersion())));
-                      }
+                    if (!tableRepo.deleteWhilePointersMatch(
+                        tableId, safe.getPointerVersion(), PointerConditions.none())) {
+                      // Nothing was deleted, so reporting success would say a corrupt row is gone
+                      // while it is still addressable. Which of the two causes it was -- a stale
+                      // expected version, or a lost fence -- is the same question every other
+                      // conditional write here asks, and it is answered in one place.
+                      throw MutationOps.lostFenceOrVersionMismatch(
+                          correlationId,
+                          "table delete",
+                          safe.getPointerVersion(),
+                          tableRepo.metaForSafe(tableId).getPointerVersion());
                     }
                     topology.evict(tableId);
                     metadataGraph.invalidate(tableId);
@@ -547,7 +574,9 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                       MutationOps.deleteWithPreconditions(
                           () -> meta,
                           request.getPrecondition(),
-                          expected -> tableRepo.deleteWithPrecondition(tableId, expected),
+                          expected ->
+                              tableRepo.deleteWhilePointersMatch(
+                                  tableId, expected, PointerConditions.none()),
                           () -> tableRepo.metaForSafe(tableId),
                           correlationId,
                           "table",
@@ -555,9 +584,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
 
                   topology.evict(tableId);
                   metadataGraph.invalidate(tableId);
-                  if (existing != null) {
-                    markerStore.bumpNamespaceMarker(existing.getNamespaceId());
-                  }
                   purgeSnapshotsAndStats(tableId);
                   return DeleteTableResponse.newBuilder().setMeta(out).build();
                 }),
@@ -897,19 +923,53 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     tableRoots.purgeRoot(tableId);
   }
 
+  /**
+   * Creates the table under its namespace's relation fence, one attempt.
+   *
+   * <p>The namespace is re-validated here rather than once before the loop: a namespace delete is
+   * one of the writers that takes this fence, so losing it can mean the namespace is gone. A retry
+   * that skipped the check would commit a table into a deleted namespace, turning a correct
+   * exclusion into the orphan the fence exists to prevent.
+   */
+  private boolean createTableFenced(
+      TableSpec spec, Table table, CatalogSurfaceWritePolicy writePolicy, String corr) {
+    return tableRepo.createWhilePointersMatch(
+            table, tableCreateFence(spec, table, writePolicy, corr))
+        .isPresent();
+  }
+
+  /** Samples and validates the namespace fence for one table-create attempt. */
+  private PointerConditions tableCreateFence(
+      TableSpec spec, Table table, CatalogSurfaceWritePolicy writePolicy, String corr) {
+    // Sampled before the namespace is checked, not after. A delete that commits between the two
+    // moves the marker, and a version read after it is that writer's version -- so the CAS would
+    // confirm the delete instead of losing to it. Sampling first means the CAS requires the
+    // pre-delete version and fails.
+    //
+    // The marker excludes a delete racing this write. The namespace's own pointer version excludes
+    // one that already finished: the check below resolves through a per-process cache that a delete
+    // on another instance does not invalidate, so it can pass for a namespace that is already gone.
+    // The fence is sampled before the namespace is checked, so a namespace already gone is reported
+    // by the fence rather than by the check -- and its message is internal. Translated here so the
+    // caller gets the same NOT_FOUND they would have got had the check run first.
+    PointerConditions fence =
+        namespaceFenceOrNotFound(
+            corr,
+            table.getNamespaceId(),
+            () -> markerStore.relationCreateFence(table.getNamespaceId()));
+    var ns = writePolicy.requireWritableNamespace(spec.getNamespaceId(), "spec.namespace_id", corr);
+    writePolicy.requireNamespaceInCatalog(ns, spec.getNamespaceId(), spec.getCatalogId(), corr);
+    return fence;
+  }
+
   private RuntimeException tableUpdateConflict(
       String corr, ResourceId tableId, long expectedVersion, boolean callerCares) {
     if (!callerCares) {
       return new BaseResourceRepository.AbortRetryableException(
           "unconditional table update conflicted with a concurrent mutation: " + tableId.getId());
     }
-    var nowMeta = tableRepo.metaForSafe(tableId);
-    return GrpcErrors.preconditionFailed(
-        corr,
-        VERSION_MISMATCH,
-        Map.of(
-            "expected", Long.toString(expectedVersion),
-            "actual", Long.toString(nowMeta.getPointerVersion())));
+    return MutationOps.lostFenceOrVersionMismatch(
+        corr, "table update", expectedVersion, tableRepo.metaForSafe(tableId).getPointerVersion());
   }
 
   /** Record the table's (possibly new) immutable definition blob on its root. */

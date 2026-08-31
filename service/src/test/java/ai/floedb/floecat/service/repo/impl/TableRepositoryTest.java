@@ -31,6 +31,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -516,7 +517,10 @@ class TableRepositoryTest {
                     try {
                       var curMeta = tableRepo.metaFor(tblId);
                       boolean ok =
-                          tableRepo.deleteWithPrecondition(tblId, curMeta.getPointerVersion());
+                          tableRepo.deleteWhilePointersMatch(
+                              tblId,
+                              curMeta.getPointerVersion(),
+                              GenericResourceRepository.PointerConditions.none());
                       if (!ok) {
                         throw new BaseResourceRepository.PreconditionFailedException(
                             "version mismatch");

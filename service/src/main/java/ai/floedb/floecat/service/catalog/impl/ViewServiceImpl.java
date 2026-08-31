@@ -33,6 +33,7 @@ import ai.floedb.floecat.catalog.rpc.ViewService;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.catalog.rpc.ViewSqlDefinition;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
@@ -51,6 +52,8 @@ import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -70,6 +73,7 @@ import org.jboss.logging.Logger;
 public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
 
   @Inject ViewRepository viewRepo;
+  @Inject MarkerStore markerStore;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
@@ -229,7 +233,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
                     try {
-                      viewRepo.create(view);
+                      retryWhileFenceLost(
+                          "create view",
+                          () -> createViewFenced(view, namespaceId, catalogId, writePolicy, corr));
                     } catch (BaseResourceRepository.NameConflictException nce) {
                       // The shared relation-name claim enforces cross-kind uniqueness (see
                       // TransactionIntentApplierSupport#buildRelationClaimUpsertOp), so this fires
@@ -297,14 +303,25 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                             GenericResourceRepository.ResourceWithMeta<View> committed;
                             try {
                               committed =
-                                  viewRepo.createWithCompletion(
-                                      reservedView,
-                                      resource -> {
-                                        var success =
-                                            new IdempotencyGuard.CommittedCreate<>(
-                                                resource.value(), reservedId, resource.meta());
-                                        return committer.prepareSuccessOps(success);
-                                      });
+                                  retryWhileFenceLost(
+                                      "create view",
+                                      () ->
+                                          viewRepo.createWithCompletionWhilePointersMatch(
+                                              reservedView,
+                                              viewCreateFence(
+                                                  reservedView,
+                                                  namespaceId,
+                                                  catalogId,
+                                                  writePolicy,
+                                                  corr),
+                                              resource -> {
+                                                var success =
+                                                    new IdempotencyGuard.CommittedCreate<>(
+                                                        resource.value(),
+                                                        reservedId,
+                                                        resource.meta());
+                                                return committer.prepareSuccessOps(success);
+                                              }));
                             } catch (BaseResourceRepository.NameConflictException nce) {
                               throw relationNameConflict(corr, accountId, spec, normName);
                             }
@@ -368,6 +385,21 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               () -> GrpcErrors.notFound(corr, VIEW, Map.of("id", viewId.getId())));
 
                   var desired = applyViewSpecPatch(current, spec, mask, corr);
+                  // Sampled before the destination namespace is checked, for the reason
+                  // TableServiceImpl's update states.
+                  final var fromNamespace = current.getNamespaceId();
+                  final var toNamespace = desired.getNamespaceId();
+                  // A catalog-only change still re-keys the relation, because its by-name key and
+                  // the count behind the fence both carry the catalog.
+                  final boolean changesCatalog =
+                      !current.getCatalogId().getId().equals(desired.getCatalogId().getId());
+                  PointerConditions relationsFence =
+                      namespaceFenceOrNotFound(
+                          corr,
+                          toNamespace,
+                          () ->
+                              markerStore.relationMoveFence(
+                                  fromNamespace, toNamespace, changesCatalog));
                   var writePolicy = catalogSurfaceWritePolicy();
                   var desiredNamespace =
                       writePolicy.requireWritableNamespace(
@@ -406,15 +438,17 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           "namespace_id", desired.getNamespaceId().getId());
 
                   try {
-                    boolean ok = viewRepo.update(desired, meta.getPointerVersion());
+                    boolean ok =
+                        viewRepo
+                            .updateWhilePointersMatch(
+                                desired, meta.getPointerVersion(), relationsFence)
+                            .isPresent();
                     if (!ok) {
-                      var nowMeta = viewRepo.metaForSafe(viewId);
-                      throw GrpcErrors.preconditionFailed(
+                      throw MutationOps.lostFenceOrVersionMismatch(
                           corr,
-                          VERSION_MISMATCH,
-                          Map.of(
-                              "expected", Long.toString(meta.getPointerVersion()),
-                              "actual", Long.toString(nowMeta.getPointerVersion())));
+                          "view update",
+                          meta.getPointerVersion(),
+                          viewRepo.metaForSafe(viewId).getPointerVersion());
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
                     throw GrpcErrors.alreadyExists(corr, VIEW_ALREADY_EXISTS, conflictInfo);
@@ -480,7 +514,9 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       MutationOps.deleteWithPreconditions(
                           () -> meta,
                           request.getPrecondition(),
-                          expected -> viewRepo.deleteWithPrecondition(viewId, expected),
+                          expected ->
+                              viewRepo.deleteWhilePointersMatch(
+                                  viewId, expected, PointerConditions.none()),
                           () -> viewRepo.metaForSafe(viewId),
                           correlationId,
                           "view",
@@ -667,6 +703,42 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                 .toList())
         .map("properties", s.getPropertiesMap())
         .bytes();
+  }
+
+  /**
+   * Creates the view under its namespace's relation fence, one attempt.
+   *
+   * <p>The namespace is re-validated here rather than once before the loop, for the reason {@code
+   * TableServiceImpl.createTableFenced} states: losing this fence can mean a namespace delete won
+   * it, so a retry that skipped the check would create a view in a namespace that is gone.
+   */
+  private boolean createViewFenced(
+      View view,
+      ResourceId namespaceId,
+      ResourceId catalogId,
+      CatalogSurfaceWritePolicy writePolicy,
+      String corr) {
+    return viewRepo.createWhilePointersMatch(
+        view, viewCreateFence(view, namespaceId, catalogId, writePolicy, corr));
+  }
+
+  /** Samples and validates the namespace fence for one view-create attempt. */
+  private PointerConditions viewCreateFence(
+      View view,
+      ResourceId namespaceId,
+      ResourceId catalogId,
+      CatalogSurfaceWritePolicy writePolicy,
+      String corr) {
+    // The marker excludes a delete racing this write; the namespace's own pointer version excludes
+    // one that already finished. See TableServiceImpl.createTableFenced.
+    PointerConditions fence =
+        namespaceFenceOrNotFound(
+            corr,
+            view.getNamespaceId(),
+            () -> markerStore.relationCreateFence(view.getNamespaceId()));
+    var ns = writePolicy.requireWritableNamespace(namespaceId, "spec.namespace_id", corr);
+    writePolicy.requireNamespaceInCatalog(ns, namespaceId, catalogId, corr);
+    return fence;
   }
 
   /**
