@@ -128,9 +128,8 @@ import org.jboss.logging.Logger;
 //    ReconcileLeaseStore.
 // 3. File-group result pointers are payload-reference state; aggregate counters and parent state
 //    are observability projection state and are no longer updated on the child hot path.
-// This store expects the post-port inline canonical reconcile layout only. It does not read
-// legacy StoredJobReference indirection, lane queue/head scheduling rows, or separate lease-state
-// blobs.
+// Supported storage layout: inline canonical reconcile jobs, transactionally maintained derived
+// indexes, and lease coordination pointers owned by ReconcileLeaseStore.
 public class DurableReconcileJobStore implements ReconcileJobStore {
   public static final class ConnectorDeletedException extends IllegalStateException {
     public final String connectorId;

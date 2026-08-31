@@ -645,12 +645,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     List<JobIndexWriteOp> deletes = new ArrayList<>();
     deletes.add(
         new JobIndexDelete(
-            currentSnapshot.canonicalPointerKey(),
-            currentSnapshot.version(),
-            "",
-            "",
-            false,
-            false));
+            currentSnapshot.canonicalPointerKey(), currentSnapshot.version(), "", false, false));
     appendOwnedDelete(deletes, lookupPointerKey, currentSnapshot.canonicalPointerKey(), true);
     return new JobIndexWriteBatch(List.copyOf(deletes), ReadyQueueMutation.empty());
   }
@@ -658,7 +653,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   private JobIndexWriteBatch buildJobDeleteBatch(
       CanonicalPointerSnapshot currentSnapshot, ReconcileJobIndexCleanupManifest fallbackManifest) {
     var session = jobIndexBackend.beginJobCleanup(currentSnapshot, fallbackManifest).orElse(null);
-    if (session == null || (session.manifest().isEmpty() && !session.footprintDrained())) {
+    if (session == null || session.manifest().isEmpty()) {
       return JobIndexWriteBatch.empty();
     }
     CanonicalPointerSnapshot lockedSnapshot = session.snapshot();
@@ -667,89 +662,12 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     List<JobIndexWriteOp> deletes = new ArrayList<>();
     deletes.add(
         new JobIndexDelete(
-            canonicalPointerKey, lockedSnapshot.version(), "", "", session.cleanupLocked(), false));
+            canonicalPointerKey, lockedSnapshot.version(), "", session.cleanupLocked(), false));
     for (String pointerKey : manifest.indexPointerKeys()) {
       appendOwnedDelete(deletes, pointerKey, canonicalPointerKey, true);
     }
     return new JobIndexWriteBatch(
         List.copyOf(deletes), new ReadyQueueMutation(List.of(), manifest.readyPointerKeys()));
-  }
-
-  @Override
-  public IndexBackfillResult backfillStoredJobIndexes(String canonicalPointerKey) {
-    if (blank(canonicalPointerKey)) {
-      return IndexBackfillResult.unchanged();
-    }
-    CanonicalPointerSnapshot snapshot = loadCanonicalSnapshot(canonicalPointerKey).orElse(null);
-    if (snapshot == null) {
-      return IndexBackfillResult.unchanged();
-    }
-    StoredReconcileJob record = readRecord(snapshot).orElse(null);
-    if (record == null) {
-      return IndexBackfillResult.unchanged();
-    }
-    return backfillStoredJobIndexes(snapshot, record);
-  }
-
-  @Override
-  public IndexBackfillResult backfillStoredJobIndexes(
-      CanonicalPointerSnapshot snapshot, StoredReconcileJob record) {
-    if (snapshot == null || record == null || blank(snapshot.canonicalPointerKey())) {
-      return IndexBackfillResult.unchanged();
-    }
-    String canonicalPointerKey = snapshot.canonicalPointerKey();
-    List<String> desiredKeys = new ArrayList<>();
-    try {
-      desiredKeys.add(connectorIndexPointerKey(record));
-      desiredKeys.addAll(indexes.statePointerKeys(record));
-      desiredKeys.add(indexes.terminalRetentionPointerKey(record));
-    } catch (RuntimeException ignored) {
-      return new IndexBackfillResult(false, true);
-    }
-    desiredKeys.removeIf(NativeReconcileJobIndexStore::blank);
-    List<JobIndexWriteOp> writes = new ArrayList<>();
-    for (String pointerKey : new java.util.LinkedHashSet<>(desiredKeys)) {
-      JobIndexEntrySnapshot existing = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
-      if (existing != null) {
-        if (!canonicalPointerKey.equals(existing.blobUri())) {
-          return new IndexBackfillResult(false, true);
-        }
-        continue;
-      }
-      writes.add(
-          new JobIndexUpsert(
-              pointerKey, 0L, canonicalPointerKey, PointerReferenceKind.PRK_POINTER_KEY));
-    }
-    ReconcileJobIndexCleanupManifest manifest;
-    try {
-      manifest = cleanupManifest(record);
-    } catch (RuntimeException ignored) {
-      try {
-        manifest =
-            new ReconcileJobIndexCleanupManifest(indexPointerKeysForCleanup(record), List.of());
-      } catch (RuntimeException invalidRecord) {
-        return new IndexBackfillResult(false, true);
-      }
-    }
-    ReconcileJobIndexCleanupManifest storedManifest =
-        jobIndexBackend.loadCleanupManifest(canonicalPointerKey);
-    if (!manifest.equals(storedManifest)) {
-      writes.add(
-          0,
-          new JobIndexUpsert(
-              canonicalPointerKey,
-              snapshot.version(),
-              snapshot.blobUri(),
-              PointerReferenceKind.PRK_INLINE_JSON,
-              manifest));
-    }
-    if (writes.isEmpty()) {
-      return IndexBackfillResult.unchanged();
-    }
-    boolean committed =
-        jobIndexBackend.compareAndSetBatch(
-            new JobIndexWriteBatch(List.copyOf(writes), ReadyQueueMutation.empty()));
-    return committed ? new IndexBackfillResult(true, false) : new IndexBackfillResult(false, true);
   }
 
   @Override
@@ -1184,12 +1102,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     if (canonicalPointerKey.equals(existing.blobUri())) {
       ops.add(
           new JobIndexDelete(
-              pointerKey,
-              existing.version(),
-              canonicalPointerKey,
-              existing.lookupStoragePartitionKey(),
-              false,
-              allowAbsent));
+              pointerKey, existing.version(), canonicalPointerKey, false, allowAbsent));
     }
   }
 
@@ -1706,10 +1619,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       pointerKey = check.pointerKey();
     } else if (write instanceof JobIndexCheckAbsent check) {
       pointerKey = check.pointerKey();
-    }
-    var lookupKey = JobIndexBackendSupport.parseLookupKey(pointerKey);
-    if (lookupKey != null) {
-      return JobIndexBackendSupport.lookupReadStorageKeys(lookupKey).size();
     }
     return 1;
   }

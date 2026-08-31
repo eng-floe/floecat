@@ -42,7 +42,6 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
@@ -92,50 +91,6 @@ public class ReconcileJobGc {
       int quarantineScanned,
       long retentionNanos,
       long quarantineNanos) {}
-
-  public record LookupMigrationResult(
-      int scanned, int migrated, int conflicted, int retryable, String nextToken) {}
-
-  public LookupMigrationResult runLegacyLookupMigrationSlice(String pageTokenIn) {
-    int pageSize =
-        ConfigProvider.getConfig()
-            .getOptionalValue(
-                "floecat.gc.reconcile-jobs.legacy-lookup-migration-page-size", Integer.class)
-            .orElse(100);
-    var page =
-        jobIndexBackend.migrateLegacyLookupEntries(
-            Math.max(1, pageSize), pageTokenIn == null ? "" : pageTokenIn);
-    return new LookupMigrationResult(
-        page.scanned(), page.migrated(), page.conflicted(), page.retryable(), page.nextPageToken());
-  }
-
-  public Optional<ReconcileJobIndexBackend.LegacyMigrationLease> acquireLegacyMigrationLease(
-      ReconcileJobIndexBackend.LegacyMigration migration,
-      String ownerId,
-      long nowMs,
-      long leaseDurationMs) {
-    return jobIndexBackend.acquireLegacyMigrationLease(migration, ownerId, nowMs, leaseDurationMs);
-  }
-
-  public boolean checkpointLegacyMigration(
-      ReconcileJobIndexBackend.LegacyMigration migration,
-      String ownerId,
-      long fence,
-      ReconcileJobIndexBackend.LegacyMigrationProgress progress,
-      long nowMs,
-      long leaseDurationMs) {
-    return jobIndexBackend.checkpointLegacyMigration(
-        migration, ownerId, fence, progress, nowMs, leaseDurationMs);
-  }
-
-  public boolean completeLegacyMigration(
-      ReconcileJobIndexBackend.LegacyMigration migration, String ownerId, long fence, long nowMs) {
-    return jobIndexBackend.completeLegacyMigration(migration, ownerId, fence, nowMs);
-  }
-
-  public boolean legacyMigrationComplete(ReconcileJobIndexBackend.LegacyMigration migration) {
-    return jobIndexBackend.legacyMigrationComplete(migration);
-  }
 
   private record JobCleanupResult(
       int expired, int ptrDeleted, int blobDeleted, int readyDeleted, int failed) {}
@@ -874,10 +829,7 @@ public class ReconcileJobGc {
         new ReconcileJobIndexStore.JobIndexWriteBatch(
             List.of(
                 new ReconcileJobIndexStore.JobIndexDelete(
-                    existing.pointerKey(),
-                    existing.version(),
-                    expectedReference,
-                    existing.lookupStoragePartitionKey())),
+                    existing.pointerKey(), existing.version(), expectedReference)),
             ReconcileJobIndexStore.ReadyQueueMutation.empty()));
   }
 

@@ -21,26 +21,16 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
  * whose durable deletion claim has already been acquired.
  */
 public record JobIndexEntrySnapshot(
-    String pointerKey,
-    String blobUri,
-    long version,
-    String lookupStoragePartitionKey,
-    boolean cleanupLocked) {
+    String pointerKey, String blobUri, long version, boolean cleanupLocked) {
   public JobIndexEntrySnapshot(String pointerKey, String blobUri, long version) {
-    this(pointerKey, blobUri, version, "", false);
-  }
-
-  public JobIndexEntrySnapshot(
-      String pointerKey, String blobUri, long version, String lookupStoragePartitionKey) {
-    this(pointerKey, blobUri, version, lookupStoragePartitionKey, false);
+    this(pointerKey, blobUri, version, false);
   }
 
   public JobIndexEntrySnapshot(
       String pointerKey, String blobUri, long version, boolean cleanupLocked) {
-    this(pointerKey, blobUri, version, "", cleanupLocked);
-  }
-
-  public JobIndexEntrySnapshot {
-    lookupStoragePartitionKey = lookupStoragePartitionKey == null ? "" : lookupStoragePartitionKey;
+    this.pointerKey = pointerKey;
+    this.blobUri = blobUri;
+    this.version = version;
+    this.cleanupLocked = cleanupLocked;
   }
 }
