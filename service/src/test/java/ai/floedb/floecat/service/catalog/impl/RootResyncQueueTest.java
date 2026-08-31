@@ -72,8 +72,16 @@ class RootResyncQueueTest {
             .setId("tbl-deleting")
             .setKind(ResourceKind.RK_TABLE)
             .build();
-    String fence = Keys.accountDeletionMarker("acct");
-    pointers.compareAndSet(fence, 0L, PointerReferences.opaqueMarkerPointer(fence, "acct", 1L));
+    String marker = Keys.accountDeletionMarker("acct");
+    String writeKey = Keys.rootResyncPendingPointer("acct", "tbl-deleting");
+    String gate = Keys.accountDeletionFenceShard("acct", writeKey);
+    assertTrue(
+        pointers.compareAndSetBatch(
+            List.of(
+                new PointerStore.CasUpsert(
+                    marker, 0L, PointerReferences.opaqueMarkerPointer(marker, "deleting", 1L)),
+                new PointerStore.CasUpsert(
+                    gate, 0L, PointerReferences.opaqueMarkerPointer(gate, "deleting", 1L)))));
 
     queue.enqueue(tableId);
 

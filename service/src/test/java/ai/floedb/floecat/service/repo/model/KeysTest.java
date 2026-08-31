@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.repo.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.types.Hashing;
 import java.util.List;
@@ -67,6 +68,38 @@ class KeysTest {
     assertEquals(
         "/accounts/acct%20id/catalog-overlays/deleting/overlay%2Fid",
         Keys.catalogOverlayDeletionMarker("acct id", "overlay/id"));
+  }
+
+  @Test
+  void accountDeletionFenceShardsAreExternalAndPathSafe() {
+    List<String> shards = Keys.accountDeletionFenceShards("acct id/encoded");
+
+    assertEquals(Keys.ACCOUNT_DELETION_FENCE_SHARDS, shards.size());
+    assertEquals("/account-deletion-fences/acct%20id%2Fencoded/00", shards.getFirst());
+    assertEquals("/account-deletion-fences/acct%20id%2Fencoded/63", shards.getLast());
+  }
+
+  @Test
+  void everyDerivedFenceShardBelongsToTheAccountFenceSet() {
+    List<String> shards = Keys.accountDeletionFenceShards("account/with encoding");
+
+    for (int i = 0; i < 1024; i++) {
+      assertTrue(
+          shards.contains(
+              Keys.accountDeletionFenceShard(
+                  "account/with encoding", "/accounts/account/write-" + i)));
+    }
+  }
+
+  @Test
+  void representativeWritesUseMostFenceShards() {
+    long distinct =
+        java.util.stream.IntStream.range(0, 1024)
+            .mapToObj(i -> Keys.accountDeletionFenceShard("account", "write-" + i))
+            .distinct()
+            .count();
+
+    assertTrue(distinct >= 48, "expected useful distribution but used " + distinct + " shards");
   }
 
   @Test

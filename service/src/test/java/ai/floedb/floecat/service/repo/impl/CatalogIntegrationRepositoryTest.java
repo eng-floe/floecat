@@ -22,7 +22,9 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -176,9 +178,15 @@ class CatalogIntegrationRepositoryTest {
     var pointers = new InMemoryPointerStore();
     var repo = new CatalogIntegrationRepository(pointers, new InMemoryBlobStore());
     String marker = Keys.accountDeletionMarker("account");
+    String writeKey = Keys.catalogIntegrationPointerById("account", "integration");
+    String gate = Keys.accountDeletionFenceShard("account", writeKey);
     assertTrue(
-        pointers.compareAndSet(
-            marker, 0L, PointerReferences.opaqueMarkerPointer(marker, "deleting", 1L)));
+        pointers.compareAndSetBatch(
+            List.of(
+                new PointerStore.CasUpsert(
+                    marker, 0L, PointerReferences.opaqueMarkerPointer(marker, "deleting", 1L)),
+                new PointerStore.CasUpsert(
+                    gate, 0L, PointerReferences.opaqueMarkerPointer(gate, "deleting", 1L)))));
     var integration =
         CatalogIntegration.newBuilder()
             .setResourceId(

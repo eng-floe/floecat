@@ -29,10 +29,13 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -94,12 +97,16 @@ class TableRootCommitterTest {
 
   @Test
   void accountDeletionFenceIsNotWrappedAsCommitFailure() {
-    String fence = ai.floedb.floecat.service.repo.model.Keys.accountDeletionMarker("acct");
-    pointers.compareAndSet(
-        fence,
-        0L,
-        ai.floedb.floecat.service.repo.model.PointerReferences.opaqueMarkerPointer(
-            fence, "acct", 1L));
+    String marker = Keys.accountDeletionMarker("acct");
+    String writeKey = Keys.tableRootByTable("acct", "tbl");
+    String gate = Keys.accountDeletionFenceShard("acct", writeKey);
+    assertTrue(
+        pointers.compareAndSetBatch(
+            List.of(
+                new PointerStore.CasUpsert(
+                    marker, 0L, PointerReferences.opaqueMarkerPointer(marker, "deleting", 1L)),
+                new PointerStore.CasUpsert(
+                    gate, 0L, PointerReferences.opaqueMarkerPointer(gate, "deleting", 1L)))));
 
     assertThrows(
         BaseResourceRepository.AccountDeletionInProgressException.class,

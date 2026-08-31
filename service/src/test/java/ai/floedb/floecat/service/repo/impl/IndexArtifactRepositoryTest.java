@@ -43,6 +43,7 @@ import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -76,6 +77,20 @@ class IndexArtifactRepositoryTest {
     return new IndexArtifactRepository(pointers, blobs, cache, new TableBlobReachabilityGuard());
   }
 
+  private static void installAccountDeletionFence(InMemoryPointerStore pointers, String accountId) {
+    List<PointerStore.CasOp> creates = new ArrayList<>();
+    String markerKey = Keys.accountDeletionMarker(accountId);
+    creates.add(
+        new PointerStore.CasUpsert(
+            markerKey, 0L, PointerReferences.opaqueMarkerPointer(markerKey, "deleting", 1L)));
+    for (String shardKey : Keys.accountDeletionFenceShards(accountId)) {
+      creates.add(
+          new PointerStore.CasUpsert(
+              shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
+    }
+    assertThat(pointers.compareAndSetBatch(creates)).isTrue();
+  }
+
   @Test
   void directArtifactWriteDeletesBlobWhenAccountFenceWinsPublicationRace() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
@@ -87,12 +102,7 @@ class IndexArtifactRepositoryTest {
             super.put(uri, bytes, contentType);
             if (uri.startsWith(Keys.tableBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()))
                 && installFence.compareAndSet(true, false)) {
-              String fence = Keys.accountDeletionMarker(TABLE_ID.getAccountId());
-              pointers.compareAndSet(
-                  fence,
-                  0L,
-                  ai.floedb.floecat.service.repo.model.PointerReferences.opaqueMarkerPointer(
-                      fence, "deleting", 1L));
+              installAccountDeletionFence(pointers, TABLE_ID.getAccountId());
             }
           }
         };

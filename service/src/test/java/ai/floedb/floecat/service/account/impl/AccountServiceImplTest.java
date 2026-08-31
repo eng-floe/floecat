@@ -52,6 +52,7 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.inject.Instance;
 import java.lang.reflect.Field;
+import java.util.Base64;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -130,6 +131,9 @@ class AccountServiceImplTest {
             "acct", StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE, authorityId.getId());
     assertTrue(pointers.get(authorityPointer).isEmpty());
     assertTrue(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
+    assertTrue(
+        Keys.accountDeletionFenceShards("acct").stream()
+            .allMatch(key -> pointers.get(key).isPresent()));
   }
 
   @Test
@@ -285,7 +289,47 @@ class AccountServiceImplTest {
 
     assertEquals(missing, response.getMeta());
     assertFalse(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
+    assertTrue(
+        Keys.accountDeletionFenceShards("acct").stream()
+            .allMatch(key -> pointers.get(key).isEmpty()));
     assertEquals(0, pointers.excludedSweepCalls);
+  }
+
+  @Test
+  void existingDeletionMarkerRepairsMissingFenceShards() {
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    installDeletionMarker(meta);
+    String existingShard = Keys.accountDeletionFenceShards("acct").get(17);
+    pointers.compareAndSet(
+        existingShard, 0L, PointerReferences.opaqueMarkerPointer(existingShard, "deleting", 1L));
+    when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
+    when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
+
+    service
+        .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
+        .await()
+        .indefinitely();
+
+    assertTrue(
+        Keys.accountDeletionFenceShards("acct").stream()
+            .allMatch(key -> pointers.get(key).isPresent()));
+  }
+
+  @Test
+  void orphanedFenceShardIsRemovedBeforeFenceCreationRetries() {
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    String orphan = Keys.accountDeletionFenceShards("acct").get(23);
+    pointers.compareAndSet(orphan, 0L, PointerReferences.opaqueMarkerPointer(orphan, "orphan", 9L));
+    when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
+    when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
+
+    service
+        .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
+        .await()
+        .indefinitely();
+
+    assertEquals(1L, pointers.get(orphan).orElseThrow().getVersion());
+    assertTrue(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
   }
 
   @Test
@@ -346,8 +390,11 @@ class AccountServiceImplTest {
                 .await()
                 .indefinitely());
 
-    assertEquals(1, pointers.compareAndDeleteCalls);
+    assertEquals(0, pointers.compareAndDeleteCalls);
     assertFalse(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
+    assertTrue(
+        Keys.accountDeletionFenceShards("acct").stream()
+            .allMatch(key -> pointers.get(key).isEmpty()));
   }
 
   @Test
@@ -424,6 +471,12 @@ class AccountServiceImplTest {
 
   private void putPointer(String key, String blobUri) {
     pointers.compareAndSet(key, 0L, PointerReferences.blobPointer(key, blobUri, 1L));
+  }
+
+  private void installDeletionMarker(MutationMeta meta) {
+    String key = Keys.accountDeletionMarker("acct");
+    String payload = Base64.getEncoder().encodeToString(meta.toByteArray());
+    pointers.compareAndSet(key, 0L, PointerReferences.opaqueMarkerPointer(key, payload, 1L));
   }
 
   private static final class TrackingPointerStore extends InMemoryPointerStore {

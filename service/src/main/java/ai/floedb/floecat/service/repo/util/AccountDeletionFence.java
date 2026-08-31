@@ -11,19 +11,15 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /** Account-deletion exclusion for repositories that publish raw pointer transactions. */
 public final class AccountDeletionFence {
   private AccountDeletionFence() {}
-
-  public static void requireAbsent(PointerStore pointerStore, String accountId) {
-    if (pointerStore.get(Keys.accountDeletionMarker(accountId)).isPresent()) {
-      throw new BaseResourceRepository.AccountDeletionInProgressException(accountId);
-    }
-  }
 
   public static boolean compareAndSet(
       PointerStore pointerStore, String accountId, String key, long expectedVersion, Pointer next) {
@@ -33,39 +29,47 @@ public final class AccountDeletionFence {
 
   public static boolean compareAndSetBatch(
       PointerStore pointerStore, String accountId, List<? extends PointerStore.CasOp> operations) {
-    String fenceKey = Keys.accountDeletionMarker(accountId);
+    if (operations == null || operations.isEmpty()) {
+      throw new IllegalArgumentException("operations must not be empty");
+    }
+    String fenceKey = Keys.accountDeletionFenceShard(accountId, operations.get(0).key());
     List<PointerStore.CasOp> fenced = new ArrayList<>(operations.size() + 1);
     fenced.add(new PointerStore.CasCheckAbsent(fenceKey));
     fenced.addAll(operations);
     boolean committed = pointerStore.compareAndSetBatch(fenced);
-    if (!committed && pointerStore.get(fenceKey).isPresent()) {
+    if (!committed && pointerStore.get(Keys.accountDeletionMarker(accountId)).isPresent()) {
       throw new BaseResourceRepository.AccountDeletionInProgressException(accountId);
     }
     return committed;
   }
 
-  /** Returns exact fence checks for every account touched by a pointer upsert. */
+  /** Returns one deterministic writer-gate check for every account touched by pointer upserts. */
   public static List<PointerStore.CasCheckAbsent> checksForAccountWrites(
       List<? extends PointerStore.CasOp> operations) {
-    Set<String> fenceKeys = new LinkedHashSet<>();
+    Map<String, String> firstWriteKeyByAccount = new LinkedHashMap<>();
     Set<String> existingChecks = new LinkedHashSet<>();
     if (operations != null) {
       for (PointerStore.CasOp operation : operations) {
         if (operation instanceof PointerStore.CasUpsert upsert) {
-          collectFenceKey(upsert.key(), fenceKeys);
+          collectAccountWrite(upsert.key(), firstWriteKeyByAccount);
           if (PointerReferences.isPointerKeyPointer(upsert.next())) {
-            collectFenceKey(upsert.next().getBlobUri(), fenceKeys);
+            collectAccountWrite(upsert.next().getBlobUri(), firstWriteKeyByAccount);
           }
         } else if (operation instanceof PointerStore.UnconditionalUpsert upsert) {
-          collectFenceKey(upsert.key(), fenceKeys);
+          collectAccountWrite(upsert.key(), firstWriteKeyByAccount);
           if (PointerReferences.isPointerKeyPointer(upsert.next())) {
-            collectFenceKey(upsert.next().getBlobUri(), fenceKeys);
+            collectAccountWrite(upsert.next().getBlobUri(), firstWriteKeyByAccount);
           }
         } else if (operation instanceof PointerStore.CasCheckAbsent check) {
           existingChecks.add(check.key());
         }
       }
     }
+    Set<String> fenceKeys = new LinkedHashSet<>();
+    firstWriteKeyByAccount.forEach(
+        (accountSegment, writeKey) ->
+            fenceKeys.add(
+                Keys.accountDeletionFenceShardForEncodedSegment(accountSegment, writeKey)));
     fenceKeys.removeAll(existingChecks);
     return fenceKeys.stream().map(PointerStore.CasCheckAbsent::new).toList();
   }
@@ -80,7 +84,13 @@ public final class AccountDeletionFence {
     return List.copyOf(fenced);
   }
 
-  private static void collectFenceKey(String pointerKey, Set<String> fenceKeys) {
+  public static PointerStore.CasCheckAbsent checkForAccountWrite(
+      String accountId, String writeKey) {
+    return new PointerStore.CasCheckAbsent(Keys.accountDeletionFenceShard(accountId, writeKey));
+  }
+
+  private static void collectAccountWrite(
+      String pointerKey, Map<String, String> firstWriteKeyByAccount) {
     if (pointerKey == null || pointerKey.isBlank()) {
       return;
     }
@@ -97,6 +107,6 @@ public final class AccountDeletionFence {
     if (accountSegment.isBlank() || Keys.isReservedAccountDirectorySegment(accountSegment)) {
       return;
     }
-    fenceKeys.add(Keys.accountDeletionMarkerForEncodedSegment(accountSegment));
+    firstWriteKeyByAccount.putIfAbsent(accountSegment, normalized);
   }
 }

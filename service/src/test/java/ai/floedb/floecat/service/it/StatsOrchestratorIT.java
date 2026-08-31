@@ -313,30 +313,34 @@ class StatsOrchestratorIT {
     CompletableFuture<StatsResolutionResult> future =
         CompletableFuture.supplyAsync(() -> orchestrator.resolve(req));
 
-    // Poll for the newly-created queued root for this connector. This test's profile disables
-    // workers so the root cannot advance and enqueue children before cancellation.
-    ReconcileJobStore.ReconcileJob syncJob = null;
+    // Cancel every newly-created queued root for this connector until resolve observes a
+    // cancellation. Attaching the connector can publish a root concurrently, so selecting only
+    // the first new root can cancel that job instead of the synchronous capture root.
+    Set<String> cancelledJobIds = new java.util.HashSet<>();
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
-    while (syncJob == null && System.nanoTime() < deadline) {
+    while (!future.isDone() && System.nanoTime() < deadline) {
       var page = jobStore.list(tableId.getAccountId(), 100, "", "", Set.of("JS_QUEUED"));
-      syncJob =
-          page.jobs.stream()
-              .filter(job -> !existingRootJobIds.contains(job.jobId))
-              .filter(job -> job.parentJobId == null || job.parentJobId.isBlank())
-              .filter(job -> connectorId.equals(job.connectorId))
-              .findFirst()
-              .orElse(null);
-      if (syncJob == null) {
+      boolean cancelledAny = false;
+      for (var job : page.jobs) {
+        if (existingRootJobIds.contains(job.jobId)
+            || (job.parentJobId != null && !job.parentJobId.isBlank())
+            || !connectorId.equals(job.connectorId)
+            || cancelledJobIds.contains(job.jobId)) {
+          continue;
+        }
+        var cancelled = jobStore.cancel(tableId.getAccountId(), job.jobId, "test_cancel");
+        assertTrue(cancelled.isPresent(), "new capture root job must be cancellable");
+        assertTrue(
+            Set.of("JS_CANCELLED", "JS_CANCELLING").contains(cancelled.get().state),
+            "new capture root job must enter a cancellation state");
+        cancelledJobIds.add(job.jobId);
+        cancelledAny = true;
+      }
+      if (!cancelledAny) {
         Thread.sleep(20);
       }
     }
-    assertNotNull(syncJob, "sync capture root job must appear in job store within 3s");
-
-    var cancelled = jobStore.cancel(tableId.getAccountId(), syncJob.jobId, "test_cancel");
-    assertTrue(cancelled.isPresent(), "sync capture root job must be cancellable");
-    assertTrue(
-        Set.of("JS_CANCELLED", "JS_CANCELLING").contains(cancelled.get().state),
-        "sync capture root job must enter a cancellation state");
+    assertFalse(cancelledJobIds.isEmpty(), "sync capture root job must appear within 3s");
     StatsResolutionResult result = future.get(5, TimeUnit.SECONDS);
 
     assertEquals(StatsSyncOutcome.FAILED, result.outcome());

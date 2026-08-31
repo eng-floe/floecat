@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.aws.DynamoDbClientManager;
 import ai.floedb.floecat.storage.kv.KvAttributes;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.storage.spi.PointerStoreKeys;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -2366,6 +2367,17 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
     String accountRootPrefix = stripLeadingSlash(Keys.accountRootPrefix());
     if (k.startsWith(accountByIdPrefix) || k.startsWith(accountByNamePrefix)) {
       return new GenericPointerKey(GENERIC_POINTER_GLOBAL_PK, k);
+    }
+    String fencePrefix = stripLeadingSlash(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PREFIX);
+    if (k.startsWith(fencePrefix)) {
+      String remainder = k.substring(fencePrefix.length());
+      int slash = remainder.indexOf('/');
+      if (slash <= 0 || slash == remainder.length() - 1) {
+        throw new IllegalArgumentException("bad account deletion fence key: " + pointerKey);
+      }
+      return new GenericPointerKey(
+          PointerStoreKeys.ACCOUNT_DELETION_FENCE_PARTITION_PREFIX + remainder,
+          PointerStoreKeys.ACCOUNT_DELETION_FENCE_SORT_KEY);
     }
     if (!k.startsWith(accountRootPrefix)) {
       throw new IllegalArgumentException("unexpected key: " + pointerKey);

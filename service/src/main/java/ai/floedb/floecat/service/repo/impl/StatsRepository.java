@@ -1424,7 +1424,7 @@ public class StatsRepository implements StatsStore {
             tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
     markGenerationPublishing(tableId, snapshotId, generationId);
     StringValue manifest = StringValue.of(generationId);
-    targetStatsStorage.putManifestBlob(tableId.getAccountId(), manifestBlobUri, manifest);
+    targetStatsStorage.putManifestBlob(manifestBlobUri, manifest);
     if (blobCache != null) {
       // Write-through the DECODED form readGenerationId caches: the first scan/planner read after
       // this publish pays neither a cold fetch nor a parse (URI is per-generation, immutable).
@@ -1795,8 +1795,7 @@ public class StatsRepository implements StatsStore {
     String manifestBlobUri =
         Keys.snapshotTargetStatsManifestBlobUri(
             tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
-    targetStatsStorage.putManifestBlob(
-        tableId.getAccountId(), manifestBlobUri, StringValue.of(generationId));
+    targetStatsStorage.putManifestBlob(manifestBlobUri, StringValue.of(generationId));
     Pointer created = PointerReferences.blobPointer(manifestPointer, manifestBlobUri, 1L);
     String lifecyclePointer = generationLifecyclePointer(tableId, snapshotId, generationId);
     Pointer published =
@@ -2829,7 +2828,6 @@ public class StatsRepository implements StatsStore {
       }
       List<TargetStatsWrite> pending = new ArrayList<>(uniqueWrites.values());
       String accountId = targetStatsAccountId(pending);
-      AccountDeletionFence.requireAbsent(mutationPointerStore, accountId);
       Set<String> blobsCreatedByCall = new LinkedHashSet<>();
       try {
         for (TargetStatsWrite write : pending) {
@@ -2854,7 +2852,6 @@ public class StatsRepository implements StatsStore {
         uniqueWrites.put(write.pointerKey(), write);
       }
       List<TargetStatsWrite> pending = new ArrayList<>(uniqueWrites.values());
-      AccountDeletionFence.requireAbsent(mutationPointerStore, targetStatsAccountId(pending));
       for (TargetStatsWrite write : pending) {
         overwrite(write.pointerKey(), write.blobUri(), write.value());
       }
@@ -3041,7 +3038,6 @@ public class StatsRepository implements StatsStore {
       }
       List<TargetStatsWrite> remaining = new ArrayList<>(uniqueWrites.values());
       String accountId = targetStatsAccountId(remaining);
-      AccountDeletionFence.requireAbsent(mutationPointerStore, accountId);
       List<TargetStatsRecord> created = new ArrayList<>(remaining.size());
       Set<String> blobsCreatedByCall = new LinkedHashSet<>();
       try {
@@ -3106,12 +3102,8 @@ public class StatsRepository implements StatsStore {
       }
     }
 
-    private void putManifestBlob(String accountId, String blobUri, StringValue manifest) {
+    private void putManifestBlob(String blobUri, StringValue manifest) {
       putBlobStrictBytes(blobUri, manifest.toByteArray());
-      if (mutationPointerStore.get(Keys.accountDeletionMarker(accountId)).isPresent()) {
-        deleteBlobQuietly(blobUri);
-        throw new AccountDeletionInProgressException(accountId);
-      }
     }
 
     private MutationMeta metaForPointer(String pointerKey, String blobUri, Timestamp nowTs) {

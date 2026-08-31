@@ -83,9 +83,16 @@ class GenericResourceRepositoryCreateTest {
 
   private void installAccountDeletionFence(String accountId) {
     String key = Keys.accountDeletionMarker(accountId);
-    assertThat(
-            ptr.compareAndSet(key, 0L, PointerReferences.opaqueMarkerPointer(key, "deleting", 1L)))
-        .isTrue();
+    List<PointerStore.CasOp> creates = new ArrayList<>();
+    creates.add(
+        new PointerStore.CasUpsert(
+            key, 0L, PointerReferences.opaqueMarkerPointer(key, "deleting", 1L)));
+    for (String shardKey : Keys.accountDeletionFenceShards(accountId)) {
+      creates.add(
+          new PointerStore.CasUpsert(
+              shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
+    }
+    assertThat(ptr.compareAndSetBatch(creates)).isTrue();
   }
 
   @Test
@@ -137,15 +144,49 @@ class GenericResourceRepositoryCreateTest {
             Catalog::toByteArray,
             "application/x-protobuf");
     var current = catalog("catalog-1", "alpha");
+    var updated = current.toBuilder().setDisplayName("beta").build();
+    String updatedBlobUri =
+        Schemas.CATALOG.blobUriForKey.apply(Schemas.CATALOG.keyFromValue.apply(updated));
     repo.create(current);
     installAccountDeletionFence("acct");
 
-    assertThatThrownBy(() -> repo.update(current.toBuilder().setDisplayName("beta").build(), 1L))
+    assertThatThrownBy(() -> repo.update(updated, 1L))
         .isInstanceOf(BaseResourceRepository.AccountDeletionInProgressException.class);
 
     assertThat(repo.getByKey(new CatalogKey("acct", "catalog-1"))).contains(current);
     assertThat(ptr.get(Keys.catalogPointerByName("acct", "alpha"))).isPresent();
     assertThat(ptr.get(Keys.catalogPointerByName("acct", "beta"))).isEmpty();
+    assertThat(blobs.head(updatedBlobUri)).isEmpty();
+  }
+
+  @Test
+  void updateDuringAccountDeletionReclaimsBodyMaterializedByAnEarlierWrite() {
+    var repo =
+        new GenericResourceRepository<>(
+            ptr,
+            blobs,
+            Schemas.CATALOG,
+            Catalog::parseFrom,
+            Catalog::toByteArray,
+            "application/x-protobuf");
+    var original = catalog("catalog-1", "alpha");
+    var renamed = original.toBuilder().setDisplayName("beta").build();
+    String originalBlobUri =
+        Schemas.CATALOG.blobUriForKey.apply(Schemas.CATALOG.keyFromValue.apply(original));
+    repo.create(original);
+    assertThat(repo.update(renamed, 1L)).isTrue();
+    // The rename left the original body behind, so reverting to it re-PUTs an already-present
+    // content-addressed URI that no live pointer names any more.
+    assertThat(blobs.head(originalBlobUri)).isPresent();
+    installAccountDeletionFence("acct");
+
+    assertThatThrownBy(() -> repo.update(original, 2L))
+        .isInstanceOf(BaseResourceRepository.AccountDeletionInProgressException.class);
+
+    assertThat(blobs.head(originalBlobUri)).isEmpty();
+    assertThat(repo.getByKey(new CatalogKey("acct", "catalog-1"))).contains(renamed);
+    assertThat(ptr.get(Keys.catalogPointerByName("acct", "beta"))).isPresent();
+    assertThat(ptr.get(Keys.catalogPointerByName("acct", "alpha"))).isEmpty();
   }
 
   @Test

@@ -74,12 +74,12 @@ public class MarkerStore {
 
   private void bumpMarker(String accountId, String key) {
     for (int i = 0; i < CAS_MAX; i++) {
-      if (pointerStore.get(Keys.accountDeletionMarker(accountId)).isPresent()) {
-        return;
-      }
       var current = pointerStore.get(key).orElse(null);
       long expected = current == null ? 0L : current.getVersion();
       if (tryAdvanceMarker(accountId, key, expected)) {
+        return;
+      }
+      if (pointerStore.get(Keys.accountDeletionMarker(accountId)).isPresent()) {
         return;
       }
     }
@@ -87,9 +87,6 @@ public class MarkerStore {
 
   private boolean advanceMarker(String accountId, String key, long expectedVersion) {
     String fenceKey = Keys.accountDeletionMarker(accountId);
-    if (pointerStore.get(fenceKey).isPresent()) {
-      throw new BaseResourceRepository.AccountDeletionInProgressException(accountId);
-    }
     boolean advanced = tryAdvanceMarker(accountId, key, expectedVersion);
     if (!advanced && pointerStore.get(fenceKey).isPresent()) {
       throw new BaseResourceRepository.AccountDeletionInProgressException(accountId);
@@ -101,7 +98,7 @@ public class MarkerStore {
     var next = PointerReferences.opaqueMarkerPointer(key, key, expectedVersion + 1);
     return pointerStore.compareAndSetBatch(
         List.of(
-            new PointerStore.CasCheckAbsent(Keys.accountDeletionMarker(accountId)),
+            AccountDeletionFence.checkForAccountWrite(accountId, key),
             new PointerStore.CasUpsert(key, expectedVersion, next)));
   }
 }

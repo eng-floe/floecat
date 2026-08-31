@@ -25,6 +25,7 @@ import ai.floedb.floecat.storage.kv.KvStore;
 import ai.floedb.floecat.storage.kv.KvStore.Key;
 import ai.floedb.floecat.storage.kv.cdi.KvTable;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.storage.spi.PointerStoreKeys;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.arc.properties.IfBuildProperty;
 import io.smallrye.mutiny.Uni;
@@ -86,6 +87,10 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     if (k.startsWith("accounts/by-id/") || k.startsWith("accounts/by-name/")) {
       return new KvStore.Key(GLOBAL_PK, k);
     }
+    String fencePrefix = stripLeadingSlash(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PREFIX);
+    if (k.startsWith(fencePrefix)) {
+      return accountDeletionFenceKey(k, fencePrefix);
+    }
     if (k.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
       return new KvStore.Key(CREDENTIAL_CLEANUP_PK, k);
     }
@@ -119,6 +124,10 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
     if (p.startsWith("accounts/by-id/") || p.startsWith("accounts/by-name/")) {
       return new KvStore.Key(GLOBAL_PK, p);
+    }
+    String fencePrefix = stripLeadingSlash(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PREFIX);
+    if (p.startsWith(fencePrefix)) {
+      return accountDeletionFenceKey(p, fencePrefix);
     }
     if (p.equals("catalog-integration-credential-cleanup")
         || p.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
@@ -420,9 +429,32 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
   private String keyOf(Key key) {
     if (key.partitionKey().equals(GLOBAL_PK) || key.partitionKey().equals(CREDENTIAL_CLEANUP_PK)) {
       return "/" + key.sortKey();
+    } else if (key.partitionKey()
+        .startsWith(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PARTITION_PREFIX)) {
+      String fenceSegment =
+          key.partitionKey()
+              .substring(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PARTITION_PREFIX.length());
+      return PointerStoreKeys.ACCOUNT_DELETION_FENCE_PREFIX + fenceSegment;
     } else {
       return key.toString();
     }
+  }
+
+  private static KvStore.Key accountDeletionFenceKey(String key, String fencePrefix) {
+    String remainder = key.substring(fencePrefix.length());
+    int slash = remainder.indexOf('/');
+    if (slash <= 0 || slash == remainder.length() - 1 || remainder.indexOf('/', slash + 1) >= 0) {
+      throw new IllegalArgumentException("bad account deletion fence key: " + key);
+    }
+    String accountSegment = remainder.substring(0, slash);
+    String shard = remainder.substring(slash + 1);
+    return new KvStore.Key(
+        PointerStoreKeys.ACCOUNT_DELETION_FENCE_PARTITION_PREFIX + accountSegment + "/" + shard,
+        PointerStoreKeys.ACCOUNT_DELETION_FENCE_SORT_KEY);
+  }
+
+  private static String stripLeadingSlash(String value) {
+    return value.startsWith("/") ? value.substring(1) : value;
   }
 
   static KvStore.Key _testKey(String key) {
