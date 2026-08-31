@@ -214,7 +214,7 @@ public class ConnectorIT {
 
     var catId = catalogs.getByName(accountId.getId(), "cat-e2e").orElseThrow().getResourceId();
 
-    assertEquals(3, namespaces.count(accountId.getId(), catId.getId(), List.of()));
+    assertEquals(3, namespaces.countConsistent(accountId.getId(), catId.getId(), List.of()));
 
     var dbNsId =
         namespaces.getByPath(accountId.getId(), catId.getId(), List.of("db")).orElseThrow();
@@ -1365,7 +1365,7 @@ public class ConnectorIT {
     var catId =
         catalogs.getByName(accountId.getId(), "glue-iceberg-rest").orElseThrow().getResourceId();
 
-    assertEquals(1, namespaces.count(accountId.getId(), catId.getId(), List.of()));
+    assertEquals(1, namespaces.countConsistent(accountId.getId(), catId.getId(), List.of()));
 
     var tpcdsNsId =
         namespaces

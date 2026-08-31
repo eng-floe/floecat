@@ -48,6 +48,7 @@ import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureRequest;
 import ai.floedb.floecat.reconciler.rpc.StartCaptureResponse;
+import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -56,6 +57,8 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.storage.impl.StorageAuthorityServiceImpl;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
@@ -131,6 +134,7 @@ public class SeedRunner {
   @Inject AccountRepository accounts;
   @Inject CatalogRepository catalogs;
   @Inject NamespaceRepository namespaces;
+  @Inject MarkerStore markerStore;
   @Inject ViewRepository views;
   @Inject TableRepository tables;
   @Inject SnapshotRepository snapshots;
@@ -213,11 +217,50 @@ public class SeedRunner {
         });
   }
 
+  /**
+   * Raised when a fixture's catalog or an ancestor namespace was deleted while seeding ran.
+   *
+   * <p>Not a failure. Seeding fences against a user's concurrent delete precisely because it can
+   * lose that race, and a fence whose subject is already gone cannot be retried into existence --
+   * re-creating a catalog a user just deleted would be worse than not seeding into it.
+   */
+  private static final class ContainerGoneException extends RuntimeException {
+    ContainerGoneException(BaseResourceRepository.NotFoundException cause) {
+      super(cause.getMessage(), cause);
+    }
+  }
+
+  /**
+   * Seeds a fixture write, treating an already-deleted container as a stop rather than a failure.
+   *
+   * <p>{@code FenceRetry} retries a LOST fence, which is the contended case. It does not catch a
+   * fence that cannot be resolved at all: {@code createFence} and {@code relationCreateFence} read
+   * the catalog, the parent path and the namespace, and throw when one is gone. That exception used
+   * to leave the retry loop uncaught and reach the startup handler, which logs "Startup seeding
+   * failed" at ERROR -- an alarm for what is a user deleting a fixture.
+   */
+  private void seedFencedWrite(String what, java.util.function.BooleanSupplier write) {
+    try {
+      FenceRetry.retryWhileFenceLost(what, write);
+    } catch (BaseResourceRepository.NotFoundException gone) {
+      throw new ContainerGoneException(gone);
+    }
+  }
+
   public void seedData() {
-    if (isFakeMode()) {
-      seedFakeData();
-    } else {
-      seedRealData();
+    try {
+      if (isFakeMode()) {
+        seedFakeData();
+      } else {
+        seedRealData();
+      }
+    } catch (ContainerGoneException gone) {
+      // Stops this run rather than failing it. Seeding is check-then-create throughout, and SEEDED
+      // is per process, so the next start seeds whatever is still missing.
+      LOG.warnf(
+          "Stopped seeding: a fixture's catalog or parent namespace was deleted concurrently (%s)."
+              + " Remaining fixtures will be seeded on the next start.",
+          gone.getMessage());
     }
   }
 
@@ -368,17 +411,49 @@ public class SeedRunner {
         : value.map(String::trim).filter(v -> !v.isBlank());
   }
 
+  /**
+   * Seeds a namespace and every ancestor on its path, deepest last.
+   *
+   * <p>The ancestors are materialised rather than skipped. The whole shape guard rests on an
+   * induction: a namespace can only be deleted or renamed when it has no descendant, and a
+   * descendant can only be added by a writer that asserts its parent's child marker -- so the
+   * parent's marker is enough, PROVIDED every namespace's parent exists. Seeding used to write
+   * {@code iceberg/staging/2025} with no {@code iceberg/staging} row, which broke that induction
+   * and made seeding the one writer that could strand a row: a user deleting {@code iceberg}
+   * samples its marker, scans and sees nothing because the seed row has not committed, and commits
+   * -- while the seed's batch, asserting only the catalog, shares no key with it and commits too.
+   *
+   * <p>Materialising each segment closes it, because each segment then asserts the marker of a
+   * parent that is really there. Seeding needs to be a participant at all -- rather than trusting
+   * check-then-create -- because it runs on an executor while traffic is served and, on a restart,
+   * seeds into a catalog and namespaces it did not create in that run.
+   */
   private ResourceId seedNamespace(
       String account, ResourceId catalogId, List<String> path, String display, long now) {
     List<String> clean = (path == null) ? List.of() : path;
-    var existing = namespaces.getByPath(account, catalogId.getId(), clean).orElse(null);
+    if (clean.isEmpty()) {
+      return seedNamespaceRow(account, catalogId, List.of(), display, now);
+    }
+    ResourceId deepest = null;
+    for (int depth = 1; depth <= clean.size(); depth++) {
+      List<String> prefix = clean.subList(0, depth);
+      deepest = seedNamespaceRow(account, catalogId, prefix, prefix.get(depth - 1), now);
+    }
+    return deepest;
+  }
+
+  /** One namespace row at {@code fullPath}, created under the same fence a request would take. */
+  private ResourceId seedNamespaceRow(
+      String account, ResourceId catalogId, List<String> fullPath, String display, long now) {
+    var existing = namespaces.getByPath(account, catalogId.getId(), fullPath).orElse(null);
     if (existing != null) {
       return existing.getResourceId();
     }
-    List<String> parents = clean.isEmpty() ? List.of() : clean.subList(0, clean.size() - 1);
-    String leaf = clean.isEmpty() ? display : clean.get(clean.size() - 1);
+    List<String> parents =
+        fullPath.isEmpty() ? List.of() : fullPath.subList(0, fullPath.size() - 1);
+    String leaf = fullPath.isEmpty() ? display : fullPath.get(fullPath.size() - 1);
 
-    String nsId = uuidFor(account + "/ns:" + displayPathKey(catalogId.getId(), clean));
+    String nsId = uuidFor(account + "/ns:" + displayPathKey(catalogId.getId(), fullPath));
 
     ResourceId nsRid =
         ResourceId.newBuilder()
@@ -397,7 +472,18 @@ public class SeedRunner {
             .setCreatedAt(Timestamps.fromMillis(now))
             .build();
 
-    namespaces.create(ns);
+    // The same fence a request takes: the catalog's child set, and the parent's when there is one.
+    // Retried, because losing is normal here -- the fence is against a user's concurrent write, and
+    // an unretried loss aborts the whole seed run at whichever row lost, leaving every later
+    // fixture
+    // unseeded with SEEDED already flipped so nothing seeds again. The fence is re-sampled per
+    // attempt, and the row id is derived, so a retry rebuilds the same row rather than a second
+    // one.
+    seedFencedWrite(
+        "seeding a namespace",
+        () ->
+            namespaces.createWhilePointersMatch(
+                ns, namespaces.createFence(markerStore, catalogId, parents)));
     return nsRid;
   }
 
@@ -439,7 +525,12 @@ public class SeedRunner {
             .putAllProperties(properties == null ? Map.of() : properties)
             .build();
 
-    views.create(view);
+    // Fenced for the same reason the namespace seed is: on a restart this seeds into a namespace it
+    // did not create in that run, so it is a real concurrent writer against a user's
+    // DeleteNamespace -- and seedData runs on an executor while traffic is served.
+    seedFencedWrite(
+        "seeding a view",
+        () -> views.createWhilePointersMatch(view, markerStore.relationCreateFence(nsRid)));
     return viewRid;
   }
 
@@ -486,7 +577,13 @@ public class SeedRunner {
             .setCreatedAt(Timestamps.fromMillis(now))
             .build();
 
-    tables.create(table);
+    // Fenced for the reason the view seed above states.
+    seedFencedWrite(
+        "seeding a table",
+        () ->
+            tables
+                .createWhilePointersMatch(table, markerStore.relationCreateFence(nsRid))
+                .isPresent());
     return tableRid;
   }
 
