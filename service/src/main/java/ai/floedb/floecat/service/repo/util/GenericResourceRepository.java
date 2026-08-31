@@ -34,6 +34,7 @@ import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -435,7 +436,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
-            cleanupCreateIfAbsentBlobOnCasMiss(
+            cleanupUncommittedCasBlob(
                 prepared.canonicalPointerKey, prepared.blobUri, prepared.blobExistedBefore);
             throw accountDeletionInProgress(resourceKey);
           }
@@ -712,7 +713,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             return true;
           }
           if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
-            cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
+            cleanupUncommittedCasBlob(canonicalPointer, blobUri, blobExistedBefore);
             throw accountDeletionInProgress(key);
           }
           return classifyCreateIfAbsentConflict(
@@ -727,7 +728,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       boolean blobExistedBefore) {
     // The batch committed nothing, so this call did not create the resource. Reclaim the blob we
     // optimistically wrote (best-effort, content-addressed) before classifying the outcome.
-    cleanupCreateIfAbsentBlobOnCasMiss(canonicalPointer, blobUri, blobExistedBefore);
+    cleanupUncommittedCasBlob(canonicalPointer, blobUri, blobExistedBefore);
 
     Pointer canonical = mutationPointerStore.get(canonicalPointer).orElse(null);
     if (canonical != null) {
@@ -801,7 +802,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return new CorruptionException(message);
   }
 
-  private void cleanupCreateIfAbsentBlobOnCasMiss(
+  private void cleanupUncommittedCasBlob(
       String canonicalPointer, String blobUri, boolean blobExistedBefore) {
     // For casBlobs schemas the URI is content-addressed (SHA256): concurrent writers with
     // identical content share a URI and no cleanup is needed. For distinct content, deleteQuietly
@@ -813,6 +814,28 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     Pointer pointer = mutationPointerStore.get(canonicalPointer).orElse(null);
     if (pointer != null && blobUri.equals(pointer.getBlobUri())) {
       return;
+    }
+    deleteQuietly(() -> mutationBlobStore.delete(blobUri));
+  }
+
+  /**
+   * Reclaims the body a write left behind when the account-deletion fence rejected its pointer
+   * batch. Unlike {@link #cleanupUncommittedCasBlob} this deletes the blob even when the same
+   * content-addressed URI already existed before the call: the account (its whole blob prefix
+   * included) is being torn down, so a body no live pointer names is garbage either way. The
+   * pointer recheck is what keeps it safe — if any pointer this write would have bound still
+   * resolves to the URI, a concurrent writer committed the identical content and owns the blob.
+   */
+  private void cleanupBlobRejectedByAccountDeletion(
+      String blobUri, Collection<String> referencingPointers) {
+    if (!schema.casBlobs || blobUri.isBlank()) {
+      return;
+    }
+    for (String pointer : referencingPointers) {
+      Pointer existing = mutationPointerStore.get(pointer).orElse(null);
+      if (existing != null && blobUri.equals(existing.getBlobUri())) {
+        return;
+      }
     }
     deleteQuietly(() -> mutationBlobStore.delete(blobUri));
   }
@@ -1019,6 +1042,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           if (!pointerConditionsStillMatch(requiredPointerVersions, requiredAbsentPointers))
             return Optional.empty();
           if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
+            Set<String> boundByThisWrite = new HashSet<>();
+            boundByThisWrite.add(canonicalPointer);
+            boundByThisWrite.addAll(schema.secondaryPointersFromValue.apply(updatedValue).values());
+            cleanupBlobRejectedByAccountDeletion(blobUri, boundByThisWrite);
             throw accountDeletionInProgress(key);
           }
           if (!markerVersionsStillMatch(markerVersions)) return Optional.empty();
@@ -1213,7 +1240,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
           if (!mutationPointerStore.compareAndSetBatch(ops)) {
             if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
-              cleanupCreateIfAbsentBlobOnCasMiss(
+              cleanupUncommittedCasBlob(
                   replacementCanonical, replacementBlobUri, replacementBlobExistedBefore);
               throw accountDeletionInProgress(currentKey);
             }
