@@ -293,6 +293,19 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-compiler-plugin</artifactId>
           <version>${version.plugin.compiler}</version>
+          <configuration>
+            <compilerArgs>
+              <!-- A javadoc that binds to nothing, or to the declaration after the one it was
+                   written for, documents nothing and describes the wrong thing. Easy to introduce by
+                   inserting a method above an existing one, and invisible on review.
+
+                   Reported, not fatal: pre-existing instances remain under the service module's own
+                   query/ package and in core/connectors, and failing the build on them belongs in a
+                   change that fixes them rather than here. No count is stated here on purpose,
+                   because one would drift; the build prints the current set. -->
+              <arg>-Xlint:dangling-doc-comments</arg>
+            </compilerArgs>
+          </configuration>
         </plugin>
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
