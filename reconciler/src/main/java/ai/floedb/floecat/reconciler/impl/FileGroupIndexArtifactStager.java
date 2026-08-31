@@ -99,7 +99,8 @@ public final class FileGroupIndexArtifactStager {
       long snapshotId,
       List<String> plannedFilePaths,
       List<TargetStatsRecord> stats,
-      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries) {
+      List<FloecatConnector.ParquetPageIndexEntry> pageIndexEntries,
+      String managedSidecarObjectPrefix) {
     if (plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return List.of();
     }
@@ -108,6 +109,7 @@ public final class FileGroupIndexArtifactStager {
     if (pageEntriesByFile.isEmpty()) {
       return List.of();
     }
+    String sidecarPrefix = normalizePrefix(managedSidecarObjectPrefix);
     Map<String, FileTargetStats> byPath = fileStatsByPath(stats);
     var now = nowTs();
     List<ReconcilerBackend.StagedIndexArtifact> artifacts = new ArrayList<>();
@@ -132,12 +134,11 @@ public final class FileGroupIndexArtifactStager {
                       .setFile(IndexFileTarget.newBuilder().setFilePath(filePath).build())
                       .build())
               .setArtifactUri(
-                  snapshotIndexSidecarBlobUri(
-                      tableId.getAccountId(),
-                      tableId.getId(),
-                      snapshotId,
-                      indexArtifactTargetStorageId(filePath),
-                      base64ToHex(contentSha256B64)))
+                  sidecarPrefix
+                      + encode(indexArtifactTargetStorageId(filePath))
+                      + "/"
+                      + encode(base64ToHex(contentSha256B64))
+                      + ".parquet")
               .setArtifactFormat("parquet")
               .setArtifactFormatVersion(1)
               .setContentEtag(contentSha256B64)
@@ -423,11 +424,12 @@ public final class FileGroupIndexArtifactStager {
     return sb.toString();
   }
 
-  private static String snapshotIndexSidecarBlobUri(
-      String accountId, String tableId, long snapshotId, String targetId, String sha256) {
-    return String.format(
-        "/accounts/%s/tables/%s/index-sidecars/%019d/%s/%s.parquet",
-        encode(accountId), encode(tableId), snapshotId, encode(targetId), encode(sha256));
+  private static String normalizePrefix(String prefix) {
+    if (prefix == null || prefix.isBlank()) {
+      throw new IllegalArgumentException("managed index sidecar object prefix is required");
+    }
+    String normalized = prefix.trim();
+    return normalized.endsWith("/") ? normalized : normalized + "/";
   }
 
   private static String encode(String value) {

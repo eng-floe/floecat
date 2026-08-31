@@ -189,7 +189,8 @@ public class StandaloneJavaFileGroupExecutionRunner {
                       payload.snapshotId(),
                       paths,
                       completedStats,
-                      completedIndexes),
+                      completedIndexes,
+                      payload.managedIndexSidecarObjectPrefix()),
                   plansByPath));
         }
         stagedIndexArtifacts.addAll(

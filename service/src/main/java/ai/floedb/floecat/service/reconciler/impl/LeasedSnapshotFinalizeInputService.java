@@ -208,7 +208,8 @@ public class LeasedSnapshotFinalizeInputService {
   private static String reusableArtifactIndexObjectPrefix(ReconcileJobStore.LeasedJob lease) {
     ReconcileSnapshotTask snapshotTask =
         lease.snapshotTask == null ? ReconcileSnapshotTask.empty() : lease.snapshotTask;
-    return Keys.tableReusableArtifactIndexObjectBlobPrefix(lease.accountId, snapshotTask.tableId());
+    return Keys.reconcileSnapshotReusableArtifactIndexObjectPrefix(
+        lease.accountId, snapshotTask.tableId(), snapshotTask.snapshotId(), lease.parentJobId);
   }
 
   private static String statsGenerationManifestUri(ReconcileJobStore.LeasedJob lease) {

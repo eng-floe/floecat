@@ -28,6 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultPayload;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -279,6 +280,8 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
           deduplicateSnapshotArtifacts(fileStats, reuseBundles);
       List<StatsObjectDescriptor> uniqueFileStats = deduplicated.fileStats();
       reuseBundles = deduplicated.reuseBundles();
+      List<StatsObjectDescriptor> inheritedIndexArtifactBundles =
+          ReusableArtifactBundles.inheritedIndexArtifactBundles(plannedGroups.values());
       validateRealizedSelectors(
           capturePolicy, input.sourceFileCount(), realizedStatsSelectors, realizedIndexSelectors);
       ReconcileSnapshotContentState.validateMaterializedStatsCoverage(
@@ -302,6 +305,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
                   finalStats,
                   List.of(),
                   reuseBundles,
+                  inheritedIndexArtifactBundles,
                   List.copyOf(realizedStatsSelectors),
                   List.copyOf(realizedIndexSelectors),
                   input.indexPredecessor())
@@ -319,6 +323,7 @@ public class RemoteSnapshotFinalizeReconcileExecutor implements ReconcileExecuto
                   finalStats,
                   List.of(),
                   reuseBundles,
+                  inheritedIndexArtifactBundles,
                   List.copyOf(realizedStatsSelectors),
                   List.copyOf(realizedIndexSelectors),
                   input.indexPredecessor(),

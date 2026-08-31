@@ -35,6 +35,7 @@ import ai.floedb.floecat.catalog.rpc.IndexTarget;
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.rpc.CaptureColumnPolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
@@ -257,13 +258,7 @@ class IndexArtifactRepositoryTest {
     IndexArtifactRepository repository = createRepository(pointers, blobs);
     long snapshotId = 715L;
     String targetStorageId = "file:s3://bucket/file.parquet";
-    String sidecar =
-        Keys.snapshotIndexSidecarBlobUri(
-            TABLE_ID.getAccountId(),
-            TABLE_ID.getId(),
-            snapshotId,
-            targetStorageId,
-            Hashing.sha256Hex(new byte[] {1, 2, 3}));
+    String sidecar = managedSidecar(snapshotId, targetStorageId, new byte[] {1, 2, 3});
     IndexArtifactRecord record =
         indexRecord(snapshotId, "s3://bucket/file.parquet").toBuilder()
             .setArtifactUri(sidecar)
@@ -275,8 +270,9 @@ class IndexArtifactRepositoryTest {
             .build()
             .toByteArray();
     byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
-    String workerPrefix = "/worker-output/index-artifacts/";
-    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    String workerPrefix = workerStatsPrefix(snapshotId) + "index-artifacts/";
+    String bundleUri =
+        workerStatsPrefix(snapshotId) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
     blobs.put(bundleUri, bundle, "application/x-protobuf");
 
     assertThatThrownBy(
@@ -300,6 +296,323 @@ class IndexArtifactRepositoryTest {
   }
 
   @Test
+  void bundledIndexReferenceRejectsSidecarFromDifferentCarrierGeneration() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = createRepository(pointers, blobs);
+    long snapshotId = 715L;
+    String targetStorageId = "file:s3://bucket/file.parquet";
+    byte[] sidecarContent = new byte[] {1, 2, 3};
+    String sidecar =
+        Keys.reconcileFileGroupIndexSidecarObjectUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            "other",
+            "group-job",
+            "lease-1",
+            targetStorageId,
+            Hashing.sha256Hex(sidecarContent));
+    blobs.put(sidecar, sidecarContent, "application/octet-stream");
+    IndexArtifactRecord record =
+        indexRecord(snapshotId, "s3://bucket/file.parquet").toBuilder()
+            .setArtifactUri(sidecar)
+            .build();
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(snapshotId) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    assertThatThrownBy(
+            () ->
+                repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+                    TABLE_ID,
+                    snapshotId,
+                    "full-rescan-bundled",
+                    workerStatsPrefix(snapshotId),
+                    List.of(
+                        new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                            targetStorageId, bundleUri, bundle.length, digest))))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("sidecar is outside its carrier or inherited generation");
+  }
+
+  @Test
+  void bundledIndexReferenceRejectsSidecarFromDifferentProducerInCarrierGeneration() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = createRepository(pointers, blobs);
+    long snapshotId = 715L;
+    String targetStorageId = "file:s3://bucket/file.parquet";
+    byte[] sidecarContent = new byte[] {1, 2, 3};
+    String sidecar =
+        Keys.reconcileFileGroupIndexSidecarObjectUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            "bundled",
+            "other-group-job",
+            "other-lease",
+            targetStorageId,
+            Hashing.sha256Hex(sidecarContent));
+    blobs.put(sidecar, sidecarContent, "application/octet-stream");
+    IndexArtifactRecord record =
+        indexRecord(snapshotId, "s3://bucket/file.parquet").toBuilder()
+            .setArtifactUri(sidecar)
+            .build();
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(snapshotId) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    assertThatThrownBy(
+            () ->
+                repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+                    TABLE_ID,
+                    snapshotId,
+                    "full-rescan-bundled",
+                    workerStatsPrefix(snapshotId) + "index-artifacts/",
+                    Keys.reconcileFileGroupIndexSidecarObjectPrefix(
+                        TABLE_ID.getAccountId(),
+                        TABLE_ID.getId(),
+                        snapshotId,
+                        "bundled",
+                        "group-job",
+                        "lease-1"),
+                    Set.of(),
+                    List.of(
+                        new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                            targetStorageId, bundleUri, bundle.length, digest))))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("sidecar is outside its producer prefix");
+  }
+
+  @Test
+  void inheritedBundleSidecarUsesCarrierGenerationRatherThanPublishingGeneration() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = createRepository(pointers, blobs);
+    long snapshotId = 715L;
+    String targetStorageId = "file:s3://bucket/file.parquet";
+    byte[] sidecarContent = new byte[] {4, 5, 6};
+    String sidecar = managedSidecar(snapshotId, targetStorageId, sidecarContent);
+    blobs.put(sidecar, sidecarContent, "application/octet-stream");
+    IndexArtifactRecord record =
+        indexRecord(snapshotId, "s3://bucket/file.parquet").toBuilder()
+            .setArtifactUri(sidecar)
+            .build();
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(snapshotId) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "full-rescan-successor",
+        Keys.tableTargetStatsBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()),
+        List.of(
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                targetStorageId, bundleUri, bundle.length, digest)));
+
+    assertThat(
+            pointers.countByPrefix(
+                Keys.snapshotIndexArtifactGenerationPrefix(
+                    TABLE_ID.getAccountId(),
+                    TABLE_ID.getId(),
+                    snapshotId,
+                    "full-rescan-successor")))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void currentBundleAcceptsManagedSidecarFromExplicitlyInheritedGeneration() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = createRepository(pointers, blobs);
+    long snapshotId = 715L;
+    String targetStorageId = "file:s3://bucket/file.parquet";
+    byte[] sidecarContent = new byte[] {7, 8, 9};
+    String sidecar =
+        Keys.reconcileFileGroupIndexSidecarObjectUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            "prior-parent",
+            "prior-group",
+            "prior-lease",
+            targetStorageId,
+            Hashing.sha256Hex(sidecarContent));
+    blobs.put(sidecar, sidecarContent, "application/octet-stream");
+    IndexArtifactRecord record =
+        indexRecord(snapshotId, "s3://bucket/file.parquet").toBuilder()
+            .setArtifactUri(sidecar)
+            .build();
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(snapshotId) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        "full-rescan-bundled",
+        workerStatsPrefix(snapshotId) + "index-artifacts/",
+        Keys.reconcileFileGroupIndexSidecarObjectPrefix(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            "bundled",
+            "group-job",
+            "lease-1"),
+        Set.of(new Keys.GenerationKey(snapshotId, "full-rescan-prior-parent")),
+        List.of(
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                targetStorageId, bundleUri, bundle.length, digest)));
+
+    assertThat(
+            pointers.countByPrefix(
+                Keys.snapshotIndexArtifactGenerationPrefix(
+                    TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, "full-rescan-bundled")))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void selectedBundleAuthenticatesItsActualTransitiveSidecarGeneration() {
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
+    String filePath = "s3://bucket/file.parquet";
+    String targetStorageId = "file:" + filePath;
+    byte[] sidecarContent = new byte[] {10, 11, 12};
+    String sidecar =
+        Keys.reconcileFileGroupIndexSidecarObjectUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            714L,
+            "ancestor-parent",
+            "ancestor-group",
+            "ancestor-lease",
+            targetStorageId,
+            Hashing.sha256Hex(sidecarContent));
+    IndexArtifactRecord record =
+        indexRecord(714L, filePath).toBuilder().setArtifactUri(sidecar).build();
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        Keys.reconcileFileGroupStatsObjectPrefix(
+                TABLE_ID.getAccountId(),
+                TABLE_ID.getId(),
+                715L,
+                "prior-parent",
+                "prior-group",
+                "prior-lease")
+            + "reuse-bundles/"
+            + Hashing.sha256Hex(bundle)
+            + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    Set<Keys.GenerationKey> generations =
+        repository.inheritedManagedSidecarGenerations(
+            TABLE_ID,
+            List.of(
+                new ReusableArtifactBundleSelection(
+                    "reuse-bundle:prior-group",
+                    bundleUri,
+                    bundle.length,
+                    digest,
+                    List.of(),
+                    List.of(filePath))));
+
+    assertThat(generations)
+        .containsExactly(new Keys.GenerationKey(714L, "full-rescan-ancestor-parent"));
+  }
+
+  @Test
+  void selectedBundleRejectsASidecarGenerationOwnedByAnotherTable() {
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
+    String filePath = "s3://bucket/file.parquet";
+    String selectedSidecar =
+        Keys.reconcileFileGroupIndexSidecarObjectUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            714L,
+            "ancestor-parent",
+            "ancestor-group",
+            "ancestor-lease",
+            "file:" + filePath,
+            Hashing.sha256Hex(new byte[] {1}));
+    String sidecar =
+        Keys.reconcileFileGroupIndexSidecarObjectUri(
+            TABLE_ID.getAccountId(),
+            "other-table",
+            714L,
+            "ancestor-parent",
+            "ancestor-group",
+            "ancestor-lease",
+            "file:" + filePath,
+            Hashing.sha256Hex(new byte[] {1}));
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(
+                indexRecord(714L, filePath).toBuilder().setArtifactUri(selectedSidecar))
+            .addIndexArtifacts(
+                indexRecord(714L, "s3://bucket/unselected.parquet").toBuilder()
+                    .setArtifactUri(sidecar))
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(715L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    assertThatThrownBy(
+            () ->
+                repository.inheritedManagedSidecarGenerations(
+                    TABLE_ID,
+                    List.of(
+                        new ReusableArtifactBundleSelection(
+                            "reuse-bundle:prior-group",
+                            bundleUri,
+                            bundle.length,
+                            digest,
+                            List.of(),
+                            List.of(filePath)))))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("sidecar is outside the owning table generation");
+  }
+
+  @Test
   void bundledIndexPublicationChecksOwnedSidecarsConcurrently() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     BlobStore blobs = mock(BlobStore.class);
@@ -307,20 +620,8 @@ class IndexArtifactRepositoryTest {
     long snapshotId = 715L;
     String firstTarget = "file:s3://bucket/first.parquet";
     String secondTarget = "file:s3://bucket/second.parquet";
-    String firstSidecar =
-        Keys.snapshotIndexSidecarBlobUri(
-            TABLE_ID.getAccountId(),
-            TABLE_ID.getId(),
-            snapshotId,
-            firstTarget,
-            Hashing.sha256Hex(new byte[] {1}));
-    String secondSidecar =
-        Keys.snapshotIndexSidecarBlobUri(
-            TABLE_ID.getAccountId(),
-            TABLE_ID.getId(),
-            snapshotId,
-            secondTarget,
-            Hashing.sha256Hex(new byte[] {2}));
+    String firstSidecar = managedSidecar(snapshotId, firstTarget, new byte[] {1});
+    String secondSidecar = managedSidecar(snapshotId, secondTarget, new byte[] {2});
     byte[] bundle =
         ReusableArtifactBundlePayload.newBuilder()
             .setFormatVersion(1)
@@ -333,7 +634,8 @@ class IndexArtifactRepositoryTest {
             .build()
             .toByteArray();
     byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
-    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    String bundleUri =
+        workerStatsPrefix(snapshotId) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
     when(blobs.get(bundleUri)).thenReturn(bundle);
     CountDownLatch bothStarted = new CountDownLatch(2);
     AtomicInteger active = new AtomicInteger();
@@ -353,7 +655,7 @@ class IndexArtifactRepositoryTest {
         TABLE_ID,
         snapshotId,
         "full-rescan-bundled",
-        "/worker-output/index-artifacts/",
+        workerStatsPrefix(snapshotId) + "index-artifacts/",
         List.of(
             new IndexArtifactRepository.PrewrittenIndexArtifactReference(
                 firstTarget, bundleUri, bundle.length, digest),
@@ -371,13 +673,7 @@ class IndexArtifactRepositoryTest {
     long snapshotId = 716L;
     String firstTarget = "file:s3://bucket/first.parquet";
     String secondTarget = "file:s3://bucket/second.parquet";
-    String sharedSidecar =
-        Keys.snapshotIndexSidecarBlobUri(
-            TABLE_ID.getAccountId(),
-            TABLE_ID.getId(),
-            snapshotId,
-            firstTarget,
-            Hashing.sha256Hex(new byte[8 * 1024 * 1024]));
+    String sharedSidecar = managedSidecar(snapshotId, firstTarget, new byte[8 * 1024 * 1024]);
     byte[] bundle =
         ReusableArtifactBundlePayload.newBuilder()
             .setFormatVersion(1)
@@ -390,7 +686,8 @@ class IndexArtifactRepositoryTest {
             .build()
             .toByteArray();
     byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
-    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    String bundleUri =
+        workerStatsPrefix(snapshotId) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
     when(blobs.get(bundleUri)).thenReturn(bundle);
     when(blobs.head(sharedSidecar)).thenReturn(Optional.of(BlobHeader.getDefaultInstance()));
 
@@ -398,7 +695,7 @@ class IndexArtifactRepositoryTest {
         TABLE_ID,
         snapshotId,
         "full-rescan-bundled",
-        "/worker-output/index-artifacts/",
+        workerStatsPrefix(snapshotId) + "index-artifacts/",
         List.of(
             new IndexArtifactRepository.PrewrittenIndexArtifactReference(
                 firstTarget, bundleUri, bundle.length, digest),
@@ -424,17 +721,12 @@ class IndexArtifactRepositoryTest {
       targets.add(target);
       bundleBuilder.addIndexArtifacts(
           indexRecord(snapshotId, filePath).toBuilder()
-              .setArtifactUri(
-                  Keys.snapshotIndexSidecarBlobUri(
-                      TABLE_ID.getAccountId(),
-                      TABLE_ID.getId(),
-                      snapshotId,
-                      target,
-                      Hashing.sha256Hex(new byte[] {(byte) index}))));
+              .setArtifactUri(managedSidecar(snapshotId, target, new byte[] {(byte) index})));
     }
     byte[] bundle = bundleBuilder.build().toByteArray();
     byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
-    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    String bundleUri =
+        workerStatsPrefix(snapshotId) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
     when(blobs.get(bundleUri)).thenReturn(bundle);
     CountDownLatch fiftyStarted = new CountDownLatch(50);
     AtomicInteger active = new AtomicInteger();
@@ -456,7 +748,7 @@ class IndexArtifactRepositoryTest {
         TABLE_ID,
         snapshotId,
         "full-rescan-bundled",
-        "/worker-output/index-artifacts/",
+        workerStatsPrefix(snapshotId) + "index-artifacts/",
         targets.stream()
             .map(
                 target ->
@@ -775,7 +1067,7 @@ class IndexArtifactRepositoryTest {
     IndexArtifactRepository repository = createRepository(pointers, blobs);
     byte[] content = new byte[] {1, 2, 3};
     String sidecar =
-        Keys.snapshotIndexSidecarBlobUri(
+        Keys.snapshotDirectIndexSidecarObjectUri(
             TABLE_ID.getAccountId(),
             TABLE_ID.getId(),
             720L,
@@ -802,7 +1094,7 @@ class IndexArtifactRepositoryTest {
     IndexArtifactRepository repository = createRepository(pointers, blobs);
     byte[] content = new byte[] {4, 5, 6};
     String sidecar =
-        Keys.snapshotIndexSidecarBlobUri(
+        Keys.snapshotDirectIndexSidecarObjectUri(
             TABLE_ID.getAccountId(),
             TABLE_ID.getId(),
             721L,
@@ -826,7 +1118,7 @@ class IndexArtifactRepositoryTest {
     IndexArtifactRepository repository = createRepository(pointers, blobs);
     byte[] content = new byte[] {7, 8, 9};
     String sidecar =
-        Keys.snapshotIndexSidecarBlobUri(
+        Keys.snapshotDirectIndexSidecarObjectUri(
             TABLE_ID.getAccountId(),
             "other-table",
             722L,
@@ -838,7 +1130,7 @@ class IndexArtifactRepositoryTest {
 
     assertThatThrownBy(() -> repository.putIndexArtifact(record))
         .isInstanceOf(BaseResourceRepository.CorruptionException.class)
-        .hasMessageContaining("sidecar owned by another table");
+        .hasMessageContaining("sidecar is outside its carrier or inherited generation");
 
     assertThat(
             pointers.countByPrefix(
@@ -1126,6 +1418,23 @@ class IndexArtifactRepositoryTest {
         .setArtifactFormatVersion(1)
         .setState(IndexArtifactState.IAS_READY)
         .build();
+  }
+
+  private static String workerStatsPrefix(long snapshotId) {
+    return Keys.reconcileFileGroupStatsObjectPrefix(
+        TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, "bundled", "group-job", "lease-1");
+  }
+
+  private static String managedSidecar(long snapshotId, String targetStorageId, byte[] content) {
+    return Keys.reconcileFileGroupIndexSidecarObjectUri(
+        TABLE_ID.getAccountId(),
+        TABLE_ID.getId(),
+        snapshotId,
+        "bundled",
+        "group-job",
+        "lease-1",
+        targetStorageId,
+        Hashing.sha256Hex(content));
   }
 
   private static SnapshotCaptureManifest captureManifest(

@@ -188,6 +188,8 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
 
     assertThat(published).isEmpty();
     assertThat(result.stagedIndexArtifacts()).hasSize(1);
+    assertThat(result.stagedIndexArtifacts().getFirst().record().getArtifactUri())
+        .startsWith(indexOnlyPayload().managedIndexSidecarObjectPrefix());
     ArgumentCaptor<CaptureEngineRequest> request =
         ArgumentCaptor.forClass(CaptureEngineRequest.class);
     verify(runner.captureEngineRegistry).capture(request.capture(), any());
@@ -352,6 +354,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
             base.groupId(),
             base.resultPayloadUri(),
             base.statsObjectPrefix(),
+            base.managedIndexSidecarObjectPrefix(),
             base.plannedFilePaths(),
             base.executionSchemaJson(),
             List.of(plan),
@@ -730,6 +733,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
             base.groupId(),
             base.resultPayloadUri(),
             base.statsObjectPrefix(),
+            base.managedIndexSidecarObjectPrefix(),
             List.of(reusedPath, capturedPath),
             base.executionSchemaJson(),
             List.of(reusedPlan, capturedPlan),
@@ -765,6 +769,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         "group-1",
         "/result.pb",
         "/stats.pb",
+        "/stats.pb/index-sidecars/",
         List.of("s3://bucket/path/file.parquet"),
         "",
         List.of(),
@@ -787,6 +792,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         base.groupId(),
         base.resultPayloadUri(),
         base.statsObjectPrefix(),
+        base.managedIndexSidecarObjectPrefix(),
         base.plannedFilePaths(),
         base.executionSchemaJson(),
         base.fileExecutionPlans(),
@@ -813,6 +819,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         base.groupId(),
         base.resultPayloadUri(),
         base.statsObjectPrefix(),
+        base.managedIndexSidecarObjectPrefix(),
         base.plannedFilePaths(),
         base.executionSchemaJson(),
         base.fileExecutionPlans(),
@@ -836,6 +843,7 @@ class StandaloneJavaFileGroupExecutionRunnerTest {
         base.groupId(),
         base.resultPayloadUri(),
         base.statsObjectPrefix(),
+        base.managedIndexSidecarObjectPrefix(),
         base.plannedFilePaths(),
         base.executionSchemaJson(),
         List.of(plan),

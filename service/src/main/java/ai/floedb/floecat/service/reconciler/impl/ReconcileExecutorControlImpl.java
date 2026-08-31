@@ -931,6 +931,14 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                               payload.parentJobId(),
                               payload.jobId(),
                               payload.leaseEpoch()))
+                      .setManagedIndexSidecarObjectPrefix(
+                          Keys.reconcileFileGroupIndexSidecarObjectPrefix(
+                              payload.tableId().getAccountId(),
+                              payload.tableId().getId(),
+                              payload.snapshotId(),
+                              payload.parentJobId(),
+                              payload.jobId(),
+                              payload.leaseEpoch()))
                       .setIndexPredecessor(
                           ai.floedb.floecat.reconciler.rpc.IndexGenerationPredecessor.newBuilder()
                               .setGenerationId(payload.indexPredecessor().generationId())

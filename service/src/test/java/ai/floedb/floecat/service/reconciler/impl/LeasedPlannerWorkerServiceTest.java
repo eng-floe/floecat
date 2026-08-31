@@ -1959,13 +1959,15 @@ class LeasedPlannerWorkerServiceTest {
                   object
                       .clone()
                       .setUri(
-                          Keys.tableReusableArtifactIndexObjectBlobPrefix("acct", "table-1")
+                          Keys.reconcileSnapshotReusableArtifactIndexObjectPrefix(
+                                  "acct", "table-1", 55L, "job-1")
                               + "manifest.pb"))
               .setFilter(
                   object
                       .clone()
                       .setUri(
-                          Keys.tableReusableArtifactIndexObjectBlobPrefix("acct", "table-1")
+                          Keys.reconcileSnapshotReusableArtifactIndexObjectPrefix(
+                                  "acct", "table-1", 55L, "job-1")
                               + "filter.bf"))
               .setEntryCount(stats + indexes)
               .setFileStatsRecordCount(stats)

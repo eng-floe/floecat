@@ -32,6 +32,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
@@ -78,6 +79,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
   @Inject ReconcileJobStore jobs;
   @Inject ai.floedb.floecat.service.repo.IdempotencyRepository idempotencyStore;
   @Inject SnapshotFinalizeChildStateService childStateService;
+  @Inject SnapshotFinalizeCoverageService coverageService;
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
   @Inject SnapshotFinalizePersistenceService persistence;
   @Inject IndexArtifactRepository indexArtifactRepository;
@@ -451,8 +453,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
     }
     ReusableArtifactIndexStore indexStore = new ReusableArtifactIndexStore(blobStore);
     indexStore.validateReadableReference(
-        Keys.tableReusableArtifactIndexObjectBlobPrefix(
-            descriptor.getAccountId(), descriptor.getTableId()),
+        Keys.tableTargetStatsBlobPrefix(descriptor.getAccountId(), descriptor.getTableId()),
         manifest.getReusableArtifactIndex());
     if (manifest.getReusableArtifactIndex().getFileStatsRecordCount()
             != manifest.getFileStatsRecordCount()
@@ -467,11 +468,50 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
         manifest.getSourceFileCount());
     boolean capturedIndexes =
         manifest.getCapturePolicy().getOutputsList().contains(CaptureOutput.CO_PARQUET_PAGE_INDEX);
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(descriptor.getAccountId())
+            .setId(descriptor.getTableId())
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    validateInheritedIndexArtifactBundles(
+        tableId, capturedIndexes, coverageService.plannedFileGroups(snapshotTask), manifest);
     if (capturedIndexes && manifest.getIndexArtifactCount() != manifest.getSourceFileCount()) {
       throw new IllegalArgumentException("snapshot index artifacts do not cover every source file");
     }
     validateIndexPredecessor(snapshotTask, capturedIndexes, manifest);
     return new ValidatedCaptureManifest(manifest);
+  }
+
+  private void validateInheritedIndexArtifactBundles(
+      ResourceId tableId,
+      boolean capturedIndexes,
+      List<ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask> plannedGroups,
+      SnapshotCaptureManifest manifest) {
+    if (!capturedIndexes && manifest.getInheritedIndexArtifactBundlesCount() != 0) {
+      throw new IllegalArgumentException(
+          "non-index snapshot contains inherited index artifact bundles");
+    }
+    List<StatsObjectDescriptor> expected =
+        ReusableArtifactBundles.inheritedIndexArtifactBundles(plannedGroups);
+    Map<String, StatsObjectDescriptor> expectedByUri = new LinkedHashMap<>();
+    for (StatsObjectDescriptor descriptor : expected) {
+      expectedByUri.put(descriptor.getPayloadUri(), descriptor);
+    }
+    Map<String, StatsObjectDescriptor> submittedByUri = new LinkedHashMap<>();
+    for (StatsObjectDescriptor descriptor : manifest.getInheritedIndexArtifactBundlesList()) {
+      if (submittedByUri.putIfAbsent(descriptor.getPayloadUri(), descriptor) != null) {
+        throw new IllegalArgumentException("duplicate inherited index artifact bundle descriptor");
+      }
+    }
+    if (!expectedByUri.equals(submittedByUri)) {
+      throw new IllegalArgumentException(
+          "snapshot inherited index artifact bundles do not match the immutable file plan");
+    }
+    if (capturedIndexes) {
+      indexArtifactRepository.inheritedManagedSidecarGenerations(
+          tableId, ReusableArtifactBundles.inheritedIndexArtifactBundleSelections(plannedGroups));
+    }
   }
 
   private static void validateIndexPredecessor(

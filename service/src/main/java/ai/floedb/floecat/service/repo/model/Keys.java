@@ -54,8 +54,6 @@ public final class Keys {
   public static final String INDEX_ARTIFACT_DIRECT_GENERATION = "direct";
   public static final String INDEX_CAPTURE_MANIFEST_POINTER_FILE = "capture-manifest";
   public static final String INDEX_CAPTURE_MANIFEST_BLOB_DIRECTORY = "capture-manifests/";
-  public static final String REUSABLE_ARTIFACT_INDEX_OBJECT_BLOB_DIRECTORY =
-      "reusable-artifact-index/runs/";
   public static final String SEG_INDEX_CAPTURE_MANIFESTS =
       SEG_INDEX_ARTIFACTS + INDEX_CAPTURE_MANIFEST_BLOB_DIRECTORY;
   public static final String SUFFIX_INDEX_CAPTURE_MANIFEST_POINTER =
@@ -563,11 +561,6 @@ public final class Keys {
     return tableBlobPrefix(accountId, tableId) + "snapshots/";
   }
 
-  public static String tableReusableArtifactIndexObjectBlobPrefix(
-      String accountId, String tableId) {
-    return tableBlobPrefix(accountId, tableId) + REUSABLE_ARTIFACT_INDEX_OBJECT_BLOB_DIRECTORY;
-  }
-
   public static String tableConstraintsBlobPrefix(String accountId, String tableId) {
     return tableBlobPrefix(accountId, tableId) + "constraints/";
   }
@@ -928,20 +921,55 @@ public final class Keys {
         + encode(req("target_id", targetId));
   }
 
-  public static String snapshotIndexSidecarBlobUri(
-      String accountId, String tableId, long snapshotId, String targetId, String sha256) {
-    String tid = req("account_id", accountId);
-    String tbid = req("table_id", tableId);
-    long sid = reqNonNegative("snapshot_id", snapshotId);
-    String target = req("target_id", targetId);
-    String sha = req("sha256", sha256);
-    return String.format(
-        "/accounts/%s/tables/%s/index-sidecars/%019d/%s/%s.parquet",
-        encode(tid), encode(tbid), sid, encode(target), encode(sha));
+  public static String reconcileFileGroupIndexSidecarObjectPrefix(
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String parentJobId,
+      String jobId,
+      String leaseEpoch) {
+    return reconcileFileGroupStatsObjectPrefix(
+            accountId, tableId, snapshotId, parentJobId, jobId, leaseEpoch)
+        + "index-sidecars/";
   }
 
-  public static String tableIndexSidecarBlobPrefix(String accountId, String tableId) {
-    return tableBlobPrefix(accountId, tableId) + SEG_INDEX_SIDECARS.substring(1);
+  public static String reconcileFileGroupIndexSidecarObjectUri(
+      String accountId,
+      String tableId,
+      long snapshotId,
+      String parentJobId,
+      String jobId,
+      String leaseEpoch,
+      String targetId,
+      String sha256) {
+    return reconcileFileGroupIndexSidecarObjectPrefix(
+            accountId, tableId, snapshotId, parentJobId, jobId, leaseEpoch)
+        + encode(req("target_id", targetId))
+        + "/"
+        + encode(req("sha256", sha256))
+        + ".parquet";
+  }
+
+  public static String snapshotDirectIndexSidecarObjectPrefix(
+      String accountId, String tableId, long snapshotId) {
+    return snapshotTargetStatsGenerationBlobPrefix(
+            accountId, tableId, snapshotId, INDEX_ARTIFACT_DIRECT_GENERATION)
+        + "index-sidecars/";
+  }
+
+  public static String snapshotDirectIndexSidecarObjectUri(
+      String accountId, String tableId, long snapshotId, String targetId, String sha256) {
+    return snapshotDirectIndexSidecarObjectPrefix(accountId, tableId, snapshotId)
+        + encode(req("target_id", targetId))
+        + "/"
+        + encode(req("sha256", sha256))
+        + ".parquet";
+  }
+
+  public static String reconcileSnapshotReusableArtifactIndexObjectPrefix(
+      String accountId, String tableId, long snapshotId, String parentJobId) {
+    return reconcileSnapshotFinalizeStatsObjectPrefix(accountId, tableId, snapshotId, parentJobId)
+        + "reusable-artifact-index/";
   }
 
   public static String snapshotCompatDirectoryPointer(

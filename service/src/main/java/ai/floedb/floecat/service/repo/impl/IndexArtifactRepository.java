@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
@@ -59,6 +60,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 @ApplicationScoped
 public class IndexArtifactRepository {
@@ -144,7 +146,12 @@ public class IndexArtifactRepository {
       Function<MutationMeta, List<PointerStore.CasOp>> completionFactory,
       Consumer<List<PointerStore.CasOp>> completionDiscarder) {
     ResourceId tableId = value.getTableId();
-    refreshSharedSidecars(tableId, List.of(value));
+    validateManagedSidecars(
+        tableId,
+        () -> new Keys.GenerationKey(value.getSnapshotId(), DIRECT_GENERATION),
+        null,
+        Set.of(),
+        List.of(value));
     Optional<String> active = activeGeneration(tableId, value.getSnapshotId());
     if (active.isPresent() && !DIRECT_GENERATION.equals(active.get())) {
       throw new IllegalStateException(
@@ -223,7 +230,12 @@ public class IndexArtifactRepository {
 
   private void putIndexArtifactGuarded(IndexArtifactRecord value) {
     ResourceId tableId = value.getTableId();
-    refreshSharedSidecars(tableId, List.of(value));
+    validateManagedSidecars(
+        tableId,
+        () -> new Keys.GenerationKey(value.getSnapshotId(), DIRECT_GENERATION),
+        null,
+        Set.of(),
+        List.of(value));
     String targetStorageId = indexArtifactTargetStorageId(value.getTarget());
     byte[] bytes = value.toByteArray();
     String blobSha256 = Hashing.sha256Hex(bytes);
@@ -293,22 +305,115 @@ public class IndexArtifactRepository {
     }
   }
 
+  public Set<Keys.GenerationKey> inheritedManagedSidecarGenerations(
+      ResourceId tableId, Iterable<ReusableArtifactBundleSelection> selections) {
+    String tablePrefix = Keys.tableTargetStatsBlobPrefix(tableId.getAccountId(), tableId.getId());
+    Set<Keys.GenerationKey> generations = new LinkedHashSet<>();
+    for (ReusableArtifactBundleSelection selection : selections) {
+      if (selection == null || selection.indexFilePaths().isEmpty()) {
+        continue;
+      }
+      String bundleUri = selection.payloadUri();
+      if (!bundleUri.startsWith("/accounts/")) {
+        continue;
+      }
+      Keys.GenerationKey carrierGeneration = Keys.generationFromTargetStatsBlobUri(bundleUri);
+      if (!bundleUri.startsWith(tablePrefix)
+          || carrierGeneration == null
+          || !ReusableArtifactBundleUris.isBundleUri(bundleUri)
+          || !ReusableArtifactBundleUris.matchesDigest(bundleUri, selection.payloadSha256())) {
+        throw new BaseResourceRepository.CorruptionException(
+            "managed reusable index bundle is outside the owning table generation");
+      }
+      byte[] bytes;
+      try {
+        bytes = blobStore.get(bundleUri);
+      } catch (StorageNotFoundException error) {
+        throw new BaseResourceRepository.CorruptionException(
+            "managed reusable index bundle is missing: " + bundleUri, error);
+      }
+      if (bytes == null
+          || bytes.length != selection.payloadBytes()
+          || !Hashing.sha256Hex(bytes)
+              .equals(HexFormat.of().formatHex(selection.payloadSha256()))) {
+        throw new BaseResourceRepository.CorruptionException(
+            "managed reusable index bundle metadata does not match: " + bundleUri);
+      }
+      ReusableArtifactBundlePayload bundle;
+      try {
+        bundle = ReusableArtifactBundles.parse(bytes);
+      } catch (InvalidProtocolBufferException error) {
+        throw new BaseResourceRepository.CorruptionException(
+            "managed reusable index bundle is invalid: " + bundleUri, error);
+      } catch (IllegalArgumentException error) {
+        throw new BaseResourceRepository.CorruptionException(
+            "managed reusable index bundle has an unsupported format: " + bundleUri, error);
+      }
+      Set<String> requiredPaths = new LinkedHashSet<>(selection.indexFilePaths());
+      for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
+        requireValidRecord(record);
+        if (!record.getTableId().getAccountId().equals(tableId.getAccountId())
+            || !record.getTableId().getId().equals(tableId.getId())) {
+          throw new BaseResourceRepository.CorruptionException(
+              "managed reusable index record belongs to another table: " + bundleUri);
+        }
+        String sidecarUri = record.getArtifactUri();
+        if (!sidecarUri.startsWith("/accounts/") || !sidecarUri.contains(Keys.SEG_INDEX_SIDECARS)) {
+          continue;
+        }
+        Keys.GenerationKey sidecarGeneration = Keys.generationFromTargetStatsBlobUri(sidecarUri);
+        if (!sidecarUri.startsWith(tablePrefix) || sidecarGeneration == null) {
+          throw new BaseResourceRepository.CorruptionException(
+              "managed reusable index sidecar is outside the owning table generation");
+        }
+        if (record.hasTarget()
+            && record.getTarget().hasFile()
+            && requiredPaths.remove(record.getTarget().getFile().getFilePath())) {
+          generations.add(sidecarGeneration);
+        }
+      }
+      if (!requiredPaths.isEmpty()) {
+        throw new BaseResourceRepository.CorruptionException(
+            "managed reusable index bundle is missing selected records: " + bundleUri);
+      }
+    }
+    return Set.copyOf(generations);
+  }
+
   /**
    * Stages references to Floecat-owned protobuf wrappers. Before publishing the pointers, validates
    * each wrapper or bundle and refreshes any table-owned shared sidecars while holding the table
    * publication guard.
    */
-  public void registerPrewrittenIndexArtifactReferencesInGeneration(
+  void registerPrewrittenIndexArtifactReferencesInGeneration(
       ResourceId tableId,
       long snapshotId,
       String generationId,
       String requiredBlobPrefix,
       List<PrewrittenIndexArtifactReference> references) {
+    registerPrewrittenIndexArtifactReferencesInGeneration(
+        tableId, snapshotId, generationId, requiredBlobPrefix, null, Set.of(), references);
+  }
+
+  public void registerPrewrittenIndexArtifactReferencesInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String requiredBlobPrefix,
+      String requiredManagedSidecarPrefix,
+      Set<Keys.GenerationKey> inheritedSidecarGenerations,
+      List<PrewrittenIndexArtifactReference> references) {
     reachabilityGuard.publishing(
         tableId,
         () -> {
           registerPrewrittenIndexArtifactReferencesInGenerationGuarded(
-              tableId, snapshotId, generationId, requiredBlobPrefix, references);
+              tableId,
+              snapshotId,
+              generationId,
+              requiredBlobPrefix,
+              requiredManagedSidecarPrefix,
+              inheritedSidecarGenerations,
+              references);
           return null;
         });
   }
@@ -318,10 +423,17 @@ public class IndexArtifactRepository {
       long snapshotId,
       String generationId,
       String requiredBlobPrefix,
+      String requiredManagedSidecarPrefix,
+      Set<Keys.GenerationKey> inheritedSidecarGenerations,
       List<PrewrittenIndexArtifactReference> references) {
     if (requiredBlobPrefix == null || requiredBlobPrefix.isBlank()) {
       throw new IllegalArgumentException("requiredBlobPrefix is required");
     }
+    if (requiredManagedSidecarPrefix != null && requiredManagedSidecarPrefix.isBlank()) {
+      throw new IllegalArgumentException("requiredManagedSidecarPrefix must not be blank");
+    }
+    Set<Keys.GenerationKey> allowedInheritedGenerations =
+        inheritedSidecarGenerations == null ? Set.of() : Set.copyOf(inheritedSidecarGenerations);
     LinkedHashMap<String, PrewrittenIndexWrite> unique = new LinkedHashMap<>();
     for (PrewrittenIndexArtifactReference reference :
         references == null ? List.<PrewrittenIndexArtifactReference>of() : references) {
@@ -367,7 +479,12 @@ public class IndexArtifactRepository {
             "duplicate prewritten index artifact reference has different content");
       }
     }
-    refreshPrewrittenSharedSidecars(tableId, snapshotId, unique.values());
+    validatePrewrittenManagedSidecars(
+        tableId,
+        snapshotId,
+        requiredManagedSidecarPrefix,
+        allowedInheritedGenerations,
+        unique.values());
     registerWrites(tableId, new ArrayList<>(unique.values()));
   }
 
@@ -802,8 +919,12 @@ public class IndexArtifactRepository {
     }
   }
 
-  private void refreshPrewrittenSharedSidecars(
-      ResourceId tableId, long snapshotId, Iterable<PrewrittenIndexWrite> writes) {
+  private void validatePrewrittenManagedSidecars(
+      ResourceId tableId,
+      long snapshotId,
+      String requiredManagedSidecarPrefix,
+      Set<Keys.GenerationKey> inheritedSidecarGenerations,
+      Iterable<PrewrittenIndexWrite> writes) {
     LinkedHashMap<String, List<PrewrittenIndexWrite>> writesByBlob = new LinkedHashMap<>();
     for (PrewrittenIndexWrite write : writes) {
       writesByBlob.computeIfAbsent(write.blobUri(), ignored -> new ArrayList<>()).add(write);
@@ -821,7 +942,12 @@ public class IndexArtifactRepository {
         for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
           requirePrewrittenRecordMatches(tableId, snapshotId, record, blobUri, false);
         }
-        refreshSharedSidecars(tableId, bundle.getIndexArtifactsList());
+        validateManagedSidecars(
+            tableId,
+            () -> requireCarrierGeneration(tableId, blobUri),
+            requiredManagedSidecarPrefix,
+            inheritedSidecarGenerations,
+            bundle.getIndexArtifactsList());
         Set<String> inMemoryBundledTargets = new java.util.HashSet<>();
         for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
           if (!inMemoryBundledTargets.add(indexArtifactTargetStorageId(record.getTarget()))) {
@@ -858,7 +984,12 @@ public class IndexArtifactRepository {
           throw new BaseResourceRepository.CorruptionException(
               "prewritten index artifact target does not match reference: " + blobUri);
         }
-        refreshSharedSidecars(tableId, List.of(record));
+        validateManagedSidecars(
+            tableId,
+            () -> requireCarrierGeneration(tableId, blobUri),
+            requiredManagedSidecarPrefix,
+            inheritedSidecarGenerations,
+            List.of(record));
       } catch (StorageNotFoundException e) {
         throw new BaseResourceRepository.CorruptionException(
             "prewritten index artifact is missing: " + blobUri, e);
@@ -893,18 +1024,51 @@ public class IndexArtifactRepository {
     }
   }
 
-  private void refreshSharedSidecars(ResourceId tableId, Iterable<IndexArtifactRecord> artifacts) {
+  private static Keys.GenerationKey requireCarrierGeneration(
+      ResourceId tableId, String carrierBlobUri) {
     String requiredPrefix =
-        Keys.tableIndexSidecarBlobPrefix(tableId.getAccountId(), tableId.getId());
+        Keys.tableTargetStatsBlobPrefix(tableId.getAccountId(), tableId.getId());
+    Keys.GenerationKey generation = Keys.generationFromTargetStatsBlobUri(carrierBlobUri);
+    if (!carrierBlobUri.startsWith(requiredPrefix) || generation == null) {
+      throw new BaseResourceRepository.CorruptionException(
+          "index artifact carrier is outside an owning generation: " + carrierBlobUri);
+    }
+    return generation;
+  }
+
+  private void validateManagedSidecars(
+      ResourceId tableId,
+      Supplier<Keys.GenerationKey> carrierGenerationSupplier,
+      String requiredManagedSidecarPrefix,
+      Set<Keys.GenerationKey> inheritedSidecarGenerations,
+      Iterable<IndexArtifactRecord> artifacts) {
+    String requiredPrefix =
+        Keys.tableTargetStatsBlobPrefix(tableId.getAccountId(), tableId.getId());
+    Keys.GenerationKey carrierGeneration = null;
+    Set<Keys.GenerationKey> allowedInheritedGenerations =
+        inheritedSidecarGenerations == null ? Set.of() : inheritedSidecarGenerations;
     Set<String> inspected = new LinkedHashSet<>();
     for (IndexArtifactRecord artifact : artifacts) {
       String uri = artifact == null ? "" : artifact.getArtifactUri();
-      if (!uri.startsWith(requiredPrefix)) {
-        if (uri.startsWith("/accounts/") && uri.contains(Keys.SEG_INDEX_SIDECARS)) {
-          throw new BaseResourceRepository.CorruptionException(
-              "index artifact references a sidecar owned by another table: " + uri);
-        }
+      if (!uri.startsWith("/accounts/") || !uri.contains(Keys.SEG_INDEX_SIDECARS)) {
         continue;
+      }
+      if (carrierGeneration == null) {
+        carrierGeneration = carrierGenerationSupplier.get();
+      }
+      Keys.GenerationKey sidecarGeneration = Keys.generationFromTargetStatsBlobUri(uri);
+      if (!uri.startsWith(requiredPrefix)
+          || sidecarGeneration == null
+          || (!sidecarGeneration.equals(carrierGeneration)
+              && !allowedInheritedGenerations.contains(sidecarGeneration))) {
+        throw new BaseResourceRepository.CorruptionException(
+            "index artifact sidecar is outside its carrier or inherited generation: " + uri);
+      }
+      if (requiredManagedSidecarPrefix != null
+          && sidecarGeneration.equals(carrierGeneration)
+          && !uri.startsWith(requiredManagedSidecarPrefix)) {
+        throw new BaseResourceRepository.CorruptionException(
+            "index artifact sidecar is outside its producer prefix: " + uri);
       }
       if (!inspected.add(uri)) {
         continue;

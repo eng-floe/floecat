@@ -1040,6 +1040,7 @@ class GrpcReconcilerBackendTest {
                 Set.of(),
                 ai.floedb.floecat.connector.spi.FloecatConnector.ColumnSelectorPolicy.defaults(),
                 Set.of(ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind.FILE),
+                "/managed-index-sidecars/",
                 false));
 
     assertThat(result.statsRecords()).isEqualTo(stats);

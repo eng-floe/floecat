@@ -49,6 +49,7 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference base =
         store.append(
             "/runs/",
+            "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("base", List.of("s3://bucket/base.parquet"))));
     assertEquals(1, base.getRunsCount());
@@ -59,7 +60,10 @@ class ReusableArtifactIndexStoreTest {
     blobs.resetPutCount();
     ReusableArtifactIndexReference appended =
         store.append(
-            "/runs/", base, List.of(statsBundle("delta", List.of("s3://bucket/delta.parquet"))));
+            "/runs/",
+            "/runs/",
+            base,
+            List.of(statsBundle("delta", List.of("s3://bucket/delta.parquet"))));
 
     assertEquals(0, blobs.putCount());
     assertEquals(2, appended.getRunsCount());
@@ -71,7 +75,7 @@ class ReusableArtifactIndexStoreTest {
   @Test
   void emptyAppendPerformsNoIo() {
     ReusableArtifactIndexReference empty = ReusableArtifactIndexStore.emptyReference();
-    assertEquals(empty, store.append("/runs/", empty, List.of()));
+    assertEquals(empty, store.append("/runs/", "/runs/", empty, List.of()));
     assertEquals(0, blobs.putCount());
     assertEquals(0, blobs.getCount());
   }
@@ -87,6 +91,7 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference index =
         store.append(
             "/runs/",
+            "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("large", paths)));
 
@@ -99,15 +104,17 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference base =
         store.append(
             "/other/",
+            "/other/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("base", List.of("s3://bucket/base.parquet"))));
-    assertEquals(base, store.append("/runs/", base, List.of()));
+    assertEquals(base, store.append("/runs/", "/other/", base, List.of()));
   }
 
   @Test
   void prePackBlockLayoutIsInvalid() throws Exception {
     ReusableArtifactIndexReference index =
         store.append(
+            "/runs/",
             "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("base", List.of("s3://bucket/base.parquet"))));
@@ -136,12 +143,14 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference base =
         store.append(
             "/runs/",
+            "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("base", List.of("s3://bucket/base.parquet"))));
     ReusableArtifactIndexReference invalid =
         base.toBuilder().setRuns(0, base.getRuns(0).toBuilder().setLevel(33)).build();
 
-    assertThrows(IllegalArgumentException.class, () -> store.append("/runs/", invalid, List.of()));
+    assertThrows(
+        IllegalArgumentException.class, () -> store.append("/runs/", "/runs/", invalid, List.of()));
   }
 
   @Test
@@ -156,6 +165,7 @@ class ReusableArtifactIndexStoreTest {
   void referenceRejectsUncompactedRunLevel() {
     ReusableArtifactIndexReference base =
         store.append(
+            "/runs/",
             "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("base", List.of("s3://bucket/base.parquet"))));
@@ -180,6 +190,7 @@ class ReusableArtifactIndexStoreTest {
     for (int run = 0; run < 4; run++) {
       index =
           store.append(
+              "/runs/",
               "/runs/",
               index,
               List.of(statsBundle("run-" + run, List.of("s3://bucket/file-" + run + ".parquet"))));
@@ -206,6 +217,7 @@ class ReusableArtifactIndexStoreTest {
     }
     ReusableArtifactIndexReference index =
         store.append(
+            "/runs/",
             "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("packed", paths)));
@@ -248,6 +260,7 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference index =
         store.append(
             "/runs/",
+            "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("packed", paths)));
     ReusableArtifactIndexRunManifest manifest =
@@ -271,6 +284,7 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference index =
         store.append(
             "/runs/",
+            "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("packed", paths)));
     ReusableArtifactIndexStore.clearSharedCacheForTests();
@@ -291,6 +305,7 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference index =
         store.append(
             "/foreign/",
+            "/foreign/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("packed", paths)));
 
@@ -308,10 +323,38 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference foreign =
         store.append(
             "/foreign/",
+            "/foreign/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("packed", paths)));
 
-    assertThrows(IllegalArgumentException.class, () -> store.append("/owned/", foreign, List.of()));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> store.append("/owned/", "/owned/", foreign, List.of()));
+  }
+
+  @Test
+  void appendAcceptsInheritedRunsFromAnOlderOwnedGeneration() {
+    List<String> paths = new ArrayList<>();
+    String padding = "x".repeat(3_000);
+    for (int index = 0; index < 400; index++) {
+      paths.add("s3://bucket/" + padding + index + ".parquet");
+    }
+    ReusableArtifactIndexReference base =
+        store.append(
+            "/owned/old-generation/",
+            "/owned/old-generation/",
+            ReusableArtifactIndexStore.emptyReference(),
+            List.of(statsBundle("base", paths)));
+
+    ReusableArtifactIndexReference appended =
+        store.append(
+            "/owned/new-generation/",
+            "/owned/",
+            base,
+            List.of(statsBundle("delta", List.of("s3://bucket/delta.parquet"))));
+
+    assertEquals(paths.size() + 1, appended.getFileStatsRecordCount());
+    assertTrue(appended.getRunsList().containsAll(base.getRunsList()));
   }
 
   @Test
@@ -323,6 +366,7 @@ class ReusableArtifactIndexStoreTest {
     }
     ReusableArtifactIndexReference index =
         store.append(
+            "/runs/",
             "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("packed", paths)));
@@ -356,6 +400,7 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference index =
         store.append(
             "/runs/",
+            "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("base", List.of("s3://bucket/base.parquet"))));
     var oversizedFilter =
@@ -383,6 +428,7 @@ class ReusableArtifactIndexStoreTest {
     }
     ReusableArtifactIndexReference index =
         store.append(
+            "/runs/",
             "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("packed", paths)));
@@ -414,11 +460,12 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference base =
         store.append(
             "/runs/",
+            "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("base", List.of(path))));
     assertThrows(
         IllegalArgumentException.class,
-        () -> store.append("/runs/", base, List.of(statsBundle("delta", List.of(path)))));
+        () -> store.append("/runs/", "/runs/", base, List.of(statsBundle("delta", List.of(path)))));
   }
 
   @Test
@@ -426,7 +473,8 @@ class ReusableArtifactIndexStoreTest {
     String path = "s3://bucket/file.parquet";
     ReusableArtifactBundleReference bundle = combinedBundle("bundle", path);
     ReusableArtifactIndexReference index =
-        store.append("/runs/", ReusableArtifactIndexStore.emptyReference(), List.of(bundle));
+        store.append(
+            "/runs/", "/runs/", ReusableArtifactIndexStore.emptyReference(), List.of(bundle));
 
     assertEquals(2, store.lookup(index, List.of(path), List.of(path)).size());
     assertEquals(List.of(bundle), store.loadBundlesForPaths(index, List.of(path), List.of(path)));
@@ -438,6 +486,7 @@ class ReusableArtifactIndexStoreTest {
     for (int run = 0; run <= ReusableArtifactIndexStore.MAX_L0_RUNS; run++) {
       index =
           store.append(
+              "/runs/",
               "/runs/",
               index,
               List.of(statsBundle("run-" + run, List.of("s3://bucket/file-" + run + ".parquet"))));
@@ -456,6 +505,7 @@ class ReusableArtifactIndexStoreTest {
     for (int run = 0; run < entries; run++) {
       index =
           store.append(
+              "/runs/",
               "/runs/",
               index,
               List.of(statsBundle("run-" + run, List.of("s3://bucket/file-" + run + ".parquet"))));
@@ -486,6 +536,7 @@ class ReusableArtifactIndexStoreTest {
       index =
           budgeted.append(
               "/runs/",
+              "/runs/",
               index,
               List.of(
                   statsBundle("budget-" + run, List.of("s3://bucket/budget-" + run + ".parquet"))));
@@ -493,6 +544,7 @@ class ReusableArtifactIndexStoreTest {
     blobs.resetPutCount();
     index =
         budgeted.append(
+            "/runs/",
             "/runs/",
             index,
             List.of(statsBundle("budget-last", List.of("s3://bucket/budget-last.parquet"))));
@@ -510,6 +562,7 @@ class ReusableArtifactIndexStoreTest {
     for (int run = 0; run < 200; run++) {
       index =
           budgeted.append(
+              "/runs/",
               "/runs/",
               index,
               List.of(
@@ -535,10 +588,12 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference first =
         store.append(
             "/runs/",
+            "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("first", List.of("s3://bucket/duplicate.parquet"))));
     ReusableArtifactIndexReference second =
         store.append(
+            "/runs/",
             "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("second", List.of("s3://bucket/duplicate.parquet"))));
@@ -559,6 +614,7 @@ class ReusableArtifactIndexStoreTest {
   void streamingTraversalDoesNotPublishEntriesBeforeCountValidation() {
     ReusableArtifactIndexReference valid =
         store.append(
+            "/runs/",
             "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("first", List.of("s3://bucket/file.parquet"))));
@@ -581,11 +637,15 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference base =
         store.append(
             "/runs/",
+            "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("base", List.of("s3://bucket/base.parquet"))));
     ReusableArtifactIndexReference appended =
         store.append(
-            "/runs/", base, List.of(statsBundle("delta", List.of("s3://bucket/delta.parquet"))));
+            "/runs/",
+            "/runs/",
+            base,
+            List.of(statsBundle("delta", List.of("s3://bucket/delta.parquet"))));
     ReusableArtifactIndexStore.clearSharedCacheForTests();
     Set<String> visited = new HashSet<>();
     Map<String, Integer> progress = new HashMap<>();
@@ -614,6 +674,7 @@ class ReusableArtifactIndexStoreTest {
     ReusableArtifactIndexReference index =
         store.append(
             "/runs/",
+            "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("base", List.of("s3://bucket/file.parquet"))));
     ReusableArtifactIndexReference corrupt =
@@ -632,6 +693,7 @@ class ReusableArtifactIndexStoreTest {
   void negativeBlockOffsetsAreRejectedWithoutReadingBlockBytes() throws Exception {
     ReusableArtifactIndexReference index =
         store.append(
+            "/runs/",
             "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("base", List.of("s3://bucket/file.parquet"))));

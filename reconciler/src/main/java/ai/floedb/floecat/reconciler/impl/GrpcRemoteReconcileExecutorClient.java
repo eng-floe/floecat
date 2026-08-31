@@ -978,6 +978,7 @@ class GrpcRemoteReconcileExecutorClient
         execution.getGroupId(),
         execution.getResultPayloadUri(),
         execution.getStatsObjectPrefix(),
+        execution.getManagedIndexSidecarObjectPrefix(),
         execution.getFilePathsList(),
         execution.getExecutionSchemaJson(),
         execution.getFileExecutionPlansList().stream()
@@ -1423,6 +1424,7 @@ class GrpcRemoteReconcileExecutorClient
       List<StatsObjectDescriptor> indexArtifacts,
       List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference>
           reusableArtifactBundles,
+      List<StatsObjectDescriptor> inheritedIndexArtifactBundles,
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor finalizeIndexPredecessor) {
@@ -1441,6 +1443,7 @@ class GrpcRemoteReconcileExecutorClient
         finalStats,
         indexArtifacts,
         reusableArtifactBundles,
+        inheritedIndexArtifactBundles,
         realizedStatsSelectors,
         realizedIndexSelectors,
         finalizeIndexPredecessor,
@@ -1463,6 +1466,7 @@ class GrpcRemoteReconcileExecutorClient
       List<StatsObjectDescriptor> indexArtifacts,
       List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference>
           reusableArtifactBundles,
+      List<StatsObjectDescriptor> inheritedIndexArtifactBundles,
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor finalizeIndexPredecessor,
@@ -1482,6 +1486,7 @@ class GrpcRemoteReconcileExecutorClient
         finalStats,
         indexArtifacts,
         reusableArtifactBundles,
+        inheritedIndexArtifactBundles,
         realizedStatsSelectors,
         realizedIndexSelectors,
         finalizeIndexPredecessor,
@@ -1504,6 +1509,7 @@ class GrpcRemoteReconcileExecutorClient
       List<StatsObjectDescriptor> indexArtifacts,
       List<ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference>
           reusableArtifactBundles,
+      List<StatsObjectDescriptor> inheritedIndexArtifactBundles,
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor finalizeIndexPredecessor,
@@ -1555,6 +1561,10 @@ class GrpcRemoteReconcileExecutorClient
         reusableArtifactBundles == null
             ? List.of()
             : reusableArtifactBundles.stream().filter(java.util.Objects::nonNull).toList();
+    List<StatsObjectDescriptor> stableInheritedIndexBundles =
+        inheritedIndexArtifactBundles == null
+            ? List.of()
+            : inheritedIndexArtifactBundles.stream().filter(java.util.Objects::nonNull).toList();
     List<String> stableRealizedIndexSelectors =
         realizedIndexSelectors == null
             ? List.of()
@@ -1635,6 +1645,7 @@ class GrpcRemoteReconcileExecutorClient
             .setFinalStatsRecordCount(records.size())
             .setIndexArtifactCount(totalIndexArtifacts)
             .addAllReusableArtifactBundles(stableReuseBundles)
+            .addAllInheritedIndexArtifactBundles(stableInheritedIndexBundles)
             .setReusableArtifactBundlesComplete(true)
             .addAllRealizedIndexSelectors(stableRealizedIndexSelectors)
             .addAllRealizedStatsSelectors(stableRealizedStatsSelectors);
@@ -1664,7 +1675,11 @@ class GrpcRemoteReconcileExecutorClient
             : appendOnlyBase.reusableArtifactIndex();
     ReusableArtifactIndexReference reusableArtifactIndex =
         new ReusableArtifactIndexStore(blobStore)
-            .append(stableReusableIndexPrefix, baseIndex, stableReuseBundles);
+            .append(
+                stableReusableIndexPrefix,
+                owningTargetStatsPrefix(stableStatsObjectPrefix),
+                baseIndex,
+                stableReuseBundles);
     if (reusableArtifactIndex.getFileStatsRecordCount() != totalFileStats
         || reusableArtifactIndex.getIndexArtifactCount() != totalIndexArtifacts) {
       throw new IllegalArgumentException(
@@ -1745,6 +1760,15 @@ class GrpcRemoteReconcileExecutorClient
             .setIndexArtifactCount(totalIndexArtifacts)
             .build();
     return new PreparedSnapshotFinalizeSuccess(stableResultId, manifestDescriptor);
+  }
+
+  private static String owningTargetStatsPrefix(String statsObjectPrefix) {
+    String segment = "/target-stats/";
+    int start = statsObjectPrefix.indexOf(segment);
+    if (!statsObjectPrefix.startsWith("/accounts/") || start < 0) {
+      throw new IllegalArgumentException("statsObjectPrefix is outside Floecat target stats");
+    }
+    return statsObjectPrefix.substring(0, start + segment.length());
   }
 
   @Override

@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.gc;
 
-import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -57,9 +56,9 @@ import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 /**
- * Sweeps unreferenced CAS blobs per account. Roots come from three sources: every live pointer
- * (shared store) and the pin/resolving roots of live query contexts — which are <b>node-local</b>
- * (in-process {@code QueryContextStore}), the only root source that is.
+ * Sweeps unreferenced CAS blobs per account. Roots come from every live pointer (shared store) and
+ * the pin/resolving roots of live query contexts — which are <b>node-local</b> (in-process {@code
+ * QueryContextStore}), the only root source that is.
  *
  * <p>Single-GC-writer assumption: because pin roots are node-local, this sweep is only safe where
  * the process running it can see every live pin — i.e. a single-node deployment, or one where all
@@ -80,16 +79,15 @@ import org.jboss.logging.Logger;
  * dead URI). Deletes are version-targeted (the exact version the pass age-checked), and the sweep
  * fails closed unless the store reports immutable version ids (S3 bucket versioning Enabled), so a
  * concurrent re-PUT always survives as a new version the targeted delete cannot touch. Families
- * with no owner pointer derivable from the key (manifest pages, reusable-index run objects, and
- * shared index sidecars) cannot be rescued individually, and lexicographic listing puts some of
- * them before any blob whose rescue could reveal the stale set — so their deletion is DEFERRED, and
- * the flush independently re-proves liveness per owning table against the settled store (root-chain
- * re-walk plus constraints/stats pointer re-scan) before deleting. The re-mark retains an exact
- * table publication epoch, and the epoch check plus version-targeted deletes run under the same
- * table entry used by root, shared sidecar, and resolving-pin publishers. A publication before the
- * proof is included by the fresh re-mark; one during or after it invalidates the proof and forces a
- * complete restart. This closes the late-publication window for ownerless manifest pages,
- * reusable-index run objects, and shared sidecars.
+ * with no owner pointer derivable from the key (manifest pages) cannot be rescued individually, and
+ * lexicographic listing puts some of them before any blob whose rescue could reveal the stale set —
+ * so their deletion is DEFERRED, and the flush independently re-proves liveness per owning table
+ * against the settled store (root-chain re-walk plus constraints/stats pointer re-scan) before
+ * deleting. The re-mark retains an exact table publication epoch, and the epoch check plus
+ * version-targeted deletes run under the same table entry used by root, shared sidecar, and
+ * resolving-pin publishers. A publication before the proof is included by the fresh re-mark; one
+ * during or after it invalidates the proof and forces a complete restart. This closes the
+ * late-publication window for ownerless manifest pages.
  *
  * <p><b>Versioned-bucket operations note.</b> This sweep only ever deletes the CURRENT version it
  * age-checked; it never visits noncurrent versions. With the always-PUT write path, an oscillating
@@ -168,6 +166,7 @@ public class CasBlobGc {
     private final Map<String, String> chainPageUris = new HashMap<>();
     private final Map<String, Integer> chainEntryIndexes = new HashMap<>();
     private final Set<String> visitedReusableIndexNodes = new HashSet<>();
+    private final Set<String> visitedInheritedIndexBundles = new HashSet<>();
     private final Map<String, Integer> reusableIndexRunProgress = new HashMap<>();
     private ReferenceIndex chainVisited;
     private String chainRoot = "";
@@ -179,6 +178,7 @@ public class CasBlobGc {
       chainVisited = null;
       chainRoot = "";
       visitedReusableIndexNodes.clear();
+      visitedInheritedIndexBundles.clear();
       reusableIndexRunProgress.clear();
     }
   }
@@ -923,14 +923,6 @@ public class CasBlobGc {
             checkDeadline();
           }
         }
-        // Generation-owned wrappers and reuse bundles are reclaimed only by StatsRepository. Their
-        // IndexArtifactRecord payloads can, however, reference shared content-addressed sidecars.
-        // Expand only those indirect shared references into the generic mark index; never add the
-        // generation-owned wrapper URI itself.
-        pointersScanned +=
-            collectSharedIndexArtifactReferences(
-                accountId, tableId, tableReferenced, pageSize, storageEstimate);
-
         // Constraints pointers live under a SIBLING prefix (/constraints/by-snapshot/), not under
         // /snapshots/, so they need their own scan. A constraints blob is deletable (it matches the
         // delete predicate) and its pointer goes live before commitConstraints records the ref on
@@ -1236,64 +1228,55 @@ public class CasBlobGc {
       deleted += snapshots.deleted();
       rescued += snapshots.rescued();
 
-      for (String prefix :
-          List.of(
-              Keys.tableRootBlobPrefix(accountId, tableId),
-              Keys.tableIndexSidecarBlobPrefix(accountId, tableId),
-              Keys.tableReusableArtifactIndexObjectBlobPrefix(accountId, tableId))) {
-        boolean more;
-        do {
-          if (continuation.deferredPage == null) {
-            var deferred = new ArrayList<DeferredCandidate>(pageSize);
-            DeleteResult listed =
-                deleteUnreferenced(
-                    prefix,
-                    referenced,
-                    walkedPinRoots,
-                    walkFailures,
-                    key -> true,
-                    deferred,
-                    pageSize,
-                    nowMs,
-                    minAgeMs);
-            scanned += listed.scanned();
-            deleted += listed.deleted();
-            rescued += listed.rescued();
-            if (walkFailures[0] > 0) {
-              return new DeleteResult(scanned, deleted, rescued, true);
-            }
-            if (deferred.isEmpty()) {
-              more = listed.pending();
-              continue;
-            }
-            continuation.deferredPage = new DeferredPageState(prefix, deferred, listed.pending());
-          } else if (!prefix.equals(continuation.deferredPage.prefix)) {
-            // A prior prefix completed before the deadline but its bounded candidate page did not.
-            // Resume that state when the loop reaches its owning prefix.
-            more = false;
-            continue;
-          }
-          DeleteResult flushed =
-              flushDeferredTableCandidates(
-                  accountId,
-                  tableId,
+      String prefix = Keys.tableRootBlobPrefix(accountId, tableId);
+      boolean more;
+      do {
+        if (continuation.deferredPage == null) {
+          var deferred = new ArrayList<DeferredCandidate>(pageSize);
+          DeleteResult listed =
+              deleteUnreferenced(
+                  prefix,
                   referenced,
                   walkedPinRoots,
                   walkFailures,
+                  key -> true,
+                  deferred,
                   pageSize,
-                  referenceCapacity,
-                  referenceFalsePositiveRate);
-          deleted += flushed.deleted();
-          rescued += flushed.rescued();
+                  nowMs,
+                  minAgeMs);
+          scanned += listed.scanned();
+          deleted += listed.deleted();
+          rescued += listed.rescued();
           if (walkFailures[0] > 0) {
             return new DeleteResult(scanned, deleted, rescued, true);
           }
-          more = continuation.deferredPage.prefixPending;
-          continuation.deferredPage.close();
-          continuation.deferredPage = null;
-          clearRemarkContinuationState(tableId, prefix);
-        } while (more);
-      }
+          if (deferred.isEmpty()) {
+            more = listed.pending();
+            continue;
+          }
+          continuation.deferredPage = new DeferredPageState(prefix, deferred, listed.pending());
+          checkDeadline();
+        }
+        DeleteResult flushed =
+            flushDeferredTableCandidates(
+                accountId,
+                tableId,
+                referenced,
+                walkedPinRoots,
+                walkFailures,
+                pageSize,
+                referenceCapacity,
+                referenceFalsePositiveRate);
+        deleted += flushed.deleted();
+        rescued += flushed.rescued();
+        if (walkFailures[0] > 0) {
+          return new DeleteResult(scanned, deleted, rescued, true);
+        }
+        more = continuation.deferredPage.prefixPending;
+        continuation.deferredPage.close();
+        continuation.deferredPage = null;
+        clearRemarkContinuationState(tableId, prefix);
+      } while (more);
       return new DeleteResult(scanned, deleted, rescued, false);
     } catch (DeadlineReached e) {
       addDeleteProgress(continuation, scanned, deleted, rescued);
@@ -1569,6 +1552,8 @@ public class CasBlobGc {
     ReusableArtifactIndexStore reusableIndexStore = new ReusableArtifactIndexStore(blobStore);
     Set<String> walkedReusableIndexNodes =
         resumable ? continuation.traversal.visitedReusableIndexNodes : new HashSet<>();
+    Set<String> walkedInheritedIndexBundles =
+        resumable ? continuation.traversal.visitedInheritedIndexBundles : new HashSet<>();
     Map<String, Integer> reusableIndexRunProgress =
         resumable ? continuation.traversal.reusableIndexRunProgress : new HashMap<>();
     String chainKey = continuationIndexScope(referenced) + ":" + rootBlobUri;
@@ -1684,6 +1669,7 @@ public class CasBlobGc {
                 referenced,
                 reusableIndexStore,
                 walkedReusableIndexNodes,
+                walkedInheritedIndexBundles,
                 reusableIndexRunProgress,
                 reusableIndexNodeCapacity)) {
               return false;
@@ -1743,6 +1729,7 @@ public class CasBlobGc {
       ReferenceIndex referenced,
       ReusableArtifactIndexStore indexStore,
       Set<String> walkedIndexNodes,
+      Set<String> walkedInheritedIndexBundles,
       Map<String, Integer> reusableIndexRunProgress,
       long indexNodeCapacity) {
     try {
@@ -1795,6 +1782,76 @@ public class CasBlobGc {
               != manifest.getIndexArtifactCount()) {
         throw new IllegalStateException("snapshot reusable artifact manifest identity mismatch");
       }
+      for (var inheritedBundle : manifest.getInheritedIndexArtifactBundlesList()) {
+        checkDeadline();
+        String bundleUri = inheritedBundle.getPayloadUri();
+        String normalizedBundleUri = normalizeKey(bundleUri);
+        if (walkedInheritedIndexBundles.contains(normalizedBundleUri)) {
+          continue;
+        }
+        Keys.GenerationKey generation = Keys.generationFromTargetStatsBlobUri(bundleUri);
+        if (inheritedBundle.getTargetStorageId().isBlank()
+            || inheritedBundle.getPayloadBytes() <= 0L
+            || inheritedBundle.getPayloadSha256().size() != 32
+            || !ReusableArtifactBundleUris.isBundleUri(bundleUri)
+            || !ReusableArtifactBundleUris.matchesDigest(
+                bundleUri, inheritedBundle.getPayloadSha256().toByteArray())
+            || generation == null
+            || !bundleUri.startsWith(
+                Keys.snapshotTargetStatsGenerationBlobPrefix(
+                    accountId, tableId, generation.snapshotId(), generation.generationId()))) {
+          throw new IllegalStateException(
+              "inherited index artifact bundle is outside the owning table generation");
+        }
+        referenced.add(normalizedBundleUri);
+        String generationManifest =
+            Keys.snapshotTargetStatsManifestBlobUri(
+                accountId, tableId, generation.snapshotId(), generation.generationId());
+        referenced.add(normalizeKey(generationManifest));
+        rememberTableGeneration(referenced, generationManifest);
+        byte[] bundleBytes = blobStore.get(bundleUri);
+        if (bundleBytes == null
+            || bundleBytes.length != inheritedBundle.getPayloadBytes()
+            || !MessageDigest.isEqual(
+                sha256(bundleBytes), inheritedBundle.getPayloadSha256().toByteArray())) {
+          throw new IllegalStateException("inherited index artifact bundle metadata mismatch");
+        }
+        ReusableArtifactBundlePayload bundle = ReusableArtifactBundlePayload.parseFrom(bundleBytes);
+        for (var record : bundle.getIndexArtifactsList()) {
+          if (!record.hasTableId()
+              || !accountId.equals(record.getTableId().getAccountId())
+              || !tableId.equals(record.getTableId().getId())) {
+            throw new IllegalStateException(
+                "inherited index artifact record belongs to another table");
+          }
+          String sidecarUri = record.getArtifactUri();
+          if (!sidecarUri.startsWith("/accounts/")
+              || !sidecarUri.contains(Keys.SEG_INDEX_SIDECARS)) {
+            continue;
+          }
+          Keys.GenerationKey sidecarGeneration = Keys.generationFromTargetStatsBlobUri(sidecarUri);
+          if (sidecarGeneration == null
+              || !sidecarUri.startsWith(
+                  Keys.snapshotTargetStatsGenerationBlobPrefix(
+                      accountId,
+                      tableId,
+                      sidecarGeneration.snapshotId(),
+                      sidecarGeneration.generationId()))) {
+            throw new IllegalStateException(
+                "inherited index artifact sidecar is outside the owning table generation");
+          }
+          referenced.add(normalizeKey(sidecarUri));
+          String sidecarGenerationManifest =
+              Keys.snapshotTargetStatsManifestBlobUri(
+                  accountId,
+                  tableId,
+                  sidecarGeneration.snapshotId(),
+                  sidecarGeneration.generationId());
+          referenced.add(normalizeKey(sidecarGenerationManifest));
+          rememberTableGeneration(referenced, sidecarGenerationManifest);
+        }
+        walkedInheritedIndexBundles.add(normalizedBundleUri);
+      }
       indexStore.walkReachable(
           manifest.getReusableArtifactIndex(),
           walkedIndexNodes,
@@ -1809,13 +1866,28 @@ public class CasBlobGc {
             if (!object.getInlinePayload().isEmpty()) {
               return;
             }
-            if (!object
-                .getUri()
-                .startsWith(Keys.tableReusableArtifactIndexObjectBlobPrefix(accountId, tableId))) {
+            String objectUri = object.getUri();
+            String legacyPrefix =
+                Keys.tableBlobPrefix(accountId, tableId) + "reusable-artifact-index/";
+            if (objectUri.startsWith(legacyPrefix)) {
+              LOG.warnf("cas gc ignored legacy reusable artifact index object: %s", objectUri);
+              return;
+            }
+            if (!objectUri.startsWith(Keys.tableTargetStatsBlobPrefix(accountId, tableId))) {
               throw new IllegalStateException(
                   "reusable artifact index object is outside the owning table");
             }
-            referenced.add(normalizeKey(object.getUri()));
+            referenced.add(normalizeKey(objectUri));
+            Keys.GenerationKey generation = Keys.generationFromTargetStatsBlobUri(objectUri);
+            if (generation == null) {
+              throw new IllegalStateException(
+                  "reusable artifact index object is outside generation ownership");
+            }
+            String generationManifest =
+                Keys.snapshotTargetStatsManifestBlobUri(
+                    accountId, tableId, generation.snapshotId(), generation.generationId());
+            referenced.add(normalizeKey(generationManifest));
+            rememberTableGeneration(referenced, generationManifest);
           },
           entry -> {
             checkDeadline();
@@ -2006,103 +2078,6 @@ public class CasBlobGc {
     return scanned;
   }
 
-  private int collectSharedIndexArtifactReferences(
-      String accountId,
-      String tableId,
-      ReferenceIndex referenced,
-      int pageSize,
-      StorageEstimate storageEstimate) {
-    int scanned = 0;
-    // StatsRepository is the only component that walks the broad target-stats pointer subtree. It
-    // exposes the exact, small generation identities discovered by that owner scan; generic GC can
-    // then query only each generation's index-artifact sub-prefix instead of paging millions of
-    // unrelated target-record pointers. Root walks may add a newly protected generation identity
-    // before a settled re-mark reaches this point.
-    var tableResourceId =
-        ResourceId.newBuilder()
-            .setAccountId(accountId)
-            .setId(tableId)
-            .setKind(ResourceKind.RK_TABLE)
-            .build();
-    for (Keys.GenerationKey generation : continuation.tableGenerationKeys) {
-      checkDeadline();
-      // Generation cleanup removes wrapper blobs before its bounded pointer cleanup necessarily
-      // reaches the corresponding wrapper pointers. Those pointers no longer represent live
-      // shared-sidecar roots, and attempting to dereference them would turn expected cleanup
-      // progress into a fatal missing-wrapper restart.
-      if (statsRepository.isGenerationDeletionInProgress(
-          tableResourceId, generation.snapshotId(), generation.generationId())) {
-        continue;
-      }
-      scanned +=
-          collectSharedIndexArtifactReferencesForPrefix(
-              Keys.snapshotIndexArtifactGenerationPrefix(
-                  accountId, tableId, generation.snapshotId(), generation.generationId()),
-              referenced,
-              pageSize,
-              storageEstimate);
-    }
-    return scanned;
-  }
-
-  private int collectSharedIndexArtifactReferencesForPrefix(
-      String prefix, ReferenceIndex referenced, int pageSize, StorageEstimate storageEstimate) {
-    boolean resumable = isRetainedContinuationIndex(referenced);
-    String scanKey = continuationIndexScope(referenced) + ":shared-index-pointers:" + prefix;
-    String token = resumable ? continuation.traversal.pointerTokens.getOrDefault(scanKey, "") : "";
-    if (SCAN_COMPLETE.equals(token)) {
-      return 0;
-    }
-    int scanned = 0;
-    while (true) {
-      checkDeadline();
-      StringBuilder next = new StringBuilder();
-      List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
-      for (Pointer pointer : pointers) {
-        checkDeadline();
-        if (pointer.getKey() == null
-            || !pointer.getKey().contains(Keys.SEG_INDEX_ARTIFACTS)
-            || pointer.getKey().endsWith(Keys.SUFFIX_INDEX_CAPTURE_MANIFEST_POINTER)
-            || !PointerReferences.isBlobPointer(pointer)
-            || pointer.getBlobUri().isBlank()) {
-          continue;
-        }
-        scanned++;
-        if (storageEstimate != null) {
-          storageEstimate.observe(pointer);
-        }
-        try {
-          byte[] bytes = blobStore.get(pointer.getBlobUri());
-          if (bytes == null) {
-            throw new IllegalStateException(
-                "missing index artifact wrapper " + pointer.getBlobUri());
-          }
-          if (ReusableArtifactBundleUris.isBundleUri(pointer.getBlobUri())) {
-            ReusableArtifactBundlePayload bundle = ReusableArtifactBundlePayload.parseFrom(bytes);
-            for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
-              addSharedArtifactReference(referenced, record);
-            }
-          } else {
-            addSharedArtifactReference(referenced, IndexArtifactRecord.parseFrom(bytes));
-          }
-        } catch (ReferenceIndex.CapacityExceededException e) {
-          throw e;
-        } catch (Exception e) {
-          throw new IllegalStateException(
-              "cannot prove shared index-artifact references from " + pointer.getBlobUri(), e);
-        }
-      }
-      token = next.toString();
-      if (resumable) {
-        continuation.traversal.pointerTokens.put(scanKey, token.isBlank() ? SCAN_COMPLETE : token);
-      }
-      if (token.isBlank()) {
-        return scanned;
-      }
-      checkDeadline();
-    }
-  }
-
   private void rememberTableGeneration(ReferenceIndex referenced, String manifestUri) {
     if (continuation == null
         || continuation.currentTableId.isBlank()
@@ -2137,13 +2112,6 @@ public class CasBlobGc {
             ignored ->
                 continuation.addGenerationKey(
                     new Keys.GenerationKey(snapshotId, Keys.INDEX_ARTIFACT_DIRECT_GENERATION)));
-  }
-
-  private static void addSharedArtifactReference(
-      ReferenceIndex referenced, IndexArtifactRecord record) {
-    if (record != null && !record.getArtifactUri().isBlank()) {
-      referenced.add(normalizeKey(record.getArtifactUri()));
-    }
   }
 
   /** Current pin-root URIs, normalized like every other root. */
@@ -2494,7 +2462,6 @@ public class CasBlobGc {
         true,
         pointer ->
             rememberDirectIndexArtifactGeneration(accountId, tableId, snapshotsById, pointer));
-    collectSharedIndexArtifactReferences(accountId, tableId, fresh, pageSize, null);
     collectPointers(
         Keys.snapshotConstraintsPointerPrefix(accountId, tableId), fresh, null, pageSize);
     return true;

@@ -131,11 +131,13 @@ public final class ReusableArtifactIndexStore {
   /** Adds one immutable delta run and restores the bounded run-count invariant at every level. */
   public ReusableArtifactIndexReference append(
       String objectPrefix,
+      String inheritedObjectPrefix,
       ReusableArtifactIndexReference base,
       List<ReusableArtifactBundleReference> bundles) {
     String prefix = normalizePrefix(objectPrefix);
+    String inheritedPrefix = normalizePrefix(inheritedObjectPrefix);
     ReusableArtifactIndexReference effectiveBase = effectiveReference(base);
-    validateReferenceObjects(effectiveBase, prefix, false);
+    validateReferenceObjects(effectiveBase, inheritedPrefix, false);
 
     DeltaRunAccumulator accumulator = new DeltaRunAccumulator(prefix, effectiveBase);
     for (ReusableArtifactBundleReference bundle :
