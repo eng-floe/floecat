@@ -46,6 +46,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
@@ -59,6 +61,41 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class RemoteSnapshotFinalizeReconcileExecutorTest {
+
+  @Test
+  void carriesIndexReuseBundleFromImmutableFilePlan() throws Exception {
+    String filePath = "s3://bucket/data.parquet";
+    byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest("bundle".getBytes());
+    String uri =
+        "/accounts/acct/tables/table-1/target-stats/snapshots/54/generations/"
+            + "full-rescan-prior/worker-uploads/group/lease/reuse-bundles/"
+            + java.util.HexFormat.of().formatHex(digest)
+            + ".pb";
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(filePath, 10L, "", null, "PARQUET", 0, List.of(), "content")
+            .withReuseBundleSelections(
+                "source",
+                "index-source",
+                "stats",
+                "index",
+                Map.of(),
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle:prior", uri, 6L, digest, List.of(), List.of(filePath))));
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of("plan", "group", "table-1", 55L, List.of(filePath))
+            .withFileExecutionPlans(List.of(plan));
+
+    assertEquals(
+        List.of(
+            StatsObjectDescriptor.newBuilder()
+                .setTargetStorageId("reuse-bundle:prior")
+                .setPayloadUri(uri)
+                .setPayloadBytes(6L)
+                .setPayloadSha256(ByteString.copyFrom(digest))
+                .build()),
+        ReusableArtifactBundles.inheritedIndexArtifactBundles(List.of(group)));
+  }
 
   @Test
   void trustedFinalizerRejectsUnrequestedRealizedSelectors() {
@@ -711,7 +748,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     verify(workerClient, never())
         .prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), any(), any(), any(), anyInt(), any(), any(), any(), any(),
-            any(), any(), any(), any());
+            any(), any(), any(), any(), any());
     verify(workerClient, never()).submitSnapshotFinalizeSuccess(any(), any());
   }
 
@@ -774,7 +811,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(input);
     when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), any(), any(), any(), anyInt(), anyList(), anyList(),
-            anyList(), anyList(), anyList(), anyList(), anyList(), any()))
+            anyList(), anyList(), anyList(), anyList(), anyList(), anyList(), any()))
         .thenThrow(new IllegalArgumentException("inconsistent predecessors"));
     when(workerClient.submitSnapshotFinalizeFailure(any(), any(), any(), any())).thenReturn(true);
 
@@ -807,7 +844,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(emptyFinalizeInput());
     when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), any(), any(), any(), anyInt(), anyList(), anyList(),
-            anyList(), anyList(), anyList(), anyList(), anyList(), any()))
+            anyList(), anyList(), anyList(), anyList(), anyList(), anyList(), any()))
         .thenReturn(preparedSnapshotFinalizeSuccess());
     when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenReturn(false);
 
@@ -843,7 +880,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     when(workerClient.getSnapshotFinalizeInput(any())).thenReturn(emptyFinalizeInput());
     when(workerClient.prepareSnapshotFinalizeSuccess(
             any(), any(), any(), any(), any(), any(), any(), anyInt(), anyList(), anyList(),
-            anyList(), anyList(), anyList(), anyList(), anyList(), any()))
+            anyList(), anyList(), anyList(), anyList(), anyList(), anyList(), any()))
         .thenReturn(preparedSnapshotFinalizeSuccess());
     when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenThrow(uncertain);
 
@@ -981,7 +1018,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
     when(blobStore.get(fixture.manifestUri())).thenReturn(fixture.manifestBytes());
     when(workerClient.prepareAppendOnlySnapshotFinalizeSuccess(
             any(), any(), any(), any(), any(), any(), any(), anyInt(), anyList(), anyList(),
-            anyList(), anyList(), anyList(), anyList(), anyList(), any(), any()))
+            anyList(), anyList(), anyList(), anyList(), anyList(), anyList(), any(), any()))
         .thenReturn(preparedSnapshotFinalizeSuccess());
     when(workerClient.submitSnapshotFinalizeSuccess(any(), any())).thenReturn(true);
 
@@ -1002,6 +1039,7 @@ class RemoteSnapshotFinalizeReconcileExecutorTest {
             any(),
             any(),
             eq(1),
+            eq(List.of()),
             eq(List.of()),
             eq(List.of()),
             eq(List.of()),

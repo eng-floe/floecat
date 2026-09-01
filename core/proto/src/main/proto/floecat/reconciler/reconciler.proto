@@ -530,6 +530,9 @@ message SnapshotCaptureManifest {
   // Complete persistent compatibility index for this snapshot. The trusted finalizer constructs
   // this run set from authenticated base runs and current file-group bundles before submission.
   ReusableArtifactIndexReference reusable_artifact_index = 31;
+  // Predecessor bundles selected for index reuse by this snapshot's immutable file plan. These
+  // roots keep generations containing inherited managed sidecars alive without copying them.
+  repeated StatsObjectDescriptor inherited_index_artifact_bundles = 32;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced
@@ -1116,6 +1119,8 @@ message LeasedFileGroupExecution {
   // content; the remote executor owns additive sidecar reconstruction.
   IndexGenerationPredecessor index_predecessor = 18;
   repeated ai.floedb.floecat.catalog.IndexArtifactRecord predecessor_index_artifacts = 19;
+  // Server-allocated immutable prefix for managed index sidecars produced by this execution.
+  string managed_index_sidecar_object_prefix = 20;
 }
 
 message GetLeasedFileGroupExecutionResponse {

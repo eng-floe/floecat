@@ -44,11 +44,8 @@ Table, snapshot, stats, constraints, and index blobs:
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/manifests/{generation_id}.pb
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/{generation_id}/{target_id_sha256}/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/{generation_id}/index-artifacts/{target_id_sha256}/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/index-sidecars/{snapshot_id:019d}/{target_id}/{sha}.parquet
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/direct/index-sidecars/{target_id}/{sha}.parquet
 /accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/index-artifacts/capture-manifests/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/reusable-artifact-index/runs/run-manifests/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/reusable-artifact-index/runs/filters/{sha}.bf
-/accounts/{account_id}/tables/{table_id}/reusable-artifact-index/runs/packs/{sha}.pack
 /accounts/{account_id}/tables/{table_id}/constraints/{snapshot_id:019d}/{sha}.pb
 ```
 
@@ -65,8 +62,12 @@ Idempotency and reconcile blobs:
 /accounts/{account_id}/reconcile/jobs/{job_id}/result-{suffix}.json
 /accounts/{account_id}/reconcile/jobs/{job_id}/result-payloads/v1/snapshot-plans/{parent_job_id}/executions/{lease_epoch_sha256}.pb
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/worker-uploads/{job_id}/{lease_epoch_sha256}/...
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/worker-uploads/{job_id}/{lease_epoch_sha256}/index-sidecars/{target_id}/{sha}.parquet
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/...
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/reuse-manifests/{manifest_sha256}.pb
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/reusable-artifact-index/run-manifests/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/reusable-artifact-index/filters/{sha}.bf
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/reusable-artifact-index/packs/{sha}.pack
 ```
 
 ### Pointer keys

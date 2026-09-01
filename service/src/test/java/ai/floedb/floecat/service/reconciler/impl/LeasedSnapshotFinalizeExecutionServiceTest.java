@@ -53,6 +53,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.FileGroupResultDescriptor;
@@ -337,6 +338,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     service.jobs = jobs;
     service.blobStore = blobs;
     service.childStateService = mock(SnapshotFinalizeChildStateService.class);
+    service.coverageService = mock(SnapshotFinalizeCoverageService.class);
+    when(service.coverageService.plannedFileGroups(any())).thenReturn(List.of());
     service.currentSnapshotPointerService = currentSnapshotPointerService;
     service.persistence = persistence;
     service.indexArtifactRepository = mock(IndexArtifactRepository.class);
@@ -1016,6 +1019,58 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
   }
 
   @Test
+  void indexFinalizeRejectsAnOmittedPlanDerivedInheritedBundle() throws Exception {
+    String filePath = "s3://bucket/data.parquet";
+    byte[] digest = sha256("bundle".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    String bundleUri =
+        Keys.reconcileFileGroupStatsObjectPrefix(
+                ACCOUNT_ID, TABLE_ID, 54L, "prior-parent", "prior-group", "prior-lease")
+            + "reuse-bundles/"
+            + HexFormat.of().formatHex(digest)
+            + ".pb";
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(filePath, 1L, "", null, "PARQUET", 0, List.of(), "content")
+            .withReuseBundleSelections(
+                "source",
+                "index-source",
+                "stats",
+                "index",
+                java.util.Map.of(),
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle:prior",
+                        bundleUri,
+                        6L,
+                        digest,
+                        List.of(),
+                        List.of(filePath))));
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of("plan", "group", TABLE_ID, SNAPSHOT_ID, List.of(filePath))
+            .withFileExecutionPlans(List.of(plan));
+    when(service.coverageService.plannedFileGroups(any())).thenReturn(List.of(group));
+    ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), indexCapturePolicy());
+    byte[] manifestBytes = indexCaptureManifestBytes();
+    when(jobs.getCompactLeaseView(FINALIZE_JOB_ID))
+        .thenReturn(Optional.of(finalizeJobView("JS_RUNNING", 0, 0, scope)));
+    when(blobs.get(manifestUri(manifestBytes))).thenReturn(manifestBytes);
+
+    IllegalArgumentException failure =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                persistAndPublish(
+                    principal,
+                    FINALIZE_JOB_ID,
+                    LEASE_EPOCH,
+                    "result-1",
+                    descriptor(manifestUri(manifestBytes), manifestBytes, 0, 0, 0)));
+
+    assertTrue(failure.getMessage().contains("immutable file plan"));
+    verify(service.indexArtifactRepository, never())
+        .prepareGenerationActivation(any(), anyLong(), anyString(), any(), any(), anyBoolean());
+  }
+
+  @Test
   void indexAndStatsPublicationConflictRepreparesAndPublishesOnce() {
     ReconcileScope scope = ReconcileScope.of(List.of(), TABLE_ID, List.of(), indexCapturePolicy());
     byte[] manifestBytes = indexCaptureManifestBytes();
@@ -1464,7 +1519,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     }
     return new ReusableArtifactIndexStore(blobs)
         .append(
-            Keys.tableReusableArtifactIndexObjectBlobPrefix(ACCOUNT_ID, TABLE_ID),
+            Keys.reconcileSnapshotReusableArtifactIndexObjectPrefix(
+                ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, "parent-job"),
+            Keys.tableTargetStatsBlobPrefix(ACCOUNT_ID, TABLE_ID),
             ReusableArtifactIndexStore.emptyReference(),
             List.of(bundle.build()));
   }

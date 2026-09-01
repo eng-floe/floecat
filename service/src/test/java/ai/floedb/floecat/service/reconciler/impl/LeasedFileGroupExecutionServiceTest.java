@@ -60,6 +60,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -78,7 +79,9 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -354,6 +357,10 @@ class LeasedFileGroupExecutionServiceTest {
             eq(SNAPSHOT_ID),
             eq("full-rescan-" + PARENT_JOB_ID),
             eq(statsObjectPrefix() + "index-artifacts/"),
+            eq(
+                Keys.reconcileFileGroupIndexSidecarObjectPrefix(
+                    ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, PARENT_JOB_ID, CHILD_JOB_ID, LEASE_EPOCH)),
+            eq(Set.of()),
             eq(List.of()));
     verify(statsStore)
         .markPreparedFileGroup(
@@ -775,8 +782,36 @@ class LeasedFileGroupExecutionServiceTest {
   @Test
   void persistSuccessExpandsOneCompactBundleWithoutReadingIt() {
     String filePath = "s3://bucket/data/file-1.parquet";
+    byte[] inheritedBundleBytes =
+        "inherited-bundle".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    byte[] inheritedBundleSha256 = sha256(inheritedBundleBytes);
+    String inheritedBundleUri =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(
+                ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, "full-rescan-prior-parent")
+            + "worker-uploads/prior-group/prior-lease/reuse-bundles/"
+            + HexFormat.of().formatHex(inheritedBundleSha256)
+            + ".pb";
+    ReusableArtifactBundleSelection inheritedSelection =
+        new ReusableArtifactBundleSelection(
+            "reuse-bundle:prior-group",
+            inheritedBundleUri,
+            inheritedBundleBytes.length,
+            inheritedBundleSha256,
+            List.of(),
+            List.of(filePath));
+    ReconcileFileExecutionPlan executionPlan =
+        ReconcileFileExecutionPlan.of(
+                filePath, 1L, "", null, "PARQUET", 0, List.of(), "test-content")
+            .withReuseBundleSelections(
+                "source",
+                "index-source",
+                "stats-signature",
+                "index-signature",
+                Map.of(),
+                List.of(inheritedSelection));
     ReconcileFileGroupTask plannedGroup =
-        ReconcileFileGroupTask.of("plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(filePath));
+        ReconcileFileGroupTask.of("plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(filePath))
+            .withFileExecutionPlans(List.of(executionPlan));
     ReconcileJobStore.ReconcileJob childLeaseView =
         job(
             CHILD_JOB_ID,
@@ -806,6 +841,8 @@ class LeasedFileGroupExecutionServiceTest {
                     "")));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
     stubIndexedPlan(plannedGroup);
+    when(indexArtifactRepository.inheritedManagedSidecarGenerations(eq(tableId()), any()))
+        .thenReturn(Set.of(new Keys.GenerationKey(SNAPSHOT_ID, "full-rescan-prior-parent")));
 
     TargetStatsRecord record = fileStatsRecord(filePath, 10L);
     StatsObjectDescriptor originalFileStats = statsObjectDescriptors(List.of(record)).getFirst();
@@ -861,6 +898,10 @@ class LeasedFileGroupExecutionServiceTest {
             eq(SNAPSHOT_ID),
             eq("full-rescan-" + PARENT_JOB_ID),
             eq(indexArtifactObjectPrefix),
+            eq(
+                Keys.reconcileFileGroupIndexSidecarObjectPrefix(
+                    ACCOUNT_ID, TABLE_ID, SNAPSHOT_ID, PARENT_JOB_ID, CHILD_JOB_ID, LEASE_EPOCH)),
+            eq(Set.of(new Keys.GenerationKey(SNAPSHOT_ID, "full-rescan-prior-parent"))),
             references.capture());
     assertEquals(1, references.getValue().size());
     assertEquals("file:" + filePath, references.getValue().getFirst().targetStorageId());
@@ -925,7 +966,7 @@ class LeasedFileGroupExecutionServiceTest {
             any(), anyLong(), anyString(), anyString(), any());
     verify(indexArtifactRepository, never())
         .registerPrewrittenIndexArtifactReferencesInGeneration(
-            any(), anyLong(), anyString(), anyString(), any());
+            any(), anyLong(), anyString(), anyString(), anyString(), any(), any());
     verify(idempotencyStore, never())
         .finalizeSuccess(
             anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());

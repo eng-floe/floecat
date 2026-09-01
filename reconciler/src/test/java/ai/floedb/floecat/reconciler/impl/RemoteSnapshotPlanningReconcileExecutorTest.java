@@ -1981,7 +1981,11 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     ReusableArtifactIndexStore.clearSharedCacheForTests();
     var reference =
         new ReusableArtifactIndexStore(blobStore)
-            .append("/artifact-index/", ReusableArtifactIndexStore.emptyReference(), bundles);
+            .append(
+                "/artifact-index/",
+                "/artifact-index/",
+                ReusableArtifactIndexStore.emptyReference(),
+                bundles);
     objects.forEach((uri, bytes) -> when(blobStore.get(uri)).thenReturn(bytes));
     doAnswer(
             invocation -> {

@@ -33,6 +33,7 @@ public record PlannedFileGroupCaptureRequest(
     Set<String> indexColumns,
     FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
     Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
+    String managedIndexSidecarObjectPrefix,
     boolean capturePageIndex) {
   public PlannedFileGroupCaptureRequest {
     planId = planId == null ? "" : planId.trim();
@@ -54,6 +55,11 @@ public record PlannedFileGroupCaptureRequest(
         requestedStatsTargetKinds == null
             ? Set.of()
             : Set.copyOf(new LinkedHashSet<>(requestedStatsTargetKinds));
+    managedIndexSidecarObjectPrefix =
+        managedIndexSidecarObjectPrefix == null ? "" : managedIndexSidecarObjectPrefix.trim();
+    if (managedIndexSidecarObjectPrefix.isBlank()) {
+      throw new IllegalArgumentException("managedIndexSidecarObjectPrefix is required");
+    }
   }
 
   private static Set<String> normalizeSelectors(Set<String> selectors) {
@@ -77,6 +83,7 @@ public record PlannedFileGroupCaptureRequest(
       Set<String> indexColumns,
       FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
       Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
+      String managedIndexSidecarObjectPrefix,
       boolean capturePageIndex) {
     return new PlannedFileGroupCaptureRequest(
         planId,
@@ -88,6 +95,7 @@ public record PlannedFileGroupCaptureRequest(
         indexColumns,
         columnSelectorPolicy,
         requestedStatsTargetKinds,
+        managedIndexSidecarObjectPrefix,
         capturePageIndex);
   }
 

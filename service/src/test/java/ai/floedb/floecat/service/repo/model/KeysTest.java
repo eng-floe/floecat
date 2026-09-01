@@ -136,18 +136,30 @@ class KeysTest {
   }
 
   @Test
-  void snapshotIndexSidecarBlobUriUsesPathSafeEncoding() {
+  void reconcileFileGroupIndexSidecarObjectUriUsesTheWorkerGenerationPath() {
+    String prefix =
+        Keys.reconcileFileGroupStatsObjectPrefix(
+                "acct id", "table id", 7L, "parent job", "group job", "lease epoch")
+            + "index-sidecars/";
     assertEquals(
-        "/accounts/acct%20id/tables/table%20id/index-sidecars/0000000000000000007/file%3As3%3A%2F%2Fb%2Fp%2Fa%20rquet/deadbeef.parquet",
-        Keys.snapshotIndexSidecarBlobUri(
-            "acct id", "table id", 7L, "file:s3://b/p/a rquet", "deadbeef"));
+        prefix + "file%3As3%3A%2F%2Fb%2Fp%2Fa%20rquet/deadbeef.parquet",
+        Keys.reconcileFileGroupIndexSidecarObjectUri(
+            "acct id",
+            "table id",
+            7L,
+            "parent job",
+            "group job",
+            "lease epoch",
+            "file:s3://b/p/a rquet",
+            "deadbeef"));
   }
 
   @Test
-  void reusableArtifactIndexObjectsHaveADedicatedTablePrefix() {
+  void reusableArtifactIndexObjectsUseTheFinalizerGenerationPrefix() {
     assertEquals(
-        "/accounts/acct%20id/tables/table%20id/reusable-artifact-index/runs/",
-        Keys.tableReusableArtifactIndexObjectBlobPrefix("acct id", "table id"));
+        "/accounts/acct%20id/tables/table%20id/target-stats/0000000000000000007/generations/full-rescan-parent%20job/finalizer-outputs/reusable-artifact-index/",
+        Keys.reconcileSnapshotReusableArtifactIndexObjectPrefix(
+            "acct id", "table id", 7L, "parent job"));
   }
 
   @Test

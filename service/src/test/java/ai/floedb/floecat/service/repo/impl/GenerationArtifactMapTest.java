@@ -62,6 +62,7 @@ class GenerationArtifactMapTest {
     var index =
         indexes.append(
             "/accounts/account-1/tables/table-1/reusable-index/",
+            "/accounts/account-1/tables/table-1/reusable-index/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(bundle));
     assertThat(blobs.list("/accounts/account-1/tables/table-1/reusable-index/", 100, "").keys())
@@ -110,6 +111,7 @@ class GenerationArtifactMapTest {
     var index =
         indexes
             .append(
+                "/accounts/account-1/tables/table-1/reusable-index/",
                 "/accounts/account-1/tables/table-1/reusable-index/",
                 ReusableArtifactIndexStore.emptyReference(),
                 List.of(

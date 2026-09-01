@@ -337,12 +337,13 @@ class GrpcRemoteReconcileExecutorClientTest {
         client.prepareSnapshotFinalizeSuccess(
             lease,
             "result-1",
-            "/stats/",
+            finalizeStatsObjectPrefix(),
             "/manifests/",
             "/reusable-index/",
             "/stats-generation.pb",
             "/index-manifests/",
             0,
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -398,7 +399,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     client.prepareSnapshotFinalizeSuccess(
         remoteSnapshotFinalizeLease(2),
         "result-1",
-        "/stats/",
+        finalizeStatsObjectPrefix(),
         "/manifests/",
         "/reusable-index/",
         "/stats-generation.pb",
@@ -411,6 +412,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         List.of(),
         List.of(),
         List.of(firstBundle, secondBundle),
+        List.of(),
         List.of(),
         List.of(),
         null);
@@ -439,11 +441,21 @@ class GrpcRemoteReconcileExecutorClientTest {
             SubmitLeasedSnapshotFinalizeResultResponse.newBuilder().setAccepted(true).build());
 
     RemoteLeasedJob lease = remoteSnapshotFinalizeLease(0, indexCapturePolicy());
+    StatsObjectDescriptor inheritedBundle =
+        StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId("reuse-bundle:prior")
+            .setPayloadUri(
+                "/accounts/acct/tables/table-1/target-stats/snapshots/54/generations/"
+                    + "full-rescan-prior/worker-uploads/group/lease/reuse-bundles/"
+                    + "0000000000000000000000000000000000000000000000000000000000000000.pb")
+            .setPayloadBytes(1L)
+            .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+            .build();
     var prepared =
         client.prepareSnapshotFinalizeSuccess(
             lease,
             "result-1",
-            "/stats/",
+            finalizeStatsObjectPrefix(),
             "/manifests/",
             "/reusable-index/",
             "/stats-generation.pb",
@@ -454,6 +466,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             List.of(),
             List.of(),
             List.of(),
+            List.of(inheritedBundle),
             List.of(),
             List.of(),
             indexPredecessor());
@@ -469,6 +482,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes.getValue());
     assertThat(manifest.getFileGroupsCount()).isZero();
     assertThat(manifest.getIndexPredecessor().getGenerationId()).isEqualTo("generation-1");
+    assertThat(manifest.getInheritedIndexArtifactBundlesList()).containsExactly(inheritedBundle);
   }
 
   @Test
@@ -487,13 +501,14 @@ class GrpcRemoteReconcileExecutorClientTest {
         client.prepareSnapshotFinalizeSuccess(
             lease,
             "result-1",
-            "/stats/",
+            finalizeStatsObjectPrefix(),
             "/manifests/",
             "/reusable-index/",
             "/stats-generation.pb",
             "/index-manifests/",
             1,
             List.of(fileGroupResultDescriptor(indexPredecessor())),
+            List.of(),
             List.of(),
             List.of(),
             List.of(),
@@ -532,7 +547,7 @@ class GrpcRemoteReconcileExecutorClientTest {
                 client.prepareSnapshotFinalizeSuccess(
                     remoteSnapshotFinalizeLease(2, indexCapturePolicy()),
                     "result-1",
-                    "/stats/",
+                    finalizeStatsObjectPrefix(),
                     "/manifests/",
                     "/reusable-index/",
                     "/stats-generation.pb",
@@ -541,6 +556,7 @@ class GrpcRemoteReconcileExecutorClientTest {
                     List.of(
                         fileGroupResultDescriptor(indexPredecessor()),
                         fileGroupResultDescriptor(otherPredecessor)),
+                    List.of(),
                     List.of(),
                     List.of(),
                     List.of(),
@@ -1480,6 +1496,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             base.groupId(),
             base.resultPayloadUri(),
             base.statsObjectPrefix(),
+            base.managedIndexSidecarObjectPrefix(),
             base.plannedFilePaths(),
             base.executionSchemaJson(),
             List.of(plan),
@@ -1605,6 +1622,7 @@ class GrpcRemoteReconcileExecutorClientTest {
             base.groupId(),
             base.resultPayloadUri(),
             base.statsObjectPrefix(),
+            base.managedIndexSidecarObjectPrefix(),
             base.plannedFilePaths(),
             base.executionSchemaJson(),
             List.of(plan),
@@ -1788,6 +1806,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         "group-1",
         "/result.pb",
         "/stats/",
+        "/stats/index-sidecars/",
         List.of(filePaths),
         "",
         List.of(),
@@ -1814,6 +1833,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         "group-1",
         "/result.pb",
         "/stats/",
+        "/stats/index-sidecars/",
         List.of(),
         "",
         List.of(),
@@ -1842,6 +1862,7 @@ class GrpcRemoteReconcileExecutorClientTest {
         "group-1",
         "/result.pb",
         "/stats/",
+        "/stats/index-sidecars/",
         List.of(filePath),
         "",
         List.of(),
@@ -1872,6 +1893,11 @@ class GrpcRemoteReconcileExecutorClientTest {
   private static ReconcileCapturePolicy indexCapturePolicy() {
     return ReconcileCapturePolicy.of(
         List.of(), Set.of(ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+  }
+
+  private static String finalizeStatsObjectPrefix() {
+    return "/accounts/acct/tables/table-1/target-stats/55/generations/"
+        + "full-rescan-snapshot-job/finalizer-outputs/";
   }
 
   private static ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference testArtifactIndex(

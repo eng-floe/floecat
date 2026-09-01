@@ -46,6 +46,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
@@ -72,6 +73,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @ApplicationScoped
 public class LeasedFileGroupExecutionService extends BaseServiceImpl {
@@ -149,6 +151,13 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         Keys.reconcileFileGroupResultPayloadUri(
             lease.accountId, lease.parentJobId, lease.jobId, lease.leaseEpoch),
         Keys.reconcileFileGroupStatsObjectPrefix(
+            lease.accountId,
+            plannedTask.tableId(),
+            plannedTask.snapshotId(),
+            lease.parentJobId,
+            lease.jobId,
+            lease.leaseEpoch),
+        Keys.reconcileFileGroupIndexSidecarObjectPrefix(
             lease.accountId,
             plannedTask.tableId(),
             plannedTask.snapshotId(),
@@ -437,6 +446,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       String leaseEpoch,
       String artifactReferencesSha256,
       String indexArtifactObjectPrefix,
+      String managedIndexSidecarObjectPrefix,
+      Set<Keys.GenerationKey> inheritedIndexSidecarGenerations,
       List<StatsStore.PrewrittenStatsObject> objects,
       List<StatsStore.PrewrittenTargetStatsReference> statsReferences,
       List<IndexArtifactRepository.PrewrittenIndexArtifactReference> indexReferences) {}
@@ -470,6 +481,14 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     List<IndexArtifactRepository.PrewrittenIndexArtifactReference> indexReferences =
         new ArrayList<>(requiredIndexArtifacts.size());
     String indexArtifactObjectPrefix = descriptor.statsObjectPrefix() + "index-artifacts/";
+    String managedIndexSidecarObjectPrefix =
+        Keys.reconcileFileGroupIndexSidecarObjectPrefix(
+            accountId,
+            plannedTask.tableId(),
+            plannedTask.snapshotId(),
+            parentJobId,
+            fileGroupJobId,
+            leaseEpoch);
     List<StatsObjectDescriptor> descriptors = new ArrayList<>(requiredFileStats);
     descriptors.addAll(requiredIndexArtifacts);
     Map<String, StatsObjectDescriptor> payloads = new LinkedHashMap<>();
@@ -568,6 +587,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             .setKind(ResourceKind.RK_TABLE)
             .setId(plannedTask.tableId())
             .build();
+    Set<Keys.GenerationKey> inheritedIndexSidecarGenerations =
+        inheritedIndexSidecarGenerations(tableId, plannedTask);
     return new StagedArtifactReferences(
         tableId,
         plannedTask.snapshotId(),
@@ -576,6 +597,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         leaseEpoch,
         artifactReferencesSha256,
         indexArtifactObjectPrefix,
+        managedIndexSidecarObjectPrefix,
+        inheritedIndexSidecarGenerations,
         List.copyOf(objects),
         List.copyOf(statsReferences),
         List.copyOf(indexReferences));
@@ -617,6 +640,15 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         || policy.outputs().contains(ReconcileCapturePolicy.Output.FILE_STATS);
   }
 
+  private Set<Keys.GenerationKey> inheritedIndexSidecarGenerations(
+      ResourceId tableId, ReconcileFileGroupTask plannedTask) {
+    List<ReusableArtifactBundleSelection> selections = new ArrayList<>();
+    for (ReconcileFileExecutionPlan executionPlan : plannedTask.fileExecutionPlans()) {
+      selections.addAll(executionPlan.reusableArtifactBundleSelections());
+    }
+    return indexArtifactRepository.inheritedManagedSidecarGenerations(tableId, selections);
+  }
+
   private void stageArtifactReferences(StagedArtifactReferences staged) {
     if (statsStore.isPreparedFileGroup(
         staged.tableId(),
@@ -640,6 +672,8 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
         staged.snapshotId(),
         staged.generationId(),
         staged.indexArtifactObjectPrefix(),
+        staged.managedIndexSidecarObjectPrefix(),
+        staged.inheritedIndexSidecarGenerations(),
         staged.indexReferences());
     statsStore.markPreparedFileGroup(
         staged.tableId(),

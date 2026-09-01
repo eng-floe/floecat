@@ -656,7 +656,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                   request.snapshotId(),
                   request.plannedFilePaths(),
                   fileStats,
-                  pageIndexEntries));
+                  pageIndexEntries,
+                  request.managedIndexSidecarObjectPrefix()));
         });
   }
 

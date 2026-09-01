@@ -20,6 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -189,6 +192,114 @@ class CasBlobGcTest {
     assertTrue(
         blobs.head(finalizerObject).isPresent(),
         "lifecycle-less finalizer outputs are outside the supported generation protocol");
+  }
+
+  @Test
+  void publishedActiveGenerationSurvivesBeforeRootPublication() {
+    long snapshotId = 7L;
+    String parentJobId = "snapshot-plan";
+    String generationId = "full-rescan-" + parentJobId;
+    String manifest =
+        Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, generationId);
+    String reuseManifest =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, snapshotId, generationId)
+            + "finalizer-outputs/reuse-manifests/reuse.pb";
+    String sidecar =
+        Keys.reconcileFileGroupIndexSidecarObjectUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            snapshotId,
+            parentJobId,
+            "group-job",
+            "lease-1",
+            "file:s3://bucket/data.parquet",
+            "sha-sidecar");
+    String reusableIndexObject =
+        Keys.reconcileSnapshotReusableArtifactIndexObjectPrefix(
+                ACCOUNT_ID, TABLE_ID, snapshotId, parentJobId)
+            + "run-manifest.pb";
+    String lifecycle =
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            ACCOUNT_ID, TABLE_ID, snapshotId, generationId);
+    seedCurrentTable();
+    blobs.put(manifest, "manifest".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    blobs.put(reuseManifest, "reuse".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    blobs.put(sidecar, "sidecar".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+    blobs.put(
+        reusableIndexObject, "index".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+    putPointer(lifecycle, "PUBLISHED");
+    putPointer(Keys.snapshotTargetStatsManifestPointer(ACCOUNT_ID, TABLE_ID, snapshotId), manifest);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(manifest).isPresent());
+    assertTrue(
+        blobs.head(reuseManifest).isPresent(),
+        "the producer-owned finalizer output must survive until snapshot publication completes");
+    assertTrue(blobs.head(sidecar).isPresent());
+    assertTrue(blobs.head(reusableIndexObject).isPresent());
+  }
+
+  @Test
+  void writingAndPublishingGenerationsRetainAllGenerationOwnedObjects() {
+    seedCurrentTable();
+    for (int index = 0; index < 2; index++) {
+      long snapshotId = 10L + index;
+      String state = index == 0 ? "WRITING" : "PUBLISHING";
+      String parentJobId = "snapshot-plan-" + index;
+      String generationId = "full-rescan-" + parentJobId;
+      String manifest =
+          Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, generationId);
+      String finalizerOutput =
+          Keys.reconcileSnapshotFinalizeStatsObjectPrefix(
+                  ACCOUNT_ID, TABLE_ID, snapshotId, parentJobId)
+              + "result.pb";
+      String sidecar =
+          Keys.reconcileFileGroupIndexSidecarObjectUri(
+              ACCOUNT_ID,
+              TABLE_ID,
+              snapshotId,
+              parentJobId,
+              "group-job",
+              "lease-1",
+              "file:s3://bucket/data-" + index + ".parquet",
+              "sha-sidecar-" + index);
+      blobs.put(manifest, "manifest".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+      blobs.put(
+          finalizerOutput, "finalizer".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+      blobs.put(sidecar, "sidecar".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+      putPointer(
+          Keys.snapshotTargetStatsGenerationLifecyclePointer(
+              ACCOUNT_ID, TABLE_ID, snapshotId, generationId),
+          state);
+    }
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    for (int index = 0; index < 2; index++) {
+      long snapshotId = 10L + index;
+      String parentJobId = "snapshot-plan-" + index;
+      assertTrue(
+          blobs
+              .head(
+                  Keys.reconcileSnapshotFinalizeStatsObjectPrefix(
+                          ACCOUNT_ID, TABLE_ID, snapshotId, parentJobId)
+                      + "result.pb")
+              .isPresent());
+      assertTrue(
+          blobs
+              .head(
+                  Keys.reconcileFileGroupIndexSidecarObjectUri(
+                      ACCOUNT_ID,
+                      TABLE_ID,
+                      snapshotId,
+                      parentJobId,
+                      "group-job",
+                      "lease-1",
+                      "file:s3://bucket/data-" + index + ".parquet",
+                      "sha-sidecar-" + index))
+              .isPresent());
+    }
   }
 
   @Test
@@ -562,10 +673,8 @@ class CasBlobGcTest {
   @Test
   void deferredPageIsRetainedBeforeDeadlineAdvancesPastIt() {
     System.setProperty("floecat.gc.cas.page-size", "1");
-    String first =
-        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:first", "sha-first");
-    String second =
-        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:second", "sha-second");
+    String first = Keys.tableRootBlobPrefix(ACCOUNT_ID, TABLE_ID) + "manifest/orphan-first.pb";
+    String second = Keys.tableRootBlobPrefix(ACCOUNT_ID, TABLE_ID) + "manifest/orphan-second.pb";
     long deadline = System.currentTimeMillis() + 200L;
     var delayedFirstHead = new java.util.concurrent.atomic.AtomicBoolean();
     var deadlineBlobs =
@@ -588,7 +697,6 @@ class CasBlobGcTest {
         new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, deadlineBlobs);
     gc.statsRepository =
         new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, deadlineBlobs);
-    seedCurrentTable();
     blobs.put(first, new byte[] {1}, "application/x-protobuf");
     blobs.put(second, new byte[] {2}, "application/x-protobuf");
 
@@ -640,11 +748,8 @@ class CasBlobGcTest {
     gc.statsRepository =
         new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, countingBlobs);
     gc.reachabilityGuard = granularGuard;
-    seedCurrentTable();
-    String first =
-        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:first", "sha-first");
-    String second =
-        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "file:second", "sha-second");
+    String first = Keys.tableRootBlobPrefix(ACCOUNT_ID, TABLE_ID) + "manifest/orphan-first.pb";
+    String second = Keys.tableRootBlobPrefix(ACCOUNT_ID, TABLE_ID) + "manifest/orphan-second.pb";
     blobs.put(first, new byte[] {1}, "application/x-protobuf");
     blobs.put(second, new byte[] {2}, "application/x-protobuf");
 
@@ -1119,7 +1224,7 @@ class CasBlobGcTest {
   @Test
   void deletingLargeGenerationDoesNotDereferenceRemovedIndexWrappers() {
     long snapshotId = 11L;
-    String generationId = "large-generation";
+    String generationId = "full-rescan-parent";
     String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
     blobs.put(tableBlob, new byte[] {1}, "application/x-protobuf");
     putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
@@ -1146,7 +1251,15 @@ class CasBlobGcTest {
         Keys.snapshotIndexArtifactGenerationBlobUri(
             ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId, "sha-wrapper");
     String sidecar =
-        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, targetId, "sha-sidecar");
+        Keys.reconcileFileGroupIndexSidecarObjectUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            snapshotId,
+            "parent",
+            "group-job",
+            "lease-1",
+            targetId,
+            "sha-sidecar");
     blobs.put(
         wrapper,
         ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.newBuilder()
@@ -1267,7 +1380,8 @@ class CasBlobGcTest {
         Keys.snapshotIndexArtifactGenerationBlobUri(
             ACCOUNT_ID, TABLE_ID, snapshotId, generationId, targetId, "sha-wrapper");
     String sidecar =
-        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, targetId, "sha-sidecar");
+        Keys.snapshotDirectIndexSidecarObjectUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, targetId, "sha-sidecar");
     var wrapperRecord =
         ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.newBuilder()
             .setArtifactUri(sidecar)
@@ -1292,7 +1406,9 @@ class CasBlobGcTest {
     assertTrue(
         blobs.head(wrapper).isPresent(),
         "generation wrappers remain exclusively owned by StatsRepository cleanup");
-    assertFalse(blobs.head(sidecar).isPresent(), "the unreferenced shared sidecar is generic CAS");
+    assertTrue(
+        blobs.head(sidecar).isPresent(),
+        "generation sidecars remain exclusively owned by StatsRepository cleanup");
   }
 
   @Test
@@ -1321,7 +1437,8 @@ class CasBlobGcTest {
             targetId,
             "sha-wrapper");
     String sidecar =
-        Keys.snapshotIndexSidecarBlobUri(ACCOUNT_ID, TABLE_ID, snapshotId, targetId, "sha-sidecar");
+        Keys.snapshotDirectIndexSidecarObjectUri(
+            ACCOUNT_ID, TABLE_ID, snapshotId, targetId, "sha-sidecar");
     var wrapperRecord =
         ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.newBuilder()
             .setArtifactUri(sidecar)
@@ -1888,6 +2005,58 @@ class CasBlobGcTest {
         Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "active-generation");
     blobs.put(activeManifest, "active".getBytes(StandardCharsets.UTF_8), "text/plain");
     putPointer(Keys.snapshotTargetStatsManifestPointer(ACCOUNT_ID, TABLE_ID, 7L), activeManifest);
+    String inheritedGenerationId = "full-rescan-prior-parent";
+    String inheritedGenerationManifest =
+        Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, 6L, inheritedGenerationId);
+    blobs.put(
+        inheritedGenerationManifest,
+        "inherited-generation".getBytes(StandardCharsets.UTF_8),
+        "text/plain");
+    putPointer(
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            ACCOUNT_ID, TABLE_ID, 6L, inheritedGenerationId),
+        "PUBLISHED");
+    String sidecarGenerationId = "full-rescan-ancestor-parent";
+    String sidecarGenerationManifest =
+        Keys.snapshotTargetStatsManifestBlobUri(ACCOUNT_ID, TABLE_ID, 5L, sidecarGenerationId);
+    blobs.put(
+        sidecarGenerationManifest,
+        "sidecar-generation".getBytes(StandardCharsets.UTF_8),
+        "text/plain");
+    putPointer(
+        Keys.snapshotTargetStatsGenerationLifecyclePointer(
+            ACCOUNT_ID, TABLE_ID, 5L, sidecarGenerationId),
+        "PUBLISHED");
+    String inheritedSidecar =
+        Keys.reconcileFileGroupIndexSidecarObjectUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            5L,
+            "ancestor-parent",
+            "ancestor-group",
+            "ancestor-lease",
+            "file:s3://bucket/data.parquet",
+            "sha-sidecar");
+    blobs.put(inheritedSidecar, new byte[] {9}, "application/octet-stream");
+    byte[] inheritedBundleBytes =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(
+                ai.floedb.floecat.catalog.rpc.IndexArtifactRecord.newBuilder()
+                    .setTableId(tableRid())
+                    .setSnapshotId(6L)
+                    .setArtifactUri(inheritedSidecar))
+            .build()
+            .toByteArray();
+    byte[] inheritedBundleDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(inheritedBundleBytes);
+    String inheritedBundleUri =
+        Keys.reconcileFileGroupStatsObjectPrefix(
+                ACCOUNT_ID, TABLE_ID, 6L, "prior-parent", "prior-group", "prior-lease")
+            + "reuse-bundles/"
+            + java.util.HexFormat.of().formatHex(inheritedBundleDigest)
+            + ".pb";
+    blobs.put(inheritedBundleUri, inheritedBundleBytes, "application/x-protobuf");
     String bundleUri =
         Keys.reconcileFileGroupStatsObjectPrefix(
                 ACCOUNT_ID, TABLE_ID, 7L, "parent-job", "group-job", "lease-1")
@@ -1911,13 +2080,23 @@ class CasBlobGcTest {
                     .setSourceFingerprint("source-v1")
                     .setStatsCaptureSignature("stats-v1"))
             .build();
-    String nodePrefix = Keys.tableReusableArtifactIndexObjectBlobPrefix(ACCOUNT_ID, TABLE_ID);
+    String nodePrefix =
+        Keys.reconcileSnapshotReusableArtifactIndexObjectPrefix(
+            ACCOUNT_ID, TABLE_ID, 7L, "parent-job");
     var index =
         new ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore(blobs)
             .append(
                 nodePrefix,
+                nodePrefix,
                 ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore.emptyReference(),
                 List.of(bundle));
+    var inheritedBundleDescriptor =
+        ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+            .setTargetStorageId("reuse-bundle:prior-group")
+            .setPayloadUri(inheritedBundleUri)
+            .setPayloadBytes(inheritedBundleBytes.length)
+            .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(inheritedBundleDigest))
+            .build();
     byte[] manifestBytes =
         ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest.newBuilder()
             .setFormatVersion(1)
@@ -1928,6 +2107,8 @@ class CasBlobGcTest {
             .setReusableArtifactBundlesComplete(true)
             .setSourceFileCount(1)
             .setFileStatsRecordCount(1)
+            .addInheritedIndexArtifactBundles(inheritedBundleDescriptor)
+            .addInheritedIndexArtifactBundles(inheritedBundleDescriptor)
             .setReusableArtifactIndex(index)
             .build()
             .toByteArray();
@@ -1953,6 +2134,8 @@ class CasBlobGcTest {
     commitRoot(7L, snapshotUri, "v7", null);
     String orphanNode = nodePrefix + "ff".repeat(32) + ".pb";
     blobs.put(orphanNode, new byte[] {9}, "application/x-protobuf");
+    BlobStore countedBlobs = spy(blobs);
+    gc.blobStore = countedBlobs;
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
@@ -1964,7 +2147,43 @@ class CasBlobGcTest {
     assertTrue(
         blobs.head(generationManifest).isPresent(),
         "an indexed bundle protects its owning generation after the live pointer moves on");
-    assertFalse(blobs.head(orphanNode).isPresent());
+    assertTrue(blobs.head(inheritedBundleUri).isPresent());
+    assertTrue(
+        blobs.head(inheritedGenerationManifest).isPresent(),
+        "an inherited index bundle protects the generation containing reused sidecars");
+    assertTrue(blobs.head(inheritedSidecar).isPresent());
+    assertTrue(
+        blobs.head(sidecarGenerationManifest).isPresent(),
+        "the inherited bundle's actual sidecar generation is rooted transitively");
+    assertTrue(
+        blobs.head(orphanNode).isPresent(),
+        "generation ownership retains index nodes until the generation is reclaimable");
+    verify(countedBlobs, times(1)).get(inheritedBundleUri);
+  }
+
+  @Test
+  void legacyReusableArtifactIndexObjectsForTheOwningTableDoNotPoisonGc() throws Exception {
+    seedCurrentTable();
+    String legacyPrefix =
+        Keys.tableBlobPrefix(ACCOUNT_ID, TABLE_ID) + "reusable-artifact-index/runs/";
+    commitReusableArtifactIndex(reusableArtifactIndexAt(legacyPrefix));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(result.poisoned());
+  }
+
+  @Test
+  void reusableArtifactIndexObjectsFromAnotherTablePoisonGc() throws Exception {
+    seedCurrentTable();
+    String foreignPrefix =
+        Keys.reconcileSnapshotReusableArtifactIndexObjectPrefix(
+            ACCOUNT_ID, "other-table", 7L, "parent-job");
+    commitReusableArtifactIndex(reusableArtifactIndexAt(foreignPrefix));
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(result.poisoned());
   }
 
   @Test
@@ -2121,6 +2340,96 @@ class CasBlobGcTest {
         .setId(TABLE_ID)
         .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
         .build();
+  }
+
+  private ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference reusableArtifactIndexAt(
+      String objectPrefix) throws Exception {
+    String bundleUri =
+        Keys.reconcileFileGroupStatsObjectPrefix(
+                ACCOUNT_ID, TABLE_ID, 7L, "parent-job", "group-job", "lease-1")
+            + "reuse-bundles/bundle.pb";
+    byte[] bundleBytes = new byte[] {1, 2, 3};
+    blobs.put(bundleUri, bundleBytes, "application/x-protobuf");
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(
+                ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                    .setTargetStorageId("reuse-bundle:group-1")
+                    .setPayloadUri(bundleUri)
+                    .setPayloadBytes(bundleBytes.length)
+                    .setPayloadSha256(
+                        com.google.protobuf.ByteString.copyFrom(
+                            java.security.MessageDigest.getInstance("SHA-256")
+                                .digest(bundleBytes))))
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath("s3://bucket/data.parquet")
+                    .setSourceFingerprint("source-v1")
+                    .setStatsCaptureSignature("stats-v1"))
+            .build();
+    var index =
+        new ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore(blobs)
+            .append(
+                objectPrefix,
+                objectPrefix,
+                ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore.emptyReference(),
+                List.of(bundle));
+    var run = index.getRuns(0);
+    var filter = run.getFilter();
+    if (!filter.getInlinePayload().isEmpty()) {
+      byte[] filterBytes = filter.getInlinePayload().toByteArray();
+      String filterUri =
+          objectPrefix
+              + java.util.HexFormat.of().formatHex(filter.getPayloadSha256().toByteArray())
+              + ".bf";
+      blobs.putImmutable(filterUri, filterBytes, "application/octet-stream");
+      index =
+          index.toBuilder()
+              .setRuns(
+                  0,
+                  run.toBuilder()
+                      .setFilter(filter.toBuilder().setUri(filterUri).clearInlinePayload().build())
+                      .build())
+              .build();
+    }
+    return index;
+  }
+
+  private void commitReusableArtifactIndex(
+      ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexReference index) throws Exception {
+    byte[] manifestBytes =
+        ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setParentJobId("parent-job")
+            .setTableId(TABLE_ID)
+            .setSnapshotId(7L)
+            .setReusableArtifactBundlesComplete(true)
+            .setSourceFileCount(1)
+            .setFileStatsRecordCount(1)
+            .setReusableArtifactIndex(index)
+            .build()
+            .toByteArray();
+    byte[] manifestDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(manifestBytes);
+    String manifestUri =
+        Keys.reconcileSnapshotDurableCaptureManifestUri(
+            ACCOUNT_ID, TABLE_ID, 7L, "parent-job", manifestDigest);
+    blobs.put(manifestUri, manifestBytes, "application/x-protobuf");
+    byte[] snapshotBytes =
+        ai.floedb.floecat.catalog.rpc.Snapshot.newBuilder()
+            .setTableId(tableRid())
+            .setSnapshotId(7L)
+            .setReuseManifestRef(
+                ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef.newBuilder()
+                    .setUri(manifestUri)
+                    .setPayloadBytes(manifestBytes.length)
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(manifestDigest)))
+            .build()
+            .toByteArray();
+    String snapshotUri = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 7L, "sha-snapshot");
+    blobs.put(snapshotUri, snapshotBytes, "application/x-protobuf");
+    commitRoot(7L, snapshotUri, "v7", null);
   }
 
   private void putSnapshotBlob(String uri, long snapshotId) {

@@ -42,6 +42,7 @@ public interface RemoteSnapshotFinalizeWorkerClient {
       List<TargetStatsRecord> finalStats,
       List<StatsObjectDescriptor> indexArtifacts,
       List<ReusableArtifactBundleReference> reusableArtifactBundles,
+      List<StatsObjectDescriptor> inheritedIndexArtifactBundles,
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor);
@@ -60,6 +61,7 @@ public interface RemoteSnapshotFinalizeWorkerClient {
       List<TargetStatsRecord> finalStats,
       List<StatsObjectDescriptor> indexArtifacts,
       List<ReusableArtifactBundleReference> reusableArtifactBundles,
+      List<StatsObjectDescriptor> inheritedIndexArtifactBundles,
       List<String> realizedStatsSelectors,
       List<String> realizedIndexSelectors,
       ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor indexPredecessor,

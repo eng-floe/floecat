@@ -38,6 +38,7 @@ public record StandaloneFileGroupExecutionPayload(
     String groupId,
     String resultPayloadUri,
     String statsObjectPrefix,
+    String managedIndexSidecarObjectPrefix,
     List<String> plannedFilePaths,
     String executionSchemaJson,
     List<ReconcileFileExecutionPlan> fileExecutionPlans,
@@ -58,6 +59,7 @@ public record StandaloneFileGroupExecutionPayload(
       String groupId,
       String resultPayloadUri,
       String statsObjectPrefix,
+      String managedIndexSidecarObjectPrefix,
       List<String> plannedFilePaths,
       String executionSchemaJson,
       List<ReconcileFileExecutionPlan> fileExecutionPlans,
@@ -76,6 +78,7 @@ public record StandaloneFileGroupExecutionPayload(
         groupId,
         resultPayloadUri,
         statsObjectPrefix,
+        managedIndexSidecarObjectPrefix,
         plannedFilePaths,
         executionSchemaJson,
         fileExecutionPlans,
@@ -107,6 +110,11 @@ public record StandaloneFileGroupExecutionPayload(
     groupId = groupId == null ? "" : groupId.trim();
     resultPayloadUri = resultPayloadUri == null ? "" : resultPayloadUri.trim();
     statsObjectPrefix = statsObjectPrefix == null ? "" : statsObjectPrefix.trim();
+    managedIndexSidecarObjectPrefix =
+        managedIndexSidecarObjectPrefix == null ? "" : managedIndexSidecarObjectPrefix.trim();
+    if (managedIndexSidecarObjectPrefix.isBlank()) {
+      throw new IllegalArgumentException("managedIndexSidecarObjectPrefix is required");
+    }
     plannedFilePaths =
         plannedFilePaths == null
             ? List.of()
