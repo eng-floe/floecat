@@ -1973,8 +1973,10 @@ Per-file S3 range readers are closed by their consumers.</p>
   default 10,000. Raise it for an unusually large catalog; exceeding it is reported as an
   <code>INVALID_RESPONSE</code> rather than allowing an unbounded listing.</li>
 <li><code>floecat.unity.max-response-bytes</code> (system property) – Cap on a single Unity Catalog response
-  body, default 32 MiB. A larger body is refused as <code>INVALID_RESPONSE</code> rather than buffered, since
-  a connector URI is tenant-supplied. Raise it for a catalog whose listing pages exceed the default.</li>
+  body, default 32 MiB. A larger body is refused rather than buffered, since a connector URI is
+  tenant-supplied: on a success the call fails as <code>INVALID_RESPONSE</code>; on an error response the body
+  is dropped for diagnostics while the HTTP status still decides the classification. Raise it for a
+  catalog whose listing pages exceed the default.</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
 <li><code>stats.ndv.*</code> – Sampling knobs identical to the Iceberg connector.</li>
 <li>Authentication-specific options (<code>auth.scheme</code>, <code>auth.properties</code>) – <code>auth.scheme=oauth2</code>
