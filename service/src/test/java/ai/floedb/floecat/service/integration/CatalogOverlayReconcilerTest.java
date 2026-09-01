@@ -298,7 +298,7 @@ class CatalogOverlayReconcilerTest {
    * contends with, so requesting it is the property, and it is deterministic.
    */
   @Test
-  void anUpdateThatMovesARelationFencesBothNamespaces() {
+  void anUpdateThatMovesARelationFencesOnlyTheDestinationNamespace() {
     NamespacePath sales = NamespacePath.of("sales");
     NamespacePath archive = NamespacePath.of("sales", "archive");
     CatalogObjectName inSales = new CatalogObjectName(sales, "orders");
@@ -322,11 +322,13 @@ class CatalogOverlayReconcilerTest {
 
     assertEquals(1, result.tablesUpdated());
     assertEquals(0, result.tablesCreated());
-    // Both markers moved, so both were in the batch that moved the table. Asking the MarkerStore
-    // for the fence proves nothing -- the reconciler could ask and then not pass it to the write.
-    assertTrue(
-        relationsMarkerVersion(from.getResourceId()) > fromBefore,
-        "the namespace it leaves is fenced against a concurrent delete");
+    // The destination marker moved, so it was in the batch that moved the table. Asking the
+    // MarkerStore for the fence proves nothing -- the reconciler could ask and then not pass it to
+    // the write. The source stays unchanged because removing a relation cannot orphan it there.
+    assertEquals(
+        fromBefore,
+        relationsMarkerVersion(from.getResourceId()),
+        "the namespace it leaves needs no fence");
     assertTrue(
         relationsMarkerVersion(to.getResourceId()) > toBefore,
         "the namespace it lands in is fenced against a concurrent delete");

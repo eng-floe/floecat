@@ -395,8 +395,8 @@ public class CatalogOverlayReconciler {
       } else if (!current.equals(desired)) {
         MutationMeta meta = tables.metaFor(current.getResourceId());
         // An update that moves the table adds a relation to the destination, so it has to pass the
-        // destination's relation fence exactly as a create does. Both ids when they differ; the
-        // fence collapses to one marker when they do not.
+        // destination's relation fence exactly as a create does. Leaving the source only makes it
+        // emptier, so the source needs no fence.
         definitionMeta =
             tables
                 .updateWhilePointersMatch(
