@@ -16,6 +16,7 @@ typed Unity Catalog client boundary, and custom file readers for S3.
 - **`DeltaConnector`** – Abstract `FloecatConnector` that centralizes snapshot/stat logic.
 - **`UnityDeltaConnector`** – Unity Catalog-backed connector that:
   - Uses `UnityCatalogClient` to list catalogs/schemas/tables.
+  - Vends table-scoped storage credentials through the client's temporary-credentials operation.
   - Uses Delta Kernel (`io.delta.kernel.Table`) for schema and snapshot access.
   - Reads Parquet data with `S3V2FileSystemClient` and `ParquetS3V2InputFile` for NDV/statistics.
   - Plans files using `DeltaPlanner`, emitting `ScanFile`s for data/delete manifests.
@@ -156,6 +157,16 @@ Important connector properties:
   tenant-supplied: on a success the call fails as `INVALID_RESPONSE`; on an error response the body
   is dropped for diagnostics while the HTTP status still decides the classification. Raise it for a
   catalog whose listing pages exceed the default.
+- `databricks.access-delegation=vended-credentials` – Explicitly enables table-scoped temporary
+  AWS credentials from Unity Catalog when no storage authority matches the table. The Databricks
+  metastore must allow external access and the caller needs `EXTERNAL USE SCHEMA` on the parent
+  schema. Azure, GCP, and R2 credential shapes are not yet consumed and fall back to a configured
+  storage authority. Accepted values are `vended-credentials`, `true`, `1`, `yes` (enabled) and
+  `false`, `0`, `no`, `none` (disabled), with underscores accepted in place of hyphens so the
+  spelling DuckDB sends works here too; anything else is rejected at create/update time rather
+  than read as "disabled". Honored only for `delta.source=unity` (the default): on
+  `delta.source=glue` or `delta.source=filesystem` the option is accepted and then ignored, since
+  neither has a Unity credential endpoint to vend from.
 - `s3.region` / `aws.region` – Region for the S3 client used to read Parquet files.
 - `stats.ndv.*` – Sampling knobs identical to the Iceberg connector.
 - Authentication-specific options (`auth.scheme`, `auth.properties`) – `auth.scheme=oauth2`

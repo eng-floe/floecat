@@ -1157,6 +1157,23 @@ public interface FloecatConnector extends Closeable {
    * than "denied": a catalog that supports delegation but has not been granted the privilege will
    * fail the underlying call instead, and that failure should propagate rather than be flattened
    * into an empty result.
+   *
+   * <p>How it propagates decides whether the caller retries. A refusal that will not change on a
+   * later attempt has to be typed, because the service classifies an unrecognized runtime exception
+   * as retryable and the reconciler then retries it indefinitely -- so a permanent refusal thrown
+   * untyped becomes a job that never fails and never succeeds. A transient failure must stay
+   * untyped for the same reason, in reverse: typing it would permanently fail a job over a
+   * condition that clears by itself.
+   *
+   * @throws SourceCatalogAccessException for a refusal the catalog will repeat: not authenticated
+   *     ({@link SourceCatalogAccessException.Denial#UNAUTHENTICATED}), authenticated but not
+   *     privileged to vend ({@link SourceCatalogAccessException.Denial#PERMISSION_DENIED}), or a
+   *     table this catalog will not vend for at all ({@link
+   *     SourceCatalogAccessException.Denial#UNSUPPORTED}). Anything that may succeed on a retry --
+   *     a transport fault, a rate limit, a gateway or proxy answering in place of the catalog --
+   *     propagates as whatever the underlying client threw, untyped and therefore retryable.
+   *     Distinguishing the two is the implementation's job: only it knows which of its client's
+   *     failures reached the catalog.
    */
   default Optional<VendedStorageCredentials> vendStorageCredentials(
       String namespaceFq, String tableName) {
@@ -1167,21 +1184,129 @@ public interface FloecatConnector extends Closeable {
    * Storage credentials vended by a source catalog, already narrowed to the properties that are
    * safe to hand to a storage client.
    *
+   * <p>Components are ordered to match {@code catalog.access.VendedStorageCredentials}, which
+   * carries the same three concepts for the catalog-access layer. The two still differ on how they
+   * spell an absent value -- this record uses null for both the prefix and the expiry, that one
+   * requires a non-null prefix (its callers pass {@code ""}) and wraps the expiry in an {@code
+   * Optional}. Reconciling that is a change to the catalog-access SPI and its consumers, not to
+   * this one.
+   *
    * @param properties storage properties (e.g. {@code s3.access-key-id}). Implementations MUST
    *     restrict this to storage credentials: a delegated {@code loadTable} also surfaces the
    *     catalog's own auth token in the same property map, and copying it here would leak the
    *     catalog credential into the storage path.
+   * @param scopePrefix storage prefix the credentials apply to, or null when the producer named
+   *     none. Null means "no restriction known", not "unrestricted": a consumer producing a scoped
+   *     credential response bounds it by what the caller was authorized to reach either way, and
+   *     narrows to the intersection when a prefix is present. Nothing invents a prefix -- a guess
+   *     here becomes a restriction the credential does not actually carry.
    * @param expiresAt when the credentials stop working, or null if the catalog did not say. Null is
    *     meaningful — callers that cache must treat it as "do not cache" rather than "never
    *     expires".
    */
-  record VendedStorageCredentials(Map<String, String> properties, Instant expiresAt) {
+  record VendedStorageCredentials(
+      Map<String, String> properties, String scopePrefix, Instant expiresAt) {
+    private static final int MAX_PREFIX_CHARS = 256;
+
     public VendedStorageCredentials {
       properties = properties == null ? Map.of() : Map.copyOf(properties);
+      // Blank folds to "none supplied". Nothing else is touched: this is a bound, and trimming it
+      // widens it -- a trailing space is a legal S3 key character, so dropping one turns
+      // "s3://bucket/my folder " into a prefix that also matches "s3://bucket/my folderX". It would
+      // also put this record's stored value out of step with the catalog-access record, which keeps
+      // what it was given.
+      scopePrefix = scopePrefix == null || scopePrefix.isBlank() ? null : scopePrefix;
     }
 
     public boolean isEmpty() {
       return properties.isEmpty();
+    }
+
+    /**
+     * Key names only. The properties carry a live secret access key and session token, and the
+     * generated form prints them; the vending path logs several lines per vend, so one added {@code
+     * LOG.debugf("%s", vended)} would write a usable AWS credential to a log file.
+     *
+     * <p>The scope prefix is printed. It is a storage location rather than a credential, and it
+     * decides how a vended credential gets scoped -- a redacted form cannot separate "the producer
+     * supplied no prefix" from "a prefix was supplied and it is the wrong one", which is the
+     * question being asked when scoping is wrong. {@code TemporaryTableCredentials.AwsCredentials}
+     * prints its access point on the same reasoning.
+     */
+    @Override
+    public String toString() {
+      return "VendedStorageCredentials[propertyKeys="
+          + properties.keySet().stream().sorted().collect(Collectors.joining(", ", "[", "]"))
+          + ", scopePrefix="
+          + displayPrefix(scopePrefix)
+          + ", expiresAt="
+          + expiresAt
+          + "]";
+    }
+
+    /**
+     * A prefix bounded and flattened for a log line. The value comes from the catalog over the wire
+     * -- {@code IcebergRestCatalogClient} passes the upstream {@code loadTable} response's prefix
+     * straight through -- so it carries no length limit and no character restriction. A newline in
+     * it forges a second log line, and a megabyte of it fills a log file.
+     *
+     * <p>Duplicated rather than shared, and it is not a small duplicate: {@code
+     * LogSafeText.location} and its {@code isUserInfo} run to roughly fifty lines of
+     * security-relevant rules, all of which the catalog-access copy repeats. Sharing them is
+     * possible in one direction only -- {@code catalog-access-spi} has no dependencies, so this
+     * module could depend on it -- but that points the connector SPI at the catalog-access SPI,
+     * which is backwards. Until there is a module both can sit on, the two copies stay, and {@code
+     * VendedStorageCredentialsParityTest} renders the same inputs through both and fails when they
+     * disagree -- otherwise each copy is only ever tested against itself and a change to one would
+     * drift silently.
+     */
+    private static String displayPrefix(String prefix) {
+      if (prefix == null) {
+        return "<absent>";
+      }
+      return LogSafeText.location(prefix, MAX_PREFIX_CHARS);
+    }
+
+    /**
+     * The largest expiry that can survive the trip back to a caller.
+     *
+     * <p>{@code Instant.ofEpochMilli} accepts every long -- {@code Long.MAX_VALUE} parses to year
+     * 292278994 -- so nothing upstream rejects a nonsense value. The service stamps the expiry with
+     * {@code Timestamps.fromMillis}, which throws for anything past 9999-12-31T23:59:59.999Z, and
+     * it throws inside a gRPC handler where an unrecognized exception is classified retryable. A
+     * catalog sending microseconds where the field is documented as milliseconds -- 1.9e15, year
+     * 62178 -- would loop a reconcile job forever on a malformed field.
+     *
+     * <p>Spelled out rather than read from {@code Timestamps.MAX_VALUE}: that constant lives in
+     * protobuf-java-util, which this module does not depend on and should not start depending on to
+     * hold a bound fixed by the proto specification.
+     */
+    private static final long MAX_EXPIRY_EPOCH_MILLIS = 253402300799999L;
+
+    /**
+     * Parses a vended expiry expressed as epoch milliseconds, shared by every connector that vends.
+     * {@code IcebergRestCatalogClient} holds the one copy that cannot call this -- catalog-access
+     * depends on the catalog-access SPI, not this one -- and repeats the rule rather than
+     * diverging.
+     *
+     * <p>Null (absent, blank, out of range, or unparseable) is deliberately not "never expires":
+     * callers that cache must treat it as "do not cache", and the reconcile path refuses a
+     * credential with no expiry because it cannot schedule a renewal for one. A malformed value is
+     * folded into the same null rather than failing the vend -- the credential still reads, it just
+     * cannot be cached or refreshed.
+     */
+    public static Instant expiryFromEpochMillis(String rawEpochMillis) {
+      if (rawEpochMillis == null || rawEpochMillis.isBlank()) {
+        return null;
+      }
+      try {
+        long millis = Long.parseLong(rawEpochMillis.trim());
+        return millis > 0 && millis <= MAX_EXPIRY_EPOCH_MILLIS
+            ? Instant.ofEpochMilli(millis)
+            : null;
+      } catch (NumberFormatException e) {
+        return null;
+      }
     }
   }
 }

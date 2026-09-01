@@ -203,6 +203,41 @@ class IcebergRestCatalogClientTest {
   }
 
   @Test
+  void aNonPositiveExpiryIsAbsentRatherThanNineteenSeventy() {
+    // Both bounds the connector-side parser applies, because a comment here claims parity with it
+    // and nothing else pins the two together. Non-positive would otherwise hand back an instant
+    // every consumer reads as already expired; out of range is a unit mismatch -- microseconds in
+    // a field documented as milliseconds lands in year 62178 -- from the same field of the same
+    // response.
+    for (String raw : new String[] {"0", "-1", "1900000000000000", "253402300800000"}) {
+      CatalogObjectName name =
+          new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
+      TableIdentifier identifier =
+          TableIdentifier.of(Namespace.of("production", "sales"), "orders");
+      Table table = mock(Table.class);
+      FileIO io =
+          mock(FileIO.class, withSettings().extraInterfaces(SupportsStorageCredentials.class));
+      when(table.io()).thenReturn(io);
+      when(table.location()).thenReturn("s3://warehouse/sales/orders/data");
+      when(((SupportsStorageCredentials) io).credentials())
+          .thenReturn(
+              List.of(
+                  StorageCredential.create(
+                      "s3://warehouse/sales/orders/",
+                      Map.of(
+                          "s3.access-key-id", "table-access",
+                          "s3.secret-access-key", "table-secret",
+                          "s3.session-token", "table-token",
+                          "s3.session-token-expires-at-ms", raw))));
+      when(catalog.loadTable(identifier)).thenReturn(table);
+
+      var vended = client().vendStorageCredentials(name).orElseThrow();
+
+      assertTrue(vended.expiresAt().isEmpty(), raw + " -> " + vended.expiresAt());
+    }
+  }
+
+  @Test
   void carriesConfiguredStorageRoutingWithProtocolVendedCredentials() {
     CatalogObjectName name =
         new CatalogObjectName(NamespacePath.of("production", "sales"), "orders");
