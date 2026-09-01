@@ -1,0 +1,2785 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reference and operational guides for Floecat">
+      
+      
+      
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/catalog-integration-design/">
+      
+      
+        <link rel="prev" href="../arrow-flight/">
+      
+      
+        <link rel="next" href="../catalog-integrations/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>Catalog Integration Architecture and Delivery Plan - Floecat Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#catalog-integration-architecture-and-delivery-plan" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Floecat Documentation" class="md-header__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Floecat Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Catalog Integration Architecture and Delivery Plan
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Floecat Documentation" class="md-nav__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Floecat Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Documentation Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Contributing to Docs
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../style-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docs Style Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docker Local Stack
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Service Runtime
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Caching
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Operations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting-errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    APIs and Clients
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            APIs and Clients
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-access/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    API Access
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../client-cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Client CLI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    CLI Reference
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../iceberg-rest-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg REST Gateway
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../arrow-flight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Arrow Flight
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Catalog and Metadata
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Catalog and Metadata
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integration Architecture and Delivery Plan
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integration Architecture and Delivery Plan
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-this-work-is" class="md-nav__link">
+    <span class="md-ellipsis">
+      What this work is
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#initial-stack-delivery-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      Initial stack delivery boundaries
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#resource-and-ownership-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Resource and ownership model
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Resource and ownership model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#catalog-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog integration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#authentication-and-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      Authentication and credentials
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vended-storage-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      Vended storage credentials
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#catalog-overlay" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog overlay
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#namespace-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Namespace selection
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#catalog-access-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog access boundary
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#materialized-metadata-and-deferred-capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Materialized metadata and deferred capture
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reconciliation-publication-and-failure-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reconciliation publication and failure semantics
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#table-validation-and-visibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      Table validation and visibility
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#refresh-and-reconciliation-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      Refresh and reconciliation ownership
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lifecycle-and-garbage-collection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lifecycle and garbage collection
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#durability-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      Durability contract
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Durability contract">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#delivery-sequencing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Delivery sequencing
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#account-deletion-fence" class="md-nav__link">
+    <span class="md-ellipsis">
+      Account deletion fence
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#consistent-reads-for-cascade-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      Consistent reads for cascade operations
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#create-conflict-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Create-conflict behavior
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#follow-on-api-evolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      Follow-on API evolution
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-connector-disposition" class="md-nav__link">
+    <span class="md-ellipsis">
+      Legacy Connector disposition
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#initial-cli-name-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      Initial CLI name resolution
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-integrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integrations and Overlays
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-access-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Access SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metadata-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Metadata Graph
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Objects
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans-grpc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans gRPC
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconciler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Reconciler
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../transactions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Transactions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-common/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector Common
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-iceberg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-delta/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Delta Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extension-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Example Catalog Extension
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Types and Builtins
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Types and Builtins
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Types
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../builtin-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Builtin Catalog Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../proto/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Protobuf and RPC Contracts
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../statistics-engine-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Statistics Engine SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Storage and Security
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Storage and Security
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Layout
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-aws/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage AWS
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Memory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../secrets-manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Secrets Manager
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    External Authentication
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fixed-roles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Fixed Roles
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Observability
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Observability
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Logging Directory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/demo-grafana/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Grafana Demo
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-this-work-is" class="md-nav__link">
+    <span class="md-ellipsis">
+      What this work is
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#initial-stack-delivery-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      Initial stack delivery boundaries
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#resource-and-ownership-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Resource and ownership model
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Resource and ownership model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#catalog-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog integration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#authentication-and-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      Authentication and credentials
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vended-storage-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      Vended storage credentials
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#catalog-overlay" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog overlay
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#namespace-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Namespace selection
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#catalog-access-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog access boundary
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#materialized-metadata-and-deferred-capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Materialized metadata and deferred capture
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reconciliation-publication-and-failure-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reconciliation publication and failure semantics
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#table-validation-and-visibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      Table validation and visibility
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#refresh-and-reconciliation-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      Refresh and reconciliation ownership
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lifecycle-and-garbage-collection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lifecycle and garbage collection
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#durability-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      Durability contract
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Durability contract">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#delivery-sequencing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Delivery sequencing
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#account-deletion-fence" class="md-nav__link">
+    <span class="md-ellipsis">
+      Account deletion fence
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#consistent-reads-for-cascade-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      Consistent reads for cascade operations
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#create-conflict-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Create-conflict behavior
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#follow-on-api-evolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      Follow-on API evolution
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-connector-disposition" class="md-nav__link">
+    <span class="md-ellipsis">
+      Legacy Connector disposition
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#initial-cli-name-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      Initial CLI name resolution
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/eng-floe/floecat/edit/kw-catalog-integration-iceberg-vending/docs/catalog-integration-design.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="catalog-integration-architecture-and-delivery-plan">Catalog Integration Architecture and Delivery Plan<a class="headerlink" href="#catalog-integration-architecture-and-delivery-plan" title="Permanent link">&para;</a></h1>
+<p>Status: accepted architecture and delivery contract for the Catalog Integration stack and its
+metadata-reconciliation follow-on.</p>
+<p>This document defines the target architecture and the boundary of each change in the initial stack.
+It separates that accepted delivery scope from architecture and behavior that remain deferred.</p>
+<h2 id="what-this-work-is">What this work is<a class="headerlink" href="#what-this-work-is" title="Permanent link">&para;</a></h2>
+<p>Catalog Integration and Catalog Overlay split today's <code>Connector</code> into its two independent halves:</p>
+<table>
+<thead>
+<tr>
+<th>Connector concern</th>
+<th>Replacement</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>uri</code>, connection properties, <code>auth</code>, <code>kind</code> — how Floecat reaches and authenticates to an upstream catalog</td>
+<td><code>CatalogIntegration</code></td>
+</tr>
+<tr>
+<td><code>source</code> — which upstream namespaces are selected</td>
+<td><code>CatalogOverlay</code></td>
+</tr>
+<tr>
+<td><code>destination</code> — where the selection lands in Floecat</td>
+<td><code>CatalogOverlay</code>, through a reference to an existing <code>Catalog</code></td>
+</tr>
+<tr>
+<td><code>policy</code> — refresh cadence, retention, pause</td>
+<td>Overlay demand or a referenced policy, deferred from the initial API</td>
+</tr>
+<tr>
+<td>scheduler state — leases, attempts, progress, last success</td>
+<td>Integration-owned scheduler state, separate from the Overlay resource</td>
+</tr>
+</tbody>
+</table>
+<p>Connectors will be deprecated and replaced by these two resources. One integration can serve many
+overlays, and overlays from one or more integrations can target the same Floecat catalog. This is the
+reuse a single <code>Connector</code> cannot express: today every destination needs its own connector, and
+therefore its own copy of the endpoint and credentials.</p>
+<p>This is a decomposition of the connector resource, not a new metadata architecture. Captured
+metadata continues to materialize into the existing <code>Catalog</code> / <code>Namespace</code> / <code>Table</code> / <code>View</code> /
+<code>Snapshot</code> resources, and every downstream consumer — name resolution, the metagraph, <code>TableRoot</code>
+and pins, statistics visibility, garbage collection, transactions, and the Iceberg REST gateway —
+continues to read those resources unchanged. Nothing in this work introduces a parallel object
+hierarchy, a second table identity, or a second name-resolution path.</p>
+<h2 id="initial-stack-delivery-boundaries">Initial stack delivery boundaries<a class="headerlink" href="#initial-stack-delivery-boundaries" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Change</th>
+<th>Boundary</th>
+<th>Explicitly deferred</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>This document</td>
+<td>Architecture decisions and delivery boundaries</td>
+<td>Production behavior</td>
+</tr>
+<tr>
+<td>Catalog graph view rename</td>
+<td>Rename the existing metadata graph <code>CatalogOverlay</code> contract to <code>CatalogGraphView</code>, freeing <code>CatalogOverlay</code> for the mapping resource</td>
+<td>Resource or persistence behavior</td>
+</tr>
+<tr>
+<td>Durability primitives</td>
+<td>Reserved resource identity, receipt-in-batch idempotency, companion pointer operations, mutation-store reads, and strongly consistent lifecycle reads</td>
+<td>Integration and Overlay resources</td>
+</tr>
+<tr>
+<td>Account deletion fence</td>
+<td>Durable account-deletion fencing and resumable descendant cleanup</td>
+<td>Integration- and Overlay-specific CRUD</td>
+</tr>
+<tr>
+<td>Catalog Integration API</td>
+<td>Integration CRUD, typed authentication, write-only credential storage and rotation, dependencies, cascade deletion, idempotency, and optimistic concurrency</td>
+<td>Upstream connectivity, provider discovery, validation RPCs, capture, reconciliation, and query visibility</td>
+</tr>
+<tr>
+<td>Catalog Overlay API</td>
+<td>Overlay CRUD, references to existing target catalogs, namespace selection, Integration and Catalog dependencies, contribution lifecycle, idempotency, and optimistic concurrency</td>
+<td>Capture, reconciliation, and query visibility</td>
+</tr>
+<tr>
+<td>Shell CLI</td>
+<td>Integration and Overlay CRUD commands, target-Catalog binding, typed authentication input, write-only credential input, authentication rotation, pagination, name resolution, namespace filters, cascade, and etag preconditions</td>
+<td>Connectivity validation, discovery, capture, reconciliation, and query visibility</td>
+</tr>
+<tr>
+<td>Catalog-access SPI</td>
+<td>Connector-independent catalog client SPI plus an Iceberg REST provider with validation, discovery, table and view loading, OAuth2, SigV4, and renewable AWS credential support</td>
+<td>Wiring Catalog Integration resources to the SPI, Integration validation/listing RPCs, persistence, scheduling, and capture</td>
+</tr>
+<tr>
+<td>Integration validation and discovery</td>
+<td>Wire persisted Integration credentials to the SPI; validate catalog authentication, credential vending, and storage access; lazily list upstream namespaces, tables, and views</td>
+<td>Persistence of discovery results, Overlay reconciliation, scheduling, and capture</td>
+</tr>
+<tr>
+<td>Overlay metadata reconciliation</td>
+<td>A synchronous Overlay RPC wires persisted Integration credentials to the SPI and materializes selected namespaces, table definitions, and views into an existing Catalog with generation fencing, collision checks, and contribution-scoped cleanup</td>
+<td>Durable scheduling, snapshot/file capture, validation, and statistics</td>
+</tr>
+</tbody>
+</table>
+<h2 id="goals">Goals<a class="headerlink" href="#goals" title="Permanent link">&para;</a></h2>
+<p>The catalog integration model provides a way to:</p>
+<ul>
+<li>authenticate Floecat to an upstream catalog once, and reuse that connection across many overlays;</li>
+<li>select upstream namespaces and expose them in an existing Floecat catalog;</li>
+<li>combine non-conflicting contributions from multiple overlays and integrations in one catalog while
+  retaining independently managed catalog content;</li>
+<li>discover and validate upstream namespaces, tables, and views without depending on Connector
+  resources; and</li>
+<li>materialize external namespace, table-definition, and view metadata into ordinary Floecat
+  resources on demand, then add durable snapshot/file capture and scheduling separately.</li>
+</ul>
+<p>The Integration path will not use, wrap, synthesize, or fall back to Connector resources.
+Connectors will remain a separate operational path until they are retired through an explicit
+later migration, not through runtime fallback.</p>
+<h2 id="resource-and-ownership-model">Resource and ownership model<a class="headerlink" href="#resource-and-ownership-model" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>CatalogIntegration &quot;prod-glue&quot;          connection and authentication
+ └── CatalogOverlay &quot;crm-import&quot;        selection -&gt; Catalog &quot;analytics&quot;
+
+CatalogIntegration &quot;finance-unity&quot;      a different connection and authentication
+ └── CatalogOverlay &quot;finance-import&quot;    selection -&gt; Catalog &quot;analytics&quot;
+
+Catalog &quot;analytics&quot;                     independently managed target
+ ├── Namespace [&quot;crm&quot;]                  materialized contribution from &quot;crm-import&quot;
+ ├── Namespace [&quot;finance&quot;]              materialized contribution from &quot;finance-import&quot;
+ └── Namespace [&quot;local&quot;]                directly managed Floecat content
+</code></pre></div>
+<p>An overlay is a mapping resource that references exactly one Integration and one existing Floecat
+<code>Catalog</code>. It does not own the target Catalog. Multiple overlays may target the same Catalog, and
+the Catalog retains its independent identity, name, writability, and lifecycle. An overlay owns only
+the materialized contributions produced by its mapping. Name resolution, listing, pinning, planning,
+and garbage collection operate on ordinary Catalog, Namespace, Table, View, and Snapshot resources
+with no overlay-specific read path.</p>
+<h3 id="catalog-integration">Catalog integration<a class="headerlink" href="#catalog-integration" title="Permanent link">&para;</a></h3>
+<p><code>CatalogIntegration</code> owns the upstream protocol, HTTP(S) endpoint, non-secret provider connection
+properties, authentication configuration, and credential lifecycle. Connection properties carry
+protocol-specific values such as the Iceberg REST warehouse; secret-bearing properties are rejected.
+Its immutable resource ID is operational identity; its display name is mutable metadata and must be
+unique among integrations in the account.</p>
+<p>The API initially supports Iceberg REST and Unity integration types. Authentication is required and
+represented by typed protobuf messages for OAuth client credentials, bearer tokens, AWS assume role,
+AWS access keys, and AWS SigV4. Unity initially accepts only OAuth client credentials or bearer
+authentication. The base service validates structural compatibility; endpoint and provider support
+remain the responsibility of the catalog-access adapter and provider.</p>
+<p>Integration type is immutable through update. The catalog URI and connection properties are mutable
+with an etag precondition; publishing either update advances the Integration generation so
+reconciliation and durable work that observed the previous connection configuration cannot publish
+afterward. Existing overlays and materialized resource identities remain attached to the same
+Integration. A replacing create is required only to change the Integration type, produces a new
+resource identity, and is rejected while overlays depend on the existing Integration because
+replacement must not silently retarget those overlays.</p>
+<p>Integration type identifies the catalog access protocol; it does not define the format of every
+table in that catalog. As in the existing Connector path, the catalog-access provider determines
+each table's <code>TableFormat</code>, and capture persists that value on the existing table protobuf at
+<code>Table.upstream.format</code>. Table format therefore remains table-owned metadata and is not stored or
+inferred as an Integration-wide property.</p>
+<h3 id="authentication-and-credentials">Authentication and credentials<a class="headerlink" href="#authentication-and-credentials" title="Permanent link">&para;</a></h3>
+<p>Persisted resources contain only non-secret authentication configuration,
+<code>credentials_configured</code>, and a server-managed credential generation. Secret values are supplied on
+create or through the dedicated authentication-update RPC and are never returned.</p>
+<p>The service derives its internal secret key from integration ID and credential generation. No
+secret-manager reference is exposed in the public resource.
+<code>CatalogIntegrationCredentialStore</code> provides the typed service-side resolution primitive used by
+the catalog-access adapter.</p>
+<p>Credential publication must provide these guarantees:</p>
+<ul>
+<li>reserve a new immutable generation with atomic <code>putIfAbsent</code> before the resource CAS;</li>
+<li>retire the old generation only after the new resource generation is published;</li>
+<li>remove the prepared secret after a definite publication failure;</li>
+<li>retain the secret after an acknowledgement-uncertain publication because the resource CAS may have
+  succeeded; and</li>
+<li>permit credentials on idempotent create, exclude secret bytes from its fingerprint, and return
+  the first successfully published value for that key.</li>
+</ul>
+<p>Reclamation of retained, unreachable credential generations is deferred to a later
+orphan-reclamation phase.</p>
+<h3 id="vended-storage-credentials">Vended storage credentials<a class="headerlink" href="#vended-storage-credentials" title="Permanent link">&para;</a></h3>
+<p>Integration authentication and vended storage credentials serve different boundaries. Integration
+authentication authorizes Floecat to call the catalog API. The catalog then vends short-lived,
+storage-scoped credentials that authorize reads of the table metadata and data files referenced by
+that catalog.</p>
+<p>Credential vending is a required Catalog Integration contract, not an optional optimization. The
+catalog-access provider requests vended credentials through the provider protocol and uses them for
+object-storage access. It must not fall back to Connector credentials, ambient service credentials,
+or the credentials used to authenticate to the catalog API. Vended credentials may be scoped to a
+table, path, or operation and must be reacquired or renewed according to their expiry. They are
+process-local runtime material: they are not written to the Integration resource,
+<code>CatalogIntegrationCredentialStore</code>, table protobufs, logs, or persisted catalog-client
+configuration.</p>
+<p>Integration validation tests the two credential boundaries independently. It verifies that the
+catalog endpoint is reachable and accepts the configured Integration authentication, then uses a
+provider-specific, non-mutating operation to obtain vended credentials and prove they can access the
+referenced object storage. A validation result must not report success when vending was skipped or
+could not be verified. Authentication, vending, expiry, scope, and storage-access failures are
+reported as separate error entries.</p>
+<h3 id="catalog-overlay">Catalog overlay<a class="headerlink" href="#catalog-overlay" title="Permanent link">&para;</a></h3>
+<p><code>CatalogOverlay</code> binds one Integration and one selection of upstream namespaces to an existing
+Floecat <code>Catalog</code>. It is the direct replacement for the connector's <code>source</code> plus <code>destination</code>
+pair. The target is explicit because Catalog lifecycle remains independent from Overlay lifecycle.</p>
+<div class="highlight"><pre><span></span><code>CatalogOverlay
+  display_name         independently managed Overlay name
+  integration_id       which upstream catalog and credentials to use (immutable through update)
+  catalog_id           existing Floecat destination (immutable through update)
+  include_namespaces   upstream selection
+  exclude_namespaces   upstream selection
+</code></pre></div>
+<p>Creating an overlay verifies that both referenced resources exist in the same account and publishes
+dependencies on the Integration and target Catalog atomically with the Overlay. A Catalog cannot be
+deleted while an Overlay references it. Renaming either resource does not rename the other because
+the binding uses immutable resource identity rather than display name. Overlay display names remain
+unique among Overlays in the account but do not reserve Catalog names.</p>
+<p>The target Catalog remains directly manageable. Clients may create local namespaces and relations in
+it, and other overlays may contribute non-conflicting resources. Materialized Tables and Views carry
+typed Integration and Overlay provenance and reject direct mutation while managed by the Overlay.
+Namespaces are shared structural containers rather than exclusively Overlay-owned resources.
+Namespace claim state records every Overlay using a path and whether the container was originally
+created by Overlay materialization. A claim prevents structural deletion or movement of the
+Namespace while the Overlay uses it, but does not make the Namespace or Catalog generally read-only.
+Releasing a claim deletes the Namespace only when no other Overlay claims it, it contains no
+relations, and it was created for Overlay materialization; a pre-existing or directly managed
+Namespace is never deleted merely because an Overlay stops using it.</p>
+<p>A destination relation path has one writer. Reconciliation fails with a conflict rather than
+overwriting a local relation or a relation managed by another Overlay. Selecting the same upstream
+object through two Overlays is valid when they materialize to different Catalogs; after namespace
+remapping is introduced, distinct destination paths will also be valid. Selecting it into the same
+destination path is a mapping conflict. Namespace containers may be shared as long as their child
+relation names do not collide.</p>
+<p>The Integration and Catalog bindings are immutable through update because changing either retargets
+everything the Overlay has materialized. A replacing create produces a new Overlay identity and may
+choose different bindings after the previous Overlay's contributions are retired.</p>
+<p>Deleting an Overlay installs a deletion fence, removes only Tables, Views, snapshot state, and
+namespace claims managed by that Overlay, then removes its dependencies and resource record. It
+never deletes the target Catalog or unrelated content.</p>
+<h2 id="namespace-selection">Namespace selection<a class="headerlink" href="#namespace-selection" title="Permanent link">&para;</a></h2>
+<p>Selection is expressed as include and exclude namespace paths in the upstream catalog's namespace
+space.</p>
+<ul>
+<li>Paths are ordered from external catalog root to namespace leaf and matched case-sensitively.</li>
+<li>An empty include list selects the whole external namespace tree.</li>
+<li>An included path selects that namespace and all descendants.</li>
+<li>An excluded path removes that namespace and all descendants; exclusion wins when both match.</li>
+<li>Paths are normalized and deduplicated without flattening segment boundaries.</li>
+<li>A selected upstream namespace maps to the same path in the target Catalog, preserving segment
+  boundaries. Namespace remapping is deferred.</li>
+<li>Newly discovered namespaces matching the stored selection materialize on the next synchronous
+  reconciliation.</li>
+</ul>
+<p>Selection is updatable through the administrative API. A client that can only express selection at
+creation time changes it by replacing the overlay, which produces a new identity under the same
+name. Reconciliation makes the selected namespace, table-definition, and view metadata visible;
+snapshot-backed table visibility remains deferred to durable capture.</p>
+<h2 id="catalog-access-boundary">Catalog access boundary<a class="headerlink" href="#catalog-access-boundary" title="Permanent link">&para;</a></h2>
+<p>The implemented contracts and provider behavior are documented in
+<a href="../catalog-access-spi/">Catalog Access SPI</a>.</p>
+<p>The catalog-access SPI phase introduces the Connector-independent boundary defined by this design:</p>
+<div class="highlight"><pre><span></span><code>CatalogConnectionConfig
+CatalogAuthentication
+ResolvedCatalogCredentials
+CatalogClient
+CatalogClientProvider
+CatalogClientFactory
+CatalogCapabilities
+</code></pre></div>
+<p>No SPI type imports Connector protobufs or carries a Connector resource ID. Provider lookup is by
+catalog protocol and fails explicitly for missing or duplicate providers.</p>
+<p>The Iceberg REST provider provides:</p>
+<ul>
+<li>connection validation using a namespace-list request;</li>
+<li>structured namespace, table, and view enumeration;</li>
+<li>provider-neutral table metadata, including the provider-determined <code>TableFormat</code>, and stable
+  upstream table identity when available;</li>
+<li>provider-neutral view metadata, including output schema, view definitions and dialects, default
+  namespace/search path, properties, and stable view identity when available;</li>
+<li>anonymous, OAuth2, and AWS SigV4 client authentication;</li>
+<li>separate catalog-signing and storage credential scopes;</li>
+<li>acquisition and renewal of short-lived, provider-vended storage credentials; and</li>
+<li>renewable, process-local AWS credential registrations with serialized refresh and terminal
+  failure handling.</li>
+</ul>
+<p>Views are first-class catalog objects in discovery and capture. The Integration path reuses
+Floecat's existing view semantics and resolution behavior rather than introducing a parallel
+external-view abstraction. A provider that advertises view support must support both enumeration
+and loading of a view's metadata. Providers without that capability return namespaces and tables
+normally and do not advertise view support.</p>
+<p>The SPI validates persistable configuration so secrets, credential-provider handles, user-info, and
+secret-bearing headers cannot cross the configuration boundary. Secret values are supplied
+separately through <code>ResolvedCatalogCredentials</code>.</p>
+<p>The service adapter translates OAuth client credentials, bearer tokens, and explicit static AWS
+SigV4 credentials from the Integration protobuf and <code>CatalogIntegrationCredentialStore</code> onto the
+SPI's authentication schemes. Ambient and assume-role AWS resolution are not yet wired into this
+adapter and fail explicitly. Integration authentication is required, so the adapter never selects
+the SPI's <code>NONE</code> scheme. Dedicated Integration RPCs validate the catalog and storage credential
+boundaries and provide paginated, read-only upstream namespace and object listing. Scheduling
+remains deferred.</p>
+<p>The catalog client owns external I/O only. Capture planning, Floecat persistence, scheduling, and
+name resolution remain outside it.</p>
+<h2 id="materialized-metadata-and-deferred-capture">Materialized metadata and deferred capture<a class="headerlink" href="#materialized-metadata-and-deferred-capture" title="Permanent link">&para;</a></h2>
+<p>Synchronous metadata reconciliation materializes ordinary Floecat resources in the Overlay's target
+Catalog. A selected upstream namespace uses or creates a <code>Namespace</code>; a selected upstream table
+becomes a <code>Table</code> definition and initial <code>TableRoot</code>; and a selected upstream view becomes a <code>View</code>.
+These are the same logical resources the Connector path produces today and use the existing
+repositories and name-resolution paths.</p>
+<p>This phase deliberately does not create <code>Snapshot</code> resources, file groups, validation results, or
+statistics. Those require extending the durable reconciler from its current Connector-rooted job
+identity to an Integration/Overlay-rooted plan. That protocol and snapshot/file capture belong in a
+separate follow-on change.</p>
+<p>Upstream identity is recorded on the existing <code>UpstreamRef</code>. The Connector path stores
+<code>connector_id</code> there; the Integration path stores <code>catalog_integration_id</code> and
+<code>catalog_overlay_id</code>. The provider's external identity and stability flag are stored with the
+materialized object. Provider-stable IDs preserve a Floecat resource identity across an upstream
+rename or namespace move; when a provider has no stable ID, the normalized full upstream path is an
+explicitly unstable identity and rename is observed as delete plus create.</p>
+<p>Two Overlays that select the same upstream table and map it to different Catalogs produce two
+Floecat Tables. Once namespace remapping exists, distinct destination paths will behave the same way.
+Their Snapshots, statistics, validation records, and visibility state are persisted independently
+under each Floecat Table identity. No persisted Snapshot, statistics, or validation object is shared
+across those Tables. Mapping both selections to the same destination relation path is a conflict, not
+an implicit deduplication mechanism.</p>
+<h2 id="reconciliation-publication-and-failure-semantics">Reconciliation publication and failure semantics<a class="headerlink" href="#reconciliation-publication-and-failure-semantics" title="Permanent link">&para;</a></h2>
+<p>Reconciliation is generation-fenced but is not one atomic transaction over an unbounded Catalog.
+Its publication order provides a monotonic safety contract:</p>
+<ol>
+<li>Validate the Integration and complete discovery for the entire selected scope without mutating
+   Floecat state.</li>
+<li>Preflight the complete desired inventory against the target Catalog, including destination name
+   conflicts and Overlay provenance.</li>
+<li>Create or update desired namespace claims, Tables, and Views while the observed Integration and
+   Overlay generations remain current.</li>
+<li>Only after all desired resources are published, retire managed relations absent from that
+   complete inventory, release unused namespace claims, and prune eligible empty namespace
+   containers.</li>
+</ol>
+<p>A validation, discovery, or preflight failure publishes nothing. A failure while publishing desired
+resources may leave successful creates or updates visible, but it does not retire prior resources;
+a retry converges them to the desired inventory. A failure during retirement may leave some stale
+resources temporarily visible, but every retired resource was absent from a completed discovery and
+all desired resources were published first. A retry completes cleanup.</p>
+<p>"Stale" means absent from the complete inventory produced for the same Overlay selection and
+Integration generation. Results from a partial discovery, a different Overlay, or an older
+configuration generation can never classify a resource as stale. Stale work may finish external I/O
+but cannot publish after its fence is invalidated.</p>
+<h2 id="table-validation-and-visibility">Table validation and visibility<a class="headerlink" href="#table-validation-and-visibility" title="Permanent link">&para;</a></h2>
+<p>The later durable-capture phase will make an active Overlay establish capture demand for the Tables
+its selection matches. The Integration-owned scheduler computes the effective union of active
+Overlay selections. The initial sharing guarantee applies only to upstream discovery and other
+external I/O that can be safely coalesced; it does not share persisted Floecat objects. Any later
+optimization that scans an upstream object once must still publish independently fenced results for
+each destination Table. The synchronous metadata RPC in the current phase does not enqueue that
+work.</p>
+<p>A table does not become query-visible until its current capture has completed validation. Validation
+compares each discovered Parquet file with the captured table format and metadata. A file that
+cannot be interpreted consistently with that metadata produces one validation-error record against
+the table, containing the table identity and display path, <code>TableFormat</code>, file path, and error
+message. The API must expose those records for listing, one entry per current file error.</p>
+<p>Validation errors and table visibility follow these rules:</p>
+<ul>
+<li>no current file errors makes the table query-visible;</li>
+<li>one or more current file errors makes the table invisible by default;</li>
+<li>error publication is atomic with the validation generation, so a partially published scan cannot
+  expose a table or mix errors from different generations;</li>
+<li>a successful later validation atomically retires the previous error set and restores default
+  visibility;</li>
+<li>an explicit per-table override makes a table query-visible despite current file errors, and the
+  error records remain listable while the override is active; and</li>
+<li>describing an integration may request revalidation in addition to connection, authentication, and
+  credential-vending checks.</li>
+</ul>
+<p>Views have no file-validation state. Catalog-access providers remain responsible for enumerating and
+loading upstream View metadata, but they do not resolve View SQL or determine whether its base Tables
+are query-visible. Dependency resolution and enforcement of base-Table visibility belong to the
+ordinary name-resolution and planner/runtime path, outside the Integration and Overlay contracts.</p>
+<h2 id="refresh-and-reconciliation-ownership">Refresh and reconciliation ownership<a class="headerlink" href="#refresh-and-reconciliation-ownership" title="Permanent link">&para;</a></h2>
+<p>Scheduling, freshness, and retention remain deferred. Overlays will state freshness, retention, and
+pause demand directly or through a reusable policy; operational scheduler state is separate from the
+Overlay resource. Integrations own upstream connection work. For active Overlays on one Integration,
+the scheduler computes one effective plan:</p>
+<ul>
+<li>discovery scope is the union of selected namespaces, including matching tables and views, while
+  file validation and statistics collection apply to the matching tables;</li>
+<li>refresh interval is the shortest requested interval;</li>
+<li>retained history satisfies the longest requested retention; and</li>
+<li>pausing an overlay removes its demand, while pausing an integration stops all new upstream work.</li>
+</ul>
+<p>Sharing applies to upstream I/O: two Overlays selecting the same upstream namespace from one
+Integration may issue one discovery pass, then materialize independently into their configured
+destination paths. Persisted Tables and their descendant state remain destination-owned.</p>
+<p>The synchronous metadata reconciler fences every resource publication on the observed Integration
+and Overlay pointer generations and the absence of account, Integration, Overlay, and target Catalog
+deletion markers. A future capture-plan generation must extend equivalent fencing to every planned
+and leased durable job. URI, credentials, selection, pause, replacement, target deletion, or Overlay
+deletion changes invalidate older work.</p>
+<h2 id="lifecycle-and-garbage-collection">Lifecycle and garbage collection<a class="headerlink" href="#lifecycle-and-garbage-collection" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Current behavior</th>
+<th>Deferred behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rename integration</td>
+<td>Atomic rename with optimistic preconditions</td>
+<td>No additional behavior required</td>
+</tr>
+<tr>
+<td>Update integration endpoint</td>
+<td>Atomic URI update with optimistic preconditions; advances the generation that fences reconciliation while preserving dependent Overlay identities</td>
+<td>Optional validation before publication</td>
+</tr>
+<tr>
+<td>Rename overlay</td>
+<td>Atomic Overlay-only rename with optimistic preconditions; the target Catalog name is unchanged</td>
+<td>No additional behavior required</td>
+</tr>
+<tr>
+<td>Rename target catalog</td>
+<td>Ordinary Catalog rename; Overlay bindings remain valid by resource ID</td>
+<td>No additional behavior required</td>
+</tr>
+<tr>
+<td>Replace integration</td>
+<td>New identity; rejected while dependent overlays exist</td>
+<td>Validation may run before publication</td>
+</tr>
+<tr>
+<td>Rotate credentials</td>
+<td>Atomic new credential generation; old generation retired after publication</td>
+<td>Reclaim acknowledgement-uncertain orphan generations</td>
+</tr>
+<tr>
+<td>Create or replace overlay</td>
+<td>Attaches to an existing Catalog; atomically stores the selection plus Integration and Catalog dependencies; replacement fences and retires only the prior Overlay's contributions</td>
+<td>Trigger or join durable snapshot/file capture into the target Catalog</td>
+</tr>
+<tr>
+<td>Reconcile overlay</td>
+<td>Completes discovery and collision preflight, publishes desired namespace claims, Table definitions, and Views, then retires stale managed contributions behind generation fences</td>
+<td>Schedule reconciliation and capture Snapshots, files, validation, and statistics</td>
+</tr>
+<tr>
+<td>Delete overlay</td>
+<td>Installs an Overlay deletion fence, explicitly retires its materialized relations and namespace claims, then removes the Overlay dependencies, resource, and fence; the target Catalog remains</td>
+<td>Cancel and drain durable jobs</td>
+</tr>
+<tr>
+<td>Delete integration</td>
+<td>Rejected while overlays exist</td>
+<td>Fence integration-owned jobs</td>
+</tr>
+<tr>
+<td>Delete target catalog</td>
+<td>Rejected while Overlays reference it, even when it is otherwise empty</td>
+<td>Fence Catalog-targeted jobs</td>
+</tr>
+<tr>
+<td>Cascade integration delete</td>
+<td>Durable Integration and Overlay deletion fences, explicit retirement of each dependent Overlay's contributions, Overlay and Integration resource deletion, and credential cleanup; target Catalogs remain</td>
+<td>Cancel and drain durable jobs</td>
+</tr>
+<tr>
+<td>Delete account</td>
+<td>Durable deletion fence, then cleanup of overlays, integrations, and integration credentials</td>
+<td>No additional behavior required</td>
+</tr>
+</tbody>
+</table>
+<p>Overlay lifecycle code explicitly deletes its logical <code>Table</code> and <code>View</code> resources, releases its
+Namespace claims, prunes only eligible empty Overlay-created Namespaces, and purges Table
+snapshot/root pointer state. It never deletes the target Catalog, another Overlay's resources, or
+directly managed content. Existing pointer and CAS-blob garbage collection remains responsible for
+reclaiming unreachable immutable blobs. Garbage collection is not a substitute for retiring the
+logical resource pointers. Validation-error records will be retained with their Table and atomically
+replaced or removed when a later validation generation is published.</p>
+<h2 id="durability-contract">Durability contract<a class="headerlink" href="#durability-contract" title="Permanent link">&para;</a></h2>
+<p>Integration-owned resources are held to a stricter durability contract than the Connector path they
+replace. This is a deliberate decision, not a side effect of the decomposition, and it is intended
+to become the standard the rest of the catalog moves toward rather than a local exception.</p>
+<p>The Connector path is the baseline being improved on. It stores a connector's secret under a key
+that is just the connector id, with no generation, and recovers from a failed rotation by putting
+the previous value back on a best-effort basis — a restore that can itself fail or lose a race.
+It does not publish an idempotency receipt atomically with the resource it created, so a retry
+after an acknowledgement-uncertain create reconstructs its answer from mutable resource state.</p>
+<p>Integration-owned resources instead guarantee:</p>
+<ul>
+<li><strong>Generation-reserved credentials.</strong> Each credential version is an immutable generation reserved
+  with atomic <code>putIfAbsent</code> before the resource CAS, retired only after the new generation is
+  published, and deliberately retained when publication is acknowledgement-uncertain. Rotation
+  never depends on a compensating write succeeding.</li>
+<li><strong>Receipt-in-batch idempotency.</strong> A create reserves its resource identity in a durable pending
+  record, then publishes the immutable success receipt in the same atomic pointer transaction as
+  the resource. A replay returns the recorded answer; it never re-derives one from state that a
+  later mutation may have changed.</li>
+<li><strong>Fenced dependencies and cascades.</strong> Integration and target Catalog dependency counts, cascade
+  deletion, and lifecycle markers are asserted inside the same pointer transaction as the mutation
+  they guard, so a concurrent Overlay create cannot slip beneath a delete that has already checked
+  for dependents.</li>
+<li><strong>Strongly consistent reads where absence is load-bearing.</strong> A cascade or dependency check that
+  misses a row produces an orphan or a wrongly permitted delete, so those paths do not read
+  secondary indexes through an eventually consistent path.</li>
+<li><strong>Mutation reads on raw stores.</strong> Prerequisite and post-commit reads inside a mutation protocol
+  go to the stores being mutated, never through caches or read adapters.</li>
+</ul>
+<p>The cost is real and concentrated in shared code rather than in the new resources: most of it lands
+in the generic resource repository, the idempotency guard, account deletion, and the storage read
+interfaces. Three consequences are large enough to describe separately.</p>
+<h3 id="delivery-sequencing">Delivery sequencing<a class="headerlink" href="#delivery-sequencing" title="Permanent link">&para;</a></h3>
+<p>The durability primitives land as their own reviewed change before the account-deletion fence and
+the Integration and Overlay resources that depend on them. Keeping this cross-cutting work separate
+makes its effect on every resource type independently reviewable and keeps the resource/API changes
+focused on their own contracts.</p>
+<p>Future work that raises a cross-cutting contract should land as its own change first, with the
+feature that motivated it stacked on top. Where this contract is extended — to capture, scheduling,
+or the remaining resource types — that extension is its own reviewed change and does not ride along
+with the phase that needs it.</p>
+<h3 id="account-deletion-fence">Account deletion fence<a class="headerlink" href="#account-deletion-fence" title="Permanent link">&para;</a></h3>
+<p>Adding integrations, overlays, and their credentials to account cleanup makes account deletion a
+multi-resource operation, so deleting the account record alone is no longer a sufficient contract.
+Account deletion therefore installs a durable deletion fence before it removes the account record,
+and clears that fence only if the account delete itself does not commit.</p>
+<p>The fence has two consequences that reach beyond the Integration path:</p>
+<ul>
+<li>Every resource create asserts the account's fence is absent in the same atomic pointer
+  transaction. A create that races an account deletion cannot leave a resource behind that cleanup
+  has already walked past.</li>
+<li>A delete whose account record is already gone replays cleanup instead of reporting success. A
+  prior delete that committed the account record and then failed part-way through descendant
+  cleanup is resumable rather than permanently half-applied.</li>
+</ul>
+<h3 id="consistent-reads-for-cascade-operations">Consistent reads for cascade operations<a class="headerlink" href="#consistent-reads-for-cascade-operations" title="Permanent link">&para;</a></h3>
+<p>Cascade deletion and dependency checks must not read secondary indexes through an eventually
+consistent path: a missed overlay would leave an orphan behind a deleted integration, and a missed
+dependent would let a delete that should be rejected succeed. The storage SPI therefore exposes
+strongly consistent variants of prefix listing and counting alongside the ordinary reads, and
+cascade and dependency paths use those variants. Ordinary listing RPCs keep the default reads.</p>
+<p>SPI implementations must define the variants explicitly. Backends whose ordinary reads are already
+strongly consistent may delegate explicitly; <code>storage/aws</code> requests DynamoDB consistent reads.</p>
+<h2 id="create-conflict-behavior">Create-conflict behavior<a class="headerlink" href="#create-conflict-behavior" title="Permanent link">&para;</a></h2>
+<p>Create requests carry an explicit conflict mode so a caller can choose between failing, replacing,
+and returning the existing resource:</p>
+<ul>
+<li><strong>error if exists</strong> — the default; a name collision is an error.</li>
+<li><strong>replace</strong> — publishes a new resource identity under the same name, atomically retiring the old
+  one. Replacement is itself state-idempotent and cannot be combined with an idempotency key.</li>
+<li><strong>return existing</strong> — returns the current resource unchanged when the name is already taken.</li>
+</ul>
+<p>Replacement rather than update is how a caller changes an Overlay's immutable Integration or target
+Catalog binding, or an Integration's type. An Integration URI is ordinary mutable configuration and
+does not require replacement.</p>
+<h2 id="follow-on-api-evolution">Follow-on API evolution<a class="headerlink" href="#follow-on-api-evolution" title="Permanent link">&para;</a></h2>
+<p>After the initial delivery, follow-on changes will:</p>
+<ol>
+<li>Add validation, capability, namespace-listing, and object-listing RPCs. Validation exercises both
+   catalog authentication and usable storage-credential vending; object listing distinguishes
+   namespaces, tables, and views.</li>
+<li>Add synchronous, generation-fenced Overlay metadata reconciliation into an existing target
+   Catalog. This materializes Namespace claims, Table definitions, and Views, but not Snapshots or
+   files.</li>
+<li>Extend the durable reconciler with Integration/Overlay-rooted jobs and capture <code>Snapshot</code>, file,
+   validation, and statistics state beneath the already materialized tables.</li>
+<li>Add Overlay freshness, retention, and pause demand, separate scheduler runtime state, Table
+   validation-error persistence, visibility and override handling, and Integration-owned scheduling
+   with durable job-generation fencing.</li>
+<li>Add migration from Connectors and Connector removal in separately reviewed changes.</li>
+</ol>
+<p>Because backwards compatibility is not a project requirement at this stage, contracts should be
+replaced when semantics differ rather than accumulating aliases or hidden fallback behavior.</p>
+<h2 id="legacy-connector-disposition">Legacy Connector disposition<a class="headerlink" href="#legacy-connector-disposition" title="Permanent link">&para;</a></h2>
+<p>Connectors remain operational as a separate API while the Integration path is completed. This is
+temporary coexistence, not a compatibility layer:</p>
+<ul>
+<li>Integration and Overlay services will not create or read Connector resources.</li>
+<li>The catalog-access SPI will not import Connector protos or delegate to Connector services.</li>
+<li>Future Integration validation and reconciliation must not call Connector RPCs.</li>
+<li>Migration and Connector removal require their own reviewed change.</li>
+</ul>
+<p>There is deliberately no runtime fallback from an Integration to a Connector. Unsupported provider
+or authentication combinations must fail explicitly.</p>
+<p>Migration is mechanical because the resources are a decomposition of the connector: each connector
+yields one integration from its <code>uri</code>, <code>auth</code>, and <code>kind</code>, and one overlay from its <code>source</code> and
+<code>destination</code>, with connectors sharing an endpoint and credentials collapsing onto one integration.
+The Overlay references the Connector's existing destination Catalog; no Catalog ownership transfer
+occurs. Existing Connector-managed Tables and their descendants may be adopted in place by replacing
+their Connector provenance with Integration and Overlay provenance during the separately reviewed
+migration, so they need not be re-materialized.</p>
+<h2 id="initial-cli-name-resolution">Initial CLI name resolution<a class="headerlink" href="#initial-cli-name-resolution" title="Permanent link">&para;</a></h2>
+<p>The CLI will initially resolve Integration and Overlay display names by listing the corresponding
+resource type. The duplication will remain isolated and will not require expanding the API until
+another consumer needs a generic resolver.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tracking", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+        <script src="../assets/javascripts/docs-navigation.js"></script>
+      
+    
+  </body>
+</html>
