@@ -72,43 +72,25 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     }
 
     /**
-     * These conditions as CAS operations, for a caller that assembles its own pointer transaction.
-     *
-     * <p>Exists so the transaction applier asserts the protocol rather than re-deriving it. It had
-     * its own copy of the marker keys, the advance shape and the read dependency, which made the
-     * highest-volume relation writer a second source of truth for the delete guard -- and a change
-     * here would have left it behind with no compile-time signal.
-     *
-     * <p>Keys already in {@code touchedKeys} are SKIPPED, not rejected, which is the opposite of
-     * what the repository does with a collision and is right for a different reason. Here a repeat
-     * is the same condition arriving twice -- two intents joining one namespace assert one marker,
-     * and the advance already queued gives the second intent the same guarantee. In the repository
-     * a repeat is a condition landing on a key that mutation already WRITES, which no ordering can
-     * satisfy. Same key twice, different situations.
-     *
-     * @param touchedKeys keys already in the batch; extended with the keys this adds
+     * Converts these conditions to their pointer transaction operations. Collision policy belongs
+     * to the batch assembler, which knows whether an existing operation is an identical condition
+     * or a conflicting mutation.
      */
-    public List<PointerStore.CasOp> toCasOps(Set<String> touchedKeys) {
+    public List<PointerStore.CasOp> toCasOps() {
       var ops = new ArrayList<PointerStore.CasOp>();
       for (var required : requiredVersions.entrySet()) {
-        if (touchedKeys.add(required.getKey())) {
-          ops.add(new PointerStore.CasCheck(required.getKey(), required.getValue()));
-        }
+        ops.add(new PointerStore.CasCheck(required.getKey(), required.getValue()));
       }
       for (String key : requiredAbsent) {
-        if (touchedKeys.add(key)) {
-          ops.add(new PointerStore.CasCheckAbsent(key));
-        }
+        ops.add(new PointerStore.CasCheckAbsent(key));
       }
       for (var marker : markerVersions.entrySet()) {
-        if (touchedKeys.add(marker.getKey())) {
-          ops.add(
-              new PointerStore.CasUpsert(
-                  marker.getKey(),
-                  marker.getValue(),
-                  PointerReferences.opaqueMarkerPointer(
-                      marker.getKey(), marker.getKey(), marker.getValue() + 1L)));
-        }
+        ops.add(
+            new PointerStore.CasUpsert(
+                marker.getKey(),
+                marker.getValue(),
+                PointerReferences.opaqueMarkerPointer(
+                    marker.getKey(), marker.getKey(), marker.getValue() + 1L)));
       }
       return ops;
     }

@@ -288,13 +288,12 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                             }
                             try {
                               var committed =
-                                  retryWhileFenceLost(
+                                  retryWhileFenceLostForResult(
                                       "create namespace",
                                       () ->
                                           namespaceRepo.createWithCompletionWhilePointersMatch(
                                               built,
-                                              namespaceCreateFence(
-                                                  spec.getCatalogId(), parents),
+                                              namespaceCreateFence(spec.getCatalogId(), parents),
                                               resource ->
                                                   committer.prepareSuccessOps(
                                                       new IdempotencyGuard.CommittedCreate<>(

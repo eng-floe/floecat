@@ -50,7 +50,7 @@ public final class FenceRetry {
    * @param fencedWrite re-samples its own conditions per attempt and returns whether it committed
    */
   public static void retryWhileFenceLost(String what, BooleanSupplier fencedWrite) {
-    retryWhileFenceLost(
+    retryWhileFenceLostForResult(
         what, () -> fencedWrite.getAsBoolean() ? Optional.of(Boolean.TRUE) : Optional.empty());
   }
 
@@ -61,7 +61,7 @@ public final class FenceRetry {
    * @param fencedWrite re-samples its own conditions and returns the committed result, or empty
    *     when it lost the fence
    */
-  public static <T> T retryWhileFenceLost(String what, Supplier<Optional<T>> fencedWrite) {
+  public static <T> T retryWhileFenceLostForResult(String what, Supplier<Optional<T>> fencedWrite) {
     for (int attempt = 1; ; attempt++) {
       Optional<T> committed;
       try {

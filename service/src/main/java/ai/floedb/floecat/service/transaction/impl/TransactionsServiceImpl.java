@@ -923,8 +923,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         applyPhaseTxn.toBuilder().setState(TransactionState.TS_APPLIED).setUpdatedAt(now).build();
     var appliedResourceId = transactionResourceId(accountId, appliedCandidate.getTxId());
     var atomicApply =
-        applyAtomicallyRetryingLostFences(
-            accountId, appliedCandidate, intents, now, committer);
+        applyAtomicallyRetryingLostFences(accountId, appliedCandidate, intents, now, committer);
     var outcome = atomicApply.outcome();
     var appliedMeta = atomicApply.appliedMeta();
     if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.APPLIED) {
@@ -2074,6 +2073,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     }
   }
 
+  /** The apply outcome and exact transaction metadata prepared for its final attempt. */
+  private record AtomicApplyAttempt(
+      TransactionIntentApplierSupport.ApplyOutcome outcome, MutationMeta appliedMeta) {}
+
   /**
    * Applies the batch, retrying locally while it only lost a fence.
    *
@@ -2093,18 +2096,13 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
    * namespace, so sustained concurrent writes into one namespace still serialise on it; sharding it
    * is the actual fix and is deliberately left until the in-flight fence-sharding work lands.
    */
-  /** The apply outcome and exact transaction metadata prepared for its final attempt. */
-  private record AtomicApplyAttempt(
-      TransactionIntentApplierSupport.ApplyOutcome outcome, MutationMeta appliedMeta) {}
-
   private AtomicApplyAttempt applyAtomicallyRetryingLostFences(
       String accountId,
       Transaction appliedCandidate,
       List<TransactionIntent> intents,
       Timestamp now,
       IdempotencyGuard.SuccessCommitter<Transaction> committer) {
-    AtomicApplyAttempt result = null;
-    for (int attempt = 1; attempt <= RETRIES + 1; attempt++) {
+    for (int attempt = 1; ; attempt++) {
       long transactionPointerVersion =
           txRepo.metaFor(accountId, appliedCandidate.getTxId()).getPointerVersion();
       var appliedResourceId = transactionResourceId(accountId, appliedCandidate.getTxId());
@@ -2143,7 +2141,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         }
         throw confirmedAbort;
       }
-      result = new AtomicApplyAttempt(outcome, appliedMeta);
+      var result = new AtomicApplyAttempt(outcome, appliedMeta);
       if (outcome.status() != TransactionIntentApplierSupport.ApplyStatus.APPLIED
           && committer != null) {
         committer.discardPreparedSuccessOps(completionOps);
@@ -2152,11 +2150,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
           || !POINTER_TXN_CAS_FAILED.equals(outcome.errorCode())) {
         return result;
       }
-      if (attempt <= RETRIES) {
-        sleepBackoff(attempt);
+      if (attempt > RETRIES) {
+        return result;
       }
+      sleepBackoff(attempt);
     }
-    return result;
   }
 
   private void logCommitFailure(

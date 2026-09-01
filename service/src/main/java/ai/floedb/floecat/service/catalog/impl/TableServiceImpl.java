@@ -309,7 +309,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                             try {
                               var reserved = table.toBuilder().setResourceId(reservedId).build();
                               var committed =
-                                  retryWhileFenceLost(
+                                  retryWhileFenceLostForResult(
                                       "create table",
                                       () ->
                                           tableRepo.createWithCompletionWhilePointersMatch(
@@ -933,8 +933,8 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
    */
   private boolean createTableFenced(
       TableSpec spec, Table table, CatalogSurfaceWritePolicy writePolicy, String corr) {
-    return tableRepo.createWhilePointersMatch(
-            table, tableCreateFence(spec, table, writePolicy, corr))
+    return tableRepo
+        .createWhilePointersMatch(table, tableCreateFence(spec, table, writePolicy, corr))
         .isPresent();
   }
 

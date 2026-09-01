@@ -857,6 +857,86 @@ class TransactionIntentApplierSupportTest {
             + " delete cannot exclude it");
   }
 
+  /** A namespace delete cannot share a transaction with a table created inside that namespace. */
+  @Test
+  void applyTransactionRejectsNamespaceDeleteBeforeTableCreateInThatNamespace() throws Exception {
+    var fixture = newApplyFixture();
+    var pointers = fixture.pointers();
+    var blobs = fixture.blobs();
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    String namespaceId = "ns-1";
+    String namespaceKey = Keys.namespacePointerById(accountId, namespaceId);
+    seedNamespace(pointers, accountId, namespaceId);
+
+    String tableId = "table-1";
+    String tableKey = Keys.tablePointerById(accountId, tableId);
+    Table table = table(accountId, "cat-1", namespaceId, tableId, "orders");
+    String tableBlobUri = "/accounts/acct/tables/table-1/table/blob.pb";
+    blobs.put(tableBlobUri, table.toByteArray(), "application/x-protobuf");
+
+    TransactionIntent namespaceDelete =
+        TransactionIntent.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setTargetPointerKey(namespaceKey)
+            .setBlobUri(Keys.transactionDeleteSentinelUri(accountId, txId, namespaceKey))
+            .setCreatedAt(Timestamps.fromMillis(1))
+            .build();
+    TransactionIntent tableCreate = tableCreateIntent(accountId, txId, tableId, tableBlobUri, 2L);
+
+    var outcome =
+        fixture
+            .support()
+            .applyTransactionBestEffort(
+                List.of(namespaceDelete, tableCreate), fixture.intentRepo());
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
+    assertEquals("POINTER_TXN_DUPLICATE_KEY", outcome.errorCode());
+    assertTrue(pointers.get(namespaceKey).isPresent(), "the namespace delete must not commit");
+    assertTrue(pointers.get(tableKey).isEmpty(), "the orphaned table must not be created");
+  }
+
+  /** Two table creates may share an identical namespace fence in one transaction. */
+  @Test
+  void applyTransactionDeduplicatesIdenticalNamespaceJoinConditions() throws Exception {
+    var fixture = newApplyFixture();
+    var pointers = fixture.pointers();
+    var blobs = fixture.blobs();
+
+    String accountId = "acct";
+    String namespaceId = "ns-1";
+    seedNamespace(pointers, accountId, namespaceId);
+    Table orders = table(accountId, "cat-1", namespaceId, "table-1", "orders");
+    Table invoices = table(accountId, "cat-1", namespaceId, "table-2", "invoices");
+    String ordersBlob = "/accounts/acct/tables/table-1/table/blob.pb";
+    String invoicesBlob = "/accounts/acct/tables/table-2/table/blob.pb";
+    blobs.put(ordersBlob, orders.toByteArray(), "application/x-protobuf");
+    blobs.put(invoicesBlob, invoices.toByteArray(), "application/x-protobuf");
+
+    TransactionIntent createOrders =
+        tableCreateIntent(accountId, "tx-1", "table-1", ordersBlob, 1L);
+    TransactionIntent createInvoices =
+        tableCreateIntent(accountId, "tx-1", "table-2", invoicesBlob, 2L);
+
+    var outcome =
+        fixture
+            .support()
+            .applyTransactionBestEffort(
+                List.of(createOrders, createInvoices), fixture.intentRepo());
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.APPLIED, outcome.status());
+    assertTrue(pointers.get(Keys.tablePointerById(accountId, "table-1")).isPresent());
+    assertTrue(pointers.get(Keys.tablePointerById(accountId, "table-2")).isPresent());
+    assertEquals(
+        1L,
+        pointers
+            .get(Keys.namespaceRelationsMarker(accountId, namespaceId))
+            .orElseThrow()
+            .getVersion());
+  }
+
   /**
    * A table intent whose namespace is already gone is refused, not applied.
    *
@@ -1152,6 +1232,21 @@ class TransactionIntentApplierSupportTest {
     return support;
   }
 
+  /** Shared in-memory transaction-apply seam for tests that inspect committed pointer state. */
+  private record ApplyFixture(
+      InMemoryPointerStore pointers,
+      InMemoryBlobStore blobs,
+      TransactionIntentRepository intentRepo,
+      TransactionIntentApplierSupport support) {}
+
+  /** Creates an apply fixture whose repository, support object, and stores share the same state. */
+  private ApplyFixture newApplyFixture() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    return new ApplyFixture(pointers, blobs, intentRepo, newSupport(pointers, blobs));
+  }
+
   private static Transaction readTransaction(InMemoryBlobStore blobs, String blobUri)
       throws Exception {
     return Transaction.parseFrom(blobs.get(blobUri));
@@ -1240,6 +1335,41 @@ class TransactionIntentApplierSupportTest {
       InMemoryPointerStore pointers, String accountId, String namespaceId) {
     String key = Keys.namespacePointerById(accountId, namespaceId);
     pointers.compareAndSet(key, 0L, PointerReferences.opaqueMarkerPointer(key, namespaceId, 1L));
+  }
+
+  /** Builds a user table payload in the requested catalog and namespace for transaction tests. */
+  private static Table table(
+      String accountId, String catalogId, String namespaceId, String tableId, String displayName) {
+    return Table.newBuilder()
+        .setResourceId(
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(tableId)
+                .setKind(ResourceKind.RK_TABLE))
+        .setCatalogId(
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(catalogId)
+                .setKind(ResourceKind.RK_CATALOG))
+        .setNamespaceId(
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(namespaceId)
+                .setKind(ResourceKind.RK_NAMESPACE))
+        .setDisplayName(displayName)
+        .build();
+  }
+
+  /** Builds a table-create intent targeting the table's canonical by-id pointer. */
+  private static TransactionIntent tableCreateIntent(
+      String accountId, String txId, String tableId, String blobUri, long createdAtMillis) {
+    return TransactionIntent.newBuilder()
+        .setAccountId(accountId)
+        .setTxId(txId)
+        .setTargetPointerKey(Keys.tablePointerById(accountId, tableId))
+        .setBlobUri(blobUri)
+        .setCreatedAt(Timestamps.fromMillis(createdAtMillis))
+        .build();
   }
 
   private static void inject(Object target, String field, Object value) throws Exception {

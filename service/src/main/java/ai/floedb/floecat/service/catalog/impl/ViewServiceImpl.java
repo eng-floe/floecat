@@ -303,7 +303,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                             GenericResourceRepository.ResourceWithMeta<View> committed;
                             try {
                               committed =
-                                  retryWhileFenceLost(
+                                  retryWhileFenceLostForResult(
                                       "create view",
                                       () ->
                                           viewRepo.createWithCompletionWhilePointersMatch(

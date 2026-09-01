@@ -421,8 +421,8 @@ public abstract class BaseServiceImpl {
   }
 
   /** Runs a value-producing fenced write until it commits and returns its exact result. */
-  protected <T> T retryWhileFenceLost(String what, Supplier<Optional<T>> fencedWrite) {
-    return FenceRetry.retryWhileFenceLost(what, fencedWrite);
+  protected <T> T retryWhileFenceLostForResult(String what, Supplier<Optional<T>> fencedWrite) {
+    return FenceRetry.retryWhileFenceLostForResult(what, fencedWrite);
   }
 
   protected void sleepBackoff(int attempts) {
