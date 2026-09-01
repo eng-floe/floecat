@@ -192,7 +192,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                             repo.createWithCompletion(
                                 authority,
                                 resource ->
-                                    committer.prepareOps(
+                                    committer.prepareSuccessOps(
                                         new IdempotencyGuard.CommittedCreate<>(
                                             resource.value(), authorityId, resource.meta())));
                         return new IdempotencyGuard.CommittedCreate<>(

@@ -289,7 +289,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                       existing,
                                       currentMeta.getPointerVersion(),
                                       resource ->
-                                          committer.prepareOps(
+                                          committer.prepareSuccessOps(
                                               new IdempotencyGuard.CommittedCreate<>(
                                                   resource.value(), reservedId, resource.meta())));
                               if (completed.isEmpty()) {
@@ -304,7 +304,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                                   namespaceRepo.createWithCompletion(
                                       built,
                                       resource ->
-                                          committer.prepareOps(
+                                          committer.prepareSuccessOps(
                                               new IdempotencyGuard.CommittedCreate<>(
                                                   resource.value(), reservedId, resource.meta())));
                               return new IdempotencyGuard.CommittedCreate<>(

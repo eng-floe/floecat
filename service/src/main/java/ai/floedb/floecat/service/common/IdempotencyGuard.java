@@ -46,9 +46,10 @@ public final class IdempotencyGuard {
 
   public record CommittedCreate<T>(T resource, ResourceId resourceId, MutationMeta meta) {}
 
-  @FunctionalInterface
   public interface SuccessCommitter<T> {
-    List<PointerStore.CasOp> prepareOps(CommittedCreate<T> committed);
+    List<PointerStore.CasOp> prepareSuccessOps(CommittedCreate<T> committed);
+
+    default void discardPreparedSuccessOps(List<PointerStore.CasOp> prepared) {}
   }
 
   public record Result<T>(T resource, MutationMeta meta) {}
@@ -144,18 +145,16 @@ public final class IdempotencyGuard {
       Timestamp commitCreatedAt = reservationCreatedAt;
       Timestamp commitExpiresAt = reservationExpiresAt;
       SuccessCommitter<T> committer =
-          created ->
-              List.of(
-                  store.prepareSuccess(
-                      accountId,
-                      key,
-                      opName,
-                      requestHash,
-                      created.resourceId(),
-                      created.meta(),
-                      serializer.apply(created.resource()),
-                      commitCreatedAt,
-                      commitExpiresAt));
+          successCommitter(
+              store,
+              accountId,
+              key,
+              opName,
+              requestHash,
+              commitCreatedAt,
+              commitExpiresAt,
+              reservedId,
+              serializer);
       CommittedCreate<T> created = creator.apply(reservedId, committer);
       committed = true;
       var completed = store.get(key);
@@ -252,22 +251,8 @@ public final class IdempotencyGuard {
 
     try {
       SuccessCommitter<T> committer =
-          committed -> {
-            if (!resourceId.equals(committed.resourceId())) {
-              throw new IllegalArgumentException("committed resource identity changed");
-            }
-            return List.of(
-                store.prepareSuccess(
-                    accountId,
-                    key,
-                    opName,
-                    requestHash,
-                    resourceId,
-                    committed.meta(),
-                    serializer.apply(committed.resource()),
-                    now,
-                    expiresAt));
-          };
+          successCommitter(
+              store, accountId, key, opName, requestHash, now, expiresAt, resourceId, serializer);
       CommittedCreate<T> committed = mutation.apply(committer);
       if (!resourceId.equals(committed.resourceId())) {
         throw new IllegalArgumentException("committed resource identity changed");
@@ -361,8 +346,7 @@ public final class IdempotencyGuard {
         store,
         ttlSeconds,
         now,
-        corrId,
-        true);
+        corrId);
   }
 
   /**
@@ -394,8 +378,7 @@ public final class IdempotencyGuard {
         store,
         ttlSeconds,
         now,
-        corrId,
-        true);
+        corrId);
   }
 
   private static <T> Result<T> executeClaimedEffect(
@@ -410,8 +393,7 @@ public final class IdempotencyGuard {
       IdempotencyRepository store,
       long ttlSeconds,
       Timestamp now,
-      Supplier<String> corrId,
-      boolean releaseConfirmedAbort) {
+      Supplier<String> corrId) {
     if (idempotencyKey == null || idempotencyKey.isBlank()) {
       var created = creator.get();
       var meta = metaExtractor.apply(created.resource());
@@ -653,24 +635,58 @@ public final class IdempotencyGuard {
           getAfterCreatePendingNanos,
           creatorNanos,
           finalizeSuccessNanos);
-      boolean retryable =
-          (t instanceof BaseResourceRepository.AbortRetryableException)
-              || (t instanceof StorageAbortRetryableException);
-      boolean confirmedAbort = t instanceof StorageTransactionConflictException;
-      if (!retryable || (releaseConfirmedAbort && confirmedAbort)) {
-        LOG.warnf(t, "idempotency.callback_failed op=%s key=%s corr=%s", opName, key, corrId.get());
-        deletePendingIfOwned(store, key, opName, requestHash, now, expiresAt, corrId);
-      } else {
-        LOG.warnf(
-            t,
-            "idempotency.retryable_failure_retained op=%s key=%s phase=%s corr=%s",
-            opName,
-            key,
-            failurePhase,
-            corrId.get());
-      }
+      LOG.warnf(
+          t,
+          "idempotency.repeatable_effect_failed op=%s key=%s phase=%s corr=%s",
+          opName,
+          key,
+          failurePhase,
+          corrId.get());
+      // Both callers of this helper explicitly promise that the callback has no durable effect or
+      // is safe to repeat. Releasing an owned PENDING claim is therefore safe for every failure,
+      // including acknowledgement-uncertain receipt writes; a receipt that actually committed is
+      // SUCCEEDED and cannot be removed by deletePendingIfOwned.
+      deletePendingIfOwned(store, key, opName, requestHash, now, expiresAt, corrId);
       throw t;
     }
+  }
+
+  private static <T> SuccessCommitter<T> successCommitter(
+      IdempotencyRepository store,
+      String accountId,
+      String key,
+      String opName,
+      String requestHash,
+      Timestamp createdAt,
+      Timestamp expiresAt,
+      ResourceId expectedResourceId,
+      Function<T, byte[]> serializer) {
+    return new SuccessCommitter<>() {
+      @Override
+      public List<PointerStore.CasOp> prepareSuccessOps(CommittedCreate<T> committed) {
+        if (!expectedResourceId.equals(committed.resourceId())) {
+          throw new IllegalArgumentException("committed resource identity changed");
+        }
+        return List.of(
+            store.prepareSuccess(
+                accountId,
+                key,
+                opName,
+                requestHash,
+                committed.resourceId(),
+                committed.meta(),
+                serializer.apply(committed.resource()),
+                createdAt,
+                expiresAt));
+      }
+
+      @Override
+      public void discardPreparedSuccessOps(List<PointerStore.CasOp> prepared) {
+        if (prepared != null) {
+          prepared.forEach(store::discardPreparedSuccess);
+        }
+      }
+    };
   }
 
   private static void deletePendingIfOwned(

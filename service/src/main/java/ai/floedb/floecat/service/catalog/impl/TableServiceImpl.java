@@ -294,7 +294,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                       existing,
                                       currentMeta.getPointerVersion(),
                                       resource ->
-                                          committer.prepareOps(
+                                          committer.prepareSuccessOps(
                                               new IdempotencyGuard.CommittedCreate<>(
                                                   resource.value(), reservedId, resource.meta())));
                               if (completed.isEmpty()) {
@@ -310,7 +310,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                                   tableRepo.createWithCompletion(
                                       reserved,
                                       resource ->
-                                          committer.prepareOps(
+                                          committer.prepareSuccessOps(
                                               new IdempotencyGuard.CommittedCreate<>(
                                                   resource.value(), reservedId, resource.meta())));
                               return new IdempotencyGuard.CommittedCreate<>(

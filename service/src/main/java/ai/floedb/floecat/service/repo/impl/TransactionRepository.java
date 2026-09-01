@@ -28,6 +28,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 @ApplicationScoped
@@ -70,8 +71,10 @@ public class TransactionRepository {
       Transaction txn,
       long expectedPointerVersion,
       Function<GenericResourceRepository.ResourceWithMeta<Transaction>, List<PointerStore.CasOp>>
-          completionFactory) {
-    return repo.completeWithMetaIfUnchanged(txn, expectedPointerVersion, completionFactory);
+          completionFactory,
+      Consumer<List<PointerStore.CasOp>> completionDiscarder) {
+    return repo.completeWithMetaIfUnchanged(
+        txn, expectedPointerVersion, completionFactory, completionDiscarder);
   }
 
   public boolean update(Transaction txn, long expectedPointerVersion) {

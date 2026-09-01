@@ -286,7 +286,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                   .completeWithMetaIfUnchanged(
                                       stored,
                                       meta.getPointerVersion(),
-                                      ignored -> committer.prepareOps(committed))
+                                      ignored -> committer.prepareSuccessOps(committed))
                                   .orElseThrow(
                                       () ->
                                           new BaseResourceRepository.AbortRetryableException(
@@ -303,7 +303,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                                         var success =
                                             new IdempotencyGuard.CommittedCreate<>(
                                                 resource.value(), reservedId, resource.meta());
-                                        return committer.prepareOps(success);
+                                        return committer.prepareSuccessOps(success);
                                       });
                             } catch (BaseResourceRepository.NameConflictException nce) {
                               throw relationNameConflict(corr, accountId, spec, normName);

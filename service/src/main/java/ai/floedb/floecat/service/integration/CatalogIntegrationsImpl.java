@@ -567,7 +567,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                   row ->
                       (PointerStore.CasUpsert)
                           completion
-                              .prepareOps(
+                              .prepareSuccessOps(
                                   new IdempotencyGuard.CommittedCreate<>(
                                       row.value(), row.value().getResourceId(), row.meta()))
                               .getFirst());

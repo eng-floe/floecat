@@ -312,9 +312,10 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
                     committedItem.getRecord(),
                     nowTs,
                     committedMeta ->
-                        committer.prepareOps(
+                        committer.prepareSuccessOps(
                             new IdempotencyGuard.CommittedCreate<>(
-                                committedItem, next.tableId(), committedMeta)));
+                                committedItem, next.tableId(), committedMeta)),
+                    committer::discardPreparedSuccessOps);
             return new IdempotencyGuard.CommittedCreate<>(committedItem, next.tableId(), meta);
           },
           idempotencyStore,

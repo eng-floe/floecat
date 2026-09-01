@@ -404,7 +404,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                         targetRecord,
                         tsNow,
                         meta ->
-                            committer.prepareOps(
+                            committer.prepareSuccessOps(
                                 new IdempotencyGuard.CommittedCreate<>(
                                     targetRecord, next.tableId(), meta)));
                 return new IdempotencyGuard.CommittedCreate<>(

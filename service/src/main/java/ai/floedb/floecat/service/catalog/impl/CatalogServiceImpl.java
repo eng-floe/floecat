@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -209,7 +210,7 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                                       existing,
                                       currentMeta.getPointerVersion(),
                                       resource ->
-                                          committer.prepareOps(
+                                          committer.prepareSuccessOps(
                                               new IdempotencyGuard.CommittedCreate<>(
                                                   resource.value(), reservedId, resource.meta())));
                               if (completed.isEmpty()) {
@@ -220,13 +221,19 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                                   existing, reservedId, completed.get());
                             }
                             var reserved = built.toBuilder().setResourceId(reservedId).build();
-                            var committed =
-                                catalogRepo.createWithCompletion(
-                                    reserved,
-                                    resource ->
-                                        committer.prepareOps(
-                                            new IdempotencyGuard.CommittedCreate<>(
-                                                resource.value(), reservedId, resource.meta())));
+                            final GenericResourceRepository.ResourceWithMeta<Catalog> committed;
+                            try {
+                              committed =
+                                  catalogRepo.createWithCompletion(
+                                      reserved,
+                                      resource ->
+                                          committer.prepareSuccessOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                            } catch (BaseResourceRepository.NameConflictException conflict) {
+                              throw GrpcErrors.alreadyExists(
+                                  corr, CATALOG_ALREADY_EXISTS, Map.of("display_name", normName));
+                            }
                             return new IdempotencyGuard.CommittedCreate<>(
                                 committed.value(), reservedId, committed.meta());
                           },

@@ -108,7 +108,7 @@ public class IdempotencyGuardTest {
             () -> id,
             (reserved, committer) -> {
               var committed = new IdempotencyGuard.CommittedCreate<>("R1", reserved, meta(1));
-              assertThat(committer.prepareOps(committed)).isEmpty();
+              assertThat(committer.prepareSuccessOps(committed)).isEmpty();
               return committed;
             },
             strSer(),
@@ -197,7 +197,7 @@ public class IdempotencyGuardTest {
             () -> reservedId,
             (id, committer) -> {
               var committed = new IdempotencyGuard.CommittedCreate<>("RESOURCE", id, createdMeta);
-              PointerStore.CasOp receipt = committer.prepareOps(committed).getFirst();
+              PointerStore.CasOp receipt = committer.prepareSuccessOps(committed).getFirst();
               String blobUri = "blob://thing/" + id.getId();
               blobs.put(
                   blobUri, "RESOURCE".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
@@ -465,6 +465,56 @@ public class IdempotencyGuardTest {
   }
 
   @Test
+  void convergentEffectRetryableAbortReleasesOwnedClaimAndRetrySucceeds() {
+    AtomicInteger callbacks = new AtomicInteger();
+    byte[] request = "request".getBytes(StandardCharsets.UTF_8);
+    String idempotencyKey = "convergent-retryable-abort";
+
+    assertThatThrownBy(
+            () ->
+                IdempotencyGuard.runOnceConvergentEffects(
+                    ACCOUNT,
+                    OP,
+                    idempotencyKey,
+                    request,
+                    () -> {
+                      callbacks.incrementAndGet();
+                      throw new BaseResourceRepository.AbortRetryableException("retry effect");
+                    },
+                    metaOfVersion(1),
+                    strSer(),
+                    strParser(),
+                    repo,
+                    60,
+                    NOW,
+                    () -> "corr"))
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class);
+
+    assertThat(repo.get(Keys.idempotencyKey(ACCOUNT, OP, idempotencyKey))).isEmpty();
+
+    var retried =
+        IdempotencyGuard.runOnceConvergentEffects(
+            ACCOUNT,
+            OP,
+            idempotencyKey,
+            request,
+            () -> {
+              callbacks.incrementAndGet();
+              return new IdempotencyGuard.CreateResult<>("R1", resourceId("rid1"));
+            },
+            metaOfVersion(1),
+            strSer(),
+            strParser(),
+            repo,
+            60,
+            NOW,
+            () -> "corr");
+
+    assertThat(retried.resource()).isEqualTo("R1");
+    assertThat(callbacks).hasValue(2);
+  }
+
+  @Test
   void committedConflictPoisonsNeitherBusinessStateNorReceiptAndRetryReplaysExactResponse() {
     var underlying = new InMemoryPointerStore();
     var conflicting = new ConfirmedAbortOncePointerStore(underlying);
@@ -483,7 +533,7 @@ public class IdempotencyGuardTest {
               if (!conflicting.compareAndSetBatch(
                   List.of(
                       new PointerStore.CasUpsert(businessKey, 0L, pointer),
-                      committer.prepareOps(committed).getFirst()))) {
+                      committer.prepareSuccessOps(committed).getFirst()))) {
                 throw new BaseResourceRepository.AbortRetryableException("lost business CAS");
               }
               return committed;

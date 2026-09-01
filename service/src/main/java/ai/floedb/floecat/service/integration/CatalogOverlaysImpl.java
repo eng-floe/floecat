@@ -444,7 +444,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
               completion == null
                   ? null
                   : row ->
-                      completion.prepareOps(
+                      completion.prepareSuccessOps(
                           new IdempotencyGuard.CommittedCreate<>(
                               row.value(), row.value().getResourceId(), row.meta())))
           .orElseThrow(

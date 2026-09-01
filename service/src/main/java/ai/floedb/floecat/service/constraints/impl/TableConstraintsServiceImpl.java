@@ -88,6 +88,11 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
    * The constraints mutation is durable; publish its derived root ref or leave a re-drive marker.
    * Calling this after an idempotency replay is deliberate: replay doubles as a free convergence
    * pass for a previously absorbed root commit.
+   *
+   * <p>This acknowledgement contract intentionally differs from stats publication. Constraints are
+   * acknowledged once their authoritative constraints-family pointer is durable; the table-root ref
+   * is derived state that may converge through the durable marker. Stats generation publication is
+   * itself the visibility boundary for pinned reads, so that path records a marker and rethrows.
    */
   void publishCommittedConstraintsToRoot(ResourceId tableId, long snapshotId) {
     if (rootWriter == null || rootWriter.commitConstraintsFromCommittedState(tableId, snapshotId)) {
@@ -250,7 +255,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                                       var success =
                                           new IdempotencyGuard.CommittedCreate<>(
                                               response, request.getTableId(), put.meta());
-                                      return committer.prepareOps(success);
+                                      return committer.prepareSuccessOps(success);
                                     });
                             return new IdempotencyGuard.CommittedCreate<>(
                                 PutTableConstraintsResponse.newBuilder()

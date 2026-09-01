@@ -121,7 +121,7 @@ class ConstraintRepositoryTest {
                                 payload,
                                 resource -> {
                                   String response = "changed=" + resource.changed();
-                                  return committer.prepareOps(
+                                  return committer.prepareSuccessOps(
                                       new IdempotencyGuard.CommittedCreate<>(
                                           response, tableId, resource.meta()));
                                 });

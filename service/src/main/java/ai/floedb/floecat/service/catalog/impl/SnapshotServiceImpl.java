@@ -455,7 +455,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                       existing.get(),
                                       currentMeta.getPointerVersion(),
                                       resource ->
-                                          committer.prepareOps(
+                                          committer.prepareSuccessOps(
                                               new IdempotencyGuard.CommittedCreate<>(
                                                   resource.value(), reservedId, resource.meta())));
                               if (completed.isEmpty()) {
@@ -470,7 +470,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                                   snapshotRepo.createWithCompletion(
                                       snap,
                                       resource ->
-                                          committer.prepareOps(
+                                          committer.prepareSuccessOps(
                                               new IdempotencyGuard.CommittedCreate<>(
                                                   resource.value(), reservedId, resource.meta())));
                               return new IdempotencyGuard.CommittedCreate<>(

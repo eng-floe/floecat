@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
+import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
@@ -42,6 +43,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import org.jboss.logging.Logger;
 
@@ -1093,6 +1095,15 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       T currentValue,
       long expectedCanonicalVersion,
       Function<ResourceWithMeta<T>, List<PointerStore.CasOp>> completionFactory) {
+    return completeWithMetaIfUnchanged(
+        currentValue, expectedCanonicalVersion, completionFactory, ignored -> {});
+  }
+
+  public Optional<MutationMeta> completeWithMetaIfUnchanged(
+      T currentValue,
+      long expectedCanonicalVersion,
+      Function<ResourceWithMeta<T>, List<PointerStore.CasOp>> completionFactory,
+      Consumer<List<PointerStore.CasOp>> completionDiscarder) {
     return observeRepository(
         "complete_if_unchanged",
         () -> {
@@ -1118,18 +1129,27 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           Set<String> keys = new HashSet<>();
           keys.add(canonicalPointer);
           keys.add(Keys.accountDeletionFenceShard(key.accountId(), canonicalPointer));
-          for (PointerStore.CasOp companion :
+          List<PointerStore.CasOp> companions =
               Objects.requireNonNull(completionFactory)
-                  .apply(new ResourceWithMeta<>(currentValue, meta))) {
+                  .apply(new ResourceWithMeta<>(currentValue, meta));
+          for (PointerStore.CasOp companion : companions) {
             if (!keys.add(companion.key())) {
               throw new IllegalArgumentException(
                   "duplicate companion pointer in atomic completion: " + companion.key());
             }
             ops.add(companion);
           }
-          if (mutationPointerStore.compareAndSetBatch(ops)) {
+          final boolean committed;
+          try {
+            committed = mutationPointerStore.compareAndSetBatch(ops);
+          } catch (StorageTransactionConflictException confirmedAbort) {
+            completionDiscarder.accept(companions);
+            throw confirmedAbort;
+          }
+          if (committed) {
             return Optional.of(meta);
           }
+          completionDiscarder.accept(companions);
           if (mutationPointerStore.get(Keys.accountDeletionMarker(key.accountId())).isPresent()) {
             throw accountDeletionInProgress(key);
           }

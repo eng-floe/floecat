@@ -62,6 +62,7 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository.PreconditionFailedException;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
@@ -196,7 +197,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                                 txRepo.createWithCompletion(
                                     txn,
                                     resource ->
-                                        committer.prepareOps(
+                                        committer.prepareSuccessOps(
                                             new IdempotencyGuard.CommittedCreate<>(
                                                 resource.value(), reservedId, resource.meta())));
                             return new IdempotencyGuard.CommittedCreate<>(
@@ -520,7 +521,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                 updated,
                 version,
                 resource ->
-                    committer.prepareOps(
+                    committer.prepareSuccessOps(
                         new IdempotencyGuard.CommittedCreate<>(
                             resource.value(),
                             transactionResourceId(accountId, txId),
@@ -565,9 +566,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             transaction,
             meta.getPointerVersion(),
             resource ->
-                committer.prepareOps(
+                committer.prepareSuccessOps(
                     new IdempotencyGuard.CommittedCreate<>(
-                        resource.value(), resourceId, resource.meta())));
+                        resource.value(), resourceId, resource.meta())),
+            committer::discardPreparedSuccessOps);
     if (completed.isEmpty()) {
       throw new BaseResourceRepository.AbortRetryableException(
           "transaction changed while committing idempotency receipt");
@@ -882,15 +884,27 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     var completionOps =
         committer == null
             ? List.<PointerStore.CasOp>of()
-            : committer.prepareOps(
+            : committer.prepareSuccessOps(
                 new IdempotencyGuard.CommittedCreate<>(
                     appliedCandidate, appliedResourceId, appliedMeta));
-    var outcome =
-        committer == null
-            ? intentApplierSupport.applyTransactionAtomically(
-                appliedCandidate, transactionPointerVersion, intents, intentRepo)
-            : intentApplierSupport.applyTransactionAtomically(
-                appliedCandidate, transactionPointerVersion, intents, intentRepo, completionOps);
+    final TransactionIntentApplierSupport.ApplyOutcome outcome;
+    try {
+      outcome =
+          committer == null
+              ? intentApplierSupport.applyTransactionAtomically(
+                  appliedCandidate, transactionPointerVersion, intents, intentRepo)
+              : intentApplierSupport.applyTransactionAtomically(
+                  appliedCandidate, transactionPointerVersion, intents, intentRepo, completionOps);
+    } catch (StorageTransactionConflictException confirmedAbort) {
+      if (committer != null) {
+        committer.discardPreparedSuccessOps(completionOps);
+      }
+      throw confirmedAbort;
+    }
+    if (outcome.status() != TransactionIntentApplierSupport.ApplyStatus.APPLIED
+        && committer != null) {
+      committer.discardPreparedSuccessOps(completionOps);
+    }
     if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.APPLIED) {
       Transaction latest = getTransactionOrThrow(accountId, applyPhaseTxn.getTxId());
       Transaction applied =

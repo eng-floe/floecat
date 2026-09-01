@@ -451,7 +451,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                       existing,
                                       currentMeta.getPointerVersion(),
                                       resource ->
-                                          committer.prepareOps(
+                                          committer.prepareSuccessOps(
                                               new IdempotencyGuard.CommittedCreate<>(
                                                   resource.value(), reservedId, resource.meta())));
                               if (completed.isEmpty()) {
@@ -473,7 +473,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                                   connectorRepo.createWithCompletion(
                                       connector,
                                       resource ->
-                                          committer.prepareOps(
+                                          committer.prepareSuccessOps(
                                               new IdempotencyGuard.CommittedCreate<>(
                                                   resource.value(), reservedId, resource.meta())));
                               return new IdempotencyGuard.CommittedCreate<>(

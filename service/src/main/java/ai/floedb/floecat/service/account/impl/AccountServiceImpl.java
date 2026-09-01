@@ -53,6 +53,7 @@ import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.storage.impl.StorageAuthorityResolver;
@@ -247,7 +248,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                                       existing,
                                       currentMeta.getPointerVersion(),
                                       resource ->
-                                          committer.prepareOps(
+                                          committer.prepareSuccessOps(
                                               new IdempotencyGuard.CommittedCreate<>(
                                                   resource.value(), reservedId, resource.meta())));
                               if (completed.isEmpty()) {
@@ -259,13 +260,19 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                             }
                             var reserved =
                                 desiredAccount.toBuilder().setResourceId(reservedId).build();
-                            var committed =
-                                accountRepo.createWithCompletion(
-                                    reserved,
-                                    resource ->
-                                        committer.prepareOps(
-                                            new IdempotencyGuard.CommittedCreate<>(
-                                                resource.value(), reservedId, resource.meta())));
+                            final GenericResourceRepository.ResourceWithMeta<Account> committed;
+                            try {
+                              committed =
+                                  accountRepo.createWithCompletion(
+                                      reserved,
+                                      resource ->
+                                          committer.prepareSuccessOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                            } catch (BaseResourceRepository.NameConflictException conflict) {
+                              throw GrpcErrors.alreadyExists(
+                                  corr, ACCOUNT_ALREADY_EXISTS, Map.of("display_name", normName));
+                            }
                             return new IdempotencyGuard.CommittedCreate<>(
                                 committed.value(), reservedId, committed.meta());
                           },
