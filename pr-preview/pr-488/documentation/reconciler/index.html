@@ -1,0 +1,2416 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reference and operational guides for Floecat">
+      
+      
+      
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/reconciler/">
+      
+      
+        <link rel="prev" href="../system-scans-grpc/">
+      
+      
+        <link rel="next" href="../rust-remote-capture-executor/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>Reconciler - Floecat Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#reconciler" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Floecat Documentation" class="md-header__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Floecat Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Reconciler
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Floecat Documentation" class="md-nav__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Floecat Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Documentation Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Contributing to Docs
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../style-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docs Style Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docker Local Stack
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Service Runtime
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Caching
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Operations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting-errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    APIs and Clients
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            APIs and Clients
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-access/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    API Access
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../client-cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Client CLI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    CLI Reference
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../iceberg-rest-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg REST Gateway
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../arrow-flight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Arrow Flight
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Catalog and Metadata
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Catalog and Metadata
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-integration-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integration Architecture and Delivery Plan
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-integrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integrations and Overlays
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-access-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Access SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metadata-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Metadata Graph
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Objects
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans-grpc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans gRPC
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Reconciler
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Reconciler
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-responsibilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      Architecture &amp; Responsibilities
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#public-api-surface-area" class="md-nav__link">
+    <span class="md-ellipsis">
+      Public API / Surface Area
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#important-internal-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      Important Internal Details
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Important Internal Details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#job-tree-versioning-and-deployment-cohorts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Job-tree versioning and deployment cohorts
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#grpc-auth" class="md-nav__link">
+    <span class="md-ellipsis">
+      gRPC auth
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-flow-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      Data Flow &amp; Lifecycle
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-extensibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      Configuration &amp; Extensibility
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#examples-scenarios" class="md-nav__link">
+    <span class="md-ellipsis">
+      Examples &amp; Scenarios
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cross-References
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../transactions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Transactions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-common/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector Common
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-iceberg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-delta/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Delta Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extension-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Example Catalog Extension
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Types and Builtins
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Types and Builtins
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Types
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../builtin-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Builtin Catalog Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../proto/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Protobuf and RPC Contracts
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../statistics-engine-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Statistics Engine SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Storage and Security
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Storage and Security
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Layout
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-aws/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage AWS
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Memory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../secrets-manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Secrets Manager
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    External Authentication
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fixed-roles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Fixed Roles
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Observability
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Observability
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Logging Directory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/demo-grafana/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Grafana Demo
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-responsibilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      Architecture &amp; Responsibilities
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#public-api-surface-area" class="md-nav__link">
+    <span class="md-ellipsis">
+      Public API / Surface Area
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#important-internal-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      Important Internal Details
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Important Internal Details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#job-tree-versioning-and-deployment-cohorts" class="md-nav__link">
+    <span class="md-ellipsis">
+      Job-tree versioning and deployment cohorts
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#grpc-auth" class="md-nav__link">
+    <span class="md-ellipsis">
+      gRPC auth
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-flow-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      Data Flow &amp; Lifecycle
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration-extensibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      Configuration &amp; Extensibility
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#examples-scenarios" class="md-nav__link">
+    <span class="md-ellipsis">
+      Examples &amp; Scenarios
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-references" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cross-References
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/eng-floe/floecat/edit/mc-fix-finalizer-generation-gc-race/docs/reconciler.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="reconciler">Reconciler<a class="headerlink" href="#reconciler" title="Permanent link">&para;</a></h1>
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>The <code>reconciler/</code> module automates ingestion from upstream connectors. It manages a durable queue of
+reconciliation jobs, leases work to workers, instantiates connectors via the SPI, and calls the
+service's gRPC APIs to create or update tables, views, snapshots, statistics, and index artifacts.</p>
+<p>This component decouples connector execution from the main service so long-running metadata and
+file-scoped execution work do not block public gRPC threads. The service submits capture jobs via
+<code>ReconcileControl.StartCapture</code>, which creates jobs in the reconciler's store.</p>
+<p>The current job model is split by responsibility:</p>
+<ul>
+<li><strong><code>PLAN_CONNECTOR</code></strong>: top-level connector discovery job. Plans table and view work and enqueues
+  child planning jobs.</li>
+<li><strong><code>PLAN_TABLE</code></strong>: child table planning job. Ensures destination table metadata exists and enqueues
+  snapshot planning work for snapshots that need processing.</li>
+<li><strong><code>PLAN_VIEW</code></strong>: child view planning job. Creates or updates exactly one destination view.</li>
+<li><strong><code>PLAN_SNAPSHOT</code></strong>: child snapshot planning job. Freezes the immutable snapshot plan on the
+  parent job payload, records explicit file-group coverage metadata, and enqueues
+  <code>EXEC_FILE_GROUP</code> plus <code>FINALIZE_SNAPSHOT_CAPTURE</code> children.</li>
+<li><strong><code>EXEC_FILE_GROUP</code></strong>: child execution job. Reads the planned source parquet files through
+  <code>FloecatConnector</code> when required, reuses compatible finalized artifacts selected by the snapshot
+  planner, captures missing file-target stats, generates missing parquet sidecar index artifacts,
+  and publishes one immutable artifact bundle for the group.</li>
+<li><strong><code>FINALIZE_SNAPSHOT_CAPTURE</code></strong>: child finalization job. Validates the persisted snapshot
+  coverage, waits for all planned <code>EXEC_FILE_GROUP</code> children to finish with persisted success
+  results, and publishes the immutable capture manifest containing reusable bundle references and
+  snapshot-wide aggregate outputs. Explicit-empty snapshots publish a zero-group manifest.</li>
+</ul>
+<h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong><code>ReconcileJobStore</code></strong>: interface abstracting job persistence and leasing. In service runtime,
+  the default is the durable implementation (<code>DurableReconcileJobStore</code>) selected by
+  <code>floecat.reconciler.job-store=durable</code>; in-memory (<code>InMemoryReconcileJobStore</code>) remains available
+  for lightweight/local usage when <code>floecat.reconciler.job-store=memory</code>.</li>
+<li><strong><code>RemoteReconcileExecutorPoller</code></strong>: Quarkus scheduled bean that leases reconcile jobs through
+  the <code>ReconcileExecutorControl</code> gRPC control plane, starts heartbeats, invokes the matching local
+  executor implementation, reports progress/completion, and repolls while worker capacity is
+  available. In <code>worker.mode=local</code>, the poller talks to the colocated service over gRPC; in
+  <code>worker.mode=remote</code>, executor-only nodes use the same lease protocol against a separate control
+  plane.</li>
+<li><strong><code>ReconcilerService</code></strong>: core planning/orchestration:</li>
+<li>Resolves connector metadata via the service's <code>Connectors</code> RPC.</li>
+<li>Plans connector-scoped table and view work while preserving destination namespace/table
+     overrides.</li>
+<li>Ensures destination catalogs/namespaces/tables exist and updates connector metadata with
+     resolved destination IDs.</li>
+<li>Instantiates the connector via <code>ConnectorFactory</code>.</li>
+<li>Handles incremental vs full-rescan logic.</li>
+<li>Supports explicit capture modes:<ul>
+<li><code>METADATA_ONLY</code>: advances catalog, table, view, and snapshot metadata without capture.</li>
+<li><code>CAPTURE_ONLY</code>: captures stats / index artifacts for explicitly scoped destination tables
+   without reconciling view metadata.</li>
+<li><code>METADATA_AND_CAPTURE</code>: ingests metadata and runs capture for matching table work in the same
+   job tree.</li>
+</ul>
+</li>
+<li><strong>Lease executors</strong>:</li>
+<li><code>RemotePlannerReconcileExecutor</code> handles <code>PLAN_CONNECTOR</code>.</li>
+<li><code>RemoteDefaultReconcileExecutor</code> handles <code>PLAN_TABLE</code> and <code>PLAN_VIEW</code>.</li>
+<li><code>RemoteSnapshotPlanningReconcileExecutor</code> handles <code>PLAN_SNAPSHOT</code>.</li>
+<li><code>RemoteFileGroupReconcileExecutor</code> handles <code>EXEC_FILE_GROUP</code>.</li>
+<li><code>RemoteSnapshotFinalizeReconcileExecutor</code> handles file-group
+    <code>FINALIZE_SNAPSHOT_CAPTURE</code> jobs with non-empty file-group plans.</li>
+<li><code>SnapshotFinalizeReconcileExecutor</code> handles direct-stats finalization and explicit-empty
+    file-group plans.</li>
+<li><strong><code>GrpcClients</code></strong>: provides blocking stubs for all service RPCs (Catalog, Namespace, Table,
+  Snapshot, Statistics, Directory, Connectors, ReconcileExecutorControl).</li>
+<li><strong><code>FloecatConnector</code></strong>: remains the only component allowed to touch upstream catalogs, table
+  metadata, and object storage. Reconcile planning and file-group execution both go through the
+  connector instance; reconcile does not use <code>ScanBundleService</code>.</li>
+</ul>
+<h2 id="public-api-surface-area">Public API / Surface Area<a class="headerlink" href="#public-api-surface-area" title="Permanent link">&para;</a></h2>
+<p>While the reconciler itself runs as an internal Quarkus app, it exposes behavior through the
+reconcile control RPCs:</p>
+<ul>
+<li><code>ReconcileControl.StartCapture(scope, mode, full_rescan, execution_policy)</code>: enqueues a
+  top-level <code>PLAN_CONNECTOR</code> job via <code>ReconcileJobStore</code>.</li>
+<li><code>ReconcileControl.CaptureNow(...)</code>: uses the same split path, but waits for the aggregated
+  outcome of the top-level plan job plus any child planning/execution jobs.</li>
+<li><code>ReconcileControl.GetReconcileJob(job_id)</code> / <code>ListReconcileJobs(...)</code>: expose both top-level and
+  child jobs. Parent-capable jobs (<code>PLAN_CONNECTOR</code>, <code>PLAN_TABLE</code>, <code>PLAN_SNAPSHOT</code>) surface
+  aggregate child status through eventually consistent projection/root-summary read models rather
+  than synchronous parent-canonical rollups.</li>
+<li><code>ReconcileControl.GetFinalizedSnapshotStatus(table_id, snapshot_id)</code>: returns whether one
+  destination snapshot has completed reconcile finalization. <code>FSS_PENDING</code> means no finalized
+  snapshot record exists yet for that table/snapshot pair. <code>FSS_FINALIZED</code> includes the
+  <code>finalized_at</code> timestamp and <code>finalizer_job_id</code> for the job that committed finalization.</li>
+</ul>
+<p>Internally, the worker poller exposes <code>pollEvery</code> via <code>@Scheduled</code> (default every second).</p>
+<h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Destination binding</strong>: when reconciling, the service ensures the connector's declared
+  destination catalog/namespace/table IDs align with actual resources. Any mismatch triggers a
+  <code>ConnectorState</code> update or raises conflicts.</li>
+<li><strong>Statistics ingestion</strong>: stats persistence is centralized behind the stats control plane
+  and the reconcile executor control plane. <code>CAPTURE_ONLY</code> routes capture planning through the
+  same reconcile job tree without metadata reconciliation. <code>METADATA_AND_CAPTURE</code> performs metadata
+  reconciliation and capture within the same planner/executor job tree. Remote file-group workers
+  publish one group artifact bundle and submit its descriptor and target mappings through
+  <code>CommitLeasedFileGroupResult</code>. The service protects the bundle and stages generation-scoped
+  pointers without reading its payload before <code>FINALIZE_SNAPSHOT_CAPTURE</code> writes snapshot-wide
+  aggregate stats.</li>
+<li><strong>Snapshot planning persistence</strong>: the immutable snapshot plan is stored in a content-bound blob
+  referenced by the compact parent <code>PLAN_SNAPSHOT</code> job. Its identity includes the complete
+  file-execution plans and, for append-only plans, the inherited base descriptor and persistent
+  reusable-artifact sorted-run index. Child
+  <code>EXEC_FILE_GROUP</code> and <code>FINALIZE_SNAPSHOT_CAPTURE</code> jobs reference that plan through <code>parentJobId</code>.
+  File-group execution resolves <code>(planId, groupId)</code> through a bounded in-process index over the
+  durable blob; a cold cache reloads the immutable plan. There is no expanded parent-task scan or
+  legacy fallback.</li>
+<li><strong>File-group execution</strong>:</li>
+<li><code>EXEC_FILE_GROUP</code> resolves its indexed immutable planned group, captures file-target stats, and
+    records per-file execution results on the child job payload.</li>
+<li>For a connector-proven append-only Delta or Iceberg change with unchanged schema, capture
+    policy, and delete artifacts, the plan contains groups only for net-new parquet data files.
+    Finalization inherits the prior stats/index generations through durable base-generation edges
+    and publishes only the delta bundle references. The trusted finalizer writes one immutable level-zero
+    sorted run and carries forward the authenticated prior run references, so the new manifest represents complete
+    reuse coverage without repeating inherited bundle metadata or reopening inherited parquet
+    artifacts. Any
+    removed data file, changed Delta deletion vector, or added/removed Iceberg delete file rejects
+    the append-only path and uses ordinary delete-aware file-group planning instead.</li>
+<li>Each file execution plan carries connector-provided physical <code>content_identity</code>, source
+    fingerprints, stats/index capture signatures, auxiliary-target fingerprints, and any selected
+    reusable bundle records. Empty physical content identity disables cross-snapshot reuse for that
+    file.</li>
+<li>Snapshot planning reads the compact capture manifest from the newest root-published finalized
+    reusable candidate at or before the committed current snapshot. Candidate selection is bounded
+    by the table root and does not scan snapshot history. The lightweight snapshot reference carries
+    the current manifest-contract version, so older references are rejected before their manifest
+    objects are fetched or parsed. A missing, unavailable, malformed, incomplete, or unsupported
+    manifest or persistent index is ineligible for reuse and triggers an ordinary full capture.
+    Append-only overlap checks use point lookups in the persistent artifact index through
+    Bloom-filtered, batched run probes and scale with delta files and the compacted run count.
+    Ordinary full-file planning resolves reuse in bounded file-group batches instead of loading the
+    complete index. Planning does not read reusable bundle payloads, source files, or page-index
+    sidecars.
+    The file-group worker fetches each selected compact bundle once, verifies its size and SHA-256,
+    rebinds selected records to the destination snapshot, and captures only missing outputs.</li>
+<li>The immutable per-file execution plans also define auxiliary stats coverage. Stats-enabled
+    groups publish one target for each planned data file, each distinct attached Iceberg
+    position/equality delete file, and each attached on-disk Delta deletion vector (<code>u</code> or <code>p</code>).
+    Inline Delta deletion vectors (<code>i</code>) remain unsupported. Auxiliary delete targets contribute to
+    file-stats descriptor counts but not planned/succeeded data-file counts, page-index coverage, or
+    table/column aggregate rollups.</li>
+<li>An Iceberg delete file can apply to data files in multiple groups. Repeated group-level
+    references are duplicate execution work, not additional logical files; snapshot publication
+    verifies equivalent source fingerprints and stats signatures, selects one canonical bundle
+    mapping, and retains one target without reading or hashing delete-file content. File-group
+    descriptors retain their group-level counts; the snapshot manifest reports the deduplicated
+    unique-target count.</li>
+<li>Snapshot-wide aggregate outputs are intentionally deferred to
+    <code>FINALIZE_SNAPSHOT_CAPTURE</code>, which acts as the barrier for complete snapshot capture.</li>
+<li>Newly generated sidecars are written per source parquet file. Reused index records retain the
+    existing <code>artifact_uri</code>, and the worker does not read or rewrite their sidecar bytes.</li>
+<li>File stats and index wrappers are serialized into one <code>ReusableArtifactBundlePayload</code> per group
+    beneath the leased <code>stats_object_prefix</code>. <code>FileGroupResultPayload</code> carries target mappings to
+    that shared object plus a lightweight compatibility index. Aggregate table/column outputs are
+    recomputed once at snapshot finalization time from group partials.</li>
+<li><code>CommitLeasedFileGroupResult</code> requires <code>result_id</code> and a canonical
+    <code>artifact_references_sha256</code> over the expanded stats and index target mappings. Success carries
+    the shared bundle descriptor and the stats/index target IDs stored in that bundle. The service
+    first durably accepts the immutable result and completes the child job, then idempotently
+    protects the bundle, stages bounded generation-scoped pointer batches without reading it, and
+    writes a metadata-only prepared marker. An exact retry resumes any incomplete staging.
+    <code>FINALIZE_SNAPSHOT_CAPTURE</code> requires the digest-bound prepared marker for every file group,
+    stages only snapshot-wide aggregate pointers, and activates the prepared stats and index
+    generations. The finalization submission service performs one small pointer lookup per file
+    group and does not read result payloads, artifact bundles, source files, sidecars, or per-file
+    pointers. Successful finalization clears protection metadata; abandoned unpublished full-rescan
+    generations are deleted after terminal failure or cancellation.</li>
+<li>Snapshot planning limits each file group to 128 files by default. The ceiling is configurable
+    with <code>floecat.reconciler.snapshot-plan.max-files-per-group</code>; values are clamped to at least one.
+    The service rejects submitted plans containing a group above its configured ceiling and
+    enforces membership and counts against the resulting immutable planned group. Raising the
+    setting increases the descriptor count, pointer-metadata work, request size, and resident
+    metadata for one file-group commit.</li>
+<li>Append-only reuse chains checkpoint with a full capture after 16 links by default. The planner
+    persists and authenticates predecessor depth in the immutable plan and manifest, and
+    <code>floecat.reconciler.snapshot-plan.max-append-only-chain-depth</code> configures the maximum. Set it to
+    zero to disable append-only chaining.</li>
+<li>The finalizer reads and verifies each bounded <code>FileGroupResultPayload</code>, derives exact file-stats
+    coverage from the immutable data-file execution plans and their attached delete artifacts, and
+    merges the embedded aggregate partials. It validates one current bundle reference per file group
+    without reading bundle payloads. Before submission, the trusted finalizer rejects duplicate
+    typed file paths against authenticated inherited runs, writes the delta through bounded 8 MiB
+    sorted L0 runs plus bounded level compaction, and stores the complete structurally shared run set in the durable
+    <code>SnapshotCaptureManifest</code>. Sorted entries remain addressable in roughly 512 KiB logical blocks,
+    but adjacent blocks are concatenated into content-addressed packs of up to 64 MiB. Each block
+    reference records its pack, byte range, and SHA-256. Point probes range-read one block, while
+    sequential compaction and paging coalesce adjacent blocks into windows of up to 8 MiB, targeting
+    a 64 MiB operation-wide read budget while always allowing one indivisible block per run. Run objects no larger than
+    64 KiB are embedded in that manifest; larger objects use content-addressed blob storage. The
+    service binds the inactive generation to
+    the capture manifest and reads file mappings through its authenticated run index after fenced
+    activation. It does not traverse and copy inherited mappings. A reuse manifest without a
+    persistent run index is invalid; planning rejects it instead of falling back to the former
+    manifest-level bundle index.</li>
+<li>Reusable compatibility metadata is executor-authored publication metadata. The control plane
+    validates its structure, leased ownership, counts, content-addressed bundle descriptor, and
+    staged target mappings, but deliberately does not GET bundle payloads to reconstruct or compare
+    that metadata. A later file-group worker is the payload consumer: it verifies the selected
+    bundle's byte length and SHA-256 and rejects missing or incompatible records before reuse.</li>
+<li>Successful publication stores the capture-manifest descriptor in the snapshot's system-owned
+    <code>reuse_manifest_ref</code> and heads the reusable stats generation from the table root. Garbage
+    collection traverses that manifest's run manifests, filters, and block packs and treats them and referenced
+    reusable bundle payloads—and the stats generations that own those payloads—as live publication
+    state.</li>
+<li>Current snapshot reads surface <code>file_groups_total</code>, <code>file_groups_completed</code>,
+    <code>file_groups_failed</code>, <code>files_total</code>, <code>files_completed</code>, and <code>files_failed</code>.</li>
+<li><strong>Index artifacts</strong>:</li>
+<li>sidecars are parquet artifacts written by execution workers and registered through
+    <code>IndexArtifactRecord</code>.</li>
+<li>The actual sidecar URI remains worker-controlled. Floecat never copies, moves, or treats the
+    sidecar named by <code>artifact_uri</code> as Floecat-owned cleanup state.</li>
+<li>The serialized <code>IndexArtifactRecord</code> wrapper is stored in the file group's reusable artifact
+    bundle. The service stages the file-index target ID against that shared bundle object.</li>
+<li>service-side lookup/list/read is exposed by <code>TableIndexService</code>.</li>
+<li><strong>Capture-engine SPI contract</strong>:</li>
+<li><code>CaptureEngine.capture</code> accepts a <code>CaptureFileResultConsumer</code>. Engines emit file-scoped stats
+    progressively through that consumer instead of retaining them in <code>CaptureEngineResult</code>.</li>
+<li>The terminal result may contain compact group-level aggregate partials and staged index
+    outputs, but it must not contain file stats or page-index rows. It also reports the sorted,
+    distinct concrete selectors represented by its column-stat aggregates so finalization can
+    preserve resolved default columns and name/field-ID aliases.</li>
+<li>Capture engines advertise <code>PROGRESSIVE_FILE_OUTPUTS</code> and implement the progressive
+    <code>capture(request, consumer)</code> contract.</li>
+<li><code>ReconcilerBackend.indexCaptureComplete</code> is a snapshot-level completeness proof. Backend
+    implementations must not replace it with one remote artifact lookup per source file.</li>
+<li><strong>External capture policy</strong>:</li>
+<li>leased file-group and snapshot-finalize payloads carry the complete policy, including its
+    opaque properties map.</li>
+<li>trusted snapshot finalizers enforce outputs, column policies, default scope, maximum default
+    columns, and properties while validating realized selector coverage.</li>
+<li>query-driven stats requests do not implicitly request Parquet page indexes and do not encode
+    their request origin in capture-policy properties.</li>
+<li>content-state coverage is checked before execution. Missing coverage attempts connector-native
+    direct stats first and uses file-group capture when direct stats cannot satisfy the request.</li>
+<li><strong>External reusable-index contract</strong>:</li>
+<li>external <code>EXEC_FILE_GROUP</code> workers do not read, construct, or compact reusable-index runs. They
+    continue to consume the bundle selections in their leased execution payload and publish the
+    current file group's bundle metadata.</li>
+<li>external <code>PLAN_SNAPSHOT</code> implementations must regenerate their protobuf bindings for the
+    format-1 sorted-run messages and preserve the complete <code>AppendOnlySnapshotBase</code>, including its
+    <code>reusable_artifact_index</code>, through planning and finalization. There is no reader for the former
+    trie-root format and no dual-read fallback.</li>
+<li>a planner that performs reusable-artifact lookup must authenticate object length and SHA-256,
+    batch-fetch run filters and manifests, and fetch only candidate data blocks. It must not turn
+    lookup into one object-store request per source file. A missing index object makes the base
+    unavailable for reuse. A reuse manifest without an artifact index is likewise ineligible and
+    falls back to a full capture. Any reusable index that is invalid under the current contract,
+    including malformed or digest-invalid index metadata, is discarded and causes a full capture;
+    it is not interpreted through a legacy reader. Missing, unavailable, malformed, digest-invalid,
+    incomplete, or unsupported capture manifests likewise make the base ineligible and cause a
+    full capture.</li>
+<li>Bloom-filter references larger than the format's 16 MiB bitset ceiling are rejected before any
+    object read. Activation streams and authenticates every referenced external pack before the
+    generation becomes visible; generation-to-capture-manifest bindings verify the content digest
+    encoded in the immutable manifest URI as well as its recorded length.</li>
+<li>an external snapshot finalizer submits the current <code>reusable_artifact_bundles</code> delta and the
+    leased <code>append_only_base</code>, constructs <code>SnapshotCaptureManifest.reusable_artifact_index</code>, and
+    owns run creation and bounded compaction. At a chain reset it authenticates and traverses the
+    inherited index and stages references through bounded control-plane calls. The service owns
+    fenced activation and garbage-collection reachability; it does not reopen inherited bundles.</li>
+<li>run objects are immutable and content-addressed. Their filter encoding and storage layout are
+    internal implementation details, not an extension point for independently constructed runs.</li>
+<li><strong>Connector security boundary</strong>: all upstream I/O remains inside <code>FloecatConnector</code>.
+  <code>ScanBundleService</code> stays query-plane only; reconcile snapshot planning uses connector-native
+  snapshot file planning.</li>
+<li><strong>Mode-aware behavior</strong>:</li>
+<li>in <code>CAPTURE_ONLY</code>, destination-table misses are treated as skip/no-op rather than job-fatal
+    errors.</li>
+<li><code>CAPTURE_ONLY</code> is table-scoped: view scope is rejected, and scoped capture requests must
+    resolve to explicit destination table IDs.</li>
+<li>in <code>METADATA_AND_CAPTURE</code>, planner/executor availability is validated up front based on scope:
+    table scope requires <code>PLAN_TABLE</code>, view scope requires <code>PLAN_VIEW</code>, and broad metadata reconcile
+    requires both.</li>
+<li><strong>Plan failure behavior</strong>: if a parent plan job fails or is cancelled after enqueuing child jobs,
+  the control plane cancels those children.</li>
+<li><strong>View reconciliation semantics</strong>: reconcile is current-state, not history-preserving. When an
+  upstream view already exists in Floecat, reconcile updates the stored canonical definition in
+  place rather than appending a backend version history.</li>
+<li><strong>Durable queue ownership model</strong>: <code>DurableReconcileJobStore</code> is split into explicit state
+  domains with native durable-store boundaries:</li>
+<li>canonical job state owns the job-index domain transactionally (<code>lookup</code>, <code>state</code>, <code>dedupe</code>,
+    parent, connector, job-local counters, payload references, and related canonical indexes)</li>
+<li>ready-queue state is a separate due-ordered domain used for leasing eligibility and queue
+    slicing</li>
+<li>lease coordination owns runtime worker-ownership state separately (<code>lease</code>, <code>lease-expiry</code>,
+    lane lease, snapshot lease)</li>
+<li>payload blobs are canonical task artifacts referenced from canonical rows (snapshot plans,
+    file-group results, direct stats, and reusable file-group artifact bundles)</li>
+<li>projection/root-summary state mirrors canonical parent rollups for eventual-consistent
+    observability (root-job list summaries and tree/list aggregate counters)</li>
+<li><strong>Stats-only enqueue coalescing</strong>: active stats-only <code>CAPTURE_ONLY</code> root jobs use a normalized
+  capture identity containing the account, connector, table/snapshot pairs, requested outputs, and
+  capture-policy properties, in addition to the normal root-job identity fields. Column target and
+  selector differences therefore do not create parallel roots for overlapping requests against the
+  same snapshot. A different snapshot or output family receives a distinct root job.</li>
+<li><strong>Job leasing</strong>: workers lease from persisted ready pointers, mark jobs
+  running/succeeded/failed through transactional state transitions, and reclaim expired leases on a
+  configured interval. Failed jobs are retried with backoff up to configured attempt limits before
+  terminal failure.</li>
+<li><strong>Execution vs observability split</strong>:</li>
+<li>queue correctness depends only on canonical state plus execution payload references</li>
+<li>projection refresh is best-effort and may lag without affecting leasing, retries,
+    cancellation, reclaim, or completion</li>
+<li>detailed read APIs use best-effort payload hydration and may degrade detail when payload blobs
+    are missing</li>
+<li><strong>No queue self-healing</strong>: read paths, lease scans, and maintenance do not rebuild missing or
+  stale job indexes. Canonical job-index pointers are expected to stay correct because the owning
+  job-state transitions update them together. Lease maintenance reclaims expired leases and
+  projection maintenance repairs dirty parent/root summaries, but neither path is part of queue
+  correctness.</li>
+<li><strong>Canonical parent projection maintenance</strong>:</li>
+<li>canonical child records are the sole rollup input; stored child projections are never scanned
+    or used to decide parent state</li>
+<li>child changes coalesce through a versioned dirty-parent marker</li>
+<li>one maintenance operation reads the direct children once, computes the exact rollup, then
+    atomically commits the canonical parent, its projection, dirty-marker consumption, and the
+    immediate ancestor marker</li>
+<li>canonical parent records therefore carry both scheduling state and exact aggregate counters;
+    projections mirror that committed state for list/tree reads</li>
+<li>list/get/tree read paths never recursively scan descendants or repair projections</li>
+<li><strong>Backend shape</strong>:</li>
+<li>in <code>floecat.kv=dynamodb</code>, the durable store hot paths use native Dynamo-style partition/sort-key
+    layouts for job indexes, ready slices, and lease rows/expiry scans</li>
+<li>in <code>floecat.kv=memory</code>, the same domain model is preserved, but the physical implementation is
+    in-memory rather than a literal Dynamo simulator</li>
+</ul>
+<h3 id="job-tree-versioning-and-deployment-cohorts">Job-tree versioning and deployment cohorts<a class="headerlink" href="#job-tree-versioning-and-deployment-cohorts" title="Permanent link">&para;</a></h3>
+<p><code>floecat.reconciler.worker-affinity</code> is the job-tree contract version for one deployment, not its
+build version. The job store stamps it on every job at enqueue and constrains every lease to an
+exact match. Remote workers send the same value in <code>LeaseReconcileJobRequest.worker_affinity</code>, the
+control plane rejects blank or mismatched requests, and the leased job echoes the value for
+worker-side validation. Lease-bound RPCs also reject jobs owned by another cohort.</p>
+<p>The ready queue affinity-qualifies execution-class, execution-lane, job-kind, and pinned-executor
+index slices. The semantic execution policy and <code>pinnedExecutorId</code> remain unchanged; only the
+derived index filter is qualified. This prevents an older control plane that does not understand
+affinity from discovering versioned work through the corresponding raw filtered slices.</p>
+<p>Upgrades use separate draining cohorts. The old unversioned deployment continues serving its old
+workers and drains unversioned trees. The new deployment and workers use the same non-empty
+affinity (currently <code>reconciler-v1</code>) and process only that cohort. Route workers exclusively to the
+matching control plane, and do not retire the old deployment until its active trees have drained.
+Changing affinity does not migrate or reclaim queued jobs; it starts a separate cohort that may
+independently plan equivalent work.</p>
+<h3 id="grpc-auth">gRPC auth<a class="headerlink" href="#grpc-auth" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Reconcile workers use the gRPC control plane for leasing, progress, and standalone worker
+  payload/result exchange.</li>
+<li>Worker auth is attached explicitly by the reconcile executor client. The global outbound gRPC
+  interceptor is not responsible for minting or attaching worker tokens.</li>
+<li>In OIDC mode, background workers obtain a machine token via client credentials using
+  <code>floecat.reconciler.oidc.issuer</code>, <code>client-id</code>, <code>client-secret</code>,
+  <code>token-refresh-skew-seconds</code>, and <code>connect-timeout</code>.</li>
+<li>If <code>floecat.interceptor.session.header</code> is configured, worker RPCs attach the token there
+  (typically <code>x-floe-session</code>). Otherwise they fall back to
+  <code>floecat.reconciler.authorization.header</code>.</li>
+<li><code>ReconcileExecutorControl</code> accepts only the dedicated internal worker permission carried by the
+  reconciler service principal.</li>
+<li>Other internal gRPC fanout paths may still propagate request-scoped user/session headers where
+  that is the actual call contract, but that is separate from reconcile worker auth.</li>
+</ul>
+<h2 id="data-flow-lifecycle">Data Flow &amp; Lifecycle<a class="headerlink" href="#data-flow-lifecycle" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>Connector StartCapture / CaptureNow
+  → ReconcileJobStore.enqueue(PLAN_CONNECTOR)
+  → RemoteReconcileExecutorPoller.pollOnce
+      → leaseNext
+      → markRunning
+      → if PLAN_CONNECTOR:
+          → ReconcilerService.planTableTasks / planViewTasks
+          → enqueue PLAN_TABLE / PLAN_VIEW children
+      → if PLAN_TABLE:
+          → ensure destination table metadata
+          → enumerate snapshots via FloecatConnector
+          → enqueue PLAN_SNAPSHOT children
+      → if PLAN_VIEW:
+          → describeView
+          → ensure destination namespace exists
+          → create or update the destination view
+      → if PLAN_SNAPSHOT:
+          → ask FloecatConnector for planned parquet file membership
+          → read the newest root-published finalized reuse manifest and select compatible bundle records
+          → persist grouped file plan on parent job payload
+          → enqueue EXEC_FILE_GROUP children
+          → enqueue FINALIZE_SNAPSHOT_CAPTURE child
+      → if EXEC_FILE_GROUP:
+          → resolve parent PLAN_SNAPSHOT payload
+          → instantiate FloecatConnector
+          → read each selected reusable bundle once
+          → capture missing file-target stats and page indexes
+          → publish one group bundle and bounded result payload
+          → commit the result descriptor and bundle target mappings
+      → if FINALIZE_SNAPSHOT_CAPTURE:
+          → validate explicit planned coverage metadata
+          → wait for all planned EXEC_FILE_GROUP children to succeed with persisted results
+          → read and verify each bounded group result payload
+          → roll up snapshot-wide aggregate outputs and publish the capture manifest
+          → activate prepared stats/index generations and snapshot reuse metadata
+      → markSucceeded or markFailed
+</code></pre></div>
+<p>Jobs include <code>fullRescan</code>, <code>executionPolicy</code>, <code>jobKind</code>, and optional task payloads. Snapshot plan
+jobs, file-group jobs, and snapshot finalization jobs surface file-group/file counters in projected
+public views; parent canonical records do not store rolled-up aggregate counters.
+<code>RemoteReconcileExecutorPoller</code> uses <code>AtomicBoolean</code> and in-flight counters to avoid over-leasing
+within the same instance while continuing to repoll until worker slots are full.
+For handled remote completions, workers stop heartbeats before the handled success RPC and do not
+perform a post-completion final lease confirmation after that RPC has durably completed the job.</p>
+<h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Scheduling cadence via <code>reconciler.pollEvery</code> (defaults to <code>1s</code>).</li>
+<li>Empty-queue polling uses one probe sweep per worker JVM and exponentially backs off with jitter
+  between <code>reconciler.empty-poll-backoff-initial-ms</code> (default <code>500</code>) and
+  <code>reconciler.empty-poll-backoff-max-ms</code> (default <code>5000</code>). Leasing work resets the backoff and
+  immediately fills available worker capacity.</li>
+<li>Worker mode via <code>floecat.reconciler.worker.mode</code>:</li>
+<li><code>local</code> runs the lease poller in the same JVM as the control plane.</li>
+<li><code>remote</code> keeps the same gRPC lease protocol but is intended for executor-only nodes. Set
+    <code>reconciler.max-parallelism=0</code> on control-plane-only nodes.</li>
+<li>Worker capacity via <code>reconciler.max-parallelism</code>.</li>
+<li>Job-tree contract affinity via <code>floecat.reconciler.worker-affinity</code> (default
+  <code>reconciler-v1</code>). Control planes and all of their local or remote executors must use exactly the
+  same value.</li>
+<li>Job store selection:</li>
+<li><code>floecat.reconciler.job-store=durable</code> (service default) uses persisted queue records plus
+    retry/lease tuning via:
+    <code>floecat.reconciler.job-store.max-attempts</code>, <code>base-backoff-ms</code>, <code>max-backoff-ms</code>, <code>lease-ms</code>,
+    <code>reclaim-interval-ms</code>, and <code>ready-scan-limit</code>.</li>
+<li><code>floecat.reconciler.job-store=memory</code> uses the in-memory queue implementation.</li>
+<li>Accepted snapshot-finalize results are published independently of the originating worker lease.
+  Publication recovery and throughput are tuned with
+  <code>floecat.reconciler.snapshot-finalize-publication.tick-every</code>, <code>page-size</code>, and
+  <code>max-parallelism</code>. A transient publication failure never discards the accepted result: the intent
+  stays pending and is retried under capped backoff, so another instance resumes it if this one
+  dies. Only a payload the service proves invalid fails the job terminally.</li>
+<li>Executor toggles:</li>
+<li><code>floecat.reconciler.executor.remote-default.enabled</code></li>
+<li><code>floecat.reconciler.executor.remote-planner.enabled</code></li>
+<li><code>floecat.reconciler.executor.remote-snapshot-planner.enabled</code></li>
+<li><code>floecat.reconciler.executor.remote-file-group.enabled</code></li>
+<li><code>floecat.reconciler.executor.remote-snapshot-finalize.enabled</code></li>
+<li><code>floecat.reconciler.executor.snapshot-finalize.enabled</code></li>
+<li>File-group snapshots, including explicit-empty snapshots, use the descriptor-driven
+    <code>RemoteSnapshotFinalizeReconcileExecutor</code> when they contain file groups. Direct-stats snapshots
+    and explicit-empty file-group snapshots use <code>SnapshotFinalizeReconcileExecutor</code>.</li>
+<li>Swap out <code>ReconcileJobStore</code> for additional backends by providing a CDI alternative (job ID
+  references must remain stable for <code>GetReconcileJob</code>).</li>
+<li>Extend <code>FloecatConnector</code> to add richer snapshot planning or file execution behavior. Query scan
+  planning remains separate behind <code>ScanBundleService</code>.</li>
+</ul>
+<h2 id="examples-scenarios">Examples &amp; Scenarios<a class="headerlink" href="#examples-scenarios" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Full metadata rescan</strong>: operator triggers
+  <code>connector trigger demo-glue --full --all --mode metadata-only</code>. The job store enqueues a
+  full <code>PLAN_CONNECTOR</code> job, the worker poller leases it, and the reconciler walks connector
+  discovery and metadata planning across the full upstream history.</li>
+<li><strong>Incremental capture run</strong>: operator triggers
+  <code>connector trigger demo-glue --incremental --current --mode metadata-and-capture --capture stats</code>.
+  The reconcile path
+  captures table/file/column stats for matching table work while still allowing metadata mutation.</li>
+<li><strong>Incremental run</strong>: <code>--incremental</code> enumerates snapshots selected by the explicit snapshot scope
+  (<code>--current</code>, <code>--latest-n</code>, <code>--snapshot</code>, or <code>--all</code>). Durable content state then skips snapshots
+  whose metadata fingerprint and requested capture coverage are already complete, or narrows work
+  to only the missing coverage. Materialized coverage records the concrete stats and index
+  selectors reported by executors, allowing a field-ID/name alias to satisfy an equivalent later
+  request. An <code>ALL</code> default covers any narrower default, and a larger <code>FIRST_N</code> covers a smaller
+  <code>FIRST_N</code>; the reverse does not hold. Full rescans bypass this content-state deduplication.</li>
+</ul>
+<h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Connector SPI details: <a href="../connectors-spi/"><code>docs/connectors-spi.md</code></a></li>
+<li>Service connector/query RPCs: <a href="../service/"><code>docs/service.md</code></a></li>
+<li>Rust file-group worker implementation guide:
+  <a href="../rust-remote-capture-executor/"><code>docs/rust-remote-capture-executor.md</code></a></li>
+<li>Concrete connectors: <a href="../connectors-iceberg/"><code>docs/connectors-iceberg.md</code></a>,
+  <a href="../connectors-delta/"><code>docs/connectors-delta.md</code></a></li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tracking", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+        <script src="../assets/javascripts/docs-navigation.js"></script>
+      
+    
+  </body>
+</html>
