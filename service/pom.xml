@@ -419,7 +419,10 @@
           <useSystemClassLoader>false</useSystemClassLoader>
           <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
           <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
-          <argLine>${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
+          <!-- Test profiles restart Quarkus repeatedly in this JVM. Avoid sharing ZIP file-system
+               handles across those class loaders: one profile closing a cached archive can make
+               the next profile fail during bootstrap with ClosedChannelException. -->
+          <argLine>-Dquarkus.bootstrap.disable-jar-cache=true ${test.jvm.args} ${test.jvm.args.extra} ${argLine}</argLine>
         </configuration>
       </plugin>
     </plugins>
