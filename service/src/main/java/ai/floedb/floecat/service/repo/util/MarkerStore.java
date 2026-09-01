@@ -266,19 +266,21 @@ public class MarkerStore {
   }
 
   /**
-   * The fence for a relation update that may be changing where the relation lives.
+   * The fence for a relation update that may be joining a different namespace.
    *
    * <p>An update that leaves a relation where it is changes no namespace's relation set, so there
    * is nothing for a namespace delete or catalog move to be excluded from -- and asserting anyway
    * would serialize every ordinary relation update on the namespace's marker.
    *
+   * <p>Only the destination needs fencing. A namespace or catalog deletion racing the relation's
+   * arrival could otherwise commit after counting the destination empty and strand the relation.
+   * Removing the relation from its source only makes that source emptier, exactly like a relation
+   * delete, so fencing the source excludes no unsafe outcome and needlessly spends a batch slot.
+   *
    * <p>"Where it is" is the container the relation is COUNTED in, which is the catalog and the
    * namespace together -- not the namespace alone. The marker is keyed by namespace, but the
    * emptiness check it guards counts by {@code (account, catalog, namespace)}, so an update that
-   * changes only the catalog still moves the relation from one count to another while leaving the
-   * namespace id alone. Reading that as "not moving" would assert nothing on a write that re-keys
-   * the relation -- the non-participating writer this protocol says voids the guard rather than
-   * weakening it.
+   * changes only the catalog still joins a different count while leaving the namespace id alone.
    *
    * <p>"The same namespace" means the same account AND the same id. A resource id is unique only
    * within its account, and every key this fence asserts is account-scoped, so comparing the local
@@ -293,9 +295,7 @@ public class MarkerStore {
     if (sameNamespace && !changesCatalog) {
       return PointerConditions.none();
     }
-    // When only the catalog moves, both sides name one namespace, so relationsFence collapses to
-    // that single marker -- exactly the assertion a create into it would make.
-    return relationsFence(from, to).and(namespaceStillExistsFence(to));
+    return relationCreateFence(to);
   }
 
   /**

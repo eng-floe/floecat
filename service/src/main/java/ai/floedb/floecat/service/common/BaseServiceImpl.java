@@ -64,7 +64,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
@@ -397,36 +396,6 @@ public abstract class BaseServiceImpl {
     } catch (BaseResourceRepository.NotFoundException gone) {
       throw GrpcErrors.notFound(corr, NAMESPACE, Map.of("id", namespaceId.getId()));
     }
-  }
-
-  /**
-   * Runs a fenced write, re-reading the fence and retrying while another writer keeps winning it.
-   *
-   * <p>Resolved here rather than thrown to the caller. An idempotent create keeps its PENDING
-   * reservation on a retryable failure and {@code runOnce} cannot reclaim one -- only {@code
-   * runOnceReserved} can -- so unwinding a lost fence through that layer strands the idempotency
-   * key until its TTL, and the client's retry with the same key meets the same wall. Losing a fence
-   * means another writer changed the shape being joined, which is a local condition answered
-   * locally, on the same budget and backoff as every other contended write here.
-   *
-   * <p>A fence can also be lost by throwing rather than by returning false: resolving the fence may
-   * find the parent it was going to fence on already deleted. That is the same condition and is
-   * retried the same way, so it does not escape to the layer this exists to protect.
-   *
-   * @param fencedWrite resolves the fence and attempts the write, returning false when the fence
-   *     was lost. It must resolve the fence on each call, or every attempt repeats a stale version.
-   */
-  protected void retryWhileFenceLost(String what, BooleanSupplier fencedWrite) {
-    FenceRetry.retryWhileFenceLost(what, fencedWrite);
-  }
-
-  /** Runs a value-producing fenced write until it commits and returns its exact result. */
-  protected <T> T retryWhileFenceLostForResult(String what, Supplier<Optional<T>> fencedWrite) {
-    return FenceRetry.retryWhileFenceLostForResult(what, fencedWrite);
-  }
-
-  protected void sleepBackoff(int attempts) {
-    FenceRetry.sleepBackoff(attempts);
   }
 
   protected static String prettyNamespacePath(List<String> parents, String leaf) {

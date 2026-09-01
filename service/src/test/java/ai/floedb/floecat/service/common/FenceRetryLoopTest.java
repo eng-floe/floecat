@@ -36,15 +36,10 @@ import org.junit.jupiter.api.Test;
  */
 class FenceRetryLoopTest {
 
-  /** The loop is protected on the base class; nothing else here needs a service. */
-  private static final class Loop extends BaseServiceImpl {}
-
-  private final Loop loop = new Loop();
-
   @Test
   void aWriteThatWinsFirstTimeRunsExactlyOnce() {
     var attempts = new AtomicInteger();
-    loop.retryWhileFenceLost(
+    FenceRetry.retryWhileFenceLost(
         "write",
         () -> {
           attempts.incrementAndGet();
@@ -58,7 +53,7 @@ class FenceRetryLoopTest {
     // Not just the write: the body re-resolves the fence AND re-asserts what the fence protects,
     // because whoever won it may have deleted the namespace this write is joining.
     var attempts = new AtomicInteger();
-    loop.retryWhileFenceLost("write", () -> attempts.incrementAndGet() >= 3);
+    FenceRetry.retryWhileFenceLost("write", () -> attempts.incrementAndGet() >= 3);
     assertEquals(3, attempts.get());
   }
 
@@ -68,7 +63,7 @@ class FenceRetryLoopTest {
     // rather than returning false. Same condition, so it must not escape the loop that exists to
     // keep it from unwinding through the idempotency layer.
     var attempts = new AtomicInteger();
-    loop.retryWhileFenceLost(
+    FenceRetry.retryWhileFenceLost(
         "write",
         () -> {
           if (attempts.incrementAndGet() < 3) {
@@ -86,7 +81,7 @@ class FenceRetryLoopTest {
         assertThrows(
             BaseResourceRepository.AbortRetryableException.class,
             () ->
-                loop.retryWhileFenceLost(
+                FenceRetry.retryWhileFenceLost(
                     "create table",
                     () -> {
                       attempts.incrementAndGet();
@@ -103,7 +98,7 @@ class FenceRetryLoopTest {
     assertThrows(
         IllegalStateException.class,
         () ->
-            loop.retryWhileFenceLost(
+            FenceRetry.retryWhileFenceLost(
                 "write",
                 () -> {
                   attempts.incrementAndGet();

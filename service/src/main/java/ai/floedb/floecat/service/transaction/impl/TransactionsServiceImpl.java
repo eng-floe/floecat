@@ -48,6 +48,7 @@ import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
+import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -134,6 +135,9 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   // it -- three, plus two cleanup. Connectors hold no relations, so they never join a namespace.
   private static final int APPLY_OPS_PER_CONNECTOR_INTENT = 5;
 
+  // MarkerStore.relationMoveFence fences only the destination: one marker advance and one
+  // namespace canonical-pointer check. Source removal is safe without a fence, like relation
+  // deletion, and keeping this shape at two also avoids rejecting valid near-limit batches.
   private static final int APPLY_OPS_PER_JOINED_NAMESPACE = 2;
   private static final int APPLY_OPS_FOR_TRANSACTION_FINALIZE = 1;
 
@@ -2153,7 +2157,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       if (attempt > RETRIES) {
         return result;
       }
-      sleepBackoff(attempt);
+      FenceRetry.sleepBackoff(attempt);
     }
   }
 

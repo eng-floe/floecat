@@ -43,6 +43,7 @@ import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceTables;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
+import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
@@ -227,7 +228,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
                     try {
-                      retryWhileFenceLost(
+                      FenceRetry.retryWhileFenceLost(
                           "create table", () -> createTableFenced(spec, table, writePolicy, corr));
                     } catch (BaseResourceRepository.NameConflictException nce) {
                       throw GrpcErrors.alreadyExists(
@@ -309,7 +310,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                             try {
                               var reserved = table.toBuilder().setResourceId(reservedId).build();
                               var committed =
-                                  retryWhileFenceLostForResult(
+                                  FenceRetry.retryWhileFenceLostForResult(
                                       "create table",
                                       () ->
                                           tableRepo.createWithCompletionWhilePointersMatch(

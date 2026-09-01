@@ -166,14 +166,7 @@ class MarkerStoreTest {
         "and its row, refusing a delete that already finished");
   }
 
-  /**
-   * Two namespaces sharing a local id in different accounts are not the same namespace.
-   *
-   * <p>A resource id is unique only within its account, and every key this fence asserts is
-   * account-scoped. Comparing the local id alone read this as a no-op and returned no conditions at
-   * all -- no markers, and no read dependency on the destination -- on a move that changes two
-   * accounts' relation sets.
-   */
+  /** A move fences only the destination: removing a relation cannot orphan it in the source. */
   @Test
   void aMoveBetweenAccountsThatShareALocalIdStillTakesTheFence() {
     var from =
@@ -188,11 +181,13 @@ class MarkerStoreTest {
     var conditions = markers.relationMoveFence(from, to, false);
 
     assertEquals(
-        java.util.Set.of(
-            Keys.namespaceRelationsMarker("acct", "ns-same"),
-            Keys.namespaceRelationsMarker("other-acct", "ns-same")),
+        java.util.Set.of(Keys.namespaceRelationsMarker("other-acct", "ns-same")),
         conditions.markerVersions().keySet(),
-        "both accounts' relation sets change, so both markers are asserted");
+        "only joining the destination can race its deletion; leaving the source makes it emptier");
+    assertEquals(
+        2,
+        conditions.toCasOps().size(),
+        "a destination join is exactly one marker advance plus one namespace existence check");
     assertTrue(
         conditions
             .requiredVersions()

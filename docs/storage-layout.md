@@ -136,16 +136,16 @@ Every write that changes a namespace's shape asserts the relevant marker at the 
 advances it inside its own pointer transaction, so a shape check and the write it guards commit
 together or neither does:
 
-```
+```text
                      markers/children              markers/relations
                        (of the PARENT)                (of the NAMESPACE)
                             |                              |
   create a child -----------+                              +------ create a table or view
   namespace                 |                              |
-                            |                              +------ move a relation between
-  rename namespace ---------+                              |       namespaces (asserts both ends)
+  rename namespace ---------+                              |
   re-parent namespace ------+                              |
-                            |                              |
+                            |                              +------ move a relation between
+                            |                                      namespaces (destination only)
   move namespace to --------+------------------------------+
   another catalog
 

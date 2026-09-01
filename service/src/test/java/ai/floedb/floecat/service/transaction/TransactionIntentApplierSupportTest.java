@@ -860,6 +860,16 @@ class TransactionIntentApplierSupportTest {
   /** A namespace delete cannot share a transaction with a table created inside that namespace. */
   @Test
   void applyTransactionRejectsNamespaceDeleteBeforeTableCreateInThatNamespace() throws Exception {
+    assertNamespaceDeleteAndTableCreateConflict(true);
+  }
+
+  /** The same collision is rejected when the table intent is planned first. */
+  @Test
+  void applyTransactionRejectsNamespaceDeleteAfterTableCreateInThatNamespace() throws Exception {
+    assertNamespaceDeleteAndTableCreateConflict(false);
+  }
+
+  private void assertNamespaceDeleteAndTableCreateConflict(boolean deleteFirst) throws Exception {
     var fixture = newApplyFixture();
     var pointers = fixture.pointers();
     var blobs = fixture.blobs();
@@ -890,7 +900,10 @@ class TransactionIntentApplierSupportTest {
         fixture
             .support()
             .applyTransactionBestEffort(
-                List.of(namespaceDelete, tableCreate), fixture.intentRepo());
+                deleteFirst
+                    ? List.of(namespaceDelete, tableCreate)
+                    : List.of(tableCreate, namespaceDelete),
+                fixture.intentRepo());
 
     assertEquals(TransactionIntentApplierSupport.ApplyStatus.CONFLICT, outcome.status());
     assertEquals("POINTER_TXN_DUPLICATE_KEY", outcome.errorCode());

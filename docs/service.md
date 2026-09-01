@@ -223,7 +223,7 @@ void the guard rather than weaken it:
 | Writer | Asserts |
 | --- | --- |
 | `NamespaceServiceImpl` create, update, delete | the parent's or its own markers, in its own batch |
-| `TableServiceImpl`, `ViewServiceImpl` create and update | the relation marker, and both namespaces when an update moves a relation between them |
+| `TableServiceImpl`, `ViewServiceImpl` create and update | the destination relation marker and namespace row when a relation enters a container where it was not already counted; leaving the source needs no fence |
 | `TableServiceImpl`, `ViewServiceImpl` delete | nothing. A namespace delete racing a relation delete can only find the namespace emptier than it counted, which orphans nothing, so asserting here would cost a write to a hot key for no exclusion |
 | `CatalogOverlayReconciler` create, update, retire | the shape assertion joined onto its overlay fence via `PointerConditions.and` |
 | `TransactionIntentApplierSupport` table intents | the relation marker and the namespace's row, as CAS ops in the same pointer transaction -- on the same terms as a request, so only when the relation enters a container it was not already counted in |

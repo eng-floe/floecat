@@ -38,6 +38,7 @@ import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceNamespaces;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
+import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
@@ -288,7 +289,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                             }
                             try {
                               var committed =
-                                  retryWhileFenceLostForResult(
+                                  FenceRetry.retryWhileFenceLostForResult(
                                       "create namespace",
                                       () ->
                                           namespaceRepo.createWithCompletionWhilePointersMatch(
@@ -367,7 +368,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
               .setCreatedAt(tsNow)
               .build();
       try {
-        retryWhileFenceLost(
+        FenceRetry.retryWhileFenceLost(
             "create namespace chain",
             () ->
                 namespaceRepo.createWhilePointersMatch(

@@ -42,6 +42,7 @@ import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceViews;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
+import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
@@ -233,7 +234,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
                     try {
-                      retryWhileFenceLost(
+                      FenceRetry.retryWhileFenceLost(
                           "create view",
                           () -> createViewFenced(view, namespaceId, catalogId, writePolicy, corr));
                     } catch (BaseResourceRepository.NameConflictException nce) {
@@ -303,7 +304,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                             GenericResourceRepository.ResourceWithMeta<View> committed;
                             try {
                               committed =
-                                  retryWhileFenceLostForResult(
+                                  FenceRetry.retryWhileFenceLostForResult(
                                       "create view",
                                       () ->
                                           viewRepo.createWithCompletionWhilePointersMatch(
