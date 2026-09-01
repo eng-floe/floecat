@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.common;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.connector.spi.DatabricksAccessDelegation;
 import org.junit.jupiter.api.Test;
 
 class PersistedSecretPropertyValidatorTest {
@@ -33,6 +34,11 @@ class PersistedSecretPropertyValidatorTest {
     assertTrue(PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey("s3.access-key-id"));
     assertTrue(
         PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey("fs.s3a.secret-access-key"));
+    // The original Databricks vend opt-in name canonicalized to *_credentials and tripped this
+    // guard, which is why it was renamed; keep the assertion so the reason stays documented.
+    assertTrue(
+        PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey(
+            "databricks.vend-credentials"));
   }
 
   @Test
@@ -63,6 +69,11 @@ class PersistedSecretPropertyValidatorTest {
     assertFalse(
         PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey("write.metadata.path"));
     assertFalse(PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey("token_type"));
+    // The Databricks vend opt-in is a non-secret boolean flag and must clear the guard. Pinned to
+    // the constant so a future rename back into a *_credentials/*_key form fails here.
+    assertFalse(
+        PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey(
+            DatabricksAccessDelegation.VEND_OPTION));
   }
 
   @Test

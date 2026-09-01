@@ -49,6 +49,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
+import ai.floedb.floecat.connector.spi.DatabricksAccessDelegation;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -72,6 +73,7 @@ import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -973,13 +975,81 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     return false;
   }
 
-  private static void validateConnectorProperties(
+  /**
+   * Rejects connector properties that must not be persisted or cannot be acted on: a key that
+   * carries a secret, and a Delta vend-credentials opt-in the connector would not recognize.
+   */
+  static void validateConnectorProperties(
       ConnectorKind kind, Map<String, String> properties, String corr) {
     validateConnectorProperties(kind, properties, corr, "properties");
   }
 
-  private static void validateConnectorProperties(
+  static void validateConnectorProperties(
       ConnectorKind kind, Map<String, String> properties, String corr, String fieldName) {
+    // Both checks live in this one method so a later connector-mutating path cannot call one and
+    // forget the other -- that is how the typo hole below reopens. This one runs before the guard
+    // that follows: that guard keys on a set named for the secret-key concern, and its containing
+    // CK_DELTA is coincidence, not coupling. Removing CK_DELTA from it must not silently delete
+    // delegation validation.
+    //
+    // DatabricksAccessDelegation reads any unrecognized value as "not opted in", the only safe
+    // reading at request time, but that makes vended-credential (singular) or vended-creds silently
+    // disable vending. Both gates that consult it then agree, so a typo
+    // surfaces far away as reads falling back to a storage authority that was never configured.
+    if (kind == ConnectorKind.CK_DELTA
+        && properties != null
+        && !DatabricksAccessDelegation.isRecognizedValue(
+            properties.get(DatabricksAccessDelegation.VEND_OPTION))) {
+      // A distinct message key, because sharing the secret-key error below would name the property
+      // and say nothing about the value, reading as "this property is not allowed here" and
+      // pushing an operator to delete it -- the outcome this check exists to prevent.
+      //
+      // The rejected value is never echoed. It is arbitrary exactly when this branch runs, and the
+      // property is a plausible place to paste a credential by mistake: an AWS secret key or a
+      // Databricks token is short enough to survive any cap worth having, and control characters
+      // in it would reach a log. Listing what is accepted is what an operator needs.
+      throw GrpcErrors.invalidArgument(
+          corr,
+          GeneratedErrorMessages.MessageKey.CONNECTOR_UNRECOGNIZED_PROPERTY_VALUE,
+          Map.of(
+              "key",
+              DatabricksAccessDelegation.VEND_OPTION,
+              "accepted",
+              DatabricksAccessDelegation.acceptedValuesDescription()));
+    }
+    // The other half of the same trap. The lookup above is exact, so
+    // databricks.access_delegation reads as absent, both gates agree the connector never opted in,
+    // and the mistake resurfaces as reads falling back to an authority nobody configured. The value
+    // tolerates underscores, which invites the same spelling in the key. Reported with the
+    // secret-key error below rather than the one above: the value is fine, the key is not.
+    if (kind == ConnectorKind.CK_DELTA && properties != null) {
+      for (String key : properties.keySet()) {
+        // Both separators fold, and the option folds the same way before the comparison. Folding
+        // only '_' compares against the dotted spelling, so databricks_access_delegation --
+        // the env-var shape, and what someone who writes underscores in the value writes in the
+        // key -- becomes databricks-access-delegation, matches nothing, and slips both gates.
+        String canonical = separatorsFolded(key.trim());
+        if (canonical.equals(separatorsFolded(DatabricksAccessDelegation.VEND_OPTION))
+            && !key.equals(DatabricksAccessDelegation.VEND_OPTION)) {
+          // Its own message, naming the spelling that works. The generic invalid-argument text
+          // carries the key only in structured params, so the sentence an operator reads would name
+          // neither their typo nor the fix -- and this branch exists for exactly that operator.
+          //
+          // Trimmed, because the canonicalization above trims: the interior is pinned to the option
+          // by the match, but surrounding whitespace is not, and params travel unclamped in the
+          // Error detail -- GrpcErrors.clampDetail collapses whitespace in the description only.
+          // A key wrapped in CR/LF would forge a line for whatever reads params.
+          //
+          // Trim is complete here rather than merely helpful: entry to this branch requires
+          // key.trim() to equal the option, trim strips exactly the characters <= U+0020, so
+          // nothing else -- U+2028, U+0085 -- can be wrapped around a key that reaches this line.
+          throw GrpcErrors.invalidArgument(
+              corr,
+              GeneratedErrorMessages.MessageKey.CONNECTOR_MISSPELLED_PROPERTY_KEY,
+              Map.of("key", key.trim(), "canonical", DatabricksAccessDelegation.VEND_OPTION));
+        }
+      }
+    }
     if (!CONNECTOR_KINDS_WITH_FORBIDDEN_SECRET_PROPERTIES.contains(kind)
         || properties == null
         || properties.isEmpty()) {
@@ -1374,6 +1444,14 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     }
 
     return out;
+  }
+
+  /**
+   * A property key reduced to the form the misspelled-key guard compares. Case and the three ways a
+   * word boundary gets spelled -- dot, dash, underscore -- all fold away; nothing else does.
+   */
+  private static String separatorsFolded(String key) {
+    return key.toLowerCase(Locale.ROOT).replace('_', '-').replace('.', '-');
   }
 
   private static FieldMask normalizeMask(FieldMask mask) {

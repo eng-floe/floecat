@@ -431,13 +431,30 @@ final class IcebergRestCatalogClient implements CatalogClient {
     return Map.copyOf(filtered);
   }
 
+  /**
+   * Mirrors {@code FloecatConnector.VendedStorageCredentials.MAX_EXPIRY_EPOCH_MILLIS}: the last
+   * instant a proto Timestamp can carry, 9999-12-31T23:59:59.999Z. Duplicated for the same reason
+   * the rule below is -- this module cannot reach the connector SPI -- and cheaply, because it is a
+   * value fixed by the proto specification rather than a policy either copy owns.
+   */
+  private static final long MAX_EXPIRY_EPOCH_MILLIS = 253402300799999L;
+
   private static Instant parseVendedExpiry(Map<String, String> properties) {
     String raw = properties.get(VENDED_EXPIRY_KEY);
     if (raw == null || raw.isBlank()) {
       return null;
     }
     try {
-      return Instant.ofEpochMilli(Long.parseLong(raw.trim()));
+      long epochMillis = Long.parseLong(raw.trim());
+      // Same rule as FloecatConnector.VendedStorageCredentials.expiryFromEpochMillis, which this
+      // module cannot call: catalog-access depends on the catalog-access SPI, not the connector
+      // one. Both bounds, because both paths parse the same field of the same response and a
+      // comment claiming parity is what makes the next reader widen the gap. A non-positive value
+      // is an absent expiry, not an instant in 1970 that every consumer reads as already expired;
+      // anything past MAX_EXPIRY_EPOCH_MILLIS is a unit mismatch, not a date.
+      return epochMillis <= 0 || epochMillis > MAX_EXPIRY_EPOCH_MILLIS
+          ? null
+          : Instant.ofEpochMilli(epochMillis);
     } catch (NumberFormatException ignored) {
       return null;
     }

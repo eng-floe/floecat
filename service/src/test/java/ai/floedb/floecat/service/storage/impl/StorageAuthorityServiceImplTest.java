@@ -786,7 +786,7 @@ class StorageAuthorityServiceImplTest {
       props.put("s3.session-token", sessionToken);
     }
     return new ai.floedb.floecat.connector.spi.FloecatConnector.VendedStorageCredentials(
-        props, expiry);
+        props, null, expiry);
   }
 
   private static final java.time.Instant EXPIRY = java.time.Instant.ofEpochMilli(1786000000000L);
