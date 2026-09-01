@@ -783,7 +783,7 @@ class DeltaConnectorTest {
     private final AtomicBoolean fallbackCalled = new AtomicBoolean(false);
 
     TestDeltaConnector(Table table) {
-      super("delta-test", null, path -> null, false, 0.0d, 0L);
+      super("delta-test", null, path -> null, false, 0.0d, 0L, null);
       this.table = table;
     }
 
@@ -837,7 +837,7 @@ class DeltaConnectorTest {
     private final Table table;
 
     StrictSchemaConnector(Table table) {
-      super("delta-test-strict", null, path -> null, false, 0.0d, 0L);
+      super("delta-test-strict", null, path -> null, false, 0.0d, 0L, null);
       this.table = table;
     }
 

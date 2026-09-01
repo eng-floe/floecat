@@ -109,19 +109,27 @@ abstract class DeltaConnector implements FloecatConnector {
   private static final Logger LOG = Logger.getLogger(DeltaConnector.class);
 
   private final String connectorId;
+  private final AutoCloseable engineResources;
   protected final Engine engine;
   protected final Function<String, InputFile> parquetInput;
   protected final boolean ndvEnabled;
   protected final double ndvSampleFraction;
   protected final long ndvMaxFiles;
 
+  /**
+   * @param engineResources what the engine was built on -- for an S3-backed engine the refreshing
+   *     client holding its connection pool and credentials provider -- or null when the engine owns
+   *     nothing releasable. Nothing else retains it, so {@link #close()} is its only release point.
+   */
   protected DeltaConnector(
       String connectorId,
       Engine engine,
       Function<String, InputFile> parquetInput,
       boolean ndvEnabled,
       double ndvSampleFraction,
-      long ndvMaxFiles) {
+      long ndvMaxFiles,
+      AutoCloseable engineResources) {
+    this.engineResources = engineResources;
     this.connectorId = connectorId;
     this.engine = engine;
     this.parquetInput = parquetInput;
@@ -1121,7 +1129,16 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   @Override
-  public void close() {}
+  public void close() {
+    if (engineResources == null) {
+      return;
+    }
+    try {
+      engineResources.close();
+    } catch (Exception e) {
+      LOG.warnf(e, "Failed to close engine resources for connector %s", connectorId);
+    }
+  }
 
   @Override
   public Optional<SnapshotConstraints> snapshotConstraints(

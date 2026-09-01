@@ -37,8 +37,16 @@ final class DeltaFilesystemConnector extends DeltaConnector {
       long ndvMaxFiles,
       String storageLocation,
       String namespaceFq,
-      String tableName) {
-    super(connectorId, engine, parquetInput, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
+      String tableName,
+      AutoCloseable engineResources) {
+    super(
+        connectorId,
+        engine,
+        parquetInput,
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles,
+        engineResources);
     this.storageLocation = storageLocation;
     this.namespaceFq = namespaceFq == null ? "" : namespaceFq;
     this.tableName = tableName == null ? "" : tableName;
