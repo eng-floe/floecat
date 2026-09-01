@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 @ApplicationScoped
 public class CatalogRepository {
@@ -64,6 +65,21 @@ public class CatalogRepository {
 
   public void create(Catalog catalog) {
     repo.create(catalog);
+  }
+
+  public GenericResourceRepository.ResourceWithMeta<Catalog> createWithCompletion(
+      Catalog catalog,
+      Function<GenericResourceRepository.ResourceWithMeta<Catalog>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.createWithMeta(catalog, completionFactory);
+  }
+
+  public Optional<MutationMeta> completeWithMetaIfUnchanged(
+      Catalog catalog,
+      long expectedPointerVersion,
+      Function<GenericResourceRepository.ResourceWithMeta<Catalog>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.completeWithMetaIfUnchanged(catalog, expectedPointerVersion, completionFactory);
   }
 
   public boolean update(Catalog catalog, long expectedPointerVersion) {

@@ -2077,6 +2077,7 @@ public interface ReconcileJobStore {
     public final Set<String> lanes;
     public final Set<String> executorIds;
     public final Set<ReconcileJobKind> jobKinds;
+    private final String deploymentLane;
 
     /**
      * Deployment cohort this worker belongs to, or empty when affinity is disabled. The job store
@@ -2098,8 +2099,20 @@ public interface ReconcileJobStore {
         Set<String> executorIds,
         Set<ReconcileJobKind> jobKinds,
         ReconcileWorkerAffinity workerAffinity) {
+      this(executionClasses, lanes, executorIds, jobKinds, workerAffinity, null);
+    }
+
+    private LeaseRequest(
+        Set<ReconcileExecutionClass> executionClasses,
+        Set<String> lanes,
+        Set<String> executorIds,
+        Set<ReconcileJobKind> jobKinds,
+        ReconcileWorkerAffinity workerAffinity,
+        String deploymentLane) {
       this.workerAffinity =
           workerAffinity == null ? ReconcileWorkerAffinity.DISABLED : workerAffinity;
+      this.deploymentLane =
+          deploymentLane == null ? null : ReconcileExecutionPolicy.normalizeLane(deploymentLane);
       this.executionClasses =
           executionClasses == null
               ? Set.of()
@@ -2176,7 +2189,14 @@ public interface ReconcileJobStore {
       String effectivePinnedExecutorId = pinnedExecutorId == null ? "" : pinnedExecutorId.trim();
       boolean executorMatches =
           effectivePinnedExecutorId.isEmpty() || executorIds.contains(effectivePinnedExecutorId);
-      return classMatches && laneMatches && kindMatches && executorMatches && cohortMatches(policy);
+      boolean deploymentLaneMatches =
+          deploymentLane == null || deploymentLane.equals(effective.lane());
+      return classMatches
+          && laneMatches
+          && kindMatches
+          && executorMatches
+          && deploymentLaneMatches
+          && cohortMatches(policy);
     }
 
     /**
@@ -2193,7 +2213,17 @@ public interface ReconcileJobStore {
           workerAffinity == null ? ReconcileWorkerAffinity.DISABLED : workerAffinity;
       return effective.equals(this.workerAffinity)
           ? this
-          : new LeaseRequest(executionClasses, lanes, executorIds, jobKinds, effective);
+          : new LeaseRequest(
+              executionClasses, lanes, executorIds, jobKinds, effective, deploymentLane);
+    }
+
+    /** Returns this request constrained to the Floecat deployment's configured execution lane. */
+    public LeaseRequest withDeploymentLane(String deploymentLane) {
+      String effective = ReconcileExecutionPolicy.normalizeLane(deploymentLane);
+      return effective.equals(this.deploymentLane)
+          ? this
+          : new LeaseRequest(
+              executionClasses, lanes, executorIds, jobKinds, workerAffinity, effective);
     }
 
     public static String anyLaneToken() {

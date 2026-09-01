@@ -1021,31 +1021,27 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
             : failureKind;
     byte[] requestBytes =
         failurePayload(requiredResultId, effectiveMessage, effectiveFailureKind).toByteArray();
-    // runIdempotentCreate replays the whole supplier on a retryable abort, so the creator must stay
-    // side-effect free; the replacement job is enqueued once, after the result is durably recorded.
     AtomicBoolean recorded = new AtomicBoolean();
     boolean accepted =
-        runIdempotentCreate(
-                () ->
-                    MutationOps.createProto(
-                        principalContext.getAccountId(),
-                        "SubmitLeasedSnapshotFinalizeResult",
-                        resultIdempotencyKey(jobId, requiredResultId),
-                        () -> requestBytes,
-                        () -> {
-                          recorded.set(true);
-                          return new IdempotencyGuard.CreateResult<>(
-                              SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
-                                  .setAccepted(true)
-                                  .build(),
-                              tableId);
-                        },
-                        ignored -> MutationMeta.getDefaultInstance(),
-                        idempotencyStore,
-                        nowTs(),
-                        idempotencyTtlSeconds(),
-                        principalContext::getCorrelationId,
-                        SubmitLeasedSnapshotFinalizeResultResponse::parseFrom))
+        MutationOps.createProtoReceiptOnly(
+                principalContext.getAccountId(),
+                "SubmitLeasedSnapshotFinalizeResult",
+                resultIdempotencyKey(jobId, requiredResultId),
+                () -> requestBytes,
+                () -> {
+                  recorded.set(true);
+                  return new IdempotencyGuard.CreateResult<>(
+                      SubmitLeasedSnapshotFinalizeResultResponse.newBuilder()
+                          .setAccepted(true)
+                          .build(),
+                      tableId);
+                },
+                ignored -> MutationMeta.getDefaultInstance(),
+                idempotencyStore,
+                nowTs(),
+                idempotencyTtlSeconds(),
+                principalContext::getCorrelationId,
+                SubmitLeasedSnapshotFinalizeResultResponse::parseFrom)
             .body
             .getAccepted();
     if (recorded.get()

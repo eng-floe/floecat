@@ -124,6 +124,61 @@ class IndexArtifactRepositoryTest {
   }
 
   @Test
+  void atomicDirectArtifactWriteFencesConcurrentGenerationFinalization() {
+    InMemoryPointerStore delegate = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    long snapshotId = 725L;
+    String activeKey =
+        Keys.snapshotIndexArtifactActiveGenerationPointer(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId);
+    String directPrefix =
+        Keys.snapshotIndexArtifactGenerationPrefix(
+            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, "direct");
+    AtomicBoolean finalizeBeforeArtifactCommit = new AtomicBoolean(true);
+    AtomicBoolean discardedCompletion = new AtomicBoolean();
+    var pointers =
+        new RepoTestPointerStores.DelegatingPointerStore(delegate) {
+          @Override
+          public boolean compareAndSetBatch(List<CasOp> ops) {
+            boolean writesDirectArtifact =
+                ops.stream().anyMatch(op -> op.key().startsWith(directPrefix));
+            if (writesDirectArtifact && finalizeBeforeArtifactCommit.compareAndSet(true, false)) {
+              var active = delegate.get(activeKey).orElseThrow();
+              assertThat(
+                      delegate.compareAndSet(
+                          activeKey,
+                          active.getVersion(),
+                          PointerReferences.opaqueMarkerPointer(
+                              activeKey, "final-generation", active.getVersion() + 1L)))
+                  .isTrue();
+              delegate.deleteByPrefix(directPrefix);
+            }
+            return super.compareAndSetBatch(ops);
+          }
+        };
+    IndexArtifactRepository repository = createRepository(pointers, blobs);
+    IndexArtifactRecord record = indexRecord(snapshotId, "s3://bucket/file.parquet");
+
+    assertThatThrownBy(
+            () ->
+                repository.putIndexArtifactWithCompletion(
+                    record,
+                    com.google.protobuf.util.Timestamps.fromMillis(1L),
+                    ignored -> List.of(new PointerStore.CasCheckAbsent("/receipt")),
+                    ignored -> discardedCompletion.set(true)))
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class);
+
+    assertThat(discardedCompletion).isTrue();
+    assertThat(pointers.countByPrefix(directPrefix)).isZero();
+    assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, record.getTarget())).isEmpty();
+    assertThat(
+            blobs
+                .list(Keys.tableBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()), 100, "")
+                .keys())
+        .isEmpty();
+  }
+
+  @Test
   void bundledIndexWrappersResolveAllTargetsWithOneBlobRead() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = spy(new InMemoryBlobStore());

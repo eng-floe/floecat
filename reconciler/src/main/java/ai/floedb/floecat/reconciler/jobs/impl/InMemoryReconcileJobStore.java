@@ -978,7 +978,9 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
     long now = System.currentTimeMillis();
     reclaimExpiredLeasesIfDue(now);
     LeaseRequest effective =
-        (request == null ? LeaseRequest.all() : request).withWorkerAffinity(workerAffinity);
+        (request == null ? LeaseRequest.all() : request)
+            .withWorkerAffinity(workerAffinity)
+            .withDeploymentLane(executionLane);
     int attempts = Math.max(1, ready.size());
     for (int i = 0; i < attempts; i++) {
       String jobId = ready.poll();

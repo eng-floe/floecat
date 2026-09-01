@@ -25,12 +25,14 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
+import ai.floedb.floecat.service.common.IdempotencyInProgressException;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
@@ -77,13 +79,38 @@ public class IdempotencyGuardTest {
   @Test
   void runOnceEmptyKey() {
     var out =
-        IdempotencyGuard.runOnce(
+        IdempotencyGuard.runOnceConvergentEffects(
             ACCOUNT,
             OP,
             "",
             "req".getBytes(StandardCharsets.UTF_8),
             () -> new IdempotencyGuard.CreateResult<>("R1", resourceId("rid1")),
             metaOfVersion(1),
+            strSer(),
+            strParser(),
+            repo,
+            300,
+            NOW,
+            () -> "corr");
+
+    assertThat(out.resource()).isEqualTo("R1");
+  }
+
+  @Test
+  void reservedCreateWithoutKeyRunsWithoutPreparingAReceipt() {
+    var id = resourceId("rid1");
+    var out =
+        IdempotencyGuard.runOnceReserved(
+            ACCOUNT,
+            OP,
+            "",
+            "req".getBytes(StandardCharsets.UTF_8),
+            () -> id,
+            (reserved, committer) -> {
+              var committed = new IdempotencyGuard.CommittedCreate<>("R1", reserved, meta(1));
+              assertThat(committer.prepareSuccessOps(committed)).isEmpty();
+              return committed;
+            },
             strSer(),
             strParser(),
             repo,
@@ -170,7 +197,7 @@ public class IdempotencyGuardTest {
             () -> reservedId,
             (id, committer) -> {
               var committed = new IdempotencyGuard.CommittedCreate<>("RESOURCE", id, createdMeta);
-              PointerStore.CasUpsert receipt = committer.prepare(committed);
+              PointerStore.CasOp receipt = committer.prepareSuccessOps(committed).getFirst();
               String blobUri = "blob://thing/" + id.getId();
               blobs.put(
                   blobUri, "RESOURCE".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
@@ -321,7 +348,7 @@ public class IdempotencyGuardTest {
     byte[] req = "same".getBytes(StandardCharsets.UTF_8);
 
     var r1 =
-        IdempotencyGuard.runOnce(
+        IdempotencyGuard.runOnceConvergentEffects(
             ACCOUNT,
             OP,
             idemKey,
@@ -342,7 +369,7 @@ public class IdempotencyGuardTest {
         .isEqualTo(IdempotencyRecord.Status.SUCCEEDED);
 
     var r2 =
-        IdempotencyGuard.runOnce(
+        IdempotencyGuard.runOnceConvergentEffects(
             ACCOUNT,
             OP,
             idemKey,
@@ -356,6 +383,255 @@ public class IdempotencyGuardTest {
             NOW,
             () -> "corr");
     assertThat(r2.resource()).isEqualTo("R1");
+  }
+
+  @Test
+  void runOncePendingDoesNotInvokeCreator() throws Exception {
+    String idemKey = "active-claim";
+    byte[] request = "request".getBytes(StandardCharsets.UTF_8);
+    String key = Keys.idempotencyKey(ACCOUNT, OP, idemKey);
+    assertThat(repo.createPending(ACCOUNT, key, OP, sha256B64(request), NOW, expiresFrom(NOW, 60)))
+        .isTrue();
+
+    assertThatThrownBy(
+            () ->
+                IdempotencyGuard.runOnceConvergentEffects(
+                    ACCOUNT,
+                    OP,
+                    idemKey,
+                    request,
+                    () -> {
+                      throw new AssertionError("active pending claim must not invoke creator");
+                    },
+                    metaOfVersion(1),
+                    strSer(),
+                    strParser(),
+                    repo,
+                    60,
+                    NOW,
+                    () -> "corr"))
+        .isInstanceOf(IdempotencyInProgressException.class);
+  }
+
+  @Test
+  void receiptOnlyConfirmedAbortReleasesOwnedClaimAndRetrySucceeds() {
+    var underlying = new InMemoryPointerStore();
+    var conflicting = new ConfirmedAbortOncePointerStore(underlying);
+    repo = new IdempotencyRepositoryImpl(conflicting, blobs);
+    AtomicInteger callbacks = new AtomicInteger();
+
+    assertThatThrownBy(
+            () ->
+                IdempotencyGuard.runOnceReceiptOnly(
+                    ACCOUNT,
+                    OP,
+                    "receipt-only-conflict",
+                    "request".getBytes(StandardCharsets.UTF_8),
+                    () -> {
+                      callbacks.incrementAndGet();
+                      return new IdempotencyGuard.CreateResult<>("R1", resourceId("rid1"));
+                    },
+                    metaOfVersion(1),
+                    strSer(),
+                    strParser(),
+                    repo,
+                    60,
+                    NOW,
+                    () -> "corr"))
+        .isInstanceOf(StorageTransactionConflictException.class);
+
+    assertThat(repo.get(Keys.idempotencyKey(ACCOUNT, OP, "receipt-only-conflict"))).isEmpty();
+
+    var retried =
+        IdempotencyGuard.runOnceReceiptOnly(
+            ACCOUNT,
+            OP,
+            "receipt-only-conflict",
+            "request".getBytes(StandardCharsets.UTF_8),
+            () -> {
+              callbacks.incrementAndGet();
+              return new IdempotencyGuard.CreateResult<>("R1", resourceId("rid1"));
+            },
+            metaOfVersion(1),
+            strSer(),
+            strParser(),
+            repo,
+            60,
+            NOW,
+            () -> "corr");
+
+    assertThat(retried.resource()).isEqualTo("R1");
+    assertThat(callbacks).hasValue(2);
+  }
+
+  @Test
+  void convergentEffectRetryableAbortReleasesOwnedClaimAndRetrySucceeds() {
+    AtomicInteger callbacks = new AtomicInteger();
+    byte[] request = "request".getBytes(StandardCharsets.UTF_8);
+    String idempotencyKey = "convergent-retryable-abort";
+
+    assertThatThrownBy(
+            () ->
+                IdempotencyGuard.runOnceConvergentEffects(
+                    ACCOUNT,
+                    OP,
+                    idempotencyKey,
+                    request,
+                    () -> {
+                      callbacks.incrementAndGet();
+                      throw new BaseResourceRepository.AbortRetryableException("retry effect");
+                    },
+                    metaOfVersion(1),
+                    strSer(),
+                    strParser(),
+                    repo,
+                    60,
+                    NOW,
+                    () -> "corr"))
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class);
+
+    assertThat(repo.get(Keys.idempotencyKey(ACCOUNT, OP, idempotencyKey))).isEmpty();
+
+    var retried =
+        IdempotencyGuard.runOnceConvergentEffects(
+            ACCOUNT,
+            OP,
+            idempotencyKey,
+            request,
+            () -> {
+              callbacks.incrementAndGet();
+              return new IdempotencyGuard.CreateResult<>("R1", resourceId("rid1"));
+            },
+            metaOfVersion(1),
+            strSer(),
+            strParser(),
+            repo,
+            60,
+            NOW,
+            () -> "corr");
+
+    assertThat(retried.resource()).isEqualTo("R1");
+    assertThat(callbacks).hasValue(2);
+  }
+
+  @Test
+  void committedConflictPoisonsNeitherBusinessStateNorReceiptAndRetryReplaysExactResponse() {
+    var underlying = new InMemoryPointerStore();
+    var conflicting = new ConfirmedAbortOncePointerStore(underlying);
+    repo = new IdempotencyRepositoryImpl(conflicting, blobs);
+    var callbacks = new AtomicInteger();
+    var id = resourceId("known");
+    var key = Keys.idempotencyKey(ACCOUNT, OP, "committed-conflict");
+    var businessKey = "acct/" + ACCOUNT + "/things/known";
+
+    Function<IdempotencyGuard.SuccessCommitter<String>, IdempotencyGuard.CommittedCreate<String>>
+        mutation =
+            committer -> {
+              callbacks.incrementAndGet();
+              var committed = new IdempotencyGuard.CommittedCreate<>("changed=true", id, meta(1));
+              var pointer = PointerReferences.blobPointer(businessKey, "blob://things/known", 1L);
+              if (!conflicting.compareAndSetBatch(
+                  List.of(
+                      new PointerStore.CasUpsert(businessKey, 0L, pointer),
+                      committer.prepareSuccessOps(committed).getFirst()))) {
+                throw new BaseResourceRepository.AbortRetryableException("lost business CAS");
+              }
+              return committed;
+            };
+
+    assertThatThrownBy(
+            () ->
+                IdempotencyGuard.runOnceCommitted(
+                    ACCOUNT,
+                    OP,
+                    "committed-conflict",
+                    "request".getBytes(StandardCharsets.UTF_8),
+                    id,
+                    mutation,
+                    strSer(),
+                    strParser(),
+                    repo,
+                    60,
+                    NOW,
+                    () -> "corr"))
+        .isInstanceOf(StorageTransactionConflictException.class);
+    assertThat(underlying.get(businessKey)).isEmpty();
+    assertThat(repo.get(key)).isEmpty();
+
+    var first =
+        IdempotencyGuard.runOnceCommitted(
+            ACCOUNT,
+            OP,
+            "committed-conflict",
+            "request".getBytes(StandardCharsets.UTF_8),
+            id,
+            mutation,
+            strSer(),
+            strParser(),
+            repo,
+            60,
+            NOW,
+            () -> "corr");
+    assertThat(first.resource()).isEqualTo("changed=true");
+    assertThat(underlying.get(businessKey)).isPresent();
+    assertThat(repo.get(key))
+        .get()
+        .extracting(IdempotencyRecord::getStatus)
+        .isEqualTo(IdempotencyRecord.Status.SUCCEEDED);
+
+    var replay =
+        IdempotencyGuard.runOnceCommitted(
+            ACCOUNT,
+            OP,
+            "committed-conflict",
+            "request".getBytes(StandardCharsets.UTF_8),
+            id,
+            ignored -> {
+              throw new AssertionError("replay must not recompute the response");
+            },
+            strSer(),
+            strParser(),
+            repo,
+            60,
+            NOW,
+            () -> "corr");
+    assertThat(replay.resource()).isEqualTo("changed=true");
+    assertThat(callbacks).hasValue(2);
+  }
+
+  @Test
+  void committedPendingInvokesNoCallback() throws Exception {
+    byte[] request = "request".getBytes(StandardCharsets.UTF_8);
+    String key = Keys.idempotencyKey(ACCOUNT, OP, "committed-pending");
+    assertThat(
+            repo.createPending(
+                ACCOUNT,
+                key,
+                OP,
+                sha256B64(request),
+                resourceId("known"),
+                NOW,
+                expiresFrom(NOW, 60)))
+        .isTrue();
+
+    assertThatThrownBy(
+            () ->
+                IdempotencyGuard.runOnceCommitted(
+                    ACCOUNT,
+                    OP,
+                    "committed-pending",
+                    request,
+                    resourceId("known"),
+                    ignored -> {
+                      throw new AssertionError("pending claim must not invoke callback");
+                    },
+                    strSer(),
+                    strParser(),
+                    repo,
+                    60,
+                    NOW,
+                    () -> "corr"))
+        .isInstanceOf(IdempotencyInProgressException.class);
   }
 
   @Test
@@ -392,7 +668,7 @@ public class IdempotencyGuardTest {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                IdempotencyGuard.runOnce(
+                IdempotencyGuard.runOnceConvergentEffects(
                     ACCOUNT,
                     OP,
                     idemKey,
@@ -446,7 +722,7 @@ public class IdempotencyGuardTest {
         meta(1));
 
     var out =
-        IdempotencyGuard.runOnce(
+        IdempotencyGuard.runOnceConvergentEffects(
             ACCOUNT,
             OP,
             idemKey,
@@ -490,7 +766,7 @@ public class IdempotencyGuardTest {
 
     assertThatThrownBy(
             () ->
-                MutationOps.<ResourceId>createProto(
+                MutationOps.<ResourceId>createProtoConvergentEffects(
                     ACCOUNT,
                     OP,
                     idemKey,
@@ -523,7 +799,7 @@ public class IdempotencyGuardTest {
         meta(1));
 
     var out =
-        IdempotencyGuard.runOnce(
+        IdempotencyGuard.runOnceConvergentEffects(
             ACCOUNT,
             OP,
             idemKey,
@@ -755,6 +1031,23 @@ public class IdempotencyGuardTest {
         beforeDelete.run();
       }
       return super.compareAndDelete(key, expectedVersion);
+    }
+  }
+
+  private static final class ConfirmedAbortOncePointerStore
+      extends RepoTestPointerStores.DelegatingPointerStore {
+    private final AtomicBoolean conflict = new AtomicBoolean(true);
+
+    private ConfirmedAbortOncePointerStore(PointerStore delegate) {
+      super(delegate);
+    }
+
+    @Override
+    public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+      if (conflict.compareAndSet(true, false)) {
+        throw new StorageTransactionConflictException("injected confirmed abort", null);
+      }
+      return super.compareAndSetBatch(ops);
     }
   }
 }

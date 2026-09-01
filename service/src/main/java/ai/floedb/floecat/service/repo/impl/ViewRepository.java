@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.ViewKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta;
 import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -37,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 @ApplicationScoped
 public class ViewRepository {
@@ -67,6 +69,18 @@ public class ViewRepository {
 
   public void create(View view) {
     repo.create(view);
+  }
+
+  public ResourceWithMeta<View> createWithCompletion(
+      View view, Function<ResourceWithMeta<View>, List<PointerStore.CasOp>> completionFactory) {
+    return repo.createWithMeta(view, completionFactory);
+  }
+
+  public Optional<MutationMeta> completeWithMetaIfUnchanged(
+      View view,
+      long expectedPointerVersion,
+      Function<ResourceWithMeta<View>, List<PointerStore.CasOp>> completionFactory) {
+    return repo.completeWithMetaIfUnchanged(view, expectedPointerVersion, completionFactory);
   }
 
   public boolean createWhilePointersMatch(View view, PointerConditions conditions) {

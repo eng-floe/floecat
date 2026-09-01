@@ -14,14 +14,11 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.storage.errors;
+package ai.floedb.floecat.service.common;
 
-public class StorageAbortRetryableException extends StorageException {
-  public StorageAbortRetryableException(String message) {
+/** Indicates that another attempt currently owns an idempotency claim. */
+public final class IdempotencyInProgressException extends RuntimeException {
+  public IdempotencyInProgressException(String message) {
     super(message);
-  }
-
-  public StorageAbortRetryableException(String message, Throwable cause) {
-    super(message, cause);
   }
 }

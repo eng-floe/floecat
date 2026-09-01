@@ -412,69 +412,92 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                         .build();
                   }
 
+                  var existingForIdempotency = connectorRepo.getByName(accountId, display);
                   var result =
-                      runIdempotentCreate(
+                      MutationOps.createProtoRecoverable(
+                          accountId,
+                          "CreateConnector",
+                          idempotencyKey,
+                          () -> fp,
                           () ->
-                              MutationOps.createProto(
-                                  accountId,
-                                  "CreateConnector",
-                                  idempotencyKey,
-                                  () -> fp,
-                                  () -> {
-                                    AuthConfig storedAuth =
-                                        storeAuthCredentials(
-                                            spec.getAuth(), accountId, connectorId.getId());
-                                    boolean storedCredentials = hasAuthCredentials(spec.getAuth());
-                                    String secretId = connectorId.getId();
-                                    ensureNoStoredCredentials(storedAuth);
-                                    var connector = builder.setAuth(storedAuth).build();
-                                    try {
-                                      createConnectorWithCredentialCompensation(
-                                          connector, storedCredentials, accountId, secretId);
-                                    } catch (BaseResourceRepository.NameConflictException nce) {
-                                      if (storedCredentials) {
-                                        credentialResolver.delete(accountId, secretId);
-                                      }
-                                      var existingOpt = connectorRepo.getByName(accountId, display);
-                                      if (existingOpt.isPresent()) {
-                                        var existingSpec = specFromConnector(existingOpt.get());
-                                        if (hasAuthCredentials(spec.getAuth())) {
-                                          var existingAuth = existingSpec.getAuth();
-                                          String existingSecretId =
-                                              existingOpt.get().getResourceId().getId();
-                                          var resolved =
-                                              credentialResolver.resolve(
-                                                  accountId, existingSecretId);
-                                          if (resolved.isPresent()) {
-                                            existingSpec =
-                                                existingSpec.toBuilder()
-                                                    .setAuth(
-                                                        existingAuth.toBuilder()
-                                                            .setCredentials(resolved.get())
-                                                            .build())
-                                                    .build();
-                                          }
-                                        }
-                                        if (Arrays.equals(fp, canonicalFingerprint(existingSpec))) {
-                                          return new IdempotencyGuard.CreateResult<>(
-                                              existingOpt.get(), existingOpt.get().getResourceId());
-                                        }
-                                      }
-                                      throw GrpcErrors.alreadyExists(
-                                          corr,
-                                          GeneratedErrorMessages.MessageKey
-                                              .CONNECTOR_ALREADY_EXISTS,
-                                          Map.of("display_name", display));
-                                    }
-                                    return new IdempotencyGuard.CreateResult<>(
-                                        connector, connectorId);
-                                  },
-                                  c -> connectorRepo.metaFor(c.getResourceId()),
-                                  idempotencyStore,
-                                  tsNow,
-                                  idempotencyTtlSeconds(),
-                                  this::correlationId,
-                                  Connector::parseFrom));
+                              existingForIdempotency
+                                  .filter(
+                                      existing ->
+                                          Arrays.equals(
+                                              fp,
+                                              canonicalFingerprint(
+                                                  specFromConnectorWithResolvedCredentials(
+                                                      accountId, existing))))
+                                  .map(Connector::getResourceId)
+                                  .orElse(connectorId),
+                          (reservedId, committer) -> {
+                            var existingOpt = connectorRepo.getByName(accountId, display);
+                            if (existingOpt.isPresent()) {
+                              var existing = existingOpt.get();
+                              if (!existing.getResourceId().equals(reservedId)
+                                  || !Arrays.equals(
+                                      fp,
+                                      canonicalFingerprint(
+                                          specFromConnectorWithResolvedCredentials(
+                                              accountId, existing)))) {
+                                throw GrpcErrors.alreadyExists(
+                                    corr,
+                                    GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
+                                    Map.of("display_name", display));
+                              }
+                              var currentMeta = connectorRepo.metaFor(reservedId);
+                              var completed =
+                                  connectorRepo.completeWithMetaIfUnchanged(
+                                      existing,
+                                      currentMeta.getPointerVersion(),
+                                      resource ->
+                                          committer.prepareSuccessOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                              if (completed.isEmpty()) {
+                                throw new BaseResourceRepository.AbortRetryableException(
+                                    "connector changed while committing idempotency receipt");
+                              }
+                              return new IdempotencyGuard.CommittedCreate<>(
+                                  existing, reservedId, completed.get());
+                            }
+                            AuthConfig storedAuth =
+                                storeAuthCredentials(spec.getAuth(), accountId, reservedId.getId());
+                            boolean storedCredentials = hasAuthCredentials(spec.getAuth());
+                            String secretId = reservedId.getId();
+                            ensureNoStoredCredentials(storedAuth);
+                            var connector =
+                                builder.setResourceId(reservedId).setAuth(storedAuth).build();
+                            try {
+                              var committed =
+                                  connectorRepo.createWithCompletion(
+                                      connector,
+                                      resource ->
+                                          committer.prepareSuccessOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                              return new IdempotencyGuard.CommittedCreate<>(
+                                  committed.value(), reservedId, committed.meta());
+                            } catch (BaseResourceRepository.NameConflictException nce) {
+                              if (storedCredentials) {
+                                credentialResolver.delete(accountId, secretId);
+                              }
+                              throw GrpcErrors.alreadyExists(
+                                  corr,
+                                  GeneratedErrorMessages.MessageKey.CONNECTOR_ALREADY_EXISTS,
+                                  Map.of("display_name", display));
+                            } catch (BaseResourceRepository.AccountDeletionInProgressException e) {
+                              if (storedCredentials) {
+                                credentialResolver.delete(accountId, secretId);
+                              }
+                              throw e;
+                            }
+                          },
+                          idempotencyStore,
+                          tsNow,
+                          idempotencyTtlSeconds(),
+                          this::correlationId,
+                          Connector::parseFrom);
 
                   return CreateConnectorResponse.newBuilder()
                       .setConnector(maskConnector(result.body))
@@ -805,6 +828,21 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
     credentialResolver.store(accountId, connectorId, safeAuth.getCredentials());
     // AuthCredentials are stored in the secrets manager; connector records must not persist them.
     return safeAuth.toBuilder().clearCredentials().build();
+  }
+
+  private ConnectorSpec specFromConnectorWithResolvedCredentials(
+      String accountId, Connector connector) {
+    var spec = specFromConnector(connector);
+    if (!hasAuthCredentials(spec.getAuth())) {
+      var resolved = credentialResolver.resolve(accountId, connector.getResourceId().getId());
+      if (resolved.isPresent()) {
+        spec =
+            spec.toBuilder()
+                .setAuth(spec.getAuth().toBuilder().setCredentials(resolved.get()).build())
+                .build();
+      }
+    }
+    return spec;
   }
 
   private static void ensureNoStoredCredentials(AuthConfig auth) {

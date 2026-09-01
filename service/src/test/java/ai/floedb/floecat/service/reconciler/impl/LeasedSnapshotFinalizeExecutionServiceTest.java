@@ -73,6 +73,7 @@ import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.google.protobuf.ByteString;
 import java.security.MessageDigest;
@@ -476,7 +477,7 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
     doAnswer(
             invocation -> {
               if (finalizeAttempts.getAndIncrement() == 0) {
-                throw new StorageAbortRetryableException("idempotency write aborted");
+                throw new StorageTransactionConflictException("idempotency write aborted", null);
               }
               return null;
             })
@@ -491,6 +492,18 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             any(byte[].class),
             any(),
             any());
+
+    assertThrows(
+        StorageTransactionConflictException.class,
+        () ->
+            service.persistFailure(
+                principal,
+                FINALIZE_JOB_ID,
+                LEASE_EPOCH,
+                "result-1",
+                "append-only base is incompatible",
+                ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest
+                    .FailureKind.SFFK_APPEND_ONLY_BASE_INCOMPATIBLE));
 
     assertTrue(
         service.persistFailure(

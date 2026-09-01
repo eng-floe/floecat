@@ -40,7 +40,7 @@ import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.LeaseReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.ReconcileExecutorControlGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
-import ai.floedb.floecat.service.it.profiles.ReconcileJobStoreControlPlaneProfile;
+import ai.floedb.floecat.service.it.profiles.ReconcileLaneIsolationProfile;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import io.quarkus.grpc.GrpcClient;
@@ -54,7 +54,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
-@TestProfile(ReconcileJobStoreControlPlaneProfile.class)
+@TestProfile(ReconcileLaneIsolationProfile.class)
 class ReconcileLaneIsolationIT {
   private static final String EXPECTED_LANE = "ci-run-a";
   private static final String OTHER_LANE = "ci-run-b";

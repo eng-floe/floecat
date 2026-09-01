@@ -29,6 +29,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
+import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -175,22 +176,28 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
               String idempotencyKey =
                   request.hasIdempotency() ? request.getIdempotency().getKey() : "";
               var op =
-                  MutationOps.createProto(
+                  MutationOps.createProtoRecoverable(
                       accountId,
                       "create-storage-authority",
                       idempotencyKey,
                       () -> spec.toByteArray(),
-                      () -> {
-                        ResourceId authorityId =
-                            randomResourceId(accountId, ResourceKind.RK_STORAGE_AUTHORITY);
+                      () -> randomResourceId(accountId, ResourceKind.RK_STORAGE_AUTHORITY),
+                      (authorityId, committer) -> {
                         StorageAuthority authority =
                             buildAuthority(authorityId, spec, null, nowTs());
-                        repo.create(authority);
+                        // Credentials use the reserved resource id and are an idempotent upsert.
+                        // A retry therefore converges before publishing the authority pointer.
                         storeCredentials(accountId, authorityId.getId(), spec);
-                        return new ai.floedb.floecat.service.common.IdempotencyGuard.CreateResult<>(
-                            authority, authorityId);
+                        var committed =
+                            repo.createWithCompletion(
+                                authority,
+                                resource ->
+                                    committer.prepareSuccessOps(
+                                        new IdempotencyGuard.CommittedCreate<>(
+                                            resource.value(), authorityId, resource.meta())));
+                        return new IdempotencyGuard.CommittedCreate<>(
+                            committed.value(), authorityId, committed.meta());
                       },
-                      authority -> repo.metaFor(authority.getResourceId()),
                       idempotencyStore,
                       nowTs(),
                       idempotencyTtlSeconds(),

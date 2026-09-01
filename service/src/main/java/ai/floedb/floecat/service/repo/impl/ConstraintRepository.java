@@ -23,6 +23,7 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotConstraintsKey;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -32,9 +33,12 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 @ApplicationScoped
 public class ConstraintRepository {
+
+  public record PutResult(SnapshotConstraints constraints, MutationMeta meta, boolean changed) {}
 
   private final GenericResourceRepository<SnapshotConstraints, SnapshotConstraintsKey> repo;
 
@@ -89,6 +93,56 @@ public class ConstraintRepository {
     }
     MutationMeta meta = repo.metaFor(key);
     return repo.update(normalized, meta.getPointerVersion());
+  }
+
+  /**
+   * Puts constraints while publishing caller-supplied completion operations in the same pointer
+   * transaction. Exact replays commit only the completion while checking the current pointer.
+   */
+  public PutResult putSnapshotConstraintsWithCompletion(
+      ResourceId tableId,
+      long snapshotId,
+      SnapshotConstraints value,
+      Function<PutResult, List<PointerStore.CasOp>> completionFactory) {
+    SnapshotConstraints normalized = normalizeForKey(tableId, snapshotId, value);
+    SnapshotConstraintsKey key = key(tableId, snapshotId);
+    Optional<SnapshotConstraints> current = repo.getByKeyForMutation(key);
+    if (current.isEmpty()) {
+      var committed =
+          repo.createWithMeta(
+              normalized,
+              resource ->
+                  completionFactory.apply(new PutResult(resource.value(), resource.meta(), true)));
+      return new PutResult(committed.value(), committed.meta(), true);
+    }
+
+    MutationMeta observed = repo.metaFor(key);
+    if (current.get().equals(normalized)) {
+      MutationMeta committed =
+          repo.completeWithMetaIfUnchanged(
+                  current.get(),
+                  observed.getPointerVersion(),
+                  resource ->
+                      completionFactory.apply(
+                          new PutResult(resource.value(), resource.meta(), false)))
+              .orElseThrow(
+                  () ->
+                      new BaseResourceRepository.AbortRetryableException(
+                          "constraints changed before atomic completion"));
+      return new PutResult(current.get(), committed, false);
+    }
+
+    MutationMeta committed =
+        repo.updateWithCompletion(
+                normalized,
+                observed.getPointerVersion(),
+                resource ->
+                    completionFactory.apply(new PutResult(resource.value(), resource.meta(), true)))
+            .orElseThrow(
+                () ->
+                    new BaseResourceRepository.AbortRetryableException(
+                        "constraints changed before atomic update"));
+    return new PutResult(normalized, committed, true);
   }
 
   /**

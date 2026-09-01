@@ -108,7 +108,7 @@ jobs:
     if: needs.detect-core-changes.outputs.core_changed == 'true'
     name: ci-localstack
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     concurrency:
       group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}-localstack
       cancel-in-progress: false

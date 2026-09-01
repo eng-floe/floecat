@@ -173,6 +173,19 @@ public final class IdempotencyRepositoryImpl implements IdempotencyRepository {
   }
 
   @Override
+  public void discardPreparedSuccess(PointerStore.CasOp prepared) {
+    if (prepared instanceof PointerStore.CasUpsert upsert
+        && !upsert.next().getBlobUri().isBlank()) {
+      try {
+        blobs.delete(upsert.next().getBlobUri());
+      } catch (RuntimeException ignored) {
+        // Best effort: the pointer transaction definitively did not publish this blob, and
+        // idempotency GC will reclaim the key prefix after expiry.
+      }
+    }
+  }
+
+  @Override
   public void finalizeSuccess(
       String accountId,
       String key,

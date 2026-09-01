@@ -58,9 +58,11 @@ import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository.PreconditionFailedException;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
@@ -170,17 +172,37 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
                   }
 
                   var result =
-                      IdempotencyGuard.runOnce(
+                      IdempotencyGuard.runOnceReserved(
                           accountId,
                           "BeginTransaction",
                           idempotencyKey,
                           request.toByteArray(),
-                          () -> {
-                            Transaction txn = createTransaction(accountId, request, now);
-                            return new IdempotencyGuard.CreateResult<>(
-                                txn, transactionResourceId(accountId, txn.getTxId()));
+                          () -> transactionResourceId(accountId, randomUuid()),
+                          (reservedId, committer) -> {
+                            Timestamp expires =
+                                request.hasTtl()
+                                    ? Timestamps.add(now, request.getTtl())
+                                    : Timestamps.add(now, defaultTtl());
+                            Transaction txn =
+                                Transaction.newBuilder()
+                                    .setTxId(reservedId.getId())
+                                    .setAccountId(accountId)
+                                    .setState(TransactionState.TS_OPEN)
+                                    .setCreatedAt(now)
+                                    .setUpdatedAt(now)
+                                    .setExpiresAt(expires)
+                                    .putAllProperties(request.getPropertiesMap())
+                                    .build();
+                            var committed =
+                                txRepo.createWithCompletion(
+                                    txn,
+                                    resource ->
+                                        committer.prepareSuccessOps(
+                                            new IdempotencyGuard.CommittedCreate<>(
+                                                resource.value(), reservedId, resource.meta())));
+                            return new IdempotencyGuard.CommittedCreate<>(
+                                committed.value(), reservedId, committed.meta());
                           },
-                          txn -> txRepo.metaFor(accountId, txn.getTxId(), now),
                           Transaction::toByteArray,
                           bytes -> {
                             try {
@@ -220,22 +242,20 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
                   Timestamp now = Timestamps.fromMillis(clock.millis());
                   if (idempotencyKey == null) {
-                    Transaction updated = prepareTransaction(accountId, request, now);
+                    Transaction updated =
+                        prepareTransaction(accountId, request, now, null).resource();
                     return PrepareTransactionResponse.newBuilder().setTransaction(updated).build();
                   }
 
+                  var transactionId = transactionResourceId(accountId, request.getTxId());
                   var result =
-                      IdempotencyGuard.runOnce(
+                      IdempotencyGuard.runOnceCommitted(
                           accountId,
                           "PrepareTransaction",
                           idempotencyKey,
                           request.toByteArray(),
-                          () -> {
-                            Transaction updated = prepareTransaction(accountId, request, now);
-                            return new IdempotencyGuard.CreateResult<>(
-                                updated, transactionResourceId(accountId, updated.getTxId()));
-                          },
-                          txn -> txRepo.metaFor(accountId, txn.getTxId(), now),
+                          transactionId,
+                          committer -> prepareTransaction(accountId, request, now, committer),
                           Transaction::toByteArray,
                           bytes -> {
                             try {
@@ -290,22 +310,20 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
                   Timestamp now = Timestamps.fromMillis(clock.millis());
                   if (idempotencyKey == null) {
-                    Transaction committed = commitTransaction(accountId, request, now);
+                    Transaction committed =
+                        commitTransaction(accountId, request, now, null).resource();
                     return CommitTransactionResponse.newBuilder().setTransaction(committed).build();
                   }
 
+                  var transactionId = transactionResourceId(accountId, request.getTxId());
                   var result =
-                      IdempotencyGuard.runOnce(
+                      IdempotencyGuard.runOnceCommitted(
                           accountId,
                           "CommitTransaction",
                           idempotencyKey,
                           request.toByteArray(),
-                          () -> {
-                            Transaction committed = commitTransaction(accountId, request, now);
-                            return new IdempotencyGuard.CreateResult<>(
-                                committed, transactionResourceId(accountId, committed.getTxId()));
-                          },
-                          txn -> txRepo.metaFor(accountId, txn.getTxId(), now),
+                          transactionId,
+                          committer -> commitTransaction(accountId, request, now, committer),
                           Transaction::toByteArray,
                           bytes -> {
                             try {
@@ -464,8 +482,12 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     throw new PreconditionFailedException("transaction update conflict: " + txId);
   }
 
-  private Transaction transitionPreparedTransaction(
-      String accountId, String txId, int intentCount, Timestamp now) {
+  private IdempotencyGuard.CommittedCreate<Transaction> transitionPreparedTransaction(
+      String accountId,
+      String txId,
+      int intentCount,
+      Timestamp now,
+      IdempotencyGuard.SuccessCommitter<Transaction> committer) {
     if (intentCount <= 0) {
       throw new IllegalArgumentException("prepared transaction must include at least one intent");
     }
@@ -473,7 +495,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       Transaction current = getTransactionOrThrow(accountId, txId);
       TransactionState currentState = current.getState();
       if (currentState == TransactionState.TS_PREPARED) {
-        return current;
+        return completeTransactionReceipt(accountId, current, now, committer);
       }
       if (currentState != TransactionState.TS_OPEN) {
         throw new PreconditionFailedException(
@@ -486,8 +508,28 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
               .setUpdatedAt(now)
               .putProperties(PREPARED_INTENT_COUNT_PROPERTY, Integer.toString(intentCount))
               .build();
-      if (txRepo.update(updated, version)) {
-        return updated;
+      if (committer == null) {
+        if (txRepo.update(updated, version)) {
+          return new IdempotencyGuard.CommittedCreate<>(
+              updated,
+              transactionResourceId(accountId, txId),
+              txRepo.metaFor(accountId, txId, now));
+        }
+      } else {
+        var meta =
+            txRepo.updateWithCompletion(
+                updated,
+                version,
+                resource ->
+                    committer.prepareSuccessOps(
+                        new IdempotencyGuard.CommittedCreate<>(
+                            resource.value(),
+                            transactionResourceId(accountId, txId),
+                            resource.meta())));
+        if (meta.isPresent()) {
+          return new IdempotencyGuard.CommittedCreate<>(
+              updated, transactionResourceId(accountId, txId), meta.get());
+        }
       }
     }
     throw new PreconditionFailedException("transaction update conflict: " + txId);
@@ -507,6 +549,32 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       throw new IllegalArgumentException(
           "invalid prepared intent count on transaction: " + txn.getTxId(), e);
     }
+  }
+
+  private IdempotencyGuard.CommittedCreate<Transaction> completeTransactionReceipt(
+      String accountId,
+      Transaction transaction,
+      Timestamp now,
+      IdempotencyGuard.SuccessCommitter<Transaction> committer) {
+    var resourceId = transactionResourceId(accountId, transaction.getTxId());
+    var meta = txRepo.metaFor(accountId, transaction.getTxId(), now);
+    if (committer == null) {
+      return new IdempotencyGuard.CommittedCreate<>(transaction, resourceId, meta);
+    }
+    var completed =
+        txRepo.completeWithMetaIfUnchanged(
+            transaction,
+            meta.getPointerVersion(),
+            resource ->
+                committer.prepareSuccessOps(
+                    new IdempotencyGuard.CommittedCreate<>(
+                        resource.value(), resourceId, resource.meta())),
+            committer::discardPreparedSuccessOps);
+    if (completed.isEmpty()) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "transaction changed while committing idempotency receipt");
+    }
+    return new IdempotencyGuard.CommittedCreate<>(transaction, resourceId, completed.get());
   }
 
   private ResourceId reserveTransactionTableId(
@@ -591,8 +659,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     return RESERVED_TABLE_ID_PROPERTY_PREFIX + URLEncoder.encode(tableFq, StandardCharsets.UTF_8);
   }
 
-  private Transaction prepareTransaction(
-      String accountId, PrepareTransactionRequest request, Timestamp now) {
+  private IdempotencyGuard.CommittedCreate<Transaction> prepareTransaction(
+      String accountId,
+      PrepareTransactionRequest request,
+      Timestamp now,
+      IdempotencyGuard.SuccessCommitter<Transaction> committer) {
     // Public prepare_transaction rejects direct CONNECTOR payloads. CONNECTOR changes processed
     // here must come only from service-side materialization of connector_provisioning hints.
     Transaction txn = getTransactionOrThrow(accountId, request.getTxId());
@@ -602,7 +673,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     }
     if (txn.getState() == TransactionState.TS_PREPARED) {
       ensurePreparedRequestMatchesExistingIntents(accountId, txn.getTxId(), request);
-      return txn;
+      return completeTransactionReceipt(accountId, txn, now, committer);
     }
     if (txn.getState() != TransactionState.TS_OPEN) {
       throw new IllegalArgumentException("transaction not open: " + txn.getState().name());
@@ -656,6 +727,9 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       intents.add(intent);
     }
     estimatedOps += APPLY_OPS_FOR_TRANSACTION_FINALIZE;
+    if (committer != null) {
+      estimatedOps += 1;
+    }
     if (estimatedOps > MAX_POINTER_TXN_OPS) {
       throw new IllegalArgumentException(
           "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
@@ -688,7 +762,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     }
 
     try {
-      return transitionPreparedTransaction(accountId, txn.getTxId(), intents.size(), now);
+      return transitionPreparedTransaction(
+          accountId, txn.getTxId(), intents.size(), now, committer);
     } catch (RuntimeException e) {
       for (var intent : created) {
         intentRepo.deleteBothIndices(intent);
@@ -697,14 +772,22 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     }
   }
 
-  private Transaction commitTransaction(
-      String accountId, CommitTransactionRequest request, Timestamp now) {
+  private Transaction prepareTransaction(
+      String accountId, PrepareTransactionRequest request, Timestamp now) {
+    return prepareTransaction(accountId, request, now, null).resource();
+  }
+
+  private IdempotencyGuard.CommittedCreate<Transaction> commitTransaction(
+      String accountId,
+      CommitTransactionRequest request,
+      Timestamp now,
+      IdempotencyGuard.SuccessCommitter<Transaction> committer) {
     Transaction txn = getTransactionOrThrow(accountId, request.getTxId());
     if (txn.getState() == TransactionState.TS_APPLIED) {
-      return txn;
+      return completeTransactionReceipt(accountId, txn, now, committer);
     }
     if (txn.getState() == TransactionState.TS_APPLY_FAILED_CONFLICT) {
-      return txn;
+      return completeTransactionReceipt(accountId, txn, now, committer);
     }
     if (txn.getState() != TransactionState.TS_APPLYING && isExpired(txn, now)) {
       abortExpired(txn, now);
@@ -729,7 +812,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
               now,
               "prepared intent set is incomplete");
       if (failed.getState() == TransactionState.TS_APPLIED) {
-        return failed;
+        return completeTransactionReceipt(accountId, failed, now, committer);
       }
       logCommitFailure(
           accountId,
@@ -737,7 +820,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
           "PREPARED_INTENT_COUNT_MISMATCH",
           "prepared transaction intent count does not match by-tx enumeration",
           intents);
-      return failed;
+      return completeTransactionReceipt(accountId, failed, now, committer);
     }
     if (intents.isEmpty()) {
       throw new IllegalArgumentException("transaction has no intents");
@@ -770,7 +853,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         if (failed.getState() == TransactionState.TS_APPLIED) {
           schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
           convergeAfterApply(intents);
-          return failed;
+          return completeTransactionReceipt(accountId, failed, now, committer);
         }
         logCommitFailure(
             accountId,
@@ -778,7 +861,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             "LOCK_OWNERSHIP_MISMATCH",
             "lock ownership mismatch during apply",
             intents);
-        return failed;
+        return completeTransactionReceipt(accountId, failed, now, committer);
       }
     }
 
@@ -786,16 +869,52 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         txRepo.metaFor(accountId, applyPhaseTxn.getTxId()).getPointerVersion();
     Transaction appliedCandidate =
         applyPhaseTxn.toBuilder().setState(TransactionState.TS_APPLIED).setUpdatedAt(now).build();
-    var outcome =
-        intentApplierSupport.applyTransactionAtomically(
-            appliedCandidate, transactionPointerVersion, intents, intentRepo);
+    var appliedResourceId = transactionResourceId(accountId, appliedCandidate.getTxId());
+    var appliedMeta =
+        MutationMeta.newBuilder()
+            .setPointerKey(Keys.transactionPointerById(accountId, appliedCandidate.getTxId()))
+            .setBlobUri(
+                Keys.transactionBlobUri(
+                    accountId,
+                    appliedCandidate.getTxId(),
+                    ai.floedb.floecat.types.Hashing.sha256Hex(appliedCandidate.toByteArray())))
+            .setPointerVersion(transactionPointerVersion + 1L)
+            .setUpdatedAt(now)
+            .build();
+    var completionOps =
+        committer == null
+            ? List.<PointerStore.CasOp>of()
+            : committer.prepareSuccessOps(
+                new IdempotencyGuard.CommittedCreate<>(
+                    appliedCandidate, appliedResourceId, appliedMeta));
+    final TransactionIntentApplierSupport.ApplyOutcome outcome;
+    try {
+      outcome =
+          committer == null
+              ? intentApplierSupport.applyTransactionAtomically(
+                  appliedCandidate, transactionPointerVersion, intents, intentRepo)
+              : intentApplierSupport.applyTransactionAtomically(
+                  appliedCandidate, transactionPointerVersion, intents, intentRepo, completionOps);
+    } catch (StorageTransactionConflictException confirmedAbort) {
+      if (committer != null) {
+        committer.discardPreparedSuccessOps(completionOps);
+      }
+      throw confirmedAbort;
+    }
+    if (outcome.status() != TransactionIntentApplierSupport.ApplyStatus.APPLIED
+        && committer != null) {
+      committer.discardPreparedSuccessOps(completionOps);
+    }
     if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.APPLIED) {
       Transaction latest = getTransactionOrThrow(accountId, applyPhaseTxn.getTxId());
       Transaction applied =
           latest.getState() == TransactionState.TS_APPLIED ? latest : appliedCandidate;
       schedulePostCommitCaptureBootstrap(accountId, applied.getTxId(), List.copyOf(intents));
       convergeAfterApply(intents);
-      return applied;
+      return new IdempotencyGuard.CommittedCreate<>(
+          applied,
+          appliedResourceId,
+          committer == null ? txRepo.metaFor(accountId, applied.getTxId(), now) : appliedMeta);
     }
 
     if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.CONFLICT) {
@@ -804,7 +923,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
         Transaction applied = latest;
         schedulePostCommitCaptureBootstrap(accountId, applied.getTxId(), List.copyOf(intents));
         convergeAfterApply(intents);
-        return applied;
+        return completeTransactionReceipt(accountId, applied, now, committer);
       }
       annotateIntentApplyFailure(intents, outcome, now);
       Transaction failed =
@@ -819,10 +938,10 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       if (failed.getState() == TransactionState.TS_APPLIED) {
         schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
         convergeAfterApply(intents);
-        return failed;
+        return completeTransactionReceipt(accountId, failed, now, committer);
       }
       logCommitFailure(accountId, failed, outcome, intents);
-      return failed;
+      return completeTransactionReceipt(accountId, failed, now, committer);
     }
 
     annotateIntentApplyFailure(intents, outcome, now);
@@ -838,10 +957,15 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     if (failed.getState() == TransactionState.TS_APPLIED) {
       schedulePostCommitCaptureBootstrap(accountId, failed.getTxId(), List.copyOf(intents));
       convergeAfterApply(intents);
-      return failed;
+      return completeTransactionReceipt(accountId, failed, now, committer);
     }
     logCommitFailure(accountId, failed, outcome, intents);
-    return failed;
+    return completeTransactionReceipt(accountId, failed, now, committer);
+  }
+
+  private Transaction commitTransaction(
+      String accountId, CommitTransactionRequest request, Timestamp now) {
+    return commitTransaction(accountId, request, now, null).resource();
   }
 
   private Transaction transitionApplyFailureOrReturnApplied(

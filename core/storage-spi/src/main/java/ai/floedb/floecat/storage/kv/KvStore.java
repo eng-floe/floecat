@@ -208,6 +208,8 @@ public interface KvStore {
    * Transactionally perform CAS puts/deletes.
    *
    * @return true if committed; false if any condition failed
+   * @throws ai.floedb.floecat.storage.errors.StorageTransactionConflictException if the backend
+   *     definitively cancelled the transaction without applying any mutation
    */
   Uni<Boolean> txnWriteCas(List<TxnOp> ops);
 

@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
@@ -241,54 +242,83 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     return CreateViewResponse.newBuilder().setView(view).setMeta(meta).build();
                   }
 
+                  var existingForIdempotency =
+                      viewRepo.getByName(
+                          accountId,
+                          spec.getCatalogId().getId(),
+                          spec.getNamespaceId().getId(),
+                          normName);
                   var result =
-                      runIdempotentCreate(
+                      MutationOps.createProtoRecoverable(
+                          accountId,
+                          "CreateView",
+                          idempotencyKey,
+                          () -> fingerprint,
                           () ->
-                              MutationOps.createProto(
-                                  accountId,
-                                  "CreateView",
-                                  idempotencyKey,
-                                  () -> fingerprint,
-                                  () -> {
-                                    try {
-                                      viewRepo.create(view);
-                                    } catch (BaseResourceRepository.NameConflictException nce) {
-                                      var existingOpt =
-                                          viewRepo.getByName(
-                                              accountId,
-                                              spec.getCatalogId().getId(),
-                                              spec.getNamespaceId().getId(),
-                                              normName);
-                                      if (existingOpt.isPresent()) {
-                                        var existingSpec = specFromView(existingOpt.get());
-                                        if (Arrays.equals(
-                                            fingerprint, canonicalFingerprint(existingSpec))) {
-                                          metadataGraph.invalidate(
-                                              existingOpt.get().getResourceId());
-                                          topology.evictRelationRefs(
-                                              existingOpt.get().getNamespaceId());
-                                          return new IdempotencyGuard.CreateResult<>(
-                                              existingOpt.get(), existingOpt.get().getResourceId());
-                                        }
-                                      }
-                                      // A same-kind view with a different fingerprint is a genuine
-                                      // VIEW_ALREADY_EXISTS; an absent view means the shared claim
-                                      // is
-                                      // held by another relation kind (see relationNameConflict).
-                                      throw relationNameConflict(corr, accountId, spec, normName);
-                                    }
-                                    metadataGraph.invalidate(viewResourceId);
-                                    topology.evictRelationRefs(view.getNamespaceId());
-                                    return new IdempotencyGuard.CreateResult<>(
-                                        view, viewResourceId);
-                                  },
-                                  v -> viewRepo.metaForSafe(v.getResourceId()),
-                                  idempotencyStore,
-                                  tsNow,
-                                  idempotencyTtlSeconds(),
-                                  this::correlationId,
-                                  View::parseFrom));
+                              existingForIdempotency
+                                  .filter(
+                                      existing ->
+                                          Arrays.equals(
+                                              fingerprint,
+                                              canonicalFingerprint(specFromView(existing))))
+                                  .map(View::getResourceId)
+                                  .orElseGet(
+                                      () -> randomResourceId(accountId, ResourceKind.RK_VIEW)),
+                          (reservedId, committer) -> {
+                            var existing =
+                                viewRepo.getByName(
+                                    accountId,
+                                    spec.getCatalogId().getId(),
+                                    spec.getNamespaceId().getId(),
+                                    normName);
+                            if (existing.isPresent()) {
+                              var stored = existing.get();
+                              if (!reservedId.equals(stored.getResourceId())
+                                  || !Arrays.equals(
+                                      fingerprint, canonicalFingerprint(specFromView(stored)))) {
+                                throw relationNameConflict(corr, accountId, spec, normName);
+                              }
+                              var meta = viewRepo.metaForSafe(stored.getResourceId());
+                              var committed =
+                                  new IdempotencyGuard.CommittedCreate<>(
+                                      stored, stored.getResourceId(), meta);
+                              viewRepo
+                                  .completeWithMetaIfUnchanged(
+                                      stored,
+                                      meta.getPointerVersion(),
+                                      ignored -> committer.prepareSuccessOps(committed))
+                                  .orElseThrow(
+                                      () ->
+                                          new BaseResourceRepository.AbortRetryableException(
+                                              "view changed before atomic completion"));
+                              return committed;
+                            }
+                            var reservedView = view.toBuilder().setResourceId(reservedId).build();
+                            GenericResourceRepository.ResourceWithMeta<View> committed;
+                            try {
+                              committed =
+                                  viewRepo.createWithCompletion(
+                                      reservedView,
+                                      resource -> {
+                                        var success =
+                                            new IdempotencyGuard.CommittedCreate<>(
+                                                resource.value(), reservedId, resource.meta());
+                                        return committer.prepareSuccessOps(success);
+                                      });
+                            } catch (BaseResourceRepository.NameConflictException nce) {
+                              throw relationNameConflict(corr, accountId, spec, normName);
+                            }
+                            return new IdempotencyGuard.CommittedCreate<>(
+                                committed.value(), reservedId, committed.meta());
+                          },
+                          idempotencyStore,
+                          tsNow,
+                          idempotencyTtlSeconds(),
+                          this::correlationId,
+                          View::parseFrom);
 
+                  metadataGraph.invalidate(result.body.getResourceId());
+                  topology.evictRelationRefs(result.body.getNamespaceId());
                   return CreateViewResponse.newBuilder()
                       .setView(result.body)
                       .setMeta(result.meta)

@@ -434,6 +434,10 @@ class ConstraintsIT {
 
     var first = constraintsService.putTableConstraints(request);
     var second = constraintsService.putTableConstraints(request);
+    assertTrue(first.getChanged());
+    assertEquals(first.getChanged(), second.getChanged());
+    assertEquals(first.getConstraints(), second.getConstraints());
+    assertEquals(first.getMeta(), second.getMeta());
     assertNotNull(first.getMeta().getPointerKey());
     assertNotNull(second.getMeta().getPointerKey());
 

@@ -30,6 +30,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 @ApplicationScoped
 public class ConnectorRepository {
@@ -50,6 +51,21 @@ public class ConnectorRepository {
 
   public void create(Connector connector) {
     repo.create(connector);
+  }
+
+  public GenericResourceRepository.ResourceWithMeta<Connector> createWithCompletion(
+      Connector connector,
+      Function<GenericResourceRepository.ResourceWithMeta<Connector>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.createWithMeta(connector, completionFactory);
+  }
+
+  public Optional<MutationMeta> completeWithMetaIfUnchanged(
+      Connector connector,
+      long expectedPointerVersion,
+      Function<GenericResourceRepository.ResourceWithMeta<Connector>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.completeWithMetaIfUnchanged(connector, expectedPointerVersion, completionFactory);
   }
 
   public boolean update(Connector connector, long expectedPointerVersion) {

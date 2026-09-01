@@ -29,6 +29,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository.CurrentSnapshotPointerUpdateResult;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -82,6 +83,17 @@ class CurrentSnapshotPointerServiceTest {
   }
 
   @Test
+  void pointerConflictUsesTheTypedRetryableException() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.CONFLICT);
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () -> service.maybeAdvance(tableId, candidate, "corr"));
+  }
+
+  @Test
   void advanceReconcilesRootCurrencyWhenThePointerMoves() {
     // The committed pointer moved onto `candidate`. If it is an already-finalized snapshot (an
     // in-place UpdateSnapshot that re-ordered currency), no later finalize runs, so root currency
@@ -122,6 +134,7 @@ class CurrentSnapshotPointerServiceTest {
             new TableRootCommitter(roots, new TableBlobReachabilityGuard()),
             tableRepo,
             service.snapshotRepo,
+            null,
             null,
             null);
     when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
@@ -193,6 +206,7 @@ class CurrentSnapshotPointerServiceTest {
             new TableRootCommitter(roots, new TableBlobReachabilityGuard()),
             tableRepo,
             service.snapshotRepo,
+            null,
             null,
             null);
     when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, first))

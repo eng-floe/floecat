@@ -234,6 +234,50 @@ public class StatsRepository implements StatsStore {
         canonicalRecord);
   }
 
+  public MutationMeta putTargetStatsWithCompletion(
+      TargetStatsRecord value,
+      Timestamp now,
+      java.util.function.Function<MutationMeta, List<PointerStore.CasOp>> completionFactory) {
+    TargetStatsRecord canonicalRecord = canonicalRecord(value);
+    ActiveSnapshotStats active =
+        ensureActiveGeneration(canonicalRecord.getTableId(), canonicalRecord.getSnapshotId());
+    String pointerKey = pointerKey(canonicalRecord, active.generationId());
+    String blobUri = blobUri(canonicalRecord, active.generationId());
+    targetStatsStorage.putBlob(blobUri, canonicalRecord);
+
+    Pointer current = pointerStore.get(pointerKey).orElse(null);
+    if (current != null && !blobUri.equals(current.getBlobUri())) {
+      throw new BaseResourceRepository.NameConflictException(
+          "target stats pointer bound to different blob: " + pointerKey);
+    }
+    long pointerVersion = current == null ? 1L : current.getVersion();
+    MutationMeta meta =
+        MutationMeta.newBuilder()
+            .setPointerKey(pointerKey)
+            .setBlobUri(blobUri)
+            .setPointerVersion(pointerVersion)
+            .setUpdatedAt(now)
+            .build();
+    List<PointerStore.CasOp> ops = new ArrayList<>();
+    if (current == null) {
+      ops.add(
+          new PointerStore.CasUpsert(
+              pointerKey,
+              0L,
+              PointerReferences.blobPointer(
+                  pointerKey, blobUri, 1L, canonicalRecord.getSerializedSize())));
+    } else {
+      ops.add(new PointerStore.CasCheck(pointerKey, current.getVersion()));
+    }
+    ops.addAll(completionFactory.apply(meta));
+    if (!AccountDeletionFence.compareAndSetBatch(
+        pointerStore, canonicalRecord.getTableId().getAccountId(), ops)) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "target stats changed while committing idempotency receipt");
+    }
+    return meta;
+  }
+
   @Override
   public void putTargetStatsBatch(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {

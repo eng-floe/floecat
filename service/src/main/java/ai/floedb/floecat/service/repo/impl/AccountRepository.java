@@ -30,6 +30,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
 
 @ApplicationScoped
 public class AccountRepository {
@@ -50,6 +51,21 @@ public class AccountRepository {
 
   public void create(Account account) {
     repo.create(account);
+  }
+
+  public GenericResourceRepository.ResourceWithMeta<Account> createWithCompletion(
+      Account account,
+      Function<GenericResourceRepository.ResourceWithMeta<Account>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.createWithMeta(account, completionFactory);
+  }
+
+  public Optional<MutationMeta> completeWithMetaIfUnchanged(
+      Account account,
+      long expectedPointerVersion,
+      Function<GenericResourceRepository.ResourceWithMeta<Account>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.completeWithMetaIfUnchanged(account, expectedPointerVersion, completionFactory);
   }
 
   public boolean update(Account account, long expectedPointerVersion) {

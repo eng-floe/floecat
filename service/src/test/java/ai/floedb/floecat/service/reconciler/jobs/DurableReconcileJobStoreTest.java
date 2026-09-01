@@ -230,6 +230,28 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void deploymentLaneConstrainsLeasesIndependentlyOfWorkerRequest() {
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+
+    System.setProperty("floecat.reconciler.execution-lane", "ci-run");
+    try {
+      store.init();
+      assertTrue(store.leaseNext(ReconcileJobStore.LeaseRequest.all()).isEmpty());
+    } finally {
+      System.clearProperty("floecat.reconciler.execution-lane");
+      store.init();
+    }
+
+    assertEquals(jobId, store.leaseNext(ReconcileJobStore.LeaseRequest.all()).orElseThrow().jobId);
+  }
+
+  @Test
   void enqueueDedupesWhileJobIsActive() {
     ReconcileScope scope = ReconcileScope.of(List.of(), "tbl");
 
@@ -3703,35 +3725,42 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void leaseNextRespectsPinnedExecutorAndExecutionClass() {
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty(),
-            ReconcileJobKind.PLAN_CONNECTOR,
-            ReconcileTableTask.empty(),
-            ReconcileViewTask.empty(),
-            ReconcileSnapshotTask.empty(),
-            ReconcileFileGroupTask.empty(),
-            ReconcileExecutionPolicy.of(
-                ReconcileExecutionClass.HEAVY, "remote", Map.of("worker", "remote")),
-            "",
-            "remote-executor");
+    System.setProperty("floecat.reconciler.execution-lane", "remote");
+    try {
+      store.init();
+      String jobId =
+          store.enqueue(
+              ACCOUNT_ID,
+              CONNECTOR_ID,
+              false,
+              CaptureMode.METADATA_AND_CAPTURE,
+              ReconcileScope.empty(),
+              ReconcileJobKind.PLAN_CONNECTOR,
+              ReconcileTableTask.empty(),
+              ReconcileViewTask.empty(),
+              ReconcileSnapshotTask.empty(),
+              ReconcileFileGroupTask.empty(),
+              ReconcileExecutionPolicy.of(
+                  ReconcileExecutionClass.HEAVY, "remote", Map.of("worker", "remote")),
+              "",
+              "remote-executor");
 
-    var lease =
-        store
-            .leaseNext(
-                ReconcileJobStore.LeaseRequest.of(
-                    java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
-                    Set.of("remote"),
-                    Set.of("remote-executor")))
-            .orElseThrow();
+      var lease =
+          store
+              .leaseNext(
+                  ReconcileJobStore.LeaseRequest.of(
+                      java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+                      Set.of("remote"),
+                      Set.of("remote-executor")))
+              .orElseThrow();
 
-    assertEquals(jobId, lease.jobId);
-    assertEquals("remote-executor", lease.pinnedExecutorId);
-    assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
+      assertEquals(jobId, lease.jobId);
+      assertEquals("remote-executor", lease.pinnedExecutorId);
+      assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
+    } finally {
+      System.clearProperty("floecat.reconciler.execution-lane");
+      store.init();
+    }
   }
 
   @Test
@@ -3769,47 +3798,54 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void leaseNextFilteredRequestsDoNotScanGlobalReadyRows() throws Exception {
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty(),
-            ReconcileJobKind.PLAN_CONNECTOR,
-            ReconcileTableTask.empty(),
-            ReconcileViewTask.empty(),
-            ReconcileSnapshotTask.empty(),
-            ReconcileFileGroupTask.empty(),
-            ReconcileExecutionPolicy.of(
-                ReconcileExecutionClass.HEAVY, "remote", Map.of("worker", "remote")),
-            "",
-            "");
+    System.setProperty("floecat.reconciler.execution-lane", "remote");
+    try {
+      store.init();
+      String jobId =
+          store.enqueue(
+              ACCOUNT_ID,
+              CONNECTOR_ID,
+              false,
+              CaptureMode.METADATA_AND_CAPTURE,
+              ReconcileScope.empty(),
+              ReconcileJobKind.PLAN_CONNECTOR,
+              ReconcileTableTask.empty(),
+              ReconcileViewTask.empty(),
+              ReconcileSnapshotTask.empty(),
+              ReconcileFileGroupTask.empty(),
+              ReconcileExecutionPolicy.of(
+                  ReconcileExecutionClass.HEAVY, "remote", Map.of("worker", "remote")),
+              "",
+              "");
 
-    StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
-    @SuppressWarnings("unchecked")
-    List<String> readyKeys =
-        (List<String>)
-            invokePrivateMethod(
-                store, "readyPointerKeys", new Class<?>[] {StoredReconcileJob.class}, queued);
-    for (String readyKey : readyKeys) {
-      if (readyKey.equals(queued.readyPointerKey)) {
-        continue;
+      StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+      @SuppressWarnings("unchecked")
+      List<String> readyKeys =
+          (List<String>)
+              invokePrivateMethod(
+                  store, "readyPointerKeys", new Class<?>[] {StoredReconcileJob.class}, queued);
+      for (String readyKey : readyKeys) {
+        if (readyKey.equals(queued.readyPointerKey)) {
+          continue;
+        }
+        assertTrue(findAndDeleteReadyEntry(queued, readyKey));
       }
-      assertTrue(findAndDeleteReadyEntry(queued, readyKey));
+
+      var filteredLease =
+          store.leaseNext(
+              ReconcileJobStore.LeaseRequest.of(
+                  java.util.EnumSet.of(ReconcileExecutionClass.HEAVY), Set.of("remote")));
+
+      assertTrue(filteredLease.isEmpty());
+
+      var lease = store.leaseNext(ReconcileJobStore.LeaseRequest.all()).orElseThrow();
+      assertEquals(jobId, lease.jobId);
+      assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
+      assertEquals("remote", lease.executionPolicy.lane());
+    } finally {
+      System.clearProperty("floecat.reconciler.execution-lane");
+      store.init();
     }
-
-    var filteredLease =
-        store.leaseNext(
-            ReconcileJobStore.LeaseRequest.of(
-                java.util.EnumSet.of(ReconcileExecutionClass.HEAVY), Set.of("remote")));
-
-    assertTrue(filteredLease.isEmpty());
-
-    var lease = store.leaseNext(ReconcileJobStore.LeaseRequest.all()).orElseThrow();
-    assertEquals(jobId, lease.jobId);
-    assertEquals(ReconcileExecutionClass.HEAVY, lease.executionPolicy.executionClass());
-    assertEquals("remote", lease.executionPolicy.lane());
   }
 
   @Test
@@ -3879,59 +3915,66 @@ class DurableReconcileJobStoreTest {
 
   @Test
   void pinnedJobsOnlyCreatePinnedReadyIndexRows() throws Exception {
-    String jobId =
-        store.enqueue(
-            ACCOUNT_ID,
-            CONNECTOR_ID,
-            false,
-            CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty(),
-            ReconcileJobKind.PLAN_CONNECTOR,
-            ReconcileTableTask.empty(),
-            ReconcileViewTask.empty(),
-            ReconcileSnapshotTask.empty(),
-            ReconcileFileGroupTask.empty(),
-            ReconcileExecutionPolicy.of(
-                ReconcileExecutionClass.HEAVY, "remote", Map.of("worker", "remote")),
-            "",
-            "remote-executor");
+    System.setProperty("floecat.reconciler.execution-lane", "remote");
+    try {
+      store.init();
+      String jobId =
+          store.enqueue(
+              ACCOUNT_ID,
+              CONNECTOR_ID,
+              false,
+              CaptureMode.METADATA_AND_CAPTURE,
+              ReconcileScope.empty(),
+              ReconcileJobKind.PLAN_CONNECTOR,
+              ReconcileTableTask.empty(),
+              ReconcileViewTask.empty(),
+              ReconcileSnapshotTask.empty(),
+              ReconcileFileGroupTask.empty(),
+              ReconcileExecutionPolicy.of(
+                  ReconcileExecutionClass.HEAVY, "remote", Map.of("worker", "remote")),
+              "",
+              "remote-executor");
 
-    StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
-    ReconcileWorkerAffinity workerAffinity =
-        ReconcileWorkerAffinity.fromPolicy(queued.executionPolicy());
-    @SuppressWarnings("unchecked")
-    List<String> readyKeys =
-        (List<String>)
-            invokePrivateMethod(
-                store, "readyPointerKeys", new Class<?>[] {StoredReconcileJob.class}, queued);
+      StoredReconcileJob queued = readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+      ReconcileWorkerAffinity workerAffinity =
+          ReconcileWorkerAffinity.fromPolicy(queued.executionPolicy());
+      @SuppressWarnings("unchecked")
+      List<String> readyKeys =
+          (List<String>)
+              invokePrivateMethod(
+                  store, "readyPointerKeys", new Class<?>[] {StoredReconcileJob.class}, queued);
 
-    assertEquals(1, readyKeys.size());
-    assertTrue(
-        readyKeys
-            .get(0)
-            .startsWith(
-                Keys.reconcileReadyByPinnedExecutorPointerPrefix(
-                    workerAffinity.indexFilterValue("remote-executor"))));
-    assertEquals("remote-executor", queued.pinnedExecutorId());
+      assertEquals(1, readyKeys.size());
+      assertTrue(
+          readyKeys
+              .get(0)
+              .startsWith(
+                  Keys.reconcileReadyByPinnedExecutorPointerPrefix(
+                      workerAffinity.indexFilterValue("remote-executor"))));
+      assertEquals("remote-executor", queued.pinnedExecutorId());
 
-    var otherExecutorLease =
-        store.leaseNext(
-            ReconcileJobStore.LeaseRequest.of(
-                java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
-                Set.of("remote"),
-                Set.of("other-executor")));
-    assertTrue(otherExecutorLease.isEmpty());
+      var otherExecutorLease =
+          store.leaseNext(
+              ReconcileJobStore.LeaseRequest.of(
+                  java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+                  Set.of("remote"),
+                  Set.of("other-executor")));
+      assertTrue(otherExecutorLease.isEmpty());
 
-    var lease =
-        store
-            .leaseNext(
-                ReconcileJobStore.LeaseRequest.of(
-                    java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
-                    Set.of("remote"),
-                    Set.of("remote-executor")))
-            .orElseThrow();
-    assertEquals(jobId, lease.jobId);
-    assertEquals("remote-executor", lease.pinnedExecutorId);
+      var lease =
+          store
+              .leaseNext(
+                  ReconcileJobStore.LeaseRequest.of(
+                      java.util.EnumSet.of(ReconcileExecutionClass.HEAVY),
+                      Set.of("remote"),
+                      Set.of("remote-executor")))
+              .orElseThrow();
+      assertEquals(jobId, lease.jobId);
+      assertEquals("remote-executor", lease.pinnedExecutorId);
+    } finally {
+      System.clearProperty("floecat.reconciler.execution-lane");
+      store.init();
+    }
   }
 
   @Test

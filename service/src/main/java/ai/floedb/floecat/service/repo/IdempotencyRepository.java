@@ -71,6 +71,11 @@ public interface IdempotencyRepository {
     throw new UnsupportedOperationException("atomic idempotency completion is not supported");
   }
 
+  /**
+   * Discards the immutable success blob created for an operation that definitively did not commit.
+   */
+  default void discardPreparedSuccess(PointerStore.CasOp prepared) {}
+
   boolean delete(String key);
 
   boolean deletePendingIfOwned(

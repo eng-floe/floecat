@@ -24,6 +24,7 @@ import ai.floedb.floecat.account.rpc.CreateAccountRequest;
 import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
 import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.common.rpc.ErrorCode;
+import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -422,6 +423,36 @@ class AccountServiceImplTest {
     assertEquals(ErrorCode.MC_PRECONDITION_FAILED, decoded.errorCode());
     assertEquals("account.deletion.in.progress", decoded.messageKey());
     assertEquals("acct", decoded.params().get("account_id"));
+  }
+
+  @Test
+  void idempotentCreateNameRaceUsesAccountAlreadyExistsContract() {
+    when(service.accountRepo.getByName("alpha")).thenReturn(Optional.empty());
+    when(service.idempotencyStore.get(any())).thenReturn(Optional.empty());
+    when(service.idempotencyStore.createPending(
+            any(), any(), any(), any(), any(ResourceId.class), any(), any()))
+        .thenReturn(true);
+    doThrow(new BaseResourceRepository.NameConflictException("concurrent account"))
+        .when(service.accountRepo)
+        .createWithCompletion(any(Account.class), any());
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createAccount(
+                        CreateAccountRequest.newBuilder()
+                            .setAccountId(accountId)
+                            .setSpec(AccountSpec.newBuilder().setDisplayName("alpha"))
+                            .setIdempotency(IdempotencyKey.newBuilder().setKey("idem"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    FloecatStatus decoded = FloecatStatus.fromThrowable(failure);
+    assertEquals(Status.Code.ALREADY_EXISTS, decoded.canonicalCode());
+    assertEquals("account.already.exists", decoded.messageKey());
   }
 
   @Test

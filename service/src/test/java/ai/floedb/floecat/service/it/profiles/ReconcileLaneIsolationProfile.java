@@ -13,15 +13,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+package ai.floedb.floecat.service.it.profiles;
 
-package ai.floedb.floecat.storage.errors;
+import java.util.HashMap;
+import java.util.Map;
 
-public class StorageAbortRetryableException extends StorageException {
-  public StorageAbortRetryableException(String message) {
-    super(message);
-  }
-
-  public StorageAbortRetryableException(String message, Throwable cause) {
-    super(message, cause);
+public class ReconcileLaneIsolationProfile extends ReconcileJobStoreControlPlaneProfile {
+  @Override
+  public Map<String, String> getConfigOverrides() {
+    Map<String, String> overrides = new HashMap<>(super.getConfigOverrides());
+    overrides.put("floecat.reconciler.execution-lane", "ci-run-a");
+    return Map.copyOf(overrides);
   }
 }

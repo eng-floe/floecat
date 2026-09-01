@@ -692,7 +692,7 @@ class StatsProviderFactoryTest {
       long snapshotId) {
     TableRootRepository roots = new TableRootRepository(pointers, blobs);
     TableRootCommitter committer = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
-    new TableRootWriter(roots, committer, tables, snapshots, null, null)
+    new TableRootWriter(roots, committer, tables, snapshots, null, null, null)
         .commitSnapshotEntry(tableId, snapshotId);
   }
 

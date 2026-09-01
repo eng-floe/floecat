@@ -36,6 +36,7 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.Hashing;
@@ -56,6 +57,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 @ApplicationScoped
 public class IndexArtifactRepository {
@@ -120,6 +123,102 @@ public class IndexArtifactRepository {
           putIndexArtifactGuarded(value);
           return null;
         });
+  }
+
+  public MutationMeta putIndexArtifactWithCompletion(
+      IndexArtifactRecord value,
+      Timestamp now,
+      Function<MutationMeta, List<PointerStore.CasOp>> completionFactory,
+      Consumer<List<PointerStore.CasOp>> completionDiscarder) {
+    requireValidRecord(value);
+    return reachabilityGuard.publishing(
+        value.getTableId(),
+        () ->
+            putIndexArtifactWithCompletionGuarded(
+                value, now, completionFactory, completionDiscarder));
+  }
+
+  private MutationMeta putIndexArtifactWithCompletionGuarded(
+      IndexArtifactRecord value,
+      Timestamp now,
+      Function<MutationMeta, List<PointerStore.CasOp>> completionFactory,
+      Consumer<List<PointerStore.CasOp>> completionDiscarder) {
+    ResourceId tableId = value.getTableId();
+    refreshSharedSidecars(tableId, List.of(value));
+    Optional<String> active = activeGeneration(tableId, value.getSnapshotId());
+    if (active.isPresent() && !DIRECT_GENERATION.equals(active.get())) {
+      throw new IllegalStateException(
+          "direct index artifact writes cannot mutate finalized generation " + active.get());
+    }
+    if (active.isEmpty() && !activateDirectGenerationIfAbsent(tableId, value.getSnapshotId())) {
+      active = activeGeneration(tableId, value.getSnapshotId());
+      if (active.filter(DIRECT_GENERATION::equals).isEmpty()) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "direct index artifact generation activation conflicted");
+      }
+    }
+    String activePointerKey =
+        Keys.snapshotIndexArtifactActiveGenerationPointer(
+            tableId.getAccountId(), tableId.getId(), value.getSnapshotId());
+    Pointer activePointer = pointerStore.get(activePointerKey).orElse(null);
+    if (activePointer == null || !DIRECT_GENERATION.equals(activePointer.getBlobUri())) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "direct index artifact generation changed before commit");
+    }
+
+    String targetStorageId = indexArtifactTargetStorageId(value.getTarget());
+    byte[] bytes = value.toByteArray();
+    String blobUri =
+        Keys.snapshotIndexArtifactGenerationBlobUri(
+            tableId.getAccountId(),
+            tableId.getId(),
+            value.getSnapshotId(),
+            DIRECT_GENERATION,
+            targetStorageId,
+            Hashing.sha256Hex(bytes));
+    boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
+    blobStore.put(blobUri, bytes, "application/x-protobuf");
+    String pointerKey =
+        generationPointer(tableId, value.getSnapshotId(), DIRECT_GENERATION, targetStorageId);
+    Pointer current = pointerStore.get(pointerKey).orElse(null);
+    long expectedVersion = current == null ? 0L : current.getVersion();
+    long pointerVersion = expectedVersion + 1L;
+    MutationMeta meta =
+        MutationMeta.newBuilder()
+            .setPointerKey(pointerKey)
+            .setBlobUri(blobUri)
+            .setPointerVersion(pointerVersion)
+            .setUpdatedAt(now)
+            .build();
+    List<PointerStore.CasOp> ops = new ArrayList<>();
+    ops.add(new PointerStore.CasCheck(activePointerKey, activePointer.getVersion()));
+    ops.add(
+        new PointerStore.CasUpsert(
+            pointerKey,
+            expectedVersion,
+            PointerReferences.blobPointer(pointerKey, blobUri, pointerVersion, bytes.length)));
+    List<PointerStore.CasOp> completionOps = completionFactory.apply(meta);
+    ops.addAll(completionOps);
+    final boolean committed;
+    try {
+      committed =
+          AccountDeletionFence.compareAndSetBatch(pointerStore, tableId.getAccountId(), ops);
+    } catch (StorageTransactionConflictException confirmedAbort) {
+      completionDiscarder.accept(completionOps);
+      if (!blobExistedBefore) {
+        deleteBlobQuietly(blobUri);
+      }
+      throw confirmedAbort;
+    }
+    if (!committed) {
+      completionDiscarder.accept(completionOps);
+      if (!blobExistedBefore) {
+        deleteBlobQuietly(blobUri);
+      }
+      throw new BaseResourceRepository.AbortRetryableException(
+          "index artifact changed while committing idempotency receipt");
+    }
+    return meta;
   }
 
   private void putIndexArtifactGuarded(IndexArtifactRecord value) {

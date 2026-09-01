@@ -16,6 +16,7 @@
 package ai.floedb.floecat.storage.kv.dynamodb;
 
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.kv.AttrValue;
 import ai.floedb.floecat.storage.kv.AttrWriteRules;
 import ai.floedb.floecat.storage.kv.KvAttributes;
@@ -35,12 +36,18 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import org.jboss.logging.Logger;
 import software.amazon.awssdk.core.SdkBytes;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
 public final class DynamoDbKvStore implements KvStore, KvAttributes {
+  private static final Logger LOG = Logger.getLogger(DynamoDbKvStore.class);
   static final int DELETE_BATCH_LIMIT = Integer.getInteger("floedb.floecat.delete.batch.size", 25);
+  static final int TRANSACTION_CONFLICT_MAX_RETRIES =
+      Math.max(0, Integer.getInteger("floedb.floecat.transaction-conflict.max-retries", 8));
+  private static final long TRANSACTION_CONFLICT_BASE_DELAY_MS = 10L;
+  private static final long TRANSACTION_CONFLICT_MAX_DELAY_MS = 250L;
   private final AsyncDynamoCaller ddb;
   private final BlockingDynamoCaller blockingDdb;
   private final String table;
@@ -682,32 +689,73 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
 
     var req = TransactWriteItemsRequest.builder().transactItems(tx).build();
 
+    return transactWriteWithConflictRetry(req, 0);
+  }
+
+  private Uni<Boolean> transactWriteWithConflictRetry(
+      TransactWriteItemsRequest req, int conflictAttempt) {
     return dynamo(client -> client.transactWriteItems(req))
         .replaceWith(true)
         .onFailure(TransactionCanceledException.class)
-        .recoverWithItem(
+        .recoverWithUni(
             t -> {
-              // Return false for retryable conflicts; throw on unexpected reasons.
               TransactionCanceledException ex = (TransactionCanceledException) t;
-              boolean sawRetryable = false;
+              boolean sawConditionalFailure = false;
+              boolean sawTransactionConflict = false;
               if (ex.cancellationReasons() != null) {
                 for (var r : ex.cancellationReasons()) {
                   if (r == null || "None".equals(r.code())) {
                     continue;
                   }
-                  if ("ConditionalCheckFailed".equals(r.code())
-                      || "TransactionConflict".equals(r.code())) {
-                    sawRetryable = true;
+                  if ("ConditionalCheckFailed".equals(r.code())) {
+                    sawConditionalFailure = true;
                     continue;
                   }
-                  // Non-retryable reason — abort immediately
-                  throw ex;
+                  if ("TransactionConflict".equals(r.code())) {
+                    sawTransactionConflict = true;
+                    continue;
+                  }
+                  return Uni.createFrom().failure(ex);
                 }
               }
-              if (sawRetryable) {
-                return false;
+              if (sawConditionalFailure) {
+                LOG.debugf(
+                    "DynamoDB transaction cancelled by conditional check table=%s outcome=stale_version",
+                    table);
+                return Uni.createFrom().item(false);
               }
-              throw ex;
+              if (!sawTransactionConflict) {
+                return Uni.createFrom().failure(ex);
+              }
+              if (conflictAttempt >= TRANSACTION_CONFLICT_MAX_RETRIES) {
+                LOG.warnf(
+                    "DynamoDB transaction cancelled by transaction conflict table=%s attempts=%d outcome=confirmed_abort",
+                    table, conflictAttempt + 1);
+                return Uni.createFrom()
+                    .failure(
+                        new StorageTransactionConflictException(
+                            "DynamoDB transaction conflict; transaction was cancelled and no mutation was applied",
+                            ex));
+              }
+
+              long exponentialDelayMs =
+                  Math.min(
+                      TRANSACTION_CONFLICT_MAX_DELAY_MS,
+                      TRANSACTION_CONFLICT_BASE_DELAY_MS * (1L << Math.min(conflictAttempt, 10)));
+              long delayMs =
+                  ThreadLocalRandom.current()
+                      .nextLong(TRANSACTION_CONFLICT_BASE_DELAY_MS, exponentialDelayMs + 1L);
+              LOG.debugf(
+                  "DynamoDB transaction conflict; retrying table=%s failed_attempt=%d max_attempts=%d backoff_ms=%d",
+                  table, conflictAttempt + 1, TRANSACTION_CONFLICT_MAX_RETRIES + 1, delayMs);
+              return Uni.createFrom()
+                  .voidItem()
+                  .onItem()
+                  .delayIt()
+                  .by(Duration.ofMillis(delayMs))
+                  .onItem()
+                  .transformToUni(
+                      ignored -> transactWriteWithConflictRetry(req, conflictAttempt + 1));
             });
   }
 

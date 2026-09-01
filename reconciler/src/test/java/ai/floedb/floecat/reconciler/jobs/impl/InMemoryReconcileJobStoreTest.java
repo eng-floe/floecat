@@ -36,6 +36,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileWorkerAffinity;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -266,6 +267,26 @@ class InMemoryReconcileJobStoreTest {
     assertFalse(
         request.withWorkerAffinity(ReconcileWorkerAffinity.of("ci-branch")).cohortMatches(legacy));
     assertTrue(request.cohortMatches(legacy));
+  }
+
+  @Test
+  void deploymentLaneIsAnIndependentServerOwnedLeaseConstraint() {
+    ReconcileJobStore.LeaseRequest request =
+        new ReconcileJobStore.LeaseRequest(
+            null,
+            Set.of(ReconcileJobStore.LeaseRequest.anyLaneToken()),
+            Set.of(),
+            EnumSet.of(ReconcileJobKind.EXEC_FILE_GROUP));
+    ReconcileExecutionPolicy configuredLane =
+        ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "ci-run", Map.of());
+    ReconcileExecutionPolicy foreignLane =
+        ReconcileExecutionPolicy.of(ReconcileExecutionClass.DEFAULT, "other-run", Map.of());
+
+    ReconcileJobStore.LeaseRequest constrained = request.withDeploymentLane("ci-run");
+
+    assertTrue(
+        constrained.matches(configuredLane, "", ReconcileJobKind.EXEC_FILE_GROUP, "group-1"));
+    assertFalse(constrained.matches(foreignLane, "", ReconcileJobKind.EXEC_FILE_GROUP, "group-1"));
   }
 
   @Test

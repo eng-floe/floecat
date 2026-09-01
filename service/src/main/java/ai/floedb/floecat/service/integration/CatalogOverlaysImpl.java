@@ -250,45 +250,40 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                         .build();
                   }
                   var result =
-                      runIdempotentCreate(
+                      MutationOps.createProtoRecoverable(
+                          pc.getAccountId(),
+                          "CreateCatalogOverlay",
+                          key,
+                          () -> fingerprint,
                           () ->
-                              MutationOps.createProtoRecoverable(
-                                  pc.getAccountId(),
-                                  "CreateCatalogOverlay",
-                                  key,
-                                  () -> fingerprint,
-                                  () ->
-                                      randomResourceId(
-                                          pc.getAccountId(), ResourceKind.RK_CATALOG_OVERLAY),
-                                  (reservedId, completion) -> {
-                                    var recovered = overlays.getByIdWithMeta(reservedId);
-                                    if (recovered.isPresent()) {
-                                      throw new BaseResourceRepository.AbortRetryableException(
-                                          "overlay exists before its idempotency receipt committed");
-                                    }
-                                    var created =
-                                        createOrReplace(
-                                            reservedId,
-                                            name,
-                                            integrationId,
-                                            catalogId,
-                                            includes,
-                                            excludes,
-                                            CreateMode.CM_ERROR_IF_EXISTS,
-                                            true,
-                                            completion,
-                                            now,
-                                            corr);
-                                    return new IdempotencyGuard.CommittedCreate<>(
-                                        created.value(),
-                                        created.value().getResourceId(),
-                                        created.meta());
-                                  },
-                                  idempotencyStore,
-                                  now,
-                                  idempotencyTtlSeconds(),
-                                  this::correlationId,
-                                  CatalogOverlay::parseFrom));
+                              randomResourceId(pc.getAccountId(), ResourceKind.RK_CATALOG_OVERLAY),
+                          (reservedId, completion) -> {
+                            var recovered = overlays.getByIdWithMeta(reservedId);
+                            if (recovered.isPresent()) {
+                              throw new BaseResourceRepository.AbortRetryableException(
+                                  "overlay exists before its idempotency receipt committed");
+                            }
+                            var created =
+                                createOrReplace(
+                                    reservedId,
+                                    name,
+                                    integrationId,
+                                    catalogId,
+                                    includes,
+                                    excludes,
+                                    CreateMode.CM_ERROR_IF_EXISTS,
+                                    true,
+                                    completion,
+                                    now,
+                                    corr);
+                            return new IdempotencyGuard.CommittedCreate<>(
+                                created.value(), created.value().getResourceId(), created.meta());
+                          },
+                          idempotencyStore,
+                          now,
+                          idempotencyTtlSeconds(),
+                          this::correlationId,
+                          CatalogOverlay::parseFrom);
                   return CreateCatalogOverlayResponse.newBuilder()
                       .setOverlay(result.body)
                       .setMeta(result.meta)
@@ -449,10 +444,9 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
               completion == null
                   ? null
                   : row ->
-                      List.of(
-                          completion.prepare(
-                              new IdempotencyGuard.CommittedCreate<>(
-                                  row.value(), row.value().getResourceId(), row.meta()))))
+                      completion.prepareSuccessOps(
+                          new IdempotencyGuard.CommittedCreate<>(
+                              row.value(), row.value().getResourceId(), row.meta())))
           .orElseThrow(
               () ->
                   new BaseResourceRepository.AbortRetryableException(

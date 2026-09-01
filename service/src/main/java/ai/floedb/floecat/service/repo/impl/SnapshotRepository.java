@@ -44,6 +44,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.Function;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -176,6 +177,21 @@ public class SnapshotRepository {
 
   public void create(Snapshot snapshot) {
     repo.create(snapshot);
+  }
+
+  public GenericResourceRepository.ResourceWithMeta<Snapshot> createWithCompletion(
+      Snapshot snapshot,
+      Function<GenericResourceRepository.ResourceWithMeta<Snapshot>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.createWithMeta(snapshot, completionFactory);
+  }
+
+  public Optional<MutationMeta> completeWithMetaIfUnchanged(
+      Snapshot snapshot,
+      long expectedPointerVersion,
+      Function<GenericResourceRepository.ResourceWithMeta<Snapshot>, List<PointerStore.CasOp>>
+          completionFactory) {
+    return repo.completeWithMetaIfUnchanged(snapshot, expectedPointerVersion, completionFactory);
   }
 
   public boolean update(Snapshot snapshot, long expectedPointerVersion) {

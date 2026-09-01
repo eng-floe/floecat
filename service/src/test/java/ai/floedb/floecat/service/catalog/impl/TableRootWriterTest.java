@@ -17,12 +17,15 @@ package ai.floedb.floecat.service.catalog.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
@@ -54,6 +57,7 @@ class TableRootWriterTest {
   private ConstraintRepository constraintRepo;
   private TableRepository tableRepo;
   private SnapshotRepository snapshotRepo;
+  private RootResyncQueue rootResyncQueue;
   private TableRootWriter writer;
   private ResourceId tableId;
 
@@ -71,8 +75,10 @@ class TableRootWriterTest {
     when(tableRepo.metaForSafe(any())).thenReturn(MutationMeta.getDefaultInstance());
     snapshotRepo = mock(SnapshotRepository.class);
     when(snapshotRepo.latestRegisteredSnapshotPointer(any())).thenReturn(Optional.empty());
+    rootResyncQueue = mock(RootResyncQueue.class);
     writer =
-        new TableRootWriter(roots, committer, tableRepo, snapshotRepo, constraintRepo, statsStore);
+        new TableRootWriter(
+            roots, committer, tableRepo, snapshotRepo, constraintRepo, statsStore, rootResyncQueue);
 
     tableId =
         ResourceId.newBuilder()
@@ -383,7 +389,13 @@ class TableRootWriterTest {
     var cCommitter = new TableRootCommitter(cRoots, new TableBlobReachabilityGuard());
     var cWriter =
         new TableRootWriter(
-            cRoots, cCommitter, tableRepo, snapshotRepo, constraintRepo, statsStore);
+            cRoots,
+            cCommitter,
+            tableRepo,
+            snapshotRepo,
+            constraintRepo,
+            statsStore,
+            rootResyncQueue);
     cCommitter.commit(
         tableId, TableRootMutations.upsertSnapshot(cRoots, tableId, finalizedEntry(7), null, true));
     updateFailures[0] = 1;
@@ -415,7 +427,13 @@ class TableRootWriterTest {
     var cCommitter = new TableRootCommitter(cRoots, new TableBlobReachabilityGuard());
     var cWriter =
         new TableRootWriter(
-            cRoots, cCommitter, tableRepo, snapshotRepo, constraintRepo, statsStore);
+            cRoots,
+            cCommitter,
+            tableRepo,
+            snapshotRepo,
+            constraintRepo,
+            statsStore,
+            rootResyncQueue);
     cCommitter.commit(
         tableId, TableRootMutations.upsertSnapshot(cRoots, tableId, finalizedEntry(7), null, true));
     updateFailures[0] = 1;
@@ -451,7 +469,13 @@ class TableRootWriterTest {
     var stubbornCommitter = new TableRootCommitter(stubbornRoots, new TableBlobReachabilityGuard());
     var stubbornWriter =
         new TableRootWriter(
-            stubbornRoots, stubbornCommitter, tableRepo, snapshotRepo, constraintRepo, statsStore);
+            stubbornRoots,
+            stubbornCommitter,
+            tableRepo,
+            snapshotRepo,
+            constraintRepo,
+            statsStore,
+            rootResyncQueue);
     stubbornCommitter.commit(
         tableId,
         TableRootMutations.upsertSnapshot(stubbornRoots, tableId, finalizedEntry(7), null, true));
@@ -477,12 +501,30 @@ class TableRootWriterTest {
   void commitFailuresPropagateAndFailTheCallingWrite() {
     // Reads resolve through the root, so the root commit IS the publication: a failure must fail
     // the write before it is acknowledged, never be silently absorbed.
-    when(statsStore.activeStatsGeneration(tableId, 7L))
-        .thenThrow(new IllegalStateException("store down"));
+    var publicationFailure = new IllegalStateException("store down");
+    when(statsStore.activeStatsGeneration(tableId, 7L)).thenThrow(publicationFailure);
 
-    org.junit.jupiter.api.Assertions.assertThrows(
-        IllegalStateException.class, () -> writer.commitStatsGeneration(tableId, 7L));
+    var thrown =
+        assertThrows(IllegalStateException.class, () -> writer.commitStatsGeneration(tableId, 7L));
+
+    assertSame(publicationFailure, thrown);
+    verify(rootResyncQueue).enqueue(tableId);
     assertFalse(entry(7).hasStatsGenerationRef());
+  }
+
+  @Test
+  void markerFailureIsSuppressedWithoutMaskingThePublicationFailure() {
+    var publicationFailure = new IllegalStateException("root publication failed");
+    var markerFailure = new IllegalStateException("marker write failed");
+    when(statsStore.activeStatsGeneration(tableId, 7L)).thenThrow(publicationFailure);
+    org.mockito.Mockito.doThrow(markerFailure).when(rootResyncQueue).enqueue(tableId);
+
+    var thrown =
+        assertThrows(IllegalStateException.class, () -> writer.commitStatsGeneration(tableId, 7L));
+
+    assertSame(publicationFailure, thrown);
+    assertEquals(1, thrown.getSuppressed().length);
+    assertSame(markerFailure, thrown.getSuppressed()[0]);
   }
 
   @Test

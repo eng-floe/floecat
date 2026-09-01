@@ -25,16 +25,21 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.CatalogSpec;
+import ai.floedb.floecat.catalog.rpc.CreateCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateCatalogRequest;
+import ai.floedb.floecat.common.rpc.IdempotencyKey;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.context.EngineContextProvider;
+import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
+import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
@@ -56,6 +61,7 @@ class CatalogServiceImplSystemCatalogTest {
   private EngineContextProvider engineContext;
   private MarkerStore markerStore;
   private UserGraph metadataGraph;
+  private IdempotencyRepository idempotencyStore;
 
   @BeforeEach
   void setup() {
@@ -68,6 +74,7 @@ class CatalogServiceImplSystemCatalogTest {
     graphView = mock(CatalogGraphView.class);
     markerStore = mock(MarkerStore.class);
     metadataGraph = mock(UserGraph.class);
+    idempotencyStore = mock(IdempotencyRepository.class);
 
     svc.catalogRepo = catalogRepo;
     svc.principal = principal;
@@ -76,6 +83,7 @@ class CatalogServiceImplSystemCatalogTest {
     svc.graphView = graphView;
     svc.markerStore = markerStore;
     svc.metadataGraph = metadataGraph;
+    svc.idempotencyStore = idempotencyStore;
 
     var pc = mock(PrincipalContext.class);
     when(principal.get()).thenReturn(pc);
@@ -142,6 +150,41 @@ class CatalogServiceImplSystemCatalogTest {
 
     assertEquals(0L, response.getMeta().getPointerVersion());
     verify(metadataGraph).invalidate(id);
+  }
+
+  @Test
+  void idempotentCreateNameRaceUsesCatalogAlreadyExistsContract() {
+    when(catalogRepo.getByName("acct", "alpha")).thenReturn(Optional.empty());
+    when(idempotencyStore.get(anyString())).thenReturn(Optional.empty());
+    when(idempotencyStore.createPending(
+            anyString(),
+            anyString(),
+            anyString(),
+            anyString(),
+            any(ResourceId.class),
+            any(),
+            any()))
+        .thenReturn(true);
+    org.mockito.Mockito.doThrow(
+            new BaseResourceRepository.NameConflictException("concurrent catalog"))
+        .when(catalogRepo)
+        .createWithCompletion(any(Catalog.class), any());
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                svc.createCatalog(
+                        CreateCatalogRequest.newBuilder()
+                            .setSpec(CatalogSpec.newBuilder().setDisplayName("alpha"))
+                            .setIdempotency(IdempotencyKey.newBuilder().setKey("idem"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    FloecatStatus decoded = FloecatStatus.fromThrowable(failure);
+    assertEquals(Status.Code.ALREADY_EXISTS, decoded.canonicalCode());
+    assertEquals("catalog.already.exists", decoded.messageKey());
   }
 
   private static ResourceId systemCatalogId() {

@@ -50,6 +50,7 @@ import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -176,43 +177,73 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                         .build();
                   }
 
+                  var existingForIdempotency = catalogRepo.getByName(accountId, normName);
                   var result =
-                      runIdempotentCreate(
+                      MutationOps.createProtoRecoverable(
+                          accountId,
+                          "CreateCatalog",
+                          idempotencyKey,
+                          () -> fingerprint,
                           () ->
-                              MutationOps.createProto(
-                                  accountId,
-                                  "CreateCatalog",
-                                  idempotencyKey,
-                                  () -> fingerprint,
-                                  () -> {
-                                    try {
-                                      catalogRepo.create(built);
-                                    } catch (BaseResourceRepository.NameConflictException nce) {
-                                      var existingOpt = catalogRepo.getByName(accountId, normName);
-                                      if (existingOpt.isPresent()) {
-                                        var existingSpec = specFromCatalog(existingOpt.get());
-                                        if (Arrays.equals(
-                                            fingerprint, canonicalFingerprint(existingSpec))) {
-                                          metadataGraph.invalidate(
-                                              existingOpt.get().getResourceId());
-                                          return new IdempotencyGuard.CreateResult<>(
-                                              existingOpt.get(), existingOpt.get().getResourceId());
-                                        }
-                                      }
-                                      throw GrpcErrors.alreadyExists(
-                                          corr,
-                                          CATALOG_ALREADY_EXISTS,
-                                          Map.of("display_name", normName));
-                                    }
-                                    metadataGraph.invalidate(catalogId);
-                                    return new IdempotencyGuard.CreateResult<>(built, catalogId);
-                                  },
-                                  c -> catalogRepo.metaForSafe(c.getResourceId()),
-                                  idempotencyStore,
-                                  tsNow,
-                                  idempotencyTtlSeconds(),
-                                  this::correlationId,
-                                  Catalog::parseFrom));
+                              existingForIdempotency
+                                  .filter(
+                                      existing ->
+                                          Arrays.equals(
+                                              fingerprint,
+                                              canonicalFingerprint(specFromCatalog(existing))))
+                                  .map(Catalog::getResourceId)
+                                  .orElse(catalogId),
+                          (reservedId, committer) -> {
+                            var existingOpt = catalogRepo.getByName(accountId, normName);
+                            if (existingOpt.isPresent()) {
+                              var existing = existingOpt.get();
+                              if (!existing.getResourceId().equals(reservedId)
+                                  || !Arrays.equals(
+                                      fingerprint,
+                                      canonicalFingerprint(specFromCatalog(existing)))) {
+                                throw GrpcErrors.alreadyExists(
+                                    corr, CATALOG_ALREADY_EXISTS, Map.of("display_name", normName));
+                              }
+                              var currentMeta = catalogRepo.metaForSafe(reservedId);
+                              var completed =
+                                  catalogRepo.completeWithMetaIfUnchanged(
+                                      existing,
+                                      currentMeta.getPointerVersion(),
+                                      resource ->
+                                          committer.prepareSuccessOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                              if (completed.isEmpty()) {
+                                throw new BaseResourceRepository.AbortRetryableException(
+                                    "catalog changed while committing idempotency receipt");
+                              }
+                              return new IdempotencyGuard.CommittedCreate<>(
+                                  existing, reservedId, completed.get());
+                            }
+                            var reserved = built.toBuilder().setResourceId(reservedId).build();
+                            final GenericResourceRepository.ResourceWithMeta<Catalog> committed;
+                            try {
+                              committed =
+                                  catalogRepo.createWithCompletion(
+                                      reserved,
+                                      resource ->
+                                          committer.prepareSuccessOps(
+                                              new IdempotencyGuard.CommittedCreate<>(
+                                                  resource.value(), reservedId, resource.meta())));
+                            } catch (BaseResourceRepository.NameConflictException conflict) {
+                              throw GrpcErrors.alreadyExists(
+                                  corr, CATALOG_ALREADY_EXISTS, Map.of("display_name", normName));
+                            }
+                            return new IdempotencyGuard.CommittedCreate<>(
+                                committed.value(), reservedId, committed.meta());
+                          },
+                          idempotencyStore,
+                          tsNow,
+                          idempotencyTtlSeconds(),
+                          this::correlationId,
+                          Catalog::parseFrom);
+
+                  metadataGraph.invalidate(result.body.getResourceId());
 
                   return CreateCatalogResponse.newBuilder()
                       .setCatalog(result.body)

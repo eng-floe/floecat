@@ -1601,7 +1601,9 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           "reconcile lease scan capacity exhausted cap=" + leaseMaxConcurrency);
     }
     LeaseRequest effective =
-        (request == null ? LeaseRequest.all() : request).withWorkerAffinity(workerAffinity);
+        (request == null ? LeaseRequest.all() : request)
+            .withWorkerAffinity(workerAffinity)
+            .withDeploymentLane(executionLane);
     LeaseScanStats scanStats = new LeaseScanStats();
     configureLeaseScanStats(scanStats, startedAtMs);
     try {

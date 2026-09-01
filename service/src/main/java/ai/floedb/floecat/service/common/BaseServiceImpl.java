@@ -40,7 +40,6 @@ import com.google.protobuf.Any;
 import com.google.protobuf.FieldMask;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
-import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
 import io.opentelemetry.context.Context;
@@ -67,7 +66,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
@@ -286,7 +284,8 @@ public abstract class BaseServiceImpl {
       return GrpcErrors.notFound(corrId, null, null, t);
     }
     if (t instanceof BaseResourceRepository.AbortRetryableException
-        || t instanceof StorageAbortRetryableException) {
+        || t instanceof StorageAbortRetryableException
+        || t instanceof IdempotencyInProgressException) {
       return GrpcErrors.aborted(corrId, null, t);
     }
     if (t instanceof BaseResourceRepository.CorruptionException
@@ -372,46 +371,6 @@ public abstract class BaseServiceImpl {
 
   protected String randomUuid() {
     return UUID.randomUUID().toString();
-  }
-
-  protected <T> MutationOps.OpResult<T> runIdempotentCreate(
-      Supplier<MutationOps.OpResult<T>> supplier) {
-    int attempts = 0;
-    while (true) {
-      try {
-        return supplier.get();
-      } catch (StatusRuntimeException sre) {
-        if (sre.getStatus().getCode() == Status.Code.ABORTED && attempts++ < RETRIES) {
-          sleepBackoff(attempts);
-          continue;
-        }
-        throw sre;
-      } catch (StorageAbortRetryableException sare) {
-        if (attempts++ < RETRIES) {
-          sleepBackoff(attempts);
-          continue;
-        }
-        throw sare;
-      }
-    }
-  }
-
-  private void sleepBackoff(int attempts) {
-    long baseMs = BACKOFF_MIN.toMillis();
-    long maxMs = BACKOFF_MAX.toMillis();
-    long delayMs = Math.max(1L, baseMs);
-    int steps = Math.min(attempts, 10);
-    for (int i = 0; i < steps && delayMs < maxMs; i++) {
-      delayMs = Math.min(maxMs, delayMs * 2L);
-    }
-    double jitter = 1.0 + ((ThreadLocalRandom.current().nextDouble() * 2.0 - 1.0) * JITTER);
-    long sleepMs = Math.max(1L, (long) (delayMs * jitter));
-    try {
-      Thread.sleep(sleepMs);
-    } catch (InterruptedException ie) {
-      Thread.currentThread().interrupt();
-      throw new RuntimeException("idempotent retry backoff interrupted", ie);
-    }
   }
 
   protected static String prettyNamespacePath(List<String> parents, String leaf) {
