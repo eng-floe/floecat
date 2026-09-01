@@ -1986,20 +1986,24 @@ Per-file S3 range readers are closed by their consumers.</p>
   Databricks path <code>/api/2.0/unity-catalog/temporary-table-credentials</code>. OSS Unity Catalog 0.6.0
   and later serve the otherwise-compatible operation under
   <code>/api/2.1/unity-catalog/temporary-table-credentials</code>, so point this at the 2.1 route for an OSS
-  endpoint -- otherwise vending returns <code>NOT_FOUND</code> against it. Every other Unity operation is 2.1
-  on both. Response-body suppression on that path follows whatever route is configured.</li>
+  endpoint -- otherwise vending fails against it: <code>INVALID_REQUEST</code> where the workspace names the
+  route in its error envelope, as Databricks does with <code>ENDPOINT_NOT_FOUND</code>, and <code>NOT_FOUND</code> where
+  it sends no envelope, as OSS Unity Catalog does. Every other Unity operation is 2.1 on both. Response-body suppression on that path follows whatever route is configured.</li>
 <li><code>floecat.unity.max-pages</code> (system property) – Maximum pages fetched by one Unity Catalog listing,
   default 10,000. Raise it for an unusually large catalog; exceeding it is reported as an
   <code>INVALID_RESPONSE</code> rather than allowing an unbounded listing.</li>
 <li><code>floecat.unity.max-response-bytes</code> (system property) – Cap on a single Unity Catalog response
-  body, default 32 MiB. A larger body is refused as <code>INVALID_RESPONSE</code> rather than buffered, since
-  a connector URI is tenant-supplied. Raise it for a catalog whose listing pages exceed the default.</li>
+  body, default 32 MiB. A larger body is refused rather than buffered, since a connector URI is
+  tenant-supplied: on a success the call fails as <code>INVALID_RESPONSE</code>; on an error response the body
+  is dropped for diagnostics while the HTTP status still decides the classification. Raise it for a
+  catalog whose listing pages exceed the default.</li>
 <li><code>databricks.access-delegation=vended-credentials</code> – Explicitly enables table-scoped temporary
   AWS credentials from Unity Catalog when no storage authority matches the table. The Databricks
   metastore must allow external access and the caller needs <code>EXTERNAL USE SCHEMA</code> on the parent
   schema. Azure, GCP, and R2 credential shapes are not yet consumed and fall back to a configured
   storage authority. Accepted values are <code>vended-credentials</code>, <code>true</code>, <code>1</code>, <code>yes</code> (enabled) and
-  <code>false</code>, <code>0</code>, <code>no</code>, <code>none</code> (disabled); anything else is rejected at create/update time rather
+  <code>false</code>, <code>0</code>, <code>no</code>, <code>none</code> (disabled), with underscores accepted in place of hyphens so the
+  spelling DuckDB sends works here too; anything else is rejected at create/update time rather
   than read as "disabled".</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
 <li><code>stats.ndv.*</code> – Sampling knobs identical to the Iceberg connector.</li>
