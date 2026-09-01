@@ -2321,7 +2321,7 @@ void the guard rather than weaken it:</p>
 </tr>
 <tr>
 <td><code>TableServiceImpl</code>, <code>ViewServiceImpl</code> create and update</td>
-<td>the relation marker, and both namespaces when an update moves a relation between them</td>
+<td>the destination relation marker and namespace row when a relation enters a container where it was not already counted; leaving the source needs no fence</td>
 </tr>
 <tr>
 <td><code>TableServiceImpl</code>, <code>ViewServiceImpl</code> delete</td>
