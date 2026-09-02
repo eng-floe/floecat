@@ -144,6 +144,29 @@ public class NodeLoader {
   }
 
   /**
+   * The same read, past the cache, for {@link #reload}'s verdict.
+   *
+   * <p>{@link #reload} decides whether a missing blob is a supersede race, a deletion, or
+   * corruption, and it decides by comparing against this. A cached pointer can name a blob that a
+   * commit on another replica superseded and CAS GC then swept, so asking the cache here would
+   * compare the stale value against itself, find them equal, and report a healthy table as a
+   * dangling pointer. This runs only after a blob read has already come back empty.
+   */
+  public Optional<MutationMeta> mutationMetaConsistent(ResourceId id) {
+    try {
+      return switch (id.getKind()) {
+        case RK_CATALOG -> Optional.of(catalogRepository.pointerMetaForSafeConsistent(id));
+        case RK_NAMESPACE -> Optional.of(namespaceRepository.pointerMetaForSafeConsistent(id));
+        case RK_TABLE -> Optional.of(tableRepository.pointerMetaForSafeConsistent(id));
+        case RK_VIEW -> Optional.of(viewRepository.pointerMetaForSafeConsistent(id));
+        default -> Optional.empty();
+      };
+    } catch (StorageNotFoundException snf) {
+      return Optional.empty();
+    }
+  }
+
+  /**
    * Rehydrates the relation node for the provided metadata snapshot. The metadata already names the
    * blob, so the blob is fetched directly — skipping the pointer re-read {@code getById} would do —
    * and the node content stays consistent with the metadata's pointer version. Falls back to a
@@ -151,7 +174,7 @@ public class NodeLoader {
    */
   public Optional<GraphNode> load(ResourceId id, MutationMeta meta) {
     return loadAt(id, meta, false)
-        .or(() -> mutationMeta(id).flatMap(live -> reload(id, meta, live)));
+        .or(() -> mutationMetaConsistent(id).flatMap(live -> reload(id, meta, live)));
   }
 
   /**

@@ -52,7 +52,6 @@ import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -167,7 +166,6 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject TransactionIntentApplierSupport intentApplierSupport;
-  @Inject UserGraph metadataGraph;
   @Inject TableRootWriter rootWriter;
   @Inject RootResyncQueue rootResyncQueue;
   @Inject CatalogGraphView graphView;
@@ -1455,7 +1453,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
           || intent.getBlobUri().isBlank()) {
         return false;
       }
-      var ptr = pointerStore.get(intent.getTargetPointerKey()).orElse(null);
+      var ptr = pointerStore.getConsistent(intent.getTargetPointerKey()).orElse(null);
       if (isDeleteSentinelBlobUri(
           intent.getAccountId(),
           intent.getTxId(),
@@ -1536,7 +1534,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     ResourceId tableId = target.tableId();
     String pointerKey = target.pointerKey();
 
-    long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
+    long currentVersion =
+        pointerStore.getConsistent(pointerKey).map(Pointer::getVersion).orElse(0L);
     requireWritableTransactionTarget(accountId, txId, target, change, currentVersion);
     Precondition pre = change.getPrecondition();
     long expectedVersion = currentVersion;
@@ -1640,7 +1639,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     ResolvedTxTarget target = resolveTarget(accountId, change);
     ResourceId tableId = target.tableId();
     String pointerKey = target.pointerKey();
-    long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
+    long currentVersion =
+        pointerStore.getConsistent(pointerKey).map(Pointer::getVersion).orElse(0L);
     requireWritableTransactionTarget(accountId, txId, target, change, currentVersion);
 
     String blobUri;
@@ -1877,7 +1877,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     if (intent == null || !isTableByIdPointer(intent.getTargetPointerKey())) {
       return false;
     }
-    if (pointerStore.get(intent.getTargetPointerKey()).isPresent()) {
+    if (pointerStore.getConsistent(intent.getTargetPointerKey()).isPresent()) {
       return false;
     }
     String tableId = tableIdFromByIdPointer(intent.getTargetPointerKey());
@@ -1892,7 +1892,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   }
 
   private boolean ownedNamePointerCleared(String pointerKey, String expectedTableId) {
-    var pointer = pointerStore.get(pointerKey).orElse(null);
+    var pointer = pointerStore.getConsistent(pointerKey).orElse(null);
     if (pointer == null || pointer.getBlobUri().isBlank()) {
       return true;
     }
@@ -1953,7 +1953,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
   private String expectedOwnedTableNamePointerKey(
       String tableByIdPointerKey, boolean requireReadable) {
-    var pointer = pointerStore.get(tableByIdPointerKey).orElse(null);
+    var pointer = pointerStore.getConsistent(tableByIdPointerKey).orElse(null);
     if (pointer == null || pointer.getBlobUri().isBlank()) {
       return null;
     }
@@ -2242,9 +2242,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     cleanupIntentsBestEffort(intents);
   }
 
-  /** Post-apply convergence: graph caches and table roots re-derive from committed pointers. */
+  /** Post-apply convergence: table roots re-derive from committed pointers. */
   private void convergeAfterApply(List<TransactionIntent> intents) {
-    invalidateTouchedGraphEntries(intents);
     resyncTouchedTableRoots(intents);
   }
 
@@ -2310,27 +2309,6 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
           "root resync for table %s failed AND its re-drive marker could not be recorded; the"
               + " root stays divergent until the table's next write",
           tableId.getId());
-    }
-  }
-
-  private void invalidateTouchedGraphEntries(List<TransactionIntent> intents) {
-    if (intents == null || intents.isEmpty() || metadataGraph == null) {
-      return;
-    }
-    for (var intent : intents) {
-      if (intent == null) {
-        continue;
-      }
-      String tableId = tableIdFromByIdPointer(intent.getTargetPointerKey());
-      if (tableId == null || tableId.isBlank()) {
-        continue;
-      }
-      metadataGraph.invalidate(
-          ResourceId.newBuilder()
-              .setAccountId(intent.getAccountId())
-              .setKind(ResourceKind.RK_TABLE)
-              .setId(tableId)
-              .build());
     }
   }
 

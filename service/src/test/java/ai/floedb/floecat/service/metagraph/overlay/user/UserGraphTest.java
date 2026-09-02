@@ -205,18 +205,19 @@ class UserGraphTest {
 
     assertThat(first).isPresent();
     assertThat(second).containsSame(first.get());
-    // Hot path: cached meta names the content key, so the second resolve does neither a pointer
-    // read nor a blob hydration.
-    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
-    assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(1);
-
-    graph.invalidate(tableId);
-    Optional<UserTableNode> third = graph.table(tableId);
-    assertThat(third).isPresent();
-    // Invalidate drops only the meta pointer: hydration re-reads the pointer once, but the node
-    // is content-keyed by blob URI, so the unchanged blob is not re-hydrated.
+    // The node is content-keyed by blob URI, so the second resolve does not re-hydrate. It does
+    // read the pointer again: this fixture has no pointer cache in front of it, where in the
+    // service that read is served from memory. One cache that cannot go stale replaced a second
+    // meta cache here whose only use was skipping this read, and which could never be trusted to
+    // hydrate from.
     assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
     assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(2);
+
+    Optional<UserTableNode> third = graph.table(tableId);
+    assertThat(third).isPresent();
+    // The node is content-keyed, so an unchanged blob is never re-hydrated.
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
+    assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(3);
   }
 
   @Test
@@ -240,7 +241,7 @@ class UserGraphTest {
   }
 
   @Test
-  void invalidateDropsMetaWhileNodesStayContentKeyed() {
+  void aMovedPointerIsCorruptionAndAReturnedOneRehydratesNothing() {
     var ids = seedTable("multi-version", "{}");
     ResourceId tableId = ids.tableId();
     String uriA = seedBlobUri("account", "multi-version");
@@ -254,7 +255,6 @@ class UserGraphTest {
     // poisoning the content-keyed cache. A live pointer naming a missing blob is a dangling
     // pointer: corruption, surfaced loud — never absence.
     tableRepository.putMeta(tableId, blobMeta(2L, uriA + ".moved"));
-    graph.invalidate(tableId);
     assertThatThrownBy(() -> graph.table(tableId))
         .isInstanceOf(BaseResourceRepository.CorruptionException.class);
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(0);
@@ -262,7 +262,6 @@ class UserGraphTest {
     // Pointer returns to the original blob: the content-keyed node entry is still valid, so no
     // rehydration happens — only the fresh pointer read.
     tableRepository.putMeta(tableId, blobMeta(3L, uriA));
-    graph.invalidate(tableId);
     graph.table(tableId);
     assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
     // Never a by-id read: the loader only ever builds from the blob a meta names. The counts are
@@ -317,7 +316,9 @@ class UserGraphTest {
 
     var ids = seedTable("disabled-cache", "{}");
     instrumentedGraph.table(ids.tableId());
-    assertThat(observability.timerValues(Telemetry.Metrics.CACHE_LATENCY)).isEmpty();
+    // How long a load takes is a property of the load, not of whether node caching is on -- and a
+    // cache turned off is exactly when someone is asking what the loads cost.
+    assertThat(observability.timerValues(Telemetry.Metrics.CACHE_LATENCY)).isNotEmpty();
   }
 
   @Test

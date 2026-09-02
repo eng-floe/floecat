@@ -25,7 +25,6 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.cache.GraphCacheManager;
 import ai.floedb.floecat.service.metagraph.hint.EngineHintManager;
 import ai.floedb.floecat.service.metagraph.loader.NodeLoader;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
@@ -41,6 +40,7 @@ import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.helpers.CacheMetrics;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -66,7 +66,7 @@ public final class UserGraph {
   // Dependencies (constructed once)
   // ----------------------------------------------------------------------
 
-  private final GraphCacheManager cache;
+  private final CacheMetrics loadMetrics;
   private final ImmutableBlobCache blobCache;
   private final NodeLoader nodes;
   private final NameResolver names;
@@ -90,8 +90,7 @@ public final class UserGraph {
    * @param observability telemetry facade; here it backs the graph cache's hit/miss and
    *     load-latency metrics
    * @param principal provider for current principal context
-   * @param cacheMaxSize maximum size of the graph cache (0 disables node caching)
-   * @param metaCacheTtlSeconds how long a cached definition pointer may be stale
+   * @param cacheMaxSize positive enables node caching; 0 turns it off
    * @param engineHints manager for engine-specific hints
    * @param blobCache process-wide decoded-blob cache holding derived nodes (null disables node
    *     caching; resolution then always loads)
@@ -109,17 +108,13 @@ public final class UserGraph {
       PrincipalProvider principal,
       @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
           long cacheMaxSize,
-      @ConfigProperty(name = "floecat.metadata.graph.meta-cache-ttl-seconds", defaultValue = "2")
-          long metaCacheTtlSeconds,
       EngineHintManager engineHints,
       ImmutableBlobCache blobCache,
       PinnedReadContract pinnedReads,
       SnapshotHelper snapshots) {
-    this.cache =
-        new GraphCacheManager(
-            cacheMaxSize > 0, cacheMaxSize, Math.max(0L, metaCacheTtlSeconds), observability);
-    // cache-max-size=0 keeps its historical meaning — node caching OFF — independent of the
-    // process-wide blob cache (whose kill switch would also drop blob decodes and indexes).
+    this.loadMetrics = new CacheMetrics(observability, "service", "graph-cache", "graph-cache");
+    // cache-max-size=0 turns node caching off, independently of the process-wide blob cache
+    // (whose own kill switch would also drop blob decodes and indexes).
     this.blobCache = cacheMaxSize > 0 ? blobCache : null;
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
@@ -159,7 +154,6 @@ public final class UserGraph {
         observability,
         principal,
         cacheMaxSize,
-        2L,
         engineHints,
         // Mirror the pre-fold node-cache knob: a positive max size enables node caching.
         cacheMaxSize > 0
@@ -167,19 +161,6 @@ public final class UserGraph {
             : null,
         pins,
         new SnapshotHelper(snapshotRepo, tableRootRepo, null, pins, repairs));
-  }
-
-  // No writer-refresh here, deliberately (unlike the root-pointer cache): resolve() always
-  // re-reads a LIVE pointer before hydrating, so a stale reinserted meta can only short-circuit
-  // to an already-cached node at that blob — the TTL-bounded staleness this class documents,
-  // never stale content served as current. The version-guarded putMeta removes the pathological
-  // arbitrarily-late overwrite; a refresh read per DDL would buy nothing on top.
-  //
-  // Only the meta pointer needs invalidation. Node entries are content-keyed by blob URI in the
-  // process-wide ImmutableBlobCache: a blob's derived node is right forever, so DDL simply makes
-  // the fresh pointer name a different blob (and thus a different node entry).
-  public void invalidate(ResourceId id) {
-    cache.invalidate(id);
   }
 
   /**
@@ -268,32 +249,25 @@ public final class UserGraph {
    */
   public Optional<GraphNode> resolve(ResourceId id) {
 
-    // ----- Hot path: cached meta names the content key for an already-derived node --------------
-    MutationMeta cachedMeta = cache.getMeta(id);
-    if (cachedMeta != null) {
-      GraphNode hit = cachedNode(cachedMeta.getBlobUri());
-      if (hit != null) {
-        return Optional.of(hit);
-      }
-    }
-
-    // ----- Hydration path: re-read a fresh pointer before loading -------------------------------
-    // The meta cache is a per-process Caffeine cache with no cross-instance invalidation, so a
-    // cached meta can name a superseded blob that is still readable (CAS blobs outlive the meta
-    // TTL). Hydrating from that stale blobUri would serve stale content as current. Only a freshly
-    // read pointer is safe to hand to load(); the meta cache is trusted solely to short-circuit to
-    // an already-cached node above.
+    // Served by the pointer cache, so on a warm path this is a memory read rather than a store
+    // round-trip. It CAN name a blob a commit on another replica superseded -- nothing expires and
+    // only a local write publishes -- which is why the loader re-reads consistently before calling
+    // a missing blob corruption (NodeLoader.reload). Hydrating from it is safe because the node it
+    // builds is keyed by the identity the node carries, not by this meta.
     Optional<MutationMeta> freshOpt = nodes.mutationMeta(id);
     if (freshOpt.isEmpty()) {
       return Optional.empty();
     }
     MutationMeta fresh = freshOpt.get();
-    cache.putMeta(id, fresh);
-
-    GraphNode cached = cachedNode(fresh.getBlobUri());
-    if (cached != null) return Optional.of(cached);
 
     long loadStart = System.nanoTime();
+    GraphNode cached = cachedNode(fresh.getBlobUri());
+    if (cached != null) {
+      // Recorded on both arms, or the hit rate is whichever constant the one arm carries.
+      loadMetrics.recordLoad(Duration.ofNanos(System.nanoTime() - loadStart), true);
+      return Optional.of(cached);
+    }
+
     try {
       Optional<GraphNode> loaded = nodes.load(id, fresh);
       // Key by the identity the node ACTUALLY carries, not the meta we passed in: load()'s
@@ -301,11 +275,12 @@ public final class UserGraph {
       // under the stale URI would poison the never-invalidated content-keyed cache — the same
       // mismatch the loader itself was fixed for, one seam up.
       loaded.ifPresent(node -> putNode(node.cacheIdentity(), node));
-      cache.recordLoad(Duration.ofNanos(System.nanoTime() - loadStart));
+      // A load only runs when the content-keyed lookup above missed, so this is a miss every time.
+      loadMetrics.recordLoad(Duration.ofNanos(System.nanoTime() - loadStart), false);
       return loaded;
     } catch (Throwable t) {
       Duration duration = Duration.ofNanos(System.nanoTime() - loadStart);
-      cache.recordLoadFailure(duration, t);
+      loadMetrics.recordLoadFailure(duration, t);
       throw t;
     }
   }
