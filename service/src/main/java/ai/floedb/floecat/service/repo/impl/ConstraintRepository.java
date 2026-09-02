@@ -27,6 +27,7 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -48,7 +49,9 @@ public class ConstraintRepository {
 
   @Inject
   public ConstraintRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      @CachedPointerStore PointerStore pointerStore,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,

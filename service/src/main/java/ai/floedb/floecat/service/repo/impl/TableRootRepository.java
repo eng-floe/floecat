@@ -20,7 +20,6 @@ import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestPage;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
-import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -29,6 +28,7 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -60,14 +60,23 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
   private final ImmutableBlobCache blobCache;
 
   public TableRootRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null);
+    this(pointerStore, pointerStore, blobStore, null);
+  }
+
+  public TableRootRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+    this(pointerStore, pointerStore, blobStore, blobCache);
   }
 
   @Inject
   public TableRootRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      PointerStore pointerStore,
+      @CachedPointerStore PointerStore pointerReads,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache) {
     super(
         pointerStore,
+        pointerReads,
         blobStore,
         Schemas.TABLE_ROOT,
         TableRoot::parseFrom,
@@ -76,16 +85,6 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
     this.pointerStore = pointerStore;
     this.blobStore = blobStore;
     this.blobCache = blobCache;
-  }
-
-  /**
-   * Pointer meta read past the cache, for the COMMIT funnel and for liveness checks.
-   *
-   * <p>A CAS expected-version, and a probe whose emptiness is the answer, are both questions about
-   * what a cache in front of the store may be behind on.
-   */
-  public MutationMeta metaForSafeLive(ResourceId tableId) {
-    return super.metaForSafeConsistent(tableId);
   }
 
   /**

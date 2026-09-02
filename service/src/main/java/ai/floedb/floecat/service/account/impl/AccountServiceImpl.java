@@ -44,12 +44,10 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -78,11 +76,9 @@ import org.jboss.logging.Logger;
 public class AccountServiceImpl extends BaseServiceImpl implements AccountService {
   @Inject AccountRepository accountRepo;
   @Inject CatalogIntegrationRepository catalogIntegrationRepo;
-  @Inject TableRootRepository tableRootRepo;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject UserGraph metadataGraph;
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject DefaultCredentialResolver credentialResolver;
@@ -697,18 +693,6 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       assertAccountPointerSweepComplete(accountPrefix, deletionFence);
       integrationsWithScheduledCredentialCleanup.forEach(
           catalogIntegrationCredentialCleanup::cleanIfSuperseded);
-      // The durable root pointers are gone; purge their read-your-writes cache entries as well.
-      for (ResourceId tableId : tables) {
-        tableRootRepo.purgeRoot(tableId);
-      }
-      invalidateAll(storageAuthorities);
-      invalidateAll(connectors);
-      invalidateAll(catalogIntegrations);
-      invalidateAll(catalogOverlays);
-      invalidateAll(catalogs);
-      invalidateAll(namespaces);
-      invalidateAll(tables);
-      invalidateAll(views);
       summary.residualAccountBlobsDeleted += blobStore.deletePrefix(accountPrefix);
       CLEANUP_LOG.infof(
           "account_delete_cleanup_complete account_id=%s account_pointer_deletes=%d catalog_overlays=%d catalog_integrations=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d reconcile_jobs=%d residual_account_blob_deletes=%d",
@@ -788,8 +772,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     String token = "";
     while (true) {
       var next = new StringBuilder();
-      for (Pointer pointer :
-          pointerStore.listPointersByPrefixConsistent(prefix, 200, token, next)) {
+      for (Pointer pointer : pointerStore.listPointersByPrefix(prefix, 200, token, next)) {
         String id;
         try {
           id = Keys.extractLastSegment(pointer.getKey());
@@ -819,20 +802,15 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     }
   }
 
-  private void invalidateAll(List<ResourceId> resourceIds) {
-    resourceIds.forEach(metadataGraph::invalidate);
-  }
-
   void assertAccountPointerSweepComplete(String accountPrefix, String deletionFence) {
     Pointer remainingFence = pointerStore.get(deletionFence).orElse(null);
-    int remaining = pointerStore.countByPrefixConsistent(accountPrefix);
+    int remaining = pointerStore.countByPrefix(accountPrefix);
     if (remainingFence == null || remaining != 1) {
       int unexpectedCount = remaining - (remainingFence == null ? 0 : 1);
       var next = new StringBuilder();
       List<String> unexpectedKeys =
           pointerStore
-              .listPointersByPrefixConsistent(
-                  accountPrefix, POINTER_SWEEP_DIAGNOSTIC_KEY_LIMIT + 1, "", next)
+              .listPointersByPrefix(accountPrefix, POINTER_SWEEP_DIAGNOSTIC_KEY_LIMIT + 1, "", next)
               .stream()
               .map(Pointer::getKey)
               .filter(key -> !key.equals(deletionFence))

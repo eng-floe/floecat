@@ -124,7 +124,7 @@ public class CatalogRepository {
 
   public List<Catalog> listConsistent(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefixConsistent(
+    return repo.listByPrefixForMutation(
         Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 

@@ -101,7 +101,7 @@ public class TableRootCommitter {
         // the dangling-pointer corruption detector below, which must fire deterministically — a
         // warm decoded root would mask a swept blob, and a CAS retry could flip behavior as the
         // entry evicts. Once per commit, the extra GET is noise on a write path.
-        var liveMeta = roots.metaForSafeLive(tableId);
+        var liveMeta = roots.metaForSafeConsistent(tableId);
         long expectedVersion = liveMeta.getPointerVersion();
         Optional<TableRoot> stored =
             liveMeta.getBlobUri().isBlank()
@@ -113,7 +113,17 @@ public class TableRootCommitter {
           // unchanged — fail CLOSED). Falling through to synthesis here would fabricate a fresh
           // base over whatever the pointer referenced and mask the data loss behind a misleading
           // CAS-contention exhaustion.
-          if (roots.metaForSafeLive(tableId).getPointerVersion() == expectedVersion) {
+          // Compared on the blob uri, not the pointer version: a re-commit of byte-identical
+          // content lands on the same content-addressed uri at a NEW version, so a version
+          // comparison calls a genuinely dangling pointer "moved" and retries until it exhausts.
+          if (liveMeta.getBlobUri().equals(roots.metaForSafeConsistent(tableId).getBlobUri())) {
+            // One re-probe first, the rule the other dangling verdicts follow: content is
+            // addressed by its bytes, so a revert re-PUTs the very uri that was swept, and a
+            // reader landing between the two live reads would otherwise call it corruption.
+            if (roots.getByBlobUriLive(liveMeta.getBlobUri()).isPresent()) {
+              throw new BaseResourceRepository.AbortRetryableException(
+                  "root blob reappeared mid-read for table " + tableId.getId());
+            }
             throw new BaseResourceRepository.CorruptionException(
                 "dangling root pointer, missing blob: " + liveMeta.getBlobUri());
           }

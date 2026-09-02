@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -29,6 +30,20 @@ public class CurrentSnapshotPointerRepository
     extends TableScopedPointerRepository<CurrentSnapshotPointer> {
 
   @Inject
+  public CurrentSnapshotPointerRepository(
+      PointerStore pointerStore,
+      @CachedPointerStore PointerStore pointerReads,
+      BlobStore blobStore) {
+    super(
+        pointerStore,
+        pointerReads,
+        blobStore,
+        Schemas.CURRENT_SNAPSHOT_POINTER,
+        CurrentSnapshotPointer::parseFrom,
+        CurrentSnapshotPointer::toByteArray,
+        null);
+  }
+
   public CurrentSnapshotPointerRepository(PointerStore pointerStore, BlobStore blobStore) {
     super(
         pointerStore,

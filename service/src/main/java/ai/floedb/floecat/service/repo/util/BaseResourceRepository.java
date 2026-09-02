@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.service.repo.ResourceRepository;
+import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
@@ -215,9 +216,10 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       ImmutableBlobCache blobCache,
       RepositoryReads reads) {
     this.mutationPointerStore =
-        Objects.requireNonNull(mutationPointerStore, "mutationPointerStore");
+        AuthoritativePointerStore.of(
+            Objects.requireNonNull(mutationPointerStore, "mutationPointerStore"));
     this.mutationBlobStore = Objects.requireNonNull(mutationBlobStore, "blobs");
-    this.mutationReads = RepositoryReads.direct(mutationPointerStore, mutationBlobStore);
+    this.mutationReads = RepositoryReads.direct(this.mutationPointerStore, mutationBlobStore);
     this.reads = Objects.requireNonNull(reads, "reads");
     this.pointerReads = this.reads.pointers();
     this.blobReads = this.reads.blobs();
@@ -246,7 +248,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   protected Optional<T> read(String key) {
-    return read(key, reads, false);
+    return read(key, reads);
   }
 
   /**
@@ -260,7 +262,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    * current one.
    */
   protected final Optional<T> readForMutation(String key) {
-    return read(key, mutationReads, true);
+    return read(key, mutationReads);
   }
 
   /**
@@ -270,14 +272,14 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    * which is sound only because a cached uri is content-addressed. A blob the pointer no longer
    * names is re-resolved at the live pointer; one that still names a missing blob is corruption.
    */
-  private Optional<T> read(String key, RepositoryReads reads, boolean consistent) {
+  private Optional<T> read(String key, RepositoryReads reads) {
     // One capability object, so the pointer seam and the blob seam are the same seam by
     // construction. Passing them separately would let a caller pair a cached pointer read with the
     // mutation blob store.
     RepositoryReads.Pointers pointers = reads.pointers();
     BiFunction<String, String, Optional<T>> blobLoader =
         (pointerKey, blobUri) -> loadAndParseReferencedBlob(pointerKey, blobUri, reads.blobs());
-    var pointerStoreOpt = consistent ? pointers.getConsistent(key) : pointers.get(key);
+    var pointerStoreOpt = pointers.get(key);
     if (pointerStoreOpt.isEmpty()) {
       return Optional.empty();
     }
@@ -295,8 +297,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
     // The pointed-at blob is absent: the pointer moved under us, or it genuinely dangles. One
     // place decides, past the cache, and resolves the moved case rather than reporting absence.
-    return reloadAfterVanishedBlob(
-            pointers, key, fresh -> blobLoader.apply(key, fresh.getBlobUri()))
+    return reloadAfterVanishedBlob(key, fresh -> blobLoader.apply(key, fresh.getBlobUri()))
         .map(Reloaded::value);
   }
 
@@ -399,8 +400,8 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    *     -- a dangling pointer is corruption at whatever version it dangles.
    */
   protected final <R> Optional<Reloaded<R>> reloadAfterVanishedBlob(
-      RepositoryReads.Pointers pointers, String key, Function<Pointer, Optional<R>> reload) {
-    var after = pointers.getConsistent(key).orElse(null);
+      String key, Function<Pointer, Optional<R>> reload) {
+    var after = mutationReads.pointers().get(key).orElse(null);
     if (after == null) {
       return Optional.empty();
     }
@@ -454,7 +455,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       return true;
     }
 
-    var pointer = mutationPointerStore.getConsistent(key).orElse(null);
+    var pointer = mutationPointerStore.get(key).orElse(null);
 
     if (pointer == null) {
       throw new AbortRetryableException("pointer suddenly vanished: " + key);
@@ -541,7 +542,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     observeRepository(
         "advance_pointer",
         () -> {
-          var pointer = mutationPointerStore.getConsistent(key).orElse(null);
+          var pointer = mutationPointerStore.get(key).orElse(null);
 
           if (pointer == null) {
             if (expectedVersion != 0L) {
@@ -553,7 +554,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
               return;
             }
 
-            var after = mutationPointerStore.getConsistent(key).orElse(null);
+            var after = mutationPointerStore.get(key).orElse(null);
             if (after == null) {
               throw new AbortRetryableException("pointer vanished during create: " + key);
             }
@@ -582,7 +583,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             return;
           }
 
-          var after = mutationPointerStore.getConsistent(key).orElse(null);
+          var after = mutationPointerStore.get(key).orElse(null);
           if (after == null) {
             throw new AbortRetryableException("pointer vanished during advance: " + key);
           }
@@ -633,7 +634,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         .toList();
   }
 
-  public List<T> listByPrefixConsistent(
+  public List<T> listByPrefixForMutation(
       String prefix, int limit, String token, StringBuilder nextOut) {
     return listByPrefixWithKeys(prefix, limit, token, nextOut, true).stream()
         .map(KeyedValue::value)
@@ -652,7 +653,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         () -> {
           var rows =
               consistentRead
-                  ? pointerReads.listConsistent(prefix, Math.max(1, limit), token, nextOut)
+                  ? mutationReads.pointers().list(prefix, Math.max(1, limit), token, nextOut)
                   : pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
           var ordinaryUris = new ArrayList<String>(rows.size());
           var projectionKeys = new ArrayList<ImmutableBlobCache.ProjectionKey>(rows.size());
@@ -705,7 +706,6 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
             byte[] bytes = blobsMap.get(blobUri);
             if (bytes == null) {
               reloadAfterVanishedBlob(
-                      pointerReads,
                       row.getKey(),
                       fresh ->
                           loadAndParseReferencedBlob(row.getKey(), fresh.getBlobUri(), blobReads))
@@ -736,9 +736,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return observeRepository("count_by_prefix", () -> pointerReads.count(prefix));
   }
 
-  public int countByPrefixConsistent(String prefix) {
+  public int countByPrefixForMutation(String prefix) {
     return observeRepository(
-        "count_by_prefix_consistent", () -> pointerReads.countConsistent(prefix));
+        "count_by_prefix_consistent", () -> mutationReads.pointers().count(prefix));
   }
 
   protected static String sha256B64(byte[] data) {
@@ -812,7 +812,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected void deletePointerOrThrow(String key, long expectedVersion) {
     boolean ok = mutationPointerStore.compareAndDelete(key, expectedVersion);
     if (!ok) {
-      var cur = mutationPointerStore.getConsistent(key).orElse(null);
+      var cur = mutationPointerStore.get(key).orElse(null);
 
       if (cur == null) {
         throw new NotFoundException("pointer already deleted: " + key);

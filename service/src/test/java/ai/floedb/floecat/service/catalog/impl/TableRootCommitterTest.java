@@ -220,7 +220,7 @@ class TableRootCommitterTest {
   @Test
   void terminalRepositoryErrorFailsTheCommit() {
     var failing = mock(TableRootRepository.class);
-    when(failing.metaForSafeLive(TABLE))
+    when(failing.metaForSafeConsistent(TABLE))
         .thenReturn(
             MutationMeta.newBuilder().setPointerVersion(3L).setBlobUri("s3://t/root.pb").build());
     when(failing.getByBlobUriLive("s3://t/root.pb"))
@@ -240,7 +240,7 @@ class TableRootCommitterTest {
   @Test
   void exhaustedCasAttemptsFailTheCommit() {
     var contended = mock(TableRootRepository.class);
-    when(contended.metaForSafeLive(TABLE))
+    when(contended.metaForSafeConsistent(TABLE))
         .thenReturn(
             MutationMeta.newBuilder().setPointerVersion(3L).setBlobUri("s3://t/root.pb").build());
     when(contended.getByBlobUriLive("s3://t/root.pb"))

@@ -65,11 +65,6 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
           }
 
           @Override
-          public Optional<Pointer> getConsistent(String key) {
-            return policy.read(() -> pointers.getConsistent(key));
-          }
-
-          @Override
           public List<Pointer> list(
               String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
             return policy.read(
@@ -77,22 +72,8 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
           }
 
           @Override
-          public List<Pointer> listConsistent(
-              String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-            return policy.read(
-                () ->
-                    pointers.listPointersByPrefixConsistent(
-                        prefix, limit, pageToken, nextTokenOut));
-          }
-
-          @Override
           public int count(String prefix) {
             return policy.read(() -> pointers.countByPrefix(prefix));
-          }
-
-          @Override
-          public int countConsistent(String prefix) {
-            return policy.read(() -> pointers.countByPrefixConsistent(prefix));
           }
         },
         new Blobs() {
@@ -124,21 +105,11 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
     /** Read one pointer by its canonical storage key. */
     Optional<Pointer> get(String key);
 
-    /** As {@link #get}, but never from a cache -- for CAS versions, liveness and GC verdicts. */
-    Optional<Pointer> getConsistent(String key);
-
     /** Read one ordered page and append the continuation token to {@code nextTokenOut}. */
     List<Pointer> list(String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
 
-    /** Read one strongly consistent ordered page and append its continuation token. */
-    List<Pointer> listConsistent(
-        String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
-
     /** Count pointers below one storage prefix. */
     int count(String prefix);
-
-    /** Count pointers below one storage prefix using strongly consistent reads. */
-    int countConsistent(String prefix);
   }
 
   /** Blob-store read operations exposed to resource repositories. */

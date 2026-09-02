@@ -44,7 +44,6 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -73,7 +72,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject UserGraph metadataGraph;
   @Inject MarkerStore markerStore;
   @Inject EngineContextProvider engineContext;
   @Inject CatalogGraphView graphView;
@@ -169,7 +167,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                     }
 
                     catalogRepo.create(built);
-                    metadataGraph.invalidate(catalogId);
                     var meta = catalogRepo.metaForSafe(catalogId);
                     return CreateCatalogResponse.newBuilder()
                         .setCatalog(built)
@@ -242,8 +239,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                           idempotencyTtlSeconds(),
                           this::correlationId,
                           Catalog::parseFrom);
-
-                  metadataGraph.invalidate(result.body.getResourceId());
 
                   return CreateCatalogResponse.newBuilder()
                       .setCatalog(result.body)
@@ -340,8 +335,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
                   }
-                  metadataGraph.invalidate(catalogId);
-
                   var outMeta = catalogRepo.metaForSafe(catalogId);
                   var latest = catalogRepo.getById(catalogId).orElse(desired);
 
@@ -384,7 +377,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    metadataGraph.invalidate(id);
                     return DeleteCatalogResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -429,7 +421,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                           "catalog",
                           Map.of("id", id.getId()));
 
-                  metadataGraph.invalidate(id);
                   return DeleteCatalogResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())

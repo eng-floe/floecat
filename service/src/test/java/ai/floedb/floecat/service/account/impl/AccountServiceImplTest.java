@@ -34,11 +34,9 @@ import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -69,11 +67,9 @@ class AccountServiceImplTest {
     service = new AccountServiceImpl();
     service.accountRepo = mock(AccountRepository.class);
     service.catalogIntegrationRepo = mock(CatalogIntegrationRepository.class);
-    service.tableRootRepo = mock(TableRootRepository.class);
     service.principal = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
     service.idempotencyStore = mock(IdempotencyRepository.class);
-    service.metadataGraph = mock(UserGraph.class);
     pointers = new TrackingPointerStore();
     service.pointerStore = pointers;
     blobs = new InMemoryBlobStore();
@@ -168,14 +164,6 @@ class AccountServiceImplTest {
     blobs.put(otherAccountBlob, new byte[] {4}, "application/x-protobuf");
     when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
     when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
-    doAnswer(
-            ignored -> {
-              assertEquals(1, pointers.countByPrefixConsistent(Keys.accountRootPrefix("acct")));
-              return null;
-            })
-        .when(service.metadataGraph)
-        .invalidate(any(ResourceId.class));
-
     service
         .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
         .await()

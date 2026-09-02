@@ -30,9 +30,11 @@ import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import com.google.protobuf.Timestamp;
@@ -69,6 +71,7 @@ public class SnapshotRepository {
   @Inject
   public SnapshotRepository(
       PointerStore pointerStore,
+      @CachedPointerStore PointerStore pointerReads,
       BlobStore blobStore,
       TableRepository tableRepo,
       CurrentSnapshotPointerRepository currentPointerRepo,
@@ -77,6 +80,7 @@ public class SnapshotRepository {
       ImmutableBlobCache blobCache) {
     this(
         pointerStore,
+        pointerReads,
         blobStore,
         tableRepo,
         currentPointerRepo,
@@ -94,6 +98,7 @@ public class SnapshotRepository {
       TableRootRepository roots,
       StatsStore statsStore) {
     this(
+        pointerStore,
         pointerStore,
         blobStore,
         tableRepo,
@@ -115,6 +120,7 @@ public class SnapshotRepository {
       CurrentSnapshotPointerRepository currentPointerRepo,
       TableRootRepository roots) {
     this(
+        pointerStore,
         pointerStore,
         blobStore,
         tableRepo,
@@ -151,6 +157,7 @@ public class SnapshotRepository {
   /** The one constructor that assigns state; every other overload delegates here. */
   private SnapshotRepository(
       PointerStore pointerStore,
+      PointerStore pointerReads,
       BlobStore blobStore,
       TableRepository tableRepo,
       CurrentSnapshotPointerRepository currentPointerRepo,
@@ -166,7 +173,8 @@ public class SnapshotRepository {
             Snapshot::parseFrom,
             Snapshot::toByteArray,
             "application/x-protobuf",
-            blobCache);
+            blobCache,
+            RepositoryReads.direct(pointerReads, blobStore));
     this.tableRepo = tableRepo;
     this.currentPointerRepo = currentPointerRepo;
     this.pointerStore = pointerStore;
@@ -543,7 +551,7 @@ public class SnapshotRepository {
       // pointer cache it would just re-read the same dead URI, so the second attempt goes past it
       // (which also drops the stale entry for every other consumer).
       MutationMeta meta =
-          attempt == 0 ? roots.metaForSafe(tableId) : roots.metaForSafeLive(tableId);
+          attempt == 0 ? roots.metaForSafe(tableId) : roots.metaForSafeConsistent(tableId);
       if (meta == null || meta.getBlobUri().isEmpty()) {
         return new RootLookup(false, null);
       }

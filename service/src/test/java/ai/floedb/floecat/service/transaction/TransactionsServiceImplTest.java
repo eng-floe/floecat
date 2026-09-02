@@ -51,6 +51,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
+import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
@@ -59,6 +60,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.service.transaction.impl.TransactionsServiceImpl;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.ConnectorProvisioning;
@@ -511,7 +513,7 @@ class TransactionsServiceImplTest {
   void commitConflictAnnotatesIntentAndTransitionsToConflictState() throws Exception {
     var service = newService();
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
 
     Transaction txn = preparedTxn();
     Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
@@ -583,7 +585,7 @@ class TransactionsServiceImplTest {
   void commitApplyingConflictFinalizesAppliedWhenIntentsAlreadyApplied() throws Exception {
     var service = newService();
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
 
     Transaction txn =
         Transaction.newBuilder()
@@ -680,7 +682,7 @@ class TransactionsServiceImplTest {
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
     inject(service, "blobStore", blobStore);
     inject(service, "nameResolver", resolver);
     inject(service, "graphView", graphView);
@@ -753,7 +755,7 @@ class TransactionsServiceImplTest {
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -804,7 +806,7 @@ class TransactionsServiceImplTest {
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -863,7 +865,7 @@ class TransactionsServiceImplTest {
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
     inject(service, "blobStore", blobStore);
     inject(service, "graphView", graphView);
 
@@ -945,7 +947,7 @@ class TransactionsServiceImplTest {
     var service = new TransactionsServiceImpl();
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
 
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -1474,6 +1476,11 @@ class TransactionsServiceImplTest {
     f.set(target, value);
   }
 
+  private static void injectPointerStore(TransactionsServiceImpl service, PointerStore backend)
+      throws Exception {
+    inject(service, "pointerStore", AuthoritativePointerStore.of(backend));
+  }
+
   /**
    * A batch of table deletes is charged for what a delete emits, not for what an upsert would.
    *
@@ -1509,7 +1516,7 @@ class TransactionsServiceImplTest {
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
     inject(service, "blobStore", blobStore);
     inject(service, "nameResolver", resolver);
     inject(service, "graphView", graphView);
@@ -1527,7 +1534,7 @@ class TransactionsServiceImplTest {
     when(txRepo.metaFor(accountId, txId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(1L).build());
     when(txRepo.update(any(), anyLong())).thenReturn(true);
-    when(pointerStore.get(anyString()))
+    when(pointerStore.getConsistent(anyString()))
         .thenAnswer(
             call ->
                 Optional.of(
