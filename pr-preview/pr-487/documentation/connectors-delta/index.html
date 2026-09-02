@@ -2008,9 +2008,9 @@ Per-file S3 range readers are closed by their consumers.</p>
   <code>delta.source=glue</code> or <code>delta.source=filesystem</code> the option is accepted and then ignored, since
   neither has a Unity credential endpoint to vend from. If the credentials response carries an
   <code>access_point</code> ARN, it is dropped and the rest of the tuple is used against the bucket named in
-  the object URI, with a warning naming the table. Nothing here addresses an access point, and the
-  grant behind one commonly permits bucket addressing anyway. Where it does not, reads fail at
-  storage with a 403; that warning is what points at the cause. Recover by having the workspace
+  the object URI, logging the table at INFO. Nothing here addresses an access point, and the grant
+  behind one commonly permits bucket addressing anyway. Where it does not, reads fail at storage
+  with a 403; that log line is what points at the cause. Recover by having the workspace
   vend bucket-scoped credentials for the external location, or by configuring a storage authority
   covering it -- vending is reached only when no authority matches.</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
