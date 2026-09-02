@@ -18,6 +18,7 @@ package ai.floedb.floecat.storage.memory;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.storage.spi.RawPointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Singleton;
 import java.util.ArrayList;
@@ -30,6 +31,7 @@ import java.util.concurrent.ConcurrentNavigableMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
 @Singleton
+@RawPointerStore
 @IfBuildProperty(name = "floecat.kv", stringValue = "memory")
 public class InMemoryPointerStore implements PointerStore {
   // All map access is guarded by this store's monitor so batch operations are atomically visible,
@@ -41,8 +43,26 @@ public class InMemoryPointerStore implements PointerStore {
     return Optional.ofNullable(map.get(key));
   }
 
+  /** One map, one read: this is the source, so there is nothing in front of it to bypass. */
+  @Override
+  public synchronized Optional<Pointer> getConsistent(String key) {
+    // Do not call get(): CDI may subclass this store and intercept both methods, which would
+    // observe one physical read twice and make the store-cost harness over-count it.
+    return Optional.ofNullable(map.get(key));
+  }
+
   @Override
   public synchronized Map<String, Pointer> getBatch(List<String> keys) {
+    return readBatch(keys);
+  }
+
+  @Override
+  public synchronized Map<String, Pointer> getBatchConsistent(List<String> keys) {
+    // Do not call getBatch(): CDI may subclass this store and intercept both methods.
+    return readBatch(keys);
+  }
+
+  private Map<String, Pointer> readBatch(List<String> keys) {
     Map<String, Pointer> out = new LinkedHashMap<>();
     for (String key : keys == null ? List.<String>of() : keys) {
       Pointer pointer = map.get(key);

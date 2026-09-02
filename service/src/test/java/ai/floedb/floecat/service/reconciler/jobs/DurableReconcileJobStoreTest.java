@@ -8049,6 +8049,12 @@ class DurableReconcileJobStoreTest {
       return delegate.get(key);
     }
 
+    /** A fake source: one read, nothing in front of it to bypass. */
+    @Override
+    public Optional<Pointer> getConsistent(String key) {
+      return get(key);
+    }
+
     @Override
     public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
       if (key != null && key.startsWith(dirtyParentPrefix())) {

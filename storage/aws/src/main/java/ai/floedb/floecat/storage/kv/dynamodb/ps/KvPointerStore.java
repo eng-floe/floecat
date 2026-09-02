@@ -41,8 +41,27 @@ public abstract class KvPointerStore implements PointerStore {
     return await(() -> pointers.get(key).await().indefinitely());
   }
 
+  /**
+   * The same read: this is the source, and its single-key get is already strongly consistent --
+   * {@code DynamoDbKvStore} builds every {@code GetItemRequest} with {@code consistentRead(true)}.
+   * Stated rather than inherited, so that making the ordinary read cheap and eventually consistent
+   * has to change this line too instead of silently redefining what consistent means.
+   */
+  @Override
+  public Optional<Pointer> getConsistent(String key) {
+    // Do not call get(): CDI may subclass this store and intercept both methods, which would
+    // observe one DynamoDB request twice.
+    return await(() -> pointers.get(key).await().indefinitely());
+  }
+
   @Override
   public Map<String, Pointer> getBatch(List<String> keys) {
+    return await(() -> pointers.getBatch(keys).await().indefinitely());
+  }
+
+  @Override
+  public Map<String, Pointer> getBatchConsistent(List<String> keys) {
+    // PointerStoreEntity's batch read uses the same strongly consistent KV read contract as get.
     return await(() -> pointers.getBatch(keys).await().indefinitely());
   }
 
