@@ -2006,7 +2006,12 @@ Per-file S3 range readers are closed by their consumers.</p>
   spelling DuckDB sends works here too; anything else is rejected at create/update time rather
   than read as "disabled". Honored only for <code>delta.source=unity</code> (the default): on
   <code>delta.source=glue</code> or <code>delta.source=filesystem</code> the option is accepted and then ignored, since
-  neither has a Unity credential endpoint to vend from.</li>
+  neither has a Unity credential endpoint to vend from. One AWS shape is refused rather than
+  fallen back: a vend scoped to an S3 access point, since the credential authorizes only requests
+  addressed to the access point and no read path here addresses one. The reconcile job fails with a
+  vend-refused reason naming the table. To recover, either have the workspace vend bucket-scoped
+  credentials for that external location, or configure a storage authority covering it -- vending is
+  reached only when no authority matches, so an authority alone takes the refusal out of the path.</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
 <li><code>stats.ndv.*</code> – Sampling knobs identical to the Iceberg connector.</li>
 <li>Authentication-specific options (<code>auth.scheme</code>, <code>auth.properties</code>) – <code>auth.scheme=oauth2</code>
