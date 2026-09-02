@@ -18,14 +18,17 @@ package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
 import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -85,6 +88,16 @@ public class NamespaceRepository {
     return repo.createWithMeta(namespace, completionFactory);
   }
 
+  /** Creates under the supplied fence and publishes companion operations in the same batch. */
+  public Optional<GenericResourceRepository.ResourceWithMeta<Namespace>>
+      createWithCompletionWhilePointersMatch(
+          Namespace namespace,
+          PointerConditions conditions,
+          Function<GenericResourceRepository.ResourceWithMeta<Namespace>, List<PointerStore.CasOp>>
+              completionFactory) {
+    return repo.createWithMeta(namespace, conditions, completionFactory);
+  }
+
   public Optional<MutationMeta> completeWithMetaIfUnchanged(
       Namespace namespace,
       long expectedPointerVersion,
@@ -97,8 +110,22 @@ public class NamespaceRepository {
     return repo.createWithMeta(namespace, conditions, null).isPresent();
   }
 
-  public boolean update(Namespace namespace, long expectedPointerVersion) {
-    return repo.update(namespace, expectedPointerVersion);
+  /**
+   * Deletes the namespace under shape markers the caller sampled before its emptiness checks.
+   *
+   * <p>Removes the markers with the row rather than advancing them, matching how a catalog delete
+   * treats its own -- an advanced marker for a deleted namespace is a row counting nothing, and
+   * namespace ids never recur so nothing would ever read it again.
+   */
+  public boolean deleteWhileShapeUnchanged(
+      ResourceId namespaceResourceId,
+      long expectedPointerVersion,
+      MarkerStore.MarkerRemoval markers) {
+    return repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()),
+        expectedPointerVersion,
+        markers.conditions(),
+        markers.toDelete());
   }
 
   public Optional<MutationMeta> updateWhilePointersMatch(
@@ -110,13 +137,6 @@ public class NamespaceRepository {
   public boolean delete(ResourceId namespaceResourceId) {
     return repo.delete(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
-  }
-
-  public boolean deleteWithPrecondition(
-      ResourceId namespaceResourceId, long expectedPointerVersion) {
-    return repo.deleteWithPrecondition(
-        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()),
-        expectedPointerVersion);
   }
 
   public boolean deleteWhilePointersMatch(
@@ -136,6 +156,122 @@ public class NamespaceRepository {
   public Optional<Namespace> getByPath(
       String accountId, String catalogId, List<String> pathSegments) {
     return repo.get(Keys.namespacePointerByPath(accountId, catalogId, pathSegments));
+  }
+
+  /**
+   * Everything a namespace create has to assert: its catalog's child set, and its parent's when it
+   * has one.
+   *
+   * <p>The catalog half is not optional and is the only half a TOP-LEVEL namespace has -- without
+   * it a namespace created at the root of a catalog is unfenced against that catalog's delete,
+   * which is the case a parent fence structurally cannot cover.
+   *
+   * <p>Composed here so the writers cannot drift apart. Each of them differs only in how it
+   * classifies an absent catalog or parent, which is genuinely per-caller; the set of conditions is
+   * not.
+   */
+  public PointerConditions createFence(
+      MarkerStore markers, ResourceId catalogId, List<String> parentPath) {
+    return markers
+        .catalogChildNamespacesFence(catalogId)
+        .and(
+            childSetFenceForParent(
+                markers, catalogId.getAccountId(), catalogId.getId(), parentPath));
+  }
+
+  /**
+   * The fence for joining {@code parentPath}'s child set, or none when the path is top-level.
+   *
+   * <p>The parent's identity and its by-path version come from ONE read of that pointer. Resolving
+   * the identity and then reading the version separately lets the path be vacated and reused in
+   * between, and the conditions would then check the new occupant's path while advancing the old
+   * occupant's child marker -- fencing one namespace and writing under another. A child could
+   * commit under the reused path without touching the current parent's marker, and a rename or
+   * delete of that parent, having already sampled an unchanged marker and an empty child scan,
+   * would strand it.
+   */
+  public PointerConditions childSetFenceForParent(
+      MarkerStore markers, String accountId, String catalogId, List<String> parentPath) {
+    if (parentPath == null || parentPath.isEmpty()) {
+      return PointerConditions.none();
+    }
+    String byPath = Keys.namespacePointerByPath(accountId, catalogId, parentPath);
+    Pointer pointer =
+        pointerStore
+            .get(byPath)
+            .orElseThrow(
+                () ->
+                    new BaseResourceRepository.NotFoundException(
+                        ResourceKind.RK_NAMESPACE,
+                        "namespace parent path does not resolve: " + parentPath));
+    return markers.childSetFenceForParent(byPath, withIdentity(pointer, parentPath));
+  }
+
+  /**
+   * The namespace a by-path pointer names, from that pointer alone.
+   *
+   * <p>Namespace pointers carry their resource id, so no second read is needed. A pointer written
+   * before that field existed is resolved through its own blob uri, which is immutable -- so the
+   * identity still comes from the same observation as the version, and is folded back into the
+   * pointer so the fence receives one object carrying both.
+   */
+  private Pointer withIdentity(Pointer pointer, List<String> parentPath) {
+    if (!pointer.getResourceId().getId().isBlank()) {
+      return pointer;
+    }
+    ResourceId resolved =
+        repo.getByBlobUri(pointer.getBlobUri())
+            .map(Namespace::getResourceId)
+            .orElseThrow(
+                () ->
+                    new BaseResourceRepository.NotFoundException(
+                        ResourceKind.RK_NAMESPACE,
+                        "namespace parent path does not resolve: " + parentPath));
+    return pointer.toBuilder().setResourceId(resolved).build();
+  }
+
+  /**
+   * How many relations a namespace holds, read strongly.
+   *
+   * <p>Both halves matter. Tables and views carry separate by-name prefixes, so counting one
+   * reports a namespace holding the other as empty. And the count has to be consistent: callers
+   * fence this answer with a marker sampled by a consistent point read, so a relation committed
+   * just before that sample is already in the marker version -- an eventually-consistent count
+   * would read zero, the CAS would match, and a delete would commit over a live relation.
+   *
+   * <p>A prefix count rather than a listing: the decision it gates is a boolean, and listing loads
+   * every row's blob to answer it.
+   */
+  public static int relationCount(
+      TableRepository tables, ViewRepository views, ResourceId catalogId, ResourceId namespaceId) {
+    String accountId = catalogId.getAccountId();
+    return tables.countConsistent(accountId, catalogId.getId(), namespaceId.getId())
+        + views.countConsistent(accountId, catalogId.getId(), namespaceId.getId());
+  }
+
+  /**
+   * Whether any namespace sits anywhere beneath {@code parentPath}.
+   *
+   * <p>Beneath, not immediately beneath. The by-path prefix ends at a separator and every segment
+   * is percent-encoded, so it matches the whole descendant subtree and cannot match {@code
+   * parentPath} itself or a sibling whose name merely starts with it.
+   *
+   * <p>Subtree-wide on purpose, and not merely as a convenience. A depth-one test is only
+   * sufficient by induction -- a descendant can only be added by a writer that asserts its parent's
+   * child marker, so the parent's marker suffices PROVIDED every namespace's parent exists. Every
+   * writer now materialises its ancestors, so that induction holds going forward; it did not
+   * always, so a row at {@code a/b/c} with no {@code a/b} row can still exist from before. Such a
+   * row is a descendant of {@code a} that no immediate-child test can see, and renaming {@code a}
+   * would then be allowed while nothing re-derives that row's by-path key -- exactly the staleness
+   * this fence exists to prevent. A prefix count also costs one read where the depth-one test cost
+   * a paged scan, and it holds whether or not the induction does.
+   *
+   * <p>Read strongly, because callers fence this answer with a marker sampled by a consistent point
+   * read: a child committed just before that sample is already in the marker version, so an
+   * eventually-consistent scan would report no descendants while the CAS matched.
+   */
+  public boolean hasDescendants(String accountId, String catalogId, List<String> parentPath) {
+    return countConsistent(accountId, catalogId, parentPath) > 0;
   }
 
   public List<Namespace> list(
@@ -160,9 +296,18 @@ public class NamespaceRepository {
     return repo.listByPrefixConsistent(prefix, limit, pageToken, nextOut);
   }
 
-  public int count(String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
-    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
-    return repo.countByPrefix(prefix);
+  /**
+   * The count read strongly, for a caller whose decision depends on emptiness.
+   *
+   * <p>The eventually-consistent count cannot be fenced against: a marker is sampled with a
+   * consistent point read, so a namespace committed before that sample is already in the marker
+   * version -- and if the index has not caught up, an emptiness check reads zero, the CAS matches
+   * the version that write itself produced, and the delete commits over a live namespace.
+   */
+  public int countConsistent(
+      String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
+    return repo.countByPrefixConsistent(
+        Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty));
   }
 
   /**

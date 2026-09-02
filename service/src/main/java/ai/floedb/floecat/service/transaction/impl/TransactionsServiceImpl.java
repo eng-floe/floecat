@@ -48,6 +48,7 @@ import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
+import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -110,8 +111,38 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   private static final Logger LOG = Logger.getLogger(TransactionsServiceImpl.class);
   private static final int MAX_POINTER_TXN_OPS = 100;
   private static final int APPLY_OPS_PER_PLAIN_INTENT = 3;
-  private static final int APPLY_OPS_PER_TABLE_OR_CONNECTOR_INTENT = 5;
+
+  // Every intent pays two index-cleanup deletes (its by-target and by-tx intent pointers), which
+  // the applier emits for every shape. The rest is the shape's own worst case in plan ops.
+  //
+  // A table UPSERT: canonical pointer, by-name pointer, shared relation claim, and the old name's
+  // pointer and claim when a rename moves it -- five, plus two cleanup. Deliberately the worst case
+  // and deliberately not narrowed further: whether an upsert renames is only decidable by comparing
+  // the staged table against the row it replaces, which Prepare does not read.
+  /** The applier's reason code for a lost pointer CAS -- the one apply failure worth retrying. */
+  private static final String POINTER_TXN_CAS_FAILED = "POINTER_TXN_CAS_FAILED";
+
+  private static final int APPLY_OPS_PER_TABLE_UPSERT_INTENT = 7;
+
+  // A table DELETE sentinel: the canonical delete, the owned name delete, and the relation claim
+  // delete -- three, plus two cleanup. It never joins a namespace, because planTableDeleteIntentOps
+  // does not read one: nothing is orphaned by a namespace that became emptier than the caller
+  // checked. Charging it the upsert's estimate cost a client roughly half the batch size it had
+  // before this fence existed, which is a regression rather than a conservative estimate.
+  private static final int APPLY_OPS_PER_TABLE_DELETE_INTENT = 5;
+
+  // A connector: canonical pointer, new name pointer, and the old name delete when a rename moves
+  // it -- three, plus two cleanup. Connectors hold no relations, so they never join a namespace.
+  private static final int APPLY_OPS_PER_CONNECTOR_INTENT = 5;
+
+  // MarkerStore.relationMoveFence fences only the destination: one marker advance and one
+  // namespace canonical-pointer check. Source removal is safe without a fence, like relation
+  // deletion, and keeping this shape at two also avoids rejecting valid near-limit batches.
+  private static final int APPLY_OPS_PER_JOINED_NAMESPACE = 2;
   private static final int APPLY_OPS_FOR_TRANSACTION_FINALIZE = 1;
+
+  // The account-deletion fence check the applier adds once per batch.
+  private static final int APPLY_OPS_FOR_ACCOUNT_DELETION_FENCE = 1;
   private static final int TABLE_NAME_REPLAY_SCAN_PAGE_SIZE = 200;
   private static final String CAPTURE_STATISTICS_PROPERTY = "floecat.connector.capture-statistics";
   private static final String POST_COMMIT_CAPTURE_GENERATION_ATTRIBUTE =
@@ -684,8 +715,9 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             accountId, txn.getTxId(), txn.getCreatedAt(), request.getChangesList());
     List<TransactionIntent> intents = new ArrayList<>();
     java.util.Set<String> seenTargets = new java.util.HashSet<>();
+    java.util.Set<String> joinedNamespaces = new java.util.HashSet<>();
     List<PendingBlob> pendingBlobs = new ArrayList<>();
-    int estimatedOps = 0;
+    int estimatedOps = APPLY_OPS_FOR_ACCOUNT_DELETION_FENCE;
 
     for (var change : effectiveChanges) {
       PlannedIntent planned = planIntent(accountId, txn.getTxId(), change);
@@ -693,10 +725,36 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       if (!seenTargets.add(pointerKey)) {
         throw new IllegalArgumentException("duplicate change for " + pointerKey);
       }
-      estimatedOps +=
-          isTableByIdPointer(pointerKey) || isConnectorByIdPointer(pointerKey)
-              ? APPLY_OPS_PER_TABLE_OR_CONNECTOR_INTENT
-              : APPLY_OPS_PER_PLAIN_INTENT;
+      // A delete sentinel is decidable here, from the blob uri this same loop already planned, so
+      // the shape is charged for what it emits rather than for the largest shape it could be.
+      boolean deletesItsTarget =
+          isDeleteSentinelBlobUri(accountId, txn.getTxId(), pointerKey, planned.blobUri());
+      boolean tableUpsert = isTableByIdPointer(pointerKey) && !deletesItsTarget;
+      if (tableUpsert) {
+        estimatedOps += APPLY_OPS_PER_TABLE_UPSERT_INTENT;
+      } else if (isTableByIdPointer(pointerKey)) {
+        estimatedOps += APPLY_OPS_PER_TABLE_DELETE_INTENT;
+      } else if (isConnectorByIdPointer(pointerKey)) {
+        estimatedOps += APPLY_OPS_PER_CONNECTOR_INTENT;
+      } else {
+        estimatedOps += APPLY_OPS_PER_PLAIN_INTENT;
+      }
+      if (tableUpsert) {
+        // Charged for every table UPSERT, not only the ones carrying an inline table: the applier
+        // routes on the POINTER KEY, so a blob-uri or raw-payload intent reaches the namespace join
+        // just the same. Charging only the inline case let Prepare accept a batch that Commit then
+        // refused as too large -- terminal, with the intents and blobs already staged. A delete
+        // sentinel is excluded above: its planner never reads a namespace.
+        //
+        // Deduplicated by namespace only where the namespace is knowable here. A non-inline payload
+        // is not parsed at prepare time, so those are charged per intent: an over-estimate refuses
+        // early, which a client can split, and an under-estimate fails after staging.
+        String joinedNamespace =
+            change.hasTable() ? change.getTable().getNamespaceId().getId() : "";
+        if (joinedNamespace.isBlank() || joinedNamespaces.add(joinedNamespace)) {
+          estimatedOps += APPLY_OPS_PER_JOINED_NAMESPACE;
+        }
+      }
       if (estimatedOps > MAX_POINTER_TXN_OPS) {
         throw new IllegalArgumentException(
             "transaction requires more than " + MAX_POINTER_TXN_OPS + " pointer operations");
@@ -865,46 +923,13 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
       }
     }
 
-    long transactionPointerVersion =
-        txRepo.metaFor(accountId, applyPhaseTxn.getTxId()).getPointerVersion();
     Transaction appliedCandidate =
         applyPhaseTxn.toBuilder().setState(TransactionState.TS_APPLIED).setUpdatedAt(now).build();
     var appliedResourceId = transactionResourceId(accountId, appliedCandidate.getTxId());
-    var appliedMeta =
-        MutationMeta.newBuilder()
-            .setPointerKey(Keys.transactionPointerById(accountId, appliedCandidate.getTxId()))
-            .setBlobUri(
-                Keys.transactionBlobUri(
-                    accountId,
-                    appliedCandidate.getTxId(),
-                    ai.floedb.floecat.types.Hashing.sha256Hex(appliedCandidate.toByteArray())))
-            .setPointerVersion(transactionPointerVersion + 1L)
-            .setUpdatedAt(now)
-            .build();
-    var completionOps =
-        committer == null
-            ? List.<PointerStore.CasOp>of()
-            : committer.prepareSuccessOps(
-                new IdempotencyGuard.CommittedCreate<>(
-                    appliedCandidate, appliedResourceId, appliedMeta));
-    final TransactionIntentApplierSupport.ApplyOutcome outcome;
-    try {
-      outcome =
-          committer == null
-              ? intentApplierSupport.applyTransactionAtomically(
-                  appliedCandidate, transactionPointerVersion, intents, intentRepo)
-              : intentApplierSupport.applyTransactionAtomically(
-                  appliedCandidate, transactionPointerVersion, intents, intentRepo, completionOps);
-    } catch (StorageTransactionConflictException confirmedAbort) {
-      if (committer != null) {
-        committer.discardPreparedSuccessOps(completionOps);
-      }
-      throw confirmedAbort;
-    }
-    if (outcome.status() != TransactionIntentApplierSupport.ApplyStatus.APPLIED
-        && committer != null) {
-      committer.discardPreparedSuccessOps(completionOps);
-    }
+    var atomicApply =
+        applyAtomicallyRetryingLostFences(accountId, appliedCandidate, intents, now, committer);
+    var outcome = atomicApply.outcome();
+    var appliedMeta = atomicApply.appliedMeta();
     if (outcome.status() == TransactionIntentApplierSupport.ApplyStatus.APPLIED) {
       Transaction latest = getTransactionOrThrow(accountId, applyPhaseTxn.getTxId());
       Transaction applied =
@@ -2049,6 +2074,90 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
             "Failed to persist apply failure details for tx=%s target=%s",
             intent.getTxId(), intent.getTargetPointerKey());
       }
+    }
+  }
+
+  /** The apply outcome and exact transaction metadata prepared for its final attempt. */
+  private record AtomicApplyAttempt(
+      TransactionIntentApplierSupport.ApplyOutcome outcome, MutationMeta appliedMeta) {}
+
+  /**
+   * Applies the batch, retrying locally while it only lost a fence.
+   *
+   * <p>Every other participating writer got this loop. Without it the fence turns two commits into
+   * the same namespace from independent successes into a client-visible {@code
+   * TS_APPLY_FAILED_RETRYABLE}: both batches now carry that namespace's relation marker, so one of
+   * them loses a CAS that, before the fence existed, it never took part in. On the Iceberg commit
+   * path that is the primary table write path, so the failure rate would scale with concurrency.
+   *
+   * <p>Only a lost pointer CAS is retried. The batch is atomic, so a lost one wrote nothing and the
+   * next attempt re-plans against fresh state -- including a freshly read transaction pointer
+   * version, since the losing batch may have lost to a writer that moved it. Any other retryable
+   * reason is returned untouched for the caller's existing handling: re-running it would spin
+   * through the whole budget without changing the answer.
+   *
+   * <p>This bounds the damage rather than removing the contention. The marker is a single key per
+   * namespace, so sustained concurrent writes into one namespace still serialise on it; sharding it
+   * is the actual fix and is deliberately left until the in-flight fence-sharding work lands.
+   */
+  private AtomicApplyAttempt applyAtomicallyRetryingLostFences(
+      String accountId,
+      Transaction appliedCandidate,
+      List<TransactionIntent> intents,
+      Timestamp now,
+      IdempotencyGuard.SuccessCommitter<Transaction> committer) {
+    for (int attempt = 1; ; attempt++) {
+      long transactionPointerVersion =
+          txRepo.metaFor(accountId, appliedCandidate.getTxId()).getPointerVersion();
+      var appliedResourceId = transactionResourceId(accountId, appliedCandidate.getTxId());
+      var appliedMeta =
+          MutationMeta.newBuilder()
+              .setPointerKey(Keys.transactionPointerById(accountId, appliedCandidate.getTxId()))
+              .setBlobUri(
+                  Keys.transactionBlobUri(
+                      accountId,
+                      appliedCandidate.getTxId(),
+                      ai.floedb.floecat.types.Hashing.sha256Hex(appliedCandidate.toByteArray())))
+              .setPointerVersion(transactionPointerVersion + 1L)
+              .setUpdatedAt(now)
+              .build();
+      var completionOps =
+          committer == null
+              ? List.<PointerStore.CasOp>of()
+              : committer.prepareSuccessOps(
+                  new IdempotencyGuard.CommittedCreate<>(
+                      appliedCandidate, appliedResourceId, appliedMeta));
+      TransactionIntentApplierSupport.ApplyOutcome outcome;
+      try {
+        outcome =
+            committer == null
+                ? intentApplierSupport.applyTransactionAtomically(
+                    appliedCandidate, transactionPointerVersion, intents, intentRepo)
+                : intentApplierSupport.applyTransactionAtomically(
+                    appliedCandidate,
+                    transactionPointerVersion,
+                    intents,
+                    intentRepo,
+                    completionOps);
+      } catch (StorageTransactionConflictException confirmedAbort) {
+        if (committer != null) {
+          committer.discardPreparedSuccessOps(completionOps);
+        }
+        throw confirmedAbort;
+      }
+      var result = new AtomicApplyAttempt(outcome, appliedMeta);
+      if (outcome.status() != TransactionIntentApplierSupport.ApplyStatus.APPLIED
+          && committer != null) {
+        committer.discardPreparedSuccessOps(completionOps);
+      }
+      if (outcome.status() != TransactionIntentApplierSupport.ApplyStatus.RETRYABLE
+          || !POINTER_TXN_CAS_FAILED.equals(outcome.errorCode())) {
+        return result;
+      }
+      if (attempt > RETRIES) {
+        return result;
+      }
+      FenceRetry.sleepBackoff(attempt);
     }
   }
 

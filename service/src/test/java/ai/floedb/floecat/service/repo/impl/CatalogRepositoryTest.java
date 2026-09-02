@@ -23,12 +23,16 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.util.TestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -184,10 +188,71 @@ class CatalogRepositoryTest {
     assertTrue(
         ptr.compareAndSet(marker, 0L, PointerReferences.opaqueMarkerPointer(marker, marker, 1L)));
 
-    assertFalse(catalogRepo.deleteWithPreconditionAndOverlayMarker(rid, 1L, 0L));
+    // Required as absent while it exists: refused.
+    assertFalse(
+        catalogRepo.deleteWhileChildSetsUnchanged(rid, 1L, removal(Set.of(marker), Map.of())));
     assertTrue(catalogRepo.getById(rid).isPresent());
-    assertTrue(catalogRepo.deleteWithPreconditionAndOverlayMarker(rid, 1L, 1L));
+    // Required at its actual version: allowed, and the marker goes with the catalog.
+    assertTrue(
+        catalogRepo.deleteWhileChildSetsUnchanged(rid, 1L, removal(Set.of(), Map.of(marker, 1L))));
     assertTrue(catalogRepo.getById(rid).isEmpty());
     assertTrue(ptr.get(marker).isEmpty());
+  }
+
+  /**
+   * Every child-set marker rides the one batch.
+   *
+   * <p>A catalog counts namespaces and overlays separately, so a delete asserting only one of them
+   * can be raced by the other -- it would commit while a namespace was being created under it.
+   */
+  @Test
+  void deleteRefusedWhenAnySingleChildSetMarkerMoved() {
+    String account = "acct-multi";
+    ResourceId rid =
+        ResourceId.newBuilder()
+            .setAccountId(account)
+            .setId("cat-multi")
+            .setKind(ResourceKind.RK_CATALOG)
+            .build();
+    catalogRepo.create(Catalog.newBuilder().setResourceId(rid).setDisplayName("multi").build());
+    String children = Keys.catalogChildrenMarker(account, rid.getId());
+    String overlays = Keys.catalogOverlaysMarker(account, rid.getId());
+    assertTrue(
+        ptr.compareAndSet(
+            children, 0L, PointerReferences.opaqueMarkerPointer(children, children, 1L)));
+    assertTrue(
+        ptr.compareAndSet(
+            overlays, 0L, PointerReferences.opaqueMarkerPointer(overlays, overlays, 1L)));
+
+    // Stale on the children half only.
+    assertFalse(
+        catalogRepo.deleteWhileChildSetsUnchanged(
+            rid, 1L, removal(Set.of(children), Map.of(overlays, 1L))));
+    assertTrue(catalogRepo.getById(rid).isPresent());
+
+    // Stale on the overlays half only.
+    assertFalse(
+        catalogRepo.deleteWhileChildSetsUnchanged(
+            rid, 1L, removal(Set.of(overlays), Map.of(children, 1L))));
+    assertTrue(catalogRepo.getById(rid).isPresent());
+
+    // Both current: allowed, and both markers go with the catalog.
+    assertTrue(
+        catalogRepo.deleteWhileChildSetsUnchanged(
+            rid, 1L, removal(Set.of(), Map.of(children, 1L, overlays, 1L))));
+    assertTrue(catalogRepo.getById(rid).isEmpty());
+    assertTrue(ptr.get(children).isEmpty());
+    assertTrue(ptr.get(overlays).isEmpty());
+  }
+
+  /**
+   * A marker removal, in the shape MarkerStore samples: absent markers are required absent, and
+   * existing ones are required at their version and removed.
+   */
+  private static MarkerStore.MarkerRemoval removal(
+      java.util.Set<String> requiredAbsent, Map<String, Long> toDelete) {
+    return new MarkerStore.MarkerRemoval(
+        new GenericResourceRepository.PointerConditions(Map.of(), requiredAbsent, Map.of()),
+        toDelete);
   }
 }

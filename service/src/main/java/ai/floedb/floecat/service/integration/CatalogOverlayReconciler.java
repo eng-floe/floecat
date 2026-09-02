@@ -70,6 +70,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 /** Materializes one Catalog Overlay's selected upstream metadata into its target catalog. */
 @ApplicationScoped
@@ -158,17 +159,8 @@ public class CatalogOverlayReconciler {
         }
         relationChanged(view.getResourceId(), namespace.getResourceId());
       }
-      if (!ownedBy(namespace.getPropertiesMap(), overlay)
-          || !listTables(namespace).isEmpty()
-          || !listViews(namespace).isEmpty()) continue;
-      if (!namespaces.delete(namespace.getResourceId())
-          && namespaces.getById(namespace.getResourceId()).isPresent()) {
-        throw new BaseResourceRepository.AbortRetryableException(
-            "Namespace changed during Catalog Overlay retirement");
-      }
-      markerStore.bumpCatalogMarker(catalogId);
-      metadataGraph.invalidate(namespace.getResourceId());
-      topology.evictNamespaceRefs(catalogId);
+      if (!ownedBy(namespace.getPropertiesMap(), overlay)) continue;
+      deleteNamespaceIfEmpty(namespace, PointerConditions.none());
     }
   }
 
@@ -280,8 +272,12 @@ public class CatalogOverlayReconciler {
               .setCreatedAt(now())
               .putAllProperties(ownershipProperties(overlay, integration))
               .build();
-      if (!namespaces.createWhilePointersMatch(created, fence)) lostFence();
-      markerStore.bumpCatalogMarker(catalogId);
+      // Joins the parent's child set exactly as CreateNamespace does, or a concurrent rename of
+      // that parent passes its own fence and strands what this creates.
+      var parentSegments = segments.subList(0, segments.size() - 1);
+      var namespaceFence =
+          fence.and(orRetry(() -> namespaces.createFence(markerStore, catalogId, parentSegments)));
+      if (!namespaces.createWhilePointersMatch(created, namespaceFence)) throw lostFence();
       metadataGraph.invalidate(created.getResourceId());
       topology.evictNamespaceRefs(catalogId);
       current.put(path, created);
@@ -339,7 +335,7 @@ public class CatalogOverlayReconciler {
       MutationMeta meta = tables.metaFor(stale.getResourceId());
       if (!tables.deleteWhilePointersMatch(
           stale.getResourceId(), meta.getPointerVersion(), fence)) {
-        lostFence();
+        throw lostFence();
       }
       purgeTableState(stale.getResourceId());
       relationChanged(stale.getResourceId(), stale.getNamespaceId());
@@ -349,7 +345,7 @@ public class CatalogOverlayReconciler {
       if (retainedViewIds.contains(stale.getResourceId().getId())) continue;
       MutationMeta meta = views.metaFor(stale.getResourceId());
       if (!views.deleteWhilePointersMatch(stale.getResourceId(), meta.getPointerVersion(), fence)) {
-        lostFence();
+        throw lostFence();
       }
       relationChanged(stale.getResourceId(), stale.getNamespaceId());
       result.viewsDeleted++;
@@ -389,15 +385,33 @@ public class CatalogOverlayReconciler {
       if (current == null) {
         definitionMeta =
             tables
-                .createWhilePointersMatch(desired, fence)
+                .createWhilePointersMatch(
+                    desired,
+                    fence.and(
+                        orRetry(() -> markerStore.relationCreateFence(desired.getNamespaceId()))))
                 .orElseThrow(CatalogOverlayReconciler::lostFence);
         result.tablesCreated++;
         changed = true;
       } else if (!current.equals(desired)) {
         MutationMeta meta = tables.metaFor(current.getResourceId());
+        // An update that moves the table adds a relation to the destination, so it has to pass the
+        // destination's relation fence exactly as a create does. Leaving the source only makes it
+        // emptier, so the source needs no fence.
         definitionMeta =
             tables
-                .updateWhilePointersMatch(desired, meta.getPointerVersion(), fence)
+                .updateWhilePointersMatch(
+                    desired,
+                    meta.getPointerVersion(),
+                    fence.and(
+                        orRetry(
+                            () ->
+                                markerStore.relationMoveFence(
+                                    current.getNamespaceId(),
+                                    desired.getNamespaceId(),
+                                    !current
+                                        .getCatalogId()
+                                        .getId()
+                                        .equals(desired.getCatalogId().getId())))))
                 .orElseThrow(CatalogOverlayReconciler::lostFence);
         result.tablesUpdated++;
         changed = true;
@@ -448,13 +462,31 @@ public class CatalogOverlayReconciler {
       View desired = viewFor(overlay, integration, namespace, source, current);
       boolean changed = false;
       if (current == null) {
-        if (!views.createWhilePointersMatch(desired, fence)) lostFence();
+        if (!views.createWhilePointersMatch(
+            desired,
+            fence.and(orRetry(() -> markerStore.relationCreateFence(desired.getNamespaceId()))))) {
+          throw lostFence();
+        }
         result.viewsCreated++;
         changed = true;
       } else if (!current.equals(desired)) {
         MutationMeta meta = views.metaFor(current.getResourceId());
-        if (views.updateWhilePointersMatch(desired, meta.getPointerVersion(), fence).isEmpty())
-          lostFence();
+        // Moves a view between namespaces on the same terms as a table. See reconcileTables.
+        if (views
+            .updateWhilePointersMatch(
+                desired,
+                meta.getPointerVersion(),
+                fence.and(
+                    orRetry(
+                        () ->
+                            markerStore.relationMoveFence(
+                                current.getNamespaceId(),
+                                desired.getNamespaceId(),
+                                !current
+                                    .getCatalogId()
+                                    .getId()
+                                    .equals(desired.getCatalogId().getId())))))
+            .isEmpty()) throw lostFence();
         result.viewsUpdated++;
         changed = true;
       }
@@ -481,16 +513,9 @@ public class CatalogOverlayReconciler {
             .toList();
     for (var entry : stale) {
       Namespace namespace = entry.getValue();
-      if (!listTables(namespace).isEmpty() || !listViews(namespace).isEmpty()) {
-        continue;
+      if (deleteNamespaceIfEmpty(namespace, fence)) {
+        result.namespacesDeleted++;
       }
-      MutationMeta meta = namespaces.metaFor(namespace.getResourceId());
-      if (!namespaces.deleteWhilePointersMatch(
-          namespace.getResourceId(), meta.getPointerVersion(), fence)) lostFence();
-      markerStore.bumpCatalogMarker(namespace.getCatalogId());
-      metadataGraph.invalidate(namespace.getResourceId());
-      topology.evictNamespaceRefs(namespace.getCatalogId());
-      result.namespacesDeleted++;
     }
   }
 
@@ -592,7 +617,7 @@ public class CatalogOverlayReconciler {
             != integrationMeta.getPointerVersion()
         || overlays.deletionFenceVersion(overlay.getResourceId()) != 0L
         || integrations.cascadeDeletionFenceVersion(integration.getResourceId()) != 0L) {
-      lostFence();
+      throw lostFence();
     }
   }
 
@@ -678,8 +703,85 @@ public class CatalogOverlayReconciler {
     }
   }
 
+  /**
+   * Deletes a namespace only while it still holds nothing, reporting whether it went.
+   *
+   * <p>Both shape markers are sampled before the emptiness checks and ride the delete's batch, so a
+   * relation or child namespace that lands after those checks costs this delete its CAS rather than
+   * being orphaned by it. Without that this reaches exactly the outcome DeleteNamespace is fenced
+   * against, by a different door.
+   *
+   * <p>A child namespace this overlay does not own is invisible to the ownership filters that
+   * select what to retire, so it has to be checked for here or the parent goes away underneath it.
+   */
+  private boolean deleteNamespaceIfEmpty(Namespace namespace, PointerConditions fence) {
+    ResourceId namespaceId = namespace.getResourceId();
+    // Sampled before the emptiness checks below, and removed with the row rather than advanced --
+    // the same idiom the service's delete uses. Advancing here would not merely leave the markers
+    // behind: one never written samples as absent, so the advance CREATES a row for a namespace
+    // this is in the act of deleting, which nothing can ever read again.
+    // The overlay fence is composed in here, so the removal carries both.
+    MarkerStore.MarkerRemoval shapeMarkers =
+        markerStore.namespaceShapeMarkers(namespaceId).and(fence);
+    if (relationCount(namespace) > 0
+        || namespaces.hasDescendants(
+            namespace.getCatalogId().getAccountId(),
+            namespace.getCatalogId().getId(),
+            path(namespace).segments())) {
+      return false;
+    }
+    MutationMeta meta = namespaces.metaForSafe(namespaceId);
+    if (meta.getPointerVersion() == 0L) {
+      // Already gone -- another pass or another writer retired it. Nothing to do, and nothing lost:
+      // failing the fence here would retry the whole reconcile for a namespace that is not there.
+      return false;
+    }
+    if (!namespaces.deleteWhileShapeUnchanged(
+        namespaceId, meta.getPointerVersion(), shapeMarkers)) {
+      throw lostFence();
+    }
+    metadataGraph.invalidate(namespaceId);
+    topology.evictNamespaceRefs(namespace.getCatalogId());
+    return true;
+  }
+
+  /**
+   * A fence this reconcile pass lost. Retryable: the next pass reads what it has to contend with.
+   */
+  private static BaseResourceRepository.AbortRetryableException lostFence() {
+    return BaseResourceRepository.AbortRetryableException.lostFence(
+        "catalog overlay reconciliation");
+  }
+
+  /**
+   * A fence whose namespace has already been retired, reported as contention.
+   *
+   * <p>Any of these fences refuses a namespace that no longer exists. For a request that is a
+   * caller error; for a reconcile pass it is a race -- the overlay named it while it was there and
+   * another writer retired it since -- so a pass retries rather than failing.
+   */
+  private PointerConditions orRetry(Supplier<PointerConditions> fence) {
+    try {
+      return fence.get();
+    } catch (BaseResourceRepository.NotFoundException retired) {
+      throw lostFence();
+    }
+  }
+
+  private int relationCount(Namespace namespace) {
+    return NamespaceRepository.relationCount(
+        tables, views, namespace.getCatalogId(), namespace.getResourceId());
+  }
+
+  /**
+   * Invalidates the caches that name a relation, after its write has committed.
+   *
+   * <p>It does not touch the relation marker. A write that adds a relation asserts the marker in
+   * its own batch, so advancing it again here would cost an unrelated concurrent writer its fence
+   * for no gain; and a write that only removes one never needs to, because nothing is orphaned by a
+   * namespace that became emptier than the caller checked.
+   */
   private void relationChanged(ResourceId relationId, ResourceId namespaceId) {
-    markerStore.bumpNamespaceMarker(namespaceId);
     metadataGraph.invalidate(relationId);
     topology.evictRelationRefs(namespaceId);
   }
@@ -803,11 +905,6 @@ public class CatalogOverlayReconciler {
         .setId(UUID.randomUUID().toString())
         .setKind(kind)
         .build();
-  }
-
-  private static BaseResourceRepository.AbortRetryableException lostFence() {
-    throw new BaseResourceRepository.AbortRetryableException(
-        "Catalog Overlay changed or deletion began during reconciliation");
   }
 
   @FunctionalInterface

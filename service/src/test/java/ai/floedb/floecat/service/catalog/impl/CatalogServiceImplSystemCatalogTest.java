@@ -139,7 +139,6 @@ class CatalogServiceImplSystemCatalogTest {
             .setKind(ResourceKind.RK_CATALOG)
             .setId("already-gone")
             .build();
-    when(markerStore.catalogMarkerVersion(id)).thenReturn(0L);
     when(catalogRepo.metaFor(id))
         .thenThrow(new BaseResourceRepository.NotFoundException("catalog missing"));
     when(catalogRepo.metaForSafe(id)).thenReturn(MutationMeta.getDefaultInstance());

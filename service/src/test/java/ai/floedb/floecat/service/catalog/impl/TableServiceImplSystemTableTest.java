@@ -17,6 +17,7 @@ package ai.floedb.floecat.service.catalog.impl;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -44,6 +45,8 @@ import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.testsupport.TestPrincipals;
@@ -96,6 +99,14 @@ class TableServiceImplSystemTableTest {
     svc.hintCleaner = hintCleaner;
     svc.topology = topology;
     svc.metadataGraph = metadataGraph;
+    // Every relation write resolves a fence, so the update paths reach markerStore.
+    svc.markerStore = mock(MarkerStore.class);
+    when(svc.markerStore.relationMoveFence(any(), any(), anyBoolean()))
+        .thenReturn(GenericResourceRepository.PointerConditions.none());
+    when(svc.markerStore.relationsFence(any(ResourceId[].class)))
+        .thenReturn(GenericResourceRepository.PointerConditions.none());
+    when(svc.markerStore.relationCreateFence(any()))
+        .thenReturn(GenericResourceRepository.PointerConditions.none());
 
     // Minimal principal + authz behavior
     var pc = TestPrincipals.stubPrincipal(principal, authz);
@@ -283,7 +294,7 @@ class TableServiceImplSystemTableTest {
             StatusRuntimeException.class, () -> svc.updateTable(req).await().indefinitely());
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
-    verify(tableRepo, never()).update(any(), anyLong());
+    verify(tableRepo, never()).updateWhilePointersMatch(any(), anyLong(), any());
   }
 
   @Test
@@ -334,7 +345,8 @@ class TableServiceImplSystemTableTest {
     when(tableRepo.getById(tableId)).thenReturn(Optional.of(current));
     when(tableRepo.metaForSafe(tableId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(8L).build());
-    when(tableRepo.update(any(Table.class), anyLong())).thenReturn(true);
+    when(tableRepo.updateWhilePointersMatch(any(Table.class), anyLong(), any()))
+        .thenReturn(Optional.of(MutationMeta.newBuilder().setPointerVersion(8L).build()));
 
     var req =
         UpdateTableRequest.newBuilder()
@@ -350,7 +362,7 @@ class TableServiceImplSystemTableTest {
     svc.updateTable(req).await().indefinitely();
 
     ArgumentCaptor<Table> tableCaptor = ArgumentCaptor.forClass(Table.class);
-    verify(tableRepo).update(tableCaptor.capture(), anyLong());
+    verify(tableRepo).updateWhilePointersMatch(tableCaptor.capture(), anyLong(), any());
     Table updated = tableCaptor.getValue();
     assertEquals("new", updated.getPropertiesMap().get("external"));
     assertEquals("2", updated.getPropertiesMap().get(ManagedTableProperties.FORMAT_VERSION));
@@ -402,7 +414,9 @@ class TableServiceImplSystemTableTest {
             MutationMeta.newBuilder().setPointerVersion(7L).build(),
             MutationMeta.newBuilder().setPointerVersion(8L).build());
     when(tableRepo.getById(tableId)).thenReturn(Optional.of(current));
-    when(tableRepo.update(any(Table.class), anyLong())).thenReturn(false, true);
+    when(tableRepo.updateWhilePointersMatch(any(Table.class), anyLong(), any()))
+        .thenReturn(
+            Optional.empty(), Optional.of(MutationMeta.newBuilder().setPointerVersion(9L).build()));
     when(tableRepo.metaForSafe(tableId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(9L).build());
 
@@ -416,7 +430,8 @@ class TableServiceImplSystemTableTest {
     svc.updateTable(req).await().indefinitely();
 
     ArgumentCaptor<Long> versionCaptor = ArgumentCaptor.forClass(Long.class);
-    verify(tableRepo, times(2)).update(any(Table.class), versionCaptor.capture());
+    verify(tableRepo, times(2))
+        .updateWhilePointersMatch(any(Table.class), versionCaptor.capture(), any());
     assertEquals(List.of(7L, 8L), versionCaptor.getAllValues());
   }
 
@@ -464,7 +479,8 @@ class TableServiceImplSystemTableTest {
     when(tableRepo.metaFor(tableId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(7L).build());
     when(tableRepo.getById(tableId)).thenReturn(Optional.of(current));
-    when(tableRepo.update(any(Table.class), anyLong())).thenReturn(false);
+    when(tableRepo.updateWhilePointersMatch(any(Table.class), anyLong(), any()))
+        .thenReturn(Optional.empty());
     when(tableRepo.metaForSafe(tableId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(8L).build());
 
@@ -481,7 +497,7 @@ class TableServiceImplSystemTableTest {
             StatusRuntimeException.class, () -> svc.updateTable(req).await().indefinitely());
 
     assertEquals(Status.Code.FAILED_PRECONDITION, ex.getStatus().getCode());
-    verify(tableRepo).update(any(Table.class), anyLong());
+    verify(tableRepo).updateWhilePointersMatch(any(Table.class), anyLong(), any());
   }
 
   private UserTableNode userTableNode(

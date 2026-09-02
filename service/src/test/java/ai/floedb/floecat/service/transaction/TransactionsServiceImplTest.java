@@ -18,15 +18,19 @@ package ai.floedb.floecat.service.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -159,6 +163,66 @@ class TransactionsServiceImplTest {
         .verify(applier)
         .applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any());
     verify(intentRepo, never()).deleteBothIndicesBestEffort(intent);
+  }
+
+  /**
+   * A commit that only lost a pointer CAS retries in process instead of failing back to the client.
+   *
+   * <p>The relation-marker fence makes two commits into one namespace contend on a key they
+   * previously did not share, so without this loop the fence converts independent successes into
+   * client-visible {@code TS_APPLY_FAILED_RETRYABLE} at a rate that scales with concurrency.
+   */
+  @Test
+  void commitRetriesLocallyWhenItOnlyLostAPointerCas() throws Exception {
+    var service = newService();
+
+    Transaction txn = preparedTxn();
+    Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
+    Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
+    TransactionIntent intent = defaultIntent();
+
+    when(txRepo.getById("acct", "tx-1"))
+        .thenReturn(
+            Optional.of(txn), Optional.of(txn), Optional.of(txnApplying), Optional.of(txnApplied));
+    when(intentRepo.listByTx("acct", "tx-1")).thenReturn(List.of(intent));
+    when(intentRepo.getByTarget("acct", "/accounts/acct/custom/key-1"))
+        .thenReturn(Optional.of(intent));
+    // Lost the marker CAS once, then won.
+    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
+        .thenReturn(
+            TransactionIntentApplierSupport.ApplyOutcome.retryable(
+                "POINTER_TXN_CAS_FAILED", "pointer transaction conflict"),
+            TransactionIntentApplierSupport.ApplyOutcome.applied());
+    when(txRepo.metaFor("acct", "tx-1"))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(11L).build(),
+            MutationMeta.newBuilder().setPointerVersion(12L).build(),
+            MutationMeta.newBuilder().setPointerVersion(13L).build());
+    when(txRepo.update(
+            argThat(
+                updated -> updated != null && updated.getState() == TransactionState.TS_APPLYING),
+            anyLong()))
+        .thenReturn(true);
+
+    Transaction committed =
+        invokeCommitPrivate(
+            service,
+            "acct",
+            CommitTransactionRequest.newBuilder().setTxId("tx-1").build(),
+            Timestamps.fromMillis(10));
+
+    assertEquals(TransactionState.TS_APPLIED, committed.getState());
+    verify(applier, times(2))
+        .applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any());
+    // The retry re-reads the transaction pointer version: the batch it lost to may have moved it.
+    verify(txRepo, atLeast(2)).metaFor("acct", "tx-1");
+    verify(txRepo, never())
+        .update(
+            argThat(
+                updated ->
+                    updated != null
+                        && updated.getState() == TransactionState.TS_APPLY_FAILED_RETRYABLE),
+            anyLong());
   }
 
   @Test
@@ -1465,5 +1529,83 @@ class TransactionsServiceImplTest {
     Field f = target.getClass().getDeclaredField(field);
     f.setAccessible(true);
     f.set(target, value);
+  }
+
+  /**
+   * A batch of table deletes is charged for what a delete emits, not for what an upsert would.
+   *
+   * <p>A delete sentinel's planner emits three plan ops and never reads a namespace, so it costs
+   * five with cleanup where an upsert costs nine. Charging every table intent the upsert estimate
+   * roughly halved the batch a client could prepare -- a regression against the behaviour before
+   * any fence existed, not a conservative estimate. Nothing covered the op ceiling at all, which is
+   * how the estimate drifted three times.
+   */
+  @Test
+  void prepareChargesATableDeleteForWhatItEmitsRatherThanForAnUpsert() throws Exception {
+    // 19 deletes: 1 account fence + 19*5 + 1 finalize = 97, inside the 100-op ceiling.
+    assertEquals(TransactionState.TS_PREPARED, prepareTableDeletes(19).getState());
+
+    // 20 would be 102. The ceiling still holds -- this is not a widened limit.
+    var tooMany =
+        assertThrows(
+            java.lang.reflect.InvocationTargetException.class, () -> prepareTableDeletes(20));
+    assertInstanceOf(IllegalArgumentException.class, tooMany.getCause());
+    assertTrue(
+        tooMany.getCause().getMessage().contains("more than 100 pointer operations"),
+        "refused for the op ceiling, not something else: " + tooMany.getCause().getMessage());
+  }
+
+  private static Transaction prepareTableDeletes(int count) throws Exception {
+    var service = new TransactionsServiceImpl();
+    var txRepo = Mockito.mock(TransactionRepository.class);
+    var intentRepo = Mockito.mock(TransactionIntentRepository.class);
+    var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
+    var blobStore = Mockito.mock(ai.floedb.floecat.storage.spi.BlobStore.class);
+    var resolver = Mockito.mock(NameResolver.class);
+    var graphView = Mockito.mock(CatalogGraphView.class);
+
+    inject(service, "txRepo", txRepo);
+    inject(service, "intentRepo", intentRepo);
+    inject(service, "pointerStore", pointerStore);
+    inject(service, "blobStore", blobStore);
+    inject(service, "nameResolver", resolver);
+    inject(service, "graphView", graphView);
+
+    String accountId = "acct";
+    String txId = "tx-1";
+    Transaction txn =
+        Transaction.newBuilder()
+            .setAccountId(accountId)
+            .setTxId(txId)
+            .setState(TransactionState.TS_OPEN)
+            .setUpdatedAt(Timestamps.fromMillis(1))
+            .build();
+    when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
+    when(txRepo.metaFor(accountId, txId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(1L).build());
+    when(txRepo.update(any(), anyLong())).thenReturn(true);
+    when(pointerStore.get(anyString()))
+        .thenAnswer(
+            call ->
+                Optional.of(
+                    Pointer.newBuilder().setKey(call.getArgument(0)).setVersion(7L).build()));
+    when(graphView.resolve(any(ResourceId.class)))
+        .thenReturn(Optional.of(Mockito.mock(UserTableNode.class)));
+    when(intentRepo.getByTarget(anyString(), anyString())).thenReturn(Optional.empty());
+
+    var request = PrepareTransactionRequest.newBuilder().setTxId(txId);
+    for (int i = 0; i < count; i++) {
+      String tableId = "table-" + i;
+      String pointerKey = Keys.tablePointerById(accountId, tableId);
+      request.addChanges(
+          TxChange.newBuilder()
+              .setTableId(
+                  ResourceId.newBuilder()
+                      .setAccountId(accountId)
+                      .setId(tableId)
+                      .setKind(ResourceKind.RK_TABLE))
+              .setIntendedBlobUri(Keys.transactionDeleteSentinelUri(accountId, txId, pointerKey)));
+    }
+    return invokePreparePrivate(service, accountId, request.build(), Timestamps.fromMillis(10));
   }
 }

@@ -77,6 +77,16 @@ public class TableRepository {
     return repo.createWithMeta(table, completionFactory);
   }
 
+  /** Creates under the supplied fence and publishes companion operations in the same batch. */
+  public Optional<GenericResourceRepository.ResourceWithMeta<Table>>
+      createWithCompletionWhilePointersMatch(
+          Table table,
+          PointerConditions conditions,
+          Function<GenericResourceRepository.ResourceWithMeta<Table>, List<PointerStore.CasOp>>
+              completionFactory) {
+    return repo.createWithMeta(table, conditions, completionFactory);
+  }
+
   public Optional<MutationMeta> completeWithMetaIfUnchanged(
       Table table,
       long expectedPointerVersion,
@@ -103,12 +113,6 @@ public class TableRepository {
 
   public boolean delete(ResourceId tableResourceId) {
     return repo.delete(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
-  }
-
-  public boolean deleteWithPrecondition(ResourceId tableResourceId, long expectedPointerVersion) {
-    return repo.deleteWithPrecondition(
-        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()),
-        expectedPointerVersion);
   }
 
   public boolean deleteWhilePointersMatch(
@@ -153,6 +157,19 @@ public class TableRepository {
 
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
+  }
+
+  /**
+   * The count read strongly, for a caller whose decision depends on emptiness.
+   *
+   * <p>The eventually-consistent count cannot be fenced against. A marker is sampled with a
+   * consistent point read, so a table committed before that sample is already counted in the marker
+   * version -- and if the index has not caught up, an emptiness check reads zero, the CAS matches
+   * the version the write itself produced, and the delete commits over a live relation.
+   */
+  public int countConsistent(String accountId, String catalogId, String namespaceId) {
+    return repo.countByPrefixConsistent(
+        Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 
   /**

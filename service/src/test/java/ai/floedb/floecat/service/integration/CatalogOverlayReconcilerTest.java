@@ -43,8 +43,10 @@ import ai.floedb.floecat.catalog.access.CatalogViewDefinition;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
@@ -55,10 +57,12 @@ import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -83,16 +87,23 @@ class CatalogOverlayReconcilerTest {
   private CatalogIntegration integration;
   private CatalogOverlay overlay;
   private FakeCatalogClient client;
+  private InMemoryPointerStore pointers;
 
   @BeforeEach
   void setUp() {
-    var pointers = new InMemoryPointerStore();
+    var overlayCatalogId = id("catalog", ResourceKind.RK_CATALOG);
+    pointers = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
     integrations = new CatalogIntegrationRepository(pointers, blobs);
     overlays = new CatalogOverlayRepository(pointers, blobs);
     namespaces = spy(new NamespaceRepository(pointers, blobs));
     tables = new TableRepository(pointers, blobs);
     views = new ViewRepository(pointers, blobs);
+    // The fences assert the catalog still exists, so the catalog is a real row here. Under the
+    // mocked MarkerStore this test never needed one.
+    new CatalogRepository(pointers, blobs)
+        .create(
+            Catalog.newBuilder().setResourceId(overlayCatalogId).setDisplayName("sales").build());
 
     integration =
         CatalogIntegration.newBuilder()
@@ -104,7 +115,7 @@ class CatalogOverlayReconcilerTest {
     overlay =
         CatalogOverlay.newBuilder()
             .setResourceId(id("overlay", ResourceKind.RK_CATALOG_OVERLAY))
-            .setCatalogId(id("catalog", ResourceKind.RK_CATALOG))
+            .setCatalogId(overlayCatalogId)
             .setIntegrationId(integration.getResourceId())
             .setDisplayName("sales")
             .addIncludeNamespaces(
@@ -126,7 +137,11 @@ class CatalogOverlayReconcilerTest {
     reconciler.pointerStore = pointers;
     reconciler.tableRoots = mock(TableRootRepository.class);
     reconciler.rootWriter = mock(TableRootWriter.class);
-    reconciler.markerStore = mock(MarkerStore.class);
+    // A real MarkerStore over the same in-memory pointer store. A mock returning empty conditions
+    // passes whether the reconciler folds a fence into its batch or drops it on the floor, which is
+    // the failure this protocol calls silent and total -- so the fences here are real and the
+    // assertions read the marker versions they move.
+    reconciler.markerStore = markerStoreOver(pointers);
     reconciler.metadataGraph = mock(UserGraph.class);
     reconciler.topology = mock(TopologyGraph.class);
   }
@@ -181,10 +196,14 @@ class CatalogOverlayReconcilerTest {
             .getByName("acct", "catalog", europeNamespace.getResourceId().getId(), "summary")
             .isPresent());
 
-    clearInvocations(reconciler.markerStore, reconciler.metadataGraph, reconciler.topology);
+    clearInvocations(reconciler.metadataGraph, reconciler.topology);
+    var markersBefore = markerVersions();
     var second = reconcile();
     assertEquals(new CatalogOverlayReconciler.Result(0, 0, 0, 0, 0, 0, 0, 0), second);
-    verifyNoInteractions(reconciler.markerStore, reconciler.metadataGraph, reconciler.topology);
+    verifyNoInteractions(reconciler.metadataGraph, reconciler.topology);
+    // A pass that changes nothing writes nothing, markers included -- advancing one would cost a
+    // concurrent writer its fence for no reason.
+    assertEquals(markersBefore, markerVersions(), "a no-op pass moves no marker");
 
     client.children.put(sales, List.of());
     client.tables.clear();
@@ -194,6 +213,14 @@ class CatalogOverlayReconcilerTest {
     assertEquals(1, third.tablesDeleted());
     assertEquals(1, third.viewsDeleted());
     assertTrue(namespaces.getByPath("acct", "catalog", List.of("sales", "eu")).isEmpty());
+    // Retiring a namespace takes its markers with it. Advancing them instead does not merely leave
+    // a stale row: this namespace never had a children marker, so that marker samples as version
+    // zero and the advance CREATES a pointer row for a namespace deleted in the same batch --
+    // unreadable forever, since namespace ids never recur, and one per retired namespace per pass.
+    var retiredId = europeNamespace.getResourceId().getId();
+    assertTrue(
+        markerVersions().keySet().stream().noneMatch(key -> key.contains(retiredId)),
+        "the retired namespace leaves no marker row behind");
 
     reconciler.retireMaterializedResources(overlay);
     assertTrue(listLocalNamespaces().isEmpty());
@@ -260,6 +287,118 @@ class CatalogOverlayReconcilerTest {
             .getByName("acct", "catalog", namespace.getResourceId().getId(), "archived_orders")
             .orElseThrow()
             .getResourceId());
+  }
+
+  /**
+   * An update that moves a relation adds one to the destination namespace, so it has to pass that
+   * namespace's relation fence -- otherwise a concurrent namespace delete reads the destination as
+   * empty, commits, and the moved relation survives under a namespace id that is gone.
+   *
+   * <p>Asserted as participation rather than as a race: the fence is what a concurrent delete
+   * contends with, so requesting it is the property, and it is deterministic.
+   */
+  @Test
+  void anUpdateThatMovesARelationFencesOnlyTheDestinationNamespace() {
+    NamespacePath sales = NamespacePath.of("sales");
+    NamespacePath archive = NamespacePath.of("sales", "archive");
+    CatalogObjectName inSales = new CatalogObjectName(sales, "orders");
+    CatalogObjectName inArchive = new CatalogObjectName(archive, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of(archive));
+    client.children.put(archive, List.of());
+    client.tables.put(inSales, catalogTable(inSales, "orders-uuid"));
+
+    reconcile();
+    var from = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    var to = namespaces.getByPath("acct", "catalog", List.of("sales", "archive")).orElseThrow();
+
+    // Same stable identity under a different namespace: resolved through existingByIdentity, so
+    // the reconciler moves the existing row rather than creating a second one.
+    client.tables.clear();
+    client.tables.put(inArchive, catalogTable(inArchive, "orders-uuid"));
+    long fromBefore = relationsMarkerVersion(from.getResourceId());
+    long toBefore = relationsMarkerVersion(to.getResourceId());
+    var result = reconcile();
+
+    assertEquals(1, result.tablesUpdated());
+    assertEquals(0, result.tablesCreated());
+    // The destination marker moved, so it was in the batch that moved the table. Asking the
+    // MarkerStore for the fence proves nothing -- the reconciler could ask and then not pass it to
+    // the write. The source stays unchanged because removing a relation cannot orphan it there.
+    assertEquals(
+        fromBefore,
+        relationsMarkerVersion(from.getResourceId()),
+        "the namespace it leaves needs no fence");
+    assertTrue(
+        relationsMarkerVersion(to.getResourceId()) > toBefore,
+        "the namespace it lands in is fenced against a concurrent delete");
+  }
+
+  /**
+   * A materialized namespace joins its catalog's child set, not only its parent's.
+   *
+   * <p>Asserted on the marker version this pass actually moved, which is what a concurrent
+   * DeleteCatalog loses its CAS to. A namespace at the root of a catalog has no parent to join, so
+   * the catalog half is the only thing standing between it and that delete.
+   */
+  @Test
+  void materializingANamespaceAssertsItsCatalogsChildSet() {
+    NamespacePath sales = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+
+    long before = catalogChildrenMarkerVersion();
+    reconcile();
+
+    assertTrue(
+        catalogChildrenMarkerVersion() > before,
+        "materializing a namespace joins its catalog's child set, or a concurrent catalog delete"
+            + " passes its own fence and strands it");
+  }
+
+  /**
+   * Retiring a namespace is the same check-then-delete that DeleteNamespace is fenced against, so
+   * it carries the same guards: it must not delete a namespace that still has a child, and it must
+   * assert both shape markers so a relation or child landing after the check costs it the commit.
+   *
+   * <p>The child here is deliberately not owned by the overlay, which is what makes the case
+   * reachable: the ownership filter skips it, so nothing else would stop the parent going away
+   * underneath it.
+   */
+  @Test
+  void doesNotRetireANamespaceThatStillHasAChild() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+
+    reconcile();
+    var parent = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+
+    // A child the overlay does not own, as a user would have created it.
+    namespaces.create(
+        Namespace.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct")
+                    .setKind(ResourceKind.RK_NAMESPACE)
+                    .setId("ns-user-child")
+                    .build())
+            .setDisplayName("user_child")
+            .addAllParents(List.of("sales"))
+            .setCatalogId(parent.getCatalogId())
+            .build());
+
+    // Upstream drops the namespace entirely, so the reconciler wants to retire it.
+    client.children.put(NamespacePath.root(), List.of());
+    client.tables.clear();
+    var result = reconcile();
+
+    assertEquals(0, result.namespacesDeleted());
+    assertTrue(
+        namespaces.getByPath("acct", "catalog", List.of("sales")).isPresent(),
+        "retiring the parent would leave the child under a path with no row");
   }
 
   @Test
@@ -466,6 +605,51 @@ class CatalogOverlayReconcilerTest {
     assertThrows(BaseResourceRepository.AbortRetryableException.class, this::reconcile);
     verify(reconciler.rootWriter).replaceDefinitionIfMatches(any(), any(), any());
     verify(reconciler.tableRoots, never()).deleteWithPrecondition(any(), anyLong());
+  }
+
+  /**
+   * A real MarkerStore over the given pointer store.
+   *
+   * <p>Its {@code pointerStore} is package-private and this test is not in that package, so it is
+   * set reflectively rather than by widening production API for a test.
+   */
+  private static MarkerStore markerStoreOver(InMemoryPointerStore pointers) {
+    var markers = new MarkerStore();
+    try {
+      var field = MarkerStore.class.getDeclaredField("pointerStore");
+      field.setAccessible(true);
+      field.set(markers, pointers);
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException("could not wire MarkerStore for the test", e);
+    }
+    return markers;
+  }
+
+  /** The version of one marker row, zero when it has never been written. */
+  private long markerVersion(String key) {
+    return pointers.get(key).map(Pointer::getVersion).orElse(0L);
+  }
+
+  private long catalogChildrenMarkerVersion() {
+    return markerVersion(
+        Keys.catalogChildrenMarker(
+            overlay.getCatalogId().getAccountId(), overlay.getCatalogId().getId()));
+  }
+
+  private long relationsMarkerVersion(ResourceId namespaceId) {
+    return markerVersion(
+        Keys.namespaceRelationsMarker(namespaceId.getAccountId(), namespaceId.getId()));
+  }
+
+  /** Every marker row the store holds, by key, so a pass can be asserted to move none of them. */
+  private Map<String, Long> markerVersions() {
+    var versions = new HashMap<String, Long>();
+    for (var pointer : pointers.listPointersByPrefixConsistent("", Integer.MAX_VALUE, "", null)) {
+      if (pointer.getKey().contains("markers/")) {
+        versions.put(pointer.getKey(), pointer.getVersion());
+      }
+    }
+    return versions;
   }
 
   private CatalogOverlayReconciler.Result reconcile() {

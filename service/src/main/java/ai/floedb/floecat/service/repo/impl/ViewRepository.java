@@ -76,6 +76,14 @@ public class ViewRepository {
     return repo.createWithMeta(view, completionFactory);
   }
 
+  /** Creates under the supplied fence and publishes companion operations in the same batch. */
+  public Optional<ResourceWithMeta<View>> createWithCompletionWhilePointersMatch(
+      View view,
+      PointerConditions conditions,
+      Function<ResourceWithMeta<View>, List<PointerStore.CasOp>> completionFactory) {
+    return repo.createWithMeta(view, conditions, completionFactory);
+  }
+
   public Optional<MutationMeta> completeWithMetaIfUnchanged(
       View view,
       long expectedPointerVersion,
@@ -99,11 +107,6 @@ public class ViewRepository {
 
   public boolean delete(ResourceId viewResourceId) {
     return repo.delete(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
-  }
-
-  public boolean deleteWithPrecondition(ResourceId viewResourceId, long expectedPointerVersion) {
-    return repo.deleteWithPrecondition(
-        new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()), expectedPointerVersion);
   }
 
   public boolean deleteWhilePointersMatch(
@@ -148,6 +151,19 @@ public class ViewRepository {
 
   public int count(String accountId, String catalogId, String namespaceId) {
     return repo.countByPrefix(Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
+  }
+
+  /**
+   * The count read strongly, for a caller whose decision depends on emptiness.
+   *
+   * <p>The eventually-consistent count cannot be fenced against. A marker is sampled with a
+   * consistent point read, so a view committed before that sample is already counted in the marker
+   * version -- and if the index has not caught up, an emptiness check reads zero, the CAS matches
+   * the version the write itself produced, and the delete commits over a live relation.
+   */
+  public int countConsistent(String accountId, String catalogId, String namespaceId) {
+    return repo.countByPrefixConsistent(
+        Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 
   /**

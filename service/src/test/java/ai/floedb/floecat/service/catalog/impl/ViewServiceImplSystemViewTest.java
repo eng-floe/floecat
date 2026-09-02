@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.catalog.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -45,6 +46,8 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.testsupport.TestPrincipals;
@@ -83,6 +86,15 @@ class ViewServiceImplSystemViewTest {
     svc.authz = authz;
     svc.graphView = graphView;
     svc.metadataGraph = mock(UserGraph.class);
+    // A view create folds the namespace's relation fence into its batch, so the marker store has
+    // to answer with a real (empty) condition set rather than null.
+    svc.markerStore = mock(MarkerStore.class);
+    // A view create reaches relationCreateFence; an update that may move it reaches
+    // relationMoveFence. Both must answer with a real (empty) condition set rather than null.
+    when(svc.markerStore.relationMoveFence(any(), any(), anyBoolean()))
+        .thenReturn(GenericResourceRepository.PointerConditions.none());
+    when(svc.markerStore.relationCreateFence(any()))
+        .thenReturn(GenericResourceRepository.PointerConditions.none());
 
     var pc = TestPrincipals.stubPrincipal(principal, authz);
   }
@@ -220,7 +232,7 @@ class ViewServiceImplSystemViewTest {
     when(viewRepo.getByName(any(), any(), any(), any())).thenReturn(Optional.empty());
     doThrow(new BaseResourceRepository.NameConflictException("claimed by a table"))
         .when(viewRepo)
-        .create(any());
+        .createWhilePointersMatch(any(), any());
 
     StatusRuntimeException ex =
         assertThrows(
@@ -244,7 +256,7 @@ class ViewServiceImplSystemViewTest {
         .thenReturn(Optional.of(View.newBuilder().setDisplayName("orders").build()));
     doThrow(new BaseResourceRepository.NameConflictException("concurrent view"))
         .when(viewRepo)
-        .create(any());
+        .createWhilePointersMatch(any(), any());
 
     StatusRuntimeException ex =
         assertThrows(

@@ -315,6 +315,30 @@ public final class MutationOps {
     return meta;
   }
 
+  /**
+   * The error for a conditional write that did not commit.
+   *
+   * <p>A conditional write reports one failure for two causes: the caller's expected version was
+   * stale, or a fence in the same batch was lost. An unmoved canonical pointer means the second --
+   * and answering that with "expected 3, actual 3" is both nonsense and a claim that retrying is
+   * pointless, when retrying is exactly right.
+   *
+   * <p>Lives here rather than at each call site because both the delete paths and the update paths
+   * reach it, and a caller told "expected 7, actual 7" cannot tell that retrying is the right move.
+   */
+  public static RuntimeException lostFenceOrVersionMismatch(
+      String correlationId, String what, long expectedVersion, long actualVersion) {
+    if (actualVersion == expectedVersion) {
+      return BaseResourceRepository.AbortRetryableException.lostFence(what);
+    }
+    return GrpcErrors.preconditionFailed(
+        correlationId,
+        GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
+        Map.of(
+            "expected", Long.toString(expectedVersion),
+            "actual", Long.toString(actualVersion)));
+  }
+
   private static MutationMeta classifyDeleteConflict(
       boolean callerCares,
       long expected,
@@ -333,12 +357,8 @@ public final class MutationOps {
       throw GrpcErrors.notFound(
           correlationId, GeneratedErrorMessages.bySuffix(entity), notFoundKVs);
     }
-    throw GrpcErrors.preconditionFailed(
-        correlationId,
-        GeneratedErrorMessages.MessageKey.VERSION_MISMATCH,
-        Map.of(
-            "expected", Long.toString(expected),
-            "actual", Long.toString(nowMeta.getPointerVersion())));
+    throw lostFenceOrVersionMismatch(
+        correlationId, entity + " delete", expected, nowMeta.getPointerVersion());
   }
 
   private static MutationMeta requireMeta(

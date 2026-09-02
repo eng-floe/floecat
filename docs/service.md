@@ -67,8 +67,9 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
 
 - **CatalogServiceImpl** – Enforces `catalog.read`/`catalog.write` permissions, canonicalises names,
   uses `IdempotencyGuard` for Create, and ensures namespace cascading checks during Delete.
-- **NamespaceServiceImpl** – Handles hierarchical selectors, supports recursive listing, and ensures
-  `require_empty` semantics on deletion by inspecting repository counts.
+- **NamespaceServiceImpl** – Handles hierarchical selectors, supports recursive listing, refuses
+  restructuring that would strand descendants, and refuses deleting a namespace that still holds
+  child namespaces, tables, or views.
 - **TableServiceImpl** – Validates `UpstreamRef`, enforces unique names before writing, supports
   partial updates via `FieldMask`, and coordinates snapshot/statistics purging.
 - **ViewServiceImpl** – Stores SQL definitions and references to base tables.
@@ -165,6 +166,135 @@ Each repository extends `BaseResourceRepository<T>`:
 `BaseResourceRepository` also exposes `reserveAllOrRollback` for multi-key updates, and
 `compareAndDelete` semantics for CAS-based deletions. Tests ensure parity between in-memory and AWS
 implementations.
+
+### Namespace Shape Fencing
+A namespace's shape is its set of child namespaces plus its set of tables and views. Two secondary
+index keys are derived from a *different* row's mutable fields:
+
+| Derived key | Derived from |
+| --- | --- |
+| `namespaces/by-path/{path...}` | catalog id + ancestors' display names + own display name |
+| `{tables,views,relations}/by-name/{name}` | catalog id + namespace id + relation name |
+
+A repository recomputes secondary keys only for the row it writes, so nothing re-derives the keys of
+rows underneath. Renaming or re-parenting a namespace therefore moves its own `by-path` pointer
+while its descendants' pointers stay under the old path, and moving a namespace to another catalog
+re-keys its relations without moving their pointers. The service refuses these operations rather
+than performing a partial restructure:
+
+| Operation | Refused when | Asserts |
+| --- | --- | --- |
+| Rename namespace | it has any descendant namespace | `markers/children`, and its parent's when it has one |
+| Re-parent namespace | it has any descendant namespace | `markers/children`, and the destination parent's when it has one |
+| Move namespace to another catalog | it has any descendant namespace, table, or view | both markers, the destination catalog's child set, and the destination parent's when it has one |
+| Delete namespace | it has any descendant namespace, table, or view | both markers, removed with the row |
+| Move a namespace beneath itself | always | — |
+
+The check is for a descendant at any depth, not an immediate child. A depth-one check is only
+sufficient by induction: a descendant can only be added by a writer that asserts its parent's child
+marker, so the parent's marker is enough provided every namespace's parent exists. Every writer
+materialises its ancestors, so that holds going forward — but it did not always, so a row at `a/b/c`
+with no `a/b` row can exist from before, and an immediate-child check cannot see it. A prefix count
+also costs one read where a depth-one check costs a paged scan.
+
+Renaming a leaf that holds only relations is allowed, because a relation's key carries the namespace
+id rather than the path. Moving a namespace beneath itself is refused outright: the destination parent
+resolves to the namespace itself, so every emptiness check passes and the write then vacates the path
+it just claimed to live under.
+
+A rename joins its parent's child set, so it serializes against concurrent creates of its siblings
+for the same reason relation creates serialize with one another. A **top-level** namespace has no
+parent to join, so it asserts no parent condition; what covers that case is the catalog's own child
+set, below.
+
+The refusal is atomic with the write. `MarkerStore.childNamespacesFence` and
+`MarkerStore.relationsFence` return the marker versions as `PointerConditions.markerVersions`, which
+the repository compiles into its own CAS batch as "require this version, then advance it".
+
+Each call site samples them *before* the emptiness checks. That ordering is the call site's
+responsibility, not something these methods can enforce: a version sampled after the check is the
+version a concurrent writer already moved, so the assertion would confirm that writer instead of
+losing to it.
+
+Exclusion holds only because every writer that changes a shape participates in the same assertion.
+Two batches that share no key cannot lose to each other, so a single non-participating writer would
+void the guard rather than weaken it:
+
+| Writer | Asserts |
+| --- | --- |
+| `NamespaceServiceImpl` create, update, delete | the parent's or its own markers, in its own batch |
+| `TableServiceImpl`, `ViewServiceImpl` create and update | the destination relation marker and namespace row when a relation enters a container where it was not already counted; leaving the source needs no fence |
+| `TableServiceImpl`, `ViewServiceImpl` delete | nothing. A namespace delete racing a relation delete can only find the namespace emptier than it counted, which orphans nothing, so asserting here would cost a write to a hot key for no exclusion |
+| `CatalogOverlayReconciler` create, update, retire | the shape assertion joined onto its overlay fence via `PointerConditions.and` |
+| `TransactionIntentApplierSupport` table intents | the relation marker and the namespace's row, as CAS ops in the same pointer transaction -- on the same terms as a request, so only when the relation enters a container it was not already counted in |
+
+A writer that loses its assertion retries on the shared `FenceRetry` policy, the same budget and
+backoff as any other contended write, re-asserting on each attempt what the lost fence
+may have invalidated -- the namespace it is joining may have been deleted by whoever won. One that
+keeps losing raises a retryable abort.
+
+Because relation writes assert a marker per namespace, concurrent creates into one namespace
+serialize on it -- including the transaction commit path, which retries the whole batch when it
+loses. "Serialize" here means retry, not queue: without a local retry the loser surfaces to the
+client as `TS_APPLY_FAILED_RETRYABLE`, so the commit path carries the same bounded retry the request
+paths do. The marker is one key per namespace, so sustained concurrent writes into a single namespace
+still contend; sharding it is the remaining work.
+
+That cost is inherent to proving a namespace empty atomically. It is not enough for
+both writers merely to read a common key: the delete's emptiness check happens before its batch, so
+a create landing in between is only excluded if the create itself *writes* something the delete
+asserts. A read-dependency cannot do that, which is why the marker is advanced rather than checked.
+
+The two are used for different jobs. The marker excludes a namespace delete racing a relation write.
+A read-dependency on the namespace's own pointer -- which its delete removes -- excludes a relation
+write against a namespace that is *already* deleted, which the marker cannot catch because a write
+arriving afterwards samples the post-delete version and matches it. Relation writes carry both.
+
+Bootstrap seeding asserts these fences too, and materialises every ancestor on a path it seeds
+rather than writing a nested row directly. It is check-then-create, but it runs on an executor while
+traffic is served and, on a restart, seeds into a catalog and namespaces it did not create in that
+run -- so it is a concurrent writer against a user's delete or rename like any other. Writing a
+nested row without its ancestors would make it the one writer that could strand one: it would assert
+the catalog's child set but no ancestor's, so a user deleting that ancestor could sample its marker,
+scan before the seed row committed, and commit alongside it.
+
+### Catalog Deletion
+A catalog holds two kinds of child, counted separately: namespaces and catalog overlays. A namespace's
+`by-path` key embeds the catalog **id**, so a catalog deleted from under one leaves that namespace
+addressable under a catalog that does not exist.
+
+Only delete can do this. A catalog's own `by-name` key derives from its own display name, which the
+repository recomputes when it writes that row, and its children reference it by id — so renaming or
+moving a catalog re-keys nothing beneath it.
+
+| Operation | Refused when | Asserts |
+| --- | --- | --- |
+| Delete catalog | it holds any namespace, or any overlay | `catalogs/{id}/markers/children` and `catalogs/overlays-marker/{id}`, both in the delete's own batch |
+
+Each marker is asserted at the version read before the emptiness checks, and what is asserted depends
+on whether it exists. One that has been written is required at that version and **deleted** with the
+catalog rather than advanced — the resource it counts for is going, so advancing would leave a row
+behind counting nothing. One that has never been written is required **absent**, because the writer
+that adds the first child of that kind is the one that creates it, and that write then loses the batch
+carrying this assertion. Advancing a marker that was never written would not merely leave a stale row
+behind: an absent marker reads as version zero, so the advance would *create* a row for a resource
+being deleted in the same batch. The namespace count is read strongly, for the same reason the namespace
+guard's is: a marker is sampled with a consistent point read, so a namespace committed just before
+that sample is already in the marker version and an eventually-consistent count would read zero
+while the CAS matched.
+
+Every writer that adds a namespace to a catalog asserts that catalog's children marker in its own
+batch — `CreateNamespace`, the path-chain create behind it, `CatalogOverlayReconciler`'s
+materialization, a catalog move (which gains the destination catalog a child exactly as a create
+does), and bootstrap seeding. Seeding is fenced here even though it is check-then-create, because on
+a restart it seeds into a catalog it did not create in that run, which makes it a genuine concurrent
+writer against a user's `DeleteCatalog`.
+
+The catalog half is not a refinement of the parent-namespace fence. A namespace at the root of a
+catalog has no parent namespace, so its parent fence is empty and the catalog fence is the only thing
+standing between it and a concurrent delete.
+
+Namespace deletes assert nothing about their catalog. Removal is the direction that orphans nothing.
 
 ### Security and Context
 `InboundContextInterceptor` reads `x-query-id`, `x-engine-version`, and `x-correlation-id` headers,
@@ -305,8 +435,10 @@ Secrets Manager integration (tags + optional per-account assume-role) is documen
   UUIDv4 identifier, reserves `/accounts/{account}/catalogs/by-name/{name}` and `/by-id/{uuid}`
   pointer keys, writes the `catalog.pb` blob, and returns `MutationMeta`. If the caller supplies an
   `IdempotencyKey`, the repository short-circuits duplicates.
-- **Delete Namespace** – Namespace deletions with `require_empty=true` check child counts via
-  `NamespaceRepository.countChildren`. If tables exist, the service raises `MC_CONFLICT.namespace.not_empty`.
+- **Delete Namespace** – The service refuses a namespace that still holds child namespaces, tables,
+  or views, raising `MC_CONFLICT.namespace.not_empty`. The emptiness checks and the delete commit
+  together under the namespace's shape markers, so a child or relation created concurrently either
+  loses its assertion or makes the delete lose one.
 - **Query lease renewal** – Clients call `QueryService.RenewQuery` before `expires_at`; the store extends
   the TTL if the query remains `ACTIVE`. A stale or ended query returns `MC_NOT_FOUND.query.not_found`.
 

@@ -105,9 +105,57 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/deleting
 /accounts/{account_id}/catalogs/{catalog_id}/markers/children
 /accounts/{account_id}/namespaces/{namespace_id}/markers/children
+/accounts/{account_id}/namespaces/{namespace_id}/markers/relations
 /accounts/{account_id}/gc/cas/generation-cursor
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
 ```
+
+A catalog carries a `markers/children` marker versioning its set of namespaces. Every writer that
+adds one asserts and advances it in its own batch — the namespace services, the overlay reconciler,
+a catalog move, and bootstrap seeding — and a catalog delete requires both it and the overlays
+marker, removing each with the catalog rather than advancing markers that would then count nothing.
+A marker that has never been written is required **absent** instead: it reads as version zero, so
+advancing it would create a row for a resource the same batch is deleting, and requiring it absent is
+what makes the writer that adds the first child of that kind lose to this delete. A namespace delete asserts nothing about it: removal is the direction that orphans nothing.
+
+Two operations assert nothing here, and for the same reason: deleting a relation, and deleting a
+child namespace. Both are the removal direction — a namespace delete racing either can only find the
+namespace emptier than it counted, which orphans nothing — so asserting would cost a write to a hot
+key for an exclusion neither needs. A rename asserts its parent's child set but not its catalog's:
+within one catalog the set of namespaces is unchanged, so a concurrent catalog delete counts this row
+and refuses either way.
+
+A namespace carries two shape markers. `markers/children` versions its set of child namespaces
+and `markers/relations` versions its set of tables and views. They are separate because the
+operations that consult them differ: a namespace's `by-path` pointer is derived from its ancestors'
+names, so a rename re-keys child namespaces, while a relation's `by-name` pointer carries the
+namespace id and is untouched by a rename. Only a catalog move disturbs both, because the catalog
+appears in both derived keys.
+
+Every write that changes a namespace's shape asserts the relevant marker at the version it read and
+advances it inside its own pointer transaction, so a shape check and the write it guards commit
+together or neither does:
+
+```text
+                     markers/children              markers/relations
+                       (of the PARENT)                (of the NAMESPACE)
+                            |                              |
+  create a child -----------+                              +------ create a table or view
+  namespace                 |                              |
+  rename namespace ---------+                              |
+  re-parent namespace ------+                              |
+                            |                              +------ move a relation between
+                            |                                      namespaces (destination only)
+  move namespace to --------+------------------------------+
+  another catalog
+
+                     markers/children              markers/relations
+                       (of the NAMESPACE, both removed with the row)
+                            |                              |
+  delete namespace ---------+------------------------------+
+```
+
+A writer that loses its assertion retries; one that keeps losing fails with a retryable abort.
 
 An overlay references an existing Catalog. Its `by-integration` and `by-catalog` dependency
 pointers are written and removed atomically with the overlay resource. Fixed generation markers on

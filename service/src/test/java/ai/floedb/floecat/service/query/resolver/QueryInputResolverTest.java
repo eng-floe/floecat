@@ -707,7 +707,6 @@ public class QueryInputResolverTest {
   }
 
   /** A snapshot_id override of zero is valid and must be preserved end-to-end. */
-  /** A snapshot_id override of zero is valid and must be preserved end-to-end. */
   @Test
   void snapshot_override_id_zero() {
     NameRef n = name("c", "ns", "t2z");
