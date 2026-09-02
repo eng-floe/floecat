@@ -20,20 +20,18 @@ callbacks.
 
 | Discipline | Implementation | What it holds | Freshness contract |
 |------------|----------------|---------------|--------------------|
-| Versioned pointers | `PointerTtlCache` (`service/repo/cache/`) | Root pointer (`TableRootRepository`, `floecat.root.pointer-cache-ttl-seconds`, default 2) and table-definition metas (`GraphCacheManager`, `floecat.metadata.graph.meta-cache-ttl-seconds`, default 2) | Short TTL bounds cross-instance staleness. Version-guarded populate (`putIfFresher`) keeps the highest pointer version; absence is never cached; writes invalidate then repopulate from a live read (read-your-writes on the writing instance). The root commit funnel bypasses the cache entirely via `metaForSafeLive` — CAS needs fresh versions. TTL 0 disables. |
-| Immutable decoded content | `ImmutableBlobCache` (`service/repo/cache/`) | Decoded root blobs, snapshot-manifest pages, catalog/namespace/table/view/snapshot/constraints blobs, stats generation manifests, plus derived forms: manifest-entry indexes (`headUri + "#index"`) and graph nodes (`blobUri + "#node"`) | Content-addressed, so no invalidation. Byte-weighted LRU: `serializedSize × 3` retained-heap estimate, 256 MB default, 15-minute access TTL, single-flight loads, absence never cached. Config `floecat.blob.cache.*`; kill switch `floecat.blob.cache.enabled=false`. Only `casBlobs` schemas route through it — blobs overwritten in place must never be cached by URI. |
+| Pointers | `CachingPointerStore` decorating `PointerStore`, holding a `MemoryCache` from `core/cache` | Every pointer read through the `@CachedPointerStore` view; prefix listings remain live store operations | No expiry. Writes **publish** rather than invalidate — the writer already holds the new value, so the next reader hits. Publication is presence-guarded, version-ordered and fenced against concurrent loads; deletes and prefix deletes evict. Sits *under* both store views, so every write is seen whoever built it — pointer keys arrive from clients via `TxChange.target_pointer_key`, so no maintained key-family allowlist can be complete. The unqualified `PointerStore` is authoritative by default; query-serving modules opt into `@CachedPointerStore` once at injection, rather than choosing consistency at each call. Authoritative reads repair any cached disagreement. |
+| Immutable decoded content | `ImmutableBlobCache` (`service/repo/cache/`) | Decoded root blobs, snapshot-manifest pages, catalog/namespace/table/view/snapshot/constraints blobs, stats generation manifests, plus derived forms: manifest-entry indexes (`headUri + "#index"`) and graph nodes (`blobUri + "#node"`) | Content-addressed, so no invalidation. Byte-weighted, with Caffeine's TinyLFU admission rather than plain LRU: `serializedSize × 3` retained-heap estimate, 256 MB default, 15-minute access TTL, single-flight loads, absence never cached. Config `floecat.blob.cache.*`; kill switch `floecat.blob.cache.enabled=false`. Only `casBlobs` schemas route through it — blobs overwritten in place must never be cached by URI. |
 | Membership lists | `CatalogTopologyCache` (`service/metagraph/cache/`) | Namespace refs per catalog and relation (table/view) refs per namespace, from pointer prefix scans | 15-minute access TTL (`floecat.topology.cache-ttl-minutes`; sizes `floecat.topology.ns-cache-size`=10000, `floecat.topology.rel-cache-size`=5000). DDL services evict on write, so same-process listings are immediately current; cross-instance staleness is bounded by the TTL. |
 | Per-query state | `QueryContextStore` and per-query memos | `QueryContext` (pins, snapshot set, expansion map) keyed by query ID | Scoped to one query lease; consistency comes from pinning, not freshness. |
 
-The `ImmutableBlobCache` budget is **shared across all tenants**. The previous design kept a
-dedicated node cache per account so eviction pressure was isolated between tenants; folding nodes
-into the process-wide cache trades that isolation for byte-accurate weighing, one budget to
-operate, and cross-layer sharing (a node and the pages it came from compete honestly for the same
-memory). One tenant's wide-schema or long-history scans can therefore evict another tenant's hot
-entries — softened by Caffeine's TinyLFU admission policy, which favors frequently reused entries
-over one-shot scan traffic. Operators should also note the knob-semantics change:
-`floecat.metadata.graph.cache-max-size` used to bound cached nodes per account; it now only gates
-node caching (`0` = off) and sizes the pointer-meta cache, while node memory is governed by
+The `ImmutableBlobCache` budget is **shared across all tenants**, which buys byte-accurate
+weighing, one budget to operate, and cross-layer sharing — a node and the pages it came from
+compete honestly for the same memory. The cost is that one tenant's wide-schema or long-history
+scans can evict another tenant's hot entries, softened by Caffeine's TinyLFU admission policy,
+which favours frequently reused entries over one-shot scan traffic.
+
+`floecat.metadata.graph.cache-max-size` gates node caching (`0` = off); node memory is governed by
 `floecat.blob.cache.max-weight-bytes`.
 
 `StatsOrchestrator` additionally keeps its own byte-weighted 256 MB cache of decoded
@@ -90,9 +88,47 @@ proportional share over-allocates it on a wide catalog and starves it on a narro
 same fixed need is a much larger fraction of a much smaller total. `max-bytes` is what pins it
 against that, and exceeding the budget costs store reads rather than wrong answers.
 
-The caches in the table above are unchanged: nothing is wired to this contract yet. What exists is
-the in-memory primitive, its weigher, and the budget derivation. The pointer-cache layer will add
-pointer-specific publication and authoritative listing semantics at the `PointerStore` boundary.
+The pointer cache is the first layer built on the shared in-memory contract; the other three
+disciplines above are unchanged.
+
+## What a cache reports
+
+A cache built on the `core/cache` contract publishes the same series, tagged by cache name, so
+those are comparable and a new one brings its telemetry with it. `ImmutableBlobCache` and
+`CatalogTopologyCache` predate the contract and publish their own subset; `graph-cache` is node-load
+timing, not a cache.
+
+| question | series |
+|---|---|
+| Is it on? | `floecat_core_cache_enabled` |
+| Is it being used, and is it working? | `floecat_core_cache_hits` / `..._misses` |
+| What does a miss cost? | `floecat_core_cache_latency`, recorded per load |
+| Are loads failing? | `floecat_core_cache_errors` |
+| How full is it? | `floecat_core_cache_weighted_size_bytes` against `..._max_weight_bytes` |
+| How many entries? | `floecat_core_cache_entries` |
+| Is the budget too small? | `floecat_core_cache_evictions` and `..._evicted_weight_bytes` |
+| Has it stopped warming? | `floecat_core_cache_loads_discarded` — a load whose value was not retained because a write may have raced it |
+
+Hits and misses are counted as they happen rather than derived from a running total, because a rate
+computed from a cumulative gauge cannot tell an idle cache from one that is missing everything.
+
+Nothing expires in the pointer cache. The eviction series count only capacity-driven removals;
+explicit deletes, prefix sweeps, and authoritative-read repairs are not included. A non-zero
+eviction rate therefore directly signals size pressure. The weight alongside the count
+distinguishes many small evictions from a few large ones.
+
+## Turning the pointer cache off
+
+`floecat.cache.pointer.enabled=false` installs the raw pointer store instead of the caching
+decorator, so the read path becomes the pre-cache one. Off means the decorator is not there, not
+that a cache is there holding nothing.
+
+A budget of zero is *not* the switch — it is refused at startup, because a cache sized zero reports
+a 0% hit rate that reads as a cache which is not helping rather than one that was turned off.
+
+There is also no flag that stops publishing while leaving the cache populated, and there should not
+be: publishing is what keeps a pointer current — nothing expires — so a populated cache that is not
+published to serves whatever it last loaded, indefinitely.
 
 ## Deliberately live reads
 These reads bypass every cache because their result is a detector, not content:
@@ -105,6 +141,7 @@ These reads bypass every cache because their result is a detector, not content:
 | Dangling-pointer verdict | `NodeLoader.reload` | Emptiness is the verdict itself: a resident decode would report a healthy node over a pointer whose blob is gone. |
 | Reusable-candidate load | `SnapshotRepository.loadReusableCandidate` | Emptiness raises a retryable storage abort: the candidate is expected to be there, so a resident decode of a swept blob would let the reuse path proceed on a candidate the store no longer holds. |
 | Commit funnel, pointer and blob | `TableRootCommitter` | The CAS needs an expected version no cached pointer can supply, and the base blob's emptiness is the corruption detector. |
+| Every pointer read in the GC | `PointerGc`, `CasBlobGc`, `ReconcileJobGc`, `TransactionGc` | The GC deletes based on what it reads. A stale canonical pointer makes a live name pointer look orphaned and CAS-deletes it; a stale root pointer puts a superseded blob in the mark set and omits the current one, which is then swept. `ConsistentReadRulesTest` holds the line. |
 
 Pinned **blob** reads are not among them. The blob a pin names is immutable and content-addressed,
 so a resident decode of it *is* the pinned content rather than a stale view — the pinned table,
@@ -126,11 +163,18 @@ emptiness is load-bearing.
 
 | Observation | Bound | Governed by |
 |-------------|-------|-------------|
-| Cross-instance DDL visibility (which blob a definition pointer names) | ≤ 2 s | Graph meta cache TTL (`floecat.metadata.graph.meta-cache-ttl-seconds`) |
-| Table currency (which root is current) | ≤ 2 s cross-instance; read-your-writes on the writing instance for update/create | Root pointer cache TTL (`floecat.root.pointer-cache-ttl-seconds`) plus invalidate-then-live-refresh on writes |
+| Cross-instance DDL visibility (which blob a definition pointer names) | **unbounded by time** | Nothing expires. A publish refreshes the replica that made the write; another replica holding the same key keeps its value until it writes that key or reads it authoritatively. Reads that cannot tolerate this do not take it: the commit funnel, the pin guards and the whole GC receive the unqualified authoritative store view, which repairs the cached entry on the way back. |
+| Table currency (which root is current) | none within the replica that committed; cross-instance as above | `CachingPointerStore` publishing under the store, version-guarded |
 | Catalog/namespace listings | ≤ 15 min cross-instance; immediate same-process | Topology cache TTL plus evict-on-write from DDL services |
 | Pinned data read within a query | None by construction | Immutable blobs plus live integrity reads |
 
-Defaults for `floecat.root.pointer-cache-ttl-seconds` and `floecat.blob.cache.*` are set in
-`service/src/main/resources/application.properties`; the graph meta TTL and `floecat.topology.*`
-defaults come from their `@ConfigProperty` declarations (`UserGraph`, `CatalogTopologyCache`).
+Cache budgets derive from the container: `floecat.cache.total-bytes` defaults to a share of the
+maximum heap, which the JVM already sizes from the container memory limit, and each cache takes a
+share of that. The knobs the pointer cache reads are `floecat.cache.total-bytes`,
+`floecat.cache.heap-share`, `floecat.cache.pointer.share` and `floecat.cache.pointer.max-bytes`,
+the last pinning an absolute size instead of a share; a share outside `(0, 1]` fails at startup.
+`heap-share` and `pointer.share` carry defaults in
+`service/src/main/resources/application.properties`, alongside `floecat.blob.cache.*`;
+`total-bytes` and `pointer.max-bytes` are unset, and each is a share until it is given a value.
+`floecat.topology.*` defaults come from their `@ConfigProperty` declarations
+(`CatalogTopologyCache`).

@@ -54,7 +54,8 @@ query lifecycle / scan bundle logic.
   `QueryServiceImpl`).
 - `service/metagraph` – MetadataGraph runtime (façade, loader, resolvers, hint manager, topology
   cache); the immutable node models live in `core/metagraph`, and the shared caches
-  (`ImmutableBlobCache`, `PointerTtlCache`) in `service/repo/cache/` (see
+  (`ImmutableBlobCache` for decoded blobs, `CachingPointerStore` for pointers) in
+  `service/repo/cache/` (see
   [`docs/metadata-graph.md`](metadata-graph.md) and [`docs/caching.md`](caching.md)).
 - `service/gc` – Scheduled cleanup for idempotency records, orphan pointers/blobs, stale transaction
   artifacts, and durable reconcile jobs.
