@@ -99,4 +99,33 @@ class CacheMetricsTest {
         .contains(Tag.of(TagKey.COMPONENT, "svc"), Tag.of(TagKey.OPERATION, "op"))
         .contains(Tag.of(TagKey.CACHE_NAME, "users"));
   }
+
+  @Test
+  void recordsAnEvictionAndTheWeightItReleased() {
+    // Both counters, always: read together they tell many small evictions from a few large ones,
+    // and a count with no weight beside it cannot.
+    TestObservability observability = new TestObservability();
+    CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "users");
+
+    metrics.recordEviction(4_096L);
+    metrics.recordEviction(1_024L);
+
+    assertThat(observability.counterValue(Telemetry.Metrics.CACHE_EVICTIONS)).isEqualTo(2d);
+    assertThat(observability.counterValue(Telemetry.Metrics.CACHE_EVICTED_WEIGHT))
+        .isEqualTo(5_120d);
+  }
+
+  @Test
+  void recordsALoadDiscardedBecauseAWriteMayHaveRacedIt() {
+    // The one cache failure that looks like health: the caller is served correctly either way, so
+    // without its own series a cache that has stopped warming reports a steady miss count and
+    // nothing else.
+    TestObservability observability = new TestObservability();
+    CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "users");
+
+    metrics.recordLoadDiscarded();
+    metrics.recordLoadDiscarded();
+
+    assertThat(observability.counterValue(Telemetry.Metrics.CACHE_LOADS_DISCARDED)).isEqualTo(2d);
+  }
 }

@@ -40,6 +40,26 @@
     "allowedTags": ["account", "cache", "component", "exception", "operation", "result"]
   },
   {
+    "name": "floecat.core.cache.evicted.weight.bytes",
+    "type": "COUNTER",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "description": "Retained bytes released by eviction, tagged by cache name. Read with evictions to tell many small entries from few large ones.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.evictions",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Entries evicted to stay within the cache's budget, tagged by cache name. For a cache with no expiry this is the signal that its budget is too small.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
     "name": "floecat.core.cache.hits",
     "type": "COUNTER",
     "unit": "",
@@ -58,6 +78,16 @@
     "description": "Cache latency distribution for operations.",
     "requiredTags": ["cache", "component", "operation", "result"],
     "allowedTags": ["account", "cache", "component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.cache.loads.discarded",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Loads whose value was not retained because a write may have raced the key while it was being loaded, tagged by cache name. Raised on both the read-through and the batch path. A sustained rate means the cache is not warming.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
   },
   {
     "name": "floecat.core.cache.max.entries",
