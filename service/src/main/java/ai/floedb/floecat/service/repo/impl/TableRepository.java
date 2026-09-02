@@ -256,6 +256,12 @@ public class TableRepository {
         new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
+  /** The same read, past the cache, for a caller whose verdict a stale pointer would invert. */
+  public MutationMeta pointerMetaForSafeConsistent(ResourceId tableResourceId) {
+    return repo.pointerMetaForSafeConsistent(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
   public Optional<Table> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);

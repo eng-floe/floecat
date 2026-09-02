@@ -65,6 +65,11 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
           }
 
           @Override
+          public Optional<Pointer> getConsistent(String key) {
+            return policy.read(() -> pointers.getConsistent(key));
+          }
+
+          @Override
           public List<Pointer> list(
               String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
             return policy.read(
@@ -118,6 +123,9 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
   public interface Pointers {
     /** Read one pointer by its canonical storage key. */
     Optional<Pointer> get(String key);
+
+    /** As {@link #get}, but never from a cache -- for CAS versions, liveness and GC verdicts. */
+    Optional<Pointer> getConsistent(String key);
 
     /** Read one ordered page and append the continuation token to {@code nextTokenOut}. */
     List<Pointer> list(String prefix, int limit, String pageToken, StringBuilder nextTokenOut);

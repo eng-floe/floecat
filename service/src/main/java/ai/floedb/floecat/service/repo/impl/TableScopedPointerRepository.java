@@ -86,6 +86,11 @@ public abstract class TableScopedPointerRepository<T> {
     return repo.metaFor(key(tableId));
   }
 
+  /** Pointer meta read past any cache, for CAS versions and for probes whose emptiness answers. */
+  public MutationMeta metaForSafeConsistent(ResourceId tableId) {
+    return repo.metaForSafeConsistent(key(tableId));
+  }
+
   /**
    * Pointer meta without throwing when absent: version 0 and empty blob uri for a missing record.
    */

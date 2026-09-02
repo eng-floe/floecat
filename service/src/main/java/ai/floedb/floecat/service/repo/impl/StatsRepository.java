@@ -2783,11 +2783,15 @@ public class StatsRepository implements StatsStore {
       this.blobCache = blobCache;
     }
 
+    // The three-argument form: it is the one every path reaches, so this bundle handling applies
+    // to get, the mutation read and the batch reload alike.
     @Override
     protected Optional<TargetStatsRecord> loadAndParseReferencedBlob(
-        String pointerKey, String blobUri) {
+        String pointerKey,
+        String blobUri,
+        ai.floedb.floecat.service.repo.util.RepositoryReads.Blobs blobs) {
       if (!ReusableArtifactBundleUris.isBundleUri(blobUri)) {
-        return super.loadAndParseReferencedBlob(pointerKey, blobUri);
+        return super.loadAndParseReferencedBlob(pointerKey, blobUri, blobs);
       }
       Optional<ReusableArtifactBundlePayload> bundle =
           blobCache == null ? loadBundle(blobUri) : blobCache.get(blobUri, this::loadBundle);
@@ -2928,7 +2932,7 @@ public class StatsRepository implements StatsStore {
         List<PointerStore.CasOp> creates = new ArrayList<>();
         List<PrewrittenStatsWrite> missing = new ArrayList<>();
         for (PrewrittenStatsWrite write : remaining) {
-          Pointer existing = mutationPointerStore.get(write.pointerKey()).orElse(null);
+          Pointer existing = mutationPointerStore.getConsistent(write.pointerKey()).orElse(null);
           if (existing != null) {
             requireExactReference(write, existing);
             continue;
@@ -2949,7 +2953,7 @@ public class StatsRepository implements StatsStore {
 
     private void verifyExactReferences(List<PrewrittenStatsWrite> writes) {
       for (PrewrittenStatsWrite write : writes) {
-        Pointer existing = mutationPointerStore.get(write.pointerKey()).orElse(null);
+        Pointer existing = mutationPointerStore.getConsistent(write.pointerKey()).orElse(null);
         if (existing == null) {
           throw new AbortRetryableException(
               "prewritten target stats reference is missing: " + write.pointerKey());
@@ -2981,7 +2985,7 @@ public class StatsRepository implements StatsStore {
         List<PrewrittenStatsWrite> nextRemaining = new ArrayList<>();
         List<PointerStore.CasOp> ops = new ArrayList<>();
         for (PrewrittenStatsWrite write : remaining) {
-          Pointer existing = mutationPointerStore.get(write.pointerKey()).orElse(null);
+          Pointer existing = mutationPointerStore.getConsistent(write.pointerKey()).orElse(null);
           if (existing != null && write.blobUri().equals(existing.getBlobUri())) {
             continue;
           }
@@ -3016,7 +3020,7 @@ public class StatsRepository implements StatsStore {
       putBlob(blobUri, value);
       try {
         for (int attempt = 0; attempt < CAS_MAX; attempt++) {
-          Pointer existing = mutationPointerStore.get(pointerKey).orElse(null);
+          Pointer existing = mutationPointerStore.getConsistent(pointerKey).orElse(null);
           long expectedVersion = existing == null ? 0L : existing.getVersion();
           if (existing != null && blobUri.equals(existing.getBlobUri())) {
             return;
@@ -3046,7 +3050,7 @@ public class StatsRepository implements StatsStore {
       // that content-hash images can map distinct records to one blobUri (timestamp-only resubmits
       // share a blob), writing the blob before this check would overwrite the live record's bytes
       // and still return false on the CAS miss. Check the pointer first and write nothing.
-      if (mutationPointerStore.get(pointerKey).isPresent()) {
+      if (mutationPointerStore.getConsistent(pointerKey).isPresent()) {
         return false;
       }
       String accountId = value.getTableId().getAccountId();
@@ -3088,7 +3092,7 @@ public class StatsRepository implements StatsStore {
         while (!remaining.isEmpty()) {
           List<TargetStatsWrite> absent = new ArrayList<>(remaining.size());
           for (TargetStatsWrite write : remaining) {
-            if (mutationPointerStore.get(write.pointerKey()).isEmpty()) {
+            if (mutationPointerStore.getConsistent(write.pointerKey()).isEmpty()) {
               absent.add(write);
             }
           }
@@ -3114,7 +3118,7 @@ public class StatsRepository implements StatsStore {
             }
             for (int offset = 0; offset < batch.size(); offset++) {
               TargetStatsWrite write = batch.get(offset);
-              Pointer pointer = mutationPointerStore.get(write.pointerKey()).orElse(null);
+              Pointer pointer = mutationPointerStore.getConsistent(write.pointerKey()).orElse(null);
               if (pointer == null) {
                 nextRemaining.add(write);
                 continue;
@@ -3172,7 +3176,7 @@ public class StatsRepository implements StatsStore {
         }
         List<TargetStatsWrite> nextRemaining = new ArrayList<>();
         for (TargetStatsWrite write : remaining) {
-          Pointer pointer = mutationPointerStore.get(write.pointerKey()).orElse(null);
+          Pointer pointer = mutationPointerStore.getConsistent(write.pointerKey()).orElse(null);
           if (pointer == null) {
             nextRemaining.add(write);
             continue;
@@ -3234,7 +3238,7 @@ public class StatsRepository implements StatsStore {
       if (blobExistedBefore || blobUri.isBlank()) {
         return;
       }
-      Pointer pointer = mutationPointerStore.get(pointerKey).orElse(null);
+      Pointer pointer = mutationPointerStore.getConsistent(pointerKey).orElse(null);
       if (pointer != null && blobUri.equals(pointer.getBlobUri())) {
         return;
       }

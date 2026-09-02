@@ -539,9 +539,9 @@ public class SnapshotRepository {
    */
   private RootLookup lookupRoot(ResourceId tableId) {
     for (int attempt = 0; attempt < 2; attempt++) {
-      // The retry exists to observe a FRESH pointer after a supersede+sweep race; through the TTL
-      // pointer cache it would just re-read the same dead URI, so the second attempt goes live
-      // (which also evicts the stale entry for every other consumer).
+      // The retry exists to observe a FRESH pointer after a supersede+sweep race; through the
+      // pointer cache it would just re-read the same dead URI, so the second attempt goes past it
+      // (which also drops the stale entry for every other consumer).
       MutationMeta meta =
           attempt == 0 ? roots.metaForSafe(tableId) : roots.metaForSafeLive(tableId);
       if (meta == null || meta.getBlobUri().isEmpty()) {

@@ -216,6 +216,12 @@ public class ViewRepository {
         new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
 
+  /** The same read, past the cache, for a caller whose verdict a stale pointer would invert. */
+  public MutationMeta pointerMetaForSafeConsistent(ResourceId viewResourceId) {
+    return repo.pointerMetaForSafeConsistent(
+        new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
+  }
+
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
   public Optional<View> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);
