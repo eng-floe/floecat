@@ -951,6 +951,46 @@ class TransactionIntentApplierSupportTest {
   }
 
   /**
+   * Re-sampling one namespace for a later intent must not turn ordinary marker contention into a
+   * terminal duplicate-key conflict.
+   *
+   * <p>The first sampled guard remains the batch's condition. If another writer advances the marker
+   * before the second intent is planned, the eventual CAS loses and the whole transaction is
+   * retried from fresh state.
+   */
+  @Test
+  void applyTransactionTreatsAMarkerChangeBetweenSharedNamespaceJoinsAsRetryable()
+      throws Exception {
+    String accountId = "acct";
+    String namespaceId = "ns-1";
+    String markerKey = Keys.namespaceRelationsMarker(accountId, namespaceId);
+    var pointers = new BumpOnSecondReadPointerStore(markerKey);
+    var blobs = new InMemoryBlobStore();
+    var intentRepo = new TransactionIntentRepository(pointers, blobs);
+    var support = newSupport(pointers, blobs);
+    seedNamespace(pointers, accountId, namespaceId);
+
+    Table orders = table(accountId, "cat-1", namespaceId, "table-1", "orders");
+    Table invoices = table(accountId, "cat-1", namespaceId, "table-2", "invoices");
+    String ordersBlob = "/accounts/acct/tables/table-1/table/blob.pb";
+    String invoicesBlob = "/accounts/acct/tables/table-2/table/blob.pb";
+    blobs.put(ordersBlob, orders.toByteArray(), "application/x-protobuf");
+    blobs.put(invoicesBlob, invoices.toByteArray(), "application/x-protobuf");
+
+    var outcome =
+        support.applyTransactionBestEffort(
+            List.of(
+                tableCreateIntent(accountId, "tx-1", "table-1", ordersBlob, 1L),
+                tableCreateIntent(accountId, "tx-1", "table-2", invoicesBlob, 2L)),
+            intentRepo);
+
+    assertEquals(TransactionIntentApplierSupport.ApplyStatus.RETRYABLE, outcome.status());
+    assertEquals("POINTER_TXN_CAS_FAILED", outcome.errorCode());
+    assertTrue(pointers.get(Keys.tablePointerById(accountId, "table-1")).isEmpty());
+    assertTrue(pointers.get(Keys.tablePointerById(accountId, "table-2")).isEmpty());
+  }
+
+  /**
    * A table intent whose namespace is already gone is refused, not applied.
    *
    * <p>The one branch of the join that is not the happy path, and nothing covered it before or
@@ -1281,6 +1321,28 @@ class TransactionIntentApplierSupportTest {
         beforeBatch.run();
       }
       return super.compareAndSetBatch(ops);
+    }
+  }
+
+  /** Advances one marker immediately before its second read, emulating a concurrent writer. */
+  private static final class BumpOnSecondReadPointerStore extends InMemoryPointerStore {
+    private final String markerKey;
+    private int markerReads;
+
+    private BumpOnSecondReadPointerStore(String markerKey) {
+      this.markerKey = markerKey;
+    }
+
+    @Override
+    public synchronized java.util.Optional<Pointer> get(String key) {
+      if (markerKey.equals(key) && ++markerReads == 2) {
+        long currentVersion = super.get(key).map(Pointer::getVersion).orElse(0L);
+        compareAndSet(
+            key,
+            currentVersion,
+            PointerReferences.opaqueMarkerPointer(key, key, currentVersion + 1L));
+      }
+      return super.get(key);
     }
   }
 

@@ -54,29 +54,42 @@ public class TransactionIntentApplierSupport {
 
   /** Owns ordered, key-unique assembly of one pointer-store transaction. */
   private static final class PointerBatch {
-    private final LinkedHashMap<String, PointerStore.CasOp> operations = new LinkedHashMap<>();
-
-    /** Adds an operation only when no earlier operation owns its pointer key. */
-    boolean addExclusive(PointerStore.CasOp operation) {
-      return operations.putIfAbsent(operation.key(), operation) == null;
+    private enum Role {
+      GUARD,
+      MUTATION
     }
 
-    /** Adds a condition or accepts an identical condition already guarding the same key. */
-    boolean addIdentical(PointerStore.CasOp condition) {
-      PointerStore.CasOp existing = operations.putIfAbsent(condition.key(), condition);
-      return existing == null || existing.equals(condition);
+    private record Entry(PointerStore.CasOp operation, Role role) {}
+
+    private final LinkedHashMap<String, Entry> entries = new LinkedHashMap<>();
+
+    /** Adds a mutation only when no earlier operation owns its pointer key. */
+    boolean addMutation(PointerStore.CasOp operation) {
+      return entries.putIfAbsent(operation.key(), new Entry(operation, Role.MUTATION)) == null;
+    }
+
+    /**
+     * Adds the first guard for a key and reuses it for later guards in the same batch.
+     *
+     * <p>A pointer can change between two samples. Keeping the first guard makes the final CAS lose
+     * normally and the caller retry the whole plan; treating the second sample as a contradictory
+     * mutation would turn ordinary contention into a terminal duplicate-key failure.
+     */
+    boolean addGuard(PointerStore.CasOp operation) {
+      Entry existing = entries.putIfAbsent(operation.key(), new Entry(operation, Role.GUARD));
+      return existing == null || existing.role() == Role.GUARD;
     }
 
     int size() {
-      return operations.size();
+      return entries.size();
     }
 
     boolean isEmpty() {
-      return operations.isEmpty();
+      return entries.isEmpty();
     }
 
     List<PointerStore.CasOp> operations() {
-      return List.copyOf(operations.values());
+      return entries.values().stream().map(Entry::operation).toList();
     }
   }
 
@@ -414,7 +427,7 @@ public class TransactionIntentApplierSupport {
         PointerStore.CasCheckAbsent check =
             AccountDeletionFence.checkForAccountWrite(
                 intent.getAccountId(), intent.getTargetPointerKey());
-        batch.addExclusive(check);
+        batch.addGuard(check);
       }
     }
     return ApplyOutcome.applied();
@@ -1010,7 +1023,7 @@ public class TransactionIntentApplierSupport {
     }
     if (join.conditions() != null) {
       for (PointerStore.CasOp condition : join.conditions().toCasOps()) {
-        if (!batch.addIdentical(condition)) {
+        if (!batch.addGuard(condition)) {
           return ApplyOutcome.conflict(
               "POINTER_TXN_DUPLICATE_KEY",
               "transaction condition conflicts with another operation on pointer key "
@@ -1096,7 +1109,7 @@ public class TransactionIntentApplierSupport {
   }
 
   private ApplyOutcome addOp(PointerStore.CasOp op, PointerBatch batch) {
-    if (!batch.addExclusive(op)) {
+    if (!batch.addMutation(op)) {
       return ApplyOutcome.conflict(
           "POINTER_TXN_DUPLICATE_KEY",
           "transaction attempts multiple updates to pointer key " + op.key(),
