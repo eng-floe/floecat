@@ -182,6 +182,13 @@ public final class Telemetry {
           new MetricId("floecat.core.cache.latency", MetricType.TIMER, "seconds", "v1", "core");
       public static final MetricId ERRORS =
           new MetricId("floecat.core.cache.errors", MetricType.COUNTER, "", "v1", "core");
+      public static final MetricId EVICTIONS =
+          new MetricId("floecat.core.cache.evictions", MetricType.COUNTER, "", "v1", "core");
+      public static final MetricId EVICTED_WEIGHT =
+          new MetricId(
+              "floecat.core.cache.evicted.weight.bytes", MetricType.COUNTER, "bytes", "v1", "core");
+      public static final MetricId LOADS_DISCARDED =
+          new MetricId("floecat.core.cache.loads.discarded", MetricType.COUNTER, "", "v1", "core");
     }
 
     public static final class Gc {
@@ -247,6 +254,9 @@ public final class Telemetry {
     public static final MetricId CACHE_WEIGHTED_SIZE = Cache.WEIGHTED_SIZE;
     public static final MetricId CACHE_LATENCY = Cache.LATENCY;
     public static final MetricId CACHE_ERRORS = Cache.ERRORS;
+    public static final MetricId CACHE_EVICTIONS = Cache.EVICTIONS;
+    public static final MetricId CACHE_EVICTED_WEIGHT = Cache.EVICTED_WEIGHT;
+    public static final MetricId CACHE_LOADS_DISCARDED = Cache.LOADS_DISCARDED;
     public static final MetricId GC_COLLECTIONS = Gc.COLLECTIONS;
     public static final MetricId GC_PAUSE = Gc.PAUSE;
     public static final MetricId GC_ERRORS = Gc.ERRORS;
@@ -410,6 +420,28 @@ public final class Telemetry {
           cacheBase,
           cacheWithAccount,
           "Number of cache lookup misses, tagged by cache name.");
+      add(
+          definitions,
+          CACHE_EVICTIONS,
+          cacheBase,
+          cacheWithAccount,
+          "Entries evicted to stay within the cache's budget, tagged by cache name. For a cache"
+              + " with no expiry this is the signal that its budget is too small.");
+      add(
+          definitions,
+          CACHE_EVICTED_WEIGHT,
+          cacheBase,
+          cacheWithAccount,
+          "Retained bytes released by eviction, tagged by cache name. Read with evictions to tell"
+              + " many small entries from few large ones.");
+      add(
+          definitions,
+          CACHE_LOADS_DISCARDED,
+          cacheBase,
+          cacheWithAccount,
+          "Loads whose value was not retained because a write may have raced the key while it was"
+              + " being loaded, tagged by cache name. Raised on both the read-through and the batch"
+              + " path. A sustained rate means the cache is not warming.");
       add(
           definitions,
           CACHE_ENABLED,
