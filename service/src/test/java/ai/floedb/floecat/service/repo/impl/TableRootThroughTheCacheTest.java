@@ -61,22 +61,24 @@ class TableRootThroughTheCacheTest {
       CountingPointerStore pointers, InMemoryBlobStore blobs) {
     // The cache lives under the store, so the caching these tests assert on is the decorator's.
     var cache =
-        new ai.floedb.floecat.cache.CaffeineCache<String, ai.floedb.floecat.common.rpc.Pointer>(
+        new ai.floedb.floecat.cache.CaffeineMemoryCache<
+            String, ai.floedb.floecat.common.rpc.Pointer>(
             ai.floedb.floecat.cache.CacheFamily.POINTER,
             1024L * 1024L,
-            ai.floedb.floecat.common.rpc.Pointer::getVersion,
-            key -> key);
+            key -> 2L * key.length(),
+            ai.floedb.floecat.cache.CacheEvents.none());
     var caching = new ai.floedb.floecat.service.repo.cache.CachingPointerStore(pointers, cache);
     return new TableRootRepository(caching, blobs, blobCache());
   }
 
-  private static ai.floedb.floecat.cache.CaffeineCache<String, ai.floedb.floecat.common.rpc.Pointer>
+  private static ai.floedb.floecat.cache.CaffeineMemoryCache<
+          String, ai.floedb.floecat.common.rpc.Pointer>
       pointerCache() {
-    return new ai.floedb.floecat.cache.CaffeineCache<>(
+    return new ai.floedb.floecat.cache.CaffeineMemoryCache<>(
         ai.floedb.floecat.cache.CacheFamily.POINTER,
         1024L * 1024L,
-        ai.floedb.floecat.common.rpc.Pointer::getVersion,
-        key -> key);
+        key -> 2L * key.length(),
+        ai.floedb.floecat.cache.CacheEvents.none());
   }
 
   /**
@@ -84,7 +86,8 @@ class TableRootThroughTheCacheTest {
    * the state every replica is in for a table it has resolved before but not recently.
    */
   private static TableRootRepository repoSharing(
-      ai.floedb.floecat.cache.CaffeineCache<String, ai.floedb.floecat.common.rpc.Pointer> shared,
+      ai.floedb.floecat.cache.CaffeineMemoryCache<String, ai.floedb.floecat.common.rpc.Pointer>
+          shared,
       CountingPointerStore pointers,
       InMemoryBlobStore blobs) {
     return new TableRootRepository(
@@ -115,7 +118,7 @@ class TableRootThroughTheCacheTest {
     repo.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
     assertEquals(1, repo.get(tableId).orElseThrow().getRootSeq()); // populate the cache
 
-    long version = repo.metaForSafeLive(tableId).getPointerVersion();
+    long version = repo.metaForSafeConsistent(tableId).getPointerVersion();
     assertTrue(
         repo.update(TableRoot.newBuilder().setTableId(tableId).setRootSeq(2).build(), version));
 
@@ -244,7 +247,7 @@ class TableRootThroughTheCacheTest {
     var warm = repoSharing(shared, pointers, blobs);
     var tableId = table("t-dangling");
     warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
-    String blobUri = warm.metaForSafeLive(tableId).getBlobUri();
+    String blobUri = warm.metaForSafeConsistent(tableId).getBlobUri();
     assertEquals(1, warm.get(tableId).orElseThrow().getRootSeq()); // warms the pointer cache
 
     blobs.delete(blobUri); // swept, pointer left behind
@@ -267,13 +270,13 @@ class TableRootThroughTheCacheTest {
     var warm = repoSharing(shared, pointers, blobs);
     var tableId = table("t-moved");
     warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
-    String staleUri = warm.metaForSafeLive(tableId).getBlobUri();
+    String staleUri = warm.metaForSafeConsistent(tableId).getBlobUri();
     assertEquals(1, warm.get(tableId).orElseThrow().getRootSeq()); // warms the pointer cache
 
     // Another replica commits seq 2 and CAS GC sweeps the old blob. Nothing tells this cache: the
     // write goes straight to the underlying store, so the cached pointer still names staleUri.
     var elsewhere = new TableRootRepository(pointers, blobs, blobCache());
-    long version = elsewhere.metaForSafeLive(tableId).getPointerVersion();
+    long version = elsewhere.metaForSafeConsistent(tableId).getPointerVersion();
     assertTrue(
         elsewhere.update(
             TableRoot.newBuilder().setTableId(tableId).setRootSeq(2).build(), version));

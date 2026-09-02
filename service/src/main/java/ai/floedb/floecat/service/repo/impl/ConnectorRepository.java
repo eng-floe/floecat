@@ -24,6 +24,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -38,7 +39,7 @@ public class ConnectorRepository {
   private final GenericResourceRepository<Connector, ConnectorKey> repo;
 
   @Inject
-  public ConnectorRepository(PointerStore pointerStore, BlobStore blobStore) {
+  public ConnectorRepository(@CachedPointerStore PointerStore pointerStore, BlobStore blobStore) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -106,7 +107,7 @@ public class ConnectorRepository {
 
   public List<Connector> listConsistent(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefixConsistent(
+    return repo.listByPrefixForMutation(
         Keys.connectorPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 

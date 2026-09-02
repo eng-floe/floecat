@@ -141,7 +141,7 @@ public class SnapshotHelper {
       // The retry reads past the cache, which would otherwise hand back the same dead URI.
       // Still null after the retry means the re-read pointer is also unreadable (corruption, or a
       // pathological second race): fall through to the per-pin-kind not-found handling below.
-      rootMeta = roots.metaForSafeLive(tableId);
+      rootMeta = roots.metaForSafeConsistent(tableId);
       root = loadRoot(rootMeta);
       if (root == null && rootMeta != null && !rootMeta.getBlobUri().isEmpty()) {
         // The re-read pointer still names an unreadable blob (a vanished pointer would be a

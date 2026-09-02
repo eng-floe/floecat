@@ -355,7 +355,7 @@ public class QueryContextStoreImpl implements QueryContextStore {
             "pinned table root belongs to a different table: " + uri);
       }
       if (root.hasSnapshotManifestRef()) {
-        String currentRootUri = tableRoots.metaForSafeLive(tableId).getBlobUri();
+        String currentRootUri = tableRoots.metaForSafeConsistent(tableId).getBlobUri();
         if (uri.equals(currentRootUri)) {
           // The common pin path names the current root. Its existing tail remains protected by
           // that live pointer, while this guard protects the head/pin handoff from GC. Avoid an

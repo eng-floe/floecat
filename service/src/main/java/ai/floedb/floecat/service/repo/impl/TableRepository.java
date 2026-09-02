@@ -152,7 +152,7 @@ public class TableRepository {
       String pageToken,
       StringBuilder nextOut) {
     String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
-    return repo.listByPrefixConsistent(prefix, limit, pageToken, nextOut);
+    return repo.listByPrefixForMutation(prefix, limit, pageToken, nextOut);
   }
 
   public int count(String accountId, String catalogId, String namespaceId) {
@@ -168,7 +168,7 @@ public class TableRepository {
    * the version the write itself produced, and the delete commits over a live relation.
    */
   public int countConsistent(String accountId, String catalogId, String namespaceId) {
-    return repo.countByPrefixConsistent(
+    return repo.countByPrefixForMutation(
         Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 

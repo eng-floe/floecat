@@ -20,6 +20,7 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -44,13 +45,14 @@ public class MetadataRepositoryFactory {
   @Inject
   public MetadataRepositoryFactory(
       PointerStore pointers,
+      @CachedPointerStore PointerStore cachedPointers,
       BlobStore blobs,
       ImmutableBlobCache cache,
       MetadataResourceReader admittedReads) {
     this.pointers = pointers;
     this.blobs = blobs;
     this.cache = cache;
-    this.reads = RepositoryReads.bind(pointers, blobs, admittedReads);
+    this.reads = RepositoryReads.bind(cachedPointers, blobs, admittedReads);
   }
 
   /** Build one admitted metadata repository while leaving its mutation path direct. */

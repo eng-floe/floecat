@@ -43,7 +43,6 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
@@ -85,7 +84,6 @@ class ViewServiceImplSystemViewTest {
     svc.principal = principal;
     svc.authz = authz;
     svc.graphView = graphView;
-    svc.metadataGraph = mock(UserGraph.class);
     // A view create folds the namespace's relation fence into its batch, so the marker store has
     // to answer with a real (empty) condition set rather than null.
     svc.markerStore = mock(MarkerStore.class);

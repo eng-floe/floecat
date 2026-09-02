@@ -43,7 +43,6 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
@@ -73,7 +72,6 @@ class TableServiceImplSystemTableTest {
   private Authorizer authz;
   private EngineHintSchemaCleaner hintCleaner;
   private TopologyGraph topology;
-  private UserGraph metadataGraph;
 
   private TestCatalogGraphView graphView;
 
@@ -87,7 +85,6 @@ class TableServiceImplSystemTableTest {
     authz = mock(Authorizer.class);
     hintCleaner = mock(EngineHintSchemaCleaner.class);
     topology = mock(TopologyGraph.class);
-    metadataGraph = mock(UserGraph.class);
 
     graphView = new TestCatalogGraphView();
 
@@ -98,7 +95,6 @@ class TableServiceImplSystemTableTest {
     svc.graphView = graphView;
     svc.hintCleaner = hintCleaner;
     svc.topology = topology;
-    svc.metadataGraph = metadataGraph;
     // Every relation write resolves a fence, so the update paths reach markerStore.
     svc.markerStore = mock(MarkerStore.class);
     when(svc.markerStore.relationMoveFence(any(), any(), anyBoolean()))

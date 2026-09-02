@@ -293,7 +293,7 @@ public class NamespaceRepository {
       String pageToken,
       StringBuilder nextOut) {
     String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
-    return repo.listByPrefixConsistent(prefix, limit, pageToken, nextOut);
+    return repo.listByPrefixForMutation(prefix, limit, pageToken, nextOut);
   }
 
   /**
@@ -306,7 +306,7 @@ public class NamespaceRepository {
    */
   public int countConsistent(
       String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
-    return repo.countByPrefixConsistent(
+    return repo.countByPrefixForMutation(
         Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty));
   }
 

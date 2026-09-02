@@ -10,6 +10,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
+import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.model.CatalogIntegrationKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -18,7 +19,9 @@ import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerConditions;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -34,9 +37,16 @@ public class CatalogIntegrationRepository {
   private final GenericResourceRepository<CatalogIntegration, CatalogIntegrationKey> repo;
   private final PointerStore pointerStore;
 
-  @Inject
   public CatalogIntegrationRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this.pointerStore = pointerStore;
+    this(pointerStore, pointerStore, blobStore);
+  }
+
+  @Inject
+  public CatalogIntegrationRepository(
+      PointerStore pointerStore,
+      @CachedPointerStore PointerStore pointerReads,
+      BlobStore blobStore) {
+    this.pointerStore = AuthoritativePointerStore.of(pointerStore);
     repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -44,7 +54,9 @@ public class CatalogIntegrationRepository {
             Schemas.CATALOG_INTEGRATION,
             CatalogIntegration::parseFrom,
             CatalogIntegration::toByteArray,
-            "application/x-protobuf");
+            "application/x-protobuf",
+            null,
+            RepositoryReads.direct(pointerReads, blobStore));
   }
 
   public void create(CatalogIntegration integration) {
@@ -225,7 +237,7 @@ public class CatalogIntegrationRepository {
 
   public List<CatalogIntegration> listConsistent(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefixConsistent(
+    return repo.listByPrefixForMutation(
         Keys.catalogIntegrationPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 

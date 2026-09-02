@@ -25,6 +25,7 @@ import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
+import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -38,6 +39,7 @@ import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -111,6 +113,7 @@ public class StatsRepository implements StatsStore {
   private static final int MAX_PARALLEL_READS = 50;
 
   private final PointerStore pointerStore;
+  private final PointerStore pointerReads;
   private final BlobStore blobStore;
   private final TargetStatsStorage targetStatsStorage;
   private final GenerationArtifactMap generationArtifactMap;
@@ -124,27 +127,31 @@ public class StatsRepository implements StatsStore {
 
   /** Test convenience; production construction injects the process-wide publication guard. */
   public StatsRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null, new TableBlobReachabilityGuard());
+    this(pointerStore, pointerStore, blobStore, null, new TableBlobReachabilityGuard());
   }
 
   /** Test convenience; production construction injects the process-wide publication guard. */
   public StatsRepository(
       PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
-    this(pointerStore, blobStore, blobCache, new TableBlobReachabilityGuard());
+    this(pointerStore, pointerStore, blobStore, blobCache, new TableBlobReachabilityGuard());
   }
 
   @Inject
   public StatsRepository(
       PointerStore pointerStore,
+      @CachedPointerStore PointerStore pointerReads,
       BlobStore blobStore,
       ImmutableBlobCache blobCache,
       TableBlobReachabilityGuard reachabilityGuard) {
-    this.pointerStore = pointerStore;
+    this.pointerStore = AuthoritativePointerStore.of(pointerStore);
+    this.pointerReads = pointerReads;
     this.blobStore = blobStore;
     this.blobCache = blobCache;
     this.reachabilityGuard = reachabilityGuard;
-    this.targetStatsStorage = new TargetStatsStorage(pointerStore, blobStore, blobCache);
-    this.generationArtifactMap = new GenerationArtifactMap(pointerStore, blobStore, blobCache);
+    this.targetStatsStorage =
+        new TargetStatsStorage(this.pointerStore, pointerReads, blobStore, blobCache);
+    this.generationArtifactMap =
+        new GenerationArtifactMap(this.pointerStore, pointerReads, blobStore, blobCache);
   }
 
   @Override
@@ -741,7 +748,7 @@ public class StatsRepository implements StatsStore {
     String manifestUri =
         Keys.snapshotTargetStatsManifestBlobUri(
             tableId.getAccountId(), tableId.getId(), snapshotId, effectiveGenerationId);
-    if (manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))) {
+    if (manifestUri.equals(activeStatsGenerationConsistent(tableId, snapshotId).orElse(""))) {
       return UnpublishedGenerationDeleteResult.NOT_DELETABLE_PUBLISHED;
     }
     if (blobStore.head(manifestUri).isPresent()) {
@@ -755,7 +762,7 @@ public class StatsRepository implements StatsStore {
     if (deleteClaim == GenerationDeleteClaim.IN_PROGRESS) {
       return UnpublishedGenerationDeleteResult.RETRYABLE_IN_PROGRESS;
     }
-    if (manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))) {
+    if (manifestUri.equals(activeStatsGenerationConsistent(tableId, snapshotId).orElse(""))) {
       throw new BaseResourceRepository.AbortRetryableException(
           "target stats generation became active while cleanup was claiming delete");
     }
@@ -764,7 +771,7 @@ public class StatsRepository implements StatsStore {
     }
     deleteGenerationStrict(
         tableId.getAccountId(), tableId.getId(), snapshotId, effectiveGenerationId);
-    if (manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
+    if (manifestUri.equals(activeStatsGenerationConsistent(tableId, snapshotId).orElse(""))
         || blobStore.head(manifestUri).isPresent()) {
       throw new BaseResourceRepository.AbortRetryableException(
           "target stats generation publication raced abandoned-generation cleanup");
@@ -1349,7 +1356,7 @@ public class StatsRepository implements StatsStore {
                     new BaseResourceRepository.NotFoundException(
                         "No active target stats generation for snapshot " + snapshotId));
     String pointerKey = targetPointerKey(tableId, snapshotId, active.generationId(), target);
-    Pointer pointer = pointerStore.get(pointerKey).orElse(null);
+    Pointer pointer = pointerReads.get(pointerKey).orElse(null);
     if (pointer == null && target.getTargetCase() == StatsTarget.TargetCase.FILE) {
       pointer =
           generationArtifactMap
@@ -1800,7 +1807,7 @@ public class StatsRepository implements StatsStore {
     String manifestPointer =
         Keys.snapshotTargetStatsManifestPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId);
-    return pointerStore.get(manifestPointer).map(Pointer::getBlobUri);
+    return pointerReads.get(manifestPointer).map(Pointer::getBlobUri);
   }
 
   private Optional<ActiveSnapshotStats> activeGeneration(ResourceId tableId, long snapshotId) {
@@ -1821,9 +1828,17 @@ public class StatsRepository implements StatsStore {
     String manifestPointer =
         Keys.snapshotTargetStatsManifestPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId);
-    return pointerStore
-        .get(manifestPointer)
-        .map(pointer -> readActiveGeneration(tableId, snapshotId, manifestPointer, pointer, live));
+    Optional<Pointer> activePointer =
+        live ? pointerStore.get(manifestPointer) : pointerReads.get(manifestPointer);
+    return activePointer.map(
+        pointer -> readActiveGeneration(tableId, snapshotId, manifestPointer, pointer, live));
+  }
+
+  private Optional<String> activeStatsGenerationConsistent(ResourceId tableId, long snapshotId) {
+    String manifestPointer =
+        Keys.snapshotTargetStatsManifestPointer(
+            tableId.getAccountId(), tableId.getId(), snapshotId);
+    return pointerStore.get(manifestPointer).map(Pointer::getBlobUri);
   }
 
   private ActiveSnapshotStats ensureActiveGeneration(ResourceId tableId, long snapshotId) {
@@ -2181,7 +2196,7 @@ public class StatsRepository implements StatsStore {
       String lifecycleState = blankToEmpty(lifecycle.getBlobUri());
       if (GENERATION_DELETING.equals(lifecycleState) || GENERATION_DELETED.equals(lifecycleState)) {
         if (isProtectedManifestUri.test(manifestUri)
-            || manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
+            || manifestUri.equals(activeStatsGenerationConsistent(tableId, snapshotId).orElse(""))
             || isActiveIndexGeneration(tableId, snapshotId, generationId)) {
           // A late pin/root can appear between bounded deletion slices, after an earlier slice has
           // already removed blobs or pointers. Restoring PUBLISHED here would expose that partial
@@ -2242,14 +2257,14 @@ public class StatsRepository implements StatsStore {
         continuation.candidateIndex++;
         continue;
       }
-      String liveActive = activeStatsGeneration(tableId, snapshotId).orElse("");
+      String liveActive = activeStatsGenerationConsistent(tableId, snapshotId).orElse("");
       if (manifestUri.equals(liveActive)) {
         continuation.candidateIndex++;
         continue; // creation-window safeguard: active pointer target survives regardless of roots
       }
       BooleanSupplier stillProtected =
           () ->
-              manifestUri.equals(activeStatsGeneration(tableId, snapshotId).orElse(""))
+              manifestUri.equals(activeStatsGenerationConsistent(tableId, snapshotId).orElse(""))
                   || isProtectedManifestUri.test(manifestUri)
                   || isActiveIndexGeneration(tableId, snapshotId, generationId);
       BooleanSupplier claim =
@@ -2772,13 +2787,18 @@ public class StatsRepository implements StatsStore {
     private final ImmutableBlobCache blobCache;
 
     private TargetStatsStorage(
-        PointerStore mutationPointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+        PointerStore mutationPointerStore,
+        PointerStore pointerReads,
+        BlobStore blobStore,
+        ImmutableBlobCache blobCache) {
       super(
           mutationPointerStore,
           blobStore,
           TargetStatsRecord::parseFrom,
           TargetStatsRecord::toByteArray,
-          "application/x-protobuf");
+          "application/x-protobuf",
+          null,
+          ai.floedb.floecat.service.repo.util.RepositoryReads.direct(pointerReads, blobStore));
       this.blobStore = blobStore;
       this.blobCache = blobCache;
     }
@@ -2932,7 +2952,7 @@ public class StatsRepository implements StatsStore {
         List<PointerStore.CasOp> creates = new ArrayList<>();
         List<PrewrittenStatsWrite> missing = new ArrayList<>();
         for (PrewrittenStatsWrite write : remaining) {
-          Pointer existing = mutationPointerStore.getConsistent(write.pointerKey()).orElse(null);
+          Pointer existing = mutationPointerStore.get(write.pointerKey()).orElse(null);
           if (existing != null) {
             requireExactReference(write, existing);
             continue;
@@ -2953,7 +2973,7 @@ public class StatsRepository implements StatsStore {
 
     private void verifyExactReferences(List<PrewrittenStatsWrite> writes) {
       for (PrewrittenStatsWrite write : writes) {
-        Pointer existing = mutationPointerStore.getConsistent(write.pointerKey()).orElse(null);
+        Pointer existing = mutationPointerStore.get(write.pointerKey()).orElse(null);
         if (existing == null) {
           throw new AbortRetryableException(
               "prewritten target stats reference is missing: " + write.pointerKey());
@@ -2985,7 +3005,7 @@ public class StatsRepository implements StatsStore {
         List<PrewrittenStatsWrite> nextRemaining = new ArrayList<>();
         List<PointerStore.CasOp> ops = new ArrayList<>();
         for (PrewrittenStatsWrite write : remaining) {
-          Pointer existing = mutationPointerStore.getConsistent(write.pointerKey()).orElse(null);
+          Pointer existing = mutationPointerStore.get(write.pointerKey()).orElse(null);
           if (existing != null && write.blobUri().equals(existing.getBlobUri())) {
             continue;
           }
@@ -3020,7 +3040,7 @@ public class StatsRepository implements StatsStore {
       putBlob(blobUri, value);
       try {
         for (int attempt = 0; attempt < CAS_MAX; attempt++) {
-          Pointer existing = mutationPointerStore.getConsistent(pointerKey).orElse(null);
+          Pointer existing = mutationPointerStore.get(pointerKey).orElse(null);
           long expectedVersion = existing == null ? 0L : existing.getVersion();
           if (existing != null && blobUri.equals(existing.getBlobUri())) {
             return;
@@ -3050,7 +3070,7 @@ public class StatsRepository implements StatsStore {
       // that content-hash images can map distinct records to one blobUri (timestamp-only resubmits
       // share a blob), writing the blob before this check would overwrite the live record's bytes
       // and still return false on the CAS miss. Check the pointer first and write nothing.
-      if (mutationPointerStore.getConsistent(pointerKey).isPresent()) {
+      if (mutationPointerStore.get(pointerKey).isPresent()) {
         return false;
       }
       String accountId = value.getTableId().getAccountId();
@@ -3092,7 +3112,7 @@ public class StatsRepository implements StatsStore {
         while (!remaining.isEmpty()) {
           List<TargetStatsWrite> absent = new ArrayList<>(remaining.size());
           for (TargetStatsWrite write : remaining) {
-            if (mutationPointerStore.getConsistent(write.pointerKey()).isEmpty()) {
+            if (mutationPointerStore.get(write.pointerKey()).isEmpty()) {
               absent.add(write);
             }
           }
@@ -3118,7 +3138,7 @@ public class StatsRepository implements StatsStore {
             }
             for (int offset = 0; offset < batch.size(); offset++) {
               TargetStatsWrite write = batch.get(offset);
-              Pointer pointer = mutationPointerStore.getConsistent(write.pointerKey()).orElse(null);
+              Pointer pointer = mutationPointerStore.get(write.pointerKey()).orElse(null);
               if (pointer == null) {
                 nextRemaining.add(write);
                 continue;
@@ -3176,7 +3196,7 @@ public class StatsRepository implements StatsStore {
         }
         List<TargetStatsWrite> nextRemaining = new ArrayList<>();
         for (TargetStatsWrite write : remaining) {
-          Pointer pointer = mutationPointerStore.getConsistent(write.pointerKey()).orElse(null);
+          Pointer pointer = mutationPointerStore.get(write.pointerKey()).orElse(null);
           if (pointer == null) {
             nextRemaining.add(write);
             continue;
@@ -3238,7 +3258,7 @@ public class StatsRepository implements StatsStore {
       if (blobExistedBefore || blobUri.isBlank()) {
         return;
       }
-      Pointer pointer = mutationPointerStore.getConsistent(pointerKey).orElse(null);
+      Pointer pointer = mutationPointerStore.get(pointerKey).orElse(null);
       if (pointer != null && blobUri.equals(pointer.getBlobUri())) {
         return;
       }

@@ -16,11 +16,14 @@
 
 package ai.floedb.floecat.service.repo.impl;
 
+import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TransactionIntentKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.TransactionIntent;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -33,10 +36,19 @@ public class TransactionIntentRepository {
 
   private final GenericResourceRepository<TransactionIntent, TransactionIntentKey> repo;
   private final PointerStore pointerStore;
+  private final PointerStore pointerReads;
+
+  public TransactionIntentRepository(PointerStore pointerStore, BlobStore blobStore) {
+    this(pointerStore, pointerStore, blobStore);
+  }
 
   @Inject
-  public TransactionIntentRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this.pointerStore = pointerStore;
+  public TransactionIntentRepository(
+      PointerStore pointerStore,
+      @CachedPointerStore PointerStore pointerReads,
+      BlobStore blobStore) {
+    this.pointerStore = AuthoritativePointerStore.of(pointerStore);
+    this.pointerReads = pointerReads;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -44,7 +56,9 @@ public class TransactionIntentRepository {
             Schemas.TRANSACTION_INTENT,
             TransactionIntent::parseFrom,
             TransactionIntent::toByteArray,
-            "application/x-protobuf");
+            "application/x-protobuf",
+            null,
+            RepositoryReads.direct(pointerReads, blobStore));
   }
 
   public void create(TransactionIntent intent) {
@@ -68,7 +82,7 @@ public class TransactionIntentRepository {
   public Optional<ai.floedb.floecat.common.rpc.Pointer> getTargetPointer(
       String accountId, String targetPointerKey) {
     String key = Keys.transactionIntentPointerByTarget(accountId, targetPointerKey);
-    return pointerStore.get(key);
+    return pointerReads.get(key);
   }
 
   public List<TransactionIntent> listByTx(String accountId, String txId) {
@@ -123,7 +137,7 @@ public class TransactionIntentRepository {
     if (txId == null || txId.isBlank() || targetPointerKey == null || targetPointerKey.isBlank()) {
       return false;
     }
-    return repo.get(pointerKey)
+    return repo.getForMutation(pointerKey)
         .map(
             existing ->
                 txId.equals(existing.getTxId())

@@ -146,7 +146,7 @@ public class ViewRepository {
       String pageToken,
       StringBuilder nextOut) {
     String prefix = Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId);
-    return repo.listByPrefixConsistent(prefix, limit, pageToken, nextOut);
+    return repo.listByPrefixForMutation(prefix, limit, pageToken, nextOut);
   }
 
   public int count(String accountId, String catalogId, String namespaceId) {
@@ -162,7 +162,7 @@ public class ViewRepository {
    * the version the write itself produced, and the delete commits over a live relation.
    */
   public int countConsistent(String accountId, String catalogId, String namespaceId) {
-    return repo.countByPrefixConsistent(
+    return repo.countByPrefixForMutation(
         Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 

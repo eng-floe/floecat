@@ -187,8 +187,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           Optional<T> loaded = getByBlobUri(blobUri);
           if (loaded.isEmpty()) {
             // The pointer moved under us: answer from where it moved to, with ITS meta.
-            return reloadAfterVanishedBlob(
-                    pointerReads, pointerKey, fresh -> getByBlobUri(fresh.getBlobUri()))
+            return reloadAfterVanishedBlob(pointerKey, fresh -> getByBlobUri(fresh.getBlobUri()))
                 .map(
                     r ->
                         new ResourceWithMeta<>(
@@ -256,7 +255,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   /** Strongly consistent variant used by lifecycle scans whose emptiness is load-bearing. */
-  public List<ResourceWithMeta<T>> listByPrefixWithMetaConsistent(
+  public List<ResourceWithMeta<T>> listByPrefixWithMetaForMutation(
       String prefix, int limit, String token, StringBuilder nextOut) {
     return listByPrefixWithMeta(prefix, limit, token, nextOut, true);
   }
@@ -268,7 +267,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           List<Pointer> pointers =
               consistentRead
-                  ? pointerReads.listConsistent(prefix, Math.max(1, limit), token, nextOut)
+                  ? mutationReads.pointers().list(prefix, Math.max(1, limit), token, nextOut)
                   : pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
           List<ResourceWithMeta<T>> values = new ArrayList<>(pointers.size());
           Timestamp now = Timestamps.fromMillis(clock.millis());
@@ -430,9 +429,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       // Skipping here would silently shorten a page, or report a live resource absent, which the
       // caller cannot detect either way. Resolve where the pointer moved to, and carry THAT uri
       // forward -- the coherence check below compares against it.
-      var reloaded =
-          reloadAfterVanishedBlob(
-              pointerReads, pointerKey, fresh -> getByBlobUri(fresh.getBlobUri()));
+      var reloaded = reloadAfterVanishedBlob(pointerKey, fresh -> getByBlobUri(fresh.getBlobUri()));
       if (reloaded.isEmpty()) {
         return Optional.empty();
       }
@@ -450,7 +447,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     // canonical would be the same hole one branch over.
     Optional<Pointer> canonical =
         consistent || reResolved
-            ? pointerReads.getConsistent(canonicalKey)
+            ? mutationReads.pointers().get(canonicalKey)
             : pointerReads.get(canonicalKey);
     if (canonical.isEmpty()) {
       // Deleted after the pointer was selected.
@@ -518,7 +515,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             return new CreateCommit(true, prepared.committedCanonical, committedMeta);
           }
 
-          if (mutationPointerStore.getConsistent(accountDeletionMarker).isPresent()) {
+          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
             cleanupUncommittedCasBlob(
                 prepared.canonicalPointerKey, prepared.blobUri, prepared.blobExistedBefore);
             throw accountDeletionInProgress(resourceKey);
@@ -544,7 +541,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           classifyCreateConflict(prepared.blobUri, prepared.pointerKeys);
           Pointer canonical =
               mutationPointerStore
-                  .getConsistent(prepared.canonicalPointerKey)
+                  .get(prepared.canonicalPointerKey)
                   .orElseThrow(
                       () ->
                           new CorruptionException(
@@ -643,7 +640,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       }
     }
     for (String pointerKey : requiredAbsentPointers) {
-      if (mutationPointerStore.getConsistent(pointerKey).isPresent()) {
+      if (mutationPointerStore.get(pointerKey).isPresent()) {
         return false;
       }
     }
@@ -651,7 +648,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   private boolean pointerVersionMatches(String pointerKey, long expectedVersion) {
-    Pointer current = mutationPointerStore.getConsistent(pointerKey).orElse(null);
+    Pointer current = mutationPointerStore.get(pointerKey).orElse(null);
     return expectedVersion == 0L
         ? current == null
         : current != null && current.getVersion() == expectedVersion;
@@ -700,7 +697,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     for (PointerStore.CasOp companion : companionOps) {
       if (companion instanceof PointerStore.CasUpsert upsert
           && upsert.expectedVersion() == 0L
-          && mutationPointerStore.getConsistent(upsert.key()).isPresent()) {
+          && mutationPointerStore.get(upsert.key()).isPresent()) {
         throw new NameConflictException("companion pointer already reserved: " + upsert.key());
       }
     }
@@ -710,7 +707,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     int present = 0;
     int absent = 0;
     for (String pointerKey : pointerKeys) {
-      Pointer pointer = mutationPointerStore.getConsistent(pointerKey).orElse(null);
+      Pointer pointer = mutationPointerStore.get(pointerKey).orElse(null);
       if (pointer == null) {
         absent++;
         continue;
@@ -816,7 +813,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
             healCanonicalBlobIfMissing(blobUri, value);
             return true;
           }
-          if (mutationPointerStore.getConsistent(accountDeletionMarker).isPresent()) {
+          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
             cleanupUncommittedCasBlob(canonicalPointer, blobUri, blobExistedBefore);
             throw accountDeletionInProgress(key);
           }
@@ -834,7 +831,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     // optimistically wrote (best-effort, content-addressed) before classifying the outcome.
     cleanupUncommittedCasBlob(canonicalPointer, blobUri, blobExistedBefore);
 
-    Pointer canonical = mutationPointerStore.getConsistent(canonicalPointer).orElse(null);
+    Pointer canonical = mutationPointerStore.get(canonicalPointer).orElse(null);
     if (canonical != null) {
       // Canonical already taken — another writer owns the create; report a lost race regardless of
       // which blob it points to.
@@ -847,7 +844,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       if (pointerKey.equals(canonicalPointer)) {
         continue;
       }
-      Pointer secondary = mutationPointerStore.getConsistent(pointerKey).orElse(null);
+      Pointer secondary = mutationPointerStore.get(pointerKey).orElse(null);
       if (secondary == null) {
         continue;
       }
@@ -915,7 +912,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     if (blobExistedBefore || !schema.casBlobs || blobUri.isBlank()) {
       return;
     }
-    Pointer pointer = mutationPointerStore.getConsistent(canonicalPointer).orElse(null);
+    Pointer pointer = mutationPointerStore.get(canonicalPointer).orElse(null);
     if (pointer != null && blobUri.equals(pointer.getBlobUri())) {
       return;
     }
@@ -1054,7 +1051,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       if (!batchedKeys.add(p)) {
         continue;
       }
-      Pointer existing = mutationPointerStore.getConsistent(p).orElse(null);
+      Pointer existing = mutationPointerStore.get(p).orElse(null);
       if (existing == null) {
         ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri, updatedValue, blobBytes)));
       } else if (!blobUri.equals(existing.getBlobUri())) {
@@ -1074,7 +1071,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         if (!batchedKeys.add(p)) {
           continue;
         }
-        Pointer existing = mutationPointerStore.getConsistent(p).orElse(null);
+        Pointer existing = mutationPointerStore.get(p).orElse(null);
         if (existing == null) {
           ops.add(new PointerStore.CasUpsert(p, 0L, reserve(p, blobUri, updatedValue, blobBytes)));
         } else if (!blobUri.equals(existing.getBlobUri())) {
@@ -1090,7 +1087,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       if (!batchedKeys.add(p)) {
         continue;
       }
-      Pointer existing = mutationPointerStore.getConsistent(p).orElse(null);
+      Pointer existing = mutationPointerStore.get(p).orElse(null);
       if (existing != null) {
         ops.add(new PointerStore.CasDelete(p, existing.getVersion()));
       }
@@ -1176,7 +1173,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
           if (!pointerConditionsStillMatch(requiredPointerVersions, requiredAbsentPointers))
             return Optional.empty();
-          if (mutationPointerStore.getConsistent(accountDeletionMarker).isPresent()) {
+          if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
             Set<String> boundByThisWrite = new HashSet<>();
             boundByThisWrite.add(canonicalPointer);
             boundByThisWrite.addAll(schema.secondaryPointersFromValue.apply(updatedValue).values());
@@ -1284,7 +1281,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   private boolean classifyUpdateConflict(
       String canonicalPointer, long expectedCanonicalVersion, String blobUri, Set<String> toAdd) {
-    Pointer canonical = mutationPointerStore.getConsistent(canonicalPointer).orElse(null);
+    Pointer canonical = mutationPointerStore.get(canonicalPointer).orElse(null);
     if (canonical == null || canonical.getVersion() != expectedCanonicalVersion) {
       // Optimistic-concurrency miss: the canonical pointer moved or vanished under us. Same
       // observable result as the previous advancePointer -> PreconditionFailed path — the caller
@@ -1295,7 +1292,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     // by a different blob is a terminal collision; otherwise a concurrent writer shifted a
     // secondary's version between our read and the commit and a retry re-reads fresh versions.
     for (String p : toAdd) {
-      Pointer secondary = mutationPointerStore.getConsistent(p).orElse(null);
+      Pointer secondary = mutationPointerStore.get(p).orElse(null);
       if (secondary != null && !blobUri.equals(secondary.getBlobUri())) {
         throw new NameConflictException("pointer bound to different blob: " + p);
       }
@@ -1349,8 +1346,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           if (currentCanonical.equals(replacementCanonical)) {
             throw new IllegalArgumentException("replacement must use a new resource identity");
           }
-          Pointer currentPointer =
-              mutationPointerStore.getConsistent(currentCanonical).orElse(null);
+          Pointer currentPointer = mutationPointerStore.get(currentCanonical).orElse(null);
           String currentBlobUri = schema.blobUriForKey.apply(currentKey);
           if (currentPointer == null
               || currentPointer.getVersion() != expectedCanonicalVersion
@@ -1395,7 +1391,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
               throw new IllegalArgumentException(
                   "secondary collides with canonical pointer: " + pointerKey);
             }
-            Pointer existing = mutationPointerStore.getConsistent(pointerKey).orElse(null);
+            Pointer existing = mutationPointerStore.get(pointerKey).orElse(null);
             if (inCurrent) {
               if (existing == null
                   || !currentBlobUri.equals(requireBlobReference(existing, pointerKey))) {
@@ -1446,7 +1442,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           }
 
           if (!mutationPointerStore.compareAndSetBatch(ops)) {
-            if (mutationPointerStore.getConsistent(accountDeletionMarker).isPresent()) {
+            if (mutationPointerStore.get(accountDeletionMarker).isPresent()) {
               cleanupUncommittedCasBlob(
                   replacementCanonical, replacementBlobUri, replacementBlobExistedBefore);
               throw accountDeletionInProgress(currentKey);
@@ -1472,7 +1468,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-          var canonicalPtr = mutationPointerStore.getConsistent(canonicalPointer).orElse(null);
+          var canonicalPtr = mutationPointerStore.get(canonicalPointer).orElse(null);
           if (canonicalPtr == null) {
             return false;
           }
@@ -1613,7 +1609,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   public List<PointerStore.CasOp> prepareDeleteOps(K key) {
     guardSystemObject(key);
     String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-    Pointer canonical = mutationPointerStore.getConsistent(canonicalPointer).orElse(null);
+    Pointer canonical = mutationPointerStore.get(canonicalPointer).orElse(null);
     if (canonical == null) {
       return List.of();
     }
@@ -1626,7 +1622,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       for (String pointerKey :
           secondaryPointersReferencingBlob(
               key, canonicalPointer, resolveBlobUriForDelete(key, canonicalPointer))) {
-        Pointer secondary = mutationPointerStore.getConsistent(pointerKey).orElse(null);
+        Pointer secondary = mutationPointerStore.get(pointerKey).orElse(null);
         if (secondary != null) {
           ops.add(new PointerStore.CasDelete(pointerKey, secondary.getVersion()));
         }
@@ -1644,7 +1640,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       if (!batchedKeys.add(pointerKey)) {
         continue;
       }
-      Pointer secondary = mutationPointerStore.getConsistent(pointerKey).orElse(null);
+      Pointer secondary = mutationPointerStore.get(pointerKey).orElse(null);
       ops.add(
           secondary != null
               ? new PointerStore.CasDelete(pointerKey, secondary.getVersion())
@@ -1678,7 +1674,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       if (!batchedKeys.add(pointerKey)) {
         continue;
       }
-      Pointer secondary = mutationPointerStore.getConsistent(pointerKey).orElse(null);
+      Pointer secondary = mutationPointerStore.get(pointerKey).orElse(null);
       if (secondary != null) {
         ops.add(new PointerStore.CasDelete(pointerKey, secondary.getVersion()));
       } else {
@@ -1722,8 +1718,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     Set<String> seenTokens = new HashSet<>();
     while (true) {
       StringBuilder next = new StringBuilder();
-      for (Pointer pointer :
-          mutationPointerStore.listPointersByPrefixConsistent(prefix, 200, token, next)) {
+      for (Pointer pointer : mutationPointerStore.listPointersByPrefix(prefix, 200, token, next)) {
         if (!canonicalPointer.equals(pointer.getKey())
             && PointerReferences.isBlobPointer(pointer)
             && blobUri.equals(pointer.getBlobUri())) {
@@ -1798,7 +1793,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           String canonical = schema.canonicalPointerForKey.apply(key);
           var ptrOpt =
-              consistent ? pointerReads.getConsistent(canonical) : pointerReads.get(canonical);
+              consistent ? mutationReads.pointers().get(canonical) : pointerReads.get(canonical);
           if (schema.casBlobs && ptrOpt.isEmpty()) {
             return MutationMeta.newBuilder()
                 .setPointerKey(canonical)
@@ -1834,7 +1829,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           Timestamp nowTs = Timestamps.fromMillis(clock.millis());
           String canonical = schema.canonicalPointerForKey.apply(key);
           var ptrOpt =
-              consistent ? pointerReads.getConsistent(canonical) : pointerReads.get(canonical);
+              consistent ? mutationReads.pointers().get(canonical) : pointerReads.get(canonical);
           String blobUri = blobUriFor(key, ptrOpt);
           return MutationMeta.newBuilder()
               .setPointerKey(canonical)
@@ -1857,7 +1852,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   private String resolveBlobUriForDelete(K key, String canonicalPointer) {
     if (schema.casBlobs) {
-      var ptrOpt = mutationPointerStore.getConsistent(canonicalPointer);
+      var ptrOpt = mutationPointerStore.get(canonicalPointer);
       if (ptrOpt.isPresent() && ptrOpt.get().getBlobUri() != null) {
         return ptrOpt.get().getBlobUri();
       }

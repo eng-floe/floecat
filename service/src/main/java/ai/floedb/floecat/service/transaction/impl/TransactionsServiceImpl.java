@@ -1453,7 +1453,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
           || intent.getBlobUri().isBlank()) {
         return false;
       }
-      var ptr = pointerStore.getConsistent(intent.getTargetPointerKey()).orElse(null);
+      var ptr = pointerStore.get(intent.getTargetPointerKey()).orElse(null);
       if (isDeleteSentinelBlobUri(
           intent.getAccountId(),
           intent.getTxId(),
@@ -1534,8 +1534,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     ResourceId tableId = target.tableId();
     String pointerKey = target.pointerKey();
 
-    long currentVersion =
-        pointerStore.getConsistent(pointerKey).map(Pointer::getVersion).orElse(0L);
+    long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
     requireWritableTransactionTarget(accountId, txId, target, change, currentVersion);
     Precondition pre = change.getPrecondition();
     long expectedVersion = currentVersion;
@@ -1639,8 +1638,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     ResolvedTxTarget target = resolveTarget(accountId, change);
     ResourceId tableId = target.tableId();
     String pointerKey = target.pointerKey();
-    long currentVersion =
-        pointerStore.getConsistent(pointerKey).map(Pointer::getVersion).orElse(0L);
+    long currentVersion = pointerStore.get(pointerKey).map(Pointer::getVersion).orElse(0L);
     requireWritableTransactionTarget(accountId, txId, target, change, currentVersion);
 
     String blobUri;
@@ -1877,7 +1875,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     if (intent == null || !isTableByIdPointer(intent.getTargetPointerKey())) {
       return false;
     }
-    if (pointerStore.getConsistent(intent.getTargetPointerKey()).isPresent()) {
+    if (pointerStore.get(intent.getTargetPointerKey()).isPresent()) {
       return false;
     }
     String tableId = tableIdFromByIdPointer(intent.getTargetPointerKey());
@@ -1892,7 +1890,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   }
 
   private boolean ownedNamePointerCleared(String pointerKey, String expectedTableId) {
-    var pointer = pointerStore.getConsistent(pointerKey).orElse(null);
+    var pointer = pointerStore.get(pointerKey).orElse(null);
     if (pointer == null || pointer.getBlobUri().isBlank()) {
       return true;
     }
@@ -1953,7 +1951,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
   private String expectedOwnedTableNamePointerKey(
       String tableByIdPointerKey, boolean requireReadable) {
-    var pointer = pointerStore.getConsistent(tableByIdPointerKey).orElse(null);
+    var pointer = pointerStore.get(tableByIdPointerKey).orElse(null);
     if (pointer == null || pointer.getBlobUri().isBlank()) {
       return null;
     }

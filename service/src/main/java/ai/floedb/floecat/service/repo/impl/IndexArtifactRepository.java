@@ -30,6 +30,7 @@ import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -40,6 +41,7 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -105,17 +107,27 @@ public class IndexArtifactRepository {
   private final TableBlobReachabilityGuard reachabilityGuard;
   private final GenerationArtifactMap generationArtifactMap;
 
-  @Inject
   public IndexArtifactRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
       ImmutableBlobCache blobCache,
       TableBlobReachabilityGuard reachabilityGuard) {
-    this.pointerStore = pointerStore;
+    this(pointerStore, pointerStore, blobStore, blobCache, reachabilityGuard);
+  }
+
+  @Inject
+  public IndexArtifactRepository(
+      PointerStore pointerStore,
+      @CachedPointerStore PointerStore pointerReads,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache,
+      TableBlobReachabilityGuard reachabilityGuard) {
+    this.pointerStore = AuthoritativePointerStore.of(pointerStore);
     this.blobStore = blobStore;
     this.blobCache = Objects.requireNonNull(blobCache, "blobCache");
     this.reachabilityGuard = reachabilityGuard;
-    this.generationArtifactMap = new GenerationArtifactMap(pointerStore, blobStore, this.blobCache);
+    this.generationArtifactMap =
+        new GenerationArtifactMap(this.pointerStore, pointerReads, blobStore, blobCache);
   }
 
   public void putIndexArtifact(IndexArtifactRecord value) {
