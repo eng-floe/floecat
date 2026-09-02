@@ -162,8 +162,6 @@ public final class Telemetry {
     public static final class Cache {
       public static final MetricId ENABLED =
           new MetricId("floecat.core.cache.enabled", MetricType.GAUGE, "", "v1", "core");
-      public static final MetricId MAX_ENTRIES =
-          new MetricId("floecat.core.cache.max.entries", MetricType.GAUGE, "count", "v1", "core");
       public static final MetricId MAX_WEIGHT =
           new MetricId(
               "floecat.core.cache.max.weight.bytes", MetricType.GAUGE, "bytes", "v1", "core");
@@ -245,7 +243,6 @@ public final class Telemetry {
     public static final MetricId STORE_ERRORS = Store.ERRORS;
     public static final MetricId STORE_RETRIES = Store.RETRIES;
     public static final MetricId CACHE_ENABLED = Cache.ENABLED;
-    public static final MetricId CACHE_MAX_ENTRIES = Cache.MAX_ENTRIES;
     public static final MetricId CACHE_MAX_WEIGHT = Cache.MAX_WEIGHT;
     public static final MetricId CACHE_HITS = Cache.HITS;
     public static final MetricId CACHE_MISSES = Cache.MISSES;
@@ -448,12 +445,6 @@ public final class Telemetry {
           cacheBase,
           cacheWithAccount,
           "Indicator that the cache is enabled (1=enabled, 0=disabled).");
-      add(
-          definitions,
-          CACHE_MAX_ENTRIES,
-          cacheBase,
-          cacheWithAccount,
-          "Configured max entries for the cache.");
       add(
           definitions,
           CACHE_MAX_WEIGHT,
