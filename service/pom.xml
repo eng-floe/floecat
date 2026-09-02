@@ -140,11 +140,6 @@
 
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-core-cache</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-types</artifactId>
       <version>${project.version}</version>
     </dependency>
