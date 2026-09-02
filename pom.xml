@@ -99,6 +99,7 @@
       <!-- Core -->
       <module>core/proto</module>
       <module>core/types</module>
+      <module>core/cache</module>
       <module>core/engine-utils</module>
       <module>core/metadata-admission-runtime</module>
       <module>core/stats</module>
