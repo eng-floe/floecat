@@ -17,6 +17,7 @@
 package ai.floedb.floecat.storage.spi;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
+import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -89,9 +90,23 @@ public interface BlobStore {
    */
   int deletePrefix(String prefix);
 
+  /**
+   * Read several blobs. A uri with no blob is <b>omitted</b> from the result rather than raising:
+   * the caller is resolving a page, and one entry naming a blob that was superseded and swept is
+   * that row's problem, not the page's. Every other fault still throws.
+   */
   default Map<String, byte[]> getBatch(List<String> uris) {
     Map<String, byte[]> out = new LinkedHashMap<>(uris.size());
-    for (String u : uris) out.put(u, get(u));
+    for (String uri : uris) {
+      try {
+        byte[] bytes = get(uri);
+        if (bytes != null) {
+          out.put(uri, bytes);
+        }
+      } catch (StorageNotFoundException ignored) {
+        // Missing members are intentionally omitted; all other storage failures still propagate.
+      }
+    }
     return out;
   }
 
