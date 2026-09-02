@@ -46,13 +46,19 @@ import java.util.Map;
  * therefore wrong, and is the precise bug the canonical model exists to prevent: the nodes with no
  * native id would all resolve to id 0, which is also the value meaning "uncomputed".
  *
- * <p><b>{@code CID_PATH_ORDINAL} is not an identity algorithm either.</b> It once named the way
- * unmapped Delta columns were identified, by hashing a path and an ordinal. That is not the model
- * any more. Floecat's aim for an unmapped Delta table is to behave as though Delta column mapping
- * had always been enabled on it — maintaining the same kind of stable per-node identity Delta
- * itself would have assigned. Path and ordinal are <em>evidence</em> used to match a node across
- * schema versions while maintaining that virtual mapping; they do not define the identity, and an
- * id must survive a rename or a reordering that changes them both.
+ * <p><b>{@code CID_PATH_ORDINAL} is not an identity algorithm either.</b> It names how ids for
+ * unmapped Delta columns were <em>historically</em> derived, by hashing a path together with an
+ * ordinal. A table still carrying that stamp records how its stored ids may once have been
+ * computed; it says nothing about how identity is determined now, and the value must never be read
+ * as an instruction to recompute anything.
+ *
+ * <p>Ordinals play no part in the current model. Identity continuity comes from the source format's
+ * own evidence: a native Delta id where column mapping is active, and otherwise the exact canonical
+ * structured path. A node whose path changes with no native id to vouch for it is a new lineage,
+ * not a renamed one — Delta records nothing that could prove otherwise, and guessing from sibling
+ * position would silently hand a dropped column's statistics to an unrelated new one. Ordinal
+ * survives on {@link ai.floedb.floecat.schema.identity.SchemaNode} as a description of the schema's
+ * current shape and to make traversal deterministic, never as identity evidence.
  *
  * <p>To identify a column, resolve the schema through a producer and consult the resulting {@link
  * SchemaIdentityMap}, which records where each node's id actually came from in its {@link

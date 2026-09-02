@@ -105,14 +105,52 @@
  * its provenance; a genuinely new node may adopt its native id only if that value has never been
  * allocated in the canonical namespace; otherwise it takes a fresh id above the high-water mark.
  *
- * <p><b>Match in priority order:</b> native format identity where both versions have one; then
- * stable physical identity where the format provides one; then structural reconciliation over
- * canonical paths for nodes with no native identity; and only then allocate fresh.
+ * <p><b>Continuity comes only from what the format makes authoritative.</b> Match in this order and
+ * no other:
  *
- * <p><b>Renames are not always inferable.</b> For unmapped Delta the schema alone cannot always
- * distinguish renaming {@code a} to {@code b} from dropping {@code a} and adding {@code b}. Path,
- * ordinal, and type similarity are legitimate heuristics, but the ambiguity must be defined
- * explicitly rather than papered over. The guarantee that matters is the conservative one: never
- * reuse an existing id for what is plainly a new node.
+ * <ol>
+ *   <li><b>Authoritative native id</b>, where both versions have one. The strongest evidence, and
+ *       what makes a mapped rename preserve identity: Delta keeps the id stable while the display
+ *       name moves.
+ *   <li><b>Collection interiors under a parent matched in step 1.</b> Deductive, not inferred: an
+ *       array has exactly one element node, a map exactly one key and one value, so a proven parent
+ *       lineage determines its collection child's with no candidate to choose between. This is what
+ *       keeps {@code orders[]} alive when {@code orders} is renamed to {@code purchases} under
+ *       column mapping without nested ids — the common case, since nested ids are written mainly
+ *       for Iceberg compatibility. Propagation continues down a chain of collection roles
+ *       ({@code array -> element -> map -> value}) and <b>stops at the first FIELD</b>: a named
+ *       field beneath a matched element inherits nothing from its position and must earn its own
+ *       match in step 1 or 3.
+ *   <li><b>Exact canonical structured path.</b> The continuity mechanism wherever no native id
+ *       exists.
+ *   <li><b>Allocate fresh.</b>
+ * </ol>
+ *
+ * <p>Nothing else counts as evidence.
+ *
+ * <p><b>Reconcile only against the immediately preceding version.</b> Path matching consults the
+ * previous live map alone, which is exactly what makes a dropped-then-readded path take a new id.
+ * Skipping a version breaks that: reconciling v3 against v1 would resurrect an identity v2
+ * retired. The Delta state therefore records the source version it represents and the reconciler
+ * rejects input that is not its immediate successor. This is a Delta-side precondition, not a
+ * neutral invariant — nothing in this package assumes a cross-format version concept.
+ *
+ * <p><b>Renames are not inferred.</b> For unmapped Delta the schema alone cannot distinguish
+ * renaming {@code a} to {@code b} from dropping {@code a} and adding {@code b}, because Delta
+ * persists nothing that records the difference. So a path change with no native id behind it
+ * produces a new lineage and a new id.
+ *
+ * <p>That loses continuity across an unmapped rename, and the trade is deliberate, resting on an
+ * asymmetry worth stating plainly: <b>a false positive silently attaches a dropped column's
+ * statistics and metadata to a different column, while a false negative only costs a new identity
+ * and a recapture.</b> One corrupts query plans invisibly; the other is visible and self-healing.
+ *
+ * <p>In particular, <b>ordinal is not identity evidence</b> — not alone, and not as one term in a
+ * similarity score. Two nodes sharing a sibling position across versions are not thereby the same
+ * node. {@link ai.floedb.floecat.schema.identity.SchemaNode#ordinal()} describes the shape of the
+ * schema in front of you and gives the traversal a deterministic order for allocation; it says
+ * nothing about lineage. Any future rename inference must rest on evidence outside the schema —
+ * Delta operation metadata or transaction history — with its confidence stated explicitly, not on
+ * structural resemblance.
  */
 package ai.floedb.floecat.schema.identity;

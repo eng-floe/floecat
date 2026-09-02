@@ -34,7 +34,8 @@ import java.util.Optional;
  *
  * @param path the canonical structured path
  * @param columnId the Floecat column id, always positive
- * @param kind what the node is structurally
+ * @param kind what the node is structurally. Always equal to {@code path.last().kind()} — the
+ *     constructor enforces it — so persisted identity need only carry the path and derive this.
  * @param formatIdentity the source format's own id for this node, when it had one
  */
 public record ColumnIdentity(
@@ -44,6 +45,14 @@ public record ColumnIdentity(
     Objects.requireNonNull(path, "path");
     Objects.requireNonNull(kind, "kind");
     Objects.requireNonNull(formatIdentity, "formatIdentity");
+    if (path.isRoot()) {
+      throw new IllegalArgumentException("An identity cannot sit at the root path");
+    }
+    if (kind != path.last().kind()) {
+      throw new IllegalArgumentException(
+          "Identity kind " + kind + " contradicts its path '" + path.display() + "', which ends in "
+              + path.last().kind());
+    }
     if (columnId <= 0L) {
       throw new IllegalArgumentException("A column id must be positive, got " + columnId);
     }

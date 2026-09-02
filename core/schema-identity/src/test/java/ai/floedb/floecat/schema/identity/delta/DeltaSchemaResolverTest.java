@@ -636,6 +636,54 @@ class DeltaSchemaResolverTest {
         .contains(path("col-aaa"));
   }
 
+  // ------------------------------------------------- path is identity location, ordinal is shape
+
+  @Test
+  void insertingASiblingChangesOrdinalsButNotCanonicalPaths() {
+    // The architectural distinction this whole model rests on: a ColumnPath says *which node* this
+    // is, an ordinal says *where it currently sits*. Reconciliation matches on the former only, so
+    // inserting a sibling must leave every surviving node's path untouched even though the
+    // ordinals after it all shift.
+    String before =
+        """
+        {"type":"struct","fields":[
+          {"name":"a","type":"long","nullable":true,"metadata":{}},
+          {"name":"s","nullable":true,"metadata":{},"type":{"type":"struct","fields":[
+            {"name":"x","type":"int","nullable":true,"metadata":{}},
+            {"name":"y","type":"int","nullable":true,"metadata":{}}
+          ]}}
+        ]}
+        """;
+    String after =
+        """
+        {"type":"struct","fields":[
+          {"name":"inserted","type":"string","nullable":true,"metadata":{}},
+          {"name":"a","type":"long","nullable":true,"metadata":{}},
+          {"name":"s","nullable":true,"metadata":{},"type":{"type":"struct","fields":[
+            {"name":"nested_inserted","type":"int","nullable":true,"metadata":{}},
+            {"name":"x","type":"int","nullable":true,"metadata":{}},
+            {"name":"y","type":"int","nullable":true,"metadata":{}}
+          ]}}
+        ]}
+        """;
+    var v1 = DeltaSchemaResolver.resolve(before, ColumnMappingMode.NONE).schema();
+    var v2 = DeltaSchemaResolver.resolve(after, ColumnMappingMode.NONE).schema();
+
+    for (ColumnPath survivor : List.of(path("a"), path("s"), path("s", "x"), path("s", "y"))) {
+      assertThat(v1.byPath(survivor)).as("%s in v1", survivor).isPresent();
+      assertThat(v2.byPath(survivor)).as("%s in v2", survivor).isPresent();
+    }
+    // Same paths, every ordinal shifted.
+    assertThat(v1.byPath(path("a")).orElseThrow().ordinal()).isEqualTo(1);
+    assertThat(v2.byPath(path("a")).orElseThrow().ordinal()).isEqualTo(2);
+    assertThat(v1.byPath(path("s", "x")).orElseThrow().ordinal()).isEqualTo(1);
+    assertThat(v2.byPath(path("s", "x")).orElseThrow().ordinal()).isEqualTo(2);
+    // And the inserted nodes take the ordinals the survivors used to hold, without taking their
+    // paths — which is exactly why ordinal cannot stand in for identity.
+    assertThat(v2.byPath(path("inserted")).orElseThrow().ordinal()).isEqualTo(1);
+    assertThat(v2.byPath(path("s", "nested_inserted")).orElseThrow().ordinal()).isEqualTo(1);
+  }
+
   // ---------------------------------------------------------------- structural position
 
   @Test

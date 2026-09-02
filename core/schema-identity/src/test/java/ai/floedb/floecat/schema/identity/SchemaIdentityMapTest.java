@@ -135,19 +135,40 @@ class SchemaIdentityMapTest {
   }
 
   @Test
-  void rejectsAnIdentityWithTheWrongKind() {
-    var schema = ResolvedSchema.of(TableFormat.TF_ICEBERG, List.of(node("a", 1)));
-    var wrongKind =
-        new ColumnIdentity(
-            ColumnPath.ROOT.field("a"),
-            1L,
-            NodeKind.MAP_KEY,
-            Optional.of(new FormatIdentity(TableFormat.TF_ICEBERG, 1)));
+  void aKindContradictingItsPathIsUnrepresentable() {
+    // kind is derived state: the constructor pins it to the path's last element, so a mismatched
+    // identity or node cannot be built at all and never reaches the map. That is what lets
+    // persisted identity store the path alone and derive the kind back.
+    assertThatThrownBy(
+            () ->
+                new ColumnIdentity(
+                    ColumnPath.ROOT.field("a"),
+                    1L,
+                    NodeKind.MAP_KEY,
+                    Optional.of(new FormatIdentity(TableFormat.TF_ICEBERG, 1))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("contradicts its path 'a', which ends in FIELD");
 
     assertThatThrownBy(
-            () -> SchemaIdentityMap.of(TableFormat.TF_ICEBERG, schema, List.of(wrongKind)))
+            () ->
+                new SchemaNode(
+                    ColumnPath.ROOT.field("a").arrayElement(),
+                    NodeKind.FIELD,
+                    1,
+                    true,
+                    OptionalInt.empty(),
+                    Optional.empty()))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("claims kind MAP_KEY but the node is FIELD");
+        .hasMessageContaining("contradicts its path 'a[]', which ends in ARRAY_ELEMENT");
+  }
+
+  @Test
+  void kindIsAlwaysDerivableFromThePath() {
+    var schema = ResolvedSchema.of(TableFormat.TF_ICEBERG, List.of(node("a", 1)));
+
+    assertThat(schema.nodes()).allMatch(n -> n.kind() == n.path().last().kind());
+    assertThat(NativeIdentityAssigner.seed(schema).identities())
+        .allMatch(i -> i.kind() == i.path().last().kind());
   }
 
   @Test

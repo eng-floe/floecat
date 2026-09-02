@@ -28,7 +28,9 @@ import java.util.OptionalInt;
  * so a consumer can walk either without knowing which it has.
  *
  * @param path the canonical structured path — the node's identity within its schema version
- * @param kind what the node is structurally
+ * @param kind what the node is structurally. Always equal to {@code path.last().kind()} — the
+ *     constructor enforces it — so the field is an ergonomic accessor rather than independent
+ *     state, and anything persisting a node can store the path alone and derive this.
  * @param ordinal 1-based position among its siblings; an array element is 1, a map key 1 and its
  *     value 2
  * @param leaf true when the node has no children
@@ -64,6 +66,11 @@ public record SchemaNode(
     Objects.requireNonNull(sourcePhysicalPath, "sourcePhysicalPath");
     if (path.isRoot()) {
       throw new IllegalArgumentException("A schema node cannot sit at the root path");
+    }
+    if (kind != path.last().kind()) {
+      throw new IllegalArgumentException(
+          "Node kind " + kind + " contradicts its path '" + path.display() + "', which ends in "
+              + path.last().kind());
     }
     if (ordinal <= 0) {
       throw new IllegalArgumentException("Ordinal must be 1-based, got " + ordinal);
