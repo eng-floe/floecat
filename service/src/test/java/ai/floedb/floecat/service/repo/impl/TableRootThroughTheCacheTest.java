@@ -27,10 +27,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 /**
- * The root-pointer TTL cache contract: warm reads touch no store; every same-process write
- * invalidates (read-your-writes); TTL 0 disables entirely.
+ * How a table root reads through the pointer cache: a warm read touches no store, every
+ * same-process write is visible to the next read, and a blob that is gone under its pointer is told
+ * apart from one whose pointer has moved on.
  */
-class TableRootPointerCacheTest {
+class TableRootThroughTheCacheTest {
 
   private static ResourceId table(String id) {
     return ai.floedb.floecat.service.util.TestSupport.rid("acct", id, ResourceKind.RK_TABLE);
@@ -58,7 +59,38 @@ class TableRootPointerCacheTest {
 
   private static TableRootRepository cachedRepo(
       CountingPointerStore pointers, InMemoryBlobStore blobs) {
-    return new TableRootRepository(pointers, blobs, blobCache(), 2L);
+    // The cache lives under the store, so the caching these tests assert on is the decorator's.
+    var cache =
+        new ai.floedb.floecat.cache.CaffeineCache<String, ai.floedb.floecat.common.rpc.Pointer>(
+            ai.floedb.floecat.cache.CacheFamily.POINTER,
+            1024L * 1024L,
+            ai.floedb.floecat.common.rpc.Pointer::getVersion,
+            key -> key);
+    var caching = new ai.floedb.floecat.service.repo.cache.CachingPointerStore(pointers, cache);
+    return new TableRootRepository(caching, blobs, blobCache());
+  }
+
+  private static ai.floedb.floecat.cache.CaffeineCache<String, ai.floedb.floecat.common.rpc.Pointer>
+      pointerCache() {
+    return new ai.floedb.floecat.cache.CaffeineCache<>(
+        ai.floedb.floecat.cache.CacheFamily.POINTER,
+        1024L * 1024L,
+        ai.floedb.floecat.common.rpc.Pointer::getVersion,
+        key -> key);
+  }
+
+  /**
+   * A repository sharing an already-warm pointer cache but with its own cold decoded-blob cache --
+   * the state every replica is in for a table it has resolved before but not recently.
+   */
+  private static TableRootRepository repoSharing(
+      ai.floedb.floecat.cache.CaffeineCache<String, ai.floedb.floecat.common.rpc.Pointer> shared,
+      CountingPointerStore pointers,
+      InMemoryBlobStore blobs) {
+    return new TableRootRepository(
+        new ai.floedb.floecat.service.repo.cache.CachingPointerStore(pointers, shared),
+        blobs,
+        blobCache());
   }
 
   @Test
@@ -70,7 +102,7 @@ class TableRootPointerCacheTest {
 
     assertEquals(1, repo.get(tableId).orElseThrow().getRootSeq());
     int afterFirst = pointers.gets.get();
-    // Second read within TTL: pointer meta cached, root blob from the decoded cache.
+    // Second read: pointer served from the cache, root blob from the decoded cache.
     assertEquals(1, repo.get(tableId).orElseThrow().getRootSeq());
     assertEquals(afterFirst, pointers.gets.get(), "a warm read must not touch the pointer store");
   }
@@ -87,7 +119,7 @@ class TableRootPointerCacheTest {
     assertTrue(
         repo.update(TableRoot.newBuilder().setTableId(tableId).setRootSeq(2).build(), version));
 
-    // Read-your-writes on the writing instance: no TTL wait needed.
+    // Read-your-writes on the writing instance.
     assertEquals(2, repo.get(tableId).orElseThrow().getRootSeq());
   }
 
@@ -100,7 +132,7 @@ class TableRootPointerCacheTest {
     assertEquals(1, repo.get(tableId).orElseThrow().getRootSeq()); // populate the cache
 
     // DROP/account-cascade purge: the pointer AND the cached entry must go — a bare pointer-store
-    // delete would leave the dropped table's root serving from cache for a further TTL.
+    // delete would leave the dropped table's root serving from the cache indefinitely.
     repo.purgeRoot(tableId);
 
     assertTrue(repo.get(tableId).isEmpty(), "read-your-writes must hold for purges too");
@@ -202,15 +234,52 @@ class TableRootPointerCacheTest {
   }
 
   @Test
-  void ttlZeroDisablesTheCacheEntirely() {
+  void aBlobGoneUnderAnUnchangedPointerIsCorruption() {
+    // Reporting this as absence is what lets a caller create a fresh root over a broken one, so it
+    // has to be loud. The verdict is taken past the pointer cache: asking the cache would compare
+    // the stale pointer against itself and reach an answer for the wrong reason.
     var pointers = new CountingPointerStore();
-    var repo = new TableRootRepository(pointers, new InMemoryBlobStore());
-    var tableId = table("t-off");
-    repo.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
+    var blobs = new InMemoryBlobStore();
+    var shared = pointerCache();
+    var warm = repoSharing(shared, pointers, blobs);
+    var tableId = table("t-dangling");
+    warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
+    String blobUri = warm.metaForSafeLive(tableId).getBlobUri();
+    assertEquals(1, warm.get(tableId).orElseThrow().getRootSeq()); // warms the pointer cache
 
-    repo.get(tableId);
-    int afterFirst = pointers.gets.get();
-    repo.get(tableId);
-    assertTrue(pointers.gets.get() > afterFirst, "with TTL 0 every read hits the live pointer");
+    blobs.delete(blobUri); // swept, pointer left behind
+
+    // Same pointer cache, cold decode: the read reaches the blob and finds it gone.
+    var repo = repoSharing(shared, pointers, blobs);
+    org.junit.jupiter.api.Assertions.assertThrows(
+        ai.floedb.floecat.service.repo.util.BaseResourceRepository.CorruptionException.class,
+        () -> repo.get(tableId));
+  }
+
+  @Test
+  void aPointerThatMovedResolvesWhereItMovedToRatherThanReadingAsAbsent() {
+    // A cached pointer naming a superseded blob is the ordinary state of every replica that did
+    // not make the write, and nothing expires. Reporting absence here would turn a healthy table
+    // into a NOT_FOUND on that replica until something else happened to repair the entry.
+    var pointers = new CountingPointerStore();
+    var blobs = new InMemoryBlobStore();
+    var shared = pointerCache();
+    var warm = repoSharing(shared, pointers, blobs);
+    var tableId = table("t-moved");
+    warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
+    String staleUri = warm.metaForSafeLive(tableId).getBlobUri();
+    assertEquals(1, warm.get(tableId).orElseThrow().getRootSeq()); // warms the pointer cache
+
+    // Another replica commits seq 2 and CAS GC sweeps the old blob. Nothing tells this cache: the
+    // write goes straight to the underlying store, so the cached pointer still names staleUri.
+    var elsewhere = new TableRootRepository(pointers, blobs, blobCache());
+    long version = elsewhere.metaForSafeLive(tableId).getPointerVersion();
+    assertTrue(
+        elsewhere.update(
+            TableRoot.newBuilder().setTableId(tableId).setRootSeq(2).build(), version));
+    blobs.delete(staleUri);
+
+    var repo = repoSharing(shared, pointers, blobs);
+    assertEquals(2, repo.get(tableId).orElseThrow().getRootSeq());
   }
 }

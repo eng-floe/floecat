@@ -160,6 +160,12 @@ public class CatalogRepository {
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 
+  /** The same read, past the cache, for a caller whose verdict a stale pointer would invert. */
+  public MutationMeta pointerMetaForSafeConsistent(ResourceId catalogResourceId) {
+    return repo.pointerMetaForSafeConsistent(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
+  }
+
   /** Blob-direct read for graph hydration from resolved metadata; empty if the blob moved. */
   public Optional<Catalog> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);

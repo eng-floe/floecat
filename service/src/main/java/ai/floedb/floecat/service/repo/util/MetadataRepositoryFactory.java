@@ -25,7 +25,10 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.function.Function;
 
-/** Composes metadata repositories with raw mutation stores and admitted read-only stores. */
+/**
+ * Composes metadata repositories with the stores their writes go through and admitted read-only
+ * stores.
+ */
 @ApplicationScoped
 public class MetadataRepositoryFactory {
   private final PointerStore pointers;
@@ -34,8 +37,9 @@ public class MetadataRepositoryFactory {
   private final RepositoryReads reads;
 
   /**
-   * Compose the process stores once: mutation transactions retain the raw stores, while repository
-   * query reads use adapters governed by {@code admittedReads}.
+   * Compose the process stores once: mutation transactions read past the cache by reading
+   * consistently, which is what keeps a CAS expected-version from being answered by an entry the
+   * cache is behind on.
    */
   @Inject
   public MetadataRepositoryFactory(
