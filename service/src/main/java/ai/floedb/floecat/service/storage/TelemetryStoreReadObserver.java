@@ -22,6 +22,7 @@ import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import ai.floedb.floecat.telemetry.helpers.StoreMetrics;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
+import java.util.OptionalLong;
 
 /** Production adapter from raw metadata-store reads to the existing store telemetry contract. */
 @Singleton
@@ -40,24 +41,33 @@ public class TelemetryStoreReadObserver implements StoreReadObserver {
     ObservationScope scope = metrics.observe();
     return new Observation() {
       @Override
+      public void success() {
+        succeed(OptionalLong.empty());
+      }
+
+      @Override
       public void success(long bytes) {
-        record("success", bytes);
-        scope.success();
+        succeed(OptionalLong.of(bytes));
       }
 
       @Override
       public void failure(Throwable failure) {
-        record("error", -1L);
+        record("error", OptionalLong.empty());
         scope.error(failure);
       }
 
-      private void record(String result, long bytes) {
+      private void succeed(OptionalLong bytes) {
+        record("success", bytes);
+        scope.success();
+      }
+
+      private void record(String result, OptionalLong bytes) {
         metrics.recordRequest(result);
         if (call.itemCount() > 0) {
           metrics.recordItems(call.itemCount(), result);
         }
-        if (bytes >= 0L) {
-          metrics.recordBytes(bytes, result);
+        if (bytes.isPresent()) {
+          metrics.recordBytes(bytes.getAsLong(), result);
         }
         StoreOperationSummary.add(call.summaryPrefix() + "_calls", 1L);
         if (call.itemCount() > 0) {

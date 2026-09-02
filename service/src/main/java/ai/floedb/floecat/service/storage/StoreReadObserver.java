@@ -98,8 +98,13 @@ public interface StoreReadObserver {
   interface Observation extends AutoCloseable {
     Observation NOOP = new Observation() {};
 
-    /** Marks a successful call; {@code bytes} is negative when the operation has no byte unit. */
-    default void success(long bytes) {}
+    /** Marks a successful call for an operation without a byte unit. */
+    default void success() {}
+
+    /** Marks a successful call and records the number of bytes returned. */
+    default void success(long bytes) {
+      success();
+    }
 
     default void failure(Throwable failure) {}
 

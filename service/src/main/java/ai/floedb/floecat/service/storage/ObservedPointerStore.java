@@ -37,8 +37,6 @@ import java.util.function.Supplier;
 @Decorator
 @Priority(Interceptor.Priority.APPLICATION)
 public final class ObservedPointerStore implements PointerStore {
-  private static final long NO_BYTES = -1L;
-
   private final PointerStore delegate;
   private final StoreReadObserver observer;
 
@@ -149,7 +147,6 @@ public final class ObservedPointerStore implements PointerStore {
         observer,
         new ReadCall(
             Store.POINTER, operation, items, observer.capturesTargets() ? targets : List.of()),
-        body,
-        ignored -> NO_BYTES);
+        body);
   }
 }

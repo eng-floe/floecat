@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.storage;
 
+import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 
@@ -24,14 +25,31 @@ final class StoreReadInstrumentation {
   private StoreReadInstrumentation() {}
 
   static <T> T observe(
+      StoreReadObserver observer, StoreReadObserver.ReadCall call, Supplier<T> body) {
+    return observe(observer, call, body, (observation, ignored) -> observation.success());
+  }
+
+  static <T> T observe(
       StoreReadObserver observer,
       StoreReadObserver.ReadCall call,
       Supplier<T> body,
       ToLongFunction<T> bytes) {
+    return observe(
+        observer,
+        call,
+        body,
+        (observation, result) -> observation.success(bytes.applyAsLong(result)));
+  }
+
+  private static <T> T observe(
+      StoreReadObserver observer,
+      StoreReadObserver.ReadCall call,
+      Supplier<T> body,
+      BiConsumer<StoreReadObserver.Observation, T> success) {
     StoreReadObserver.Observation observation = observer.begin(call);
     try {
       T result = body.get();
-      observation.success(bytes.applyAsLong(result));
+      success.accept(observation, result);
       return result;
     } catch (RuntimeException | Error failure) {
       observation.failure(failure);

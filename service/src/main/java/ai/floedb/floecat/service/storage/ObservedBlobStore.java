@@ -38,8 +38,6 @@ import java.util.function.ToLongFunction;
 @Decorator
 @Priority(Interceptor.Priority.APPLICATION)
 public final class ObservedBlobStore implements BlobStore {
-  private static final long NO_BYTES = -1L;
-
   private final BlobStore delegate;
   private final StoreReadObserver observer;
 
@@ -81,12 +79,7 @@ public final class ObservedBlobStore implements BlobStore {
 
   @Override
   public Optional<BlobHeader> head(String uri) {
-    return observe(
-        Operation.HEAD,
-        1,
-        Collections.singletonList(uri),
-        () -> delegate.head(uri),
-        ignored -> NO_BYTES);
+    return observe(Operation.HEAD, 1, Collections.singletonList(uri), () -> delegate.head(uri));
   }
 
   @Override
@@ -141,8 +134,7 @@ public final class ObservedBlobStore implements BlobStore {
         Operation.LIST,
         0,
         Collections.singletonList(prefix),
-        () -> delegate.list(prefix, limit, pageToken),
-        ignored -> NO_BYTES);
+        () -> delegate.list(prefix, limit, pageToken));
   }
 
   @Override
@@ -151,8 +143,12 @@ public final class ObservedBlobStore implements BlobStore {
         Operation.LIST_PREFIXES,
         0,
         Collections.singletonList(prefix),
-        () -> delegate.listPrefixes(prefix, limit, pageToken),
-        ignored -> NO_BYTES);
+        () -> delegate.listPrefixes(prefix, limit, pageToken));
+  }
+
+  private <T> T observe(Operation operation, int items, List<String> targets, Supplier<T> body) {
+    return StoreReadInstrumentation.observe(
+        observer, new ReadCall(Store.BLOB, operation, items, observedTargets(targets)), body);
   }
 
   private <T> T observe(
@@ -163,10 +159,13 @@ public final class ObservedBlobStore implements BlobStore {
       ToLongFunction<T> bytes) {
     return StoreReadInstrumentation.observe(
         observer,
-        new ReadCall(
-            Store.BLOB, operation, items, observer.capturesTargets() ? targets : List.of()),
+        new ReadCall(Store.BLOB, operation, items, observedTargets(targets)),
         body,
         bytes);
+  }
+
+  private List<String> observedTargets(List<String> targets) {
+    return observer.capturesTargets() ? targets : List.of();
   }
 
   private static long bytes(byte[] value) {
