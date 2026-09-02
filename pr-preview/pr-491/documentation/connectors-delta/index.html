@@ -1133,6 +1133,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#compose-credential-vending-smoke" class="md-nav__link">
+    <span class="md-ellipsis">
+      Compose credential-vending smoke
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cross-references" class="md-nav__link">
     <span class="md-ellipsis">
       Cross-References
@@ -1794,6 +1803,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#compose-credential-vending-smoke" class="md-nav__link">
+    <span class="md-ellipsis">
+      Compose credential-vending smoke
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cross-references" class="md-nav__link">
     <span class="md-ellipsis">
       Cross-References
@@ -1829,19 +1847,19 @@
 <h1 id="delta-unity-catalog-connector">Delta / Unity Catalog Connector<a class="headerlink" href="#delta-unity-catalog-connector" title="Permanent link">&para;</a></h1>
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
 <p><code>connectors/catalogs/delta/</code> implements a connector targeting Databricks Unity Catalog-powered Delta Lake
-warehouses. It uses the Delta Kernel, Unity Catalog REST APIs, Databricks SQL endpoints, and AWS S3
+warehouses. It uses the Delta Kernel, Unity Catalog REST APIs, and AWS S3
 (through the v2 client) to enumerate tables, collect statistics, and plan files.</p>
 <p>The primary implementation is <code>DeltaConnector</code> (abstract) with source-specific subclasses for Unity
 Catalog, AWS Glue, and filesystem-backed tables, exposed via <code>DeltaConnectorProvider</code>. Supporting classes manage
-OAuth2 bearer token usage (including CLI, service principal, and WIF flows resolved upstream),
-Databricks SQL execution, and custom file readers for S3.</p>
+OAuth2 bearer token usage (including CLI, service principal, and WIF flows resolved upstream), a
+typed Unity Catalog client boundary, and custom file readers for S3.</p>
 <h2 id="architecture-responsibilities">Architecture &amp; Responsibilities<a class="headerlink" href="#architecture-responsibilities" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong><code>DeltaConnector</code></strong> – Abstract <code>FloecatConnector</code> that centralizes snapshot/stat logic.</li>
 <li><strong><code>UnityDeltaConnector</code></strong> – Unity Catalog-backed connector that:</li>
-<li>Talks to Unity Catalog REST (<code>UcHttp</code>) to list catalogs/schemas/tables.</li>
+<li>Uses <code>UnityCatalogClient</code> to list catalogs/schemas/tables.</li>
+<li>Vends table-scoped storage credentials through the client's temporary-credentials operation.</li>
 <li>Uses Delta Kernel (<code>io.delta.kernel.Table</code>) for schema and snapshot access.</li>
-<li>Executes Databricks SQL statements via <code>SqlStmtClient</code> if a warehouse is configured.</li>
 <li>Reads Parquet data with <code>S3V2FileSystemClient</code> and <code>ParquetS3V2InputFile</code> for NDV/statistics.</li>
 <li>Plans files using <code>DeltaPlanner</code>, emitting <code>ScanFile</code>s for data/delete manifests.</li>
 <li><strong><code>DeltaFilesystemConnector</code></strong> – Single-table connector for <code>delta.table-root</code> plus optional
@@ -1850,8 +1868,10 @@ Databricks SQL execution, and custom file readers for S3.</p>
 <li>Lists databases and Delta-registered tables from Glue.</li>
 <li>Resolves table <code>storage_location</code> from Glue metadata and reads table snapshots via Delta Kernel.</li>
 <li><strong><code>DeltaConnectorFactory</code></strong> – Selects Unity, Glue, or filesystem sources and wires engine/auth/IO.</li>
-<li><strong><code>UcBaseSupport</code> / <code>UcHttp</code></strong> – HTTP helpers for constructing API URLs, encoding parameters, and
-  handling retries/timeouts.</li>
+<li><strong><code>UnityCatalogClient</code> / <code>HttpUnityCatalogClient</code></strong> – Typed client boundary and HTTP adapter for
+  Unity Catalog metadata, pagination, error classification, and credential vending. The adapter
+  lives in <code>connectors/clients/unity-catalog/</code>; connector domain code does not depend on Java HTTP
+  types.</li>
 <li><strong><code>DeltaTypeMapper</code></strong> – Maps Delta/Parquet logical types into Floecat logical types for stats.</li>
 </ul>
 <h2 id="public-api-surface-area">Public API / Surface Area<a class="headerlink" href="#public-api-surface-area" title="Permanent link">&para;</a></h2>
@@ -1884,9 +1904,8 @@ Databricks SQL execution, and custom file readers for S3.</p>
   For <code>delta.source=glue</code> and <code>delta.source=filesystem</code>, AWS temporary credentials from
   <code>aws-assume-role</code> or <code>aws-web-identity</code> are preserved as a shared refreshable provider so native
   Glue catalog access and S3 reads use the same AWS identity.</li>
-<li><strong>HTTP &amp; SQL clients</strong> – <code>UcHttp</code> centralises base URI, connect/read timeouts, and error mapping.
-  <code>SqlStmtClient</code> optionally executes SQL statements (for example to inspect statistics tables) via
-  Databricks SQL warehouses.</li>
+<li><strong>Unity Catalog client</strong> – <code>HttpUnityCatalogClient</code> centralizes base URI, connect/read timeouts,
+  pagination, JSON decoding, and semantic error mapping behind the <code>UnityCatalogClient</code> interface.</li>
 <li><strong>S3 integration</strong> – Uses AWS SDK v2 (<code>S3Client</code>) with region from connector properties to read
   data files. <code>S3RangeReader</code> provides efficient range reads for Parquet file access.</li>
 <li><strong>NDV sampling</strong> – Controlled by <code>stats.ndv.enabled</code>, <code>stats.ndv.sample_fraction</code>, and
@@ -1925,7 +1944,7 @@ Databricks SQL execution, and custom file readers for S3.</p>
   → DeltaConnectorFactory.create(uri, options, authProvider)
       → Select Unity vs filesystem source
       → Instantiate S3 client + Delta Kernel engine
-      → Configure Unity Catalog HTTP and optional SQL client when needed
+      → Configure the UnityCatalogClient HTTP adapter when needed
   → listNamespaces/listTables via Unity Catalog REST
   → describe via REST + Delta Kernel schema inspection
   → enumerateSnapshots
@@ -1937,7 +1956,10 @@ Databricks SQL execution, and custom file readers for S3.</p>
   → captureSnapshotTargetStats
       → Delta Kernel Snapshot → Parquet stats engine → TargetStatsRecord (table/column/file stats)
 </code></pre></div>
-<p>Connector resources (HTTP clients, S3 client, Delta engine) are closed when <code>close()</code> is invoked.</p>
+<p>Source-specific resources follow the <code>FloecatConnector.close()</code> lifecycle:
+<code>UnityDeltaConnector.close()</code> releases the <code>UnityCatalogClient</code> transport, which matters because the
+storage service builds a connector per vend (once per scan session and once per file group).
+Per-file S3 range readers are closed by their consumers.</p>
 <h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
 <p>Important connector properties:</p>
 <ul>
@@ -1945,7 +1967,46 @@ Databricks SQL execution, and custom file readers for S3.</p>
 <li><code>delta.table-root</code> – Required for <code>delta.source=filesystem</code>, pointing at a Delta table root.</li>
 <li><code>external.namespace</code>, <code>external.table-name</code> – Optional overrides for filesystem connector naming.</li>
 <li><code>http.connect.ms</code>, <code>http.read.ms</code> – Timeout controls for Unity Catalog HTTP calls.</li>
-<li><code>databricks.sql.warehouse_id</code> – Enables SQL statement execution when set.</li>
+<li>Unity Catalog connector URIs must use <code>https://</code>. Cleartext <code>http://</code> is rejected unless the
+  host is a loopback address <em>and</em> the operator has set
+  <code>floecat.security.allow-loopback-catalog-endpoints=true</code> (or
+  <code>FLOECAT_SECURITY_ALLOW_LOOPBACK_CATALOG_ENDPOINTS=true</code>). It defaults to deny, so a
+  tenant-supplied connector URI cannot grant itself cleartext transport; this mirrors
+  <code>floecat.security.allow-loopback-token-endpoints</code> for OAuth token endpoints. Private-CA HTTPS
+  endpoints need no flag -- only the JVM truststore.</li>
+<li>A Unity Catalog connector URI naming a <strong>private address literal</strong> (10/8, 172.16/12, 192.168/16,
+  IPv6 unique-local) is rejected unless <code>floecat.security.allow-private-catalog-endpoints=true</code>
+  (or <code>FLOECAT_SECURITY_ALLOW_PRIVATE_CATALOG_ENDPOINTS=true</code>). Set it for a catalog on an internal
+  network. Link-local, wildcard and multicast literals -- including the cloud metadata address
+  <code>169.254.169.254</code> -- are always rejected, with no opt-in. These checks apply only to address
+  <em>literals</em>: a hostname is never resolved during validation, deliberately, because a resolver in
+  the gate would disagree with the resolution the HTTP client performs at connect time. A hostname
+  pointing at a private address is therefore out of scope here and belongs to network policy.</li>
+<li><code>unity.temporary-table-vend-path</code> – Route for temporary-table-credential vending. Defaults to the
+  Databricks path <code>/api/2.0/unity-catalog/temporary-table-credentials</code>. OSS Unity Catalog 0.6.0
+  and later serve the otherwise-compatible operation under
+  <code>/api/2.1/unity-catalog/temporary-table-credentials</code>, so point this at the 2.1 route for an OSS
+  endpoint -- otherwise vending fails against it: <code>INVALID_REQUEST</code> where the workspace names the
+  route in its error envelope, as Databricks does with <code>ENDPOINT_NOT_FOUND</code>, and <code>NOT_FOUND</code> where
+  it sends no envelope, as OSS Unity Catalog does. Every other Unity operation is 2.1 on both. Response-body suppression on that path follows whatever route is configured.</li>
+<li><code>floecat.unity.max-pages</code> (system property) – Maximum pages fetched by one Unity Catalog listing,
+  default 10,000. Raise it for an unusually large catalog; exceeding it is reported as an
+  <code>INVALID_RESPONSE</code> rather than allowing an unbounded listing.</li>
+<li><code>floecat.unity.max-response-bytes</code> (system property) – Cap on a single Unity Catalog response
+  body, default 32 MiB. A larger body is refused rather than buffered, since a connector URI is
+  tenant-supplied: on a success the call fails as <code>INVALID_RESPONSE</code>; on an error response the body
+  is dropped for diagnostics while the HTTP status still decides the classification. Raise it for a
+  catalog whose listing pages exceed the default.</li>
+<li><code>databricks.access-delegation=vended-credentials</code> – Explicitly enables table-scoped temporary
+  AWS credentials from Unity Catalog when no storage authority matches the table. The Databricks
+  metastore must allow external access and the caller needs <code>EXTERNAL USE SCHEMA</code> on the parent
+  schema. Azure, GCP, and R2 credential shapes are not yet consumed and fall back to a configured
+  storage authority. Accepted values are <code>vended-credentials</code>, <code>true</code>, <code>1</code>, <code>yes</code> (enabled) and
+  <code>false</code>, <code>0</code>, <code>no</code>, <code>none</code> (disabled), with underscores accepted in place of hyphens so the
+  spelling DuckDB sends works here too; anything else is rejected at create/update time rather
+  than read as "disabled". Honored only for <code>delta.source=unity</code> (the default): on
+  <code>delta.source=glue</code> or <code>delta.source=filesystem</code> the option is accepted and then ignored, since
+  neither has a Unity credential endpoint to vend from.</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
 <li><code>stats.ndv.*</code> – Sampling knobs identical to the Iceberg connector.</li>
 <li>Authentication-specific options (<code>auth.scheme</code>, <code>auth.properties</code>) – <code>auth.scheme=oauth2</code>
@@ -1982,7 +2043,7 @@ guide listed below.</p>
   &quot;kind&quot;:&quot;CK_DELTA&quot;,
   &quot;uri&quot;:&quot;https://dbc-1234.cloud.databricks.com&quot;,
   &quot;properties&quot;:{
-    &quot;databricks.sql.warehouse_id&quot;:&quot;abcd&quot;,
+    &quot;delta.source&quot;:&quot;unity&quot;,
     &quot;s3.region&quot;:&quot;us-west-2&quot;,
     &quot;stats.ndv.enabled&quot;:&quot;true&quot;
   },
@@ -2049,6 +2110,17 @@ guide listed below.</p>
   connector lists every table in the namespace, creates missing namespaces in the destination
   catalog, updates <code>DestinationTarget</code> pointers, and ingests snapshot stats for each table.</li>
 </ul>
+<h2 id="compose-credential-vending-smoke">Compose credential-vending smoke<a class="headerlink" href="#compose-credential-vending-smoke" title="Permanent link">&para;</a></h2>
+<p><code>COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke</code> runs an OSS Unity Catalog 0.6.0 server
+against LocalStack STS and a Delta fixture in <code>floecat-delta-vended</code>. The fixture bucket is
+intentionally excluded from the storage-authority setup, so metadata capture and the leased query
+scan can succeed only with the temporary AWS session credentials returned by Unity Catalog. The
+smoke first validates the credential response shape without logging its secret fields, then imports
+the table with <code>databricks.access-delegation=vended-credentials</code> and checks stats, indexes, and the
+remote scan-file path.</p>
+<p>OSS Unity Catalog exposes temporary table credentials under its 2.1 API, whereas Databricks uses
+the 2.0 route consumed by <code>HttpUnityCatalogClient</code>. The compose-only TLS proxy translates that one
+route; production code remains aligned with the Databricks API.</p>
 <h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../cli-reference/"><code>docs/cli-reference.md</code></a></li>
