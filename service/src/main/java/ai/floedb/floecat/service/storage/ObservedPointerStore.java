@@ -51,12 +51,32 @@ public final class ObservedPointerStore implements PointerStore {
     return observe(Operation.GET, 1, Collections.singletonList(key), () -> delegate.get(key));
   }
 
+  /**
+   * Observed like any other read, but routed to the delegate's consistent read rather than its
+   * ordinary one. Inheriting a default that called this class's own {@code get} would reach the
+   * delegate through the wrong door -- correct today only because every read below happens to be
+   * consistent.
+   */
+  @Override
+  public Optional<Pointer> getConsistent(String key) {
+    return observe(
+        Operation.GET, 1, Collections.singletonList(key), () -> delegate.getConsistent(key));
+  }
+
   @Override
   public Map<String, Pointer> getBatch(List<String> keys) {
     if (keys == null || keys.isEmpty()) {
       return delegate.getBatch(keys);
     }
     return observe(Operation.GET_BATCH, keys.size(), keys, () -> delegate.getBatch(keys));
+  }
+
+  @Override
+  public Map<String, Pointer> getBatchConsistent(List<String> keys) {
+    if (keys == null || keys.isEmpty()) {
+      return delegate.getBatchConsistent(keys);
+    }
+    return observe(Operation.GET_BATCH, keys.size(), keys, () -> delegate.getBatchConsistent(keys));
   }
 
   @Override

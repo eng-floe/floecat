@@ -113,6 +113,37 @@ public interface PointerStore {
     return Map.copyOf(out);
   }
 
+  /**
+   * Reads multiple pointers from the authoritative store view. Backends with a native consistent
+   * batch operation should override; the default preserves correctness for decorators and test
+   * stores by composing the mandatory single-key consistent read.
+   */
+  default Map<String, Pointer> getBatchConsistent(List<String> keys) {
+    Map<String, Pointer> out = new LinkedHashMap<>();
+    for (String key : keys == null ? List.<String>of() : keys) {
+      getConsistent(key).ifPresent(pointer -> out.put(key, pointer));
+    }
+    return Map.copyOf(out);
+  }
+
+  /**
+   * The pointer as the store has it, never from a cache in front of it.
+   *
+   * <p>The prefix reads have had this distinction since caching was only a prefix concern; a
+   * single-key form is needed for the same reason -- a CAS expected-version, a liveness probe and a
+   * GC emptiness verdict are all questions a cache cannot answer, because what they ask about is
+   * precisely what the cache might be behind on.
+   *
+   * <p><b>Not a default.</b> A store that is the source implements it as an ordinary read, and a
+   * decorator has something to bypass -- but which of those an implementation is, only it knows. As
+   * a default delegating to {@link #get} it read as free, and every implementation that never
+   * thought about it inherited "consistent" as a synonym for "whatever get does". That holds only
+   * while every read below is consistent: make one of them cheap and eventually consistent, and
+   * every caller asking this question is silently answered by the wrong read, with no signature
+   * moving and nothing failing.
+   */
+  Optional<Pointer> getConsistent(String key);
+
   boolean compareAndSet(String key, long expectedVersion, Pointer next);
 
   boolean delete(String key);
