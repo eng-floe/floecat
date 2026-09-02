@@ -60,7 +60,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  *
  * <p>The catalog is populated to a given table count and then scanned twice, so the second scan is
  * warm in whatever sense the running service is warm. The cost is then ASSERTED, as a constant
- * rather than a formula: one KV round trip and one blob object at both catalog sizes, and no
+ * rather than a formula: zero KV round trips and one blob object at both catalog sizes, and no
  * listing. A scan resolves the catalog and does not pay per table, so a number that starts scaling
  * with the catalog is the regression this exists to catch. The rows are asserted too, because a
  * scan that returned nothing would touch few stores and report a flattering number.
@@ -175,7 +175,7 @@ class SystemTableScanStoreCostIT {
     // Asserted, like the resolution suite. This used to record without gating, because the
     // app-scoped caches are shared across the JVM and the same scan read one pointer alone and
     // twenty after a neighbour had evicted what it relied on. The profile now sizes those caches
-    // past anything a fixture creates, and the cost is flat: one KV round trip and one S3 object,
+    // past anything a fixture creates, and the cost is flat: zero KV round trips and one S3 object,
     // at both catalog sizes, alone and after the sibling suite. Flat and unasserted is the worst of
     // both -- it looks like evidence and defends nothing.
     //
@@ -183,9 +183,10 @@ class SystemTableScanStoreCostIT {
     // does not pay per table in the catalog. That is the finding this suite exists to record, so a
     // number that starts scaling with tableCount is exactly what should fail here.
     assertEquals(
-        1,
+        0,
         reads.pointerRoundTrips(),
-        "a system-table scan must not scale its KV reads with the catalog");
+        "a system-table scan must not reach the pointer store at all: the catalog and namespace"
+            + " resolutions it needs are served by the pointer cache");
     assertEquals(
         1,
         reads.blobObjectGets(),
