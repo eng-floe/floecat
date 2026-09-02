@@ -38,6 +38,7 @@ This lists all metrics currently available in the repository:
 | floecat.core.rpc.retries | COUNTER |  | v1 | Number of RPC retries invoked. | component, operation | component, operation |
 | floecat.core.store.bytes | COUNTER | bytes | v1 | Count of bytes processed by store operations. | component, operation, result | account, component, exception, operation, result |
 | floecat.core.store.errors | COUNTER |  | v1 | Store failure count per component/operation. | component, operation, result | account, component, exception, operation, result |
+| floecat.core.store.items | COUNTER |  | v1 | Number of keys or objects addressed by keyed store operations. | component, operation, result | account, component, exception, operation, result |
 | floecat.core.store.latency | TIMER | seconds | v1 | Store operation latency distribution. | component, operation, result | account, component, exception, operation, result |
 | floecat.core.store.requests | COUNTER |  | v1 | Number of store requests emitted per component/operation. | component, operation, result | account, component, exception, operation, result |
 | floecat.core.store.retries | COUNTER |  | v1 | Store retries per component/operation. | component, operation | component, operation |

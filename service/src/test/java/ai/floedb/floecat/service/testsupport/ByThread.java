@@ -25,9 +25,16 @@ final class ByThread {
   private final ConcurrentMap<String, AtomicInteger> counts = new ConcurrentHashMap<>();
 
   void record() {
+    record(1);
+  }
+
+  void record(int amount) {
+    if (amount <= 0) {
+      return;
+    }
     counts
         .computeIfAbsent(Thread.currentThread().getName(), n -> new AtomicInteger())
-        .incrementAndGet();
+        .addAndGet(amount);
   }
 
   void appendTo(StringBuilder out, String prefix) {

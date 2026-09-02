@@ -47,8 +47,7 @@ import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.StoreCostProfile;
-import ai.floedb.floecat.service.testsupport.CountingBlobStore;
-import ai.floedb.floecat.service.testsupport.CountingPointerStore;
+import ai.floedb.floecat.service.testsupport.RecordingStoreReadObserver;
 import ai.floedb.floecat.service.testsupport.StoreCostMeter;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
@@ -87,9 +86,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>An integration test rather than a wired-by-hand one on purpose. The question is what the
  * DEPLOYED service does, and a test that assembles its own object graph cannot see a read that only
  * bypasses a cache in the container's wiring: it would report a flattering number while the running
- * service still went to storage. So this runs the real service with counting stores substituted
- * underneath, and reports the whole picture before asserting anything, so a failure never leaves
- * you with a number and no idea which read produced it.
+ * service still went to storage. So this runs the real service through the same store decorators
+ * used in production, selects a detailed local observer instead of the metrics observer, and
+ * reports the whole picture before asserting anything, so a failure never leaves you with a number
+ * and no idea which read produced it.
  */
 @QuarkusTest
 @TestProfile(StoreCostProfile.class)
@@ -121,8 +121,7 @@ class WarmRequestStoreCostIT {
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
-  @Inject CountingPointerStore pointers;
-  @Inject CountingBlobStore blobs;
+  @Inject RecordingStoreReadObserver reads;
 
   /** The pair, plus the protocol for measuring through it and the proof it is the wired pair. */
   @Inject StoreCostMeter meter;
@@ -233,11 +232,12 @@ class WarmRequestStoreCostIT {
         });
     checks.add(
         () ->
-            assertEquals(0, blobs.listCalls(), "a warm request must not enumerate the blob store"));
+            assertEquals(
+                0, reads.blobListCalls(), "a warm request must not enumerate the blob store"));
     checks.add(
         () ->
             assertEquals(
-                0, pointers.prefixWalks(), "a warm request must not walk the pointer store"));
+                0, reads.pointerPrefixWalks(), "a warm request must not walk the pointer store"));
     assertAll(checks);
   }
 
@@ -270,15 +270,15 @@ class WarmRequestStoreCostIT {
   }
 
   /**
-   * KV round trips, not keys: a getBatch of eight is one. See {@code
-   * CountingPointerStore.roundTrips}.
+   * KV round trips, not keys: a getBatch of eight is one. See {@code floecat.core.store.requests}.
    */
-  private static final Cost KV = new Cost("KV round trips", 8, 1, t -> t.pointers.roundTrips());
+  private static final Cost KV = new Cost("KV round trips", 8, 1, t -> t.reads.pointerRoundTrips());
 
-  private static final Cost S3_GET = new Cost("S3 objects GET", 7, 1, t -> t.blobs.objectGets());
+  private static final Cost S3_GET =
+      new Cost("S3 objects GET", 7, 1, t -> t.reads.blobObjectGets());
 
   /** Pin validation HEADs the live store per table; there is no per-request part. */
-  private static final Cost S3_HEAD = new Cost("S3 objects HEAD", 3, 0, t -> t.blobs.heads());
+  private static final Cost S3_HEAD = new Cost("S3 objects HEAD", 3, 0, t -> t.reads.blobHeads());
 
   private static final List<Cost> COSTS = List.of(KV, S3_GET, S3_HEAD);
 

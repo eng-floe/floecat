@@ -45,9 +45,11 @@ class StoreMetricsTest {
 
     metrics.recordRequest("success", Tag.of(TagKey.ACCOUNT, "acct"));
     metrics.recordLatency(Duration.ofMillis(5), "success", Tag.of(TagKey.ACCOUNT, "acct"));
+    metrics.recordItems(8, "success", Tag.of(TagKey.ACCOUNT, "acct"));
     metrics.recordBytes(123, "success", Tag.of(TagKey.ACCOUNT, "acct"));
 
     assertThat(observability.counterValue(Telemetry.Metrics.STORE_REQUESTS)).isEqualTo(1d);
+    assertThat(observability.counterValue(Telemetry.Metrics.STORE_ITEMS)).isEqualTo(8d);
     assertThat(observability.counterValue(Telemetry.Metrics.STORE_BYTES)).isEqualTo(123d);
     List<Tag> requestTags =
         observability.counterTagHistory(Telemetry.Metrics.STORE_REQUESTS).get(0);

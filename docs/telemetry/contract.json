@@ -310,6 +310,16 @@
     "allowedTags": ["account", "component", "exception", "operation", "result"]
   },
   {
+    "name": "floecat.core.store.items",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Number of keys or objects addressed by keyed store operations.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["account", "component", "exception", "operation", "result"]
+  },
+  {
     "name": "floecat.core.store.latency",
     "type": "TIMER",
     "unit": "seconds",

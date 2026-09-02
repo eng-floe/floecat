@@ -27,8 +27,7 @@ import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.StoreCostProfile;
-import ai.floedb.floecat.service.testsupport.CountingBlobStore;
-import ai.floedb.floecat.service.testsupport.CountingPointerStore;
+import ai.floedb.floecat.service.testsupport.RecordingStoreReadObserver;
 import ai.floedb.floecat.service.testsupport.StoreCostMeter;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
@@ -93,8 +92,7 @@ class SystemTableScanStoreCostIT {
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
-  @Inject CountingPointerStore pointers;
-  @Inject CountingBlobStore blobs;
+  @Inject RecordingStoreReadObserver reads;
 
   /** The pair, plus the protocol for measuring through it and the proof it is the wired pair. */
   @Inject StoreCostMeter meter;
@@ -186,23 +184,24 @@ class SystemTableScanStoreCostIT {
     // number that starts scaling with tableCount is exactly what should fail here.
     assertEquals(
         1,
-        pointers.roundTrips(),
+        reads.pointerRoundTrips(),
         "a system-table scan must not scale its KV reads with the catalog");
     assertEquals(
         1,
-        blobs.objectGets(),
+        reads.blobObjectGets(),
         "a system-table scan must not scale its blob reads with the catalog");
-    assertEquals(0, blobs.heads(), "a system-table scan must not probe the blob store per table");
+    assertEquals(
+        0, reads.blobHeads(), "a system-table scan must not probe the blob store per table");
 
     // Both halves of "must not walk the store", because the round-trip total above hides either
     // one: a scan that replaced its single get with a single listing over the whole catalog holds
     // that total at 1 while the cost grows with the catalog, which is the regression this suite is
     // here to catch.
     assertEquals(
-        0, blobs.listCalls(), "a scan must not walk the blob store to find out what exists");
+        0, reads.blobListCalls(), "a scan must not walk the blob store to find out what exists");
     assertEquals(
         0,
-        pointers.prefixWalks(),
+        reads.pointerPrefixWalks(),
         "a scan must not walk the pointer store to find out what exists");
   }
 

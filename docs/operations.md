@@ -243,6 +243,19 @@ Micrometer + Prometheus export is enabled by default. The scrape endpoint is:
 GET http://<host>:<http-port>/q/metrics
 ```
 
+Physical metadata-store reads use the existing `floecat.core.store.*` family with
+`component="pointer_store"` or `component="blob_store"`. For example, request rate and batch
+fan-out can be inspected with:
+
+```promql
+sum by (component, operation) (rate(floecat_core_store_requests_total{component=~"pointer_store|blob_store"}[5m]))
+sum by (component, operation) (rate(floecat_core_store_items_total{component=~"pointer_store|blob_store"}[5m]))
+  / sum by (component, operation) (rate(floecat_core_store_requests_total{component=~"pointer_store|blob_store"}[5m]))
+```
+
+The first query is physical call rate; the second is addressed items per call. Store identifiers
+are intentionally absent from labels to keep cardinality bounded.
+
 See [`docs/telemetry/overview.md`](telemetry/overview.md) for the naming, tagging, and contribution rules, and view the generated catalog (`docs/telemetry/contract.md` and `docs/telemetry/contract.json`) for the current set of metrics. Regenerate the catalog any time you add or modify a metric:
 
 ```

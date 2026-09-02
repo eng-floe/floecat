@@ -51,6 +51,11 @@ public final class StoreMetrics extends BaseMetrics {
     recording(Telemetry.Metrics.STORE_BYTES, bytes, result, extraTags);
   }
 
+  /** Records keyed objects separately from the call that addressed them. */
+  public void recordItems(double items, String result, Tag... extraTags) {
+    recording(Telemetry.Metrics.STORE_ITEMS, items, result, extraTags);
+  }
+
   public ObservationScope observe(Tag... extraTags) {
     Tag[] tags = scopeTags(extraTags);
     ObservationScope metricsScope =

@@ -81,6 +81,14 @@ public final class StoreOperationSummary {
     }
   }
 
+  /** Adds to a request-local diagnostic counter without turning it into a durable metric tag. */
+  public static void add(String key, long amount) {
+    Mutable current = current();
+    if (current != null && key != null && !key.isBlank()) {
+      current.add(key, amount);
+    }
+  }
+
   public static void nanos(String key, long nanos) {
     Mutable current = current();
     if (current != null && key != null && !key.isBlank()) {

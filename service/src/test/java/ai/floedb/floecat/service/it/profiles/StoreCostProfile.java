@@ -21,12 +21,11 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Substitutes counting stores for the in-memory ones, so a test can assert what a request costs.
+ * Selects a detailed local observer, so a test can assert what a request costs.
  *
- * <p>The counting stores subclass the in-memory implementations this profile already uses, so
- * nothing about storage behaviour changes — only that calls are tallied. Selecting them through a
- * profile rather than annotating them globally keeps every other test on the plain stores: a
- * counter shared across tests would be meaningless.
+ * <p>The production and test observers sit behind the same store decorators. Selecting the recorder
+ * through a profile changes only where observations go; the stores and their behaviour are exactly
+ * those the running service uses. Every other test keeps the production telemetry observer.
  */
 public class StoreCostProfile implements QuarkusTestProfile {
   @Override
@@ -34,8 +33,7 @@ public class StoreCostProfile implements QuarkusTestProfile {
     Map<String, String> overrides = new HashMap<>();
     overrides.put(
         "quarkus.arc.selected-alternatives",
-        "ai.floedb.floecat.service.testsupport.CountingPointerStore,"
-            + "ai.floedb.floecat.service.testsupport.CountingBlobStore,"
+        "ai.floedb.floecat.service.testsupport.RecordingStoreReadObserver,"
             + "ai.floedb.floecat.service.testsupport.StoreCostMeter");
 
     // Every short TTL on a read path this measures is pinned past the length of any test here.
