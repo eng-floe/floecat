@@ -2004,7 +2004,9 @@ Per-file S3 range readers are closed by their consumers.</p>
   storage authority. Accepted values are <code>vended-credentials</code>, <code>true</code>, <code>1</code>, <code>yes</code> (enabled) and
   <code>false</code>, <code>0</code>, <code>no</code>, <code>none</code> (disabled), with underscores accepted in place of hyphens so the
   spelling DuckDB sends works here too; anything else is rejected at create/update time rather
-  than read as "disabled".</li>
+  than read as "disabled". Honored only for <code>delta.source=unity</code> (the default): on
+  <code>delta.source=glue</code> or <code>delta.source=filesystem</code> the option is accepted and then ignored, since
+  neither has a Unity credential endpoint to vend from.</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
 <li><code>stats.ndv.*</code> – Sampling knobs identical to the Iceberg connector.</li>
 <li>Authentication-specific options (<code>auth.scheme</code>, <code>auth.properties</code>) – <code>auth.scheme=oauth2</code>
