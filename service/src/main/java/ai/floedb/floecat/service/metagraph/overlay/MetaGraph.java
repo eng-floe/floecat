@@ -341,8 +341,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
 
   /**
    * Batch kind-agnostic name resolution: system names answer from the in-memory registry; the rest
-   * resolve through the user graph in one batch so names sharing a catalog/namespace resolve their
-   * scope once.
+   * resolve through the pointer-backed user graph, with duplicate names resolved once.
    */
   @Override
   public Map<NameRef, Optional<ResourceId>> resolveNames(String correlationId, List<NameRef> refs) {

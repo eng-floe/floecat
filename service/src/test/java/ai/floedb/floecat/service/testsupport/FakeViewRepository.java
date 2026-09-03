@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.testsupport;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -29,8 +31,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
-public final class FakeViewRepository extends ViewRepository {
+public class FakeViewRepository extends ViewRepository {
   private final Map<ResourceId, View> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
   // blobUri -> view, so the getByBlobUri hydration fast path is exercised (put() does not touch the
@@ -109,6 +112,39 @@ public final class FakeViewRepository extends ViewRepository {
   }
 
   @Override
+  public Optional<RelationRef> getRefByName(
+      String accountId, String catalogId, String namespaceId, String displayName) {
+    return getByName(accountId, catalogId, namespaceId, displayName).map(this::ref);
+  }
+
+  @Override
+  public List<RelationRef> listRefs(String accountId, String catalogId, String namespaceId) {
+    return matchingViews(accountId, catalogId, namespaceId).stream().map(this::ref).toList();
+  }
+
+  @Override
+  public List<RelationRef> listRefs(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      int limit,
+      String pageToken,
+      StringBuilder nextOut) {
+    return list(accountId, catalogId, namespaceId, limit, pageToken, nextOut).stream()
+        .map(this::ref)
+        .toList();
+  }
+
+  @Override
+  public List<RelationRef> listRefsByName(
+      String accountId, String catalogId, String namespaceId, Set<String> names) {
+    return matchingViews(accountId, catalogId, namespaceId).stream()
+        .filter(view -> names.contains(view.getDisplayName()))
+        .map(this::ref)
+        .toList();
+  }
+
+  @Override
   public List<View> list(
       String accountId,
       String catalogId,
@@ -175,5 +211,9 @@ public final class FakeViewRepository extends ViewRepository {
       }
     }
     throw new IllegalArgumentException("bad token");
+  }
+
+  private RelationRef ref(View view) {
+    return new RelationRef(view.getResourceId(), view.getDisplayName(), ResourceKind.RK_VIEW);
   }
 }

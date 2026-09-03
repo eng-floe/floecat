@@ -187,6 +187,28 @@ public class TableRepository {
     return refs;
   }
 
+  /** Returns one pointer-only table page without fetching table blobs. */
+  public List<RelationRef> listRefs(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      int limit,
+      String pageToken,
+      StringBuilder nextOut) {
+    String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
+    return repo.listRefsByPrefix(prefix, limit, pageToken, nextOut).stream()
+        .map(pointer -> toRelationRef(accountId, ResourceKind.RK_TABLE, pointer))
+        .flatMap(Optional::stream)
+        .toList();
+  }
+
+  /** Resolves one exact table name from pointer metadata without fetching its blob. */
+  public Optional<RelationRef> getRefByName(
+      String accountId, String catalogId, String namespaceId, String name) {
+    return repo.refByPointer(Keys.tablePointerByName(accountId, catalogId, namespaceId, name))
+        .flatMap(pointer -> toRelationRef(accountId, ResourceKind.RK_TABLE, pointer));
+  }
+
   /**
    * Reads the shared, kind-agnostic relation-name claim ({@link Keys#relationPointerByName}) and
    * returns the owning relation's id — kind {@code RK_TABLE} or {@code RK_VIEW} — in one pointer

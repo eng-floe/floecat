@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.service.metagraph.resolver;
 
-import ai.floedb.floecat.catalog.rpc.Catalog;
-import ai.floedb.floecat.catalog.rpc.Namespace;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository.CatalogRef;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -38,25 +38,25 @@ final class ScopeMemo {
 
   private static final String DELIM = "\u001F";
 
-  private final Function<String, Optional<Catalog>> catalogByName;
-  private final BiFunction<Catalog, List<String>, Optional<Namespace>> namespaceByPath;
+  private final Function<String, Optional<CatalogRef>> catalogByName;
+  private final BiFunction<CatalogRef, List<String>, Optional<NamespaceRef>> namespaceByPath;
 
-  private final Map<String, Optional<Catalog>> catalogs = new HashMap<>();
-  private final Map<String, Optional<Namespace>> namespaces = new HashMap<>();
+  private final Map<String, Optional<CatalogRef>> catalogs = new HashMap<>();
+  private final Map<String, Optional<NamespaceRef>> namespaces = new HashMap<>();
 
   ScopeMemo(
-      Function<String, Optional<Catalog>> catalogByName,
-      BiFunction<Catalog, List<String>, Optional<Namespace>> namespaceByPath) {
+      Function<String, Optional<CatalogRef>> catalogByName,
+      BiFunction<CatalogRef, List<String>, Optional<NamespaceRef>> namespaceByPath) {
     this.catalogByName = catalogByName;
     this.namespaceByPath = namespaceByPath;
   }
 
-  Optional<Catalog> catalog(String name) {
+  Optional<CatalogRef> catalog(String name) {
     return catalogs.computeIfAbsent(name, catalogByName);
   }
 
-  Optional<Namespace> namespace(Catalog catalog, List<String> path) {
-    String key = catalog.getResourceId().getId() + DELIM + String.join(DELIM, path);
+  Optional<NamespaceRef> namespace(CatalogRef catalog, List<String> path) {
+    String key = catalog.id().getId() + DELIM + String.join(DELIM, path);
     return namespaces.computeIfAbsent(key, k -> namespaceByPath.apply(catalog, path));
   }
 }

@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.testsupport;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -27,8 +28,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
-public final class FakeNamespaceRepository extends NamespaceRepository {
+public class FakeNamespaceRepository extends NamespaceRepository {
   private final Map<ResourceId, Namespace> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
   // blobUri -> namespace, so the getByBlobUri hydration fast path is exercised.
@@ -85,6 +87,30 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
   }
 
   @Override
+  public Optional<NamespaceRef> getRefByPath(
+      String accountId, String catalogId, List<String> path) {
+    return getByPath(accountId, catalogId, path).map(this::ref);
+  }
+
+  @Override
+  public List<NamespaceRef> listRefs(String accountId, String catalogId) {
+    return entries.values().stream()
+        .filter(
+            namespace ->
+                accountId.equals(namespace.getResourceId().getAccountId())
+                    && catalogId.equals(namespace.getCatalogId().getId()))
+        .map(this::ref)
+        .toList();
+  }
+
+  @Override
+  public List<NamespaceRef> listRefsByName(String accountId, String catalogId, Set<String> names) {
+    return listRefs(accountId, catalogId).stream()
+        .filter(ref -> names.contains(String.join(".", ref.pathSegments())))
+        .toList();
+  }
+
+  @Override
   public MutationMeta metaForSafe(ResourceId id) {
     MutationMeta meta = metas.get(id);
     if (meta == null) {
@@ -112,5 +138,14 @@ public final class FakeNamespaceRepository extends NamespaceRepository {
     List<String> parents = path.subList(0, path.size() - 1);
     String name = path.get(path.size() - 1);
     return parents.equals(namespace.getParentsList()) && name.equals(namespace.getDisplayName());
+  }
+
+  private NamespaceRef ref(Namespace namespace) {
+    var path = new java.util.ArrayList<>(namespace.getParentsList());
+    if (!namespace.getDisplayName().isBlank()) {
+      path.add(namespace.getDisplayName());
+    }
+    return new NamespaceRef(
+        namespace.getResourceId(), namespace.getDisplayName(), namespace.getCatalogId(), path);
   }
 }
