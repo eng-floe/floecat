@@ -52,7 +52,7 @@ public class ConstraintRepository {
 
   public ConstraintRepository(
       PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
-    this(pointerStore, pointerStore, blobStore, blobCache, ObjectCache.disabled());
+    this(pointerStore, pointerStore, blobStore, blobCache, ObjectCache.forTesting());
   }
 
   public ConstraintRepository(
