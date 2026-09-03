@@ -70,7 +70,7 @@ sizing harness use the same arithmetic.
 | Piece | What it is |
 |-------|------------|
 | `MemoryCache<K, V>` | Read-through `get`; batch `getAll`, which owns miss detection, loading and safe publication; uncounted `peek`; unconditional `put`; `evict` by key and `evictPartition` by caller-supplied membership; `bytes()`/`entryCount()` for the budget. A load racing a mutation cannot restore its stale value. Partition eviction is an infrequent O(n) scan of resident keys. No expiry: staleness is bounded by publication, not by a clock. Pointer version ordering deliberately is not part of this generic contract. |
-| `CaffeineMemoryCache` | The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction. |
+| `CaffeineMemoryCache` | The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Cold loads are single-flight and may compose other keys from the same cache. Refuses a non-positive budget at construction. |
 | `CacheWeights` | Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (`WeightedValue` first, then protobuf, text, `byte[]`, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte. |
 | `CacheFamily` | The independently budgeted in-memory families that actually use this module — `POINTER` and `OBJECT` today. Each is its own cache, never a tag inside a shared one, so a burst in the fastest-moving family cannot evict the slowest. Add `HINT` when that implementation lands; do not add disk blob caching to this enum. The tag is both the metric dimension and the config segment. |
 | `CacheBudget` / `CacheBudgetResolver` | One total split across the families. Pure arithmetic in `CacheBudget.split`; `CacheBudgetResolver` (`service/cache/`) reads the configuration and runs it at startup. |
@@ -107,7 +107,9 @@ and its mapped `SchemaDescriptor` per immutable relation identity, mapped schema
 mapping inputs, decoded constraint bundles by immutable content URI, and the two small snapshot
 facts used by relation assembly. A table relation key hashes the definition and schema identities
 before any ingredient is loaded, so a warm relation skips pinned-schema resolution and
-mapping entirely. Names, projection, stats attachment, pin identity, and engine decoration are
+mapping entirely. Pinned schema reads use those same immutable pin identities, so planner schema
+RPCs also avoid resolving their table and snapshot ingredients on a hit. Names, projection, stats
+attachment, pin identity, and engine decoration are
 applied after lookup, so a single cached relation survives renames, data-only ingests, and requests
 from different engines. Constraints use their own content-keyed entry because they are served by a
 separate RPC and are not part of `RelationInfo`; changing them does not invalidate the relation.
@@ -115,13 +117,15 @@ Mapped schema and assembled relation entries use the measured mapped-proto
 retained-heap multiplier; relation entries conservatively charge their schema reference again so
 eviction order cannot make retained memory invisible to the budget.
 
-Absent constraints and stats are not cached. Snapshot facts distinguish the mutable live view from
-immutable pinned stats generations, preserving stable-plan semantics when generations overlap for
-the same snapshot. Writers publish facts only under the exact generation identity successfully
-committed to the table root and evict the mutable live entry when that identity or the table record
-is unavailable. That avoids guessing which generation won a concurrent publication race. Immutable
-relation, schema, constraint, and generation-fact entries need no mutation invalidation. Account
-deletion drops the account partition while the deletion fence is held.
+Absent constraints and stats are not cached. Current snapshot facts distinguish the mutable live
+view from immutable pinned stats generations, preserving stable-plan semantics when generations
+overlap for the same snapshot. Historical and time-travel facts read through without admission, so
+they cannot displace current SQL metadata. Writers publish facts only under the exact generation
+identity successfully committed to the table root and evict the mutable live entry when that
+identity or the table record is unavailable. That avoids guessing which generation won a concurrent
+publication race. Immutable relation, schema, constraint, and current-generation fact entries need
+no mutation invalidation. Account deletion drops the account partition while the deletion fence is
+held.
 
 The pointer and object caches are the first specialized layers built on the shared in-memory
 contract. The pointer cache's independent durable subtrees load through a bounded metadata
