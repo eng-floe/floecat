@@ -360,31 +360,55 @@ public final class PointerCache {
     }
   }
 
-  /** Returns true when the complete index owned this publication. */
-  boolean publish(String key, Pointer pointer) {
+  /** Publishes a store write into either the complete index or the resident cache. */
+  void publish(String key, Pointer pointer) {
     IndexLayout.Match match = IndexLayout.match(key).orElse(null);
-    if (match == null) {
-      return false;
-    }
-    Partition partition = partitions.get(match.partition());
-    if (!isLoadingOrComplete(partition)) {
-      return false;
-    }
-    partition.lock.writeLock().lock();
-    try {
-      if (partition.readiness != Readiness.COMPLETE) {
-        return false;
+    if (match != null) {
+      Partition partition = partitions.get(match.partition());
+      if (isLoadingOrComplete(partition)) {
+        partition.lock.writeLock().lock();
+        try {
+          if (partition.readiness == Readiness.COMPLETE) {
+            Pointer current = partition.entries.get(key);
+            if (current == null || current.getVersion() < pointer.getVersion()) {
+              boolean applied = replace(partition, key, pointer);
+              partition.events.writeThrough(
+                  applied
+                      ? CacheEvents.WriteThroughResult.APPLIED
+                      : CacheEvents.WriteThroughResult.SKIPPED);
+            } else {
+              if (!current.equals(pointer)) {
+                degrade(partition);
+              }
+              partition.events.writeThrough(CacheEvents.WriteThroughResult.SKIPPED);
+            }
+            return;
+          }
+        } finally {
+          partition.lock.writeLock().unlock();
+        }
       }
-      Pointer current = partition.entries.get(key);
-      if (current == null || current.getVersion() < pointer.getVersion()) {
-        replace(partition, key, pointer);
-      } else if (!current.equals(pointer)) {
-        degrade(partition);
-      }
-      return true;
-    } finally {
-      partition.lock.writeLock().unlock();
     }
+
+    CacheEvents writeEvents =
+        IndexLayout.accountPartition(key)
+            .map(Keys::decodeSegment)
+            .map(events::forAccount)
+            .orElse(events);
+    Optional<Pointer> cached = resident.peek(key);
+    if (cached.isPresent() && cached.orElseThrow().getVersion() < pointer.getVersion()) {
+      resident.put(key, pointer);
+      writeEvents.writeThrough(CacheEvents.WriteThroughResult.APPLIED);
+      return;
+    }
+    if (cached.filter(pointer::equals).isEmpty()) {
+      // An absent entry may be an in-flight load, so evict to move the MemoryCache fence. A cached
+      // higher version may instead belong to an older incarnation of a key that was deleted and
+      // recreated. Without an incarnation in the schema, absence is the only safe common
+      // resolution; the next read reloads it.
+      resident.evict(key);
+    }
+    writeEvents.writeThrough(CacheEvents.WriteThroughResult.SKIPPED);
   }
 
   /** Returns true when the complete index owned this deletion. */
@@ -449,10 +473,6 @@ public final class PointerCache {
     }
   }
 
-  Optional<Pointer> peekResident(String key) {
-    return resident.peek(key);
-  }
-
   Optional<Pointer> peek(String key) {
     IndexLayout.Match match = IndexLayout.match(key).orElse(null);
     if (match != null) {
@@ -467,10 +487,6 @@ public final class PointerCache {
       }
     }
     return resident.peek(key);
-  }
-
-  void putResident(String key, Pointer pointer) {
-    resident.put(key, pointer);
   }
 
   void evictResident(String key) {
@@ -662,7 +678,7 @@ public final class PointerCache {
     return loaded;
   }
 
-  private void replace(Partition partition, String key, Pointer next) {
+  private boolean replace(Partition partition, String key, Pointer next) {
     Pointer previous = partition.entries.get(key);
     long oldWeight = previous == null ? 0L : weight(key, previous);
     long newWeight = next == null ? 0L : weight(key, next);
@@ -670,7 +686,8 @@ public final class PointerCache {
     synchronized (budgetLock) {
       if (delta > 0L && delta > maxBytes - completeBytes.get()) {
         degradeLocked(partition);
-        return;
+        partition.events.admissionRejected();
+        return false;
       }
       if (next == null) {
         partition.entries.remove(key);
@@ -685,6 +702,7 @@ public final class PointerCache {
         completeEntries.decrementAndGet();
       }
       resident.maximumBytes(maxBytes - completeBytes.get());
+      return true;
     }
   }
 
@@ -843,6 +861,21 @@ public final class PointerCache {
         return Optional.empty();
       }
       return Optional.of(account);
+    }
+
+    private static Optional<String> accountPartition(String key) {
+      String root = Keys.accountRootPrefix();
+      if (key == null || !key.startsWith(root)) {
+        return Optional.empty();
+      }
+      int end = key.indexOf('/', root.length());
+      if (end < 0) {
+        end = key.length();
+      }
+      String account = key.substring(root.length(), end);
+      return account.isEmpty() || Keys.isReservedAccountDirectorySegment(account)
+          ? Optional.empty()
+          : Optional.of(account);
     }
 
     private record Match(String partition) {}

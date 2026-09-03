@@ -20,6 +20,7 @@ This lists all metrics currently available in the repository:
 | floecat.core.cache.max.weight.bytes | GAUGE | bytes | v1 | Configured maximum weight (bytes) for the cache. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.misses | COUNTER |  | v1 | Number of cache lookup misses, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.weighted.size.bytes | GAUGE | bytes | v1 | Total weight (bytes) of cache entries, tagged by cache name. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.write.through | COUNTER |  | v1 | Write-through publications, tagged by whether they were applied or skipped by the cache's safety guards. | cache, component, operation, result | account, cache, component, operation, result |
 | floecat.core.exec.active | GAUGE | count | v1 | Number of threads actively executing tasks per pool. | component, operation, pool | component, operation, pool |
 | floecat.core.exec.queue.depth | GAUGE | count | v1 | Number of work items waiting in the executor queue per pool. | component, operation, pool | component, operation, pool |
 | floecat.core.exec.rejected | COUNTER |  | v1 | Number of task submissions rejected by the executor. | component, operation, pool | component, operation, pool |

@@ -142,4 +142,28 @@ class CacheMetricsTest {
             observability.counterTagHistory(Telemetry.Metrics.CACHE_ADMISSION_REJECTED).getFirst())
         .contains(Tag.of(TagKey.ACCOUNT, "acct"));
   }
+
+  @Test
+  void recordsWriteThroughOutcomes() {
+    TestObservability observability = new TestObservability();
+    CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "pointers");
+
+    metrics.recordWriteThrough(true, Tag.of(TagKey.ACCOUNT, "acct"));
+    metrics.recordWriteThrough(false);
+
+    assertThat(observability.counterValue(Telemetry.Metrics.CACHE_WRITE_THROUGH)).isEqualTo(2d);
+    assertThat(observability.counterTagHistory(Telemetry.Metrics.CACHE_WRITE_THROUGH))
+        .containsExactly(
+            List.of(
+                Tag.of(TagKey.COMPONENT, "svc"),
+                Tag.of(TagKey.OPERATION, "op"),
+                Tag.of(TagKey.CACHE_NAME, "pointers"),
+                Tag.of(TagKey.RESULT, "applied"),
+                Tag.of(TagKey.ACCOUNT, "acct")),
+            List.of(
+                Tag.of(TagKey.COMPONENT, "svc"),
+                Tag.of(TagKey.OPERATION, "op"),
+                Tag.of(TagKey.CACHE_NAME, "pointers"),
+                Tag.of(TagKey.RESULT, "skipped")));
+  }
 }

@@ -190,6 +190,8 @@ public final class Telemetry {
       public static final MetricId ADMISSION_REJECTED =
           new MetricId(
               "floecat.core.cache.admission.rejected", MetricType.COUNTER, "", "v1", "core");
+      public static final MetricId WRITE_THROUGH =
+          new MetricId("floecat.core.cache.write.through", MetricType.COUNTER, "", "v1", "core");
     }
 
     public static final class Gc {
@@ -258,6 +260,7 @@ public final class Telemetry {
     public static final MetricId CACHE_EVICTED_WEIGHT = Cache.EVICTED_WEIGHT;
     public static final MetricId CACHE_LOADS_DISCARDED = Cache.LOADS_DISCARDED;
     public static final MetricId CACHE_ADMISSION_REJECTED = Cache.ADMISSION_REJECTED;
+    public static final MetricId CACHE_WRITE_THROUGH = Cache.WRITE_THROUGH;
     public static final MetricId GC_COLLECTIONS = Gc.COLLECTIONS;
     public static final MetricId GC_PAUSE = Gc.PAUSE;
     public static final MetricId GC_ERRORS = Gc.ERRORS;
@@ -450,6 +453,13 @@ public final class Telemetry {
           cacheBase,
           cacheWithAccount,
           "Values not retained because they exceeded the cache budget, tagged by cache name.");
+      add(
+          definitions,
+          CACHE_WRITE_THROUGH,
+          cacheWithResult,
+          addTags(cacheWithResult, TagKey.ACCOUNT),
+          "Write-through publications, tagged by whether they were applied or skipped by the"
+              + " cache's safety guards.");
       add(
           definitions,
           CACHE_ENABLED,
