@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -170,6 +171,17 @@ public final class QueryPins {
   /** Blob versions match unless one side never captured its etag (empty), which proves nothing. */
   private static boolean sameCapturedVersion(String a, String b) {
     return a.isEmpty() || b.isEmpty() || a.equals(b);
+  }
+
+  /**
+   * Immutable read-schema identity carried by a table pin. Legacy pins predate schema fingerprints,
+   * so their snapshot blob version is the safe, coarser fallback.
+   */
+  public static String schemaScope(TablePin pin) {
+    Objects.requireNonNull(pin, "pin");
+    return pin.getSchemaFingerprint().isBlank()
+        ? pin.getSnapshotBlobVersion()
+        : pin.getSchemaFingerprint();
   }
 
   /**

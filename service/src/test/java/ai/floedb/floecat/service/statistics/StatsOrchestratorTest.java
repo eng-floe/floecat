@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.statistics;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -43,6 +44,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -654,7 +656,14 @@ class StatsOrchestratorTest {
       TableRepository tableRepository,
       StatsSyncCapture syncCapture) {
     return new StatsOrchestrator(
-        statsStore, jobStore, tableRepository, connectorRepositoryWith(), syncCapture, true, null);
+        statsStore,
+        jobStore,
+        tableRepository,
+        connectorRepositoryWith(),
+        syncCapture,
+        ObjectCache.forTesting(),
+        true,
+        null);
   }
 
   private static ConnectorRepository connectorRepositoryWith() {
@@ -1116,6 +1125,45 @@ class StatsOrchestratorTest {
   }
 
   @Test
+  void pinnedTableFactsDoNotRetainAMutableFallbackUnderThePinnedKey() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+    TargetStatsRecord first = record(request);
+    TargetStatsRecord replacement =
+        first.toBuilder().setTable(first.getTable().toBuilder().setRowCount(19L)).build();
+    when(store.getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), "gen-pinned", request.target()))
+        .thenReturn(Optional.empty());
+    when(store.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.of(first), Optional.of(replacement));
+
+    assertThat(
+            orchestrator
+                .resolveTableFactsInGeneration(request, Optional.of("gen-pinned"))
+                .orElseThrow()
+                .rowCount())
+        .hasValue(7L);
+    assertThat(
+            orchestrator
+                .resolveTableFactsInGeneration(request, Optional.of("gen-pinned"))
+                .orElseThrow()
+                .rowCount())
+        .hasValue(19L);
+
+    verify(store, Mockito.times(2))
+        .getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), "gen-pinned", request.target());
+    verify(store, Mockito.times(2))
+        .getTargetStats(request.tableId(), request.snapshotId(), request.target());
+  }
+
+  @Test
   void tableFactsAreSharedUntilTheirTargetIsInvalidated() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator orchestrator =
@@ -1142,6 +1190,92 @@ class StatsOrchestratorTest {
     verify(store).getTargetStats(request.tableId(), request.snapshotId(), request.target());
 
     orchestrator.invalidateStatsCache(request.tableId(), request.snapshotId(), request.target());
+
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty()))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(19L);
+    verify(store, Mockito.times(2))
+        .getTargetStats(request.tableId(), request.snapshotId(), request.target());
+  }
+
+  @Test
+  void committedTableFactsAreReadFromTheirGenerationBeforePublication() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+    TargetStatsRecord first = record(request);
+    TargetStatsRecord replacement =
+        first.toBuilder().setTable(first.getTable().toBuilder().setRowCount(19)).build();
+    String generation = "generation-uri";
+    when(store.getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), generation, request.target()))
+        .thenReturn(Optional.of(first), Optional.of(replacement));
+
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.of(generation)))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(7L);
+
+    orchestrator.publishCommittedTableFacts(request.tableId(), request.snapshotId(), generation);
+
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.of(generation)))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(19L);
+    verify(store, Mockito.times(2))
+        .getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), generation, request.target());
+  }
+
+  @Test
+  void committedTableFactsWarmFailureDoesNotFailTheCompletedWrite() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+    when(store.getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), "generation-uri", request.target()))
+        .thenThrow(new IllegalStateException("store unavailable"));
+
+    assertThatCode(
+            () ->
+                orchestrator.publishCommittedTableFacts(
+                    request.tableId(), request.snapshotId(), "generation-uri"))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void wholeSnapshotReplacementWithoutTableFactsEvictsTheLiveEntry() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+    TargetStatsRecord first = record(request);
+    TargetStatsRecord replacement =
+        first.toBuilder().setTable(first.getTable().toBuilder().setRowCount(19)).build();
+    when(store.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.of(first), Optional.of(replacement));
+
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty()))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(7L);
+
+    orchestrator.invalidateStatsCache(request.tableId(), request.snapshotId());
 
     assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty()))
         .get()

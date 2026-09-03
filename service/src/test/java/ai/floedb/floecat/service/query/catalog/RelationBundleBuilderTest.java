@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.RelationNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnFailureCode;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
@@ -46,6 +47,8 @@ import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
+import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.spi.decorator.ColumnDecoration;
 import ai.floedb.floecat.systemcatalog.spi.decorator.DecorationException;
@@ -144,6 +147,13 @@ class RelationBundleBuilderTest {
 
   private TestBuilder builder(
       EngineMetadataDecoratorProvider provider, boolean engineSpecificEnabled) {
+    return builder(provider, engineSpecificEnabled, ObjectCache.forTesting());
+  }
+
+  private TestBuilder builder(
+      EngineMetadataDecoratorProvider provider,
+      boolean engineSpecificEnabled,
+      ObjectCache objects) {
     EngineRelationDecorator engineRelationDecorator =
         new EngineRelationDecorator(provider, engineSpecificEnabled);
     return new TestBuilder(
@@ -152,7 +162,7 @@ class RelationBundleBuilderTest {
             engineRelationDecorator,
             new SystemExecutionResolver(
                 FlightEndpointRef.newBuilder().setHost("floecat-flight").setPort(80).build()),
-            ObjectCache.forTesting()),
+            objects),
         engineRelationDecorator);
   }
 
@@ -273,6 +283,61 @@ class RelationBundleBuilderTest {
     assertThat(info.hasStats()).isTrue();
     assertThat(info.getStats().getRowCount()).isEqualTo(42L);
     assertThat(info.getStats().getTotalSizeBytes()).isEqualTo(4096L);
+  }
+
+  @Test
+  void warmRelationSkipsPinnedSchemaResolution() {
+    String schemaJson =
+        "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[{\"id\":1,\"name\":\"id\","
+            + "\"required\":true,\"type\":\"long\"}]}";
+    UserTableNode table = TestNodes.tableNode(TABLE, schemaJson);
+    graphView.registerRelation(
+        TABLE,
+        table,
+        UserObjectBundleTestSupport.schemaFor("id"),
+        NameRef.newBuilder().setCatalog("cat").setName("x").build());
+    QueryContext pinned =
+        QueryContext.builder()
+            .queryId("q-pinned")
+            .principal(ctx.getPrincipal())
+            .relationPins(
+                SnapshotTestSupport.relationPins(
+                        SnapshotTestSupport.blobBackedPin(TABLE, 1L, "schema-fingerprint"))
+                    .toByteArray())
+            .createdAtMs(1)
+            .expiresAtMs(1000)
+            .state(QueryContext.State.ACTIVE)
+            .version(1)
+            .queryDefaultCatalogId(CATALOG)
+            .build();
+    ObjectCache objects = ObjectCache.forTesting();
+    TestBuilder builder = builder(ignored -> Optional.empty(), false, objects);
+    ResolvedRelation relation = resolved(TABLE, fullCandidate());
+
+    assertThat(
+            builder
+                .build(
+                    "cid",
+                    relation,
+                    pinned,
+                    resolutionContext(StatsProvider.NONE),
+                    Optional.empty(),
+                    Optional.empty())
+                .isSuccess())
+        .isTrue();
+    assertThat(
+            builder
+                .build(
+                    "cid",
+                    relation,
+                    pinned,
+                    resolutionContext(StatsProvider.NONE),
+                    Optional.empty(),
+                    Optional.empty())
+                .isSuccess())
+        .isTrue();
+
+    assertThat(graphView.schemaResolutionCount(TABLE)).isEqualTo(1);
   }
 
   @Test

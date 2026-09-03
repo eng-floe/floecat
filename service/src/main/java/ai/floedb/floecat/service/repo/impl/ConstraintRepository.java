@@ -50,6 +50,19 @@ public class ConstraintRepository {
     this(pointerStore, pointerStore, blobStore, null, ObjectCache.forTesting());
   }
 
+  public ConstraintRepository(
+      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+    this(pointerStore, pointerStore, blobStore, blobCache, ObjectCache.disabled());
+  }
+
+  public ConstraintRepository(
+      PointerStore pointerStore,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache,
+      ObjectCache objects) {
+    this(pointerStore, pointerStore, blobStore, blobCache, objects);
+  }
+
   @Inject
   public ConstraintRepository(
       PointerStore pointerStore,
@@ -77,7 +90,7 @@ public class ConstraintRepository {
    * write repoints the pointer to a newer blob.
    */
   public Optional<SnapshotConstraints> getByBlobUri(ResourceId tableId, String blobUri) {
-    return objects.constraints(tableId, blobUri, () -> repo.getByBlobUriLive(blobUri));
+    return objects.constraints(tableId, blobUri, () -> repo.getByBlobUriDecodedFresh(blobUri));
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
