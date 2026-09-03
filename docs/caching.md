@@ -95,6 +95,12 @@ fan-out; `floecat.cache.pointer.load-parallelism=0` derives the bound from the p
 to the JVM, while a positive value pins it. Complete-index events, including eager-load duration,
 carry the logical account tag through the same `CacheEvents` contract.
 
+Cache selection stops at the repository boundary. Service and graph callers ask repositories for
+objects or lightweight refs; they never inject a cached, authoritative, or raw pointer-store view.
+Repositories use the cached view for query reads, while mutation and GC repositories retain the
+authoritative default. `ConsistentReadRulesTest` enforces both that boundary and the absence of
+per-call consistency selection.
+
 ## What a cache reports
 
 A cache built on the `core/cache` contract publishes the same series, tagged by cache name, so
