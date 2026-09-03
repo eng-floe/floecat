@@ -1995,12 +1995,18 @@ listed below apply.</p>
   depends on some other valid storage credential path. If the upstream catalog rejects delegated
   access requests, connector planning or table load will fail on the REST call.</li>
 </ul>
-<p>The header is honored only for <code>iceberg.source=rest</code> and <code>iceberg.source=glue</code>, whose catalog
-  client applies whatever <code>loadTable</code> vends. For <code>iceberg.source=filesystem</code> it is ignored: that
-  source reads a metadata JSON directly and has no catalog to vend from, so such a connector needs
-  a storage authority covering its location, or its own <code>s3.*</code> credentials. A filesystem connector
-  that carries the header but matches no storage authority fails reconcile with a missing-authority
-  error rather than falling back, so that it cannot silently read under floecat's own AWS identity.
+<p>The header only does something useful for <code>iceberg.source=rest</code> and <code>iceberg.source=glue</code>, whose
+  catalog client applies whatever <code>loadTable</code> vends. <code>iceberg.source=filesystem</code> reads a metadata
+  JSON directly and has no catalog to vend from, so such a connector needs a storage authority
+  covering its location, or its own <code>s3.*</code> credentials.</p>
+<p>The header is not currently <em>rejected</em> for a filesystem source, though, and it is worth knowing
+  what actually happens: a vend is still attempted, which for this source means loading the
+  metadata JSON while the connector is constructed, once per file group. Nothing is vended, so a
+  connector matching no storage authority then fails reconcile with a missing-authority error
+  rather than falling back — which is what keeps it from silently reading under floecat's own AWS
+  identity. If that metadata load is itself what fails, the job sees a retryable internal error
+  instead. Skipping the attempt for this source is deferred along with the rest of the connector
+  path, which catalog integrations replace.
 - <strong>Filesystem (single table)</strong> – CLI example using the metadata JSON as the connector URI:
   <div class="highlight"><pre><span></span><code>connector create &quot;Filesystem Iceberg&quot; ICEBERG \
   &quot;s3://warehouse/metadata/00001.metadata.json&quot; \
