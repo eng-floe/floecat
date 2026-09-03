@@ -391,7 +391,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
       if (next.idempotencyKey() == null) {
         statsStore.putTargetStats(targetRecord);
-        statsOrchestrator.invalidateStatsCache(
+        statsOrchestrator.evictSnapshotFacts(
             targetRecord.getTableId(), targetRecord.getSnapshotId(), targetRecord.getTarget());
         if (targetRecord.getTarget().hasTable()) {
           tableFactsChanged.set(true);
@@ -427,7 +427,7 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
               this::correlationId,
               TargetStatsRecord::parseFrom);
 
-      statsOrchestrator.invalidateStatsCache(
+      statsOrchestrator.evictSnapshotFacts(
           result.body.getTableId(), result.body.getSnapshotId(), result.body.getTarget());
       if (result.body.getTarget().hasTable()) {
         tableFactsChanged.set(true);

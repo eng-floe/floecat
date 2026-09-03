@@ -528,7 +528,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                       throw GrpcErrors.notFound(
                           correlationId, SNAPSHOT, Map.of("id", Long.toString(snapshotId)));
                     }
-                    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+                    statsOrchestrator.evictSnapshotFacts(tableId, snapshotId);
                     // Converge the root on THIS path too: the by-id pointer is gone (either a
                     // client double-delete, or a prior attempt that deleted the pointer then failed
                     // its root commit and is retrying here). removeSnapshotFromRoot is idempotent —
@@ -555,7 +555,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
 
-                    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+                    statsOrchestrator.evictSnapshotFacts(tableId, snapshotId);
                     // Do NOT eagerly tear down the snapshot's stats generations here. A query that
                     // pinned this snapshot froze its stats_generation_ref and reads pages through
                     // that frozen manifest for the query's lifetime; a whole-prefix delete would
