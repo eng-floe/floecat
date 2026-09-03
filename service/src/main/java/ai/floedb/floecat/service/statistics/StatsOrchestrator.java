@@ -120,7 +120,7 @@ public class StatsOrchestrator {
             statsStore, this::readStore, this::incrementCounter, this::observePlannerHit);
   }
 
-  /** Test/embedded constructor retaining the pre-Object-cache call shape. */
+  /** Test/embedded constructor that keeps the production Object-cache behavior. */
   public StatsOrchestrator(
       StatsStore statsStore,
       ReconcileJobStore reconcileJobStore,
@@ -135,7 +135,7 @@ public class StatsOrchestrator {
         tableRepository,
         connectorRepository,
         statsSyncCapture,
-        ObjectCache.disabled(),
+        ObjectCache.forTesting(),
         syncEnabled,
         observability);
   }
