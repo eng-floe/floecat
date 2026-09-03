@@ -20,8 +20,8 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TransactionKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
-import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.transaction.rpc.Transaction;
 import com.google.protobuf.Timestamp;
@@ -37,12 +37,21 @@ public class TransactionRepository {
 
   private final GenericResourceRepository<Transaction, TransactionKey> repo;
 
-  @Inject
-  public TransactionRepository(@CachedPointerStore PointerStore pointerStore, BlobStore blobStore) {
+  public TransactionRepository(PointerStore pointerStore, BlobStore blobStore) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
+            Schemas.TRANSACTION,
+            Transaction::parseFrom,
+            Transaction::toByteArray,
+            "application/x-protobuf");
+  }
+
+  @Inject
+  public TransactionRepository(MetadataRepositoryFactory repositories) {
+    this.repo =
+        repositories.create(
             Schemas.TRANSACTION,
             Transaction::parseFrom,
             Transaction::toByteArray,

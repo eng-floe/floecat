@@ -34,6 +34,7 @@ import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.IdempotencyInProgressException;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -94,7 +95,8 @@ class ConstraintRepositoryTest {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     CountingBlobStore blobs = new CountingBlobStore();
     ConstraintRepository constraints =
-        new ConstraintRepository(pointers, blobs, null, ObjectCache.forTesting());
+        new ConstraintRepository(
+            pointers, blobs, BlobCacheAccess.disabled(), ObjectCache.forTesting());
     SnapshotConstraints payload =
         constraintsForSnapshot(
             tableId, 102L, List.of(definition("pk_orders", ConstraintType.CT_PRIMARY_KEY)));
