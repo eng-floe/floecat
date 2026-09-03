@@ -75,8 +75,9 @@ import org.jboss.logging.Logger;
  * enqueue. When disabled, query-time resolution is store-only and never enqueues capture work. The
  * outcome is encoded in {@link StatsResolutionResult} so callers can inspect quality.
  *
- * <p>Planner-facing store resolution — generation ordering, the fallback ladder, and the planner
- * stats cache — lives in {@link PlannerStatsResolver}; capture policy stays here.
+ * <p>Planner-facing store resolution — generation ordering and the fallback ladder — lives in
+ * {@link PlannerStatsResolver}; serialized residency is below the store in the disk blob cache, and
+ * capture policy stays here.
  */
 @ApplicationScoped
 public class StatsOrchestrator {
@@ -155,24 +156,21 @@ public class StatsOrchestrator {
         null);
   }
 
-  /** Invalidates every cached target for one table snapshot. */
-  public void invalidateStatsCache(ResourceId tableId, long snapshotId) {
-    plannerResolver.invalidateStatsCache(tableId, snapshotId);
+  /** Evicts the small derived table facts for one snapshot after stats publication changes. */
+  public void evictSnapshotFacts(ResourceId tableId, long snapshotId) {
     objects.evictSnapshotFacts(tableId, snapshotId);
   }
 
-  /** Invalidates one cached target for one table snapshot. */
-  public void invalidateStatsCache(ResourceId tableId, long snapshotId, StatsTarget target) {
-    plannerResolver.invalidateStatsCache(tableId, snapshotId, target);
+  /** Evicts derived facts when the changed target is the table aggregate. */
+  public void evictSnapshotFacts(ResourceId tableId, long snapshotId, StatsTarget target) {
     if (target != null && target.hasTable()) {
       objects.evictSnapshotFacts(tableId, snapshotId);
     }
   }
 
-  /** Invalidates cached targets represented by successfully persisted records. */
-  public void invalidateStatsCache(
+  /** Evicts derived facts when a published batch contains the table aggregate. */
+  public void evictSnapshotFacts(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
-    plannerResolver.invalidateStatsCache(tableId, snapshotId, records);
     if (records != null
         && records.stream()
             .anyMatch(
@@ -403,9 +401,6 @@ public class StatsOrchestrator {
    * richer record for the SAME snapshot exists. For each target the lookup order is:
    *
    * <ol>
-   *   <li>cache hit in the pinned generation's keyspace (the live/newest keyspace when the pin
-   *       froze no generation), only if the cached record satisfies the target's completeness
-   *       predicate;
    *   <li>the pinned generation for the pinned snapshot — the primary source; a record that fails
    *       its predicate is held as a PARTIAL candidate rather than served;
    *   <li>the newest (live active) generation of the SAME pinned snapshot, consulted for targets
@@ -416,11 +411,10 @@ public class StatsOrchestrator {
    *   <li>sync/async capture.
    * </ol>
    *
-   * <p>Hits are cached under the generation actually served — the pinned generation under its own
-   * token, newest-fill under the empty token — so the two never contaminate each other. Records are
-   * cached whole and completeness is re-evaluated per read, so one query's lesser need never masks
-   * another's richer need. When the pin froze no generation the primary source is the live/newest
-   * generation (empty token) and the fill step is skipped: a partial primary record is served
+   * <p>The repository preserves the generation identity on every read, so pinned and newest records
+   * never contaminate each other. Completeness is re-evaluated per request, so one query's lesser
+   * need never masks another's richer need. When the pin froze no generation the primary source is
+   * the live/newest generation and the fill step is skipped: a partial primary record is served
    * as-is, because no richer same-snapshot source exists.
    *
    * @param pinnedGenerationToken the generation frozen on the query pin, read as the primary

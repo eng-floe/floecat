@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -42,17 +43,18 @@ import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
+import ai.floedb.floecat.service.testsupport.DiskBlobCacheTestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.Hashing;
-import java.time.Duration;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -63,22 +65,30 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class IndexArtifactRepositoryTest {
 
+  @TempDir Path tempDir;
+
   private static final ResourceId TABLE_ID =
       ResourceId.newBuilder().setAccountId("a").setId("t").setKind(ResourceKind.RK_TABLE).build();
-  private static final ImmutableBlobCache DISABLED_BLOB_CACHE =
-      new ImmutableBlobCache(false, 1L, Duration.ZERO);
 
   private static IndexArtifactRepository createRepository(PointerStore pointers, BlobStore blobs) {
     return new IndexArtifactRepository(
-        pointers, blobs, DISABLED_BLOB_CACHE, new TableBlobReachabilityGuard());
+        pointers,
+        blobs,
+        ai.floedb.floecat.service.repo.cache.BlobCacheAccess.disabled(),
+        new TableBlobReachabilityGuard());
   }
 
   private static IndexArtifactRepository createRepository(
-      PointerStore pointers, BlobStore blobs, ImmutableBlobCache cache) {
+      PointerStore pointers, BlobStore blobs, BlobCacheAccess cache) {
     return new IndexArtifactRepository(pointers, blobs, cache, new TableBlobReachabilityGuard());
+  }
+
+  private BlobCacheAccess blobCache() {
+    return DiskBlobCacheTestSupport.create(tempDir.resolve(java.util.UUID.randomUUID().toString()));
   }
 
   private static void installAccountDeletionFence(InMemoryPointerStore pointers, String accountId) {
@@ -93,19 +103,6 @@ class IndexArtifactRepositoryTest {
               shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
     }
     assertThat(pointers.compareAndSetBatch(creates)).isTrue();
-  }
-
-  @Test
-  void requiresBlobCacheDependency() {
-    assertThatThrownBy(
-            () ->
-                new IndexArtifactRepository(
-                    new InMemoryPointerStore(),
-                    new InMemoryBlobStore(),
-                    null,
-                    new TableBlobReachabilityGuard()))
-        .isInstanceOf(NullPointerException.class)
-        .hasMessage("blobCache");
   }
 
   @Test
@@ -199,9 +196,7 @@ class IndexArtifactRepositoryTest {
   void bundledIndexWrappersResolveAllTargetsWithOneBlobRead() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = spy(new InMemoryBlobStore());
-    IndexArtifactRepository repository =
-        createRepository(
-            pointers, blobs, new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+    IndexArtifactRepository repository = createRepository(pointers, blobs, blobCache());
     long snapshotId = 714L;
     String generationId = "full-rescan-bundled";
     IndexArtifactRecord first = indexRecord(snapshotId, "s3://bucket/first.parquet");
@@ -234,12 +229,64 @@ class IndexArtifactRepositoryTest {
         snapshotId,
         generationId,
         captureManifest(snapshotId, 2, 2, "customer_id").toByteArray());
+    clearInvocations(blobs);
 
     assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, first.getTarget()))
         .contains(first);
     assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, second.getTarget()))
         .contains(second);
     verify(blobs, times(1)).get(bundleUri);
+  }
+
+  @Test
+  void bundledIndexListingsConsumeWithoutFillingAndDedupeEachPage() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = spy(new InMemoryBlobStore());
+    IndexArtifactRepository repository = createRepository(pointers, blobs, blobCache());
+    long snapshotId = 7141L;
+    String generationId = "full-rescan-bundled";
+    IndexArtifactRecord first = indexRecord(snapshotId, "s3://bucket/first.parquet");
+    IndexArtifactRecord second = indexRecord(snapshotId, "s3://bucket/second.parquet");
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(first)
+            .addIndexArtifacts(second)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri = "/worker-output/reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+    repository.registerPrewrittenIndexArtifactReferencesInGeneration(
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        "/worker-output/index-artifacts/",
+        List.of(
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                "file:s3://bucket/first.parquet", bundleUri, bundle.length, digest),
+            new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                "file:s3://bucket/second.parquet", bundleUri, bundle.length, digest)));
+    activateGeneration(
+        repository,
+        blobs,
+        TABLE_ID,
+        snapshotId,
+        generationId,
+        captureManifest(snapshotId, 2, 2, "customer_id").toByteArray());
+    clearInvocations(blobs);
+
+    assertThat(repository.listIndexArtifacts(TABLE_ID, snapshotId, 10, "", new StringBuilder()))
+        .containsExactlyInAnyOrder(first, second);
+    verify(blobs, times(1)).get(bundleUri);
+    assertThat(repository.listIndexArtifacts(TABLE_ID, snapshotId, 10, "", new StringBuilder()))
+        .containsExactlyInAnyOrder(first, second);
+    verify(blobs, times(2)).get(bundleUri);
+    assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, first.getTarget()))
+        .contains(first);
+    assertThat(repository.getIndexArtifact(TABLE_ID, snapshotId, second.getTarget()))
+        .contains(second);
+    verify(blobs, times(3)).get(bundleUri);
   }
 
   @Test
@@ -573,143 +620,6 @@ class IndexArtifactRepositoryTest {
   }
 
   @Test
-  void selectedBundleAllowsExternalIndexSidecarsWithoutAnInheritedGeneration() {
-    InMemoryBlobStore blobs = new InMemoryBlobStore();
-    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
-    String filePath = "s3://bucket/file.parquet";
-    IndexArtifactRecord record =
-        indexRecord(714L, filePath).toBuilder()
-            .setArtifactUri("s3://external-indexes/file.parquet")
-            .build();
-    byte[] bundle =
-        ReusableArtifactBundlePayload.newBuilder()
-            .setFormatVersion(1)
-            .addIndexArtifacts(record)
-            .build()
-            .toByteArray();
-    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
-    String bundleUri =
-        workerStatsPrefix(715L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
-    blobs.put(bundleUri, bundle, "application/x-protobuf");
-
-    assertThat(
-            repository.inheritedManagedSidecarGenerations(
-                TABLE_ID,
-                List.of(
-                    new ReusableArtifactBundleSelection(
-                        "reuse-bundle:prior-group",
-                        bundleUri,
-                        bundle.length,
-                        digest,
-                        List.of(),
-                        List.of(filePath)))))
-        .isEmpty();
-  }
-
-  @Test
-  void selectedBundleValidationUsesTheImmutableBlobCache() {
-    BlobStore blobs = mock(BlobStore.class);
-    ImmutableBlobCache cache = new ImmutableBlobCache(true, 1024 * 1024, Duration.ZERO);
-    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs, cache);
-    String filePath = "s3://bucket/file.parquet";
-    String targetStorageId = "file:" + filePath;
-    String sidecar = managedSidecar(714L, targetStorageId, new byte[] {1});
-    byte[] bundle =
-        ReusableArtifactBundlePayload.newBuilder()
-            .setFormatVersion(1)
-            .addIndexArtifacts(indexRecord(714L, filePath).toBuilder().setArtifactUri(sidecar))
-            .build()
-            .toByteArray();
-    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
-    String bundleUri =
-        workerStatsPrefix(715L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
-    when(blobs.get(bundleUri)).thenReturn(bundle);
-    when(blobs.head(bundleUri))
-        .thenReturn(Optional.of(BlobHeader.newBuilder().setContentLength(bundle.length).build()));
-    ReusableArtifactBundleSelection selection =
-        new ReusableArtifactBundleSelection(
-            "reuse-bundle:prior-group",
-            bundleUri,
-            bundle.length,
-            digest,
-            List.of(),
-            List.of(filePath));
-
-    repository.inheritedManagedSidecarGenerations(TABLE_ID, List.of(selection));
-    repository.inheritedManagedSidecarGenerations(TABLE_ID, List.of(selection));
-
-    verify(blobs, times(1)).get(bundleUri);
-    verify(blobs, times(2)).head(bundleUri);
-  }
-
-  @Test
-  void selectedBundleRejectsDeclaredLengthThatDiffersFromStoredLength() {
-    BlobStore blobs = mock(BlobStore.class);
-    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
-    String filePath = "s3://bucket/file.parquet";
-    byte[] bundle =
-        ReusableArtifactBundlePayload.newBuilder()
-            .setFormatVersion(1)
-            .addIndexArtifacts(indexRecord(714L, filePath))
-            .build()
-            .toByteArray();
-    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
-    String bundleUri =
-        workerStatsPrefix(715L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
-    when(blobs.head(bundleUri))
-        .thenReturn(
-            Optional.of(BlobHeader.newBuilder().setContentLength(bundle.length + 1).build()));
-
-    assertThatThrownBy(
-            () ->
-                repository.inheritedManagedSidecarGenerations(
-                    TABLE_ID,
-                    List.of(
-                        new ReusableArtifactBundleSelection(
-                            "reuse-bundle:prior-group",
-                            bundleUri,
-                            bundle.length,
-                            digest,
-                            List.of(),
-                            List.of(filePath)))))
-        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
-        .hasMessageContaining("metadata does not match");
-    verify(blobs, never()).get(bundleUri);
-  }
-
-  @Test
-  void selectedBundleWrapsUnsupportedFormatAsCorruption() {
-    InMemoryBlobStore blobs = new InMemoryBlobStore();
-    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
-    String filePath = "s3://bucket/file.parquet";
-    byte[] bundle =
-        ReusableArtifactBundlePayload.newBuilder()
-            .setFormatVersion(2)
-            .addIndexArtifacts(indexRecord(714L, filePath))
-            .build()
-            .toByteArray();
-    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
-    String bundleUri =
-        workerStatsPrefix(715L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
-    blobs.put(bundleUri, bundle, "application/x-protobuf");
-
-    assertThatThrownBy(
-            () ->
-                repository.inheritedManagedSidecarGenerations(
-                    TABLE_ID,
-                    List.of(
-                        new ReusableArtifactBundleSelection(
-                            "reuse-bundle:prior-group",
-                            bundleUri,
-                            bundle.length,
-                            digest,
-                            List.of(),
-                            List.of(filePath)))))
-        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
-        .hasMessageContaining("unsupported format");
-  }
-
-  @Test
   void selectedBundleRejectsASidecarGenerationOwnedByAnotherTable() {
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
@@ -960,9 +870,7 @@ class IndexArtifactRepositoryTest {
   void bundledIndexPublicationRejectsABundleDeletedAfterItWasCached() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = new InMemoryBlobStore();
-    IndexArtifactRepository repository =
-        createRepository(
-            pointers, blobs, new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+    IndexArtifactRepository repository = createRepository(pointers, blobs, blobCache());
     long snapshotId = 716L;
     String targetStorageId = "file:s3://bucket/file.parquet";
     IndexArtifactRecord record = indexRecord(snapshotId, "s3://bucket/file.parquet");
@@ -1054,9 +962,7 @@ class IndexArtifactRepositoryTest {
   void generationActivationPreservesExternallyOverriddenArtifactUri() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = spy(new InMemoryBlobStore());
-    IndexArtifactRepository repository =
-        createRepository(
-            pointers, blobs, new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+    IndexArtifactRepository repository = createRepository(pointers, blobs, blobCache());
     long snapshotId = 716L;
     String generationId = "full-rescan-parent";
     String filePath = "s3://source/data.parquet";

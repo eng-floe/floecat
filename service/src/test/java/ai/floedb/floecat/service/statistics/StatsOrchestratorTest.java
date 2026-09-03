@@ -730,7 +730,7 @@ class StatsOrchestratorTest {
   }
 
   // ---------------------------------------------------------------------------
-  // resolvePlannerBatch — cache correctness tests
+  // resolvePlannerBatch — store-resolution correctness tests
   // ---------------------------------------------------------------------------
 
   @Test
@@ -755,7 +755,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void resolvePlannerBatch_firstCallHitsDynamoDB_secondCallHitsCache() {
+  void resolvePlannerBatch_repeatedCallsUseTheStoreContract() {
     StatsStore store = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepo = Mockito.mock(TableRepository.class);
@@ -766,7 +766,6 @@ class StatsOrchestratorTest {
     TargetStatsRecord rec = columnRecord(req);
     String storageId = StatsTargetIdentity.storageId(req.target());
 
-    // First call: DynamoDB is queried.
     when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
         .thenReturn(Map.of(storageId, Optional.of(rec)));
     Map<String, StatsResolutionResult> result1 =
@@ -774,11 +773,10 @@ class StatsOrchestratorTest {
     assertThat(result1.get(storageId).stats()).isPresent().contains(rec);
     verify(store, Mockito.times(1)).getTargetStatsBatch(any(), anyLong(), any());
 
-    // Second call (same snapshot): served from cache, store NOT called again.
     Map<String, StatsResolutionResult> result2 =
         o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE);
     assertThat(result2.get(storageId).stats()).isPresent().contains(rec);
-    verify(store, Mockito.times(1)).getTargetStatsBatch(any(), anyLong(), any()); // still 1
+    verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
   }
 
   @Test
@@ -927,7 +925,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void invalidateStatsCacheForTargetForcesStoreRefresh() {
+  void repeatedTargetResolutionObservesStoreChanges() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator o =
         orchestrator(
@@ -947,7 +945,7 @@ class StatsOrchestratorTest {
     assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(first);
 
-    o.invalidateStatsCache(req.tableId(), req.snapshotId(), req.target());
+    o.evictSnapshotFacts(req.tableId(), req.snapshotId(), req.target());
 
     assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(replacement);
@@ -955,7 +953,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void invalidateStatsCacheForTargetClearsGenerationScopedEntries() {
+  void repeatedGenerationResolutionObservesStoreChanges() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator o =
         orchestrator(
@@ -979,7 +977,7 @@ class StatsOrchestratorTest {
                 .stats())
         .contains(first);
 
-    o.invalidateStatsCache(req.tableId(), req.snapshotId(), req.target());
+    o.evictSnapshotFacts(req.tableId(), req.snapshotId(), req.target());
 
     assertThat(
             o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-1"), Long.MAX_VALUE)
@@ -1045,7 +1043,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void resolvePlannerBatch_pinnedGenerationServedFromCacheOnReplay() {
+  void resolvePlannerBatch_pinnedGenerationIsReproducibleOnReplay() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator o =
         orchestrator(
@@ -1060,9 +1058,8 @@ class StatsOrchestratorTest {
             req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
         .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 1L))));
 
-    // Two resolutions on the same pin: the second is served from the pinned-generation cache, so
-    // the
-    // plan is reproducible and the store is read only once.
+    // Two resolutions on the same pin remain reproducible; serialized residency is below this
+    // mocked store boundary in production.
     for (int i = 0; i < 2; i++) {
       assertThat(
               o.resolvePlannerBatchInGeneration(
@@ -1074,7 +1071,7 @@ class StatsOrchestratorTest {
                   .getRowCount())
           .isEqualTo(1L);
     }
-    verify(store, Mockito.times(1)).getTargetStatsBatchInGeneration(any(), anyLong(), any(), any());
+    verify(store, Mockito.times(2)).getTargetStatsBatchInGeneration(any(), anyLong(), any(), any());
   }
 
   @Test
@@ -1302,7 +1299,7 @@ class StatsOrchestratorTest {
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(7L);
 
-    orchestrator.invalidateStatsCache(request.tableId(), request.snapshotId());
+    orchestrator.evictSnapshotFacts(request.tableId(), request.snapshotId());
 
     assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
         .get()
@@ -1411,61 +1408,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void resolvePlannerBatch_cachedPartialServesWhenPinnedRereadFailsAndNewestEmpty() {
-    StatsStore store = Mockito.mock(StatsStore.class);
-    StatsOrchestrator o =
-        orchestrator(
-            store,
-            Mockito.mock(ReconcileJobStore.class),
-            Mockito.mock(TableRepository.class),
-            Mockito.mock(StatsSyncCapture.class));
-
-    StatsCaptureRequest req = columnRequest(42L, 7L);
-    String storageId = StatsTargetIdentity.storageId(req.target());
-
-    // The pinned-generation batch read succeeds the first time (priming the cache with a
-    // scalar-only record) then throws — the frozen manifest becomes unreadable between queries.
-    RuntimeException manifestGone =
-        new RuntimeException("frozen stats generation manifest missing for snapshot 42");
-    java.util.concurrent.atomic.AtomicInteger pinnedReads =
-        new java.util.concurrent.atomic.AtomicInteger();
-    when(store.getTargetStatsBatchInGeneration(
-            req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
-        .thenAnswer(
-            inv -> {
-              if (pinnedReads.getAndIncrement() == 0) {
-                return Map.of(storageId, Optional.of(columnRecord(req, 1L)));
-              }
-              throw manifestGone;
-            });
-    when(store.getTargetStatsInGeneration(
-            req.tableId(), req.snapshotId(), "gen-pinned", req.target()))
-        .thenThrow(manifestGone);
-    // The newest generation of the same snapshot has nothing to gap-fill with.
-    when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
-        .thenReturn(Map.of(storageId, Optional.empty()));
-
-    // 1. Prime: a need with no completeness predicate caches the scalar-only pinned record.
-    o.resolvePlannerBatchInGeneration(List.of(req), Optional.of("gen-pinned"), Long.MAX_VALUE);
-
-    // 2. A richer need the cached record cannot satisfy. The pinned re-read fails and the newest
-    // generation is empty — the only
-    // thing standing between the planner and a needless capture is the incomplete cached record,
-    // which is still a valid (degraded) hit and must be served.
-    Map<String, StatsResolutionResult> result =
-        o.resolvePlannerBatchInGeneration(
-            List.of(req),
-            Optional.of("gen-pinned"),
-            completeAtRowCount(storageId, 10L),
-            Long.MAX_VALUE);
-
-    assertThat(result.get(storageId).hasStats()).isTrue();
-    assertThat(result.get(storageId).stats().get().getTable().getRowCount()).isEqualTo(1L);
-    // The partial hit means no capture was triggered.
-  }
-
-  @Test
-  void resolvePlannerBatch_cachedPartialDoesNotShortCircuitRicherNeed() {
+  void resolvePlannerBatch_partialPinnedRecordDoesNotShortCircuitRicherNeed() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator o =
         orchestrator(
@@ -1482,7 +1425,7 @@ class StatsOrchestratorTest {
     when(store.getTargetStatsBatch(req.tableId(), req.snapshotId(), List.of(req.target())))
         .thenReturn(Map.of(storageId, Optional.of(columnRecord(req, 10L))));
 
-    // A need without a completeness predicate caches the pinned record: presence = complete.
+    // A need without a completeness predicate accepts the pinned record: presence = complete.
     assertThat(
             o.resolvePlannerBatchInGeneration(
                     List.of(req), Optional.of("gen-pinned"), Long.MAX_VALUE)
@@ -1493,8 +1436,7 @@ class StatsOrchestratorTest {
                 .getRowCount())
         .isEqualTo(1L);
 
-    // A richer need must not be short-circuited by that cached record: the cache read fails the
-    // predicate, the pinned re-read is still partial, and the newest generation serves it.
+    // A richer need re-reads the partial pin and lets the newest generation satisfy it.
     assertThat(
             o.resolvePlannerBatchInGeneration(
                     List.of(req),
@@ -1711,7 +1653,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void invalidateStatsCacheForPersistedRecordsUsesExplicitTableSnapshot() {
+  void persistedRecordsEvictFactsForTheExplicitTableSnapshot() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator o =
         orchestrator(
@@ -1733,7 +1675,7 @@ class StatsOrchestratorTest {
     assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(first);
 
-    o.invalidateStatsCache(req.tableId(), req.snapshotId(), List.of(targetOnlyRecord));
+    o.evictSnapshotFacts(req.tableId(), req.snapshotId(), List.of(targetOnlyRecord));
 
     assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(replacement);
@@ -1741,7 +1683,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void invalidateStatsCacheForSnapshotForcesStoreRefresh() {
+  void repeatedSnapshotResolutionObservesStoreChanges() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator o =
         orchestrator(
@@ -1761,7 +1703,7 @@ class StatsOrchestratorTest {
     assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(first);
 
-    o.invalidateStatsCache(req.tableId(), req.snapshotId());
+    o.evictSnapshotFacts(req.tableId(), req.snapshotId());
 
     assertThat(o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE).get(storageId).stats())
         .contains(replacement);
