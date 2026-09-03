@@ -17,6 +17,9 @@
 package ai.floedb.floecat.reconciler.jobs;
 
 import ai.floedb.floecat.types.Hashing;
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 
 /** Content-addressing rules for compact reusable artifact bundles. */
@@ -49,5 +52,18 @@ public final class ReusableArtifactBundleUris {
   public static boolean matchesPayload(String uri, byte[] payload) {
     return payload != null
         && matchesDigest(uri, HexFormat.of().parseHex(Hashing.sha256Hex(payload)));
+  }
+
+  public static boolean matchesPayload(String uri, ByteBuffer payload) {
+    if (payload == null) {
+      return false;
+    }
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      digest.update(payload.duplicate());
+      return matchesDigest(uri, digest.digest());
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 unavailable", e);
+    }
   }
 }

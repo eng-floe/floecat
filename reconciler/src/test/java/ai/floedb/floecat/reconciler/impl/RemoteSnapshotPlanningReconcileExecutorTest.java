@@ -1978,7 +1978,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             })
         .when(blobStore)
         .putImmutable(anyString(), any(byte[].class), anyString());
-    ReusableArtifactIndexStore.clearSharedCacheForTests();
     var reference =
         new ReusableArtifactIndexStore(blobStore)
             .append(
@@ -1997,7 +1996,6 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             })
         .when(blobStore)
         .getBatch(any());
-    ReusableArtifactIndexStore.clearSharedCacheForTests();
     return reference;
   }
 
