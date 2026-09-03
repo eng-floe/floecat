@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.cache;
 
 import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.cache.CacheFamily;
+import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.CachingPointerStore;
@@ -124,10 +125,13 @@ public class MetadataCaches {
   public ObjectCache objects(
       CacheBudgetResolver budgets,
       Observability observability,
+      LogicalSchemaMapper schemaMapper,
       @ConfigProperty(name = "floecat.cache.object.enabled", defaultValue = "true")
           boolean enabled) {
     var metrics = metricsFor(CacheFamily.OBJECT, observability);
-    var cache = new ObjectCache(budgets.bytesFor(CacheFamily.OBJECT), events(metrics), enabled);
+    var cache =
+        new ObjectCache(
+            budgets.bytesFor(CacheFamily.OBJECT), events(metrics), schemaMapper, enabled);
     report(cache.family(), cache::entryCount, cache::bytes, budgets, metrics, cache.enabled());
     return cache;
   }

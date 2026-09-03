@@ -20,7 +20,6 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
@@ -33,6 +32,7 @@ import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -71,7 +71,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   private static final Logger LOG = Logger.getLogger(QuerySchemaServiceImpl.class);
 
   @Inject QueryInputResolver inputResolver;
-  @Inject LogicalSchemaMapper schemaMapper;
+  @Inject ObjectCache objects;
   @Inject ObligationsResolver obligations;
   @Inject ViewExpansionResolver expansions;
   @Inject QueryContextStore queryStore;
@@ -292,7 +292,8 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
             correlationId, rid, snapshotRef, pin.getTableBlobUri(), pin.getSnapshotBlobUri());
     // Planner-facing logical schema: synthetic element/key/value placeholder rows are stats
     // plumbing; the planner reads nested typing from the columns' type trees.
-    SchemaDescriptor mapped = schemaMapper.map(resolved.table(), resolved.schemaJson());
+    SchemaDescriptor mapped =
+        objects.mappedSchema(resolved.table(), resolved.schemaJson()).descriptor();
     return UserObjectBundleUtils.qualifyNestedColumnNames(
         mapped.toBuilder()
             .clearColumns()

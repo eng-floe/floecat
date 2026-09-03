@@ -30,6 +30,7 @@ import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -81,7 +82,8 @@ class RelationPayloadPolicyTest {
     EngineRelationDecorator engineRelationDecorator =
         new EngineRelationDecorator(ctxIgnored -> Optional.empty(), false);
     RelationBundleBuilder builder =
-        new RelationBundleBuilder(graphView, engineRelationDecorator, systemExecutionResolver);
+        new RelationBundleBuilder(
+            graphView, engineRelationDecorator, systemExecutionResolver, ObjectCache.forTesting());
     policy =
         new RelationPayloadPolicy(builder, systemExecutionResolver, engineRelationDecorator, "1");
   }

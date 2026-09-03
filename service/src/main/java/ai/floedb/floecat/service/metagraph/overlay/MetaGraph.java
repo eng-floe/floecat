@@ -20,7 +20,6 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
@@ -35,6 +34,7 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.PageTokens;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
@@ -65,18 +65,18 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
   private static final Logger LOG = Logger.getLogger(MetaGraph.class);
 
   private final UserGraph userGraph;
-  private final LogicalSchemaMapper schemaMapper;
+  private final ObjectCache objects;
   private final SystemGraph systemGraph;
   private final EngineContextProvider engine;
 
   @Inject
   public MetaGraph(
       UserGraph userGraph,
-      LogicalSchemaMapper schemaMapper,
+      ObjectCache objects,
       SystemGraph systemGraph,
       EngineContextProvider engine) {
     this.userGraph = userGraph;
-    this.schemaMapper = schemaMapper;
+    this.objects = objects;
     this.systemGraph = systemGraph;
     this.engine = engine;
   }
@@ -769,7 +769,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
 
   private List<SchemaColumn> schemaForTable(TableNode table) {
     if (table instanceof UserTableNode ut) {
-      return schemaMapper.map(ut).getColumnsList();
+      return objects.mappedSchema(ut, ut.schemaJson()).descriptor().getColumnsList();
     }
     if (table instanceof SystemTableNode st) {
       return st.columns();

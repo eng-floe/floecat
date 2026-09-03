@@ -28,5 +28,5 @@ record ResolvedRelation(
     ResourceId relationId,
     RelationNode node,
     QueryInput selectedInput,
-    // Resolve once through the request memo so parallel builders never re-walk shared ancestors.
+    // Resolve at selection so parallel builders never re-walk shared ancestors.
     NameRef canonicalName) {}

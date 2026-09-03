@@ -20,9 +20,9 @@ import ai.floedb.floecat.catalog.rpc.GetSchemaRequest;
 import ai.floedb.floecat.catalog.rpc.GetSchemaResponse;
 import ai.floedb.floecat.catalog.rpc.SchemaService;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.security.impl.Authorizer;
@@ -37,7 +37,7 @@ import org.jboss.logging.Logger;
  * Catalog-facing SchemaService.
  *
  * <p>Selects the correct physical schema JSON (table-level or snapshot-level), then delegates JSON
- * → logical schema conversion to LogicalSchemaMapper.
+ * → logical schema conversion through the shared object cache.
  */
 @Singleton
 @GrpcService
@@ -45,7 +45,7 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
 
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
-  @Inject LogicalSchemaMapper logicalSchema;
+  @Inject ObjectCache objects;
   @Inject CatalogGraphView graphView;
 
   private static final Logger LOG = Logger.getLogger(SchemaService.class);
@@ -70,7 +70,7 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
                           request.hasSnapshot() ? request.getSnapshot() : null);
 
                   SchemaDescriptor desc =
-                      logicalSchema.map(resolved.table(), resolved.schemaJson());
+                      objects.mappedSchema(resolved.table(), resolved.schemaJson()).descriptor();
 
                   return GetSchemaResponse.newBuilder().setSchema(desc).build();
                 }),

@@ -27,7 +27,6 @@ import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.RelationInfo;
-import ai.floedb.floecat.query.rpc.RelationStats;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.MessageLite;
@@ -36,6 +35,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.function.Supplier;
 
 /**
@@ -62,15 +62,14 @@ public final class ObjectCache {
   private final boolean enabled;
 
   ObjectCache(long maxBytes, CacheEvents events, boolean enabled) {
-    this(
-        new CaffeineMemoryCache<>(
-            CacheFamily.OBJECT, maxBytes, ObjectCache::estimatedKeyBytes, events),
-        new LogicalSchemaMapper(),
-        enabled);
+    this(maxBytes, events, new LogicalSchemaMapper(), enabled);
   }
 
-  ObjectCache(MemoryCache<Key, Value> entries, LogicalSchemaMapper schemaMapper, boolean enabled) {
-    this.entries = Objects.requireNonNull(entries, "entries");
+  ObjectCache(
+      long maxBytes, CacheEvents events, LogicalSchemaMapper schemaMapper, boolean enabled) {
+    this.entries =
+        new CaffeineMemoryCache<>(
+            CacheFamily.OBJECT, maxBytes, ObjectCache::estimatedKeyBytes, events);
     this.schemaMapper = Objects.requireNonNull(schemaMapper, "schemaMapper");
     this.enabled = enabled;
   }
@@ -80,7 +79,7 @@ public final class ObjectCache {
     return new ObjectCache(64L * 1024L * 1024L, CacheEvents.none(), true);
   }
 
-  /** The mapped schema together with the exact identity used by relation-template entries. */
+  /** The mapped schema together with the exact identity used by assembled relation entries. */
   public record MappedSchema(String identity, SchemaDescriptor descriptor) {
     public MappedSchema {
       Objects.requireNonNull(identity, "identity");
@@ -88,21 +87,17 @@ public final class ObjectCache {
     }
   }
 
-  /**
-   * Engine-neutral relation content. The schema is retained because request-time projection and
-   * engine decoration require the physical column tree even though the assembled relation already
-   * carries planner-facing columns.
-   */
-  public record RelationTemplate(RelationInfo relation, SchemaDescriptor schema)
+  /** The two small ingest-shaped values relation assembly needs from table-level statistics. */
+  public record SnapshotFacts(OptionalLong rowCount, OptionalLong totalSizeBytes)
       implements WeightedValue {
-    public RelationTemplate {
-      Objects.requireNonNull(relation, "relation");
-      Objects.requireNonNull(schema, "schema");
+    public SnapshotFacts {
+      rowCount = rowCount == null ? OptionalLong.empty() : rowCount;
+      totalSizeBytes = totalSizeBytes == null ? OptionalLong.empty() : totalSizeBytes;
     }
 
     @Override
     public long estimatedWeightBytes() {
-      return retainedProtoBytes(relation) + retainedProtoBytes(schema);
+      return 64L;
     }
   }
 
@@ -118,25 +113,29 @@ public final class ObjectCache {
     return new MappedSchema(identity, descriptor);
   }
 
-  /** Load the full engine-neutral template for one immutable user-table definition. */
-  public RelationTemplate tableRelation(
-      UserTableNode table, MappedSchema schema, Supplier<RelationTemplate> loader) {
+  /** Load the full engine-neutral relation for one immutable user-table definition. */
+  public RelationInfo tableRelation(
+      UserTableNode table, MappedSchema schema, Supplier<RelationInfo> loader) {
     Objects.requireNonNull(table, "table");
     Objects.requireNonNull(schema, "schema");
     return relation(table.id(), table.cacheIdentity() + '\0' + schema.identity(), loader);
   }
 
-  /** Load the full engine-neutral template for one immutable user-view definition. */
-  public RelationTemplate viewRelation(ViewNode view, Supplier<RelationTemplate> loader) {
+  /** Load the full engine-neutral relation for one immutable user-view definition. */
+  public RelationInfo viewRelation(ViewNode view, Supplier<RelationInfo> loader) {
     Objects.requireNonNull(view, "view");
     return relation(view.id(), view.cacheIdentity(), loader);
   }
 
-  private RelationTemplate relation(
-      ResourceId relationId, String identity, Supplier<RelationTemplate> loader) {
+  private RelationInfo relation(
+      ResourceId relationId, String identity, Supplier<RelationInfo> loader) {
     requireIdentity(identity, "relation identity");
-    Key key = new Key(account(relationId), Kind.RELATION, identity);
-    return get(key, RelationTemplate.class, loader);
+    Key key =
+        new Key(
+            account(relationId),
+            Kind.RELATION,
+            requireIdentity(relationId.getId(), "relation id") + '\0' + identity);
+    return get(key, RelationInfo.class, loader);
   }
 
   /**
@@ -146,23 +145,33 @@ public final class ObjectCache {
   public Optional<SnapshotConstraints> constraints(
       ResourceId tableId, String contentIdentity, Supplier<Optional<SnapshotConstraints>> loader) {
     requireIdentity(contentIdentity, "constraints content identity");
-    Key key = new Key(account(tableId), Kind.CONSTRAINTS, contentIdentity);
+    Key key =
+        new Key(
+            account(tableId),
+            Kind.CONSTRAINTS,
+            requireIdentity(tableId.getId(), "table id") + '\0' + contentIdentity);
     return getOptional(key, SnapshotConstraints.class, loader);
   }
 
-  /** Load the two small ingest-shaped facts for an immutable stats-generation identity. */
-  public Optional<RelationStats> snapshotFacts(
-      ResourceId tableId,
-      long snapshotId,
-      String generationIdentity,
-      Supplier<Optional<RelationStats>> loader) {
+  /** Load the two small ingest-shaped facts for one table snapshot. */
+  public Optional<SnapshotFacts> snapshotFacts(
+      ResourceId tableId, long snapshotId, Supplier<Optional<SnapshotFacts>> loader) {
     if (snapshotId < 0L) {
       throw new IllegalArgumentException("snapshotId must be non-negative");
     }
-    requireIdentity(generationIdentity, "stats generation identity");
-    String identity = tableId.getId() + '\0' + snapshotId + '\0' + generationIdentity;
-    Key key = new Key(account(tableId), Kind.SNAPSHOT_FACTS, identity);
-    return getOptional(key, RelationStats.class, loader);
+    return getOptional(snapshotFactsKey(tableId, snapshotId), SnapshotFacts.class, loader);
+  }
+
+  /** Drop facts replaced by a successful stats mutation. */
+  public void evictSnapshotFacts(ResourceId tableId, long snapshotId) {
+    entries.evict(snapshotFactsKey(tableId, snapshotId));
+  }
+
+  private static Key snapshotFactsKey(ResourceId tableId, long snapshotId) {
+    return new Key(
+        account(tableId),
+        Kind.SNAPSHOT_FACTS,
+        requireIdentity(tableId.getId(), "table id") + '\0' + snapshotId);
   }
 
   /** Drop every decoded object belonging to an account. */
