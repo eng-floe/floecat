@@ -28,7 +28,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-public class FakeCatalogRepository extends CatalogRepository {
+public final class FakeCatalogRepository extends CatalogRepository {
   private final Map<ResourceId, Catalog> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
   private final Map<ResourceId, Integer> gets = new HashMap<>();
@@ -45,6 +45,10 @@ public class FakeCatalogRepository extends CatalogRepository {
     if (meta != null && meta.getBlobUri() != null && !meta.getBlobUri().isBlank()) {
       byBlob.put(meta.getBlobUri(), catalog);
     }
+  }
+
+  public void put(Catalog catalog) {
+    put(catalog, null);
   }
 
   public void putMeta(ResourceId id, MutationMeta meta) {

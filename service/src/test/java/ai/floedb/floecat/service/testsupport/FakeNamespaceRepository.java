@@ -30,7 +30,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-public class FakeNamespaceRepository extends NamespaceRepository {
+public final class FakeNamespaceRepository extends NamespaceRepository {
   private final Map<ResourceId, Namespace> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
   // blobUri -> namespace, so the getByBlobUri hydration fast path is exercised.
@@ -46,6 +46,10 @@ public class FakeNamespaceRepository extends NamespaceRepository {
     if (meta != null && meta.getBlobUri() != null && !meta.getBlobUri().isBlank()) {
       byBlob.put(meta.getBlobUri(), namespace);
     }
+  }
+
+  public void put(Namespace namespace) {
+    put(namespace, null);
   }
 
   @Override

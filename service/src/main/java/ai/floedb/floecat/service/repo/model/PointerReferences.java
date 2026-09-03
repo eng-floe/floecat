@@ -19,6 +19,9 @@ package ai.floedb.floecat.service.repo.model;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
+import java.util.Optional;
 
 public final class PointerReferences {
   private PointerReferences() {}
@@ -133,6 +136,24 @@ public final class PointerReferences {
 
   public static boolean hasKind(Pointer pointer, PointerReferenceKind expectedKind) {
     return pointer != null && expectedKind != null && pointer.getReferenceKind() == expectedKind;
+  }
+
+  /** Builds the lightweight relation identity carried by a table or view name pointer. */
+  public static Optional<RelationRef> relationRef(
+      String accountId, ResourceKind kind, Pointer pointer) {
+    String name =
+        !pointer.getDisplayName().isEmpty()
+            ? pointer.getDisplayName()
+            : Keys.extractLastSegment(pointer.getKey());
+    ResourceId id = pointer.getResourceId();
+    if (id.getId().isEmpty()) {
+      String rawId = Keys.extractResourceIdFromBlobUri(pointer.getBlobUri());
+      if (rawId.isEmpty()) {
+        return Optional.empty();
+      }
+      id = ResourceId.newBuilder().setAccountId(accountId).setId(rawId).setKind(kind).build();
+    }
+    return Optional.of(new RelationRef(id, name, kind));
   }
 
   private static String blankToEmpty(String value) {

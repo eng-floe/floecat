@@ -33,7 +33,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-public class FakeViewRepository extends ViewRepository {
+public final class FakeViewRepository extends ViewRepository {
   private final Map<ResourceId, View> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
   // blobUri -> view, so the getByBlobUri hydration fast path is exercised (put() does not touch the
@@ -50,6 +50,10 @@ public class FakeViewRepository extends ViewRepository {
     if (meta != null && meta.getBlobUri() != null && !meta.getBlobUri().isBlank()) {
       byBlob.put(meta.getBlobUri(), view);
     }
+  }
+
+  public void put(View view) {
+    put(view, null);
   }
 
   public void putMeta(ResourceId id, MutationMeta meta) {
