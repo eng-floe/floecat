@@ -88,6 +88,55 @@ class ObjectCacheTest {
   }
 
   @Test
+  void pinnedSchemaChecksItsIdentityBeforeLoadingTheBackingObjects() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    UserTableNode table = table("account", "table", TableFormat.TF_ICEBERG, List.of());
+    TablePin pin = pin(table.id(), "definition-a", "constraints", "schema-a");
+    AtomicInteger loads = new AtomicInteger();
+    String schema =
+        "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[{\"id\":1,\"name\":\"id\","
+            + "\"required\":true,\"type\":\"long\"}]}";
+
+    SchemaDescriptor first =
+        cache
+            .pinnedSchema(
+                pin,
+                () -> {
+                  loads.incrementAndGet();
+                  return new ObjectCache.SchemaInput(table, schema);
+                })
+            .descriptor();
+    SchemaDescriptor second =
+        cache
+            .pinnedSchema(
+                pin,
+                () -> {
+                  loads.incrementAndGet();
+                  return new ObjectCache.SchemaInput(table, schema);
+                })
+            .descriptor();
+
+    assertThat(second).isSameAs(first);
+    assertThat(loads).hasValue(1);
+  }
+
+  @Test
+  void pinnedSchemaIdentityIncludesDefinitionInputs() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    UserTableNode table = table("account", "table", TableFormat.TF_ICEBERG, List.of());
+    AtomicInteger loads = new AtomicInteger();
+
+    cache.pinnedSchema(
+        pin(table.id(), "definition-a", "constraints", "schema"),
+        () -> loaded(loads, new ObjectCache.SchemaInput(table, table.schemaJson())));
+    cache.pinnedSchema(
+        pin(table.id(), "definition-b", "constraints", "schema"),
+        () -> loaded(loads, new ObjectCache.SchemaInput(table, table.schemaJson())));
+
+    assertThat(loads).hasValue(2);
+  }
+
+  @Test
   void constraintsAreContentKeyedAndAbsenceIsNotCached() {
     ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
     ResourceId tableId = tableId("account", "table");
@@ -333,6 +382,31 @@ class ObjectCacheTest {
     // Constraints are served from their own content-keyed entry. They are not part of RelationInfo,
     // so changing only that ref must keep the expensive relation template hot.
     assertThat(loads).hasValue(3);
+  }
+
+  @Test
+  void legacyPinnedRelationFallsBackToTheImmutableSnapshotIdentity() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    UserTableNode table = table("account", "table", TableFormat.TF_ICEBERG, List.of());
+    ObjectCache.RelationObject relation =
+        new ObjectCache.RelationObject(
+            RelationInfo.newBuilder().setRelationId(table.id()).build(),
+            SchemaDescriptor.getDefaultInstance());
+    AtomicInteger loads = new AtomicInteger();
+    TablePin legacy =
+        pin(table.id(), "definition", "constraints", "ignored").toBuilder()
+            .clearSchemaFingerprint()
+            .clearSnapshotBlobVersion()
+            .setSnapshotBlobUri("snapshot-a")
+            .build();
+
+    cache.tableRelation(table, Optional.of(legacy), () -> loaded(loads, relation));
+    cache.tableRelation(
+        table,
+        Optional.of(legacy.toBuilder().setSnapshotBlobUri("snapshot-b").build()),
+        () -> loaded(loads, relation));
+
+    assertThat(loads).hasValue(2);
   }
 
   private static <T> T loaded(AtomicInteger loads, T value) {
