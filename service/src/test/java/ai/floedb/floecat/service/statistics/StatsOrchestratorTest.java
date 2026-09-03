@@ -1145,13 +1145,13 @@ class StatsOrchestratorTest {
 
     assertThat(
             orchestrator
-                .resolveTableFactsInGeneration(request, Optional.of("gen-pinned"))
+                .resolveTableFactsInGeneration(request, Optional.of("gen-pinned"), true)
                 .orElseThrow()
                 .rowCount())
         .hasValue(7L);
     assertThat(
             orchestrator
-                .resolveTableFactsInGeneration(request, Optional.of("gen-pinned"))
+                .resolveTableFactsInGeneration(request, Optional.of("gen-pinned"), true)
                 .orElseThrow()
                 .rowCount())
         .hasValue(19L);
@@ -1179,11 +1179,11 @@ class StatsOrchestratorTest {
     when(store.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
         .thenReturn(Optional.of(first), Optional.of(replacement));
 
-    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty()))
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(7L);
-    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty()))
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(7L);
@@ -1191,12 +1191,47 @@ class StatsOrchestratorTest {
 
     orchestrator.invalidateStatsCache(request.tableId(), request.snapshotId(), request.target());
 
-    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty()))
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(19L);
     verify(store, Mockito.times(2))
         .getTargetStats(request.tableId(), request.snapshotId(), request.target());
+  }
+
+  @Test
+  void historicalTableFactsReadThroughWithoutDisplacingCurrentMetadata() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+    TargetStatsRecord first = record(request);
+    TargetStatsRecord replacement =
+        first.toBuilder().setTable(first.getTable().toBuilder().setRowCount(19)).build();
+    when(store.getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), "historical", request.target()))
+        .thenReturn(Optional.of(first), Optional.of(replacement));
+
+    assertThat(
+            orchestrator
+                .resolveTableFactsInGeneration(request, Optional.of("historical"), false)
+                .orElseThrow()
+                .rowCount())
+        .hasValue(7L);
+    assertThat(
+            orchestrator
+                .resolveTableFactsInGeneration(request, Optional.of("historical"), false)
+                .orElseThrow()
+                .rowCount())
+        .hasValue(19L);
+
+    verify(store, Mockito.times(2))
+        .getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), "historical", request.target());
   }
 
   @Test
@@ -1217,14 +1252,14 @@ class StatsOrchestratorTest {
             request.tableId(), request.snapshotId(), generation, request.target()))
         .thenReturn(Optional.of(first), Optional.of(replacement));
 
-    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.of(generation)))
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.of(generation), true))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(7L);
 
     orchestrator.publishCommittedTableFacts(request.tableId(), request.snapshotId(), generation);
 
-    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.of(generation)))
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.of(generation), true))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(19L);
@@ -1270,14 +1305,14 @@ class StatsOrchestratorTest {
     when(store.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
         .thenReturn(Optional.of(first), Optional.of(replacement));
 
-    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty()))
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(7L);
 
     orchestrator.invalidateStatsCache(request.tableId(), request.snapshotId());
 
-    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty()))
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(19L);
