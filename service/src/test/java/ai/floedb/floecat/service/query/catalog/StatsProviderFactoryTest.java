@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.query.catalog;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Ndv;
@@ -35,6 +36,7 @@ import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
@@ -104,7 +106,7 @@ class StatsProviderFactoryTest {
 
     when(tableRepository.getById(TABLE))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE).build()));
-    when(orchestrator.resolveTableFactsInGeneration(any(), any()))
+    when(orchestrator.resolveTableFactsInGeneration(any(), any(), anyBoolean()))
         .thenAnswer(
             ignored -> {
               int now = active.incrementAndGet();
@@ -398,7 +400,7 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolveTableFactsInGeneration(any(), any()))
+    when(orchestrator.resolveTableFactsInGeneration(any(), any(), anyBoolean()))
         .thenReturn(
             Optional.of(
                 new ai.floedb.floecat.service.cache.ObjectCache.SnapshotFacts(
@@ -409,10 +411,30 @@ class StatsProviderFactoryTest {
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolveTableFactsInGeneration(requestCaptor.capture(), any());
+    Mockito.verify(orchestrator)
+        .resolveTableFactsInGeneration(requestCaptor.capture(), any(), Mockito.eq(true));
     assertEquals("iceberg", requestCaptor.getValue().connectorType());
     assertTrue(requestCaptor.getValue().latencyBudget().isEmpty());
     assertEquals(StatsExecutionMode.ASYNC, requestCaptor.getValue().executionMode());
+  }
+
+  @Test
+  void historicalPinsReadTableFactsWithoutRetainingThemInObjects() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
+    StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
+    QueryContext ctx = queryContextWithPin("historical", 500L, PinKind.PIN_KIND_SNAPSHOT_ID);
+    store.seed(ctx);
+    when(tableRepository.getById(TABLE))
+        .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE).build()));
+    when(orchestrator.resolveTableFactsInGeneration(any(), any(), anyBoolean()))
+        .thenReturn(Optional.empty());
+
+    factory.forQuery(ctx, "corr").tableStats(TABLE);
+
+    Mockito.verify(orchestrator).resolveTableFactsInGeneration(any(), any(), Mockito.eq(false));
   }
 
   @Test
@@ -428,7 +450,7 @@ class StatsProviderFactoryTest {
     CountDownLatch interrupted = new CountDownLatch(1);
     CountDownLatch allowCompletion = new CountDownLatch(1);
     CountDownLatch completed = new CountDownLatch(1);
-    when(orchestrator.resolveTableFactsInGeneration(any(), any()))
+    when(orchestrator.resolveTableFactsInGeneration(any(), any(), anyBoolean()))
         .thenAnswer(
             ignored -> {
               started.countDown();
@@ -517,14 +539,16 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolveTableFactsInGeneration(any(), any())).thenReturn(Optional.empty());
+    when(orchestrator.resolveTableFactsInGeneration(any(), any(), anyBoolean()))
+        .thenReturn(Optional.empty());
 
     var provider = factory.forQuery(ctx, "corr");
     provider.tableStats(TABLE);
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolveTableFactsInGeneration(requestCaptor.capture(), any());
+    Mockito.verify(orchestrator)
+        .resolveTableFactsInGeneration(requestCaptor.capture(), any(), anyBoolean());
     assertEquals(StatsExecutionMode.ASYNC, requestCaptor.getValue().executionMode());
     assertTrue(requestCaptor.getValue().latencyBudget().isEmpty());
   }
@@ -571,14 +595,16 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolveTableFactsInGeneration(any(), any())).thenReturn(Optional.empty());
+    when(orchestrator.resolveTableFactsInGeneration(any(), any(), anyBoolean()))
+        .thenReturn(Optional.empty());
 
     var provider = factory.forQuery(ctx, "corr");
     provider.tableStats(TABLE);
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolveTableFactsInGeneration(requestCaptor.capture(), any());
+    Mockito.verify(orchestrator)
+        .resolveTableFactsInGeneration(requestCaptor.capture(), any(), anyBoolean());
     assertEquals(Duration.ofSeconds(10), requestCaptor.getValue().latencyBudget().orElseThrow());
   }
 
@@ -736,6 +762,11 @@ class StatsProviderFactoryTest {
   }
 
   private static QueryContext queryContextWithPin(String queryId, long snapshotId) {
+    return queryContextWithPin(queryId, snapshotId, PinKind.PIN_KIND_CURRENT);
+  }
+
+  private static QueryContext queryContextWithPin(
+      String queryId, long snapshotId, PinKind pinKind) {
     PrincipalContext principal =
         PrincipalContext.newBuilder()
             .setAccountId(TABLE.getAccountId())
@@ -746,7 +777,10 @@ class StatsProviderFactoryTest {
         .queryId(queryId)
         .principal(principal)
         .relationPins(
-            SnapshotTestSupport.relationPins(SnapshotTestSupport.blobBackedPin(TABLE, snapshotId))
+            SnapshotTestSupport.relationPins(
+                    SnapshotTestSupport.blobBackedPin(TABLE, snapshotId).toBuilder()
+                        .setPinKind(pinKind)
+                        .build())
                 .toByteArray())
         .createdAtMs(1)
         .expiresAtMs(1_000)

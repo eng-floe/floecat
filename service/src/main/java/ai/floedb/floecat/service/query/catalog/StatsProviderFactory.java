@@ -284,7 +284,10 @@ public final class StatsProviderFactory {
                 .latencyBudget(syncEnabled ? Optional.of(syncLatencyBudget) : Optional.empty())
                 .build();
         return statsOrchestrator
-            .resolveTableFactsInGeneration(request, pinResolver.pinnedStatsGenerationRef(tableId))
+            .resolveTableFactsInGeneration(
+                request,
+                pinResolver.pinnedStatsGenerationRef(tableId),
+                allowUnpinnedLatestSnapshotFallback || pinResolver.currentSnapshotIsPinned(tableId))
             .map(
                 facts ->
                     new TableStatsViewImpl(

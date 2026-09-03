@@ -262,23 +262,27 @@ public class StatsOrchestrator {
   /**
    * Resolve relation-sized table facts through Objects. The miss loader retains the existing
    * pinned-generation-first policy; successful stats mutations evict this table/snapshot key.
+   * Historical pins read through so time travel cannot displace the resident current catalog.
    */
   public Optional<ObjectCache.SnapshotFacts> resolveTableFactsInGeneration(
-      StatsCaptureRequest request, Optional<String> pinnedGenerationToken) {
+      StatsCaptureRequest request,
+      Optional<String> pinnedGenerationToken,
+      boolean retainCurrentFacts) {
     Optional<String> pinned =
         pinnedGenerationToken.filter(token -> !token.isBlank()).map(String::trim);
     if (pinned.isPresent()) {
+      java.util.function.Supplier<Optional<ObjectCache.SnapshotFacts>> loadExact =
+          () ->
+              statsStore
+                  .getTargetStatsInGeneration(
+                      request.tableId(), request.snapshotId(), pinned.get(), request.target())
+                  .filter(TargetStatsRecord::hasTable)
+                  .map(StatsOrchestrator::snapshotFacts);
       Optional<ObjectCache.SnapshotFacts> exact =
-          objects.snapshotFacts(
-              request.tableId(),
-              request.snapshotId(),
-              pinned.get(),
-              () ->
-                  statsStore
-                      .getTargetStatsInGeneration(
-                          request.tableId(), request.snapshotId(), pinned.get(), request.target())
-                      .filter(TargetStatsRecord::hasTable)
-                      .map(StatsOrchestrator::snapshotFacts));
+          retainCurrentFacts
+              ? objects.snapshotFacts(
+                  request.tableId(), request.snapshotId(), pinned.get(), loadExact)
+              : loadExact.get();
       if (exact.isPresent()) {
         return exact;
       }
@@ -289,15 +293,15 @@ public class StatsOrchestrator {
           .filter(TargetStatsRecord::hasTable)
           .map(StatsOrchestrator::snapshotFacts);
     }
-    return objects.snapshotFacts(
-        request.tableId(),
-        request.snapshotId(),
-        "",
+    java.util.function.Supplier<Optional<ObjectCache.SnapshotFacts>> loadLive =
         () ->
             resolveInGeneration(request, Optional.empty())
                 .stats()
                 .filter(TargetStatsRecord::hasTable)
-                .map(StatsOrchestrator::snapshotFacts));
+                .map(StatsOrchestrator::snapshotFacts);
+    return retainCurrentFacts
+        ? objects.snapshotFacts(request.tableId(), request.snapshotId(), "", loadLive)
+        : loadLive.get();
   }
 
   private static ObjectCache.SnapshotFacts snapshotFacts(TargetStatsRecord record) {
