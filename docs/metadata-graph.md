@@ -5,9 +5,9 @@ Floecat’s query-facing services share a common metadata cache called the **Met
 between the pointer/blob repositories and any RPC that needs to inspect catalogs, namespaces, tables,
 or views. The graph provides:
 
-- Immutable node models that can be safely reused across requests. Nodes are pure derivations of
-  their source blob and are cached content-addressed (keyed by `blobUri + "#node"`) in the
-  process-wide `ImmutableBlobCache`, so they need no invalidation.
+- Immutable node models derived through repositories. Repository bytes are resident in the disk
+  blob cache, while complete engine-neutral relation responses and mapped schemas are reused by
+  `ObjectCache`; the graph maintains no overlapping node cache.
 - Resource-ID → current-blob resolution served by the pointer cache (`CachingPointerStore`), which
   is refreshed on write and does not expire, so a commit is visible to the replica that made it as
   soon as it lands.
@@ -35,7 +35,7 @@ facade sit inside `service/metagraph`. The split looks like this:
   `ViewNode`, `SystemViewNode`) plus shared enums (`GraphNodeKind`, `EngineKey`, `EngineHint`,
   `GraphNodeOrigin`, etc.).
 - `service/repo/cache/` – the pointer cache owns complete namespace and relation-name indexes;
-  derived nodes live content-keyed by blob URI in the process-wide `ImmutableBlobCache`.
+  `BlobCacheAccess` owns immutable versus pointer-version disk identities.
 - `service/metagraph/loader/` – `NodeLoader` wraps the catalog/namespace/table/view repositories to
   hydrate immutable nodes from protobuf metadata (`metaForSafe` + pointer fetches).
 - `service/metagraph/resolver/` – `NameResolver` handles catalog/namespace/table/view lookups and
@@ -164,11 +164,10 @@ Internally `resolve(ResourceId)`:
 1. Reads the pointer through `nodes.mutationMeta(id)`. There is no graph-level meta cache to probe
    first: the pointer cache now sits under the store, so this read is a memory lookup when the key
    is resident and a store read when it is not.
-2. Returns the derived node at `blobUri + "#node"` from the `ImmutableBlobCache` when present.
-3. Rehydrates the protobuf record (`Catalog`, `Namespace`, `Table`, `View`) into the immutable node
-   and stores it content-keyed under `blobUri + "#node"`.
-4. Serves the node from cache for as long as the blob stays hot; a DDL writes a new blob, so the
-   fresh pointer simply names a different node entry — no eviction required.
+2. Reads the named serialized body through its repository; a warm body comes from local disk.
+3. Rehydrates the protobuf record (`Catalog`, `Namespace`, `Table`, `View`) into an immutable node.
+4. Query relation assembly above the graph reuses `ObjectCache`, keyed by DDL identity, so repeated
+   planner requests normally do not reach this hydration path.
 
 ### Snapshot Pinning Semantics
 - Explicit snapshot ID overrides always win.
@@ -220,18 +219,18 @@ response to avoid exposing synthetic tables twice.
 Column decorations are surfaced per column via `RelationInfo.columns[*]` (`ColumnResult`), so a relation can
 still resolve as `FOUND` while individual columns report `COLUMN_STATUS_FAILED` with structured failure reasons.
 
-## Metrics
-Graph cache metrics are emitted through the shared `CacheMetrics` helper under the
-`floecat.core.cache.*` metric family, distinguished by cache-name tag:
+## Cache metrics
+The metadata graph does not own a cache. Repository-backed object and blob caches report through
+the shared `floecat.core.cache.*` metric family:
 
 | Cache name | What is tracked |
 |------------|-----------------|
-| `graph-cache` | Node-load latency timer and load-failure counter, recorded by `UserGraph` around each node load. |
-| `blob-cache` | Node/blob caching itself: the `ImmutableBlobCache` registers enabled, max weight, entries, weighted size, and hit/miss under this name. |
+| `object` | Assembled relation, mapped-schema, constraint, and snapshot-facts residency. |
+| `blob` | Serialized disk hits/misses, physical bytes, entries, corruption, sweep reclamation, and live mappings. |
 
 ## Testing
-`MetadataGraphTest` uses in-memory repository/snapshot/directory fakes to exercise cache behavior and
-helper semantics without Mockito or bytecode agents. Any new helper should be covered there. Higher
+`MetadataGraphTest` uses in-memory repository/snapshot/directory fakes to exercise graph behavior
+and helper semantics without Mockito or bytecode agents. Any new helper should be covered there. Higher
 level components (e.g., `QueryInputResolverTest`) rely on lightweight graph fakes to validate their
 own logic while still mirroring real graph responses.
 
