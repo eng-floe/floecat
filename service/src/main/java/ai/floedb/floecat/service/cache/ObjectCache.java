@@ -91,6 +91,13 @@ public final class ObjectCache {
     }
   }
 
+  /** The stored inputs needed to map a schema after an identity-first cache miss. */
+  public record SchemaInput(UserTableNode table, String schemaJson) {
+    public SchemaInput {
+      Objects.requireNonNull(table, "table");
+    }
+  }
+
   /** The DDL-shaped relation answer and the mapped schema needed to project and decorate it. */
   public record RelationObject(RelationInfo relation, SchemaDescriptor schema)
       implements WeightedValue {
@@ -134,6 +141,41 @@ public final class ObjectCache {
     return new MappedSchema(identity, descriptor);
   }
 
+  /**
+   * Resolve a pinned schema by the immutable identities already carried on the pin. The backing
+   * table and snapshot are read only on a miss, which keeps callers from resolving cache
+   * ingredients before asking Objects for the answer.
+   */
+  public MappedSchema pinnedSchema(TablePin pin, Supplier<SchemaInput> loader) {
+    Objects.requireNonNull(pin, "pin");
+    Objects.requireNonNull(loader, "loader");
+    String schemaScope = pinnedSchemaScope(pin);
+    String identity =
+        Hashing.sha256Hex(
+            requireIdentity(pin.getTableBlobUri(), "pinned table identity")
+                + '\0'
+                + requireIdentity(schemaScope, "pinned schema identity"));
+    Key key = new Key(account(pin.getTableId()), Kind.SCHEMA, identity);
+    SchemaDescriptor descriptor =
+        get(
+            key,
+            SchemaDescriptor.class,
+            () -> {
+              SchemaInput input =
+                  Objects.requireNonNull(loader.get(), "a schema loader returned null");
+              if (!input.table().id().equals(pin.getTableId())) {
+                throw new IllegalArgumentException("schema input does not match the pinned table");
+              }
+              String schemaJson = input.schemaJson();
+              String effectiveSchema =
+                  schemaJson == null || schemaJson.isBlank()
+                      ? input.table().schemaJson()
+                      : schemaJson;
+              return schemaMapper.map(input.table(), effectiveSchema);
+            });
+    return new MappedSchema(identity, descriptor);
+  }
+
   /** Load the full engine-neutral relation for one immutable user-table DDL identity. */
   public RelationObject tableRelation(
       UserTableNode table, Optional<TablePin> pin, Supplier<RelationObject> loader) {
@@ -146,8 +188,7 @@ public final class ObjectCache {
             .orElse(table.cacheIdentity());
     String schemaIdentity =
         effectivePin
-            .map(QueryPins::schemaScope)
-            .filter(identity -> !identity.isBlank())
+            .map(ObjectCache::pinnedSchemaScope)
             .orElseGet(() -> schemaIdentity(table, table.schemaJson()));
     String identity =
         Hashing.sha256Hex(
@@ -300,6 +341,12 @@ public final class ObjectCache {
             + "\0"
             + effectiveSchema;
     return Hashing.sha256Hex(material);
+  }
+
+  private static String pinnedSchemaScope(TablePin pin) {
+    String scope = QueryPins.schemaScope(pin);
+    return requireIdentity(
+        scope.isBlank() ? pin.getSnapshotBlobUri() : scope, "pinned schema identity");
   }
 
   private static String account(ResourceId id) {

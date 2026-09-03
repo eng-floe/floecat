@@ -284,16 +284,27 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   }
 
   private SchemaDescriptor describeTable(String correlationId, ResourceId rid, TablePin pin) {
-    // Read the pinned snapshot, never current catalog state: a pinned read that drifted to
-    // current would answer a different question than the one the query asked.
-    SnapshotRef snapshotRef = SnapshotRef.newBuilder().setSnapshotId(pin.getSnapshotId()).build();
-    CatalogGraphView.SchemaResolution resolved =
-        graphView.schemaFor(
-            correlationId, rid, snapshotRef, pin.getTableBlobUri(), pin.getSnapshotBlobUri());
+    SchemaDescriptor mapped =
+        objects
+            .pinnedSchema(
+                pin,
+                () -> {
+                  // Read the pinned snapshot, never current catalog state: a pinned read that
+                  // drifted to current would answer a different question than the query asked.
+                  SnapshotRef snapshotRef =
+                      SnapshotRef.newBuilder().setSnapshotId(pin.getSnapshotId()).build();
+                  CatalogGraphView.SchemaResolution resolved =
+                      graphView.schemaFor(
+                          correlationId,
+                          rid,
+                          snapshotRef,
+                          pin.getTableBlobUri(),
+                          pin.getSnapshotBlobUri());
+                  return new ObjectCache.SchemaInput(resolved.table(), resolved.schemaJson());
+                })
+            .descriptor();
     // Planner-facing logical schema: synthetic element/key/value placeholder rows are stats
     // plumbing; the planner reads nested typing from the columns' type trees.
-    SchemaDescriptor mapped =
-        objects.mappedSchema(resolved.table(), resolved.schemaJson()).descriptor();
     return UserObjectBundleUtils.qualifyNestedColumnNames(
         mapped.toBuilder()
             .clearColumns()

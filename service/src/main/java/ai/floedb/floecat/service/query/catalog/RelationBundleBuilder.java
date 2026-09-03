@@ -475,14 +475,18 @@ final class RelationBundleBuilder {
     // pin before the relation entered worker fan-out.
     SnapshotRef snapshotRef =
         SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
-    CatalogGraphView.SchemaResolution resolved =
-        graphView.schemaFor(
-            correlationId,
-            relationId,
-            snapshotRef,
-            pin.get().getTableBlobUri(),
-            pin.get().getSnapshotBlobUri());
-    return objects.mappedSchema(resolved.table(), resolved.schemaJson());
+    return objects.pinnedSchema(
+        pin.get(),
+        () -> {
+          CatalogGraphView.SchemaResolution resolved =
+              graphView.schemaFor(
+                  correlationId,
+                  relationId,
+                  snapshotRef,
+                  pin.get().getTableBlobUri(),
+                  pin.get().getSnapshotBlobUri());
+          return new ObjectCache.SchemaInput(resolved.table(), resolved.schemaJson());
+        });
   }
 
   private ViewDefinition.Builder viewDefinitionBuilder(ViewNode view) {
