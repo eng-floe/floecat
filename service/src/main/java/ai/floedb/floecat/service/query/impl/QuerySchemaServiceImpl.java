@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.query.impl;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
@@ -284,25 +283,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   }
 
   private SchemaDescriptor describeTable(String correlationId, ResourceId rid, TablePin pin) {
-    SchemaDescriptor mapped =
-        objects
-            .pinnedSchema(
-                pin,
-                () -> {
-                  // Read the pinned snapshot, never current catalog state: a pinned read that
-                  // drifted to current would answer a different question than the query asked.
-                  SnapshotRef snapshotRef =
-                      SnapshotRef.newBuilder().setSnapshotId(pin.getSnapshotId()).build();
-                  CatalogGraphView.SchemaResolution resolved =
-                      graphView.schemaFor(
-                          correlationId,
-                          rid,
-                          snapshotRef,
-                          pin.getTableBlobUri(),
-                          pin.getSnapshotBlobUri());
-                  return new ObjectCache.SchemaInput(resolved.table(), resolved.schemaJson());
-                })
-            .descriptor();
+    SchemaDescriptor mapped = objects.pinnedSchema(correlationId, pin, graphView);
     // Planner-facing logical schema: synthetic element/key/value placeholder rows are stats
     // plumbing; the planner reads nested typing from the columns' type trees.
     return UserObjectBundleUtils.qualifyNestedColumnNames(
