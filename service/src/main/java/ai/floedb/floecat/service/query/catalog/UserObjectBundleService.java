@@ -230,7 +230,7 @@ public class UserObjectBundleService {
         queryStore,
         new CancelledQueryPinCleanup(queryStore, Runnable::run),
         statsFactory,
-        ObjectCache.forTesting(),
+        ObjectCache.disabled(),
         decoratorProvider,
         engineContext,
         engineSpecificEnabled,

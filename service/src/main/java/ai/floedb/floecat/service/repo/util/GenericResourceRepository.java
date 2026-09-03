@@ -187,22 +187,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   public Optional<T> getByKeyThrough(K key, Function<String, Optional<T>> bodyReader) {
     Objects.requireNonNull(bodyReader, "bodyReader");
     return observeRepository(
-        "get_by_key",
-        () -> {
-          String pointerKey = schema.canonicalPointerForKey.apply(key);
-          Optional<Pointer> selected = pointerReads.get(pointerKey);
-          if (selected.isEmpty()) {
-            return Optional.empty();
-          }
-          String blobUri = requireBlobReference(selected.get(), pointerKey);
-          Optional<T> loaded = bodyReader.apply(blobUri);
-          if (loaded.isPresent()) {
-            return loaded;
-          }
-          return reloadAfterVanishedBlob(
-                  pointerKey, fresh -> bodyReader.apply(requireBlobReference(fresh, pointerKey)))
-              .map(Reloaded::value);
-        });
+        "get_by_key", () -> readThrough(schema.canonicalPointerForKey.apply(key), bodyReader));
   }
 
   /** Returns a body and metadata resolved from the same canonical pointer version. */
@@ -269,6 +254,15 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * rather than be masked by a still-resident decode.
    */
   public Optional<T> getByBlobUriLive(String blobUri) {
+    return getByBlobUriDecodedFresh(blobUri);
+  }
+
+  /**
+   * Decode immutable content without retaining the decoded value in the repository blob cache.
+   * Higher-level object caches use this as their miss loader so one decoded POJO has one cache
+   * owner. A future byte-oriented disk cache remains free to sit below this decode seam.
+   */
+  public Optional<T> getByBlobUriDecodedFresh(String blobUri) {
     if (blobUri == null || blobUri.isBlank()) {
       return Optional.empty();
     }

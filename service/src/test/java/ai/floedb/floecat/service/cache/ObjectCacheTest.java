@@ -28,6 +28,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.query.rpc.TablePin;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -149,6 +150,7 @@ class ObjectCacheTest {
     cache.snapshotFacts(
         first,
         1,
+        "",
         () -> {
           firstLoads.incrementAndGet();
           return Optional.of(
@@ -157,6 +159,7 @@ class ObjectCacheTest {
     cache.snapshotFacts(
         second,
         1,
+        "",
         () -> {
           secondLoads.incrementAndGet();
           return Optional.of(
@@ -168,6 +171,7 @@ class ObjectCacheTest {
     cache.snapshotFacts(
         first,
         1,
+        "",
         () -> {
           firstLoads.incrementAndGet();
           return Optional.of(
@@ -176,6 +180,7 @@ class ObjectCacheTest {
     cache.snapshotFacts(
         second,
         1,
+        "",
         () -> {
           secondLoads.incrementAndGet();
           return Optional.of(
@@ -196,6 +201,7 @@ class ObjectCacheTest {
             cache.snapshotFacts(
                 tableId,
                 1,
+                "",
                 () ->
                     Optional.of(
                         new ObjectCache.SnapshotFacts(
@@ -203,11 +209,32 @@ class ObjectCacheTest {
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(1L);
+
+    cache.publishSnapshotFacts(
+        tableId,
+        1,
+        "generation-1",
+        new ObjectCache.SnapshotFacts(OptionalLong.of(7L), OptionalLong.of(70L)));
+    assertThat(
+            cache.snapshotFacts(
+                tableId,
+                1,
+                "generation-1",
+                () ->
+                    Optional.of(
+                        new ObjectCache.SnapshotFacts(
+                            OptionalLong.of(loads.incrementAndGet()), OptionalLong.empty()))))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(7L);
+    assertThat(loads).hasValue(1);
+
     cache.evictSnapshotFacts(tableId, 1);
     assertThat(
             cache.snapshotFacts(
                 tableId,
                 1,
+                "",
                 () ->
                     Optional.of(
                         new ObjectCache.SnapshotFacts(
@@ -218,24 +245,96 @@ class ObjectCacheTest {
   }
 
   @Test
+  void snapshotFactsKeepPinnedGenerationsSeparateFromEachOtherAndLive() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    ResourceId tableId = tableId("account", "table");
+    AtomicInteger loads = new AtomicInteger();
+
+    assertThat(rowCount(cache.snapshotFacts(tableId, 1, "gen-a", () -> facts(loads, 10))))
+        .isEqualTo(10L);
+    assertThat(rowCount(cache.snapshotFacts(tableId, 1, "gen-b", () -> facts(loads, 20))))
+        .isEqualTo(20L);
+    assertThat(rowCount(cache.snapshotFacts(tableId, 1, "", () -> facts(loads, 30))))
+        .isEqualTo(30L);
+
+    cache.evictSnapshotFacts(tableId, 1);
+
+    assertThat(rowCount(cache.snapshotFacts(tableId, 1, "gen-a", () -> facts(loads, 40))))
+        .isEqualTo(10L);
+    assertThat(rowCount(cache.snapshotFacts(tableId, 1, "", () -> facts(loads, 50))))
+        .isEqualTo(50L);
+    assertThat(loads).hasValue(4);
+  }
+
+  private static Optional<ObjectCache.SnapshotFacts> facts(AtomicInteger loads, long rowCount) {
+    loads.incrementAndGet();
+    return Optional.of(
+        new ObjectCache.SnapshotFacts(OptionalLong.of(rowCount), OptionalLong.empty()));
+  }
+
+  private static long rowCount(Optional<ObjectCache.SnapshotFacts> facts) {
+    return facts.orElseThrow().rowCount().orElseThrow();
+  }
+
+  @Test
   void relationTemplateIsSharedAcrossRequestSpecificUse() {
     ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
     UserTableNode table = table("account", "table", TableFormat.TF_ICEBERG, List.of());
-    ObjectCache.MappedSchema schema =
-        new ObjectCache.MappedSchema("schema", SchemaDescriptor.getDefaultInstance());
     RelationInfo template = RelationInfo.newBuilder().setRelationId(table.id()).build();
+    ObjectCache.RelationObject relation =
+        new ObjectCache.RelationObject(template, SchemaDescriptor.getDefaultInstance());
     AtomicInteger loads = new AtomicInteger();
 
-    assertThat(cache.tableRelation(table, schema, () -> loaded(loads, template)))
-        .isSameAs(template);
-    assertThat(cache.tableRelation(table, schema, () -> loaded(loads, template)))
-        .isSameAs(template);
+    assertThat(cache.tableRelation(table, Optional.empty(), () -> loaded(loads, relation)))
+        .isSameAs(relation);
+    assertThat(cache.tableRelation(table, Optional.empty(), () -> loaded(loads, relation)))
+        .isSameAs(relation);
     assertThat(loads).hasValue(1);
+  }
+
+  @Test
+  void everyRelationIngredientParticipatesInTheIdentity() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    UserTableNode table = table("account", "table", TableFormat.TF_ICEBERG, List.of());
+    ObjectCache.RelationObject relation =
+        new ObjectCache.RelationObject(
+            RelationInfo.newBuilder().setRelationId(table.id()).build(),
+            SchemaDescriptor.getDefaultInstance());
+    AtomicInteger loads = new AtomicInteger();
+
+    cache.tableRelation(
+        table,
+        Optional.of(pin(table.id(), "definition-a", "constraints-a", "schema-a")),
+        () -> loaded(loads, relation));
+    cache.tableRelation(
+        table,
+        Optional.of(pin(table.id(), "definition-b", "constraints-a", "schema-a")),
+        () -> loaded(loads, relation));
+    cache.tableRelation(
+        table,
+        Optional.of(pin(table.id(), "definition-a", "constraints-b", "schema-a")),
+        () -> loaded(loads, relation));
+    cache.tableRelation(
+        table,
+        Optional.of(pin(table.id(), "definition-a", "constraints-a", "schema-b")),
+        () -> loaded(loads, relation));
+
+    assertThat(loads).hasValue(4);
   }
 
   private static <T> T loaded(AtomicInteger loads, T value) {
     loads.incrementAndGet();
     return value;
+  }
+
+  private static TablePin pin(
+      ResourceId tableId, String definition, String constraints, String schema) {
+    return TablePin.newBuilder()
+        .setTableId(tableId)
+        .setTableBlobUri(definition)
+        .setConstraintsRefUri(constraints)
+        .setSchemaFingerprint(schema)
+        .build();
   }
 
   private static UserTableNode table(

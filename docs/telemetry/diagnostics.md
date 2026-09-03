@@ -116,9 +116,6 @@ Emitted by `GetUserObjects`. This is the main planner metadata lookup summary fo
 | `scheduling_ms` | Time not attributed to measured sub-phases, usually scheduling or queueing around the work. |
 | `decorator_warm_hits` | Number of decoration results served from warm decorator state. |
 | `default_catalog_lookups` | Number of default-catalog lookups. |
-| `name_cache_hits` / `name_cache_misses` | Request-local name-resolution cache behavior. |
-| `node_cache_hits` / `node_cache_misses` | Request-local node-resolution cache behavior. |
-| `name_cache_entries` / `node_cache_entries` / `relation_cache_entries` | Final request-local cache sizes. |
 | `outcome` | `completed`, `failed`, or cancellation-specific outcome where applicable. |
 
 ### `floecat.flight.summary`

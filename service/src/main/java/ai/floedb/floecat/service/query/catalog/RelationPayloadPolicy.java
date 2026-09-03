@@ -79,7 +79,7 @@ final class RelationPayloadPolicy {
         && relation.node().origin() == GraphNodeOrigin.USER) {
       return queryContext
           .findTablePin(relation.relationId(), correlationId)
-          .map(pin -> new PinIdentitySource(QueryPins.identity(pin), schemaScope(pin)));
+          .map(pin -> new PinIdentitySource(QueryPins.identity(pin), QueryPins.schemaScope(pin)));
     }
     String cacheIdentity = relation.node().cacheIdentity();
     if (cacheIdentity == null || cacheIdentity.isBlank()) {
@@ -140,18 +140,6 @@ final class RelationPayloadPolicy {
   private record PinIdentitySource(RelationPinIdentity identity, String schemaScope) {}
 
   /**
-   * The schema-scope material a table pin contributes to the payload token: the read-schema
-   * fingerprint stamped on the pinned manifest entry, or — for pins built from pre-fingerprint
-   * entries — the snapshot blob version (correct but coarser: it also moves on data-only ingests,
-   * so legacy entries run cold on ingest until their next snapshot write stamps a fingerprint).
-   */
-  private static String schemaScope(ai.floedb.floecat.query.rpc.TablePin pin) {
-    return pin.getSchemaFingerprint().isBlank()
-        ? pin.getSnapshotBlobVersion()
-        : pin.getSchemaFingerprint();
-  }
-
-  /**
    * The pin identity as stamped on the wire, with its {@code table_blob_version} scoped to the
    * SERVED PAYLOAD rather than the bare content version (see {@link #payloadToken}). Both the
    * full-response stamp and the identity-only match go through here, so the token a client
@@ -182,17 +170,17 @@ final class RelationPayloadPolicy {
    * so we fold it in server-side at both mint sites; the client stays engine-agnostic and
    * correctness no longer depends on it keying its own cache by engine.
    *
-   * <p>The token folds in a SCHEMA scope ({@code schemaScope}), because the served column schema is
-   * read from the pinned snapshot (schema-on-read) and CreateSnapshot/UpdateSnapshot can change
-   * that schema WITHOUT moving the definition ref (table_blob_version). A definition-only token
-   * would therefore let a client that holds an old schema be served identity-only for a NEW schema
-   * and reuse stale columns/types. The scope is the read-schema fingerprint stamped on the pinned
-   * manifest entry (SnapshotManifestEntry.schema_fingerprint): identical read schemas share it, so
-   * a data-only ingest keeps the token — and the client's schema — warm, while a snapshot-backed
-   * schema change moves it. Pins built from pre-fingerprint manifest entries fall back to the
-   * snapshot blob version (see {@link #schemaScope}): still never stale, just cold on every ingest
-   * until the table's next snapshot write stamps a fingerprint. Views and system relations pass an
-   * empty scope — their content hash is already the schema identity.
+   * <p>The token folds in a SCHEMA scope ({@link QueryPins#schemaScope}), because the served column
+   * schema is read from the pinned snapshot (schema-on-read) and CreateSnapshot/UpdateSnapshot can
+   * change that schema WITHOUT moving the definition ref (table_blob_version). A definition-only
+   * token would therefore let a client that holds an old schema be served identity-only for a NEW
+   * schema and reuse stale columns/types. The scope is the read-schema fingerprint stamped on the
+   * pinned manifest entry (SnapshotManifestEntry.schema_fingerprint): identical read schemas share
+   * it, so a data-only ingest keeps the token — and the client's schema — warm, while a
+   * snapshot-backed schema change moves it. Pins built from pre-fingerprint manifest entries fall
+   * back to the snapshot blob version (see {@link QueryPins#schemaScope}): still never stale, just
+   * cold on every ingest until the table's next snapshot write stamps a fingerprint. Views and
+   * system relations pass an empty scope — their content hash is already the schema identity.
    *
    * <p>{@code decorationEpoch} additionally invalidates cached decoration when the decorator's
    * behavior changes without moving the engine version. When there is nothing to fold in — no

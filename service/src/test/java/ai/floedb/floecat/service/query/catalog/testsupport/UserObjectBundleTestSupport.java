@@ -29,6 +29,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.ScanHandle;
@@ -82,6 +83,7 @@ public final class UserObjectBundleTestSupport {
     private final Map<String, Integer> resolveCalls = new ConcurrentHashMap<>();
     private final Map<NameRef, Integer> resolveNameCalls = new ConcurrentHashMap<>();
     private final Map<ResourceId, Integer> tableSchemaCalls = new ConcurrentHashMap<>();
+    private final Map<ResourceId, Integer> schemaResolutionCalls = new ConcurrentHashMap<>();
 
     public void clear() {
       nodes.clear();
@@ -94,6 +96,7 @@ public final class UserObjectBundleTestSupport {
       resolveCalls.clear();
       resolveNameCalls.clear();
       tableSchemaCalls.clear();
+      schemaResolutionCalls.clear();
     }
 
     /**
@@ -246,6 +249,11 @@ public final class UserObjectBundleTestSupport {
       return tableSchemaCalls.getOrDefault(id, 0);
     }
 
+    /** How many pinned snapshot schemas were resolved for this relation. */
+    public int schemaResolutionCount(ResourceId id) {
+      return schemaResolutionCalls.getOrDefault(id, 0);
+    }
+
     @Override
     public Optional<ResourceId> resolveSystemTable(NameRef ref) {
       return names.entrySet().stream()
@@ -347,7 +355,12 @@ public final class UserObjectBundleTestSupport {
         ai.floedb.floecat.common.rpc.SnapshotRef snapshot,
         String tableBlobUri,
         String snapshotBlobUri) {
-      throw unsupported();
+      schemaResolutionCalls.merge(tableId, 1, Integer::sum);
+      GraphNode node = nodes.get(tableId.getId());
+      if (!(node instanceof UserTableNode table)) {
+        throw unsupported();
+      }
+      return new SchemaResolution(table, table.schemaJson());
     }
 
     @Override

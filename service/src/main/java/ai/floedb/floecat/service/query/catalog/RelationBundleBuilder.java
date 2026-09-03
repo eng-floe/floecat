@@ -66,8 +66,6 @@ final class RelationBundleBuilder {
 
   static final String BUILD_FAILED_CODE = "catalog_bundle.build_failed";
 
-  private record RelationTemplate(RelationInfo relation, SchemaDescriptor schema) {}
-
   private final CatalogGraphView graphView;
   private final EngineRelationDecorator engineRelationDecorator;
   private final SystemExecutionResolver systemExecutionResolver;
@@ -212,7 +210,7 @@ final class RelationBundleBuilder {
           relation.node().origin());
     }
 
-    RelationTemplate template = relationTemplate(correlationId, relation, queryContext);
+    ObjectCache.RelationObject template = relationTemplate(correlationId, relation, queryContext);
 
     // Relation payloads carry TOP-LEVEL columns only: ordinals are 1-based within the parent,
     // so any nested row — synthetic placeholder or struct child — shares its ordinal (and
@@ -316,7 +314,9 @@ final class RelationBundleBuilder {
   }
 
   private static List<ColumnInfo> columnsFromTemplate(
-      RelationTemplate template, List<SchemaColumn> schemaColumns, List<SchemaColumn> pruned) {
+      ObjectCache.RelationObject template,
+      List<SchemaColumn> schemaColumns,
+      List<SchemaColumn> pruned) {
     List<ColumnInfo> cached =
         template.relation().getColumnsList().stream().map(ColumnResult::getColumn).toList();
     if (pruned == schemaColumns) {
@@ -334,22 +334,28 @@ final class RelationBundleBuilder {
   }
 
   /** Resolve or build the full engine-neutral, DDL-shaped relation object. */
-  private RelationTemplate relationTemplate(
+  private ObjectCache.RelationObject relationTemplate(
       String correlationId, ResolvedRelation relation, QueryContext queryContext) {
     if (relation.node() instanceof UserTableNode userTable) {
-      ObjectCache.MappedSchema schema =
-          logicalSchemaForRelation(correlationId, relation.relationId(), userTable, queryContext);
-      RelationInfo cached =
-          objects.tableRelation(
-              userTable, schema, () -> buildTemplate(relation, schema.descriptor(), correlationId));
-      return new RelationTemplate(cached, schema.descriptor());
+      Optional<TablePin> pin = queryContext.findTablePin(relation.relationId(), correlationId);
+      return objects.tableRelation(
+          userTable,
+          pin,
+          () -> {
+            ObjectCache.MappedSchema schema =
+                logicalSchemaForRelation(correlationId, relation.relationId(), userTable, pin);
+            return new ObjectCache.RelationObject(
+                buildTemplate(relation, schema.descriptor(), correlationId), schema.descriptor());
+          });
     }
     if (relation.node() instanceof ViewNode view && view.origin() != GraphNodeOrigin.SYSTEM) {
       SchemaDescriptor schema =
           SchemaDescriptor.newBuilder().addAllColumns(view.outputColumns()).build();
-      RelationInfo cached =
-          objects.viewRelation(view, () -> buildTemplate(relation, schema, correlationId));
-      return new RelationTemplate(cached, schema);
+      return objects.viewRelation(
+          view,
+          () ->
+              new ObjectCache.RelationObject(
+                  buildTemplate(relation, schema, correlationId), schema));
     }
 
     // System registry state and its configurable execution endpoints are process state, not
@@ -363,7 +369,7 @@ final class RelationBundleBuilder {
                     Optional.ofNullable(graphView.tableSchema(relation.node().id()))
                         .orElseGet(List::of))
                 .build();
-    return new RelationTemplate(buildTemplate(relation, schema, correlationId), schema);
+    return new ObjectCache.RelationObject(buildTemplate(relation, schema, correlationId), schema);
   }
 
   private RelationInfo buildTemplate(
@@ -459,8 +465,7 @@ final class RelationBundleBuilder {
       String correlationId,
       ResourceId relationId,
       UserTableNode userTable,
-      QueryContext queryContext) {
-    Optional<TablePin> pin = queryContext.findTablePin(relationId, correlationId);
+      Optional<TablePin> pin) {
     if (pin.isEmpty()) {
       // Not yet pinned (e.g. a relation resolved outside the pinned set): fall back to the table's
       // default schema.

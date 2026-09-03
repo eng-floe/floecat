@@ -28,6 +28,8 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.MessageLite;
 import java.util.ArrayList;
@@ -54,6 +56,8 @@ import java.util.function.Supplier;
 public final class ObjectCache {
 
   private static final long RETAINED_PROTO_FACTOR = 3L;
+  private static final long RETAINED_SCHEMA_FACTOR_NUMERATOR = 677L;
+  private static final long RETAINED_SCHEMA_FACTOR_DENOMINATOR = 100L;
   private static final long VALUE_WRAPPER_BYTES = 24L;
   private static final long KEY_OBJECT_BYTES = 48L;
 
@@ -79,11 +83,33 @@ public final class ObjectCache {
     return new ObjectCache(64L * 1024L * 1024L, CacheEvents.none(), true);
   }
 
+  /** An explicit no-retention adapter for legacy, embedded and narrowly scoped test callers. */
+  public static ObjectCache disabled() {
+    return new ObjectCache(1L, CacheEvents.none(), false);
+  }
+
   /** The mapped schema together with the exact identity used by assembled relation entries. */
   public record MappedSchema(String identity, SchemaDescriptor descriptor) {
     public MappedSchema {
       Objects.requireNonNull(identity, "identity");
       Objects.requireNonNull(descriptor, "descriptor");
+    }
+  }
+
+  /** The DDL-shaped relation answer and the mapped schema needed to project and decorate it. */
+  public record RelationObject(RelationInfo relation, SchemaDescriptor schema)
+      implements WeightedValue {
+    public RelationObject {
+      Objects.requireNonNull(relation, "relation");
+      Objects.requireNonNull(schema, "schema");
+    }
+
+    @Override
+    public long estimatedWeightBytes() {
+      // Conservative while the same descriptor is also reachable through the schema entry: if
+      // that entry is evicted first, the relation still owns this reference and remains fully
+      // charged. Shared descriptors may therefore be over-counted, never under-counted.
+      return retainedMappedMetadataBytes(relation) + retainedMappedMetadataBytes(schema);
     }
   }
 
@@ -113,29 +139,47 @@ public final class ObjectCache {
     return new MappedSchema(identity, descriptor);
   }
 
-  /** Load the full engine-neutral relation for one immutable user-table definition. */
-  public RelationInfo tableRelation(
-      UserTableNode table, MappedSchema schema, Supplier<RelationInfo> loader) {
+  /** Load the full engine-neutral relation for one immutable user-table DDL identity. */
+  public RelationObject tableRelation(
+      UserTableNode table, Optional<TablePin> pin, Supplier<RelationObject> loader) {
     Objects.requireNonNull(table, "table");
-    Objects.requireNonNull(schema, "schema");
-    return relation(table.id(), table.cacheIdentity() + '\0' + schema.identity(), loader);
+    Optional<TablePin> effectivePin = Objects.requireNonNull(pin, "pin");
+    String definitionIdentity =
+        effectivePin
+            .map(TablePin::getTableBlobUri)
+            .filter(identity -> !identity.isBlank())
+            .orElse(table.cacheIdentity());
+    String constraintsIdentity = effectivePin.map(TablePin::getConstraintsRefUri).orElse("");
+    String schemaIdentity =
+        effectivePin
+            .map(QueryPins::schemaScope)
+            .filter(identity -> !identity.isBlank())
+            .orElseGet(() -> schemaIdentity(table, table.schemaJson()));
+    String identity =
+        Hashing.sha256Hex(
+            requireIdentity(definitionIdentity, "definition identity")
+                + '\0'
+                + Objects.requireNonNullElse(constraintsIdentity, "")
+                + '\0'
+                + requireIdentity(schemaIdentity, "schema identity"));
+    return relation(table.id(), identity, loader);
   }
 
   /** Load the full engine-neutral relation for one immutable user-view definition. */
-  public RelationInfo viewRelation(ViewNode view, Supplier<RelationInfo> loader) {
+  public RelationObject viewRelation(ViewNode view, Supplier<RelationObject> loader) {
     Objects.requireNonNull(view, "view");
     return relation(view.id(), view.cacheIdentity(), loader);
   }
 
-  private RelationInfo relation(
-      ResourceId relationId, String identity, Supplier<RelationInfo> loader) {
+  private RelationObject relation(
+      ResourceId relationId, String identity, Supplier<RelationObject> loader) {
     requireIdentity(identity, "relation identity");
     Key key =
         new Key(
             account(relationId),
             Kind.RELATION,
             requireIdentity(relationId.getId(), "relation id") + '\0' + identity);
-    return get(key, RelationInfo.class, loader);
+    return get(key, RelationObject.class, loader);
   }
 
   /**
@@ -153,25 +197,49 @@ public final class ObjectCache {
     return getOptional(key, SnapshotConstraints.class, loader);
   }
 
-  /** Load the two small ingest-shaped facts for one table snapshot. */
+  /**
+   * Load the two small ingest-shaped facts for one table snapshot and stats-generation view.
+   *
+   * <p>A blank generation identity denotes the mutable live view. A non-blank identity denotes an
+   * immutable generation frozen on a query pin; keeping it in the key preserves the existing
+   * query-consistent stats policy when generations overlap for the same snapshot.
+   */
   public Optional<SnapshotFacts> snapshotFacts(
-      ResourceId tableId, long snapshotId, Supplier<Optional<SnapshotFacts>> loader) {
+      ResourceId tableId,
+      long snapshotId,
+      String generationIdentity,
+      Supplier<Optional<SnapshotFacts>> loader) {
+    return getOptional(
+        snapshotFactsKey(tableId, snapshotId, generationIdentity), SnapshotFacts.class, loader);
+  }
+
+  /** Drop the mutable live facts replaced by a successful stats mutation. */
+  public void evictSnapshotFacts(ResourceId tableId, long snapshotId) {
+    entries.evict(snapshotFactsKey(tableId, snapshotId, ""));
+  }
+
+  /** Publish facts already held by a successful writer under an immutable generation token. */
+  public void publishSnapshotFacts(
+      ResourceId tableId, long snapshotId, String generationIdentity, SnapshotFacts facts) {
+    if (!enabled) {
+      return;
+    }
+    String generation = requireIdentity(generationIdentity, "generation identity");
+    entries.put(
+        snapshotFactsKey(tableId, snapshotId, generation),
+        Value.of(Objects.requireNonNull(facts, "facts")));
+  }
+
+  private static Key snapshotFactsKey(
+      ResourceId tableId, long snapshotId, String generationIdentity) {
     if (snapshotId < 0L) {
       throw new IllegalArgumentException("snapshotId must be non-negative");
     }
-    return getOptional(snapshotFactsKey(tableId, snapshotId), SnapshotFacts.class, loader);
-  }
-
-  /** Drop facts replaced by a successful stats mutation. */
-  public void evictSnapshotFacts(ResourceId tableId, long snapshotId) {
-    entries.evict(snapshotFactsKey(tableId, snapshotId));
-  }
-
-  private static Key snapshotFactsKey(ResourceId tableId, long snapshotId) {
+    String generation = generationIdentity == null ? "" : generationIdentity.trim();
     return new Key(
         account(tableId),
         Kind.SNAPSHOT_FACTS,
-        requireIdentity(tableId.getId(), "table id") + '\0' + snapshotId);
+        requireIdentity(tableId.getId(), "table id") + '\0' + snapshotId + '\0' + generation);
   }
 
   /** Drop every decoded object belonging to an account. */
@@ -262,6 +330,11 @@ public final class ObjectCache {
     return RETAINED_PROTO_FACTOR * message.getSerializedSize();
   }
 
+  private static long retainedMappedMetadataBytes(MessageLite message) {
+    return Math.multiplyExact(RETAINED_SCHEMA_FACTOR_NUMERATOR, (long) message.getSerializedSize())
+        / RETAINED_SCHEMA_FACTOR_DENOMINATOR;
+  }
+
   private enum Kind {
     SCHEMA,
     RELATION,
@@ -289,7 +362,9 @@ public final class ObjectCache {
       long retained =
           value instanceof WeightedValue weighted
               ? weighted.estimatedWeightBytes()
-              : value instanceof MessageLite message ? retainedProtoBytes(message) : 0L;
+              : value instanceof SchemaDescriptor schema
+                  ? retainedMappedMetadataBytes(schema)
+                  : value instanceof MessageLite message ? retainedProtoBytes(message) : 0L;
       if (!(value instanceof WeightedValue) && !(value instanceof MessageLite)) {
         throw new IllegalArgumentException("unsupported object-cache value: " + value.getClass());
       }
