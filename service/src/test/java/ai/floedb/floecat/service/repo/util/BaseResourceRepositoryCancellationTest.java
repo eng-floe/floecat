@@ -87,7 +87,7 @@ class BaseResourceRepositoryCancellationTest {
         Catalog::parseFrom,
         Catalog::toByteArray,
         "application/x-protobuf",
-        null,
+        ai.floedb.floecat.service.repo.cache.BlobCacheAccess.disabled(),
         reads);
   }
 }

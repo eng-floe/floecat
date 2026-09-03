@@ -18,7 +18,7 @@ package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.service.repo.model.TableScopedPointerKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
@@ -52,7 +52,7 @@ public abstract class TableScopedPointerRepository<T> {
       ResourceSchema<T, TableScopedPointerKey> schema,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes) {
-    this(pointerStore, blobStore, schema, parser, toBytes, null);
+    this(pointerStore, blobStore, schema, parser, toBytes, BlobCacheAccess.disabled());
   }
 
   protected TableScopedPointerRepository(
@@ -61,7 +61,7 @@ public abstract class TableScopedPointerRepository<T> {
       ResourceSchema<T, TableScopedPointerKey> schema,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
-      ImmutableBlobCache blobCache) {
+      BlobCacheAccess blobCache) {
     this(pointerStore, pointerStore, blobStore, schema, parser, toBytes, blobCache);
   }
 
@@ -72,7 +72,7 @@ public abstract class TableScopedPointerRepository<T> {
       ResourceSchema<T, TableScopedPointerKey> schema,
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
-      ImmutableBlobCache blobCache) {
+      BlobCacheAccess blobCache) {
     this.repo =
         new GenericResourceRepository<>(
             mutationPointerStore,

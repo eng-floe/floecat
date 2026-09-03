@@ -19,7 +19,7 @@ package ai.floedb.floecat.service.repo.util;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
@@ -133,7 +133,14 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
-    this(mutationPointerStore, mutationBlobStore, schema, parser, toBytes, contentType, null);
+    this(
+        mutationPointerStore,
+        mutationBlobStore,
+        schema,
+        parser,
+        toBytes,
+        contentType,
+        BlobCacheAccess.disabled());
   }
 
   /** Build a cached repository that reads directly from the supplied stores. */
@@ -144,7 +151,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType,
-      ImmutableBlobCache blobCache) {
+      BlobCacheAccess blobCache) {
     super(mutationPointerStore, mutationBlobStore, parser, toBytes, contentType, blobCache);
     this.schema = Objects.requireNonNull(schema, "schema");
   }
@@ -157,7 +164,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType,
-      ImmutableBlobCache blobCache,
+      BlobCacheAccess blobCache,
       RepositoryReads reads) {
     super(mutationPointerStore, mutationBlobStore, parser, toBytes, contentType, blobCache, reads);
     this.schema = Objects.requireNonNull(schema, "schema");
@@ -237,14 +244,10 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     if (blobUri == null || blobUri.isBlank()) {
       return Optional.empty();
     }
-    Function<String, Optional<T>> cacheMissLoader = this::loadAndParseBlob;
-    if (blobCacheable()) {
-      // CONTENT-only read: a resident decode may outlive the durable blob, so an empty result
-      // means absent but a present result does NOT prove the blob still exists. Callers whose
-      // emptiness doubles as a liveness/integrity check must use getByBlobUriLive.
-      return blobCache.get(blobUri, cacheMissLoader);
-    }
-    return cacheMissLoader.apply(blobUri);
+    // CONTENT-only read: a resident body may outlive the durable blob, so an empty result means
+    // absent but a present result does NOT prove the blob still exists. Callers whose emptiness
+    // doubles as a liveness/integrity check must use getByBlobUriLive.
+    return loadAndParseBlob(blobUri);
   }
 
   /**

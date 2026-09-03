@@ -32,6 +32,9 @@ public interface BlobStore {
       throw new IllegalArgumentException("blob range is invalid");
     }
     byte[] bytes = get(uri);
+    if (bytes == null) {
+      return null;
+    }
     if (offset > bytes.length || (long) length > bytes.length - offset) {
       throw new IllegalArgumentException("blob range exceeds the object");
     }

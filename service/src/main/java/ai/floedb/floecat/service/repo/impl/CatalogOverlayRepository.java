@@ -11,6 +11,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.CatalogOverlayKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -38,14 +39,15 @@ public class CatalogOverlayRepository {
   private final PointerStore pointerStore;
 
   public CatalogOverlayRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, pointerStore, blobStore);
+    this(pointerStore, pointerStore, blobStore, BlobCacheAccess.disabled());
   }
 
   @Inject
   public CatalogOverlayRepository(
       PointerStore pointerStore,
       @CachedPointerStore PointerStore pointerReads,
-      BlobStore blobStore) {
+      BlobStore blobStore,
+      BlobCacheAccess blobCache) {
     this.pointerStore = AuthoritativePointerStore.of(pointerStore);
     repo =
         new GenericResourceRepository<>(
@@ -55,7 +57,7 @@ public class CatalogOverlayRepository {
             CatalogOverlay::parseFrom,
             CatalogOverlay::toByteArray,
             "application/x-protobuf",
-            null,
+            blobCache,
             RepositoryReads.direct(pointerReads, blobStore));
   }
 

@@ -18,10 +18,13 @@ package ai.floedb.floecat.storage.spi;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +49,34 @@ class BlobStoreTest {
     BlobStore store = store(Map.of());
 
     assertThrows(IllegalStateException.class, () -> store.getBatch(List.of("/broken")));
+  }
+
+  @Test
+  void defaultRangeReadPreservesANullAbsence() {
+    BlobStore store = store(Map.of());
+
+    assertNull(store.getRange("/null", 0L, 1));
+  }
+
+  @Test
+  void defaultScopedBatchReadWrapsHeapBodiesAsReadOnlyBuffers() {
+    BlobStore store = store(Map.of("/present", "value".getBytes(StandardCharsets.UTF_8)));
+
+    try (BlobStore.ScopedObjects objects = store.getBatchScoped(List.of("/present", "/absent"))) {
+      ByteBuffer first = objects.get("/present");
+      ByteBuffer second = objects.get("/present");
+
+      assertTrue(first.isReadOnly());
+      assertArrayEquals("value".getBytes(StandardCharsets.UTF_8), read(first));
+      assertEquals(0, second.position());
+      assertNull(objects.get("/absent"));
+    }
+  }
+
+  private static byte[] read(ByteBuffer buffer) {
+    byte[] bytes = new byte[buffer.remaining()];
+    buffer.get(bytes);
+    return bytes;
   }
 
   private static BlobStore store(Map<String, byte[]> values) {

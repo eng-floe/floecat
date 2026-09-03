@@ -24,7 +24,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotKey;
@@ -77,7 +77,7 @@ public class SnapshotRepository {
       CurrentSnapshotPointerRepository currentPointerRepo,
       TableRootRepository roots,
       StatsStore statsStore,
-      ImmutableBlobCache blobCache) {
+      BlobCacheAccess blobCache) {
     this(
         pointerStore,
         pointerReads,
@@ -106,7 +106,7 @@ public class SnapshotRepository {
         roots,
         statsStore,
         Clock.systemUTC(),
-        null);
+        BlobCacheAccess.disabled());
   }
 
   // Convenience constructors below pass statsStore = null: with no stats store the read-time
@@ -128,7 +128,7 @@ public class SnapshotRepository {
         roots,
         null,
         Clock.systemUTC(),
-        null);
+        BlobCacheAccess.disabled());
   }
 
   public SnapshotRepository(
@@ -164,7 +164,7 @@ public class SnapshotRepository {
       TableRootRepository roots,
       StatsStore statsStore,
       Clock clock,
-      ImmutableBlobCache blobCache) {
+      BlobCacheAccess blobCache) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,

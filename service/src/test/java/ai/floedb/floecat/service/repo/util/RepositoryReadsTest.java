@@ -20,18 +20,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.testsupport.DiskBlobCacheTestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
-import java.time.Duration;
+import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /** Verifies repository reads invoke the backend seam only when storage is actually consulted. */
 class RepositoryReadsTest {
+
+  @TempDir Path tempDir;
 
   private static final CatalogKey KEY = new CatalogKey("account", "catalog");
 
@@ -40,7 +44,8 @@ class RepositoryReadsTest {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     GenericResourceRepository<Catalog, CatalogKey> writer =
-        repository(pointers, blobs, null, RepositoryReads.direct(pointers, blobs));
+        repository(
+            pointers, blobs, BlobCacheAccess.disabled(), RepositoryReads.direct(pointers, blobs));
     Catalog catalog = catalog("sales");
     writer.create(catalog);
     String blobUri = writer.metaFor(KEY).getBlobUri();
@@ -50,7 +55,7 @@ class RepositoryReadsTest {
         repository(
             pointers,
             blobs,
-            new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)),
+            DiskBlobCacheTestSupport.create(tempDir.resolve("repository-reads")),
             countedReads(pointers, blobs, backendGets));
 
     assertThat(reader.getByBlobUri(blobUri)).contains(catalog);
@@ -64,7 +69,11 @@ class RepositoryReadsTest {
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     AtomicInteger admittedReads = new AtomicInteger();
     GenericResourceRepository<Catalog, CatalogKey> repository =
-        repository(pointers, blobs, null, countedReads(pointers, blobs, admittedReads));
+        repository(
+            pointers,
+            blobs,
+            BlobCacheAccess.disabled(),
+            countedReads(pointers, blobs, admittedReads));
     repository.create(catalog("sales"));
     long version = repository.metaFor(KEY).getPointerVersion();
     admittedReads.set(0);
@@ -85,7 +94,7 @@ class RepositoryReadsTest {
   private static GenericResourceRepository<Catalog, CatalogKey> repository(
       InMemoryPointerStore pointers,
       InMemoryBlobStore blobs,
-      ImmutableBlobCache cache,
+      BlobCacheAccess cache,
       RepositoryReads reads) {
     return new GenericResourceRepository<>(
         pointers,

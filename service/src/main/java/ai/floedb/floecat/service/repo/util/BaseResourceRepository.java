@@ -16,14 +16,14 @@
 
 package ai.floedb.floecat.service.repo.util;
 
+import ai.floedb.floecat.cache.BlobCache;
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.service.repo.ResourceRepository;
 import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -37,17 +37,17 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import io.quarkus.arc.Arc;
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -65,8 +65,8 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected ProtoParser<T> parser;
   protected Function<T, byte[]> toBytes;
   protected String contentType;
-  // Optional decoded-content cache for immutable (content-addressed) blobs; null = no caching.
-  protected ImmutableBlobCache blobCache;
+  // Serialized-body disk policy. Lightweight construction receives the disabled implementation.
+  protected BlobCacheAccess blobCache = BlobCacheAccess.disabled();
 
   public static final int CAS_MAX = 10;
 
@@ -181,7 +181,13 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType) {
-    this(mutationPointerStore, mutationBlobStore, parser, toBytes, contentType, null);
+    this(
+        mutationPointerStore,
+        mutationBlobStore,
+        parser,
+        toBytes,
+        contentType,
+        BlobCacheAccess.disabled());
   }
 
   protected BaseResourceRepository(
@@ -190,7 +196,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType,
-      ImmutableBlobCache blobCache) {
+      BlobCacheAccess blobCache) {
     this(
         mutationPointerStore,
         mutationBlobStore,
@@ -213,7 +219,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       String contentType,
-      ImmutableBlobCache blobCache,
+      BlobCacheAccess blobCache,
       RepositoryReads reads) {
     this.mutationPointerStore =
         AuthoritativePointerStore.of(
@@ -226,20 +232,29 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     this.parser = Objects.requireNonNull(parser, "parser");
     this.toBytes = Objects.requireNonNull(toBytes, "toBytes");
     this.contentType = Objects.requireNonNull(contentType, "contentType");
-    this.blobCache = blobCache;
+    this.blobCache = Objects.requireNonNull(blobCache, "blobCache");
   }
 
   /**
    * Whether this repository's blobs are immutable once written (content-addressed) and may be
-   * served from {@link ImmutableBlobCache}. Subclasses that know their schema override (see {@code
+   * served from the disk blob cache. Subclasses that know their schema override (see {@code
    * ResourceSchema.casBlobs}); the default is the safe "never cache".
    */
   protected boolean blobsImmutable() {
     return false;
   }
 
+  /**
+   * Whether one pointer-referenced body is immutable at its URI. Most repositories have one policy;
+   * mixed schemas (for example mutable target records that may reference immutable bundles)
+   * override this single seam.
+   */
+  protected boolean referencedBlobImmutable(String pointerKey, String blobUri) {
+    return blobsImmutable();
+  }
+
   protected final boolean blobCacheable() {
-    return blobCache != null && blobCache.enabled() && blobsImmutable();
+    return blobCache.enabled();
   }
 
   @Override
@@ -273,71 +288,79 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected final Optional<T> readThrough(
       String key, Function<String, Optional<T>> decodedBodyReader) {
     Objects.requireNonNull(decodedBodyReader, "decodedBodyReader");
-    BiFunction<String, String, Optional<T>> reader =
-        (ignoredPointerKey, blobUri) -> decodedBodyReader.apply(blobUri);
+    Function<Pointer, Optional<T>> reader =
+        pointer -> decodedBodyReader.apply(requireBlobReference(pointer, pointer.getKey()));
     return readResolved(key, pointerReads, reader, reader);
   }
 
   /**
    * Resolve one pointer with the selected read capability, loading its referenced blob through
    * {@code blobLoader}. A blob-cache hit skips the loader, so the selected boundary holds for the
-   * POINTER; the body then comes from the decoded cache rather than the seam this was called with,
-   * which is sound only because a cached uri is content-addressed. A blob the pointer no longer
-   * names is re-resolved at the live pointer; one that still names a missing blob is corruption.
+   * POINTER; the body then comes from the serialized disk cache rather than the seam this was
+   * called with, which is sound because its key carries immutable or pointer-version identity. A
+   * blob the pointer no longer names is re-resolved at the live pointer; one that still names a
+   * missing blob is corruption.
    */
   private Optional<T> read(String key, RepositoryReads reads) {
     // One capability object, so the pointer seam and the blob seam are the same seam by
     // construction. Passing them separately would let a caller pair a cached pointer read with the
     // mutation blob store.
     RepositoryReads.Pointers pointers = reads.pointers();
-    BiFunction<String, String, Optional<T>> blobLoader =
-        (pointerKey, blobUri) -> loadAndParseReferencedBlob(pointerKey, blobUri, reads.blobs());
-    BiFunction<String, String, Optional<T>> firstReader =
-        (pointerKey, blobUri) ->
-            blobCacheable()
-                ? ReusableArtifactBundleUris.isBundleUri(blobUri)
-                    ? blobCache.getProjection(
-                        blobUri, pointerKey, ignored -> blobLoader.apply(pointerKey, blobUri))
-                    : blobCache.get(blobUri, ignored -> blobLoader.apply(pointerKey, blobUri))
-                : blobLoader.apply(pointerKey, blobUri);
-    return readResolved(key, pointers, firstReader, blobLoader);
+    Function<Pointer, Optional<T>> freshReader =
+        pointer ->
+            loadAndParseReferencedBlob(
+                pointer.getKey(), requireBlobReference(pointer, pointer.getKey()), reads.blobs());
+    Function<Pointer, Optional<T>> firstReader =
+        pointer ->
+            loadAndParseReferencedBlob(
+                pointer,
+                reads.blobs(),
+                reads != mutationReads && blobCacheable() ? BlobCache.Fill.FILL : null);
+    return readResolved(key, pointers, firstReader, freshReader);
   }
 
   private Optional<T> readResolved(
       String key,
       RepositoryReads.Pointers pointers,
-      BiFunction<String, String, Optional<T>> firstReader,
-      BiFunction<String, String, Optional<T>> freshReader) {
+      Function<Pointer, Optional<T>> firstReader,
+      Function<Pointer, Optional<T>> freshReader) {
     var pointerStoreOpt = pointers.get(key);
     if (pointerStoreOpt.isEmpty()) {
       return Optional.empty();
     }
 
     var pointer = pointerStoreOpt.get();
-    String blobUri = requireBlobReference(pointer, key);
-    Optional<T> loaded = firstReader.apply(key, blobUri);
+    requireBlobReference(pointer, key);
+    Optional<T> loaded = firstReader.apply(pointer);
     if (loaded.isPresent()) {
       return loaded;
     }
     // The pointed-at blob is absent: the pointer moved under us, or it genuinely dangles. One
     // place decides, past the cache, and resolves the moved case rather than reporting absence.
-    return reloadAfterVanishedBlob(
-            key, fresh -> freshReader.apply(key, requireBlobReference(fresh, key)))
-        .map(Reloaded::value);
+    return reloadAfterVanishedBlob(key, freshReader).map(Reloaded::value);
   }
 
   /**
    * Fetch-and-decode one blob: empty ONLY for a genuinely absent blob; parse failures and retryable
-   * store faults throw. This is the loader {@link ImmutableBlobCache} single-flights — decode
-   * semantics live here, once, for both pointer-resolved and blob-direct reads.
+   * store faults throw. The serialized disk cache sits below this decode seam.
    */
   protected final Optional<T> loadAndParseBlob(String blobUri) {
-    byte[] bytes = loadBlob(blobReads, blobUri);
-    if (bytes == null) {
-      return Optional.empty();
+    if (blobCacheable() && blobsImmutable()) {
+      return parseContent(
+          blobUri,
+          blobCache.immutable(blobUri, BlobCache.Fill.FILL, () -> loadBlob(blobReads, blobUri)),
+          bytes -> parser.parse(bytes));
     }
+    return loadAndParseBlobFresh(blobUri, blobReads);
+  }
+
+  private Optional<T> loadAndParseBlobFresh(String blobUri, RepositoryReads.Blobs blobs) {
+    byte[] bytes = loadBlob(blobs, blobUri);
+    if (bytes == null) return Optional.empty();
     try {
-      return Optional.of(parser.parse(bytes));
+      return Optional.of(parser.parse(ByteBuffer.wrap(bytes).asReadOnlyBuffer()));
+    } catch (CorruptionException corruption) {
+      throw corruption;
     } catch (InvalidProtocolBufferException ipbe) {
       throw new CorruptionException("parse failed: " + blobUri, ipbe);
     } catch (Exception e) {
@@ -356,6 +379,21 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return loadAndParseReferencedBlob(pointerKey, blobUri, blobReads);
   }
 
+  /** Read an immutable referenced body with explicit disk admission intent. */
+  protected final Optional<T> loadAndParseImmutableReferencedBlob(
+      String pointerKey, String blobUri, BlobCache.Fill fill) {
+    if (!referencedBlobImmutable(pointerKey, blobUri)) {
+      throw new IllegalArgumentException("referenced blob is not immutable: " + blobUri);
+    }
+    if (!blobCacheable()) {
+      return loadAndParseReferencedBlob(pointerKey, blobUri, blobReads);
+    }
+    return parseContent(
+        blobUri,
+        blobCache.immutable(blobUri, fill, () -> loadBlob(blobReads, blobUri)),
+        bytes -> parseReferencedBlob(pointerKey, blobUri, bytes));
+  }
+
   /**
    * Load and decode a referenced blob through the selected read capability. Missing blobs are
    * returned as empty so the caller can distinguish a concurrent pointer change from corruption;
@@ -368,7 +406,38 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       return Optional.empty();
     }
     try {
-      return Optional.of(parseReferencedBlob(pointerKey, blobUri, bytes));
+      return Optional.of(
+          parseReferencedBlob(pointerKey, blobUri, ByteBuffer.wrap(bytes).asReadOnlyBuffer()));
+    } catch (CorruptionException corruption) {
+      throw corruption;
+    } catch (InvalidProtocolBufferException ipbe) {
+      throw new CorruptionException("parse failed: " + blobUri, ipbe);
+    } catch (Exception e) {
+      throw new CorruptionException("parse failed: " + blobUri, e);
+    }
+  }
+
+  private Optional<T> loadAndParseReferencedBlob(
+      Pointer pointer, RepositoryReads.Blobs blobs, BlobCache.Fill fill) {
+    String pointerKey = pointer.getKey();
+    String blobUri = requireBlobReference(pointer, pointerKey);
+    if (fill == null) {
+      return loadAndParseReferencedBlob(pointerKey, blobUri, blobs);
+    }
+    Optional<BlobCache.Content> content =
+        referencedBlobImmutable(pointerKey, blobUri)
+            ? blobCache.immutable(blobUri, fill, () -> loadBlob(blobs, blobUri))
+            : blobCache.versioned(pointer, fill, () -> loadBlob(blobs, blobUri));
+    return parseContent(blobUri, content, bytes -> parseReferencedBlob(pointerKey, blobUri, bytes));
+  }
+
+  private Optional<T> parseContent(
+      String blobUri, Optional<BlobCache.Content> content, ProtoParser<T> decoder) {
+    if (content.isEmpty()) return Optional.empty();
+    try (BlobCache.Content body = content.orElseThrow()) {
+      return Optional.of(decoder.parse(body.buffer()));
+    } catch (CorruptionException corruption) {
+      throw corruption;
     } catch (InvalidProtocolBufferException ipbe) {
       throw new CorruptionException("parse failed: " + blobUri, ipbe);
     } catch (Exception e) {
@@ -387,7 +456,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     }
   }
 
-  protected T parseReferencedBlob(String pointerKey, String blobUri, byte[] bytes)
+  protected T parseReferencedBlob(String pointerKey, String blobUri, ByteBuffer bytes)
       throws Exception {
     return parser.parse(bytes);
   }
@@ -543,6 +612,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     if (after.isEmpty() || !want.equals(after.get().getEtag())) {
       throw new AbortRetryableException("blob write verification failed: " + blobUri);
     }
+    if (blobCacheable() && blobsImmutable()) {
+      blobCache.putImmutable(blobUri, bytes);
+    }
     return bytes.length;
   }
 
@@ -559,6 +631,9 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
     if (!mutationBlobStore.head(blobUri).map(h -> want.equals(h.getEtag())).orElse(false)) {
       throw new AbortRetryableException("blob write verification failed: " + blobUri);
+    }
+    if (blobCacheable() && blobsImmutable()) {
+      blobCache.putImmutable(blobUri, bytes);
     }
   }
 
@@ -674,18 +749,23 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   public List<T> listByPrefixForMutation(
       String prefix, int limit, String token, StringBuilder nextOut) {
-    return listByPrefixWithKeys(prefix, limit, token, nextOut, true).stream()
+    return listByPrefixWithKeys(prefix, limit, token, nextOut, true, BlobCache.Fill.FILL).stream()
         .map(KeyedValue::value)
         .toList();
   }
 
   protected List<KeyedValue<T>> listByPrefixWithKeys(
       String prefix, int limit, String token, StringBuilder nextOut) {
-    return listByPrefixWithKeys(prefix, limit, token, nextOut, false);
+    return listByPrefixWithKeys(prefix, limit, token, nextOut, false, BlobCache.Fill.BYPASS_FILL);
   }
 
   private List<KeyedValue<T>> listByPrefixWithKeys(
-      String prefix, int limit, String token, StringBuilder nextOut, boolean consistentRead) {
+      String prefix,
+      int limit,
+      String token,
+      StringBuilder nextOut,
+      boolean consistentRead,
+      BlobCache.Fill fill) {
     return observeRepository(
         consistentRead ? "list_by_prefix_consistent" : "list_by_prefix",
         () -> {
@@ -693,80 +773,62 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
               consistentRead
                   ? mutationReads.pointers().list(prefix, Math.max(1, limit), token, nextOut)
                   : pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
-          var ordinaryUris = new ArrayList<String>(rows.size());
-          var projectionKeys = new ArrayList<ImmutableBlobCache.ProjectionKey>(rows.size());
-          for (var row : rows) {
-            String blobUri = requireBlobReference(row, row.getKey());
-            if (ReusableArtifactBundleUris.isBundleUri(blobUri)) {
-              projectionKeys.add(new ImmutableBlobCache.ProjectionKey(blobUri, row.getKey()));
-            } else {
-              ordinaryUris.add(blobUri);
-            }
-          }
-
-          // Serve immutable blobs from the decoded cache and batch-fetch only the misses; fetched
-          // misses are decoded once and populated back for the next page/scan of this data.
-          Map<String, T> cachedBlobs =
-              blobCacheable() ? blobCache.getAllPresent(ordinaryUris) : Map.<String, T>of();
-          Map<ImmutableBlobCache.ProjectionKey, T> cachedProjections =
-              blobCacheable()
-                  ? blobCache.getAllProjectionsPresent(projectionKeys)
-                  : Map.<ImmutableBlobCache.ProjectionKey, T>of();
-          var missUris = new LinkedHashSet<String>();
-          for (var row : rows) {
-            String blobUri = requireBlobReference(row, row.getKey());
-            boolean cached =
-                ReusableArtifactBundleUris.isBundleUri(blobUri)
-                    ? cachedProjections.containsKey(
-                        new ImmutableBlobCache.ProjectionKey(blobUri, row.getKey()))
-                    : cachedBlobs.containsKey(blobUri);
-            if (!cached) {
-              missUris.add(blobUri);
-            }
-          }
-          var blobsMap =
-              missUris.isEmpty()
-                  ? Map.<String, byte[]>of()
-                  : blobReads.getBatch(new ArrayList<>(missUris));
-          var blobs = new ArrayList<KeyedValue<T>>(rows.size());
-          for (var row : rows) {
-            String blobUri = requireBlobReference(row, row.getKey());
-            boolean projected = ReusableArtifactBundleUris.isBundleUri(blobUri);
-            T hit =
-                projected
-                    ? cachedProjections.get(
-                        new ImmutableBlobCache.ProjectionKey(blobUri, row.getKey()))
-                    : cachedBlobs.get(blobUri);
-            if (hit != null) {
-              blobs.add(new KeyedValue<>(row.getKey(), hit));
-              continue;
-            }
-            byte[] bytes = blobsMap.get(blobUri);
-            if (bytes == null) {
-              reloadAfterVanishedBlob(
-                      row.getKey(),
-                      fresh ->
-                          loadAndParseReferencedBlob(row.getKey(), fresh.getBlobUri(), blobReads))
-                  .ifPresent(r -> blobs.add(new KeyedValue<>(row.getKey(), r.value())));
-              continue;
-            }
-
-            try {
-              T parsed = parseReferencedBlob(row.getKey(), blobUri, bytes);
-              if (blobCacheable()) {
-                if (projected) {
-                  blobCache.putProjection(blobUri, row.getKey(), parsed);
-                } else {
-                  blobCache.put(blobUri, parsed);
-                }
+          Map<String, byte[]> bytesByPointer;
+          if (consistentRead || !blobCacheable()) {
+            List<String> uris =
+                rows.stream()
+                    .map(row -> requireBlobReference(row, row.getKey()))
+                    .distinct()
+                    .toList();
+            Map<String, byte[]> byUri = blobReads.getBatch(uris);
+            bytesByPointer = new LinkedHashMap<>();
+            for (Pointer row : rows) {
+              byte[] bytes = byUri.get(requireBlobReference(row, row.getKey()));
+              if (bytes != null) {
+                bytesByPointer.put(row.getKey(), bytes);
               }
-              blobs.add(new KeyedValue<>(row.getKey(), parsed));
-            } catch (Exception e) {
-              throw new CorruptionException("parse failed: " + blobUri, e);
             }
+            return parseListedRows(rows, bytesByPointer, null);
           }
-          return blobs;
+          try (BlobCacheAccess.Contents contents =
+              blobCache.referencedContents(
+                  rows,
+                  fill,
+                  row -> referencedBlobImmutable(row.getKey(), row.getBlobUri()),
+                  blobReads::getBatch)) {
+            return parseListedRows(rows, null, contents);
+          }
         });
+  }
+
+  private List<KeyedValue<T>> parseListedRows(
+      List<Pointer> rows, Map<String, byte[]> bytesByPointer, BlobCacheAccess.Contents contents) {
+    var blobs = new ArrayList<KeyedValue<T>>(rows.size());
+    for (var row : rows) {
+      String blobUri = requireBlobReference(row, row.getKey());
+      ByteBuffer bytes =
+          contents == null
+              ? Optional.ofNullable(bytesByPointer.get(row.getKey()))
+                  .map(value -> ByteBuffer.wrap(value).asReadOnlyBuffer())
+                  .orElse(null)
+              : contents.get(row.getKey()).orElse(null);
+      if (bytes == null) {
+        reloadAfterVanishedBlob(
+                row.getKey(),
+                fresh -> loadAndParseReferencedBlob(fresh.getKey(), fresh.getBlobUri(), blobReads))
+            .ifPresent(r -> blobs.add(new KeyedValue<>(row.getKey(), r.value())));
+        continue;
+      }
+      try {
+        blobs.add(
+            new KeyedValue<>(row.getKey(), parseReferencedBlob(row.getKey(), blobUri, bytes)));
+      } catch (CorruptionException corruption) {
+        throw corruption;
+      } catch (Exception error) {
+        throw new CorruptionException("parse failed: " + blobUri, error);
+      }
+    }
+    return blobs;
   }
 
   @Override

@@ -20,7 +20,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.cache.ObjectCache;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotConstraintsKey;
@@ -47,18 +47,18 @@ public class ConstraintRepository {
   private final ObjectCache objects;
 
   public ConstraintRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, pointerStore, blobStore, null, ObjectCache.forTesting());
+    this(pointerStore, pointerStore, blobStore, BlobCacheAccess.disabled(), ObjectCache.forTesting());
   }
 
   public ConstraintRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      PointerStore pointerStore, BlobStore blobStore, BlobCacheAccess blobCache) {
     this(pointerStore, pointerStore, blobStore, blobCache, ObjectCache.forTesting());
   }
 
   public ConstraintRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
-      ImmutableBlobCache blobCache,
+      BlobCacheAccess blobCache,
       ObjectCache objects) {
     this(pointerStore, pointerStore, blobStore, blobCache, objects);
   }
@@ -68,7 +68,7 @@ public class ConstraintRepository {
       PointerStore pointerStore,
       @CachedPointerStore PointerStore pointerReads,
       BlobStore blobStore,
-      ImmutableBlobCache blobCache,
+      BlobCacheAccess blobCache,
       ObjectCache objects) {
     this.objects = objects;
     this.repo =

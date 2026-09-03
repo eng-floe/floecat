@@ -83,6 +83,15 @@ public final class CacheMetrics extends BaseMetrics {
     observability.counter(Telemetry.Metrics.CACHE_WRITE_THROUGH, 1, metricTags(dynamic));
   }
 
+  public void recordCorruption(Tag... extraTags) {
+    observability.counter(Telemetry.Metrics.CACHE_CORRUPTIONS, 1, metricTags(extraTags));
+  }
+
+  public void recordSweep(long reclaimedBytes, Tag... extraTags) {
+    observability.counter(
+        Telemetry.Metrics.CACHE_SWEEP_RECLAIMED, reclaimedBytes, metricTags(extraTags));
+  }
+
   public void trackSize(Supplier<? extends Number> supplier, String description, Tag... extraTags) {
     registerGauge(Telemetry.Metrics.CACHE_SIZE, supplier, description, metricTags(extraTags));
   }
@@ -106,6 +115,12 @@ public final class CacheMetrics extends BaseMetrics {
       Supplier<? extends Number> supplier, String description, Tag... extraTags) {
     registerGauge(
         Telemetry.Metrics.CACHE_WEIGHTED_SIZE, supplier, description, metricTags(extraTags));
+  }
+
+  public void trackLiveMappings(
+      Supplier<? extends Number> supplier, String description, Tag... extraTags) {
+    registerGauge(
+        Telemetry.Metrics.CACHE_LIVE_MAPPINGS, supplier, description, metricTags(extraTags));
   }
 
   private void registerGauge(
