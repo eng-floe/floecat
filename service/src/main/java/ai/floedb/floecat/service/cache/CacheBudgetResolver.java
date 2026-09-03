@@ -40,8 +40,8 @@ import org.jboss.logging.Logger;
  * Shares resolve against that total, not the heap. Nothing about a reference sizing scenario is
  * compiled in; it only says what to set, not what the code assumes.
  *
- * <p>Every family resolves the same way, by tag, over {@link CacheFamily#values()}: adding a family
- * adds its two properties and nothing else, with no per-family injection point to forget.
+ * <p>Every configured heap family resolves the same way, by tag, over {@link CacheFamily#values()}.
+ * Families on other media simply leave both heap properties absent and take no part in this split.
  *
  * <p>{@link Startup} because the validation is the point of this class. Resolved lazily it would
  * report a misconfiguration on a request rather than at boot, and being unused it would be removed

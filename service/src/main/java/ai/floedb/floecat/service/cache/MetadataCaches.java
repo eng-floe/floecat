@@ -16,11 +16,15 @@
 
 package ai.floedb.floecat.service.cache;
 
+import ai.floedb.floecat.cache.BlobCache;
+import ai.floedb.floecat.cache.BlobCacheEvents;
 import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.cache.CacheFamily;
+import ai.floedb.floecat.cache.DiskBlobCache;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -33,6 +37,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.function.LongSupplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -138,6 +143,50 @@ public class MetadataCaches {
     return cache;
   }
 
+  /** Blobs: serialized immutable bodies on local disk, with no resident heap index. */
+  @Produces
+  @Singleton
+  public BlobCache blobs(
+      Observability observability,
+      @ConfigProperty(name = "floecat.cache.blob.disk.enabled", defaultValue = "false")
+          boolean enabled,
+      @ConfigProperty(name = "floecat.cache.blob.disk.path", defaultValue = "/mnt/nvme/floecat")
+          String path,
+      @ConfigProperty(name = "floecat.cache.blob.disk.max-bytes", defaultValue = "108447924224")
+          long maxBytes,
+      @ConfigProperty(
+              name = "floecat.cache.blob.disk.mmap-threshold-bytes",
+              defaultValue = "262144")
+          int mmapThresholdBytes,
+      @ConfigProperty(
+              name = "floecat.cache.blob.disk.access-touch-interval-seconds",
+              defaultValue = "60")
+          long accessTouchIntervalSeconds) {
+    var metrics = metricsFor(CacheFamily.BLOB, observability);
+    BlobCache cache =
+        enabled
+            ? new DiskBlobCache(
+                Path.of(path),
+                maxBytes,
+                mmapThresholdBytes,
+                Duration.ofSeconds(accessTouchIntervalSeconds),
+                blobEvents(metrics))
+            : BlobCache.disabled();
+    metrics.trackEnabled(() -> cache.enabled() ? 1.0 : 0.0, "Whether the blob cache is enabled");
+    metrics.trackSize(cache::entryCount, "Entries held by the blob cache");
+    metrics.trackWeightedSize(cache::bytes, "Physical bytes held by the blob cache");
+    metrics.trackMaxWeight(cache::maxBytes, "Disk byte budget for the blob cache");
+    metrics.trackLiveMappings(
+        cache::liveMappings, "Mapped blob-cache entries protected from reclamation");
+    return cache;
+  }
+
+  @Produces
+  @Singleton
+  public BlobCacheAccess blobAccess(BlobCache cache) {
+    return new BlobCacheAccess(cache);
+  }
+
   private static CacheMetrics metricsFor(CacheFamily family, Observability observability) {
     return new CacheMetrics(observability, "service", "metadata-cache", family.tag());
   }
@@ -179,6 +228,52 @@ public class MetadataCaches {
       @Override
       public void evicted(long weightBytes) {
         metrics.recordEviction(weightBytes, tags);
+      }
+    };
+  }
+
+  /** One metric shape for each memory-cache family. */
+  private static BlobCacheEvents blobEvents(CacheMetrics metrics) {
+    return new BlobCacheEvents() {
+      @Override
+      public void hit(Duration served) {
+        metrics.recordHit();
+        metrics.recordLoad(served, true);
+      }
+
+      @Override
+      public void miss() {
+        metrics.recordMiss();
+      }
+
+      @Override
+      public void loadTime(Duration elapsed) {
+        metrics.recordLoad(elapsed, false);
+      }
+
+      @Override
+      public void loadFailed(Duration elapsed, RuntimeException error) {
+        metrics.recordLoadFailure(elapsed, error);
+      }
+
+      @Override
+      public void admissionRejected() {
+        metrics.recordAdmissionRejected();
+      }
+
+      @Override
+      public void evicted(long weightBytes) {
+        metrics.recordEviction(weightBytes);
+      }
+
+      @Override
+      public void corrupted(long bytes) {
+        metrics.recordCorruption();
+      }
+
+      @Override
+      public void swept(BlobCache.SweepResult result) {
+        metrics.recordSweep(result.bytesReclaimed());
       }
     };
   }

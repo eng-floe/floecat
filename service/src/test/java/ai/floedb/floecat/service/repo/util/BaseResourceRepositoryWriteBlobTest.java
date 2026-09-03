@@ -19,19 +19,22 @@ package ai.floedb.floecat.service.repo.util;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import ai.floedb.floecat.account.rpc.Account;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.AccountKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.testsupport.DiskBlobCacheTestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.StringValue;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Re-referencing an existing content-addressed blob must refresh its LastModified — the write path
@@ -40,6 +43,8 @@ import org.junit.jupiter.api.Test;
  * looking unreferenced AND old, i.e. sweepable mid-pass (eng-floe/core#1904).
  */
 class BaseResourceRepositoryWriteBlobTest {
+
+  @TempDir Path tempDir;
 
   private static final class CountingBlobStore extends InMemoryBlobStore {
     final Map<String, Integer> puts = new HashMap<>();
@@ -63,7 +68,7 @@ class BaseResourceRepositoryWriteBlobTest {
 
   private static final class ProjectingRepository extends BaseResourceRepository<StringValue> {
     private ProjectingRepository(
-        InMemoryPointerStore pointers, InMemoryBlobStore blobs, ImmutableBlobCache blobCache) {
+        InMemoryPointerStore pointers, InMemoryBlobStore blobs, BlobCacheAccess blobCache) {
       super(
           pointers,
           blobs,
@@ -79,7 +84,7 @@ class BaseResourceRepositoryWriteBlobTest {
     }
 
     @Override
-    protected StringValue parseReferencedBlob(String pointerKey, String blobUri, byte[] bytes) {
+    protected StringValue parseReferencedBlob(String pointerKey, String blobUri, ByteBuffer bytes) {
       return StringValue.of(pointerKey);
     }
   }
@@ -114,7 +119,7 @@ class BaseResourceRepositoryWriteBlobTest {
   void sharedBundleProjectionsAreCachedByPointerIdentity() {
     var pointers = new InMemoryPointerStore();
     var blobs = new InMemoryBlobStore();
-    var cache = new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5));
+    var cache = DiskBlobCacheTestSupport.create(tempDir.resolve("projections"));
     var repository = new ProjectingRepository(pointers, blobs, cache);
     String uri = "/stats/reuse-bundles/shared.pb";
     blobs.put(uri, StringValue.of("bundle").toByteArray(), "application/x-protobuf");
