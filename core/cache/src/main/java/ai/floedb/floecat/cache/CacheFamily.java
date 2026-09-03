@@ -28,7 +28,10 @@ package ai.floedb.floecat.cache;
 public enum CacheFamily {
 
   /** Addressing: which object a name or id currently resolves to, and what a container holds. */
-  POINTER("pointer");
+  POINTER("pointer"),
+
+  /** Decoded, engine-neutral SQL metadata whose identity is content-addressed. */
+  OBJECT("object");
 
   private final String tag;
 
