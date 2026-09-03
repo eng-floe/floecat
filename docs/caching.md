@@ -92,8 +92,11 @@ against that, and exceeding the budget costs store reads rather than wrong answe
 The pointer cache is the first specialized layer built on the shared in-memory contract; the other
 layers above are unchanged. Its independent durable subtrees load through a bounded metadata
 fan-out; `floecat.cache.pointer.load-parallelism=0` derives the bound from the processors available
-to the JVM, while a positive value pins it. Complete-index events, including eager-load duration,
-carry the logical account tag through the same `CacheEvents` contract.
+to the JVM, while a positive value pins it. A failed or capacity-rejected index remains store-backed
+until the first read after `floecat.cache.pointer.degraded-retry-seconds`, when one caller retries
+the complete load and concurrent callers continue through the store. Complete-index events,
+including eager-load duration, carry the logical account tag through the same `CacheEvents`
+contract.
 
 Cache selection stops at the repository boundary. Service and graph callers ask repositories for
 objects or lightweight refs; they never inject a cached, authoritative, or raw pointer-store view.
@@ -122,6 +125,8 @@ contract and publishes its own subset; `graph-cache` is node-load timing, not a 
 
 Hits and misses are counted as they happen rather than derived from a running total, because a rate
 computed from a cumulative gauge cannot tell an idle cache from one that is missing everything.
+An account retrying a degraded index moves through `degraded` to `loading` and then `complete` in
+the readiness counts; another failure returns it to `degraded`.
 
 Nothing expires in the pointer cache. The eviction series count only capacity-driven removals;
 explicit deletes, prefix sweeps, and authoritative-read repairs are not included. A non-zero
@@ -183,8 +188,9 @@ Cache budgets derive from the container: `floecat.cache.total-bytes` defaults to
 maximum heap, which the JVM already sizes from the container memory limit, and each cache takes a
 share of that. The knobs the pointer cache reads are `floecat.cache.total-bytes`,
 `floecat.cache.heap-share`, `floecat.cache.pointer.share` and `floecat.cache.pointer.max-bytes`,
-the last pinning an absolute size instead of a share, plus
-`floecat.cache.pointer.load-parallelism`; a share outside `(0, 1]` fails at startup.
+the last pinning an absolute size instead of a share, plus `floecat.cache.pointer.enabled`,
+`floecat.cache.pointer.load-parallelism` and
+`floecat.cache.pointer.degraded-retry-seconds`; a share outside `(0, 1]` fails at startup.
 `heap-share` and `pointer.share` carry defaults in
 `service/src/main/resources/application.properties`, alongside `floecat.blob.cache.*`;
 `total-bytes` and `pointer.max-bytes` are unset, and each is a share until it is given a value.

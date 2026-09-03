@@ -32,6 +32,7 @@ import ai.floedb.floecat.telemetry.helpers.CacheMetrics;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
+import java.time.Duration;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /** Where the pointer cache is built, and the pointer store that wraps it. */
@@ -86,7 +87,9 @@ public class MetadataCaches {
       @ConfigProperty(name = "floecat.cache.pointer.enabled", defaultValue = "true")
           boolean enabled,
       @ConfigProperty(name = "floecat.cache.pointer.load-parallelism", defaultValue = "0")
-          int configuredLoadParallelism) {
+          int configuredLoadParallelism,
+      @ConfigProperty(name = "floecat.cache.pointer.degraded-retry-seconds", defaultValue = "30")
+          long degradedRetrySeconds) {
     var metrics = metricsFor(CacheFamily.POINTER, observability);
     int loadParallelism =
         configuredLoadParallelism == 0
@@ -97,6 +100,10 @@ public class MetadataCaches {
           "floecat.cache.pointer.load-parallelism must be >= 0; zero derives from available"
               + " processors");
     }
+    if (degradedRetrySeconds < 1L) {
+      throw new IllegalArgumentException(
+          "floecat.cache.pointer.degraded-retry-seconds must be >= 1");
+    }
     var cache =
         new PointerCache(
             AuthoritativePointerStore.of(raw),
@@ -104,7 +111,8 @@ public class MetadataCaches {
             events(metrics),
             loadParallelism == 1
                 ? MetadataFanout.serial()
-                : MetadataFanout.concurrent(loadParallelism));
+                : MetadataFanout.concurrent(loadParallelism),
+            Duration.ofSeconds(degradedRetrySeconds));
     report(cache, budgets, metrics, enabled);
     return cache;
   }
