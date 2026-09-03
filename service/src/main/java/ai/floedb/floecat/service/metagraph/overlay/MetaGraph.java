@@ -769,7 +769,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
 
   private List<SchemaColumn> schemaForTable(TableNode table) {
     if (table instanceof UserTableNode ut) {
-      return objects.mappedSchema(ut, ut.schemaJson()).descriptor().getColumnsList();
+      return objects.mappedSchema(ut, ut.schemaJson()).getColumnsList();
     }
     if (table instanceof SystemTableNode st) {
       return st.columns();

@@ -16,8 +16,6 @@
 
 package ai.floedb.floecat.service.query.catalog;
 
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
@@ -342,10 +340,9 @@ final class RelationBundleBuilder {
           userTable,
           pin,
           () -> {
-            ObjectCache.MappedSchema schema =
-                logicalSchemaForRelation(correlationId, relation.relationId(), userTable, pin);
+            SchemaDescriptor schema = logicalSchemaForRelation(correlationId, userTable, pin);
             return new ObjectCache.RelationObject(
-                buildTemplate(relation, schema.descriptor(), correlationId), schema.descriptor());
+                buildTemplate(relation, schema, correlationId), schema);
           });
     }
     if (relation.node() instanceof ViewNode view && view.origin() != GraphNodeOrigin.SYSTEM) {
@@ -461,32 +458,16 @@ final class RelationBundleBuilder {
     return count;
   }
 
-  private ObjectCache.MappedSchema logicalSchemaForRelation(
-      String correlationId,
-      ResourceId relationId,
-      UserTableNode userTable,
-      Optional<TablePin> pin) {
+  private SchemaDescriptor logicalSchemaForRelation(
+      String correlationId, UserTableNode userTable, Optional<TablePin> pin) {
     if (pin.isEmpty()) {
       // Not yet pinned (e.g. a relation resolved outside the pinned set): fall back to the table's
       // default schema.
       return objects.mappedSchema(userTable, userTable.schemaJson());
     }
-    // Consume the pinned snapshot identity. The stream's producer-thread pre-pass validated this
-    // pin before the relation entered worker fan-out.
-    SnapshotRef snapshotRef =
-        SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
-    return objects.pinnedSchema(
-        pin.get(),
-        () -> {
-          CatalogGraphView.SchemaResolution resolved =
-              graphView.schemaFor(
-                  correlationId,
-                  relationId,
-                  snapshotRef,
-                  pin.get().getTableBlobUri(),
-                  pin.get().getSnapshotBlobUri());
-          return new ObjectCache.SchemaInput(resolved.table(), resolved.schemaJson());
-        });
+    // The stream's producer-thread pre-pass validated this pin before the relation entered worker
+    // fan-out. Objects owns the cache-first resolution so every caller gets the same behavior.
+    return objects.pinnedSchema(correlationId, pin.get(), graphView);
   }
 
   private ViewDefinition.Builder viewDefinitionBuilder(ViewNode view) {
