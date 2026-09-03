@@ -28,9 +28,12 @@ import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.context.impl.InboundCallContextHelper;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import io.grpc.Channel;
+import io.grpc.Metadata;
+import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
@@ -51,6 +54,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
@@ -124,11 +128,19 @@ class SpanDecorationIT {
   @Test
   void serverSpanCarriesFloecatDecorations() {
     InMemoryExporterProducer.EXPORTER.reset();
+    String correlationId = "span-decoration-" + UUID.randomUUID();
+    Metadata headers = new Metadata();
+    headers.put(
+        Metadata.Key.of(
+            InboundCallContextHelper.HEADER_CORRELATION_ID, Metadata.ASCII_STRING_MARSHALLER),
+        correlationId);
 
-    catalog.listCatalogs(ListCatalogsRequest.newBuilder().build());
+    catalog
+        .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(headers))
+        .listCatalogs(ListCatalogsRequest.newBuilder().build());
 
     SpanData span =
-        awaitServerSpan("ListCatalogs")
+        awaitServerSpan("ListCatalogs", correlationId)
             .orElseThrow(
                 () ->
                     new AssertionError(
@@ -138,7 +150,7 @@ class SpanDecorationIT {
     // SpanCaptureInterceptor, inside the tracing window: identity attributes on the REAL span.
     assertThat(span.getAttributes().get(AttributeKey.stringKey("correlation_id")))
         .as("correlation_id — SpanCaptureInterceptor must capture inside the tracing window")
-        .isNotBlank();
+        .isEqualTo(correlationId);
 
     // The telemetry delegate's in-window capture: component tag at interceptCall, status at
     // finish. Both read the span reference captured at interceptCall time.
@@ -233,12 +245,23 @@ class SpanDecorationIT {
 
   /** Polls the exporter for the finished SERVER span of the given method (batch delay ~100ms). */
   private static Optional<SpanData> awaitServerSpan(String methodPart) {
+    return awaitServerSpan(methodPart, null);
+  }
+
+  /** Selects the exact call when a correlation id is supplied, ignoring delayed earlier exports. */
+  private static Optional<SpanData> awaitServerSpan(
+      String methodPart, String expectedCorrelationId) {
     Instant deadline = Instant.now().plus(Duration.ofSeconds(15));
     while (Instant.now().isBefore(deadline)) {
       Optional<SpanData> match =
           InMemoryExporterProducer.EXPORTER.getFinishedSpanItems().stream()
               .filter(span -> span.getKind() == io.opentelemetry.api.trace.SpanKind.SERVER)
               .filter(span -> span.getName().contains(methodPart))
+              .filter(
+                  span ->
+                      expectedCorrelationId == null
+                          || expectedCorrelationId.equals(
+                              span.getAttributes().get(AttributeKey.stringKey("correlation_id"))))
               .findFirst();
       if (match.isPresent()) {
         return match;
