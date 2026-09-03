@@ -46,8 +46,7 @@ public class SnapshotFinalizePersistenceService {
     List<TargetStatsRecord> canonical = canonicalize(records);
     statsStore.replaceAllStatsForSnapshot(tableId, snapshotId, canonical, false);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-    String generation = commitGenerationToRoot(tableId, snapshotId);
-    statsOrchestrator.publishCommittedTableFacts(tableId, snapshotId, generation);
+    commitAndPublishTableFacts(tableId, snapshotId);
     return canonical.size();
   }
 
@@ -60,8 +59,7 @@ public class SnapshotFinalizePersistenceService {
     statsStore.publishStatsGeneration(
         tableId, snapshotId, generationId, canonicalAggregates, false);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-    String generation = commitGenerationToRoot(tableId, snapshotId);
-    statsOrchestrator.publishCommittedTableFacts(tableId, snapshotId, generation);
+    commitAndPublishTableFacts(tableId, snapshotId);
     return canonicalAggregates.size();
   }
 
@@ -76,8 +74,7 @@ public class SnapshotFinalizePersistenceService {
             : references.stream().filter(java.util.Objects::nonNull).toList();
     statsStore.publishPrewrittenStatsGeneration(tableId, snapshotId, generationId, stable);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-    String generation = commitGenerationToRoot(tableId, snapshotId);
-    statsOrchestrator.publishCommittedTableFacts(tableId, snapshotId, generation);
+    commitAndPublishTableFacts(tableId, snapshotId);
     return stable.size();
   }
 
@@ -97,8 +94,7 @@ public class SnapshotFinalizePersistenceService {
       return false;
     }
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-    String generation = commitGenerationToRoot(tableId, snapshotId);
-    statsOrchestrator.publishCommittedTableFacts(tableId, snapshotId, generation);
+    commitAndPublishTableFacts(tableId, snapshotId);
     return true;
   }
 
@@ -154,9 +150,10 @@ public class SnapshotFinalizePersistenceService {
     for (var entry : touched.entrySet()) {
       TableSnapshot pair = entry.getKey();
       List<TargetStatsRecord> persisted = List.copyOf(entry.getValue());
-      String generation = commitGenerationToRoot(pair.tableId(), pair.snapshotId());
       if (containsTableFacts(persisted)) {
-        statsOrchestrator.publishCommittedTableFacts(pair.tableId(), pair.snapshotId(), generation);
+        commitAndPublishTableFacts(pair.tableId(), pair.snapshotId());
+      } else {
+        commitGenerationToRoot(pair.tableId(), pair.snapshotId());
       }
     }
     return processed;
@@ -170,6 +167,12 @@ public class SnapshotFinalizePersistenceService {
       return "";
     }
     return rootWriter.commitStatsGeneration(tableId, snapshotId).orElse("");
+  }
+
+  /** Make newly committed table facts warm only after the root publishes their generation. */
+  private void commitAndPublishTableFacts(ResourceId tableId, long snapshotId) {
+    String generation = commitGenerationToRoot(tableId, snapshotId);
+    statsOrchestrator.publishCommittedTableFacts(tableId, snapshotId, generation);
   }
 
   public long persistEmptySnapshotCompletionMarker(
@@ -188,8 +191,7 @@ public class SnapshotFinalizePersistenceService {
       statsStore.replaceAllStatsForSnapshot(
           tableId, snapshotId, List.of(TargetStatsRecords.canonicalize(zeroMarker)), false);
       statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-      String generation = commitGenerationToRoot(tableId, snapshotId);
-      statsOrchestrator.publishCommittedTableFacts(tableId, snapshotId, generation);
+      commitAndPublishTableFacts(tableId, snapshotId);
       return 1L;
     }
     if (statsStore
@@ -202,22 +204,19 @@ public class SnapshotFinalizePersistenceService {
       // the current pointer MOVES — for an already-current empty snapshot it stays UNCHANGED, so
       // nothing else would attach the stats_generation_ref and the snapshot would be permanently
       // gated-invisible. commitGenerationToRoot is idempotent.
-      String generation = commitGenerationToRoot(tableId, snapshotId);
-      statsOrchestrator.publishCommittedTableFacts(tableId, snapshotId, generation);
+      commitAndPublishTableFacts(tableId, snapshotId);
       return 0L;
     }
     if (statsStore.putTargetStatsIfAbsent(zeroMarker)) {
       statsOrchestrator.invalidateStatsCache(tableId, snapshotId, zeroMarker.getTarget());
-      String generation = commitGenerationToRoot(tableId, snapshotId);
-      statsOrchestrator.publishCommittedTableFacts(tableId, snapshotId, generation);
+      commitAndPublishTableFacts(tableId, snapshotId);
       return 1L;
     }
     if (statsStore
         .getTargetStats(tableId, snapshotId, StatsTargetIdentity.tableTarget())
         .isPresent()) {
       // Lost the create race to a concurrent attempt; ensure the generation is on the root anyway.
-      String generation = commitGenerationToRoot(tableId, snapshotId);
-      statsOrchestrator.publishCommittedTableFacts(tableId, snapshotId, generation);
+      commitAndPublishTableFacts(tableId, snapshotId);
       return 0L;
     }
     throw new IllegalStateException(

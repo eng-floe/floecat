@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import java.util.Optional;
@@ -85,6 +86,20 @@ final class SnapshotPinResolver implements SnapshotPinLookup {
     return ctx.findTablePin(tableId, correlationId)
         .map(pin -> pin.getStatsGenerationRefUri())
         .filter(uri -> !uri.isBlank());
+  }
+
+  /** Whether this pin represents the current SQL view rather than retained history. */
+  boolean currentSnapshotIsPinned(ResourceId tableId) {
+    QueryContext ctx = liveContext();
+    if (ctx == null) {
+      return false;
+    }
+    return ctx.findTablePin(tableId, correlationId)
+        .map(
+            pin ->
+                pin.getPinKind() == PinKind.PIN_KIND_CURRENT
+                    || pin.getPinKind() == PinKind.PIN_KIND_UNSPECIFIED)
+        .orElse(false);
   }
 
   <T> Optional<T> withPinnedSnapshot(
