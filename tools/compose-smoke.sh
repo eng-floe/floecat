@@ -33,11 +33,10 @@ COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_E
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_WAREHOUSE=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_WAREHOUSE:-quickstart_catalog}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_TABLE=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_TABLE:-trino_types}
 COMPOSE_SMOKE_UPSTREAM_ICEBERG_METADATA_PREFIX=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_METADATA_PREFIX:-s3://floecat/sales/us/trino_types/metadata/}
-# Disabled until PR 474 fronts the compose Unity endpoint with the TLS-backed unity-proxy. Until
-# then COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI below is cleartext and the client rejects it, so
-# setting IMPORT=true alone will not run this scenario.
-COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT:-false}
-COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI:-http://unity:8080}
+# Enabled through the TLS-backed unity-proxy configured by this smoke scenario.
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT:-true}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI:-https://unity-proxy:8443}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_VEND_PATH=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_VEND_PATH:-/api/2.1/unity-catalog/temporary-table-credentials}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS:-unity.default}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_TABLE=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_TABLE:-call_center}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG:-unity_import}
@@ -45,11 +44,9 @@ COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_NS=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE:-unity_import.unity_smoke.call_center}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_CONNECTOR_ARGS=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_CONNECTOR_ARGS:---auth-scheme none}
 COMPOSE_SMOKE_UNITY_HEALTH_PATH=${COMPOSE_SMOKE_UNITY_HEALTH_PATH:-/api/2.1/unity-catalog/catalogs}
-COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_STORAGE_LOCATION=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_STORAGE_LOCATION:-s3://floecat-delta/call_center}
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_STORAGE_LOCATION=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_STORAGE_LOCATION:-s3://floecat-delta-vended/call_center}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT:-http://localstack:4566}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION:-us-east-1}
-COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID:-test}
-COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY:-test}
 COMPOSE_SMOKE_LOCALSTACK_BUCKETS="${COMPOSE_SMOKE_LOCALSTACK_BUCKETS:-bucket floecat floecat-delta floecat-dev staged-fixtures warehouse yb-iceberg-tpcds}"
 COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX=${COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX:-true}
 COMPOSE_SMOKE_STATS_RETRIES=${COMPOSE_SMOKE_STATS_RETRIES:-45}
@@ -217,6 +214,22 @@ assert_contains() {
     echo "[PASS] $check_name"
   else
     echo "[FAIL] $check_name (missing: $pattern)"
+    echo "---- output begin ----"
+    echo "$output"
+    echo "---- output end ----"
+    return 1
+  fi
+}
+
+assert_not_contains() {
+  local check_name="$1"
+  local output="$2"
+  local pattern="$3"
+
+  if [[ "$output" != *"$pattern"* ]]; then
+    echo "[PASS] $check_name"
+  else
+    echo "[FAIL] $check_name (unexpected: $pattern)"
     echo "---- output begin ----"
     echo "$output"
     echo "---- output end ----"
@@ -446,6 +459,58 @@ cleanup_mode() {
   eval "$compose_cmd down --remove-orphans -v" >/dev/null 2>&1 || true
 }
 
+prepare_unity_tls() {
+  local tls_dir="$1"
+  local cert_file="$tls_dir/server.crt"
+  local key_file="$tls_dir/server.key"
+  local truststore_file="$tls_dir/runtime-truststore.p12"
+
+  cp docker/certs/runtime-truststore.p12 "$truststore_file"
+  openssl req \
+    -x509 \
+    -nodes \
+    -newkey rsa:2048 \
+    -keyout "$key_file" \
+    -out "$cert_file" \
+    -days 1 \
+    -subj /CN=unity-proxy \
+    -addext 'subjectAltName=DNS:unity-proxy,DNS:localhost,IP:127.0.0.1,DNS:sts.us-east-1.amazonaws.com' \
+    >/dev/null 2>&1
+  keytool -delete \
+    -alias unity-proxy \
+    -keystore "$truststore_file" \
+    -storepass password \
+    >/dev/null 2>&1 || true
+  keytool -importcert \
+    -noprompt \
+    -alias unity-proxy \
+    -file "$cert_file" \
+    -keystore "$truststore_file" \
+    -storepass password \
+    >/dev/null
+  chmod 600 "$key_file"
+  chmod 644 "$cert_file" "$truststore_file"
+}
+
+cleanup_unity_tls() {
+  local tls_dir="$1"
+  if [ -z "$tls_dir" ]; then
+    return 0
+  fi
+  case "${tls_dir##*/}" in
+    floecat-unity-tls.*) ;;
+    *)
+      echo "refusing to clean unexpected Unity TLS directory: $tls_dir" >&2
+      return 1
+      ;;
+  esac
+  rm -f \
+    "$tls_dir/server.crt" \
+    "$tls_dir/server.key" \
+    "$tls_dir/runtime-truststore.p12"
+  rmdir "$tls_dir" 2>/dev/null || true
+}
+
 save_mode_logs() {
   local compose_cmd="$1"
   local label="$2"
@@ -518,6 +583,25 @@ wait_for_url() {
   done
 }
 
+wait_for_url_with_ca() {
+  local url="$1"
+  local timeout_seconds="$2"
+  local label="$3"
+  local ca_file="$4"
+  local i
+
+  for i in $(seq 1 "$timeout_seconds"); do
+    if curl -fsS --cacert "$ca_file" "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [ "$i" -eq "$timeout_seconds" ]; then
+      echo "$label timed out" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 wait_for_url_auth() {
   local url="$1"
   local timeout_seconds="$2"
@@ -572,11 +656,35 @@ run_mode() {
   if [ "$smoke_scope" = "full" ] && { [ "$profile" = "localstack" ] || [ "$profile" = "localstack-oidc" ]; } && should_run_client trino; then
     compose_profiles="${compose_profiles},trino"
   fi
+
+  local unity_tls_dir=""
+  local unity_tls_cert_file=""
+  local unity_tls_key_file=""
+  local unity_runtime_truststore_file=""
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
+    unity_tls_dir=$(mktemp -d "${TMPDIR:-/tmp}/floecat-unity-tls.XXXXXX")
+    unity_tls_cert_file="$unity_tls_dir/server.crt"
+    unity_tls_key_file="$unity_tls_dir/server.key"
+    unity_runtime_truststore_file="$unity_tls_dir/runtime-truststore.p12"
+    if ! prepare_unity_tls "$unity_tls_dir"; then
+      cleanup_unity_tls "$unity_tls_dir"
+      return 1
+    fi
+  fi
+
   local -a mode_env_args=(
     "FLOECAT_ENV_FILE=$env_file"
     "COMPOSE_PROFILES=$compose_profiles"
     "COMPOSE_PROJECT_NAME=$compose_project"
   )
+
+  if [ -n "$unity_tls_dir" ]; then
+    mode_env_args+=(
+      "FLOECAT_RUNTIME_TRUSTSTORE_FILE=$unity_runtime_truststore_file"
+      "FLOECAT_UNITY_TLS_CERT_FILE=$unity_tls_cert_file"
+      "FLOECAT_UNITY_TLS_KEY_FILE=$unity_tls_key_file"
+    )
+  fi
 
   if [ -n "$kc_host" ]; then
     mode_env_args+=("KC_HOSTNAME=$kc_host")
@@ -627,6 +735,7 @@ run_mode() {
         echo "==> [SMOKE][KEEP] preserving compose stack for mode=$label (COMPOSE_SMOKE_KEEP_ON_EXIT=$COMPOSE_SMOKE_KEEP_ON_EXIT)"
       else
         cleanup_mode "$compose_cmd"
+        cleanup_unity_tls "$unity_tls_dir"
       fi
     else
       save_mode_logs "$compose_cmd" "${label}-fail"
@@ -635,6 +744,7 @@ run_mode() {
         echo "==> [SMOKE][KEEP] preserving compose stack for mode=$label (COMPOSE_SMOKE_KEEP_ON_FAIL=$COMPOSE_SMOKE_KEEP_ON_FAIL)"
       else
         cleanup_mode "$compose_cmd"
+        cleanup_unity_tls "$unity_tls_dir"
       fi
     fi
     return "$rc"
@@ -653,9 +763,9 @@ run_mode() {
   fi
   if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
     if [ -z "$pre_services" ]; then
-      pre_services="localstack unity"
+      pre_services="localstack unity unity-proxy"
     elif [[ ",$pre_services," != *",unity,"* ]]; then
-      pre_services="$pre_services unity"
+      pre_services="$pre_services unity unity-proxy"
     fi
   fi
 
@@ -680,6 +790,12 @@ run_mode() {
   if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
     local unity_host_port="${FLOECAT_UNITY_HOST_PORT:-8083}"
     wait_for_url "http://localhost:${unity_host_port}${COMPOSE_SMOKE_UNITY_HEALTH_PATH}" 180 "Unity Catalog health"
+    local unity_https_host_port="${FLOECAT_UNITY_HTTPS_HOST_PORT:-8444}"
+    wait_for_url_with_ca \
+      "https://localhost:${unity_https_host_port}${COMPOSE_SMOKE_UNITY_HEALTH_PATH}" \
+      180 \
+      "Unity Catalog TLS proxy health" \
+      "$unity_tls_cert_file"
   fi
 
   local compose_up_cmd="$compose_cmd up -d"
@@ -1072,6 +1188,16 @@ quit")
       return 1
     fi
 
+    # SeedRunner writes the canonical Delta fixture to floecat-delta. Copy it to a bucket that is
+    # deliberately absent from COMPOSE_SMOKE_LOCALSTACK_BUCKETS, so no Floecat storage authority
+    # can make this test pass without Unity Catalog vending credentials.
+    local unity_aws_cli
+    unity_aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
+    $unity_aws_cli --endpoint-url http://localstack:4566 s3 cp \
+      s3://floecat-delta/call_center/ \
+      "$unity_storage_location/" \
+      --recursive >/dev/null
+
     local unity_catalog_resp
     unity_catalog_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
       -w "\n%{http_code}\n" \
@@ -1120,13 +1246,65 @@ quit")
       return 1
     fi
 
+    # Exercise the same OSS credential-vending route configured on the connector below. The proxy
+    # only terminates TLS; it does not rewrite API paths. Never print either response: the second
+    # one contains live session credentials.
+    local unity_table_get_resp
+    unity_table_get_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -k -fsS \
+      "${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI}/api/2.1/unity-catalog/tables/${unity_catalog}.${unity_schema}.${unity_source_table}")
+    local unity_table_id
+    unity_table_id=$(python3 - "$unity_table_get_resp" <<'PY'
+import json
+import sys
+
+table_id = json.loads(sys.argv[1]).get("table_id")
+if isinstance(table_id, str) and table_id.strip():
+    print(table_id)
+PY
+    )
+    if [ -z "$unity_table_id" ]; then
+      echo "[FAIL] $label Unity Catalog table response omitted table_id"
+      return 1
+    fi
+
+    local unity_vend_resp
+    unity_vend_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -k -fsS \
+      -X POST "${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI}${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_VEND_PATH}" \
+      -H "Content-Type: application/json" \
+      -d "{\"table_id\":\"$unity_table_id\",\"operation\":\"READ\"}")
+    if ! python3 - "$unity_vend_resp" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+creds = payload.get("aws_temp_credentials")
+required = ("access_key_id", "secret_access_key", "session_token")
+if not isinstance(creds, dict) or any(not str(creds.get(key, "")).strip() for key in required):
+    sys.exit(1)
+try:
+    if int(payload.get("expiration_time", 0)) <= 0:
+        sys.exit(1)
+except (TypeError, ValueError):
+    sys.exit(1)
+PY
+    then
+      echo "[FAIL] $label Unity Catalog did not vend a complete expiring AWS session tuple"
+      echo "[FAIL] Unity response omitted because it contains storage credentials"
+      return 1
+    fi
+
     local unity_setup_out
     unity_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
 catalog create $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG --desc compose-smoke-upstream-delta-unity
-connector create smoke-upstream-delta-unity DELTA $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG --source-table $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_TABLE --dest-ns $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_NS --props delta.source=unity --props s3.endpoint=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT --props s3.path-style-access=true --props s3.region=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION --cred-type aws --cred access_key_id=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ACCESS_KEY_ID --cred secret_access_key=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_SECRET_ACCESS_KEY $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_CONNECTOR_ARGS
+connector create smoke-upstream-delta-unity DELTA $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG --source-table $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_TABLE --dest-ns $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_NS --props delta.source=unity --props unity.temporary-table-vend-path=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_VEND_PATH --props databricks.access-delegation=vended-credentials --props s3.endpoint=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT --props s3.path-style-access=true --props s3.region=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_CONNECTOR_ARGS
 quit")
     echo "$unity_setup_out"
-    assert_contains "$label upstream delta unity connector setup" "$unity_setup_out" "smoke-upstream-delta-unity"
+    # CONNECTOR_ID is the header of the row a successful create prints; the connector name alone
+    # also appears in the CLI's error text, so it cannot distinguish success from failure. The
+    # shell prefixes every reported error with "! ".
+    assert_contains "$label upstream delta unity connector setup" "$unity_setup_out" "CONNECTOR_ID"
+    assert_contains "$label upstream delta unity connector setup names the connector" "$unity_setup_out" "smoke-upstream-delta-unity"
+    assert_not_contains "$label upstream delta unity connector setup reported no error" "$unity_setup_out" "! "
 
     run_connector_trigger_and_wait \
       "$compose_cmd" \
@@ -1157,6 +1335,41 @@ quit")
       "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE" \
       "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
       "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
+
+    if [ "$label" = "localstack-remote" ]; then
+      local unity_query_begin_out
+      unity_query_begin_out=$(run_cli_script "$compose_cmd" "account t-0001
+catalog use $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG
+query begin table $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE
+quit")
+      echo "$unity_query_begin_out"
+      assert_contains "$label upstream delta unity query lease" "$unity_query_begin_out" "query id:"
+
+      local unity_query_id
+      local unity_floecat_table_id
+      unity_query_id=$(printf "%s\n" "$unity_query_begin_out" | sed -n 's/.*query id: //p' | tail -n1)
+      unity_floecat_table_id=$(printf "%s\n" "$out_upstream_delta_unity" | sed -n 's/.*table id: //p' | tail -n1)
+      if [ -z "$unity_query_id" ] || [ -z "$unity_floecat_table_id" ]; then
+        echo "[FAIL] $label could not resolve Unity query and table ids"
+        return 1
+      fi
+
+      local unity_scan_out
+      unity_scan_out=$(run_cli_script "$compose_cmd" "account t-0001
+query fetch-scan $unity_query_id $unity_floecat_table_id
+query end $unity_query_id --commit
+quit")
+      echo "$unity_scan_out"
+      assert_contains "$label upstream delta unity remote scan" "$unity_scan_out" "data_files:"
+      assert_contains "$label upstream delta unity remote scan location" "$unity_scan_out" "$unity_storage_location"
+
+      local unity_vending_logs
+      unity_vending_logs=$(eval "$compose_cmd logs --no-color service executor" 2>&1)
+      assert_contains \
+        "$label upstream delta unity source-catalog vending path" \
+        "$unity_vending_logs" \
+        "vended storage credentials from source catalog"
+    fi
   elif [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ]; then
     echo "==> [SMOKE] skipping upstream delta unity import (set COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=true to enable)"
   fi

@@ -24,6 +24,20 @@ awslocal s3api create-bucket --bucket "yb-iceberg-tpcds" --region "${REGION}" >/
 awslocal s3api create-bucket --bucket "floecat" --region "${REGION}" >/dev/null 2>&1 || true
 awslocal s3api create-bucket --bucket "staged-fixtures" --region "${REGION}" >/dev/null 2>&1 || true
 awslocal s3api create-bucket --bucket "floecat-delta" --region "${REGION}" >/dev/null 2>&1 || true
+awslocal s3api create-bucket --bucket "floecat-delta-vended" --region "${REGION}" >/dev/null 2>&1 || true
+
+# OSS Unity Catalog assumes this role when its temporary-table-credentials endpoint is called.
+# Keep the vended bucket out of COMPOSE_SMOKE_LOCALSTACK_BUCKETS: that list creates Floecat storage
+# authorities, and this fixture must prove that the source catalog credentials work on their own.
+UNITY_TRUST_POLICY='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole"}]}'
+UNITY_S3_POLICY='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetObject","s3:ListBucket"],"Resource":["arn:aws:s3:::floecat-delta-vended","arn:aws:s3:::floecat-delta-vended/*"]}]}'
+awslocal iam create-role \
+  --role-name unity-vending \
+  --assume-role-policy-document "${UNITY_TRUST_POLICY}" >/dev/null 2>&1 || true
+awslocal iam put-role-policy \
+  --role-name unity-vending \
+  --policy-name unity-vended-delta-read \
+  --policy-document "${UNITY_S3_POLICY}" >/dev/null 2>&1 || true
 
 awslocal dynamodb create-table \
   --table-name "${TABLE}" \
