@@ -32,7 +32,8 @@ class ConsistentPointerCacheRepairTest {
   private static final String TABLE = "tbl-1";
 
   private final InMemoryPointerStore store = new InMemoryPointerStore();
-  private final PointerCache cache = new PointerCache(store, 1024L * 1024L, CacheEvents.none());
+  private final PointerCache cache =
+      new PointerCache(AuthoritativePointerStore.of(store), 1024L * 1024L, CacheEvents.none());
   private final CachingPointerStore caching = new CachingPointerStore(store, cache);
 
   @Test
@@ -157,6 +158,54 @@ class ConsistentPointerCacheRepairTest {
     assertThat(caching.listPointersByPrefix(prefix, 10, "", new StringBuilder()))
         .extracting(Pointer::getKey)
         .containsExactly(keys.get(0), keys.get(1), keys.get(3), keys.get(4));
+  }
+
+  @Test
+  void consistentPaginationCarriesARepairBoundaryAcrossPages() {
+    String prefix = Keys.tablePointerByIdPrefix(ACCOUNT);
+    List<String> keys =
+        List.of(
+            Keys.tablePointerById(ACCOUNT, "a"),
+            Keys.tablePointerById(ACCOUNT, "b"),
+            Keys.tablePointerById(ACCOUNT, "c"),
+            Keys.tablePointerById(ACCOUNT, "d"));
+    keys.forEach(key -> store.compareAndSet(key, 0L, pointer(key, "s3://" + key, 1L)));
+    caching.get(keys.getFirst());
+
+    StringBuilder next = new StringBuilder();
+    assertThat(caching.listPointersByPrefixConsistent(prefix, 2, "", next))
+        .extracting(Pointer::getKey)
+        .containsExactly(keys.get(0), keys.get(1));
+    store.delete(keys.get(2));
+
+    assertThat(caching.listPointersByPrefixConsistent(prefix, 2, next.toString(), next))
+        .extracting(Pointer::getKey)
+        .containsExactly(keys.get(3));
+    assertThat(caching.listPointersByPrefix(prefix, 10, "", new StringBuilder()))
+        .extracting(Pointer::getKey)
+        .containsExactly(keys.get(0), keys.get(1), keys.get(3));
+  }
+
+  @Test
+  void anOpaqueContinuationDegradesInsteadOfClaimingACompleteRepair() {
+    String prefix = Keys.tablePointerByIdPrefix(ACCOUNT);
+    List<String> keys =
+        List.of(
+            Keys.tablePointerById(ACCOUNT, "a"),
+            Keys.tablePointerById(ACCOUNT, "b"),
+            Keys.tablePointerById(ACCOUNT, "c"));
+    keys.forEach(key -> store.compareAndSet(key, 0L, pointer(key, "s3://" + key, 1L)));
+    caching.get(keys.getFirst());
+    store.delete(keys.get(1));
+
+    assertThat(
+            caching.listPointersByPrefixConsistent(
+                prefix, 10, store.pageTokenAfterKey(keys.getFirst()), new StringBuilder()))
+        .extracting(Pointer::getKey)
+        .containsExactly(keys.get(2));
+    assertThat(caching.listPointersByPrefix(prefix, 10, "", new StringBuilder()))
+        .extracting(Pointer::getKey)
+        .containsExactly(keys.get(0), keys.get(2));
   }
 
   @Test
