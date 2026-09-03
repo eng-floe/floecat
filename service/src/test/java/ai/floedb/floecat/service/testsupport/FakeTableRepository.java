@@ -34,7 +34,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class FakeTableRepository extends TableRepository {
+public final class FakeTableRepository extends TableRepository {
   private final Map<ResourceId, Table> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
   private final Map<ResourceId, Integer> gets = new HashMap<>();
@@ -54,6 +54,10 @@ public class FakeTableRepository extends TableRepository {
     entries.put(table.getResourceId(), table);
     metas.put(table.getResourceId(), meta);
     indexBlob(meta, table);
+  }
+
+  public void put(Table table) {
+    put(table, null);
   }
 
   @Override
