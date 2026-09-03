@@ -125,7 +125,8 @@ public final class StoreCostMeter {
         Thread.sleep(SETTLE_POLL.toMillis());
       } catch (InterruptedException interrupted) {
         Thread.currentThread().interrupt();
-        return;
+        throw new AssertionError(
+            "settling was interrupted before the store-read window became stable", interrupted);
       }
     }
     throw new AssertionError(
