@@ -646,6 +646,46 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void publishedGenerationAcceptsOnlyIdenticalFinalRecordReplays() {
+    StatsRepository repository =
+        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    long snapshotId = 7091L;
+    String generationId = "immutable-generation";
+    TargetStatsRecord published =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(10L).setTotalSizeBytes(100L).build(),
+            null);
+    TargetStatsRecord changed =
+        TargetStatsRecords.tableRecord(
+            TABLE_ID,
+            snapshotId,
+            TableValueStats.newBuilder().setRowCount(20L).setTotalSizeBytes(200L).build(),
+            null);
+
+    repository.publishStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(published), false);
+    repository.publishStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(published), false);
+
+    assertThatThrownBy(
+            () ->
+                repository.publishStatsGeneration(
+                    TABLE_ID, snapshotId, generationId, List.of(changed), false))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("publication intent changed");
+    assertThatThrownBy(
+            () ->
+                repository.publishStatsGeneration(
+                    TABLE_ID, snapshotId, generationId, List.of(), false))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("publication intent changed");
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(published);
+  }
+
+  @Test
   void deleteUnpublishedStatsGenerationRemovesOnlyDraftGeneration() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();
