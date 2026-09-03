@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository.CatalogRef;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -27,7 +28,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
-public final class FakeCatalogRepository extends CatalogRepository {
+public class FakeCatalogRepository extends CatalogRepository {
   private final Map<ResourceId, Catalog> entries = new HashMap<>();
   private final Map<ResourceId, MutationMeta> metas = new HashMap<>();
   private final Map<ResourceId, Integer> gets = new HashMap<>();
@@ -78,6 +79,12 @@ public final class FakeCatalogRepository extends CatalogRepository {
                 accountId.equals(c.getResourceId().getAccountId())
                     && displayName.equals(c.getDisplayName()))
         .findFirst();
+  }
+
+  @Override
+  public Optional<CatalogRef> getRefByName(String accountId, String displayName) {
+    return getByName(accountId, displayName)
+        .map(catalog -> new CatalogRef(catalog.getResourceId(), catalog.getDisplayName()));
   }
 
   @Override

@@ -412,8 +412,7 @@ public class QueryInputResolver {
                   cancelled));
 
       try {
-        // Batch-resolve all NAME inputs up front: names sharing a catalog/namespace resolve their
-        // scope once instead of once per input.
+        // Batch-resolve all NAME inputs up front so duplicate names are resolved once.
         List<NameRef> nameInputs =
             inputs.stream()
                 .filter(in -> in.getTargetCase() == QueryInput.TargetCase.NAME)

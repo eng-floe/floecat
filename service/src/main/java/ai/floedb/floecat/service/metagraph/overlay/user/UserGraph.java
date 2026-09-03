@@ -394,10 +394,7 @@ public final class UserGraph {
     return names.resolveRelationId(accountId, ref);
   }
 
-  /**
-   * Batch variant of {@link #resolveName}: names sharing a catalog/namespace resolve their scope
-   * (catalog + namespace reads) once per call instead of once per name.
-   */
+  /** Batch variant of {@link #resolveName}; duplicate names are resolved once. */
   public Map<NameRef, Optional<ResourceId>> resolveNames(String cid, List<NameRef> refs) {
     refs.forEach(ref -> validateNameRef(cid, ref));
     String accountId = requireAccountId(cid);

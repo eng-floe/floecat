@@ -180,6 +180,29 @@ public class ViewRepository {
     return refs;
   }
 
+  /** Returns one pointer-only view page without fetching view blobs. */
+  public List<RelationRef> listRefs(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      int limit,
+      String pageToken,
+      StringBuilder nextOut) {
+    String prefix = Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId);
+    return repo.listRefsByPrefix(prefix, limit, pageToken, nextOut).stream()
+        .map(pointer -> TableRepository.toRelationRef(accountId, ResourceKind.RK_VIEW, pointer))
+        .flatMap(Optional::stream)
+        .toList();
+  }
+
+  /** Resolves one exact view name from pointer metadata without fetching its blob. */
+  public Optional<RelationRef> getRefByName(
+      String accountId, String catalogId, String namespaceId, String name) {
+    return repo.refByPointer(Keys.viewPointerByName(accountId, catalogId, namespaceId, name))
+        .flatMap(
+            pointer -> TableRepository.toRelationRef(accountId, ResourceKind.RK_VIEW, pointer));
+  }
+
   /** Reads exact by-name view pointers and returns refs without fetching blobs from S3. */
   public List<RelationRef> listRefsByName(
       String accountId, String catalogId, String namespaceId, Set<String> names) {

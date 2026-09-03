@@ -158,6 +158,14 @@ public class NamespaceRepository {
     return repo.get(Keys.namespacePointerByPath(accountId, catalogId, pathSegments));
   }
 
+  /** Resolves a namespace path from pointer metadata without fetching its blob. */
+  public Optional<NamespaceRef> getRefByPath(
+      String accountId, String catalogId, List<String> pathSegments) {
+    ResourceId catalogResourceId = catalogResourceId(accountId, catalogId);
+    return repo.refByPointer(Keys.namespacePointerByPath(accountId, catalogId, pathSegments))
+        .flatMap(pointer -> toNamespaceRef(accountId, catalogId, catalogResourceId, pointer));
+  }
+
   /**
    * Everything a namespace create has to assert: its catalog's child set, and its parent's when it
    * has one.
@@ -320,15 +328,7 @@ public class NamespaceRepository {
   }
 
   public List<ResourceId> listIds(String accountId, String catalogId) {
-    // empty parent path -> all namespaces in catalog
-    String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, List.of());
-    List<Namespace> namespaces =
-        repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());
-    List<ResourceId> ids = new java.util.ArrayList<>(namespaces.size());
-    for (Namespace ns : namespaces) {
-      ids.add(ns.getResourceId());
-    }
-    return ids;
+    return listRefs(accountId, catalogId).stream().map(NamespaceRef::id).toList();
   }
 
   /**
