@@ -265,17 +265,25 @@ public final class PointerCache {
       }
       String cachedAfter = decodeToken(pageToken).orElse(null);
       boolean startsAtPrefix = pageToken == null || pageToken.isBlank();
-      String firstFresh = fresh.isEmpty() ? null : fresh.getFirst().getKey();
+      if (!startsAtPrefix && cachedAfter == null) {
+        // Native store tokens are opaque: without the preceding pointer key we cannot prove which
+        // cached entries lie inside this page's authoritative interval. Future tokens emitted by
+        // CachingPointerStore carry that boundary; an old or externally supplied native token
+        // safely falls back to the store instead of leaving a falsely complete index.
+        degrade(partition);
+        return;
+      }
+      if (!exhausted && fresh.isEmpty()) {
+        // An opaque continuation without a returned key gives us no upper repair boundary.
+        degrade(partition);
+        return;
+      }
       String lastFresh = fresh.isEmpty() ? null : fresh.getLast().getKey();
-      String lower =
-          fresh.isEmpty() && !exhausted
-              ? null
-              : startsAtPrefix ? prefix : cachedAfter != null ? cachedAfter : firstFresh;
-      boolean lowerInclusive = startsAtPrefix || cachedAfter == null;
+      String lower = startsAtPrefix ? prefix : cachedAfter;
+      boolean lowerInclusive = startsAtPrefix;
 
       // A strongly consistent page proves absence inside the ordered interval it returned. It says
-      // nothing after its last key unless the continuation is exhausted. Native backend tokens are
-      // opaque, so on those continuation pages the first returned key is the earliest safe bound.
+      // nothing after its last key unless the continuation is exhausted.
       List<String> old =
           lower == null
               ? List.of()

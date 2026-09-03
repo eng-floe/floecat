@@ -142,6 +142,10 @@ public final class CachingPointerStore implements PointerStore {
           delegate.listPointersByPrefixConsistent(prefix, limit, sourceToken, nextTokenOut);
       boolean exhausted = nextTokenOut != null && nextTokenOut.isEmpty();
       pointers.repairPrefix(prefix, pageToken, fresh, exhausted);
+      if (nextTokenOut != null && !nextTokenOut.isEmpty() && !fresh.isEmpty()) {
+        nextTokenOut.setLength(0);
+        nextTokenOut.append(pointers.pageTokenAfterKey(fresh.getLast().getKey()));
+      }
       return fresh;
     } finally {
       unlockAllMutations();
