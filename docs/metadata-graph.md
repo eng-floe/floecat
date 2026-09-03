@@ -178,15 +178,19 @@ Internally `resolve(ResourceId)`:
 
 ### Name Resolution Semantics
 `resolveName` first short-circuits when the NameRef embeds a `ResourceId`. Otherwise it performs the
-table/view lookups directly (using the same repositories DirectoryService previously used) and
-throws the same ambiguity/unresolved error codes as `DirectoryService.Resolve*`. Graph callers get
-consistent NameRef → ResourceId translations without depending on a secondary RPC hop.
+catalog, namespace, and relation lookups through lightweight repository refs backed entirely by
+pointer metadata. It throws the same ambiguity/unresolved error codes as
+`DirectoryService.Resolve*`; graph callers get consistent NameRef → ResourceId translations without
+depending on a secondary RPC hop or hydrating metadata blobs.
 
 ### Fully Qualified (ResolveFQ*) Semantics
 `resolveTables/resolveViews` mirror the `ResolveFQ*` RPCs. The helpers accept either a list selector
 or a namespace prefix, apply input validation, paginate using Directory-compatible tokens, and
 return canonical `NameRef` + `ResourceId` pairs. DirectoryService delegates to these helpers so
-the graph defines the single source of truth for list/prefix resolution.
+the graph defines the single source of truth for list/prefix resolution. Both exact selectors and
+paged prefix selectors return lightweight refs directly from the complete pointer index; full
+catalog, namespace, table, and view blobs are loaded only by APIs that actually return their
+contents.
 
 ## Usage Guidelines
 - **Always go through the graph** for read paths instead of hitting repositories directly. This keeps
