@@ -166,7 +166,13 @@ Important connector properties:
   spelling DuckDB sends works here too; anything else is rejected at create/update time rather
   than read as "disabled". Honored only for `delta.source=unity` (the default): on
   `delta.source=glue` or `delta.source=filesystem` the option is accepted and then ignored, since
-  neither has a Unity credential endpoint to vend from.
+  neither has a Unity credential endpoint to vend from. If the credentials response carries an
+  `access_point` ARN, it is dropped and the rest of the tuple is used against the bucket named in
+  the object URI, logging the table at INFO. Nothing here addresses an access point, and the grant
+  behind one commonly permits bucket addressing anyway. Where it does not, reads fail at storage
+  with a 403; that log line is what points at the cause. Recover by having the workspace
+  vend bucket-scoped credentials for the external location, or by configuring a storage authority
+  covering it -- vending is reached only when no authority matches.
 - `s3.region` / `aws.region` – Region for the S3 client used to read Parquet files.
 - `stats.ndv.*` – Sampling knobs identical to the Iceberg connector.
 - Authentication-specific options (`auth.scheme`, `auth.properties`) – `auth.scheme=oauth2`

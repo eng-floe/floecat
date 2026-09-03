@@ -172,6 +172,20 @@ To extend behavior:
   If the upstream REST catalog ignores that header, normal REST behavior still applies and success
   depends on some other valid storage credential path. If the upstream catalog rejects delegated
   access requests, connector planning or table load will fail on the REST call.
+
+  The header only does something useful for `iceberg.source=rest` and `iceberg.source=glue`, whose
+  catalog client applies whatever `loadTable` vends. `iceberg.source=filesystem` reads a metadata
+  JSON directly and has no catalog to vend from, so such a connector needs a storage authority
+  covering its location, or its own `s3.*` credentials.
+
+  The header is not currently *rejected* for a filesystem source, though, and it is worth knowing
+  what actually happens: a vend is still attempted, which for this source means loading the
+  metadata JSON while the connector is constructed, once per file group. Nothing is vended, so a
+  connector matching no storage authority then fails reconcile with a missing-authority error
+  rather than falling back — which is what keeps it from silently reading under floecat's own AWS
+  identity. If that metadata load is itself what fails, the job sees a retryable internal error
+  instead. Skipping the attempt for this source is deferred along with the rest of the connector
+  path, which catalog integrations replace.
 - **Filesystem (single table)** – CLI example using the metadata JSON as the connector URI:
   ```
   connector create "Filesystem Iceberg" ICEBERG \

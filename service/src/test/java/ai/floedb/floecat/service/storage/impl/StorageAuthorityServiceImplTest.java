@@ -29,6 +29,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -789,7 +790,10 @@ class StorageAuthorityServiceImplTest {
         props, null, expiry);
   }
 
-  private static final java.time.Instant EXPIRY = java.time.Instant.ofEpochMilli(1786000000000L);
+  // Relative, not a literal: requireUsableCredentials now rejects an expiry that has already
+  // passed, so a hardcoded "future" epoch becomes a test that starts failing on a calendar date.
+  private static final java.time.Instant EXPIRY =
+      java.time.Instant.now().plus(java.time.Duration.ofHours(1));
 
   /**
    * Every field of the session tuple is required, not just the expiry. Access key plus secret plus
@@ -835,6 +839,34 @@ class StorageAuthorityServiceImplTest {
         "tpch_10",
         "customer",
         SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
+  }
+
+  @Test
+  void reconcileAcceptsALongLivedStaticKey() {
+    // Neither a session token nor an expiry means a long-lived key, not a session credential with
+    // its renewal fields missing. Capture handles it: isRefreshableExecutionCredential is false, so
+    // mergeResolvedStorageConfig embeds the tuple statically, which is correct for a credential
+    // that never expires. Unity returns this shape for an external location backed by long-lived
+    // keys, and refusing it would leave such a table queryable but never capturable.
+    SourceCatalogCredentialVendor.requireUsableCredentials(
+        vendedTuple("AKIA", "secret", null, null),
+        "tpch_10",
+        "customer",
+        SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
+
+    // The middle case stays terminal: a session token floecat cannot renew because the expiry is
+    // absent or already past would lapse mid-capture with nothing to recover it.
+    for (java.time.Instant expiry : new java.time.Instant[] {null, java.time.Instant.EPOCH}) {
+      assertThrows(
+          StatusRuntimeException.class,
+          () ->
+              SourceCatalogCredentialVendor.requireUsableCredentials(
+                  vendedTuple("ASIA", "secret", "token", expiry),
+                  "tpch_10",
+                  "customer",
+                  SourceCatalogCredentialVendor.CredentialUse.RECONCILE),
+          String.valueOf(expiry));
+    }
   }
 
   @Test
@@ -993,6 +1025,176 @@ class StorageAuthorityServiceImplTest {
    * table on that path, or a view-lease holder could steer which catalog vends -- the confused
    * deputy the leased-table path was built to prevent. Proof: the caller's table is never loaded.
    */
+  @Test
+  void aClientVendIsNotHeldToTheReconcilePathsRenewabilityRequirement() {
+    // This handler serves both usages, and only an execution-bound request registers a refresh
+    // provider. A client loadTable reads the tuple once, so validating it as RECONCILE would refuse
+    // credentials that read perfectly well -- Unity omits the session token for long-lived keys --
+    // and refuse them terminally, on a path where nothing retries. Neither the session token nor
+    // the expiry is required of it: the fixture below carries an expiry only because a realistic
+    // Unity response does, and the null-expiry case is pinned separately.
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(tableRepo.getById(TABLE_ID)).thenReturn(Optional.of(currentTable()));
+    when(connectorRepo.getById(CONNECTOR_ID))
+        .thenReturn(
+            Optional.of(
+                Connector.newBuilder()
+                    .setResourceId(CONNECTOR_ID)
+                    .setKind(ConnectorKind.CK_DELTA)
+                    .setState(ConnectorState.CS_ACTIVE)
+                    .putProperties("delta.source", "unity")
+                    .putProperties(
+                        ai.floedb.floecat.connector.spi.DatabricksAccessDelegation.VEND_OPTION,
+                        "vended-credentials")
+                    .build()));
+
+    ai.floedb.floecat.connector.spi.FloecatConnector source =
+        mock(ai.floedb.floecat.connector.spi.FloecatConnector.class);
+    when(source.vendStorageCredentials(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+        .thenReturn(
+            Optional.of(
+                new ai.floedb.floecat.connector.spi.FloecatConnector.VendedStorageCredentials(
+                    java.util.Map.of(
+                        "s3.access-key-id", "AKIA",
+                        "s3.secret-access-key", "secret"),
+                    "s3://warehouse/orders",
+                    java.time.Instant.now().plusSeconds(3600))));
+    service.sourceCatalogVendor.connectorFactory = ignored -> source;
+    service.sourceCatalogVendor.defaultRegion = "us-east-1";
+
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setTableId(TABLE_ID)
+                    .setLocationPrefix("s3://warehouse/orders/data.parquet")
+                    .setUsage(StorageCredentialUsage.SCU_CLIENT)
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(1, response.getStorageCredentialsCount());
+    assertEquals("AKIA", response.getStorageCredentials(0).getConfigMap().get("s3.access-key-id"));
+  }
+
+  @Test
+  void aClientVendWithNoExpiryAtAllIsStillAccepted() {
+    // The deliberate shape, not an accident: CredentialUse.QUERY registers no refresh provider and
+    // reads the tuple once, so an absent expiry says nothing about whether the read works. The
+    // consequence is on the record in the PR -- the credential's expires_at is then unset, which a
+    // consumer cannot tell from "never expires" -- and is why this is pinned rather than implied.
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(tableRepo.getById(TABLE_ID)).thenReturn(Optional.of(currentTable()));
+    when(connectorRepo.getById(CONNECTOR_ID))
+        .thenReturn(
+            Optional.of(
+                Connector.newBuilder()
+                    .setResourceId(CONNECTOR_ID)
+                    .setKind(ConnectorKind.CK_DELTA)
+                    .setState(ConnectorState.CS_ACTIVE)
+                    .putProperties("delta.source", "unity")
+                    .putProperties(
+                        ai.floedb.floecat.connector.spi.DatabricksAccessDelegation.VEND_OPTION,
+                        "vended-credentials")
+                    .build()));
+
+    ai.floedb.floecat.connector.spi.FloecatConnector source =
+        mock(ai.floedb.floecat.connector.spi.FloecatConnector.class);
+    when(source.vendStorageCredentials(
+            org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+        .thenReturn(
+            Optional.of(
+                new ai.floedb.floecat.connector.spi.FloecatConnector.VendedStorageCredentials(
+                    java.util.Map.of(
+                        "s3.access-key-id", "AKIA",
+                        "s3.secret-access-key", "secret"),
+                    "s3://warehouse/orders",
+                    null)));
+    service.sourceCatalogVendor.connectorFactory = ignored -> source;
+    service.sourceCatalogVendor.defaultRegion = "us-east-1";
+
+    ResolveStorageAuthorityResponse response =
+        service
+            .vendStorageCredentials(
+                VendStorageCredentialsRequest.newBuilder()
+                    .setAccountId("acct")
+                    .setTableId(TABLE_ID)
+                    .setLocationPrefix("s3://warehouse/orders/data.parquet")
+                    .setUsage(StorageCredentialUsage.SCU_CLIENT)
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(1, response.getStorageCredentialsCount());
+    assertFalse(response.getStorageCredentials(0).hasExpiresAt());
+  }
+
+  @Test
+  void anUpstreamConnectorNamingAnotherAccountIsNeverOpened() {
+    // The upstream ref is stored verbatim from spec.upstream, and validateUpstreamRef checks the
+    // resource kind rather than the account, so a table here can name a connector in another
+    // tenant. ConnectorRepository.getById keys on the account inside the id it is handed, so an
+    // unscoped lookup would resolve that tenant's connector and its secret and vend through it for
+    // a caller authorized only in this account.
+    ResourceId foreignConnectorId =
+        ResourceId.newBuilder()
+            .setAccountId("other-tenant")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId("conn-1")
+            .build();
+    ai.floedb.floecat.catalog.rpc.Table table =
+        ai.floedb.floecat.catalog.rpc.Table.newBuilder()
+            .setResourceId(TABLE_ID)
+            .putProperties("location", "s3://warehouse/orders")
+            .setUpstream(
+                ai.floedb.floecat.catalog.rpc.UpstreamRef.newBuilder()
+                    .setConnectorId(foreignConnectorId)
+                    .addNamespacePath("src")
+                    .setTableDisplayName("orders"))
+            .build();
+
+    when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
+    when(tableRepo.getById(TABLE_ID)).thenReturn(Optional.of(table));
+    // Present in the other tenant and willing to vend; absent in this one.
+    when(connectorRepo.getById(foreignConnectorId))
+        .thenReturn(
+            Optional.of(
+                Connector.newBuilder()
+                    .setResourceId(foreignConnectorId)
+                    .setKind(ConnectorKind.CK_DELTA)
+                    .setState(ConnectorState.CS_ACTIVE)
+                    .putProperties("delta.source", "unity")
+                    .putProperties(
+                        ai.floedb.floecat.connector.spi.DatabricksAccessDelegation.VEND_OPTION,
+                        "vended-credentials")
+                    .build()));
+    when(connectorRepo.getById(CONNECTOR_ID)).thenReturn(Optional.empty());
+
+    ai.floedb.floecat.connector.spi.FloecatConnector source =
+        mock(ai.floedb.floecat.connector.spi.FloecatConnector.class);
+    service.sourceCatalogVendor.connectorFactory = ignored -> source;
+
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            service
+                .vendStorageCredentials(
+                    VendStorageCredentialsRequest.newBuilder()
+                        .setAccountId("acct")
+                        .setTableId(TABLE_ID)
+                        .setLocationPrefix("s3://warehouse/orders/data.parquet")
+                        .setUsage(StorageCredentialUsage.SCU_CLIENT)
+                        .build())
+                .await()
+                .indefinitely());
+
+    // The foreign connector is never read, and nothing is ever asked to vend through it.
+    verify(connectorRepo, never()).getById(foreignConnectorId);
+    verifyNoInteractions(source);
+  }
+
   @Test
   void planViewLeaseCannotVendFromCallerSuppliedTable() {
     when(repo.list(eq("acct"), anyInt(), any(), any())).thenReturn(java.util.List.of());
