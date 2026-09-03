@@ -130,6 +130,16 @@
     "allowedTags": ["account", "cache", "component", "operation"]
   },
   {
+    "name": "floecat.core.cache.write.through",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Write-through publications, tagged by whether they were applied or skipped by the cache's safety guards.",
+    "requiredTags": ["cache", "component", "operation", "result"],
+    "allowedTags": ["account", "cache", "component", "operation", "result"]
+  },
+  {
     "name": "floecat.core.exec.active",
     "type": "GAUGE",
     "unit": "count",

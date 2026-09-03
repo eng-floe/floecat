@@ -62,7 +62,7 @@ sizing harness use the same arithmetic.
 | `CacheWeights` | Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (`WeightedValue` first, then protobuf, text, `byte[]`, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte. |
 | `CacheFamily` | The independently budgeted in-memory families that actually use this module — `POINTER` today. Each is its own cache, never a tag inside a shared one, so a burst in the fastest-moving family cannot evict the slowest. Add `OBJECT` and `HINT` when those implementations land; do not add disk blob caching to this enum. The tag is both the metric dimension and the config segment. |
 | `CacheBudget` / `CacheBudgetResolver` | One total split across the families. Pure arithmetic in `CacheBudget.split`; `CacheBudgetResolver` (`service/cache/`) reads the configuration and runs it at startup. |
-| `CacheEvents` | The common event baseline: `hit` (with how long it took to serve, so a caller that waited on someone else's load is not an instant hit), `miss`, `loadTime`, `loadFailed`, `loadDiscarded`, `admissionRejected` and `evicted`. Bulk reads report hits and misses per distinct key and one duration per loader invocation. A disk cache can reuse these metrics and add mapping/sweep signals without implementing `MemoryCache`. The module reports events; the container names the metrics. |
+| `CacheEvents` | The common event baseline: `hit` (with how long it took to serve, so a caller that waited on someone else's load is not an instant hit), `miss`, `loadTime`, `loadFailed`, `loadDiscarded`, `admissionRejected`, `writeThrough` and `evicted`. Write-through reports whether the cache applied the publication or skipped it through a safety guard. Bulk reads report hits and misses per distinct key and one duration per loader invocation. A disk cache can reuse these metrics and add mapping/sweep signals without implementing `MemoryCache`. The module reports events; the container names the metrics. |
 
 Budgets resolve from the container rather than from a compiled-in figure. The JVM already sizes its
 heap from the container memory limit, so `floecat.cache.heap-share` (0.5) of the maximum heap
@@ -121,6 +121,7 @@ contract and publishes its own subset; `graph-cache` is node-load timing, not a 
 | Is the budget too small? | `floecat_core_cache_evictions` and `..._evicted_weight_bytes` |
 | Has it stopped warming? | `floecat_core_cache_loads_discarded` — a load whose value was not retained because a write may have raced it |
 | Is the budget rejecting valid entries? | `floecat_core_cache_admission_rejected` |
+| Are write-through publications being applied or safety-guarded? | `floecat_core_cache_write_through{result="applied\|skipped"}` |
 | Are pointer indexes ready? | `floecat_core_cache_accounts`, tagged `result=loading|complete|degraded` |
 
 Hits and misses are counted as they happen rather than derived from a running total, because a rate

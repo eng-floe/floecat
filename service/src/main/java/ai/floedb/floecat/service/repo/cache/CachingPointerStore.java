@@ -330,19 +330,7 @@ public final class CachingPointerStore implements PointerStore {
       return;
     }
     Pointer published = next.toBuilder().setKey(key).setVersion(assignedVersion).build();
-    if (pointers.publish(key, published)) {
-      return;
-    }
-    Optional<Pointer> cached = pointers.peekResident(key);
-    if (cached.isPresent() && cached.orElseThrow().getVersion() < assignedVersion) {
-      pointers.putResident(key, published);
-    } else if (cached.filter(published::equals).isEmpty()) {
-      // An absent entry may be an in-flight load, so evict to move the MemoryCache fence. A cached
-      // higher version may instead belong to an older incarnation of a key that was deleted and
-      // recreated. Without an incarnation in the schema, absence is the only safe common
-      // resolution; the next read reloads it.
-      pointers.evictResident(key);
-    }
+    pointers.publish(key, published);
   }
 
   private void evictHeld(String key) {
