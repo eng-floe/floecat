@@ -18,6 +18,11 @@ package ai.floedb.floecat.service.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
@@ -30,6 +35,7 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -76,13 +82,9 @@ class ObjectCacheTest {
             + "\"required\":true,\"type\":\"long\"}]}";
 
     SchemaDescriptor first =
-        cache
-            .mappedSchema(table("account", "first", TableFormat.TF_ICEBERG, List.of()), schema)
-            .descriptor();
+        cache.mappedSchema(table("account", "first", TableFormat.TF_ICEBERG, List.of()), schema);
     SchemaDescriptor second =
-        cache
-            .mappedSchema(table("account", "second", TableFormat.TF_ICEBERG, List.of()), schema)
-            .descriptor();
+        cache.mappedSchema(table("account", "second", TableFormat.TF_ICEBERG, List.of()), schema);
 
     assertThat(second).isSameAs(first);
   }
@@ -96,25 +98,10 @@ class ObjectCacheTest {
     String schema =
         "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[{\"id\":1,\"name\":\"id\","
             + "\"required\":true,\"type\":\"long\"}]}";
+    CatalogGraphView graphView = schemaGraph(table, schema, loads);
 
-    SchemaDescriptor first =
-        cache
-            .pinnedSchema(
-                pin,
-                () -> {
-                  loads.incrementAndGet();
-                  return new ObjectCache.SchemaInput(table, schema);
-                })
-            .descriptor();
-    SchemaDescriptor second =
-        cache
-            .pinnedSchema(
-                pin,
-                () -> {
-                  loads.incrementAndGet();
-                  return new ObjectCache.SchemaInput(table, schema);
-                })
-            .descriptor();
+    SchemaDescriptor first = cache.pinnedSchema("correlation", pin, graphView);
+    SchemaDescriptor second = cache.pinnedSchema("correlation", pin, graphView);
 
     assertThat(second).isSameAs(first);
     assertThat(loads).hasValue(1);
@@ -125,13 +112,12 @@ class ObjectCacheTest {
     ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
     UserTableNode table = table("account", "table", TableFormat.TF_ICEBERG, List.of());
     AtomicInteger loads = new AtomicInteger();
+    CatalogGraphView graphView = schemaGraph(table, table.schemaJson(), loads);
 
     cache.pinnedSchema(
-        pin(table.id(), "definition-a", "constraints", "schema"),
-        () -> loaded(loads, new ObjectCache.SchemaInput(table, table.schemaJson())));
+        "correlation", pin(table.id(), "definition-a", "constraints", "schema"), graphView);
     cache.pinnedSchema(
-        pin(table.id(), "definition-b", "constraints", "schema"),
-        () -> loaded(loads, new ObjectCache.SchemaInput(table, table.schemaJson())));
+        "correlation", pin(table.id(), "definition-b", "constraints", "schema"), graphView);
 
     assertThat(loads).hasValue(2);
   }
@@ -412,6 +398,18 @@ class ObjectCacheTest {
   private static <T> T loaded(AtomicInteger loads, T value) {
     loads.incrementAndGet();
     return value;
+  }
+
+  private static CatalogGraphView schemaGraph(
+      UserTableNode table, String schemaJson, AtomicInteger loads) {
+    CatalogGraphView graphView = mock(CatalogGraphView.class);
+    when(graphView.schemaFor(anyString(), eq(table.id()), any(), anyString(), anyString()))
+        .thenAnswer(
+            ignored -> {
+              loads.incrementAndGet();
+              return new CatalogGraphView.SchemaResolution(table, schemaJson);
+            });
+    return graphView;
   }
 
   private static TablePin pin(

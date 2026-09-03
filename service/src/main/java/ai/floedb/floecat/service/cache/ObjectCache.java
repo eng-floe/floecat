@@ -23,12 +23,14 @@ import ai.floedb.floecat.cache.MemoryCache;
 import ai.floedb.floecat.cache.WeightedValue;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.MessageLite;
@@ -83,21 +85,6 @@ public final class ObjectCache {
     return new ObjectCache(64L * 1024L * 1024L, CacheEvents.none(), true);
   }
 
-  /** The mapped schema together with the exact identity used by assembled relation entries. */
-  public record MappedSchema(String identity, SchemaDescriptor descriptor) {
-    public MappedSchema {
-      Objects.requireNonNull(identity, "identity");
-      Objects.requireNonNull(descriptor, "descriptor");
-    }
-  }
-
-  /** The stored inputs needed to map a schema after an identity-first cache miss. */
-  public record SchemaInput(UserTableNode table, String schemaJson) {
-    public SchemaInput {
-      Objects.requireNonNull(table, "table");
-    }
-  }
-
   /** The DDL-shaped relation answer and the mapped schema needed to project and decorate it. */
   public record RelationObject(RelationInfo relation, SchemaDescriptor schema)
       implements WeightedValue {
@@ -130,15 +117,13 @@ public final class ObjectCache {
   }
 
   /** Map a table schema once for its real mapping inputs, not once per snapshot or caller. */
-  public MappedSchema mappedSchema(UserTableNode table, String schemaJson) {
+  public SchemaDescriptor mappedSchema(UserTableNode table, String schemaJson) {
     Objects.requireNonNull(table, "table");
     String effectiveSchema =
         schemaJson == null || schemaJson.isBlank() ? table.schemaJson() : schemaJson;
     String identity = schemaIdentity(table, effectiveSchema);
     Key key = new Key(table.id().getAccountId(), Kind.SCHEMA, identity);
-    SchemaDescriptor descriptor =
-        get(key, SchemaDescriptor.class, () -> schemaMapper.map(table, effectiveSchema));
-    return new MappedSchema(identity, descriptor);
+    return get(key, SchemaDescriptor.class, () -> schemaMapper.map(table, effectiveSchema));
   }
 
   /**
@@ -146,9 +131,11 @@ public final class ObjectCache {
    * table and snapshot are read only on a miss, which keeps callers from resolving cache
    * ingredients before asking Objects for the answer.
    */
-  public MappedSchema pinnedSchema(TablePin pin, Supplier<SchemaInput> loader) {
+  public SchemaDescriptor pinnedSchema(
+      String correlationId, TablePin pin, CatalogGraphView graphView) {
+    Objects.requireNonNull(correlationId, "correlationId");
     Objects.requireNonNull(pin, "pin");
-    Objects.requireNonNull(loader, "loader");
+    Objects.requireNonNull(graphView, "graphView");
     String schemaScope = pinnedSchemaScope(pin);
     String identity =
         Hashing.sha256Hex(
@@ -156,24 +143,31 @@ public final class ObjectCache {
                 + '\0'
                 + requireIdentity(schemaScope, "pinned schema identity"));
     Key key = new Key(account(pin.getTableId()), Kind.SCHEMA, identity);
-    SchemaDescriptor descriptor =
-        get(
-            key,
-            SchemaDescriptor.class,
-            () -> {
-              SchemaInput input =
-                  Objects.requireNonNull(loader.get(), "a schema loader returned null");
-              if (!input.table().id().equals(pin.getTableId())) {
-                throw new IllegalArgumentException("schema input does not match the pinned table");
-              }
-              String schemaJson = input.schemaJson();
-              String effectiveSchema =
-                  schemaJson == null || schemaJson.isBlank()
-                      ? input.table().schemaJson()
-                      : schemaJson;
-              return schemaMapper.map(input.table(), effectiveSchema);
-            });
-    return new MappedSchema(identity, descriptor);
+    return get(
+        key,
+        SchemaDescriptor.class,
+        () -> {
+          SnapshotRef snapshotRef =
+              SnapshotRef.newBuilder().setSnapshotId(pin.getSnapshotId()).build();
+          CatalogGraphView.SchemaResolution resolved =
+              Objects.requireNonNull(
+                  graphView.schemaFor(
+                      correlationId,
+                      pin.getTableId(),
+                      snapshotRef,
+                      pin.getTableBlobUri(),
+                      pin.getSnapshotBlobUri()),
+                  "pinned schema resolution returned null");
+          if (!resolved.table().id().equals(pin.getTableId())) {
+            throw new IllegalArgumentException("resolved schema does not match the pinned table");
+          }
+          String schemaJson = resolved.schemaJson();
+          String effectiveSchema =
+              schemaJson == null || schemaJson.isBlank()
+                  ? resolved.table().schemaJson()
+                  : schemaJson;
+          return schemaMapper.map(resolved.table(), effectiveSchema);
+        });
   }
 
   /** Load the full engine-neutral relation for one immutable user-table DDL identity. */
