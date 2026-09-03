@@ -40,6 +40,7 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -69,7 +70,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -150,6 +150,7 @@ public class UserObjectBundleService {
       QueryContextStore queryStore,
       CancelledQueryPinCleanup cancelledQueryPinCleanup,
       StatsProviderFactory statsFactory,
+      ObjectCache objects,
       EngineMetadataDecoratorProvider decoratorProvider,
       EngineContextProvider engineContext,
       @ConfigProperty(name = "floecat.catalog.bundle.emit_engine_specific", defaultValue = "true")
@@ -198,7 +199,8 @@ public class UserObjectBundleService {
     this.engineRelationDecorator =
         new EngineRelationDecorator(decoratorProvider, engineSpecificEnabled);
     this.relationBuilder =
-        new RelationBundleBuilder(graphView, engineRelationDecorator, systemExecutionResolver);
+        new RelationBundleBuilder(
+            graphView, engineRelationDecorator, systemExecutionResolver, objects);
     this.relationPayloadPolicy =
         new RelationPayloadPolicy(
             relationBuilder,
@@ -228,6 +230,7 @@ public class UserObjectBundleService {
         queryStore,
         new CancelledQueryPinCleanup(queryStore, Runnable::run),
         statsFactory,
+        ObjectCache.forTesting(),
         decoratorProvider,
         engineContext,
         engineSpecificEnabled,
@@ -370,7 +373,7 @@ public class UserObjectBundleService {
         : MetadataFanout.serial();
   }
 
-  private record RelationCacheKey(
+  private record RelationBuildKey(
       ResourceId relationId,
       boolean wantsAllColumns,
       List<String> initialColumns,
@@ -410,19 +413,12 @@ public class UserObjectBundleService {
 
     // Maintains the order inputs were resolved so the emitted chunk mirrors the request order.
     private final List<PendingItem> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
-    // Per-request name/node resolution memo, shared (thread-safe) across the concurrent select
-    // stage; records its hit/miss and resolve-nanos into the request tally below.
-    private final RelationResolutionMemo resolutionMemo;
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
     // Requested inputs selected for a chunk that filled before they could be emitted (a view ahead
     // of them expanded into enough base tables to reach the cap). Emitted, in order, ahead of newly
     // selected inputs in the next chunk — so a resolution's position never depends on chunk size.
     private final ArrayDeque<PendingItem> resolvedSpillover = new ArrayDeque<>();
-    // Read via size() from the Mutiny termination/failure callback (transport thread) while the
-    // driver may still be put()-ing mid-build on a cancelled stream; ConcurrentHashMap makes that
-    // concurrent size() well-defined, so a cancelled stream reports partial-but-not-torn telemetry.
-    private final Map<RelationCacheKey, RelationInfo> relationInfoCache = new ConcurrentHashMap<>();
     private final TimingAccumulator timings = new TimingAccumulator();
     private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
@@ -466,8 +462,6 @@ public class UserObjectBundleService {
               statsProvider);
       this.decorationSelection = engineRelationDecorator.select(requestEngine);
       this.buildFanout = buildFanout(decorationSelection);
-      this.resolutionMemo =
-          new RelationResolutionMemo(graphView, correlationId, requestEngine, timings);
       this.pinCommitter =
           new QueryPinCommitter(inputResolver, queryStore, ctx, correlationId, timings);
       initializeParentSpan();
@@ -599,16 +593,33 @@ public class UserObjectBundleService {
       return cancelled.get();
     }
 
-    private Optional<ResourceId> resolveNameCached(NameRef ref) {
-      return resolutionMemo.resolveName(ref);
+    private Optional<ResourceId> resolveName(NameRef ref) {
+      long startNs = System.nanoTime();
+      try {
+        return graphView.resolveName(correlationId, ref, resolutionContext.engineContext());
+      } finally {
+        timings.addNameResolveNanos(System.nanoTime() - startNs);
+      }
     }
 
-    private Optional<GraphNode> resolveNodeCached(ResourceId id) {
-      return resolutionMemo.resolveNode(id);
+    private Optional<GraphNode> resolveNode(ResourceId id) {
+      long startNs = System.nanoTime();
+      try {
+        return graphView.resolve(id, resolutionContext.engineContext());
+      } finally {
+        timings.addNodeResolveNanos(System.nanoTime() - startNs);
+      }
     }
 
-    private NameRef canonicalNameCached(RelationNode relation) {
-      return resolutionMemo.canonicalName(relation);
+    private NameRef canonicalName(RelationNode relation) {
+      NameRef nameOnly = NameRef.newBuilder().setName(relation.displayName()).build();
+      Optional<NameRef> canonical =
+          switch (relation.kind()) {
+            case TABLE -> graphView.tableName(relation.id(), resolutionContext.engineContext());
+            case VIEW -> graphView.viewName(relation.id(), resolutionContext.engineContext());
+            default -> Optional.empty();
+          };
+      return canonical.orElse(nameOnly);
     }
 
     /**
@@ -719,7 +730,7 @@ public class UserObjectBundleService {
         try {
           NameRef enriched =
               ViewContextUtils.enrichForViewContext(baseRef, cursor.view, defaultCatalogName());
-          Optional<ResourceId> baseIdOpt = resolveNameCached(enriched);
+          Optional<ResourceId> baseIdOpt = resolveName(enriched);
           if (baseIdOpt.isEmpty()) {
             continue;
           }
@@ -728,7 +739,7 @@ public class UserObjectBundleService {
           if (eagerBaseSeen.contains(baseKey)) {
             continue; // deduplicate
           }
-          Optional<GraphNode> nodeOpt = resolveNodeCached(baseId);
+          Optional<GraphNode> nodeOpt = resolveNode(baseId);
           if (nodeOpt.isEmpty() || !(nodeOpt.get() instanceof RelationNode rel)) {
             continue;
           }
@@ -740,7 +751,7 @@ public class UserObjectBundleService {
                   baseId,
                   rel,
                   syntheticInput,
-                  canonicalNameCached(rel));
+                  canonicalName(rel));
           // Base-table pins are already derived from the parent view candidate (including AS-OF
           // overrides). Avoid re-adding a synthetic TABLE_ID pin here, which would otherwise
           // resolve to CURRENT and can overwrite AS-OF pins in the same batch.
@@ -806,9 +817,9 @@ public class UserObjectBundleService {
                   correlationId,
                   planned.candidate(),
                   planned.normalized(),
-                  this::resolveNameCached,
-                  this::resolveNodeCached,
-                  this::canonicalNameCached);
+                  this::resolveName,
+                  this::resolveNode,
+                  this::canonicalName);
         } finally {
           timings.addSelectRelationNanos(System.nanoTime() - selectStartNs);
         }
@@ -1033,7 +1044,7 @@ public class UserObjectBundleService {
       // buildOne does not recompute it. slots keeps every resolution in chunk order.
       RelationResolution[] slots = new RelationResolution[chunkItems.size()];
       List<BuildPlan> buildPlans = new ArrayList<>();
-      Map<RelationCacheKey, Integer> buildIndexByKey = new HashMap<>();
+      Map<RelationBuildKey, Integer> buildIndexByKey = new HashMap<>();
       for (int i = 0; i < chunkItems.size(); i++) {
         throwIfCancelled(this::isCancelled);
         PendingItem item = chunkItems.get(i);
@@ -1042,13 +1053,8 @@ public class UserObjectBundleService {
           continue;
         }
         PendingFound found = (PendingFound) item;
-        RelationInfo cachedInfo = relationInfoCache.get(relationCacheKey(found.relation()));
-        if (cachedInfo != null) {
-          slots[i] = foundResolution(found.inputIndex(), cachedInfo);
-          continue;
-        }
-        RelationCacheKey cacheKey = relationCacheKey(found.relation());
-        Integer existingBuildIndex = buildIndexByKey.get(cacheKey);
+        RelationBuildKey buildKey = relationBuildKey(found.relation());
+        Integer existingBuildIndex = buildIndexByKey.get(buildKey);
         if (existingBuildIndex != null) {
           // The first full build produces an immutable payload that every same-key slot can share.
           // Keep all slots so the emitted response still mirrors the requested inputs exactly.
@@ -1087,7 +1093,7 @@ public class UserObjectBundleService {
           continue;
         }
         buildPlans.add(new BuildPlan(found, i, payloadIdentity));
-        buildIndexByKey.put(cacheKey, buildPlans.size() - 1);
+        buildIndexByKey.put(buildKey, buildPlans.size() - 1);
       }
 
       // Build the remaining relations concurrently; each task times itself into its own
@@ -1116,7 +1122,6 @@ public class UserObjectBundleService {
         PendingFound found = outcome.source();
         BuildPlan plan = buildPlans.get(j);
         if (outcome.info() != null) {
-          relationInfoCache.put(relationCacheKey(found.relation()), outcome.info());
           for (BuildTarget target : plan.targets) {
             slots[target.slot()] = foundResolution(target.found().inputIndex(), outcome.info());
           }
@@ -1184,9 +1189,6 @@ public class UserObjectBundleService {
               totalMs,
               pinMs,
               schedulingMs,
-              resolutionMemo.nameEntries(),
-              resolutionMemo.nodeEntries(),
-              relationInfoCache.size(),
               safe(outcome)));
       updateParentSpanSummary(outcome, totalMs);
 
@@ -1250,7 +1252,7 @@ public class UserObjectBundleService {
       parentSpan.setAttribute("floecat.get_user_objects.not_found", timings.notFound());
     }
 
-    private RelationCacheKey relationCacheKey(ResolvedRelation relation) {
+    private RelationBuildKey relationBuildKey(ResolvedRelation relation) {
       TableReferenceCandidate candidate = relation.candidate();
       List<String> initialColumns =
           candidate.getInitialColumnsCount() == 0
@@ -1260,7 +1262,7 @@ public class UserObjectBundleService {
           relation.selectedInput().hasSnapshot()
               ? relation.selectedInput().getSnapshot()
               : SnapshotRef.getDefaultInstance();
-      return new RelationCacheKey(
+      return new RelationBuildKey(
           relation.relationId(),
           candidate.getWantsAllColumns(),
           initialColumns,
