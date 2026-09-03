@@ -37,10 +37,9 @@ import org.jboss.logging.Logger;
  * floecat.cache.total-bytes} and the derivation is skipped entirely.
  *
  * <p>A cache's figure is a share of that total, or an absolute {@code max-bytes} pinned instead.
- * The pointer share comes from the reference sizing scenario -- a 100,000-table account at 100
- * columns, where addressing needs 0.32 GB of the 3.34 GB the memory caches hold between them.
- * Shares resolve against that total, not the heap. Nothing about the scenario is compiled in; it
- * says what to set, not what the code assumes.
+ * The pointer and object shares come from the reference sizing scenario -- a 100,000-table account
+ * at 100 columns. Shares resolve against that total, not the heap. Nothing about the scenario is
+ * compiled in; it says what to set, not what the code assumes.
  *
  * <p>Every family resolves the same way, by tag, over {@link CacheFamily#values()}: adding a family
  * adds its two properties and nothing else, with no per-family injection point to forget.

@@ -30,6 +30,7 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
@@ -79,6 +80,7 @@ class AccountServiceImplTest {
     service.durableReconcileJobStore = mock(Instance.class);
     when(service.durableReconcileJobStore.isResolvable()).thenReturn(false);
     service.catalogIntegrationCredentialCleanup = mock(CatalogIntegrationCredentialCleanup.class);
+    service.objects = ObjectCache.forTesting();
     installBasePrincipal(service, service.principal);
     when(service.principal.get())
         .thenReturn(
