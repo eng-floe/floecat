@@ -42,6 +42,7 @@ import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -150,7 +151,8 @@ class RelationBundleBuilderTest {
             graphView,
             engineRelationDecorator,
             new SystemExecutionResolver(
-                FlightEndpointRef.newBuilder().setHost("floecat-flight").setPort(80).build())),
+                FlightEndpointRef.newBuilder().setHost("floecat-flight").setPort(80).build()),
+            ObjectCache.forTesting()),
         engineRelationDecorator);
   }
 

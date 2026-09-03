@@ -27,11 +27,11 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.RelationInfo;
-import ai.floedb.floecat.query.rpc.RelationStats;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -64,6 +64,25 @@ class ObjectCacheTest {
                     List.of("part")),
                 schema))
         .isNotEqualTo(identity);
+  }
+
+  @Test
+  void mappedSchemaIsSharedAcrossTablesWithEquivalentMappingInputs() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    String schema =
+        "{\"type\":\"struct\",\"schema-id\":1,\"fields\":[{\"id\":1,\"name\":\"id\","
+            + "\"required\":true,\"type\":\"long\"}]}";
+
+    SchemaDescriptor first =
+        cache
+            .mappedSchema(table("account", "first", TableFormat.TF_ICEBERG, List.of()), schema)
+            .descriptor();
+    SchemaDescriptor second =
+        cache
+            .mappedSchema(table("account", "second", TableFormat.TF_ICEBERG, List.of()), schema)
+            .descriptor();
+
+    assertThat(second).isSameAs(first);
   }
 
   @Test
@@ -130,18 +149,18 @@ class ObjectCacheTest {
     cache.snapshotFacts(
         first,
         1,
-        "generation",
         () -> {
           firstLoads.incrementAndGet();
-          return Optional.of(RelationStats.newBuilder().setRowCount(1).build());
+          return Optional.of(
+              new ObjectCache.SnapshotFacts(OptionalLong.of(1), OptionalLong.empty()));
         });
     cache.snapshotFacts(
         second,
         1,
-        "generation",
         () -> {
           secondLoads.incrementAndGet();
-          return Optional.of(RelationStats.newBuilder().setRowCount(2).build());
+          return Optional.of(
+              new ObjectCache.SnapshotFacts(OptionalLong.of(2), OptionalLong.empty()));
         });
 
     cache.evictAccount("first");
@@ -149,22 +168,53 @@ class ObjectCacheTest {
     cache.snapshotFacts(
         first,
         1,
-        "generation",
         () -> {
           firstLoads.incrementAndGet();
-          return Optional.of(RelationStats.newBuilder().setRowCount(3).build());
+          return Optional.of(
+              new ObjectCache.SnapshotFacts(OptionalLong.of(3), OptionalLong.empty()));
         });
     cache.snapshotFacts(
         second,
         1,
-        "generation",
         () -> {
           secondLoads.incrementAndGet();
-          return Optional.of(RelationStats.newBuilder().setRowCount(4).build());
+          return Optional.of(
+              new ObjectCache.SnapshotFacts(OptionalLong.of(4), OptionalLong.empty()));
         });
 
     assertThat(firstLoads).hasValue(2);
     assertThat(secondLoads).hasValue(1);
+  }
+
+  @Test
+  void snapshotFactsCanBeReplacedAfterAStatsMutation() {
+    ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
+    ResourceId tableId = tableId("account", "table");
+    AtomicInteger loads = new AtomicInteger();
+
+    assertThat(
+            cache.snapshotFacts(
+                tableId,
+                1,
+                () ->
+                    Optional.of(
+                        new ObjectCache.SnapshotFacts(
+                            OptionalLong.of(loads.incrementAndGet()), OptionalLong.empty()))))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(1L);
+    cache.evictSnapshotFacts(tableId, 1);
+    assertThat(
+            cache.snapshotFacts(
+                tableId,
+                1,
+                () ->
+                    Optional.of(
+                        new ObjectCache.SnapshotFacts(
+                            OptionalLong.of(loads.incrementAndGet()), OptionalLong.empty()))))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(2L);
   }
 
   @Test
@@ -173,9 +223,7 @@ class ObjectCacheTest {
     UserTableNode table = table("account", "table", TableFormat.TF_ICEBERG, List.of());
     ObjectCache.MappedSchema schema =
         new ObjectCache.MappedSchema("schema", SchemaDescriptor.getDefaultInstance());
-    ObjectCache.RelationTemplate template =
-        new ObjectCache.RelationTemplate(
-            RelationInfo.newBuilder().setRelationId(table.id()).build(), schema.descriptor());
+    RelationInfo template = RelationInfo.newBuilder().setRelationId(table.id()).build();
     AtomicInteger loads = new AtomicInteger();
 
     assertThat(cache.tableRelation(table, schema, () -> loaded(loads, template)))
