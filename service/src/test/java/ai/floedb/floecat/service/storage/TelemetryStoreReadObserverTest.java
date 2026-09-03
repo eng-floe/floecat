@@ -22,6 +22,7 @@ import ai.floedb.floecat.service.storage.StoreReadObserver.Observation;
 import ai.floedb.floecat.service.storage.StoreReadObserver.Operation;
 import ai.floedb.floecat.service.storage.StoreReadObserver.ReadCall;
 import ai.floedb.floecat.service.storage.StoreReadObserver.Store;
+import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import ai.floedb.floecat.telemetry.Tag;
@@ -72,6 +73,13 @@ class TelemetryStoreReadObserverTest {
     assertThat(observability.counterValue(Telemetry.Metrics.STORE_ERRORS)).isEqualTo(1d);
     assertThat(observability.counterTagHistory(Telemetry.Metrics.STORE_REQUESTS).get(0))
         .contains(Tag.of(TagKey.RESULT, "error"));
+    assertThat(
+            observability
+                .storeTraceScopes()
+                .get(Observability.Category.STORE.name())
+                .get(0)
+                .errorType())
+        .isEqualTo(IllegalStateException.class);
   }
 
   @Test

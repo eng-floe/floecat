@@ -80,7 +80,7 @@ class StoreMetricsTest {
       assertThat(traceScopes).hasSize(1);
       TestStoreTraceScope traceScope = traceScopes.get(0);
       assertThat(traceScope.succeeded()).isTrue();
-      assertThat(traceScope.error()).isNull();
+      assertThat(traceScope.errorType()).isNull();
       assertThat(traceScope.closed()).isTrue();
 
       PhaseDiagnostics diagnostics = observability.diagnostics("svc", "op");
@@ -204,7 +204,7 @@ class StoreMetricsTest {
     assertThat(traceScopes).hasSize(1);
     TestStoreTraceScope traceScope = traceScopes.get(0);
     assertThat(traceScope.succeeded()).isFalse();
-    assertThat(traceScope.error()).isSameAs(failure);
+    assertThat(traceScope.errorType()).isEqualTo(IllegalStateException.class);
     assertThat(traceScope.closed()).isTrue();
   }
 }

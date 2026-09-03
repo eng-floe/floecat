@@ -393,7 +393,7 @@ public final class TestObservability implements Observability {
     private final String operation;
     private final List<Tag> tags;
     private boolean success;
-    private Throwable error;
+    private Class<? extends Throwable> errorType;
     private boolean closed;
 
     private TestStoreTraceScope(String component, String operation, List<Tag> tags) {
@@ -404,14 +404,14 @@ public final class TestObservability implements Observability {
 
     @Override
     public void success() {
-      if (error == null) {
+      if (errorType == null) {
         success = true;
       }
     }
 
     @Override
-    public void error(Throwable throwable) {
-      error = throwable;
+    public void error(Class<? extends Throwable> errorType) {
+      this.errorType = Objects.requireNonNull(errorType, "errorType");
       success = false;
     }
 
@@ -424,8 +424,8 @@ public final class TestObservability implements Observability {
       return success;
     }
 
-    public Throwable error() {
-      return error;
+    public Class<? extends Throwable> errorType() {
+      return errorType;
     }
 
     public boolean closed() {

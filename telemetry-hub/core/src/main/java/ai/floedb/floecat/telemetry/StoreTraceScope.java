@@ -25,7 +25,7 @@ public interface StoreTraceScope extends AutoCloseable {
         public void success() {}
 
         @Override
-        public void error(Throwable throwable) {}
+        public void error(Class<? extends Throwable> errorType) {}
 
         @Override
         public void close() {}
@@ -34,8 +34,8 @@ public interface StoreTraceScope extends AutoCloseable {
   /** Marks the span as a success. */
   void success();
 
-  /** Records an error and marks the span as failed. */
-  void error(Throwable throwable);
+  /** Records the non-sensitive error type and marks the span as failed. */
+  void error(Class<? extends Throwable> errorType);
 
   @Override
   default void close() {}

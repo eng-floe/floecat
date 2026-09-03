@@ -39,7 +39,7 @@ class RecordingStoreReadObserverTest {
   }
 
   @Test
-  void preservesLegacyUnitsForDefaultAndConsistentMethods() {
+  void countsEveryObservedCallInItsActualStoreUnit() {
     RecordingStoreReadObserver observer = new RecordingStoreReadObserver();
 
     observer.begin(new ReadCall(Store.POINTER, Operation.SCAN_PREFIX_CONSISTENT, 0, List.of("/")));
@@ -48,7 +48,7 @@ class RecordingStoreReadObserverTest {
     observer.begin(new ReadCall(Store.BLOB, Operation.GET_RANGE, 1, List.of("one")));
     observer.begin(new ReadCall(Store.BLOB, Operation.GET_RANGES, 2, List.of("two", "three")));
 
-    assertThat(observer.pointerRoundTrips()).isEqualTo(2);
+    assertThat(observer.pointerRoundTrips()).isEqualTo(3);
     assertThat(observer.pointerPrefixWalks()).isEqualTo(2);
     assertThat(observer.blobRoundTrips()).isEqualTo(3);
     assertThat(observer.blobObjectGets()).isEqualTo(3);

@@ -98,7 +98,7 @@ public final class StoreMetrics extends BaseMetrics {
     public void error(Throwable throwable) {
       error = throwable;
       metricsScope.error(throwable);
-      traceScope.error(throwable);
+      traceScope.error(throwable.getClass());
     }
 
     @Override

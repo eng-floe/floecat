@@ -45,6 +45,7 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
   private final AtomicInteger pointerBatchKeys = new AtomicInteger();
   private final AtomicInteger pointerScans = new AtomicInteger();
   private final AtomicInteger pointerCounts = new AtomicInteger();
+  private final AtomicInteger pointerIsEmpty = new AtomicInteger();
   private final AtomicInteger blobGets = new AtomicInteger();
   private final AtomicInteger blobBatches = new AtomicInteger();
   private final AtomicInteger blobBatchObjects = new AtomicInteger();
@@ -70,31 +71,24 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
   private void recordPointer(ReadCall call) {
     switch (call.operation()) {
       case GET -> {
-        pointerThreads.record();
         pointerGets.incrementAndGet();
         pointerKeys.addAll(call.targets());
       }
       case GET_BATCH -> {
-        pointerThreads.record();
         pointerBatches.incrementAndGet();
         pointerBatchKeys.addAndGet(call.itemCount());
         pointerKeys.addAll(call.targets());
       }
-      // The old in-memory counting subclass saw each consistent method delegate through its
-      // corresponding ordinary method, so both names remain one legacy scan/count here.
       case SCAN_PREFIX, SCAN_PREFIX_CONSISTENT -> {
-        pointerThreads.record();
         pointerScans.incrementAndGet();
       }
       case COUNT_PREFIX, COUNT_PREFIX_CONSISTENT -> {
-        pointerThreads.record();
         pointerCounts.incrementAndGet();
       }
-      // InMemoryPointerStore.isEmpty was never overridden by the old recorder. Production still
-      // observes it, but adding it to this test unit would change the established cost formulas.
-      case IS_EMPTY -> {}
+      case IS_EMPTY -> pointerIsEmpty.incrementAndGet();
       default -> throw new IllegalArgumentException("not a pointer operation: " + call.operation());
     }
+    pointerThreads.record();
   }
 
   private void recordBlob(ReadCall call) {
@@ -111,8 +105,7 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
         blobBatchObjects.addAndGet(call.itemCount());
         kind = FetchKind.GET;
       }
-      // The old recorder inherited BlobStore.getRanges, whose default implementation called the
-      // overridden singular get once per range. Preserve those units in the compatibility view.
+      // Each range becomes an independent backend GET in both the default and S3 implementations.
       case GET_RANGES -> {
         blobThreads.record(call.itemCount());
         blobGets.addAndGet(call.itemCount());
@@ -135,7 +128,11 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
   }
 
   public int pointerRoundTrips() {
-    return pointerGets.get() + pointerBatches.get() + pointerScans.get() + pointerCounts.get();
+    return pointerGets.get()
+        + pointerBatches.get()
+        + pointerScans.get()
+        + pointerCounts.get()
+        + pointerIsEmpty.get();
   }
 
   public int pointerKeysRead() {
@@ -172,6 +169,7 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
     pointerBatchKeys.set(0);
     pointerScans.set(0);
     pointerCounts.set(0);
+    pointerIsEmpty.set(0);
     blobGets.set(0);
     blobBatches.set(0);
     blobBatchObjects.set(0);
@@ -197,6 +195,8 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
         .append(pointerScans.get())
         .append("  prefixCounts=")
         .append(pointerCounts.get())
+        .append("  isEmpty=")
+        .append(pointerIsEmpty.get())
         .append('\n');
     synchronized (pointerKeys) {
       if (!pointerKeys.isEmpty()) {

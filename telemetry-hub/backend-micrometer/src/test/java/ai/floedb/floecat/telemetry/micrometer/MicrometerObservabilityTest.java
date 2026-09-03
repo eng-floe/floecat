@@ -599,16 +599,17 @@ class MicrometerObservabilityTest {
   }
 
   @Test
-  void storeTraceScopeRecordsException() {
+  void storeTraceScopeRecordsOnlyTheExceptionType() {
     try (GlobalTelemetry telemetry = new GlobalTelemetry()) {
       MicrometerObservability observability =
           new MicrometerObservability(meters, telemetryRegistry, TelemetryPolicy.LENIENT);
       Tracer tracer = GlobalOpenTelemetry.getTracer("test");
       Span parent = tracer.spanBuilder("parent-span").startSpan();
-      IllegalStateException failure = new IllegalStateException("boom");
+      IllegalStateException failure =
+          new IllegalStateException("s3://sensitive-bucket/private/object-key");
       try (Scope ignored = parent.makeCurrent()) {
         StoreTraceScope scope = observability.storeTraceScope("svc", "store-op");
-        scope.error(failure);
+        scope.error(failure.getClass());
         scope.close();
       } finally {
         parent.end();
@@ -625,7 +626,10 @@ class MicrometerObservabilityTest {
                 assertThat(event.getAttributes().get(AttributeKey.stringKey("exception.type")))
                     .endsWith("IllegalStateException");
                 assertThat(event.getAttributes().get(AttributeKey.stringKey("exception.message")))
-                    .isEqualTo("boom");
+                    .isNull();
+                assertThat(
+                        event.getAttributes().get(AttributeKey.stringKey("exception.stacktrace")))
+                    .isNull();
               });
     }
   }
