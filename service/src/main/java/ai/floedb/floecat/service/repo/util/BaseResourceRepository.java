@@ -625,6 +625,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return observeRepository("ref_by_pointer", () -> pointerReads.get(key));
   }
 
+  /** Builds a continuation token through the same read view used by ordinary listings. */
+  public String pageTokenAfterKey(String key) {
+    return observeRepository("page_token_after_key", () -> pointerReads.pageTokenAfterKey(key));
+  }
+
   public record KeyedValue<T>(String key, T value) {}
 
   @Override
