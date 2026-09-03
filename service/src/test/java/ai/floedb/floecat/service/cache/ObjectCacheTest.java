@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 
 import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
@@ -266,6 +267,16 @@ class ObjectCacheTest {
     assertThat(loads).hasValue(4);
   }
 
+  @Test
+  void snapshotFactsRequireExplicitAbsence() {
+    assertThatNullPointerException()
+        .isThrownBy(() -> new ObjectCache.SnapshotFacts(null, OptionalLong.empty()))
+        .withMessage("rowCount");
+    assertThatNullPointerException()
+        .isThrownBy(() -> new ObjectCache.SnapshotFacts(OptionalLong.empty(), null))
+        .withMessage("totalSizeBytes");
+  }
+
   private static Optional<ObjectCache.SnapshotFacts> facts(AtomicInteger loads, long rowCount) {
     loads.incrementAndGet();
     return Optional.of(
@@ -293,7 +304,7 @@ class ObjectCacheTest {
   }
 
   @Test
-  void everyRelationIngredientParticipatesInTheIdentity() {
+  void relationIdentityTracksOnlyInputsThatChangeTheCachedPayload() {
     ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
     UserTableNode table = table("account", "table", TableFormat.TF_ICEBERG, List.of());
     ObjectCache.RelationObject relation =
@@ -319,7 +330,9 @@ class ObjectCacheTest {
         Optional.of(pin(table.id(), "definition-a", "constraints-a", "schema-b")),
         () -> loaded(loads, relation));
 
-    assertThat(loads).hasValue(4);
+    // Constraints are served from their own content-keyed entry. They are not part of RelationInfo,
+    // so changing only that ref must keep the expensive relation template hot.
+    assertThat(loads).hasValue(3);
   }
 
   private static <T> T loaded(AtomicInteger loads, T value) {
