@@ -34,14 +34,13 @@ facade sit inside `service/metagraph`. The split looks like this:
 - `core/metagraph/model/` – Immutable node records (`CatalogNode`, `NamespaceNode`, `TableNode`,
   `ViewNode`, `SystemViewNode`) plus shared enums (`GraphNodeKind`, `EngineKey`, `EngineHint`,
   `GraphNodeOrigin`, etc.).
-- `service/metagraph/cache/` – `CatalogTopologyCache` holds namespace and relation ref listings.
-  Derived nodes are not cached here: they live content-keyed by blob URI in the process-wide
-  `ImmutableBlobCache` (`service/repo/cache/`), and the pointers naming them live in the pointer
-  cache under the store.
+- `service/repo/cache/` – the pointer cache owns complete namespace and relation-name indexes;
+  derived nodes live content-keyed by blob URI in the process-wide `ImmutableBlobCache`.
 - `service/metagraph/loader/` – `NodeLoader` wraps the catalog/namespace/table/view repositories to
   hydrate immutable nodes from protobuf metadata (`metaForSafe` + pointer fetches).
-- `service/metagraph/resolver/` – `NameResolver` handles catalog/namespace/table/view lookups, while
-  `FullyQualifiedResolver` mirrors DirectoryService’s ResolveFQ list/prefix semantics.
+- `service/metagraph/resolver/` – `NameResolver` handles catalog/namespace/table/view lookups and
+  lightweight pointer-backed ref listings, while `FullyQualifiedResolver` mirrors
+  DirectoryService’s ResolveFQ list/prefix semantics.
 - `service/metagraph/snapshot/` – `SnapshotHelper` encapsulates snapshot pinning and schema resolution,
   wrapping the SnapshotService RPC stub.
 - `service/metagraph/hint/` – `EngineHintManager` routes registered hint providers, matches them

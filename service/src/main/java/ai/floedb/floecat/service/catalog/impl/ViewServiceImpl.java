@@ -36,7 +36,6 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceViews;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
@@ -77,7 +76,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject TopologyGraph topology;
   @Inject CatalogGraphView graphView;
   @Inject EngineHintSchemaCleaner hintCleaner;
 
@@ -241,7 +239,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       // when the name is held by any relation, not only a same-kind view.
                       throw relationNameConflict(corr, accountId, spec, normName);
                     }
-                    topology.evictRelationRefs(view.getNamespaceId());
                     var meta = viewRepo.metaForSafe(viewResourceId);
                     return CreateViewResponse.newBuilder().setView(view).setMeta(meta).build();
                   }
@@ -332,7 +329,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           this::correlationId,
                           View::parseFrom);
 
-                  topology.evictRelationRefs(result.body.getNamespaceId());
                   return CreateViewResponse.newBuilder()
                       .setView(result.body)
                       .setMeta(result.meta)
@@ -458,10 +454,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                             "expected", Long.toString(meta.getPointerVersion()),
                             "actual", Long.toString(nowMeta.getPointerVersion())));
                   }
-                  topology.evict(viewId);
-                  if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
-                    topology.evictRelationRefs(desired.getNamespaceId());
-                  }
                   var outMeta = viewRepo.metaForSafe(viewId);
                   var latest = viewRepo.getById(viewId).orElse(desired);
                   return UpdateViewResponse.newBuilder().setView(latest).setMeta(outMeta).build();
@@ -500,7 +492,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    topology.evict(viewId);
                     return DeleteViewResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -516,7 +507,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           "view",
                           Map.of("id", viewId.getId()));
 
-                  topology.evict(viewId);
                   return DeleteViewResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())

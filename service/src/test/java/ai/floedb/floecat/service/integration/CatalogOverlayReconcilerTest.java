@@ -30,7 +30,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.access.CatalogCapabilities;
@@ -52,7 +51,6 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
-import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
@@ -141,7 +139,6 @@ class CatalogOverlayReconcilerTest {
     // the failure this protocol calls silent and total -- so the fences here are real and the
     // assertions read the marker versions they move.
     reconciler.markerStore = markerStoreOver(pointers);
-    reconciler.topology = mock(TopologyGraph.class);
   }
 
   @Test
@@ -194,11 +191,9 @@ class CatalogOverlayReconcilerTest {
             .getByName("acct", "catalog", europeNamespace.getResourceId().getId(), "summary")
             .isPresent());
 
-    clearInvocations(reconciler.topology);
     var markersBefore = markerVersions();
     var second = reconcile();
     assertEquals(new CatalogOverlayReconciler.Result(0, 0, 0, 0, 0, 0, 0, 0), second);
-    verifyNoInteractions(reconciler.topology);
     // A pass that changes nothing writes nothing, markers included -- advancing one would cost a
     // concurrent writer its fence for no reason.
     assertEquals(markersBefore, markerVersions(), "a no-op pass moves no marker");

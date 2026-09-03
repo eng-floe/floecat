@@ -12,17 +12,18 @@ callbacks.
   be stale; the content it names is immutable.
 - **Content-addressed means no invalidation.** The bytes at a CAS blob URI never change, so a
   decoded entry keyed by URI is right forever. Eviction exists only for memory, never correctness.
-- **Caches serve content, never existence.** A resident decode may outlive the durable blob (GC can
+- **Decoded content never proves existence.** A resident decode may outlive the durable blob (GC can
   sweep a superseded blob while its decode is still cached). Any read whose emptiness is
-  load-bearing — a liveness or integrity probe — must hit the live store.
+  load-bearing — a liveness or integrity probe — must hit the live store. The complete pointer
+  index is deliberately different: after its account load completes, a missing addressing key is
+  authoritative absence.
 
-## The four disciplines
+## The cache disciplines
 
 | Discipline | Implementation | What it holds | Freshness contract |
 |------------|----------------|---------------|--------------------|
-| Pointers | `CachingPointerStore` decorating `PointerStore`, holding a `MemoryCache` from `core/cache` | Every pointer read through the `@CachedPointerStore` view; prefix listings remain live store operations | No expiry. Writes **publish** rather than invalidate — the writer already holds the new value, so the next reader hits. Publication is presence-guarded, version-ordered and fenced against concurrent loads; deletes and prefix deletes evict. Sits *under* both store views, so every write is seen whoever built it — pointer keys arrive from clients via `TxChange.target_pointer_key`, so no maintained key-family allowlist can be complete. The unqualified `PointerStore` is authoritative by default; query-serving modules opt into `@CachedPointerStore` once at injection, rather than choosing consistency at each call. Authoritative reads repair any cached disagreement. |
+| Pointers | `PointerCache` behind `CachingPointerStore` | Eleven complete SQL-addressing families plus an admission-controlled remainder for every other pointer family | No expiry. The first addressing read loads the account's four durable subtrees consistently; once complete, point misses, prefix listings and counts are authoritative and cost no store reads. Complete entries never evict. Writes **publish** rather than invalidate and are version-ordered; deletes remove. A failed load or exhausted budget marks the account degraded and falls back to the store. The unqualified `PointerStore` remains authoritative by default; query-serving repositories opt into `@CachedPointerStore` once at wiring. |
 | Immutable decoded content | `ImmutableBlobCache` (`service/repo/cache/`) | Decoded root blobs, snapshot-manifest pages, catalog/namespace/table/view/snapshot/constraints blobs, stats generation manifests, plus derived forms: manifest-entry indexes (`headUri + "#index"`) and graph nodes (`blobUri + "#node"`) | Content-addressed, so no invalidation. Byte-weighted, with Caffeine's TinyLFU admission rather than plain LRU: `serializedSize × 3` retained-heap estimate, 256 MB default, 15-minute access TTL, single-flight loads, absence never cached. Config `floecat.blob.cache.*`; kill switch `floecat.blob.cache.enabled=false`. Only `casBlobs` schemas route through it — blobs overwritten in place must never be cached by URI. |
-| Membership lists | `CatalogTopologyCache` (`service/metagraph/cache/`) | Namespace refs per catalog and relation (table/view) refs per namespace, from pointer prefix scans | 15-minute access TTL (`floecat.topology.cache-ttl-minutes`; sizes `floecat.topology.ns-cache-size`=10000, `floecat.topology.rel-cache-size`=5000). DDL services evict on write, so same-process listings are immediately current; cross-instance staleness is bounded by the TTL. |
 | Per-query state | `QueryContextStore` and per-query memos | `QueryContext` (pins, snapshot set, expansion map) keyed by query ID | Scoped to one query lease; consistency comes from pinning, not freshness. |
 
 The `ImmutableBlobCache` budget is **shared across all tenants**, which buys byte-accurate
@@ -88,8 +89,8 @@ proportional share over-allocates it on a wide catalog and starves it on a narro
 same fixed need is a much larger fraction of a much smaller total. `max-bytes` is what pins it
 against that, and exceeding the budget costs store reads rather than wrong answers.
 
-The pointer cache is the first layer built on the shared in-memory contract; the other three
-disciplines above are unchanged. Its independent durable subtrees load through a bounded metadata
+The pointer cache is the first specialized layer built on the shared in-memory contract; the other
+layers above are unchanged. Its independent durable subtrees load through a bounded metadata
 fan-out; `floecat.cache.pointer.load-parallelism=0` derives the bound from the processors available
 to the JVM, while a positive value pins it. Complete-index events, including eager-load duration,
 carry the logical account tag through the same `CacheEvents` contract.
@@ -97,9 +98,8 @@ carry the logical account tag through the same `CacheEvents` contract.
 ## What a cache reports
 
 A cache built on the `core/cache` contract publishes the same series, tagged by cache name, so
-those are comparable and a new one brings its telemetry with it. `ImmutableBlobCache` and
-`CatalogTopologyCache` predate the contract and publish their own subset; `graph-cache` is node-load
-timing, not a cache.
+those are comparable and a new one brings its telemetry with it. `ImmutableBlobCache` predates the
+contract and publishes its own subset; `graph-cache` is node-load timing, not a cache.
 
 | question | series |
 |---|---|
@@ -170,7 +170,7 @@ emptiness is load-bearing.
 |-------------|-------|-------------|
 | Cross-instance DDL visibility (which blob a definition pointer names) | **unbounded by time** | Nothing expires. A publish refreshes the replica that made the write; another replica holding the same key keeps its value until it writes that key or reads it authoritatively. Reads that cannot tolerate this do not take it: the commit funnel, the pin guards and the whole GC receive the unqualified authoritative store view, which repairs the cached entry on the way back. |
 | Table currency (which root is current) | none within the replica that committed; cross-instance as above | `CachingPointerStore` publishing under the store, version-guarded |
-| Catalog/namespace listings | ≤ 15 min cross-instance; immediate same-process | Topology cache TTL plus evict-on-write from DDL services |
+| Catalog/namespace listings | none within the owning replica; degraded accounts read through | Complete pointer indexes maintained by `CachingPointerStore` |
 | Pinned data read within a query | None by construction | Immutable blobs plus live integrity reads |
 
 Cache budgets derive from the container: `floecat.cache.total-bytes` defaults to a share of the
@@ -182,5 +182,3 @@ the last pinning an absolute size instead of a share, plus
 `heap-share` and `pointer.share` carry defaults in
 `service/src/main/resources/application.properties`, alongside `floecat.blob.cache.*`;
 `total-bytes` and `pointer.max-bytes` are unset, and each is a share until it is given a value.
-`floecat.topology.*` defaults come from their `@ConfigProperty` declarations
-(`CatalogTopologyCache`).
