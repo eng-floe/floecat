@@ -1332,6 +1332,69 @@ class LeasedFileGroupExecutionServiceTest {
   }
 
   @Test
+  void anUpstreamConnectorNamingAnotherAccountIsNeverOpened() {
+    // The upstream ref is stored verbatim from spec.upstream and validateUpstreamRef checks the
+    // connector's resource kind, not its account, so a table here can name a connector in another
+    // tenant. ConnectorRepository.getById keys on the account inside the id it is handed, and
+    // resolvedConnectorPayload puts the resolved connector secret into the worker payload -- so an
+    // unscoped lookup would ship another tenant's credential to this job's worker.
+    ResourceId foreignConnectorId =
+        ResourceId.newBuilder()
+            .setAccountId("other-tenant")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .setId(CONNECTOR_ID)
+            .build();
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of("s3://bucket/data/file-1.parquet"));
+
+    when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
+    when(jobs.getLeaseView(CHILD_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    CHILD_JOB_ID,
+                    ReconcileJobKind.EXEC_FILE_GROUP,
+                    ReconcileSnapshotTask.empty(),
+                    group.asReference(),
+                    PARENT_JOB_ID)));
+    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+        .thenReturn(
+            Optional.of(
+                job(
+                    PARENT_JOB_ID,
+                    ReconcileJobKind.PLAN_SNAPSHOT,
+                    ReconcileSnapshotTask.of(
+                        TABLE_ID,
+                        SNAPSHOT_ID,
+                        "db",
+                        "events",
+                        List.of(group),
+                        true,
+                        ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                        "/accounts/acct/reconcile/jobs/parent-job/snapshot-plan/blob.json",
+                        1),
+                    ReconcileFileGroupTask.empty(),
+                    "")));
+    when(tableRepo.getById(tableId()))
+        .thenReturn(
+            Optional.of(
+                table().toBuilder()
+                    .setUpstream(
+                        table().getUpstream().toBuilder().setConnectorId(foreignConnectorId))
+                    .build()));
+    // Present and willing in the other tenant; absent in this one.
+    when(connectorRepo.getById(foreignConnectorId)).thenReturn(Optional.of(connector()));
+    when(connectorRepo.getById(connectorId())).thenReturn(Optional.empty());
+    stubIndexedPlan(group);
+
+    assertThrows(
+        StatusRuntimeException.class, () -> service.resolve(principal, CHILD_JOB_ID, LEASE_EPOCH));
+
+    verify(connectorRepo, never()).getById(foreignConnectorId);
+  }
+
+  @Test
   void resolveDerivesIcebergStorageLocationFromCurrentSnapshotMetadata() {
     ReconcileFileGroupTask group =
         ReconcileFileGroupTask.of(

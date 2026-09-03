@@ -331,8 +331,19 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
                         ? sourceCatalogTableId(request, accountId, authorized.job())
                         : null;
                 if (sourceTableId != null) {
+                  // Only an execution-bound request renews: it registers a refresh provider keyed
+                  // on the lease. A client vend reaches this same handler and reads the tuple once,
+                  // so requiring a renewable one there would refuse credentials that read fine --
+                  // Unity omits the session token for long-lived keys -- and refuse them
+                  // terminally, on a path with nothing retrying.
                   ResolveStorageAuthorityResponse vended =
-                      vendFromSourceCatalog(accountId, sourceTableId, credentialScope.location());
+                      vendFromSourceCatalog(
+                          accountId,
+                          sourceTableId,
+                          credentialScope.location(),
+                          isExecutionBound(request)
+                              ? SourceCatalogCredentialVendor.CredentialUse.RECONCILE
+                              : SourceCatalogCredentialVendor.CredentialUse.QUERY);
                   if (vended != null) {
                     return vended;
                   }
@@ -732,7 +743,10 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
    * because the invalidation policy is a design decision, not an implementation detail.
    */
   private ResolveStorageAuthorityResponse vendFromSourceCatalog(
-      String accountId, ResourceId requestedTableId, String responseLocationPrefix) {
+      String accountId,
+      ResourceId requestedTableId,
+      String responseLocationPrefix,
+      SourceCatalogCredentialVendor.CredentialUse use) {
     Table table;
     try {
       table = loadVisibleTable(scopedTableId(accountId, requestedTableId, correlationId()));
@@ -749,8 +763,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
           requestedTableId.getId(), e.getStatus());
       return null;
     }
-    return sourceCatalogVendor.vendForTable(
-        table, responseLocationPrefix, SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
+    return sourceCatalogVendor.vendForTable(table, responseLocationPrefix, use);
   }
 
   private CredentialScope resolvePlannerBootstrapLocation(

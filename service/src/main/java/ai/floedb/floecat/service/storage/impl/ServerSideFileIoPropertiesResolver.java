@@ -31,6 +31,14 @@ import java.util.Map;
 
 @ApplicationScoped
 public class ServerSideFileIoPropertiesResolver {
+  /**
+   * The FileIO properties a resolved storage answer owns end to end -- replaced wholesale rather
+   * than merged, so a stale value never survives alongside a fresh credential.
+   *
+   * <p>No {@code s3.access-point}: nothing downstream addresses an access point, so a vend that
+   * carries one has the ARN dropped at {@code SourceCatalogCredentialVendor} and is used against
+   * the bucket in the object URI.
+   */
   private static final List<String> FILE_IO_PROPERTY_KEYS =
       List.of(
           "s3.region",

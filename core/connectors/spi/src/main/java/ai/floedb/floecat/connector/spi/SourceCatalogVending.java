@@ -84,9 +84,19 @@ public final class SourceCatalogVending {
   /**
    * Whether an Iceberg connector reads a table directly rather than through a catalog.
    *
-   * <p>The one Iceberg source with no {@code loadTable} to carry credentials, so absorbing a
-   * missing-authority error for it hands back a config that cannot read. A connector migrated from
-   * REST keeps its delegation header, which is all the gate above would otherwise look at.
+   * <p>The one Iceberg source with no {@code loadTable} to carry credentials, and the reason the
+   * gate above is not simply "declares vending". It is consulted only from inside the catch that
+   * already caught "no authority covers this location", so a filesystem connector reading through a
+   * matching authority never arrives here -- the only config whose behaviour turns on this is one
+   * with a leftover delegation header, an {@code s3://} URI and no matching authority.
+   *
+   * <p>For that config, absorbing is not merely a lost diagnostic. {@code IcebergConnectorFactory}
+   * accepts {@code auth.scheme=none} for an S3 URI, so such a connector may carry no {@code s3.*}
+   * credentials at all, and an S3 client built from it resolves through the AWS default chain --
+   * floecat's own instance role. The read would then succeed under floecat's identity with the
+   * tenant's authority requirement silently gone, which is worse than the precise missing-authority
+   * error it replaces. Supporting a filesystem connector that legitimately reads through the
+   * ambient chain is a separate decision and wants an explicit opt-in, not a stale header.
    *
    * <p>Spelled here rather than read from {@code IcebergConnectorFactory}: connectors-spi cannot
    * depend on the Iceberg connector module. A source it stops accepting under this spelling makes

@@ -108,7 +108,15 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
           .withDescription("table upstream connector metadata is required for file-group execution")
           .asRuntimeException();
     }
-    ResourceId connectorId = table.getUpstream().getConnectorId();
+    // Scoped to the table's own account rather than trusting the reference. validateUpstreamRef
+    // checks the connector's resource kind, not its account, and ConnectorRepository.getById keys
+    // on the account inside the id it is handed -- so a ref naming another tenant would resolve
+    // that tenant's connector here, and resolvedConnectorPayload would put its resolved secret in
+    // the worker payload. SourceCatalogCredentialVendor rebuilds the id the same way.
+    ResourceId connectorId =
+        table.getUpstream().getConnectorId().toBuilder()
+            .setAccountId(table.getResourceId().getAccountId())
+            .build();
     Connector connector =
         connectorRepo
             .getById(connectorId)
@@ -217,6 +225,14 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
     return pinned;
   }
 
+  /**
+   * Stamps the table's {@code storage_location} onto the connector payload the worker receives.
+   *
+   * <p>The only writer of the property that {@code ReconcilerService.sourceStorageLocation} and
+   * {@code StorageAuthorityServiceImpl.connectorSourceStorageLocation} read to decide which storage
+   * authority covers a table -- and, when none does, whether to ask the source catalog to vend. A
+   * kind missing here silently skips both.
+   */
   private Connector withTableStorageLocation(Connector connector, Table table) {
     if (connector == null
         || table == null
