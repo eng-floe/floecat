@@ -40,13 +40,6 @@ public class StoreCostProfile implements QuarkusTestProfile {
     // pointer cache replaces both. Nothing here depends on a timer any more, which is the point --
     // the stability came from closing the measurement window, not from the pins.
 
-    // The topology cache is bounded by ENTRIES, not time, and it is application-scoped: another
-    // suite filling it evicts what this one relied on, so the same scan reads one pointer alone and
-    // twenty after a neighbour has run. Sized past anything a test fixture creates, that eviction
-    // cannot happen and the count stops depending on what ran before.
-    overrides.put("floecat.topology.ns-cache-size", "100000");
-    overrides.put("floecat.topology.rel-cache-size", "100000");
-
     // One switch, not a list of schedulers. A GC tick or reconcile poll landing inside the measured
     // window is recorded as part of the request -- which is how one request measured 17 KV reads on
     // one run and 19 on the next. Quarkus owns every @Scheduled bean here, so disabling its

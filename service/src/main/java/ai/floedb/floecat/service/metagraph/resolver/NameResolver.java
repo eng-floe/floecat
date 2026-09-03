@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -40,6 +41,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -52,7 +54,7 @@ import java.util.function.Supplier;
  * <p>MetadataGraph and FullyQualifiedResolver delegate to this class so the main façade stays
  * focused on caching and orchestration.
  *
- * <p>No caching — pure repository calls.
+ * <p>No cache of its own — repository calls inherit the pointer cache below the store seam.
  */
 @ApplicationScoped
 public final class NameResolver {
@@ -348,6 +350,47 @@ public final class NameResolver {
   // ----------------------------------------------------------------------
   // Listing helpers
   // ----------------------------------------------------------------------
+
+  /** Lists lightweight namespace refs from pointers, without materializing namespace blobs. */
+  public List<TopologyGraph.NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
+    return namespaceRepository.listRefs(catalogId.getAccountId(), catalogId.getId());
+  }
+
+  /** Resolves selected namespace names by exact pointer lookup. */
+  public List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(
+      ResourceId catalogId, Set<String> names) {
+    if (names == null || names.isEmpty()) {
+      return List.of();
+    }
+    return namespaceRepository.listRefsByName(catalogId.getAccountId(), catalogId.getId(), names);
+  }
+
+  /** Lists lightweight table and view refs from the complete pointer index. */
+  public List<TopologyGraph.RelationRef> listRelationRefs(
+      ResourceId catalogId, ResourceId namespaceId) {
+    List<TopologyGraph.RelationRef> refs = new ArrayList<>();
+    refs.addAll(
+        tableRepository.listRefs(catalogId.getAccountId(), catalogId.getId(), namespaceId.getId()));
+    refs.addAll(
+        viewRepository.listRefs(catalogId.getAccountId(), catalogId.getId(), namespaceId.getId()));
+    return List.copyOf(refs);
+  }
+
+  /** Resolves selected relation names by exact table and view pointer lookups. */
+  public List<TopologyGraph.RelationRef> listRelationRefsByName(
+      ResourceId catalogId, ResourceId namespaceId, Set<String> names) {
+    if (names == null || names.isEmpty()) {
+      return List.of();
+    }
+    List<TopologyGraph.RelationRef> refs = new ArrayList<>();
+    refs.addAll(
+        tableRepository.listRefsByName(
+            catalogId.getAccountId(), catalogId.getId(), namespaceId.getId(), names));
+    refs.addAll(
+        viewRepository.listRefsByName(
+            catalogId.getAccountId(), catalogId.getId(), namespaceId.getId(), names));
+    return List.copyOf(refs);
+  }
 
   public List<ResourceId> listNamespaces(String accountId, String catalogId) {
     return diagnose(

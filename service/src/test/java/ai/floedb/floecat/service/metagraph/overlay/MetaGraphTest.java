@@ -42,7 +42,6 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
-import ai.floedb.floecat.service.metagraph.cache.CatalogTopologyCache;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
@@ -63,7 +62,6 @@ class MetaGraphTest {
   UserGraph user;
   SystemGraph system;
   MetaGraph meta;
-  CatalogTopologyCache topologyCache;
   LogicalSchemaMapper schemaMapper;
   EngineContext context;
 
@@ -85,7 +83,6 @@ class MetaGraphTest {
   void setup() {
     user = mock(UserGraph.class);
     system = mock(SystemGraph.class);
-    topologyCache = mock(CatalogTopologyCache.class);
 
     schemaMapper =
         new LogicalSchemaMapper() {
@@ -100,7 +97,7 @@ class MetaGraphTest {
     when(engine.engineContext()).thenReturn(context);
     when(engine.isPresent()).thenReturn(true);
 
-    meta = new MetaGraph(user, schemaMapper, system, engine, topologyCache);
+    meta = new MetaGraph(user, schemaMapper, system, engine);
   }
 
   @AfterEach
@@ -193,10 +190,10 @@ class MetaGraphTest {
             .build();
 
     when(system.listRelations(any(), same(context))).thenReturn(List.of(s));
-    when(topologyCache.listNamespaceRefs(catalogId))
+    when(user.listNamespaceRefs(catalogId))
         .thenReturn(
             List.of(new TopologyGraph.NamespaceRef(namespaceId, "ns", catalogId, List.of())));
-    when(topologyCache.listRelationRefs(catalogId, namespaceId))
+    when(user.listRelationRefs(catalogId, namespaceId))
         .thenReturn(List.of(new TopologyGraph.RelationRef(usrTable, "usr", ResourceKind.RK_TABLE)));
     when(user.table(usrTable)).thenReturn(Optional.of(u));
 
@@ -774,7 +771,7 @@ class MetaGraphTest {
             Map.of());
     Set<String> names = Set.of("sales", "information_schema.tables");
     when(system.listNamespaces(catalogId, context)).thenReturn(List.of(systemNamespace));
-    when(topologyCache.listNamespaceRefsByName(catalogId, names))
+    when(user.listNamespaceRefsByName(catalogId, names))
         .thenReturn(
             List.of(
                 new TopologyGraph.NamespaceRef(
@@ -785,8 +782,8 @@ class MetaGraphTest {
     assertThat(refs)
         .extracting(TopologyGraph.NamespaceRef::id)
         .containsExactly(systemNamespaceId, userNamespaceId);
-    verify(topologyCache).listNamespaceRefsByName(catalogId, names);
-    verify(topologyCache, never()).listNamespaceRefs(catalogId);
+    verify(user).listNamespaceRefsByName(catalogId, names);
+    verify(user, never()).listNamespaceRefs(catalogId);
   }
 
   @Test
@@ -806,7 +803,7 @@ class MetaGraphTest {
             .build();
     Set<String> names = Set.of("orders");
     when(system.listRelationsInNamespace(catalogId, namespaceId, context)).thenReturn(List.of());
-    when(topologyCache.listRelationRefsByName(catalogId, namespaceId, names))
+    when(user.listRelationRefsByName(catalogId, namespaceId, names))
         .thenReturn(
             List.of(
                 new TopologyGraph.RelationRef(userRelationId, "orders", ResourceKind.RK_TABLE)));
@@ -815,8 +812,8 @@ class MetaGraphTest {
         meta.listRelationRefsByName(catalogId, namespaceId, names);
 
     assertThat(refs).extracting(TopologyGraph.RelationRef::id).containsExactly(userRelationId);
-    verify(topologyCache).listRelationRefsByName(catalogId, namespaceId, names);
-    verify(topologyCache, never()).listRelationRefs(catalogId, namespaceId);
+    verify(user).listRelationRefsByName(catalogId, namespaceId, names);
+    verify(user, never()).listRelationRefs(catalogId, namespaceId);
   }
 
   @Test
@@ -824,7 +821,7 @@ class MetaGraphTest {
     EngineContextProvider engine = mock(EngineContextProvider.class);
     when(engine.isPresent()).thenReturn(false);
 
-    MetaGraph metaNoEngine = new MetaGraph(user, schemaMapper, system, engine, topologyCache);
+    MetaGraph metaNoEngine = new MetaGraph(user, schemaMapper, system, engine);
 
     NameRef ref = NameRef.newBuilder().setName("t").build();
     when(system.resolveTable(ref, EngineContext.empty())).thenReturn(Optional.empty());

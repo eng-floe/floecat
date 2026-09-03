@@ -37,7 +37,6 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceTables;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
@@ -79,7 +78,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
   @Inject TableRootWriter rootWriter;
@@ -237,8 +235,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "catalog_id", spec.getCatalogId().getId(),
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
-                    // The namespace's relation marker advanced inside the create batch above.
-                    topology.evictRelationRefs(table.getNamespaceId());
                     var meta = tableRepo.metaForSafe(tableResourceId);
                     commitDefinitionToRoot(tableResourceId, meta);
                     return CreateTableResponse.newBuilder().setTable(table).setMeta(meta).build();
@@ -336,8 +332,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           idempotencyTtlSeconds(),
                           this::correlationId,
                           Table::parseFrom);
-
-                  topology.evictRelationRefs(result.body.getNamespaceId());
 
                   // Parity with the non-idempotent path: record the definition on the root at
                   // create time. Idempotent (the committer no-ops when the ref already matches), so
@@ -479,11 +473,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                         meta.getPointerVersion(),
                         hasMeaningfulPrecondition(request.getPrecondition()));
                   }
-                  topology.evict(tableId);
-                  if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
-                    topology.evictRelationRefs(desired.getNamespaceId());
-                  }
-
                   var outMeta = tableRepo.metaForSafe(tableId);
                   var latest = tableRepo.getById(tableId).orElse(desired);
 
@@ -535,7 +524,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
-                    topology.evict(tableId);
                     purgeSnapshotsAndStats(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   } catch (BaseResourceRepository.CorruptionException corrupt) {
@@ -558,7 +546,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           safe.getPointerVersion(),
                           tableRepo.metaForSafe(tableId).getPointerVersion());
                     }
-                    topology.evict(tableId);
                     purgeSnapshotsAndStats(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   }
@@ -575,7 +562,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           "table",
                           Map.of("id", tableId.getId()));
 
-                  topology.evict(tableId);
                   purgeSnapshotsAndStats(tableId);
                   return DeleteTableResponse.newBuilder().setMeta(out).build();
                 }),
