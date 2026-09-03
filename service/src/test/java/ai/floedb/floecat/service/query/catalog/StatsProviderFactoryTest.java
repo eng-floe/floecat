@@ -51,7 +51,6 @@ import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
-import ai.floedb.floecat.stats.spi.StatsResolutionResult;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.ByteString;
@@ -61,6 +60,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -104,7 +104,7 @@ class StatsProviderFactoryTest {
 
     when(tableRepository.getById(TABLE))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE).build()));
-    when(orchestrator.resolveInGeneration(any(), any()))
+    when(orchestrator.resolveTableFactsInGeneration(any(), any()))
         .thenAnswer(
             ignored -> {
               int now = active.incrementAndGet();
@@ -118,7 +118,7 @@ class StatsProviderFactoryTest {
               } finally {
                 active.decrementAndGet();
               }
-              return StatsResolutionResult.skipped("test");
+              return Optional.empty();
             });
     StatsProviderFactory factory =
         new StatsProviderFactory(
@@ -398,21 +398,18 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolveInGeneration(any(), any()))
+    when(orchestrator.resolveTableFactsInGeneration(any(), any()))
         .thenReturn(
-            StatsResolutionResult.hit(
-                TargetStatsRecords.tableRecord(
-                    TABLE,
-                    snapshotId,
-                    TableValueStats.newBuilder().setRowCount(1).setTotalSizeBytes(2).build(),
-                    null)));
+            Optional.of(
+                new ai.floedb.floecat.service.cache.ObjectCache.SnapshotFacts(
+                    OptionalLong.of(1), OptionalLong.of(2))));
 
     var provider = factory.forQuery(ctx, "corr");
     assertTrue(provider.tableStats(TABLE).isPresent());
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolveInGeneration(requestCaptor.capture(), any());
+    Mockito.verify(orchestrator).resolveTableFactsInGeneration(requestCaptor.capture(), any());
     assertEquals("iceberg", requestCaptor.getValue().connectorType());
     assertTrue(requestCaptor.getValue().latencyBudget().isEmpty());
     assertEquals(StatsExecutionMode.ASYNC, requestCaptor.getValue().executionMode());
@@ -431,7 +428,7 @@ class StatsProviderFactoryTest {
     CountDownLatch interrupted = new CountDownLatch(1);
     CountDownLatch allowCompletion = new CountDownLatch(1);
     CountDownLatch completed = new CountDownLatch(1);
-    when(orchestrator.resolveInGeneration(any(), any()))
+    when(orchestrator.resolveTableFactsInGeneration(any(), any()))
         .thenAnswer(
             ignored -> {
               started.countDown();
@@ -448,7 +445,7 @@ class StatsProviderFactoryTest {
               } finally {
                 completed.countDown();
               }
-              return StatsResolutionResult.skipped("cancelled");
+              return Optional.empty();
             });
     AtomicBoolean cancelled = new AtomicBoolean();
     var provider = factory.forQuery(ctx, "corr");
@@ -520,15 +517,14 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolveInGeneration(any(), any()))
-        .thenReturn(StatsResolutionResult.skipped("sync_disabled"));
+    when(orchestrator.resolveTableFactsInGeneration(any(), any())).thenReturn(Optional.empty());
 
     var provider = factory.forQuery(ctx, "corr");
     provider.tableStats(TABLE);
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolveInGeneration(requestCaptor.capture(), any());
+    Mockito.verify(orchestrator).resolveTableFactsInGeneration(requestCaptor.capture(), any());
     assertEquals(StatsExecutionMode.ASYNC, requestCaptor.getValue().executionMode());
     assertTrue(requestCaptor.getValue().latencyBudget().isEmpty());
   }
@@ -575,15 +571,14 @@ class StatsProviderFactoryTest {
                             .setFormat(TableFormat.TF_ICEBERG)
                             .build())
                     .build()));
-    when(orchestrator.resolveInGeneration(any(), any()))
-        .thenReturn(StatsResolutionResult.skipped("sync_disabled"));
+    when(orchestrator.resolveTableFactsInGeneration(any(), any())).thenReturn(Optional.empty());
 
     var provider = factory.forQuery(ctx, "corr");
     provider.tableStats(TABLE);
 
     ArgumentCaptor<StatsCaptureRequest> requestCaptor =
         ArgumentCaptor.forClass(StatsCaptureRequest.class);
-    Mockito.verify(orchestrator).resolveInGeneration(requestCaptor.capture(), any());
+    Mockito.verify(orchestrator).resolveTableFactsInGeneration(requestCaptor.capture(), any());
     assertEquals(Duration.ofSeconds(10), requestCaptor.getValue().latencyBudget().orElseThrow());
   }
 

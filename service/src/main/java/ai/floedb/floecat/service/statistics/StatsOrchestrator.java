@@ -26,6 +26,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.PlannerStatsResolver.PlannerLookupDiagnostics;
@@ -53,6 +54,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -90,6 +92,7 @@ public class StatsOrchestrator {
   private final boolean syncEnabled;
   private final Observability observability;
   private final PlannerStatsResolver plannerResolver;
+  private final ObjectCache objects;
 
   @Inject
   public StatsOrchestrator(
@@ -98,6 +101,7 @@ public class StatsOrchestrator {
       TableRepository tableRepository,
       ConnectorRepository connectorRepository,
       StatsSyncCapture statsSyncCapture,
+      ObjectCache objects,
       @ConfigProperty(name = "floecat.stats.sync.enabled", defaultValue = "false")
           boolean syncEnabled,
       Instance<Observability> observability) {
@@ -106,12 +110,33 @@ public class StatsOrchestrator {
     this.tableRepository = tableRepository;
     this.connectorRepository = connectorRepository;
     this.statsSyncCapture = statsSyncCapture;
+    this.objects = objects;
     this.syncEnabled = syncEnabled;
     this.observability =
         observability == null || observability.isUnsatisfied() ? null : observability.get();
     this.plannerResolver =
         new PlannerStatsResolver(
             statsStore, this::readStore, this::incrementCounter, this::observePlannerHit);
+  }
+
+  /** Test/embedded constructor retaining the pre-Object-cache call shape. */
+  public StatsOrchestrator(
+      StatsStore statsStore,
+      ReconcileJobStore reconcileJobStore,
+      TableRepository tableRepository,
+      ConnectorRepository connectorRepository,
+      StatsSyncCapture statsSyncCapture,
+      boolean syncEnabled,
+      Instance<Observability> observability) {
+    this(
+        statsStore,
+        reconcileJobStore,
+        tableRepository,
+        connectorRepository,
+        statsSyncCapture,
+        ObjectCache.forTesting(),
+        syncEnabled,
+        observability);
   }
 
   public StatsOrchestrator(
@@ -132,17 +157,24 @@ public class StatsOrchestrator {
   /** Invalidates every cached target for one table snapshot. */
   public void invalidateStatsCache(ResourceId tableId, long snapshotId) {
     plannerResolver.invalidateStatsCache(tableId, snapshotId);
+    objects.evictSnapshotFacts(tableId, snapshotId);
   }
 
   /** Invalidates one cached target for one table snapshot. */
   public void invalidateStatsCache(ResourceId tableId, long snapshotId, StatsTarget target) {
     plannerResolver.invalidateStatsCache(tableId, snapshotId, target);
+    if (target != null && target.hasTable()) {
+      objects.evictSnapshotFacts(tableId, snapshotId);
+    }
   }
 
   /** Invalidates cached targets represented by successfully persisted records. */
   public void invalidateStatsCache(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
     plannerResolver.invalidateStatsCache(tableId, snapshotId, records);
+    if (records != null && records.stream().anyMatch(TargetStatsRecord::hasTable)) {
+      objects.evictSnapshotFacts(tableId, snapshotId);
+    }
   }
 
   /**
@@ -180,6 +212,26 @@ public class StatsOrchestrator {
       return StatsResolutionResult.hit(stored.get());
     }
     return captureAndResolve(request, startNanos);
+  }
+
+  /**
+   * Resolve relation-sized table facts through Objects. The miss loader retains the existing
+   * pinned-generation-first policy; successful stats mutations evict this table/snapshot key.
+   */
+  public Optional<ObjectCache.SnapshotFacts> resolveTableFactsInGeneration(
+      StatsCaptureRequest request, Optional<String> pinnedGenerationToken) {
+    return objects.snapshotFacts(
+        request.tableId(),
+        request.snapshotId(),
+        () ->
+            resolveInGeneration(request, pinnedGenerationToken)
+                .stats()
+                .filter(TargetStatsRecord::hasTable)
+                .map(
+                    record ->
+                        new ObjectCache.SnapshotFacts(
+                            OptionalLong.of(record.getTable().getRowCount()),
+                            OptionalLong.of(record.getTable().getTotalSizeBytes()))));
   }
 
   /** Bounded sync capture, then async-enqueue fallback, for a store miss. */

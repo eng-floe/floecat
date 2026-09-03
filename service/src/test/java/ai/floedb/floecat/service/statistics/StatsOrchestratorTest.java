@@ -1115,6 +1115,42 @@ class StatsOrchestratorTest {
     assertThat(r.stats().get().getTable().getRowCount()).isEqualTo(3L);
   }
 
+  @Test
+  void tableFactsAreSharedUntilTheirTargetIsInvalidated() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+    TargetStatsRecord first = record(request);
+    TargetStatsRecord replacement =
+        first.toBuilder().setTable(first.getTable().toBuilder().setRowCount(19)).build();
+    when(store.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.of(first), Optional.of(replacement));
+
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty()))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(7L);
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty()))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(7L);
+    verify(store).getTargetStats(request.tableId(), request.snapshotId(), request.target());
+
+    orchestrator.invalidateStatsCache(request.tableId(), request.snapshotId(), request.target());
+
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty()))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(19L);
+    verify(store, Mockito.times(2))
+        .getTargetStats(request.tableId(), request.snapshotId(), request.target());
+  }
+
   /**
    * Completeness predicate used by the planner-completeness tests: the orchestrator treats the
    * predicate as opaque, so a simple row-count threshold stands in for "carries the requested
