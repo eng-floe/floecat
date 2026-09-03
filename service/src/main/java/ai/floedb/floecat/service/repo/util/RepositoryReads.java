@@ -75,6 +75,11 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
           public int count(String prefix) {
             return policy.read(() -> pointers.countByPrefix(prefix));
           }
+
+          @Override
+          public String pageTokenAfterKey(String key) {
+            return policy.read(() -> pointers.pageTokenAfterKey(key));
+          }
         },
         new Blobs() {
           @Override
@@ -110,6 +115,9 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
 
     /** Count pointers below one storage prefix. */
     int count(String prefix);
+
+    /** Build a continuation token that resumes immediately after one pointer key. */
+    String pageTokenAfterKey(String key);
   }
 
   /** Blob-store read operations exposed to resource repositories. */

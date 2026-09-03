@@ -316,8 +316,7 @@ public class NamespaceRepository {
    * instead of after the whole over-fetched batch.
    */
   public String listTokenAfter(String accountId, String catalogId, List<String> fullPath) {
-    return pointerStore.pageTokenAfterKey(
-        Keys.namespacePointerByPath(accountId, catalogId, fullPath));
+    return repo.pageTokenAfterKey(Keys.namespacePointerByPath(accountId, catalogId, fullPath));
   }
 
   public List<ResourceId> listIds(String accountId, String catalogId) {
