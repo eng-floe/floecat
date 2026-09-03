@@ -39,6 +39,7 @@ import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.LongSupplier;
 
 /**
  * Storage owned by the pointer-store cache layer.
@@ -51,16 +52,19 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * <p>The complete maps and the resident remainder share one byte ceiling. Growing a complete map
  * shrinks the Caffeine remainder; if the map cannot fit, the account becomes {@link
  * Readiness#DEGRADED} and reads fall back to the store. Capacity can therefore cost latency, never
- * correctness.
+ * correctness. A degraded account retries after a cooldown; one caller reloads it while concurrent
+ * callers keep using the store.
  */
 public final class PointerCache {
 
   private static final int LOAD_PAGE_SIZE = 1_000;
   private static final long SORTED_MAP_NODE_BYTES = 48L;
   private static final String TOKEN_PREFIX = "pc1.";
+  private static final Duration DEFAULT_DEGRADED_RETRY_DELAY = Duration.ofSeconds(30);
 
   enum Readiness {
     LOADING,
+    RECOVERING,
     COMPLETE,
     DEGRADED
   }
@@ -69,6 +73,8 @@ public final class PointerCache {
   private final long maxBytes;
   private final CacheEvents events;
   private final MetadataFanout loadFanout;
+  private final long degradedRetryNanos;
+  private final LongSupplier nanoTime;
   private final CaffeineMemoryCache<String, Pointer> resident;
   private final ConcurrentHashMap<String, Partition> partitions = new ConcurrentHashMap<>();
   private final AtomicLong completeBytes = new AtomicLong();
@@ -76,7 +82,12 @@ public final class PointerCache {
   private final Object budgetLock = new Object();
 
   public PointerCache(PointerStore authoritativeSource, long maxBytes, CacheEvents events) {
-    this(authoritativeSource, maxBytes, events, MetadataFanout.serial());
+    this(
+        authoritativeSource,
+        maxBytes,
+        events,
+        MetadataFanout.serial(),
+        DEFAULT_DEGRADED_RETRY_DELAY);
   }
 
   public PointerCache(
@@ -84,13 +95,39 @@ public final class PointerCache {
       long maxBytes,
       CacheEvents events,
       MetadataFanout loadFanout) {
+    this(authoritativeSource, maxBytes, events, loadFanout, DEFAULT_DEGRADED_RETRY_DELAY);
+  }
+
+  public PointerCache(
+      PointerStore authoritativeSource,
+      long maxBytes,
+      CacheEvents events,
+      MetadataFanout loadFanout,
+      Duration degradedRetryDelay) {
+    this(authoritativeSource, maxBytes, events, loadFanout, degradedRetryDelay, System::nanoTime);
+  }
+
+  PointerCache(
+      PointerStore authoritativeSource,
+      long maxBytes,
+      CacheEvents events,
+      MetadataFanout loadFanout,
+      Duration degradedRetryDelay,
+      LongSupplier nanoTime) {
     if (maxBytes <= 0L) {
       throw new IllegalArgumentException("pointer cache needs a positive byte budget");
+    }
+    if (degradedRetryDelay == null
+        || degradedRetryDelay.isZero()
+        || degradedRetryDelay.isNegative()) {
+      throw new IllegalArgumentException("pointer cache degraded retry delay must be positive");
     }
     this.source = java.util.Objects.requireNonNull(authoritativeSource, "authoritativeSource");
     this.maxBytes = maxBytes;
     this.events = java.util.Objects.requireNonNull(events, "events");
     this.loadFanout = java.util.Objects.requireNonNull(loadFanout, "loadFanout");
+    this.degradedRetryNanos = degradedRetryDelay.toNanos();
+    this.nanoTime = java.util.Objects.requireNonNull(nanoTime, "nanoTime");
     this.resident =
         new CaffeineMemoryCache<>(CacheFamily.POINTER, maxBytes, key -> 2L * key.length(), events);
   }
@@ -484,7 +521,7 @@ public final class PointerCache {
   }
 
   public long loadingAccountCount() {
-    return accountCount(Readiness.LOADING);
+    return accountCount(Readiness.LOADING) + accountCount(Readiness.RECOVERING);
   }
 
   public long completeAccountCount() {
@@ -516,17 +553,35 @@ public final class PointerCache {
       partition.events.hit(Duration.ofNanos(System.nanoTime() - start));
       return partition;
     }
-    partition.lock.writeLock().lock();
+    if (partition.readiness == Readiness.DEGRADED && !retryDue(partition)) {
+      partition.events.miss();
+      return null;
+    }
+    if (partition.readiness == Readiness.RECOVERING) {
+      partition.events.miss();
+      return null;
+    }
+    if (partition.readiness == Readiness.DEGRADED) {
+      if (!partition.lock.writeLock().tryLock()) {
+        partition.events.miss();
+        return null;
+      }
+    } else {
+      partition.lock.writeLock().lock();
+    }
     try {
       if (partition.readiness == Readiness.COMPLETE) {
         partition.events.hit(Duration.ofNanos(System.nanoTime() - start));
         return partition;
       }
       if (partition.readiness == Readiness.DEGRADED) {
-        partition.events.miss();
-        return null;
+        if (!retryDue(partition)) {
+          partition.events.miss();
+          return null;
+        }
+        partition.readiness = Readiness.RECOVERING;
       }
-      partition.readiness = Readiness.LOADING;
+      boolean recovering = partition.readiness == Readiness.RECOVERING;
       partition.events.miss();
       long loadStart = System.nanoTime();
       try {
@@ -535,7 +590,7 @@ public final class PointerCache {
         synchronized (budgetLock) {
           long available = maxBytes - completeBytes.get();
           if (loadedBytes > available) {
-            partition.readiness = Readiness.DEGRADED;
+            degradeLocked(partition);
             partition.events.admissionRejected();
             return null;
           }
@@ -546,16 +601,34 @@ public final class PointerCache {
           partition.weightBytes = loadedBytes;
           partition.readiness = Readiness.COMPLETE;
         }
+        if (recovering) {
+          // Reads stay available through the ordinary resident cache while a retry runs. Once the
+          // complete map is published, fence and remove those temporary copies so a later
+          // degradation cannot expose one that predates this authoritative load.
+          evictResidentPartition(partitionKey);
+        }
         partition.events.loadTime(Duration.ofNanos(System.nanoTime() - loadStart));
         return partition;
       } catch (RuntimeException failure) {
-        partition.readiness = Readiness.DEGRADED;
+        degrade(partition);
         partition.events.loadFailed(Duration.ofNanos(System.nanoTime() - loadStart), failure);
         return null;
       }
     } finally {
       partition.lock.writeLock().unlock();
     }
+  }
+
+  private boolean retryDue(Partition partition) {
+    return nanoTime.getAsLong() - partition.retryAtNanos >= 0L;
+  }
+
+  private void evictResidentPartition(String partitionKey) {
+    resident.evictPartition(
+        key ->
+            IndexLayout.match(key)
+                .map(match -> match.partition().equals(partitionKey))
+                .orElse(false));
   }
 
   private NavigableMap<String, Pointer> load(String partitionKey) {
@@ -626,6 +699,7 @@ public final class PointerCache {
     completeEntries.addAndGet(-partition.entries.size());
     partition.entries.clear();
     partition.weightBytes = 0L;
+    partition.retryAtNanos = nanoTime.getAsLong() + degradedRetryNanos;
     partition.readiness = Readiness.DEGRADED;
     resident.maximumBytes(maxBytes - completeBytes.get());
   }
@@ -684,7 +758,9 @@ public final class PointerCache {
 
   private static boolean isLoadingOrComplete(Partition partition) {
     return partition != null
-        && (partition.readiness == Readiness.LOADING || partition.readiness == Readiness.COMPLETE);
+        && (partition.readiness == Readiness.LOADING
+            || partition.readiness == Readiness.RECOVERING
+            || partition.readiness == Readiness.COMPLETE);
   }
 
   /** The durable key layout mirrored by the complete pointer index. */
@@ -777,6 +853,7 @@ public final class PointerCache {
     private final NavigableMap<String, Pointer> entries = new TreeMap<>();
     private final CacheEvents events;
     private volatile Readiness readiness = Readiness.LOADING;
+    private volatile long retryAtNanos;
     private long weightBytes;
 
     private Partition(CacheEvents events) {
