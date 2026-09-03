@@ -5,7 +5,17 @@
     "unit": "count",
     "since": "v1",
     "origin": "core",
-    "description": "Number of accounts with an active cache entry, tagged by cache name.",
+    "description": "Number of accounts in a cache readiness state, tagged by cache name and optionally result.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation", "result"]
+  },
+  {
+    "name": "floecat.core.cache.admission.rejected",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Values not retained because they exceeded the cache budget, tagged by cache name.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation"]
   },

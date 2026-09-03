@@ -66,7 +66,7 @@ class CacheMetricsTest {
     CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "users");
 
     AtomicInteger accounts = new AtomicInteger(2);
-    metrics.trackAccounts(accounts::get, "account cache count");
+    metrics.trackAccounts(accounts::get, "account cache count", Tag.of(TagKey.RESULT, "complete"));
 
     Supplier<? extends Number> gauge = observability.gauge(Telemetry.Metrics.CACHE_ACCOUNTS);
     assertThat(gauge).isNotNull();
@@ -77,7 +77,7 @@ class CacheMetricsTest {
     List<Tag> tags = observability.gaugeTags(Telemetry.Metrics.CACHE_ACCOUNTS);
     assertThat(tags)
         .contains(Tag.of(TagKey.COMPONENT, "svc"), Tag.of(TagKey.OPERATION, "op"))
-        .contains(Tag.of(TagKey.CACHE_NAME, "users"));
+        .contains(Tag.of(TagKey.CACHE_NAME, "users"), Tag.of(TagKey.RESULT, "complete"));
   }
 
   @Test
@@ -127,5 +127,19 @@ class CacheMetricsTest {
     metrics.recordLoadDiscarded();
 
     assertThat(observability.counterValue(Telemetry.Metrics.CACHE_LOADS_DISCARDED)).isEqualTo(2d);
+  }
+
+  @Test
+  void recordsAnAdmissionRejectedByTheBudget() {
+    TestObservability observability = new TestObservability();
+    CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "users");
+
+    metrics.recordAdmissionRejected(Tag.of(TagKey.ACCOUNT, "acct"));
+
+    assertThat(observability.counterValue(Telemetry.Metrics.CACHE_ADMISSION_REJECTED))
+        .isEqualTo(1d);
+    assertThat(
+            observability.counterTagHistory(Telemetry.Metrics.CACHE_ADMISSION_REJECTED).getFirst())
+        .contains(Tag.of(TagKey.ACCOUNT, "acct"));
   }
 }

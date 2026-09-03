@@ -18,28 +18,23 @@ package ai.floedb.floecat.service.cache;
 
 import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.cache.CacheFamily;
-import ai.floedb.floecat.cache.CaffeineMemoryCache;
-import ai.floedb.floecat.cache.MemoryCache;
-import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.CachingPointerStore;
+import ai.floedb.floecat.service.repo.cache.PointerCache;
 import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.storage.spi.RawPointerStore;
 import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.Tag;
+import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.helpers.CacheMetrics;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-/**
- * Where a cache on the {@link MemoryCache} contract is built, and the pointer store that wraps one.
- *
- * <p>A cache here is a plain {@link CaffeineMemoryCache} differing only in its budget and key
- * weight. Pointer-specific version ordering belongs to {@link CachingPointerStore}, not to the
- * generic memory primitive.
- */
+/** Where the pointer cache is built, and the pointer store that wraps it. */
 @ApplicationScoped
 public class MetadataCaches {
 
@@ -62,7 +57,7 @@ public class MetadataCaches {
   @CachedPointerStore
   public PointerStore cachedPointerStore(
       @RawPointerStore PointerStore raw,
-      MemoryCache<String, Pointer> pointers,
+      PointerCache pointers,
       @ConfigProperty(name = "floecat.cache.pointer.enabled", defaultValue = "true")
           boolean enabled) {
     return enabled ? new CachingPointerStore(raw, pointers) : raw;
@@ -78,20 +73,39 @@ public class MetadataCaches {
     return AuthoritativePointerStore.of(cached);
   }
 
-  /** Pointers: mutable addressing, with publication semantics owned by the store decorator. */
+  /**
+   * Pointers: a complete sorted index for SQL addressing plus an admission-controlled remainder,
+   * sharing one family budget and one telemetry contract.
+   */
   @Produces
   @ApplicationScoped
-  public MemoryCache<String, Pointer> pointers(
-      CacheBudgetResolver budgets, Observability observability) {
+  public PointerCache pointers(
+      @RawPointerStore PointerStore raw,
+      CacheBudgetResolver budgets,
+      Observability observability,
+      @ConfigProperty(name = "floecat.cache.pointer.enabled", defaultValue = "true")
+          boolean enabled,
+      @ConfigProperty(name = "floecat.cache.pointer.load-parallelism", defaultValue = "0")
+          int configuredLoadParallelism) {
     var metrics = metricsFor(CacheFamily.POINTER, observability);
+    int loadParallelism =
+        configuredLoadParallelism == 0
+            ? Runtime.getRuntime().availableProcessors()
+            : configuredLoadParallelism;
+    if (loadParallelism < 1) {
+      throw new IllegalArgumentException(
+          "floecat.cache.pointer.load-parallelism must be >= 0; zero derives from available"
+              + " processors");
+    }
     var cache =
-        new CaffeineMemoryCache<String, Pointer>(
-            CacheFamily.POINTER,
+        new PointerCache(
+            AuthoritativePointerStore.of(raw),
             budgets.bytesFor(CacheFamily.POINTER),
-            // The key's own bytes, which the weigher adds to the entry's machinery and payload.
-            key -> 2L * key.length(),
-            events(metrics));
-    report(cache, budgets, metrics);
+            events(metrics),
+            loadParallelism == 1
+                ? MetadataFanout.serial()
+                : MetadataFanout.concurrent(loadParallelism));
+    report(cache, budgets, metrics, enabled);
     return cache;
   }
 
@@ -105,37 +119,47 @@ public class MetadataCaches {
    * what a miss costs, how full it is, whether loads are failing, and whether it has stopped
    * retaining what it loads.
    */
-  private static CacheEvents events(CacheMetrics metrics) {
+  private static CacheEvents events(CacheMetrics metrics, Tag... tags) {
     return new CacheEvents() {
       @Override
+      public CacheEvents forAccount(String accountId) {
+        return events(metrics, Tag.of(TagKey.ACCOUNT, accountId));
+      }
+
+      @Override
       public void hit(java.time.Duration served) {
-        metrics.recordHit();
-        metrics.recordLoad(served, true);
+        metrics.recordHit(tags);
+        metrics.recordLoad(served, true, tags);
       }
 
       @Override
       public void miss() {
-        metrics.recordMiss();
+        metrics.recordMiss(tags);
       }
 
       @Override
       public void loadTime(java.time.Duration elapsed) {
-        metrics.recordLoad(elapsed, false);
+        metrics.recordLoad(elapsed, false, tags);
       }
 
       @Override
       public void loadFailed(java.time.Duration elapsed, RuntimeException error) {
-        metrics.recordLoadFailure(elapsed, error);
+        metrics.recordLoadFailure(elapsed, error, tags);
       }
 
       @Override
       public void loadDiscarded() {
-        metrics.recordLoadDiscarded();
+        metrics.recordLoadDiscarded(tags);
+      }
+
+      @Override
+      public void admissionRejected() {
+        metrics.recordAdmissionRejected(tags);
       }
 
       @Override
       public void evicted(long weightBytes) {
-        metrics.recordEviction(weightBytes);
+        metrics.recordEviction(weightBytes, tags);
       }
     };
   }
@@ -146,17 +170,28 @@ public class MetadataCaches {
    * telemetry with it instead of being remembered separately.
    */
   private static void report(
-      MemoryCache<?, ?> cache, CacheBudgetResolver budgets, CacheMetrics metrics) {
+      PointerCache cache, CacheBudgetResolver budgets, CacheMetrics metrics, boolean enabled) {
     String tag = cache.family().tag();
     // Fixed at construction, so both gauges read the same captured value rather than one of them
     // re-resolving the budget on every scrape.
     long budget = budgets.bytesFor(cache.family());
-    metrics.trackEnabled(
-        () -> budget > 0 ? 1.0 : 0.0, "Whether the " + tag + " cache holds anything");
+    metrics.trackEnabled(() -> enabled ? 1.0 : 0.0, "Whether the " + tag + " cache is enabled");
     metrics.trackSize(cache::entryCount, "Entries held by the " + tag + " cache");
     metrics.trackWeightedSize(
         () -> (double) cache.bytes(), "Retained bytes held by the " + tag + " cache");
     metrics.trackMaxWeight(() -> (double) budget, "Byte budget for the " + tag + " cache");
+    metrics.trackAccounts(
+        cache::loadingAccountCount,
+        "Accounts whose complete pointer index is loading",
+        Tag.of(TagKey.RESULT, "loading"));
+    metrics.trackAccounts(
+        cache::completeAccountCount,
+        "Accounts with a complete pointer index",
+        Tag.of(TagKey.RESULT, "complete"));
+    metrics.trackAccounts(
+        cache::degradedAccountCount,
+        "Accounts falling back to the pointer store",
+        Tag.of(TagKey.RESULT, "degraded"));
     // Hits, misses, load latency and evictions are not registered here: they are events, recorded
     // per read by the cache itself through CacheEvents, not gauges sampled from a running total.
   }

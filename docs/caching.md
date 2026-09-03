@@ -61,7 +61,7 @@ sizing harness use the same arithmetic.
 | `CacheWeights` | Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (`WeightedValue` first, then protobuf, text, `byte[]`, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte. |
 | `CacheFamily` | The independently budgeted in-memory families that actually use this module — `POINTER` today. Each is its own cache, never a tag inside a shared one, so a burst in the fastest-moving family cannot evict the slowest. Add `OBJECT` and `HINT` when those implementations land; do not add disk blob caching to this enum. The tag is both the metric dimension and the config segment. |
 | `CacheBudget` / `CacheBudgetResolver` | One total split across the families. Pure arithmetic in `CacheBudget.split`; `CacheBudgetResolver` (`service/cache/`) reads the configuration and runs it at startup. |
-| `CacheEvents` | The common event baseline: `hit` (with how long it took to serve, so a caller that waited on someone else's load is not an instant hit), `miss`, `loadTime`, `loadFailed`, `loadDiscarded` and `evicted`. Bulk reads report hits and misses per distinct key and one duration per loader invocation. A disk cache can reuse these metrics and add mapping/sweep signals without implementing `MemoryCache`. The module reports events; the container names the metrics. |
+| `CacheEvents` | The common event baseline: `hit` (with how long it took to serve, so a caller that waited on someone else's load is not an instant hit), `miss`, `loadTime`, `loadFailed`, `loadDiscarded`, `admissionRejected` and `evicted`. Bulk reads report hits and misses per distinct key and one duration per loader invocation. A disk cache can reuse these metrics and add mapping/sweep signals without implementing `MemoryCache`. The module reports events; the container names the metrics. |
 
 Budgets resolve from the container rather than from a compiled-in figure. The JVM already sizes its
 heap from the container memory limit, so `floecat.cache.heap-share` (0.5) of the maximum heap
@@ -89,7 +89,10 @@ same fixed need is a much larger fraction of a much smaller total. `max-bytes` i
 against that, and exceeding the budget costs store reads rather than wrong answers.
 
 The pointer cache is the first layer built on the shared in-memory contract; the other three
-disciplines above are unchanged.
+disciplines above are unchanged. Its independent durable subtrees load through a bounded metadata
+fan-out; `floecat.cache.pointer.load-parallelism=0` derives the bound from the processors available
+to the JVM, while a positive value pins it. Complete-index events, including eager-load duration,
+carry the logical account tag through the same `CacheEvents` contract.
 
 ## What a cache reports
 
@@ -108,6 +111,8 @@ timing, not a cache.
 | How many entries? | `floecat_core_cache_entries` |
 | Is the budget too small? | `floecat_core_cache_evictions` and `..._evicted_weight_bytes` |
 | Has it stopped warming? | `floecat_core_cache_loads_discarded` — a load whose value was not retained because a write may have raced it |
+| Is the budget rejecting valid entries? | `floecat_core_cache_admission_rejected` |
+| Are pointer indexes ready? | `floecat_core_cache_accounts`, tagged `result=loading|complete|degraded` |
 
 Hits and misses are counted as they happen rather than derived from a running total, because a rate
 computed from a cumulative gauge cannot tell an idle cache from one that is missing everything.
@@ -172,7 +177,8 @@ Cache budgets derive from the container: `floecat.cache.total-bytes` defaults to
 maximum heap, which the JVM already sizes from the container memory limit, and each cache takes a
 share of that. The knobs the pointer cache reads are `floecat.cache.total-bytes`,
 `floecat.cache.heap-share`, `floecat.cache.pointer.share` and `floecat.cache.pointer.max-bytes`,
-the last pinning an absolute size instead of a share; a share outside `(0, 1]` fails at startup.
+the last pinning an absolute size instead of a share, plus
+`floecat.cache.pointer.load-parallelism`; a share outside `(0, 1]` fails at startup.
 `heap-share` and `pointer.share` carry defaults in
 `service/src/main/resources/application.properties`, alongside `floecat.blob.cache.*`;
 `total-bytes` and `pointer.max-bytes` are unset, and each is a share until it is given a value.
