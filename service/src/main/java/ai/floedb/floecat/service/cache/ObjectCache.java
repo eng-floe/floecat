@@ -83,11 +83,6 @@ public final class ObjectCache {
     return new ObjectCache(64L * 1024L * 1024L, CacheEvents.none(), true);
   }
 
-  /** An explicit no-retention adapter for legacy, embedded and narrowly scoped test callers. */
-  public static ObjectCache disabled() {
-    return new ObjectCache(1L, CacheEvents.none(), false);
-  }
-
   /** The mapped schema together with the exact identity used by assembled relation entries. */
   public record MappedSchema(String identity, SchemaDescriptor descriptor) {
     public MappedSchema {
@@ -117,8 +112,8 @@ public final class ObjectCache {
   public record SnapshotFacts(OptionalLong rowCount, OptionalLong totalSizeBytes)
       implements WeightedValue {
     public SnapshotFacts {
-      rowCount = rowCount == null ? OptionalLong.empty() : rowCount;
-      totalSizeBytes = totalSizeBytes == null ? OptionalLong.empty() : totalSizeBytes;
+      Objects.requireNonNull(rowCount, "rowCount");
+      Objects.requireNonNull(totalSizeBytes, "totalSizeBytes");
     }
 
     @Override
@@ -149,7 +144,6 @@ public final class ObjectCache {
             .map(TablePin::getTableBlobUri)
             .filter(identity -> !identity.isBlank())
             .orElse(table.cacheIdentity());
-    String constraintsIdentity = effectivePin.map(TablePin::getConstraintsRefUri).orElse("");
     String schemaIdentity =
         effectivePin
             .map(QueryPins::schemaScope)
@@ -158,8 +152,6 @@ public final class ObjectCache {
     String identity =
         Hashing.sha256Hex(
             requireIdentity(definitionIdentity, "definition identity")
-                + '\0'
-                + Objects.requireNonNullElse(constraintsIdentity, "")
                 + '\0'
                 + requireIdentity(schemaIdentity, "schema identity"));
     return relation(table.id(), identity, loader);
