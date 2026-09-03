@@ -71,7 +71,7 @@ sizing harness use the same arithmetic.
 | `MemoryCache<K, V>` | Read-through `get`; batch `getAll`, which owns miss detection, loading and safe publication; uncounted `peek`; unconditional `put`; `evict` by key and `evictPartition` by caller-supplied membership; `bytes()`/`entryCount()` for the budget. A load racing a mutation cannot restore its stale value. Partition eviction is an infrequent O(n) scan of resident keys. No expiry: staleness is bounded by publication, not by a clock. Pointer version ordering deliberately is not part of this generic contract. |
 | `CaffeineMemoryCache` | The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction. |
 | `CacheWeights` | Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (`WeightedValue` first, then protobuf, text, `byte[]`, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte. |
-| `CacheFamily` | The independently budgeted in-memory families that actually use this module — `POINTER` today. Each is its own cache, never a tag inside a shared one, so a burst in the fastest-moving family cannot evict the slowest. Add `OBJECT` and `HINT` when those implementations land; do not add disk blob caching to this enum. The tag is both the metric dimension and the config segment. |
+| `CacheFamily` | The independently budgeted in-memory families that actually use this module — `POINTER` and `OBJECT` today. Each is its own cache, never a tag inside a shared one, so a burst in the fastest-moving family cannot evict the slowest. Add `HINT` when that implementation lands; do not add disk blob caching to this enum. The tag is both the metric dimension and the config segment. |
 | `CacheBudget` / `CacheBudgetResolver` | One total split across the families. Pure arithmetic in `CacheBudget.split`; `CacheBudgetResolver` (`service/cache/`) reads the configuration and runs it at startup. |
 | `CacheEvents` | The common event baseline: `hit` (with how long it took to serve, so a caller that waited on someone else's load is not an instant hit), `miss`, `loadTime`, `loadFailed`, `loadDiscarded`, `admissionRejected`, `writeThrough` and `evicted`. Write-through reports whether the cache applied the publication or skipped it through a safety guard. Bulk reads report hits and misses per distinct key and one duration per loader invocation. A disk cache can reuse these metrics and add mapping/sweep signals without implementing `MemoryCache`. The module reports events; the container names the metrics. |
 
@@ -88,8 +88,9 @@ budget of zero.
 
 Only implemented in-memory families appear in `CacheFamily`; this avoids publishing configuration
 and metric dimensions for caches that do not exist yet. The existing `ImmutableBlobCache` remains
-under `floecat.blob.cache.max-weight-bytes`. A future disk blob cache can reuse the cache module's
-telemetry vocabulary while exposing its own lifecycle-shaped interface and volume budget.
+temporarily under `floecat.blob.cache.max-weight-bytes` for decoded ingredients not yet moved to the
+disk blob layer. A future disk blob cache can reuse the cache module's telemetry vocabulary while
+exposing its own lifecycle-shaped interface and volume budget.
 
 `floecat.cache.pointer.share` is 0.096, from the reference sizing scenario: a 100,000-table account
 at 100 columns needs 0.32 GB of addressing out of the 3.34 GB the memory caches hold between them
@@ -100,8 +101,17 @@ proportional share over-allocates it on a wide catalog and starves it on a narro
 same fixed need is a much larger fraction of a much smaller total. `max-bytes` is what pins it
 against that, and exceeding the budget costs store reads rather than wrong answers.
 
-The pointer cache is the first specialized layer built on the shared in-memory contract; the other
-layers above are unchanged. Its independent durable subtrees load through a bounded metadata
+`floecat.cache.object.share` is 0.775. Objects holds one engine-neutral assembled `RelationInfo`
+per immutable relation definition, mapped schemas by their real mapping inputs, decoded constraint
+bundles by immutable content URI, and the two small snapshot facts used by relation assembly. Names,
+projection, stats attachment, pin identity, and engine decoration are applied after lookup, so a
+single cached relation survives renames, data-only ingests, and requests from different engines.
+Absent constraints and stats are not cached. Successful stats writes evict only the affected
+snapshot-facts entry; immutable relation, schema, and constraint entries need no mutation
+invalidation. Account deletion drops the account partition while the deletion fence is held.
+
+The pointer and object caches are the first specialized layers built on the shared in-memory
+contract. The pointer cache's independent durable subtrees load through a bounded metadata
 fan-out; `floecat.cache.pointer.load-parallelism=0` derives the bound from the processors available
 to the JVM, while a positive value pins it. A failed or capacity-rejected index remains store-backed
 until the first read after `floecat.cache.pointer.degraded-retry-seconds`, when one caller retries
@@ -145,11 +155,15 @@ explicit deletes, prefix sweeps, and authoritative-read repairs are not included
 eviction rate therefore directly signals size pressure. The weight alongside the count
 distinguishes many small evictions from a few large ones.
 
-## Turning the pointer cache off
+## Turning memory caches off
 
 `floecat.cache.pointer.enabled=false` installs the raw pointer store instead of the caching
 decorator, so the read path becomes the pre-cache one. Off means the decorator is not there, not
 that a cache is there holding nothing.
+
+`floecat.cache.object.enabled=false` keeps the same object-facing APIs but loads every relation,
+schema, constraint bundle, and snapshot-facts value directly. Callers do not select cached versus
+uncached reads themselves.
 
 A budget of zero is *not* the switch — it is refused at startup, because a cache sized zero reports
 a 0% hit rate that reads as a cache which is not helping rather than one that was turned off.
@@ -198,11 +212,12 @@ emptiness is load-bearing.
 
 Cache budgets derive from the container: `floecat.cache.total-bytes` defaults to a share of the
 maximum heap, which the JVM already sizes from the container memory limit, and each cache takes a
-share of that. The knobs the pointer cache reads are `floecat.cache.total-bytes`,
-`floecat.cache.heap-share`, `floecat.cache.pointer.share` and `floecat.cache.pointer.max-bytes`,
-the last pinning an absolute size instead of a share, plus `floecat.cache.pointer.enabled`,
+share of that. The shared knobs are `floecat.cache.total-bytes` and
+`floecat.cache.heap-share`. Each family accepts `floecat.cache.<tag>.share`,
+`floecat.cache.<tag>.max-bytes`, and `floecat.cache.<tag>.enabled`; the max pins an absolute size
+instead of a share. Pointer-specific knobs are
 `floecat.cache.pointer.load-parallelism` and
 `floecat.cache.pointer.degraded-retry-seconds`; a share outside `(0, 1]` fails at startup.
-`heap-share` and `pointer.share` carry defaults in
+`heap-share`, `pointer.share`, and `object.share` carry defaults in
 `service/src/main/resources/application.properties`, alongside `floecat.blob.cache.*`;
-`total-bytes` and `pointer.max-bytes` are unset, and each is a share until it is given a value.
+`total-bytes` and the per-family `max-bytes` properties are unset.

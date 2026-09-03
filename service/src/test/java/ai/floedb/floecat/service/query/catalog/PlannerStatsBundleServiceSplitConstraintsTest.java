@@ -321,7 +321,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
 
     // And served through the cacheable read. A pinned constraints blob is immutable and
     // content-addressed, so bypassing the cache buys nothing on a warm path.
-    verify(constraintRepo).getByBlobUri(pinnedMeta.getBlobUri());
+    verify(constraintRepo).getByBlobUri(TABLE, pinnedMeta.getBlobUri());
     verify(constraintRepo, never()).getByBlobUriLive(anyString());
   }
 

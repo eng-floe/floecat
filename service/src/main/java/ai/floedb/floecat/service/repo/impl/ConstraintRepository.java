@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -43,9 +44,10 @@ public class ConstraintRepository {
   public record PutResult(SnapshotConstraints constraints, MutationMeta meta, boolean changed) {}
 
   private final GenericResourceRepository<SnapshotConstraints, SnapshotConstraintsKey> repo;
+  private final ObjectCache objects;
 
   public ConstraintRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, pointerStore, blobStore, null);
+    this(pointerStore, pointerStore, blobStore, null, ObjectCache.forTesting());
   }
 
   @Inject
@@ -53,7 +55,9 @@ public class ConstraintRepository {
       PointerStore pointerStore,
       @CachedPointerStore PointerStore pointerReads,
       BlobStore blobStore,
-      ImmutableBlobCache blobCache) {
+      ImmutableBlobCache blobCache,
+      ObjectCache objects) {
+    this.objects = objects;
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -72,8 +76,8 @@ public class ConstraintRepository {
    * query keeps reading the exact bundle its root references even after an in-place constraints
    * write repoints the pointer to a newer blob.
    */
-  public Optional<SnapshotConstraints> getByBlobUri(String blobUri) {
-    return repo.getByBlobUri(blobUri);
+  public Optional<SnapshotConstraints> getByBlobUri(ResourceId tableId, String blobUri) {
+    return objects.constraints(tableId, blobUri, () -> repo.getByBlobUriLive(blobUri));
   }
 
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
@@ -176,7 +180,8 @@ public class ConstraintRepository {
   }
 
   public Optional<SnapshotConstraints> getSnapshotConstraints(ResourceId tableId, long snapshotId) {
-    return repo.getByKey(key(tableId, snapshotId));
+    return repo.getByKeyThrough(
+        key(tableId, snapshotId), blobUri -> getByBlobUri(tableId, blobUri));
   }
 
   /** Loads constraints through the mutation read path, bypassing the query pointer cache. */

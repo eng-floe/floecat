@@ -175,6 +175,36 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return observeRepository("get_by_key", () -> getByKeyUnobserved(key));
   }
 
+  /**
+   * Resolve the canonical pointer here while a specialized decoded-object cache owns the immutable
+   * body. The repository retains the pointer/blob race protocol; the supplied reader receives only
+   * a content-addressed URI and must not cache absence.
+   *
+   * <p>This is intentionally narrower than exposing a pointer: callers cannot accidentally pair a
+   * cached body with metadata from another version or omit the authoritative retry when a selected
+   * blob vanished.
+   */
+  public Optional<T> getByKeyThrough(K key, Function<String, Optional<T>> bodyReader) {
+    Objects.requireNonNull(bodyReader, "bodyReader");
+    return observeRepository(
+        "get_by_key",
+        () -> {
+          String pointerKey = schema.canonicalPointerForKey.apply(key);
+          Optional<Pointer> selected = pointerReads.get(pointerKey);
+          if (selected.isEmpty()) {
+            return Optional.empty();
+          }
+          String blobUri = requireBlobReference(selected.get(), pointerKey);
+          Optional<T> loaded = bodyReader.apply(blobUri);
+          if (loaded.isPresent()) {
+            return loaded;
+          }
+          return reloadAfterVanishedBlob(
+                  pointerKey, fresh -> bodyReader.apply(requireBlobReference(fresh, pointerKey)))
+              .map(Reloaded::value);
+        });
+  }
+
   /** Returns a body and metadata resolved from the same canonical pointer version. */
   public Optional<ResourceWithMeta<T>> getByKeyWithMeta(K key) {
     return observeRepository(
