@@ -70,6 +70,11 @@ public final class CacheMetrics extends BaseMetrics {
     observability.counter(Telemetry.Metrics.CACHE_LOADS_DISCARDED, 1, metricTags(extraTags));
   }
 
+  /** One valid value not retained because it did not fit the cache budget. */
+  public void recordAdmissionRejected(Tag... extraTags) {
+    observability.counter(Telemetry.Metrics.CACHE_ADMISSION_REJECTED, 1, metricTags(extraTags));
+  }
+
   public void trackSize(Supplier<? extends Number> supplier, String description, Tag... extraTags) {
     registerGauge(Telemetry.Metrics.CACHE_SIZE, supplier, description, metricTags(extraTags));
   }

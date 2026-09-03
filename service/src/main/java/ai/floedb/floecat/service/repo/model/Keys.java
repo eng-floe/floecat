@@ -113,6 +113,11 @@ public final class Keys {
     return encode(s);
   }
 
+  /** Decodes one durable-key segment without treating {@code +} as a space. */
+  public static String decodeSegment(String s) {
+    return percentDecode(Objects.requireNonNull(s, "decode value"));
+  }
+
   public static String catalogIntegrationCredentialCleanupPrefix() {
     return SEG_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP;
   }

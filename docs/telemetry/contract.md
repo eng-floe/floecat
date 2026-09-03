@@ -7,7 +7,8 @@ This lists all metrics currently available in the repository:
 
 | Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
 | --- | --- | --- | --- | --- | --- | --- |
-| floecat.core.cache.accounts | GAUGE | count | v1 | Number of accounts with an active cache entry, tagged by cache name. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.accounts | GAUGE | count | v1 | Number of accounts in a cache readiness state, tagged by cache name and optionally result. | cache, component, operation | account, cache, component, operation, result |
+| floecat.core.cache.admission.rejected | COUNTER |  | v1 | Values not retained because they exceeded the cache budget, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.enabled | GAUGE |  | v1 | Indicator that the cache is enabled (1=enabled, 0=disabled). | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.entries | GAUGE | count | v1 | Approximate number of entries in the cache, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.errors | COUNTER |  | v1 | Number of cache operation failures (load errors), tagged by cache name. | cache, component, operation, result | account, cache, component, exception, operation, result |

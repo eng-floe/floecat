@@ -25,6 +25,14 @@ import java.time.Duration;
 public interface CacheEvents {
 
   /**
+   * Returns the same event contract scoped to an account. Implementations that do not publish an
+   * account dimension can keep the default; callers do not need parallel metric APIs.
+   */
+  default CacheEvents forAccount(String accountId) {
+    return this;
+  }
+
+  /**
    * Served without going to the source, after {@code served}. A hit is not always immediate: a
    * caller arriving during another's load waits for it, then is served from the map. Without the
    * duration a stampede of such followers reads as a high hit rate.
@@ -54,6 +62,9 @@ public interface CacheEvents {
    * steady miss count.
    */
   default void loadDiscarded() {}
+
+  /** A value was valid but could not be retained within this cache's budget. */
+  default void admissionRejected() {}
 
   /**
    * A load threw; the caller still sees the exception. Its {@link #miss()} is raised too, so a

@@ -109,6 +109,19 @@ class CaffeineMemoryCacheTest {
   }
 
   @Test
+  void aSpecializedCacheCanReserveTheWholeSharedBudget() {
+    var cache = CacheFixtures.<Versioned>cacheForAnyValue(CacheEvents.none());
+    cache.put("first", new Versioned("one", 1L));
+    cache.put("second", new Versioned("two", 1L));
+
+    cache.maximumBytes(0L);
+
+    assertThat(cache.bytes()).isZero();
+    assertThat(cache.entryCount()).isZero();
+    assertThatThrownBy(() -> cache.maximumBytes(-1L)).isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
   void peekReadsWithoutLoadingOrCounting() {
     // peek must not move the hit rate: it is not a question anyone asked the cache.
     var events = new RecordingEvents();

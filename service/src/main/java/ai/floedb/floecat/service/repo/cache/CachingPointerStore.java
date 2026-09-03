@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.repo.cache;
 
-import ai.floedb.floecat.cache.MemoryCache;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.List;
@@ -41,8 +40,9 @@ import java.util.concurrent.locks.ReentrantLock;
  *
  * <p>Writes <b>publish</b> rather than invalidate: the writer already holds the new value, so the
  * next reader hits instead of paying for a reload. Pointer-specific version ordering lives here,
- * above the generic memory cache: a publish only replaces a key already cached and only when its
- * store-assigned version is newer.
+ * above the generic memory cache: complete indexes accept inserts so they remain complete, while
+ * the evictable remainder updates only an entry already resident. Both paths reject an older
+ * store-assigned version.
  *
  * <p>The consistent reads are never served from the cache. They exist for deletion fencing and
  * mutation paths, where a cached answer would defeat the point of asking -- and because their
@@ -58,10 +58,10 @@ public final class CachingPointerStore implements PointerStore {
   private static final int MUTATION_STRIPES = 256;
 
   private final PointerStore delegate;
-  private final MemoryCache<String, Pointer> pointers;
+  private final PointerCache pointers;
   private final ReentrantLock[] mutationLocks = new ReentrantLock[MUTATION_STRIPES];
 
-  public CachingPointerStore(PointerStore delegate, MemoryCache<String, Pointer> pointers) {
+  public CachingPointerStore(PointerStore delegate, PointerCache pointers) {
     this.delegate = delegate;
     this.pointers = pointers;
     for (int stripe = 0; stripe < mutationLocks.length; stripe++) {
@@ -73,10 +73,7 @@ public final class CachingPointerStore implements PointerStore {
 
   @Override
   public Optional<Pointer> get(String key) {
-    // Absence is not cached here: a null value cannot be stored, and an absent pointer that later
-    // appears must be visible. Completeness -- absence as an answer -- is a property of a loaded
-    // account, not of a single miss, and arrives with the eager load.
-    return Optional.ofNullable(pointers.get(key, k -> delegate.get(k).orElse(null)));
+    return pointers.get(key);
   }
 
   /**
@@ -91,22 +88,12 @@ public final class CachingPointerStore implements PointerStore {
    */
   @Override
   public Optional<Pointer> getConsistent(String key) {
-    Optional<Pointer> fresh = delegate.getConsistent(key);
-    repair(key, fresh);
-    return fresh;
-  }
-
-  private void repair(String key, Optional<Pointer> fresh) {
     ReentrantLock lock = mutationLock(key);
     lock.lock();
     try {
-      // Drop rather than replace: a delete and recreate can restart below the cached version, and
-      // the store read may itself have raced a local publish. Leaving the key absent is always
-      // safe. Evict even when peek sees no entry, so an older in-flight load cannot install after
-      // this authoritative read returned.
-      if (pointers.peek(key).filter(cached -> cached.equals(fresh.orElse(null))).isEmpty()) {
-        pointers.evict(key);
-      }
+      Optional<Pointer> fresh = delegate.getConsistent(key);
+      pointers.repair(key, fresh);
+      return fresh;
     } finally {
       lock.unlock();
     }
@@ -117,9 +104,7 @@ public final class CachingPointerStore implements PointerStore {
     if (keys == null || keys.isEmpty()) {
       return Map.of();
     }
-    // MemoryCache owns miss partitioning, one bulk store read, per-key telemetry, and fencing each
-    // loaded value against a concurrent mutation. Omitted keys remain absent and are not cached.
-    return pointers.getAll(keys, misses -> delegate.getBatch(List.copyOf(misses)));
+    return pointers.getBatch(keys);
   }
 
   /** The authoritative batch view bypasses the cache and repairs every key it read. */
@@ -128,43 +113,61 @@ public final class CachingPointerStore implements PointerStore {
     if (keys == null || keys.isEmpty()) {
       return Map.of();
     }
-    Map<String, Pointer> fresh = delegate.getBatchConsistent(keys);
-    for (String key : keys) {
-      repair(key, Optional.ofNullable(fresh.get(key)));
+    int[] stripes = mutationStripesForKeys(keys);
+    lockMutations(stripes);
+    try {
+      Map<String, Pointer> fresh = delegate.getBatchConsistent(keys);
+      for (String key : keys) {
+        pointers.repair(key, Optional.ofNullable(fresh.get(key)));
+      }
+      return fresh;
+    } finally {
+      unlockMutations(stripes);
     }
-    return fresh;
   }
 
   @Override
   public List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-    return delegate.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+    return pointers.list(prefix, limit, pageToken, nextTokenOut);
   }
 
   @Override
   public List<Pointer> listPointersByPrefixConsistent(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-    List<Pointer> fresh =
-        delegate.listPointersByPrefixConsistent(prefix, limit, pageToken, nextTokenOut);
-    repairPrefix(prefix);
-    return fresh;
+    lockAllMutations();
+    try {
+      String sourceToken = pointers.tokenForSource(pageToken);
+      List<Pointer> fresh =
+          delegate.listPointersByPrefixConsistent(prefix, limit, sourceToken, nextTokenOut);
+      boolean exhausted = nextTokenOut != null && nextTokenOut.isEmpty();
+      pointers.repairPrefix(prefix, pageToken, fresh, exhausted);
+      return fresh;
+    } finally {
+      unlockAllMutations();
+    }
   }
 
   @Override
   public int countByPrefix(String prefix) {
-    return delegate.countByPrefix(prefix);
+    return pointers.count(prefix);
   }
 
   @Override
   public int countByPrefixConsistent(String prefix) {
-    int count = delegate.countByPrefixConsistent(prefix);
-    repairPrefix(prefix);
-    return count;
+    lockAllMutations();
+    try {
+      int count = delegate.countByPrefixConsistent(prefix);
+      pointers.verifyCount(prefix, count);
+      return count;
+    } finally {
+      unlockAllMutations();
+    }
   }
 
   @Override
   public String pageTokenAfterKey(String key) {
-    return delegate.pageTokenAfterKey(key);
+    return pointers.pageTokenAfterKey(key);
   }
 
   /** Straight through: emptiness is asked as a fence, and a cache cannot answer for the store. */
@@ -177,77 +180,127 @@ public final class CachingPointerStore implements PointerStore {
 
   @Override
   public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-    boolean won = delegate.compareAndSet(key, expectedVersion, next);
-    if (won) {
-      publish(key, next, expectedVersion + 1L);
-    } else {
-      // A rejected CAS is authoritative evidence that the expected cached state may be stale.
-      // Drop it so a retry loop cannot spin forever on the same version.
-      evict(key);
+    ReentrantLock lock = mutationLock(key);
+    lock.lock();
+    try {
+      boolean won = delegate.compareAndSet(key, expectedVersion, next);
+      if (won) {
+        publishHeld(key, next, expectedVersion + 1L);
+      } else {
+        // A rejected CAS is authoritative evidence that the expected state is stale. A complete
+        // index cannot evict one key (absence would become a wrong answer), so repair it from the
+        // store while this mutation stripe is still fenced.
+        pointers.repair(key, delegate.getConsistent(key));
+      }
+      return won;
+    } finally {
+      lock.unlock();
     }
-    return won;
   }
 
   @Override
   public boolean delete(String key) {
-    boolean deleted = delegate.delete(key);
-    // Even a false result proves the store has no value now. A stale resident value must not
-    // survive merely because another replica won the delete first.
-    evict(key);
-    return deleted;
+    ReentrantLock lock = mutationLock(key);
+    lock.lock();
+    try {
+      boolean deleted = delegate.delete(key);
+      if (deleted) {
+        evictHeld(key);
+      } else {
+        // Dynamo's best-effort delete returns false both for absence and when a concurrent update
+        // wins between its read and CAS delete. Only a fresh read can distinguish those outcomes;
+        // evicting unconditionally could turn the winning value into authoritative absence.
+        pointers.repair(key, delegate.getConsistent(key));
+      }
+      return deleted;
+    } finally {
+      lock.unlock();
+    }
   }
 
   @Override
   public boolean compareAndDelete(String key, long expectedVersion) {
-    boolean deleted = delegate.compareAndDelete(key, expectedVersion);
-    // On failure the expected version may have come from a stale cached read. Evict so a retry can
-    // observe what defeated it; on success the same eviction publishes absence.
-    evict(key);
-    return deleted;
+    ReentrantLock lock = mutationLock(key);
+    lock.lock();
+    try {
+      boolean deleted = delegate.compareAndDelete(key, expectedVersion);
+      if (deleted) {
+        evictHeld(key);
+      } else {
+        pointers.repair(key, delegate.getConsistent(key));
+      }
+      return deleted;
+    } finally {
+      lock.unlock();
+    }
   }
 
   @Override
   public boolean compareAndSetBatch(List<CasOp> ops) {
-    boolean won = delegate.compareAndSetBatch(ops);
-    if (ops == null) {
-      return won;
+    if (ops == null || ops.isEmpty()) {
+      return delegate.compareAndSetBatch(ops);
     }
-    if (!won) {
-      // The backend does not identify the failed condition. Any participating key may have made a
-      // cached precondition stale, so drop all of them and let the retry rebuild one coherent view.
-      ops.forEach(op -> evict(op.key()));
-      return false;
-    }
-    // The batch is atomic, so it either all applied or none of it did.
-    for (CasOp op : ops) {
-      switch (op) {
-        case CasUpsert upsert ->
-            publish(upsert.key(), upsert.next(), upsert.expectedVersion() + 1L);
-        // The caller owns the version on this shape, so what it proposed IS what the store holds.
-        case UnconditionalUpsert upsert ->
-            publish(upsert.key(), upsert.next(), upsert.next().getVersion());
-        case CasDelete delete -> evict(delete.key());
-        // A successful check is authoritative but carries no value to publish. Evict even when the
-        // cached version matches: delete-and-recreate can reuse a version for different content.
-        case CasCheck check -> evict(check.key());
-        case CasCheckAbsent check -> evict(check.key());
+    int[] stripes = mutationStripes(ops);
+    lockMutations(stripes);
+    try {
+      boolean won = delegate.compareAndSetBatch(ops);
+      if (!won) {
+        // The backend does not identify the failed condition. Any participating key may have made
+        // a cached precondition stale, so repair all of them in one authoritative batch while the
+        // participating stripes remain fenced.
+        List<String> keys = ops.stream().map(CasOp::key).distinct().toList();
+        Map<String, Pointer> fresh = delegate.getBatchConsistent(keys);
+        keys.forEach(key -> pointers.repair(key, Optional.ofNullable(fresh.get(key))));
+        return false;
       }
+      // Publish every insertion before any removal. A rename may transiently retain the old alias,
+      // but it must never create an authoritative-absence window between the two names.
+      for (CasOp op : ops) {
+        switch (op) {
+          case CasUpsert upsert ->
+              publishHeld(upsert.key(), upsert.next(), upsert.expectedVersion() + 1L);
+          // The caller owns this version, so what it proposed is what the store holds.
+          case UnconditionalUpsert upsert ->
+              publishHeld(upsert.key(), upsert.next(), upsert.next().getVersion());
+          default -> {}
+        }
+      }
+      for (CasOp op : ops) {
+        switch (op) {
+          case CasDelete delete -> evictHeld(delete.key());
+          case CasCheck check -> pointers.checkedPresent(check.key(), check.expectedVersion());
+          case CasCheckAbsent check -> evictHeld(check.key());
+          default -> {}
+        }
+      }
+      return true;
+    } finally {
+      unlockMutations(stripes);
     }
-    return won;
   }
 
   @Override
   public int deleteByPrefix(String prefix) {
-    int deleted = delegate.deleteByPrefix(prefix);
-    evictPrefix(prefix, null);
-    return deleted;
+    lockAllMutations();
+    try {
+      int deleted = delegate.deleteByPrefix(prefix);
+      pointers.removePrefix(prefix, null);
+      return deleted;
+    } finally {
+      unlockAllMutations();
+    }
   }
 
   @Override
   public int deleteByPrefixExcluding(String prefix, String excludedKey) {
-    int deleted = delegate.deleteByPrefixExcluding(prefix, excludedKey);
-    evictPrefix(prefix, excludedKey);
-    return deleted;
+    lockAllMutations();
+    try {
+      int deleted = delegate.deleteByPrefixExcluding(prefix, excludedKey);
+      pointers.removePrefix(prefix, excludedKey);
+      return deleted;
+    } finally {
+      unlockAllMutations();
+    }
   }
 
   /**
@@ -262,74 +315,81 @@ public final class CachingPointerStore implements PointerStore {
    * "the writer already holds the new value, so the next reader does not pay for a reload" into the
    * writer paying a bigger one.
    *
-   * <p>Still version-guarded, because the publish is not atomic with the write: two writers can
-   * interleave and the later commit must not be overwritten by the earlier one's publish. And still
-   * presence-guarded, so a write to a key nobody has cached does not fill it from the write path.
-   * Those are pointer semantics, not properties of {@link MemoryCache#put}.
+   * <p>Still version-guarded for writes performed by another process. A complete index accepts a
+   * new addressing key because that is how it remains complete; the evictable remainder stays
+   * presence-guarded so a write to a cold key does not fill it. Local mutations hold the key's
+   * stripe from durable mutation through publication, making their cache effects follow store
+   * order. Those are pointer semantics, not properties of {@link MemoryCache#put}.
    */
-  private void publish(String key, Pointer next, long assignedVersion) {
+  private void publishHeld(String key, Pointer next, long assignedVersion) {
     if (next == null) {
       return;
     }
     Pointer published = next.toBuilder().setKey(key).setVersion(assignedVersion).build();
-    ReentrantLock lock = mutationLock(key);
-    lock.lock();
-    try {
-      Optional<Pointer> cached = pointers.peek(key);
-      if (cached.isPresent() && cached.orElseThrow().getVersion() < assignedVersion) {
-        pointers.put(key, published);
-      } else if (cached.filter(published::equals).isEmpty()) {
-        // An absent entry may be an in-flight load, so evict to move the MemoryCache fence. A
-        // cached higher version may instead belong to an older incarnation of a key that was
-        // deleted and recreated. Without an incarnation in the schema, absence is the only safe
-        // common resolution; the next read reloads it.
-        pointers.evict(key);
+    if (pointers.publish(key, published)) {
+      return;
+    }
+    Optional<Pointer> cached = pointers.peekResident(key);
+    if (cached.isPresent() && cached.orElseThrow().getVersion() < assignedVersion) {
+      pointers.putResident(key, published);
+    } else if (cached.filter(published::equals).isEmpty()) {
+      // An absent entry may be an in-flight load, so evict to move the MemoryCache fence. A cached
+      // higher version may instead belong to an older incarnation of a key that was deleted and
+      // recreated. Without an incarnation in the schema, absence is the only safe common
+      // resolution; the next read reloads it.
+      pointers.evictResident(key);
+    }
+  }
+
+  private void evictHeld(String key) {
+    if (!pointers.remove(key)) {
+      pointers.evictResident(key);
+    }
+  }
+
+  private int[] mutationStripes(List<CasOp> ops) {
+    return mutationStripesForKeys(ops.stream().map(CasOp::key).toList());
+  }
+
+  private int[] mutationStripesForKeys(List<String> keys) {
+    boolean[] selected = new boolean[MUTATION_STRIPES];
+    int count = 0;
+    for (String key : keys) {
+      int stripe = mutationStripe(key);
+      if (!selected[stripe]) {
+        selected[stripe] = true;
+        count++;
       }
-    } finally {
-      lock.unlock();
     }
-  }
-
-  private void evict(String key) {
-    ReentrantLock lock = mutationLock(key);
-    lock.lock();
-    try {
-      pointers.evict(key);
-    } finally {
-      lock.unlock();
+    int[] stripes = new int[count];
+    int next = 0;
+    for (int stripe = 0; stripe < selected.length; stripe++) {
+      if (selected[stripe]) {
+        stripes[next++] = stripe;
+      }
     }
-  }
-
-  /**
-   * Evicts unconditionally rather than only when the store reported deletions. A prefix delete that
-   * removed nothing may still have raced one that did, and the cost of evicting a key that was
-   * already gone is a reload.
-   */
-  private void evictPrefix(String prefix, String excludedKey) {
-    lockAllMutations();
-    try {
-      pointers.evictPartition(
-          key ->
-              (prefix == null || prefix.isEmpty() || key.startsWith(prefix))
-                  && !key.equals(excludedKey));
-    } finally {
-      unlockAllMutations();
-    }
-  }
-
-  /**
-   * A prefix answer can disprove any resident pointer below it. Until the listing layer owns a
-   * complete name index that it can reconcile atomically, invalidating the prefix is the only safe
-   * repair: a later cached get reloads instead of retaining a value the authoritative read may have
-   * shown to be absent.
-   */
-  private void repairPrefix(String prefix) {
-    evictPrefix(prefix, null);
+    return stripes;
   }
 
   private ReentrantLock mutationLock(String key) {
+    return mutationLocks[mutationStripe(key)];
+  }
+
+  private int mutationStripe(String key) {
     int spread = key.hashCode() * 0x9E3779B9;
-    return mutationLocks[(spread >>> 16) & (MUTATION_STRIPES - 1)];
+    return (spread >>> 16) & (MUTATION_STRIPES - 1);
+  }
+
+  private void lockMutations(int[] stripes) {
+    for (int stripe : stripes) {
+      mutationLocks[stripe].lock();
+    }
+  }
+
+  private void unlockMutations(int[] stripes) {
+    for (int offset = stripes.length - 1; offset >= 0; offset--) {
+      mutationLocks[stripes[offset]].unlock();
+    }
   }
 
   private void lockAllMutations() {
