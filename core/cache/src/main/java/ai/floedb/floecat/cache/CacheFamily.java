@@ -17,10 +17,11 @@
 package ai.floedb.floecat.cache;
 
 /**
- * The in-memory cache families that are independently budgeted and measured.
+ * Stable identities for cache families that are independently sized and measured.
  *
  * <p>Each family is its own cache, never a tag inside a shared one: the values change at different
- * rates, and one eviction policy would let the fastest-moving family discard the slowest.
+ * rates and may use different media; one eviction policy would let the fastest-moving family
+ * discard the slowest.
  *
  * <p>The tag is both the metric dimension and the config segment, so renaming a constant renames a
  * published series and an operator's property.
@@ -31,7 +32,10 @@ public enum CacheFamily {
   POINTER("pointer"),
 
   /** Decoded, engine-neutral SQL metadata whose identity is content-addressed. */
-  OBJECT("object");
+  OBJECT("object"),
+
+  /** Serialized immutable bodies held on local disk rather than the JVM heap. */
+  BLOB("blob");
 
   private final String tag;
 
