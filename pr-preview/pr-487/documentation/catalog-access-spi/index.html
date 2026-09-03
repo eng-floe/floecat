@@ -1853,6 +1853,13 @@ Iceberg catalogs use the Iceberg REST integration path.</p>
 When no token URI is configured, the provider resolves <code>/oidc/v1/token</code> against the catalog URI.
 Provider connection properties include <code>http.connect.ms</code>, <code>http.read.ms</code>,
 <code>unity.temporary-table-vend-path</code>, <code>s3.region</code>, <code>s3.endpoint</code>, and <code>s3.path-style-access</code>.</p>
+<p>Table schemas reported through this slice are the ones Unity holds, not the ones the Delta log
+holds. The Unity Delta <em>Connector</em> prefers the log for a table with a storage location and falls
+back to Unity's column list only when the log will not read, because for an externally written
+table Unity's columns can lag the log. This provider has no Delta reader, so an Overlay-materialized
+table can report an older schema than the Connector-imported copy of the same upstream table, and
+the Overlay is the stale side. Closing the gap means reading the log from <code>catalog-access/unity</code>;
+until then, treat overlay schemas as catalog-reported.</p>
 <h2 id="iceberg-rest-slice">Iceberg REST slice<a class="headerlink" href="#iceberg-rest-slice" title="Permanent link">&para;</a></h2>
 <p>The Iceberg REST provider currently supports:</p>
 <ul>
