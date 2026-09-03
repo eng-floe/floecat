@@ -105,11 +105,13 @@ against that, and exceeding the budget costs store reads rather than wrong answe
 `floecat.cache.object.share` is 0.775. Objects holds one engine-neutral assembled `RelationInfo`
 and its mapped `SchemaDescriptor` per immutable relation identity, mapped schemas by their real
 mapping inputs, decoded constraint bundles by immutable content URI, and the two small snapshot
-facts used by relation assembly. A table relation key hashes the definition, constraints and schema
-identities before any ingredient is loaded, so a warm relation skips pinned-schema resolution and
+facts used by relation assembly. A table relation key hashes the definition and schema identities
+before any ingredient is loaded, so a warm relation skips pinned-schema resolution and
 mapping entirely. Names, projection, stats attachment, pin identity, and engine decoration are
 applied after lookup, so a single cached relation survives renames, data-only ingests, and requests
-from different engines. Mapped schema and assembled relation entries use the measured mapped-proto
+from different engines. Constraints use their own content-keyed entry because they are served by a
+separate RPC and are not part of `RelationInfo`; changing them does not invalidate the relation.
+Mapped schema and assembled relation entries use the measured mapped-proto
 retained-heap multiplier; relation entries conservatively charge their schema reference again so
 eviction order cannot make retained memory invisible to the budget.
 
