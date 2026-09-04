@@ -26,7 +26,6 @@ import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.hint.EngineHintManager;
 import ai.floedb.floecat.service.metagraph.loader.NodeLoader;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
@@ -67,7 +66,6 @@ public final class UserGraph {
   private final NameResolver names;
   private final FullyQualifiedResolver fq;
   private final SnapshotHelper snapshots;
-  private final EngineHintManager hints;
   private final PrincipalProvider principal;
   private final PinnedReadContract pinnedReads;
 
@@ -83,7 +81,6 @@ public final class UserGraph {
    * @param tableRepo repository for table operations
    * @param viewRepo repository for view operations
    * @param principal provider for current principal context
-   * @param engineHints manager for engine-specific hints
    * @param pinnedReads unwraps a pinned blob read, failing loudly when the blob is gone
    * @param snapshots pinned-snapshot reads and pin construction, container-wired so it shares one
    *     repair queue with {@code pinnedReads}
@@ -95,7 +92,6 @@ public final class UserGraph {
       TableRepository tableRepo,
       ViewRepository viewRepo,
       PrincipalProvider principal,
-      EngineHintManager engineHints,
       PinnedReadContract pinnedReads,
       SnapshotHelper snapshots) {
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
@@ -103,7 +99,6 @@ public final class UserGraph {
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.pinnedReads = pinnedReads;
     this.snapshots = snapshots;
-    this.hints = engineHints;
     this.principal = principal;
   }
 
@@ -122,8 +117,7 @@ public final class UserGraph {
       TableRepository tableRepo,
       ViewRepository viewRepo,
       TableRootRepository tableRootRepo,
-      PrincipalProvider principal,
-      EngineHintManager engineHints) {
+      PrincipalProvider principal) {
     RootRepairRequests repairs = RootRepairRequests.disabled();
     PinnedReadContract pins = new PinnedReadContract(repairs);
     return new UserGraph(
@@ -132,7 +126,6 @@ public final class UserGraph {
         tableRepo,
         viewRepo,
         principal,
-        engineHints,
         pins,
         new SnapshotHelper(snapshotRepo, tableRootRepo, null, pins, repairs));
   }
@@ -585,19 +578,6 @@ public final class UserGraph {
                         namespaceId.getAccountId(), ns.catalogId().getId(), namespaceId.getId()))
             .orElseGet(List::of);
     return ids.stream().map(this::view).flatMap(Optional::stream).toList();
-  }
-
-  // ----------------------------------------------------------------------
-  // Engine hints
-  // ----------------------------------------------------------------------
-
-  public Optional<EngineHint> engineHint(GraphNode node, EngineKey key, String type, String cid) {
-
-    if (hints == null) {
-      return Optional.empty();
-    }
-    EngineHintKey hintKey = new EngineHintKey(key.engineKind(), key.engineVersion(), type);
-    return hints.get(node, hintKey, cid);
   }
 
   // ----------------------------------------------------------------------
