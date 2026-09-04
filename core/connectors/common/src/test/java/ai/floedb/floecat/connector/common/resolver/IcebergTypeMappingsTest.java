@@ -56,8 +56,10 @@ class IcebergTypeMappingsTest {
                 Types.NestedField.optional(2, "qty", Types.IntegerType.get())));
     assertThat(t.fields()).hasSize(2);
     assertThat(t.fields().get(0).name()).isEqualTo("sku");
+    assertThat(t.fields().get(0).columnId()).isEqualTo(1);
     assertThat(t.fields().get(0).nullable()).isFalse();
     assertThat(t.fields().get(1).name()).isEqualTo("qty");
+    assertThat(t.fields().get(1).columnId()).isEqualTo(2);
     assertThat(t.fields().get(1).nullable()).isTrue();
   }
 
