@@ -281,6 +281,34 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   /**
+   * Read one mutation prerequisite together with the exact authoritative pointer that selected it.
+   * Callers that will CAS the pointer need both values from one read boundary; sampling metadata in
+   * a second call can pair an old body with a newer version.
+   */
+  protected final Optional<Reloaded<T>> readForMutationWithPointer(String key) {
+    Optional<Pointer> pointer = mutationReads.pointers().get(key);
+    if (pointer.isEmpty()) {
+      return Optional.empty();
+    }
+    Pointer selected = pointer.get();
+    Optional<T> loaded =
+        loadAndParseReferencedBlob(
+            selected.getKey(),
+            requireBlobReference(selected, selected.getKey()),
+            mutationReads.blobs());
+    if (loaded.isPresent()) {
+      return Optional.of(new Reloaded<>(selected, loaded.get()));
+    }
+    return reloadAfterVanishedBlob(
+        key,
+        fresh ->
+            loadAndParseReferencedBlob(
+                fresh.getKey(),
+                requireBlobReference(fresh, fresh.getKey()),
+                mutationReads.blobs()));
+  }
+
+  /**
    * Resolve one ordinary read pointer while a higher-level object cache owns decoded content.
    * Pointer selection, the authoritative retry after a vanished blob, and dangling-pointer
    * detection remain centralized in this repository.
@@ -865,6 +893,17 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected MutationMeta readMetaOrDefault(
       Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
     return meta(blobReads.head(blobUri), pointerOpt, pointerKey, blobUri, nowTs);
+  }
+
+  /** Metadata for a pointer already selected by an internal read, without a redundant blob HEAD. */
+  protected MutationMeta pointerMeta(Pointer pointer, Timestamp nowTs) {
+    return MutationMeta.newBuilder()
+        .setPointerKey(pointer.getKey())
+        .setBlobUri(requireBlobReference(pointer, pointer.getKey()))
+        .setPointerVersion(pointer.getVersion())
+        .setEtag("")
+        .setUpdatedAt(nowTs)
+        .build();
   }
 
   /**
