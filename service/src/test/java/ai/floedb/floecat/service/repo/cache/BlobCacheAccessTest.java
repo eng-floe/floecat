@@ -22,10 +22,10 @@ import ai.floedb.floecat.cache.BlobCache;
 import ai.floedb.floecat.cache.BlobCacheEvents;
 import ai.floedb.floecat.cache.DiskBlobCache;
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.testsupport.DiskBlobCacheTestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
+import ai.floedb.floecat.storage.spi.BlobStore;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -103,10 +103,10 @@ class BlobCacheAccessTest {
             tempDir.resolve("scoped-batch"), 1024 * 1024, 1, Duration.ZERO, BlobCacheEvents.none());
     var cached = new CachedImmutableBlobStore(delegate, new BlobCacheAccess(disk));
 
-    try (ReusableArtifactIndexStore.ScopedObjects ignored = cached.getBatchScoped(List.of(uri))) {
+    try (BlobStore.ScopedObjects ignored = cached.getBatchScoped(List.of(uri))) {
       assertThat(delegate.batchGets).hasValue(1);
     }
-    try (ReusableArtifactIndexStore.ScopedObjects bodies = cached.getBatchScoped(List.of(uri))) {
+    try (BlobStore.ScopedObjects bodies = cached.getBatchScoped(List.of(uri))) {
       assertThat(bodies.get(uri)).isNotNull();
       assertThat(disk.liveMappings()).isEqualTo(1);
       assertThat(delegate.batchGets).hasValue(1);
