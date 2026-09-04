@@ -204,7 +204,7 @@ final class ConnectorCliSupport {
       case "create" -> {
         if (args.size() < 6) {
           out.println(
-              "usage: connector create <display_name> <kind (ICEBERG|DELTA|GLUE|UNITY)> <uri>"
+              "usage: connector create <display_name> <kind (ICEBERG|DELTA|GLUE)> <uri>"
                   + " <source_namespace (a[.b[.c]...])> <destination_catalog (name)>"
                   + " [--source-table <name>] [--source-cols c1,#id2,...] [--dest-ns <a.b[.c]>]"
                   + " [--dest-table <name>] [--desc <text>] [--auth-scheme <scheme>] [--auth k=v"
@@ -2099,7 +2099,6 @@ final class ConnectorCliSupport {
       case "ICEBERG" -> ConnectorKind.CK_ICEBERG;
       case "DELTA" -> ConnectorKind.CK_DELTA;
       case "GLUE" -> ConnectorKind.CK_GLUE;
-      case "UNITY" -> ConnectorKind.CK_UNITY;
       default -> ConnectorKind.CK_UNSPECIFIED;
     };
   }

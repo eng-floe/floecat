@@ -142,11 +142,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
           "assertion",
           "external_id");
   private static final Set<ConnectorKind> CONNECTOR_KINDS_WITH_FORBIDDEN_SECRET_PROPERTIES =
-      Set.of(
-          ConnectorKind.CK_ICEBERG,
-          ConnectorKind.CK_DELTA,
-          ConnectorKind.CK_GLUE,
-          ConnectorKind.CK_UNITY);
+      Set.of(ConnectorKind.CK_ICEBERG, ConnectorKind.CK_DELTA, ConnectorKind.CK_GLUE);
 
   @Override
   public Uni<ListConnectorsResponse> listConnectors(ListConnectorsRequest request) {
@@ -723,7 +719,6 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                         case CK_ICEBERG -> Kind.ICEBERG;
                         case CK_DELTA -> Kind.DELTA;
                         case CK_GLUE -> Kind.GLUE;
-                        case CK_UNITY -> Kind.UNITY;
                         default ->
                             throw GrpcErrors.invalidArgument(corr, null, Map.of("field", "kind"));
                       };
