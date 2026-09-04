@@ -27,10 +27,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.metagraph.hint.EngineHintMetadata;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
-import ai.floedb.floecat.metagraph.model.EngineHint;
-import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
@@ -257,7 +254,6 @@ public class NodeLoader {
     UpstreamRef upstream =
         table.hasUpstream() ? table.getUpstream() : UpstreamRef.getDefaultInstance();
     TableFormat format = upstream.getFormat();
-    RelationHints hints = relationHints(table.getPropertiesMap());
     return new UserTableNode(
         table.getResourceId(),
         meta.getBlobUri(),
@@ -273,8 +269,8 @@ public class NodeLoader {
         Optional.<SnapshotRef>empty(),
         Optional.empty(),
         List.of(),
-        hints.engineHints(),
-        hints.columnHints());
+        Map.of(),
+        Map.of());
   }
 
   private static final Logger LOG = Logger.getLogger(NodeLoader.class);
@@ -311,7 +307,6 @@ public class NodeLoader {
   }
 
   private ViewNode toViewNode(View view, MutationMeta meta) {
-    RelationHints hints = relationHints(view.getPropertiesMap());
     return new ViewNode(
         view.getResourceId(),
         meta.getBlobUri(),
@@ -325,8 +320,8 @@ public class NodeLoader {
         GraphNodeOrigin.USER,
         view.getPropertiesMap(),
         Optional.empty(),
-        hints.columnHints(),
-        hints.engineHints());
+        Map.of(),
+        Map.of());
   }
 
   private static List<NameRef> parseBaseRelations(List<String> fqns) {
@@ -355,33 +350,5 @@ public class NodeLoader {
       b.addPath(parts[i]);
     }
     return b.build();
-  }
-
-  static RelationHints relationHints(Map<String, String> properties) {
-    Map<EngineHintKey, EngineHint> engineHints =
-        containsHintKey(properties, "engine.hint.")
-            ? EngineHintMetadata.hintsFromProperties(properties)
-            : Map.of();
-    Map<Long, Map<EngineHintKey, EngineHint>> columnHints =
-        containsHintKey(properties, "engine.hint.column.")
-            ? EngineHintMetadata.columnHints(properties)
-            : Map.of();
-    return new RelationHints(engineHints, columnHints);
-  }
-
-  static record RelationHints(
-      Map<EngineHintKey, EngineHint> engineHints,
-      Map<Long, Map<EngineHintKey, EngineHint>> columnHints) {}
-
-  private static boolean containsHintKey(Map<String, String> properties, String prefix) {
-    if (properties == null || properties.isEmpty()) {
-      return false;
-    }
-    for (String key : properties.keySet()) {
-      if (key != null && key.startsWith(prefix)) {
-        return true;
-      }
-    }
-    return false;
   }
 }

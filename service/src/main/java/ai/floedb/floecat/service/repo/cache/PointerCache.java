@@ -45,7 +45,7 @@ import java.util.function.LongSupplier;
  * Storage owned by the pointer-store cache layer.
  *
  * <p>Complete SQL-addressing families live in one sorted map per account. The first read blocks
- * while that account's four durable subtrees are read consistently; only then can a missing key be
+ * while that account's five durable subtrees are read consistently; only then can a missing key be
  * returned as authoritative absence. Writes maintain a complete map in place. Everything outside
  * those structurally recognised families uses the ordinary admission-controlled memory cache.
  *
@@ -801,7 +801,7 @@ public final class PointerCache {
 
     private IndexLayout() {}
 
-    /** Structurally identifies the eleven complete addressing families. */
+    /** Structurally identifies the complete pointer families needed on the query path. */
     private static Optional<Match> match(String keyOrPrefix) {
       if (keyOrPrefix == null || !keyOrPrefix.startsWith(Keys.accountRootPrefix())) {
         return Optional.empty();
@@ -843,6 +843,13 @@ public final class PointerCache {
           && "by-name".equals(segment[7])) {
         return Optional.of(new Match(account));
       }
+      if (segment.length >= 6
+          && "relations".equals(segment[2])
+          && !segment[3].isEmpty()
+          && "hints".equals(segment[4])
+          && "by-engine".equals(segment[5])) {
+        return Optional.of(new Match(account));
+      }
       return Optional.empty();
     }
 
@@ -857,7 +864,8 @@ public final class PointerCache {
           root + "catalogs/",
           root + "namespaces/by-id/",
           root + "tables/by-id/",
-          root + "views/by-id/");
+          root + "views/by-id/",
+          root + "relations/");
     }
 
     private static Optional<String> accountPartitionForRootPrefix(String prefix) {

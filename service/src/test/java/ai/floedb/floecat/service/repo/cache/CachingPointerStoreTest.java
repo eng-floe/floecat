@@ -313,7 +313,7 @@ class CachingPointerStoreTest {
     assertThat(reads.listingReads).hasValue(readsAfterLoad);
     assertThat(reads.listingReads)
         .as("one consistent scan for each complete account subtree")
-        .hasValue(4);
+        .hasValue(5);
   }
 
   @Test
@@ -353,7 +353,7 @@ class CachingPointerStoreTest {
   }
 
   @Test
-  void allElevenAddressingFamiliesAreComplete() {
+  void allQueryPointerFamiliesAreComplete() {
     CountingReads reads = new CountingReads();
     CachingPointerStore caching = new CachingPointerStore(reads, cacheFor(reads));
     List<String> keys =
@@ -368,17 +368,18 @@ class CachingPointerStoreTest {
             Keys.tablePointerByName(ACCT, "cat", "ns", "table"),
             Keys.viewPointerById(ACCT, "view"),
             Keys.viewPointerByName(ACCT, "cat", "ns", "view"),
-            Keys.relationPointerByName(ACCT, "cat", "ns", "relation"));
+            Keys.relationPointerByName(ACCT, "cat", "ns", "relation"),
+            Keys.relationHintsPointer(ACCT, "relation", "floe", "1"));
     keys.forEach(key -> reads.compareAndSet(key, 0L, pointer(key, "s3://" + key, 0L)));
 
     assertThat(caching.getBatch(keys)).containsOnlyKeys(keys.toArray(String[]::new));
     assertThat(reads.listingReads)
-        .as("two global and four account subtree scans load every complete family")
-        .hasValue(6);
+        .as("two global and five account subtree scans load every complete family")
+        .hasValue(7);
 
     keys.forEach(reads::delete);
     assertThat(caching.getBatch(keys)).containsOnlyKeys(keys.toArray(String[]::new));
-    assertThat(reads.listingReads).hasValue(6);
+    assertThat(reads.listingReads).hasValue(7);
   }
 
   @Test
@@ -396,7 +397,7 @@ class CachingPointerStoreTest {
     assertThat(caching.get(missing)).isEmpty();
     int readsAfterLoad = reads.listingReads.get();
 
-    assertThat(readsAfterLoad).isEqualTo(5);
+    assertThat(readsAfterLoad).isEqualTo(6);
     assertThat(caching.get(missing)).isEmpty();
     assertThat(reads.listingReads).hasValue(readsAfterLoad);
   }
@@ -427,7 +428,7 @@ class CachingPointerStoreTest {
 
     assertThat(caching.get(key).map(Pointer::getBlobUri)).contains("s3://relation");
 
-    assertThat(reads.listingReads).hasValue(4);
+    assertThat(reads.listingReads).hasValue(5);
   }
 
   @Test
@@ -474,6 +475,26 @@ class CachingPointerStoreTest {
 
     assertThat(caching.get(missing)).isEmpty();
     assertThat(reads.consistentPointReads).hasValue(sourceReadsAfterLoad);
+    assertThat(reads.listingReads).hasValue(listingReadsAfterLoad);
+  }
+
+  @Test
+  void absentRelationHintsStayOffTheStoreAndAWritePublishesThem() {
+    CountingReads reads = new CountingReads();
+    CachingPointerStore caching = new CachingPointerStore(reads, cacheFor(reads));
+    String key = Keys.relationHintsPointer(ACCT, "table", "floe", "1");
+
+    assertThat(caching.get(key)).isEmpty();
+    int pointReadsAfterLoad = reads.consistentPointReads.get();
+    int listingReadsAfterLoad = reads.listingReads.get();
+
+    assertThat(caching.get(key)).isEmpty();
+    assertThat(reads.consistentPointReads).hasValue(pointReadsAfterLoad);
+    assertThat(reads.listingReads).hasValue(listingReadsAfterLoad);
+
+    assertThat(caching.compareAndSet(key, 0L, pointer(key, "s3://hint", 0L))).isTrue();
+    assertThat(caching.get(key).map(Pointer::getBlobUri)).contains("s3://hint");
+    assertThat(reads.consistentPointReads).hasValue(pointReadsAfterLoad);
     assertThat(reads.listingReads).hasValue(listingReadsAfterLoad);
   }
 

@@ -313,10 +313,10 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    * Pointer selection, the authoritative retry after a vanished blob, and dangling-pointer
    * detection remain centralized in this repository.
    */
-  protected final Optional<T> readThrough(
-      String key, Function<String, Optional<T>> decodedBodyReader) {
+  protected final <R> Optional<R> readThrough(
+      String key, Function<String, Optional<R>> decodedBodyReader) {
     Objects.requireNonNull(decodedBodyReader, "decodedBodyReader");
-    Function<Pointer, Optional<T>> reader =
+    Function<Pointer, Optional<R>> reader =
         pointer -> decodedBodyReader.apply(requireBlobReference(pointer, pointer.getKey()));
     return readResolved(key, pointerReads, reader, reader);
   }
@@ -347,11 +347,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return readResolved(key, pointers, firstReader, freshReader);
   }
 
-  private Optional<T> readResolved(
+  private <R> Optional<R> readResolved(
       String key,
       RepositoryReads.Pointers pointers,
-      Function<Pointer, Optional<T>> firstReader,
-      Function<Pointer, Optional<T>> freshReader) {
+      Function<Pointer, Optional<R>> firstReader,
+      Function<Pointer, Optional<R>> freshReader) {
     var pointerStoreOpt = pointers.get(key);
     if (pointerStoreOpt.isEmpty()) {
       return Optional.empty();
@@ -359,7 +359,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
     var pointer = pointerStoreOpt.get();
     requireBlobReference(pointer, key);
-    Optional<T> loaded = firstReader.apply(pointer);
+    Optional<R> loaded = firstReader.apply(pointer);
     if (loaded.isPresent()) {
       return loaded;
     }
