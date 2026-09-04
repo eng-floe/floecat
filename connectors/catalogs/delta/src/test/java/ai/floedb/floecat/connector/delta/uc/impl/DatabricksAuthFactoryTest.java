@@ -19,9 +19,13 @@ package ai.floedb.floecat.connector.delta.uc.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 import ai.floedb.floecat.connector.spi.AuthProvider;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import java.net.http.HttpClient;
+import java.nio.file.InvalidPathException;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -45,5 +49,27 @@ class DatabricksAuthFactoryTest {
         new ConnectorConfig.Auth("oauth2", Map.of("cli.provider", "databricks"), Map.of());
 
     assertThrows(IllegalArgumentException.class, () -> DatabricksAuthFactory.from(auth, ""));
+  }
+
+  @Test
+  void cliTokenProviderRejectsAnUnusableCachePathBeforeAllocatingATransport() {
+    // Only the throw is observable; it happens while resolving the argument list, before the
+    // production constructor builds an HttpClient that nothing could then close.
+    assertThrows(
+        InvalidPathException.class,
+        () ->
+            new DatabricksCliTokenProvider(
+                "https://dbc.example.com", "cache\u0000.json", null, null));
+  }
+
+  @Test
+  void closingCliTokenProviderClosesItsHttpClient() {
+    HttpClient http = mock(HttpClient.class);
+    var provider =
+        new DatabricksCliTokenProvider("https://dbc.example.com", null, null, null, http);
+
+    provider.close();
+
+    verify(http).close();
   }
 }

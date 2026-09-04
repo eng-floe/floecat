@@ -100,9 +100,14 @@ import org.apache.parquet.io.RecordReader;
 import org.apache.parquet.io.SeekableInputStream;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 @QuarkusTest
 @TestProfile(ReconcilerWorkerLocalProfile.class)
+// UcStubServer widens floecat.security.allow-loopback-catalog-endpoints for its lifetime, so the
+// lock belongs to the class rather than to the tests that happen to declare it: a future test
+// touching Unity, or asserting the default deny, would otherwise depend on scheduling.
+@ResourceLock("floecat.security.allow-loopback-catalog-endpoints")
 public class ConnectorIT {
   private static final String YB_TPCDS_TABLE_DIR = "call_center-78092955d9dc452fbe14ab11d90a85ce";
   private static final String YB_TPCDS_METADATA_LOCATION =
@@ -1724,12 +1729,24 @@ public class ConnectorIT {
   }
 
   private static final class UcStubServer implements AutoCloseable {
+    /**
+     * The client admits a cleartext loopback Unity Catalog only when an operator has opted in, so
+     * this stub -- which is exactly that -- plays the operator for as long as it is running. Kept a
+     * literal because {@code HttpUnityCatalogClient.ALLOW_LOOPBACK_PROPERTY} is package-private in
+     * another module; see docs/connectors-delta.md. Saved and restored around the stub's lifetime,
+     * which assumes no concurrent test expects the default deny.
+     */
+    private static final String ALLOW_LOOPBACK_PROPERTY =
+        "floecat.security.allow-loopback-catalog-endpoints";
+
     private final HttpServer server;
     private final String baseUri;
+    private final String previousAllowLoopback;
 
-    private UcStubServer(HttpServer server) {
+    private UcStubServer(HttpServer server, String previousAllowLoopback) {
       this.server = server;
       this.baseUri = "http://localhost:" + server.getAddress().getPort();
+      this.previousAllowLoopback = previousAllowLoopback;
     }
 
     static UcStubServer start(String storageLocation) throws IOException {
@@ -1755,7 +1772,10 @@ public class ConnectorIT {
           "/api/2.1/unity-catalog/tables/", exchange -> writeJson(exchange, tableJson));
 
       server.start();
-      return new UcStubServer(server);
+      // Set last, once nothing left can fail: the property is JVM-wide, and a throw before a
+      // closeable is returned would leave the opt-in on for every test that follows.
+      String previous = System.setProperty(ALLOW_LOOPBACK_PROPERTY, "true");
+      return new UcStubServer(server, previous);
     }
 
     String baseUri() {
@@ -1764,6 +1784,12 @@ public class ConnectorIT {
 
     @Override
     public void close() {
+      // Restore rather than clear, so an existing value survives.
+      if (previousAllowLoopback == null) {
+        System.clearProperty(ALLOW_LOOPBACK_PROPERTY);
+      } else {
+        System.setProperty(ALLOW_LOOPBACK_PROPERTY, previousAllowLoopback);
+      }
       server.stop(0);
     }
 

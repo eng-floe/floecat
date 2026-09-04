@@ -33,8 +33,16 @@ final class DeltaGlueConnector extends DeltaConnector {
       Function<String, InputFile> parquetInput,
       boolean ndvEnabled,
       double ndvSampleFraction,
-      long ndvMaxFiles) {
-    super(connectorId, engine, parquetInput, ndvEnabled, ndvSampleFraction, ndvMaxFiles);
+      long ndvMaxFiles,
+      AutoCloseable engineResources) {
+    super(
+        connectorId,
+        engine,
+        parquetInput,
+        ndvEnabled,
+        ndvSampleFraction,
+        ndvMaxFiles,
+        engineResources);
     this.glueCatalog = glueCatalog;
   }
 
@@ -71,6 +79,12 @@ final class DeltaGlueConnector extends DeltaConnector {
 
   @Override
   public void close() {
-    glueCatalog.close();
+    try {
+      glueCatalog.close();
+    } finally {
+      // In a finally so a catalog failure cannot skip the engine's resources: the base class holds
+      // the refreshing S3 client, which nothing else retains.
+      super.close();
+    }
   }
 }

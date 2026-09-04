@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.aws.RefreshingAwsClient;
+import ai.floedb.floecat.client.unity.HttpUnityCatalogClient;
 import ai.floedb.floecat.connector.common.auth.AwsGlueClientFactory;
 import ai.floedb.floecat.connector.common.auth.RefreshingAwsCredentialsProviderRegistry;
 import ai.floedb.floecat.connector.common.auth.RegistryBackedAwsCredentialsProvider;
@@ -25,6 +26,7 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import io.delta.kernel.defaults.engine.DefaultEngine;
 import io.delta.kernel.engine.Engine;
 import java.net.URI;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -44,6 +46,8 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.S3Configuration;
 
 final class DeltaConnectorFactory {
+  static final String DELTA_SOURCE_OPTION = "delta.source";
+
   private static final String CLIENT_CREDENTIALS_PROVIDER = "client.credentials-provider";
   private static final String CLIENT_CREDENTIALS_PROVIDER_PREFIX =
       CLIENT_CREDENTIALS_PROVIDER + ".";
@@ -66,6 +70,22 @@ final class DeltaConnectorFactory {
     Map<String, String> effectiveAuthProps = authProps == null ? Map.of() : authProps;
 
     DeltaSource source = selectSource(effectiveOptions);
+    try {
+      return createForSource(uri, effectiveOptions, authProvider, effectiveAuthProps, source);
+    } catch (RuntimeException | Error failure) {
+      if (source == DeltaSource.UNITY) {
+        closeAfterFailedConstruction(null, authProvider, failure);
+      }
+      throw failure;
+    }
+  }
+
+  private static FloecatConnector createForSource(
+      String uri,
+      Map<String, String> effectiveOptions,
+      AuthProvider authProvider,
+      Map<String, String> effectiveAuthProps,
+      DeltaSource source) {
     String storageLocation = effectiveOptions.getOrDefault("delta.table-root", "");
     validateOptions(source, storageLocation);
 
@@ -90,54 +110,155 @@ final class DeltaConnectorFactory {
     } catch (NumberFormatException ignore) {
     }
 
-    return switch (source) {
-      case FILESYSTEM -> {
-        String namespaceFq = effectiveOptions.getOrDefault("external.namespace", "");
-        String tableName =
-            effectiveOptions.getOrDefault("external.table-name", deriveTableName(storageLocation));
-        yield new DeltaFilesystemConnector(
-            "delta-filesystem",
-            engineContext.engine(),
-            engineContext.parquetInput(),
-            ndvEnabled,
-            ndvSampleFraction,
-            ndvMaxFiles,
-            storageLocation,
-            namespaceFq,
-            tableName);
+    // buildEngine ran above and its refreshing client is released only by
+    // DeltaConnector.close(), which never runs if construction throws below.
+    try {
+      return switch (source) {
+        case FILESYSTEM -> {
+          String namespaceFq = effectiveOptions.getOrDefault("external.namespace", "");
+          String tableName =
+              effectiveOptions.getOrDefault(
+                  "external.table-name", deriveTableName(storageLocation));
+          yield new DeltaFilesystemConnector(
+              "delta-filesystem",
+              engineContext.engine(),
+              engineContext.parquetInput(),
+              ndvEnabled,
+              ndvSampleFraction,
+              ndvMaxFiles,
+              storageLocation,
+              namespaceFq,
+              tableName,
+              engineContext.engineResources());
+        }
+        case GLUE -> {
+          Map<String, String> catalogOptions = buildGlueCatalogOptions(effectiveOptions);
+          var glue = AwsGlueClientFactory.createRefreshing(catalogOptions, effectiveAuthProps);
+          yield new DeltaGlueConnector(
+              "delta-glue",
+              new GlueDeltaCatalog(glue),
+              engineContext.engine(),
+              engineContext.parquetInput(),
+              ndvEnabled,
+              ndvSampleFraction,
+              ndvMaxFiles,
+              engineContext.engineResources());
+        }
+        case UNITY -> {
+          Objects.requireNonNull(uri, "Unity base uri");
+          String host = uri.endsWith("/") ? uri.substring(0, uri.length() - 1) : uri;
+          int connectMs = positiveIntOption(effectiveOptions, "http.connect.ms", 10_000);
+          int readMs = positiveIntOption(effectiveOptions, "http.read.ms", 60_000);
+          HttpUnityCatalogClient uc = null;
+          try {
+            // Databricks serves vending under 2.0 and OSS Unity Catalog under 2.1; everything else
+            // is 2.1 on both. Defaulting to Databricks keeps the supported target working with no
+            // configuration, while an OSS or proxied endpoint can name its own route.
+            // Blank reads as unset, matching positiveIntOption above: an empty string is how config
+            // UIs and persisted-property round-trips commonly encode "not set".
+            String configuredVendPath = effectiveOptions.get("unity.temporary-table-vend-path");
+            String credentialsPath =
+                configuredVendPath == null || configuredVendPath.isBlank()
+                    ? HttpUnityCatalogClient.DATABRICKS_TEMPORARY_TABLE_CREDENTIALS_PATH
+                    : configuredVendPath.trim();
+            uc =
+                new HttpUnityCatalogClient(
+                    parseUriOption(host, "Unity Catalog base URI"),
+                    Duration.ofMillis(connectMs),
+                    Duration.ofMillis(readMs),
+                    () -> authProvider.applyHeaders(Map.of()),
+                    credentialsPath);
+            yield new UnityDeltaConnector(
+                "delta-unity",
+                uc,
+                authProvider,
+                engineContext.engine(),
+                engineContext.parquetInput(),
+                ndvEnabled,
+                ndvSampleFraction,
+                ndvMaxFiles,
+                engineContext.engineResources());
+          } catch (RuntimeException | Error failure) {
+            closeAfterFailedConstruction(uc, null, failure);
+            throw failure;
+          }
+        }
+      };
+    } catch (RuntimeException | Error failure) {
+      closeEngineResources(engineContext, failure);
+      throw failure;
+    }
+  }
+
+  /**
+   * Parses a URI-valued connector option without quoting it back on failure.
+   *
+   * <p>{@code URI.create} puts the entire input in its message, and validateConnector walks the
+   * cause chain appending every message into the summary it logs and returns over RPC. A value
+   * carrying userinfo would publish that credential. The client rejects userinfo on the base URI,
+   * but only once the string parses at all, so a malformed one never reaches that check.
+   */
+  private static URI parseUriOption(String value, String what) {
+    try {
+      return URI.create(value);
+    } catch (IllegalArgumentException malformed) {
+      // No cause and no input: both carry the text being rejected.
+      throw new IllegalArgumentException(what + " is not a valid URI");
+    }
+  }
+
+  /**
+   * A timeout option, reported against the key an operator can act on. The client rejects a
+   * non-positive timeout by its own parameter name, and Integer.parseInt reports nothing at all,
+   * neither of which appears in connector configuration or the docs.
+   */
+  private static int positiveIntOption(Map<String, String> options, String key, int defaultValue) {
+    String raw = options.get(key);
+    if (raw == null || raw.isBlank()) {
+      return defaultValue;
+    }
+    int value;
+    try {
+      value = Integer.parseInt(raw.trim());
+    } catch (NumberFormatException notAnInteger) {
+      throw new IllegalArgumentException(
+          "Option '" + key + "' must be a positive integer (got: '" + raw + "')", notAnInteger);
+    }
+    if (value <= 0) {
+      throw new IllegalArgumentException(
+          "Option '" + key + "' must be a positive integer (got: '" + raw + "')");
+    }
+    return value;
+  }
+
+  private static void closeEngineResources(EngineContext engineContext, Throwable failure) {
+    AutoCloseable resources = engineContext.engineResources();
+    if (resources == null) {
+      return;
+    }
+    try {
+      resources.close();
+    } catch (Exception closeFailure) {
+      failure.addSuppressed(closeFailure);
+    }
+  }
+
+  private static void closeAfterFailedConstruction(
+      HttpUnityCatalogClient catalog, AuthProvider authProvider, Throwable failure) {
+    if (catalog != null) {
+      try {
+        catalog.close();
+      } catch (RuntimeException closeFailure) {
+        failure.addSuppressed(closeFailure);
       }
-      case GLUE -> {
-        Map<String, String> catalogOptions = buildGlueCatalogOptions(effectiveOptions);
-        var glue = AwsGlueClientFactory.createRefreshing(catalogOptions, effectiveAuthProps);
-        yield new DeltaGlueConnector(
-            "delta-glue",
-            new GlueDeltaCatalog(glue),
-            engineContext.engine(),
-            engineContext.parquetInput(),
-            ndvEnabled,
-            ndvSampleFraction,
-            ndvMaxFiles);
+    }
+    if (authProvider instanceof AutoCloseable closeable) {
+      try {
+        closeable.close();
+      } catch (Exception closeFailure) {
+        failure.addSuppressed(closeFailure);
       }
-      case UNITY -> {
-        Objects.requireNonNull(uri, "Unity base uri");
-        String host = uri.endsWith("/") ? uri.substring(0, uri.length() - 1) : uri;
-        int connectMs = Integer.parseInt(effectiveOptions.getOrDefault("http.connect.ms", "10000"));
-        int readMs = Integer.parseInt(effectiveOptions.getOrDefault("http.read.ms", "60000"));
-        String warehouse = effectiveOptions.getOrDefault("databricks.sql.warehouse_id", "");
-        var uc = new UcHttp(host, connectMs, readMs, authProvider);
-        var sql =
-            warehouse.isBlank() ? null : new SqlStmtClient(host, authProvider, warehouse, readMs);
-        yield new UnityDeltaConnector(
-            "delta-unity",
-            uc,
-            sql,
-            engineContext.engine(),
-            engineContext.parquetInput(),
-            ndvEnabled,
-            ndvSampleFraction,
-            ndvMaxFiles);
-      }
-    };
+    }
   }
 
   static Map<String, String> buildGlueCatalogOptions(Map<String, String> options) {
@@ -186,7 +307,7 @@ final class DeltaConnectorFactory {
     if (options == null) {
       return DeltaSource.UNITY;
     }
-    String source = options.get("delta.source");
+    String source = options.get(DELTA_SOURCE_OPTION);
     if (source != null && !source.isBlank()) {
       String normalized = source.trim().toLowerCase(Locale.ROOT);
       return switch (normalized) {
@@ -211,7 +332,12 @@ final class DeltaConnectorFactory {
     }
   }
 
-  private record EngineContext(Engine engine, Function<String, InputFile> parquetInput) {}
+  /**
+   * @param engineResources the refreshing S3 client the engine and parquet reader were built on, or
+   *     null for a local-filesystem engine. Nothing else retains it, so the connector closes it.
+   */
+  private record EngineContext(
+      Engine engine, Function<String, InputFile> parquetInput, AutoCloseable engineResources) {}
 
   private static EngineContext buildEngine(Map<String, String> options) {
     String localRoot = options.getOrDefault("fs.floecat.test-root", "");
@@ -219,7 +345,7 @@ final class DeltaConnectorFactory {
       var root = java.nio.file.Path.of(localRoot).toAbsolutePath();
       Engine engine = DefaultEngine.create(new LocalFileSystemClient(root));
       Function<String, InputFile> inputFn = p -> new ParquetLocalInputFile(root, p);
-      return new EngineContext(engine, inputFn);
+      return new EngineContext(engine, inputFn, null);
     }
 
     var region = Region.of(resolveOption(options, "s3.region", "aws.region", "us-east-1"));
@@ -242,7 +368,7 @@ final class DeltaConnectorFactory {
                       .credentialsProvider(provider);
               try {
                 if (endpoint != null && !endpoint.isBlank()) {
-                  s3Builder.endpointOverride(URI.create(endpoint));
+                  s3Builder.endpointOverride(parseUriOption(endpoint, "s3.endpoint"));
                 }
                 return RefreshingAwsClient.clientResource(
                     s3Builder.build(), RefreshingAwsClient.closeableResource(provider));
@@ -253,7 +379,7 @@ final class DeltaConnectorFactory {
             });
     Engine engine = DefaultEngine.create(new S3V2FileSystemClient(s3Client));
     Function<String, InputFile> inputFn = p -> new ParquetS3V2InputFile(s3Client, p);
-    return new EngineContext(engine, inputFn);
+    return new EngineContext(engine, inputFn, s3Client);
   }
 
   private static AwsCredentialsProvider resolveCredentials(Map<String, String> options) {
