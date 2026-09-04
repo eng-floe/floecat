@@ -112,8 +112,12 @@ message TablePin {
    */
   string root_uri = 12;
 
-  /** Content-hash version of the pinned root blob. */
-  string root_version = 13;
+  // reserved 13: root_version. It existed only so the up-front pin probe could compare a captured
+  // root etag against a live HEAD. That probe is gone -- a pinned read now fails at the read that
+  // needs the blob -- and nothing else ever read the field. The Pointers cache carries a root
+  // version of its own, taken from the live pointer rather than copied onto the pin.
+  reserved 13;
+  reserved "root_version";
 
   /**
    * Ref of the constraints bundle frozen for the pinned snapshot, copied from the pinned root's

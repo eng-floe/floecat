@@ -38,7 +38,6 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
-import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
@@ -66,18 +65,15 @@ final class RelationBundleBuilder {
   private final CatalogGraphView graphView;
   private final EngineRelationDecorator engineRelationDecorator;
   private final SystemExecutionResolver systemExecutionResolver;
-  private final PinValidator pinValidator;
   private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
 
   RelationBundleBuilder(
       CatalogGraphView graphView,
       EngineRelationDecorator engineRelationDecorator,
-      SystemExecutionResolver systemExecutionResolver,
-      PinValidator pinValidator) {
+      SystemExecutionResolver systemExecutionResolver) {
     this.graphView = graphView;
     this.engineRelationDecorator = engineRelationDecorator;
     this.systemExecutionResolver = systemExecutionResolver;
-    this.pinValidator = pinValidator;
   }
 
   /** A build error for one relation. Never sinks the whole bundle; the driver maps it to ERROR. */
@@ -120,30 +116,6 @@ final class RelationBundleBuilder {
 
     TimingAccumulator timings() {
       return timings;
-    }
-  }
-
-  /**
-   * Validate the pinned root for a user-table build on the caller's thread. Returns the same
-   * per-relation error that {@link #build} uses for later assembly failures; cancellation still
-   * aborts the whole stream.
-   */
-  Optional<BuildError> validatePin(
-      String correlationId, ResolvedRelation relation, QueryContext queryContext) {
-    if (!(relation.node() instanceof UserTableNode)) {
-      return Optional.empty();
-    }
-    Optional<TablePin> pin = queryContext.findTablePin(relation.relationId(), correlationId);
-    if (pin.isEmpty()) {
-      return Optional.empty();
-    }
-    try {
-      pinValidator.validate(correlationId, pin.get());
-      return Optional.empty();
-    } catch (java.util.concurrent.CancellationException e) {
-      throw e;
-    } catch (RuntimeException e) {
-      return Optional.of(buildError(relation, e));
     }
   }
 

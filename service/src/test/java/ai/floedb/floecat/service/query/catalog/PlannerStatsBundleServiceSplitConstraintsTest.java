@@ -18,6 +18,10 @@ package ai.floedb.floecat.service.query.catalog;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
@@ -270,10 +274,14 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     StatsRepository repository = createRepository();
+    // Spied, not plain: this repository reads from in-memory stores with no blob cache behind it,
+    // so the cached and live arms return the same bundle and only the call itself distinguishes
+    // them. Without this, reverting the pinned constraints read to a live one passes every test.
     var constraintRepo =
-        new ai.floedb.floecat.service.repo.impl.ConstraintRepository(
-            new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
-            new ai.floedb.floecat.storage.memory.InMemoryBlobStore());
+        spy(
+            new ai.floedb.floecat.service.repo.impl.ConstraintRepository(
+                new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
+                new ai.floedb.floecat.storage.memory.InMemoryBlobStore()));
     ConstraintDefinition pk = constraint("pk_pinned", ConstraintType.CT_PRIMARY_KEY, List.of(1L));
     constraintRepo.putSnapshotConstraints(
         TABLE,
@@ -310,6 +318,11 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
     assertEquals("pk_pinned", results.get(0).getConstraints(0).getName());
     // The pinned ref version is echoed so the result matches the pin identity.
     assertEquals(pinnedMeta.getEtag(), results.get(0).getConstraintsRefVersion());
+
+    // And served through the cacheable read. A pinned constraints blob is immutable and
+    // content-addressed, so bypassing the cache buys nothing on a warm path.
+    verify(constraintRepo).getByBlobUri(pinnedMeta.getBlobUri());
+    verify(constraintRepo, never()).getByBlobUriLive(anyString());
   }
 
   @Test

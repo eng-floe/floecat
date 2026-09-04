@@ -29,6 +29,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class FakeTableRepository extends TableRepository {
   private final Map<ResourceId, Table> entries = new HashMap<>();
@@ -36,6 +37,7 @@ public final class FakeTableRepository extends TableRepository {
   private final Map<ResourceId, Integer> gets = new HashMap<>();
   private final Map<ResourceId, Integer> metaGets = new HashMap<>();
   private final Map<ResourceId, Integer> blobGets = new HashMap<>();
+  private final AtomicInteger liveBlobReads = new AtomicInteger();
   // blobUri -> table, so the getByBlobUri hydration fast path is actually exercised (put() does not
   // touch the real blob store). Keeps old blobs addressable, mirroring CAS blobs outliving a
   // pointer move.
@@ -98,24 +100,20 @@ public final class FakeTableRepository extends TableRepository {
     return super.getByBlobUri(blobUri);
   }
 
+  /**
+   * The fake's in-memory map IS the live store, so both arms return the same thing. Counted for
+   * exactly that reason: without a record of which arm was taken, a read converted from live to
+   * cached (or back) would leave every test green.
+   */
   @Override
   public Optional<Table> getByBlobUriLive(String blobUri) {
-    // The fake's in-memory map IS the live store; same lookup, same counter.
+    liveBlobReads.incrementAndGet();
     return getByBlobUri(blobUri);
   }
 
-  @Override
-  public String blobEtag(String blobUri) {
-    if (blobUri == null || blobUri.isBlank()) {
-      return null;
-    }
-    // A blob is "present" if any seeded meta names it; return that meta's etag so version checks
-    // resolve against the same value put() / putMeta() recorded.
-    return metas.values().stream()
-        .filter(m -> blobUri.equals(m.getBlobUri()))
-        .map(MutationMeta::getEtag)
-        .findFirst()
-        .orElse(null);
+  /** How many reads bypassed the cache. A pinned read must not be among them. */
+  public int liveBlobReads() {
+    return liveBlobReads.get();
   }
 
   @Override

@@ -39,7 +39,7 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.common.ScanPruningUtils;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.query.PinValidator;
+import ai.floedb.floecat.service.query.PinnedReadContract;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.impl.ScanSession.DeleteFileMetadata;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -71,7 +71,7 @@ public class ScanBundleService {
   private final SnapshotRepository snapshots;
   private final StatsStore statsStore;
   private final ServerSideFileIoPropertiesResolver fileIoPropertiesResolver;
-  private final PinValidator pinValidator;
+  private final PinnedReadContract pinnedReads;
 
   @Inject
   public ScanBundleService(
@@ -79,12 +79,12 @@ public class ScanBundleService {
       SnapshotRepository snapshots,
       StatsStore statsStore,
       ServerSideFileIoPropertiesResolver fileIoPropertiesResolver,
-      PinValidator pinValidator) {
+      PinnedReadContract pinnedReads) {
     this.tables = tables;
     this.snapshots = snapshots;
     this.statsStore = statsStore;
     this.fileIoPropertiesResolver = fileIoPropertiesResolver;
-    this.pinValidator = pinValidator;
+    this.pinnedReads = pinnedReads;
   }
 
   /**
@@ -94,7 +94,7 @@ public class ScanBundleService {
    * properties (storage/connector settings, credentials, metadata location, schema fallback)
    * reflect the pinned state and do not drift with the current table pointer — a scan survives a
    * drop/unpublish of the current table — and an in-place UpdateSnapshot repointing the (table,
-   * snapshot id) pointer to a new blob cannot drift the scan after the pin was validated. Every pin
+   * snapshot id) pointer to a new blob cannot drift the scan after the pin was built. Every pin
    * captures both blob identities at construction, so a missing blob here is a catalog-integrity
    * failure, not a fallback case.
    */
@@ -103,21 +103,18 @@ public class ScanBundleService {
     long snapshotId = pin.getSnapshotId();
     long initStartedNanos = System.nanoTime();
     long tableStartedNanos = initStartedNanos;
-    // LIVE reads, not the decoded cache: requirePinned*'s contract is that a missing pinned blob
-    // fails as catalog-integrity corruption — a still-resident decode must not mask a swept blob,
-    // so these reads' emptiness has to reflect the store. Once per scan session, not per page.
+    // Cached reads: these blobs are immutable and content-addressed, so a resident decode IS the
+    // pinned content. requirePinned*'s contract is unchanged — a genuinely missing pinned blob
+    // still fails as catalog-integrity corruption at the point of the read.
     Table table =
-        pinValidator.requirePinnedTableBlob(
-            tables.getByBlobUriLive(pin.getTableBlobUri()), correlationId, tableId);
+        pinnedReads.requirePinnedTableBlob(
+            tables.getByBlobUri(pin.getTableBlobUri()), correlationId, tableId);
     StoreOperationSummary.nanos("table_load", System.nanoTime() - tableStartedNanos);
 
     long snapshotStartedNanos = System.nanoTime();
     Snapshot snapshot =
-        pinValidator.requirePinnedSnapshotBlob(
-            snapshots.getByBlobUriLive(pin.getSnapshotBlobUri()),
-            correlationId,
-            tableId,
-            snapshotId);
+        pinnedReads.requirePinnedSnapshotBlob(
+            snapshots.getByBlobUri(pin.getSnapshotBlobUri()), correlationId, tableId, snapshotId);
     StoreOperationSummary.nanos("snapshot_load", System.nanoTime() - snapshotStartedNanos);
 
     TableInfo info = buildTableInfo(table, snapshot, snapshotId);

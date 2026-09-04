@@ -119,9 +119,9 @@ public class NodeLoader {
       return Optional.empty();
     }
     MutationMeta meta = MutationMeta.newBuilder().setBlobUri(blobUri).build();
-    // LIVE: this read's emptiness is the pin-integrity detector (the caller wraps it in
-    // requirePinnedTableBlob); a still-resident decode must not mask a swept pinned blob.
-    return tableRepository.getByBlobUriLive(blobUri).map(table -> toTableNode(table, meta));
+    // The blob a pin names is immutable, so a resident decode of it is the pinned content, not a
+    // stale view of it. Emptiness still fails through requirePinnedTableBlob at the caller.
+    return tableRepository.getByBlobUri(blobUri).map(table -> toTableNode(table, meta));
   }
 
   /**

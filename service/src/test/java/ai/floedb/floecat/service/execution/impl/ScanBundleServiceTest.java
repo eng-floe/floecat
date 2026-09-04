@@ -38,7 +38,7 @@ import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
-import ai.floedb.floecat.service.query.PinValidator;
+import ai.floedb.floecat.service.query.PinnedReadContract;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -91,9 +91,9 @@ class ScanBundleServiceTest {
     // A real repair pipeline over an in-memory store: initScan's missing-pinned-blob failures
     // must durably enqueue the table for the resync re-drive, and tests assert the marker.
     repairPointers = new InMemoryPointerStore();
-    PinValidator pinValidator =
-        new PinValidator(null, new RootRepairRequests(new RootResyncQueue(repairPointers)));
-    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver, pinValidator);
+    PinnedReadContract pinnedReads =
+        new PinnedReadContract(new RootRepairRequests(new RootResyncQueue(repairPointers)));
+    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver, pinnedReads);
   }
 
   private boolean repairEnqueued(ResourceId tableId) {
@@ -103,9 +103,9 @@ class ScanBundleServiceTest {
   }
 
   private void stubPinnedBlobsPresent() {
-    when(tableRepo.getByBlobUriLive(TABLE_BLOB_URI))
+    when(tableRepo.getByBlobUri(TABLE_BLOB_URI))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
-    when(snapshotRepo.getByBlobUriLive(SNAPSHOT_BLOB_URI))
+    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI))
         .thenReturn(
             Optional.of(Snapshot.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build()));
     when(resolver.applyToTableProperties(any(), any(), any())).thenReturn(Map.of());
@@ -126,17 +126,17 @@ class ScanBundleServiceTest {
             .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
             .setMetadataLocation("s3://bucket/table/metadata/00001.metadata.json")
             .build();
-    when(tableRepo.getByBlobUriLive(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
-    when(snapshotRepo.getByBlobUriLive(SNAPSHOT_BLOB_URI)).thenReturn(Optional.of(snapshot));
+    when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
+    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI)).thenReturn(Optional.of(snapshot));
     when(resolver.applyToTableProperties(table, null, table.getPropertiesMap()))
         .thenReturn(Map.of("s3.region", "us-east-1"));
 
     var init = service.initScan("corr", PIN);
 
     // Both reads come from the pinned immutable blobs, never the live pointers.
-    verify(tableRepo).getByBlobUriLive(TABLE_BLOB_URI);
+    verify(tableRepo).getByBlobUri(TABLE_BLOB_URI);
     verify(tableRepo, never()).getById(any());
-    verify(snapshotRepo).getByBlobUriLive(SNAPSHOT_BLOB_URI);
+    verify(snapshotRepo).getByBlobUri(SNAPSHOT_BLOB_URI);
     verify(snapshotRepo, never()).getById(any(), anyLong());
     assertEquals(42L, init.snapshotId());
     assertEquals(
@@ -147,7 +147,7 @@ class ScanBundleServiceTest {
 
   @Test
   void initScanFailsWhenPinnedTableBlobMissingAndEnqueuesRepair() {
-    when(tableRepo.getByBlobUriLive(TABLE_BLOB_URI)).thenReturn(Optional.empty());
+    when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.empty());
 
     assertThrows(io.grpc.StatusRuntimeException.class, () -> service.initScan("corr", PIN));
     // The pinned root names a table blob no read can load: without a re-derived root every
@@ -157,9 +157,9 @@ class ScanBundleServiceTest {
 
   @Test
   void initScanFailsWhenPinnedSnapshotBlobMissingAndEnqueuesRepair() {
-    when(tableRepo.getByBlobUriLive(TABLE_BLOB_URI))
+    when(tableRepo.getByBlobUri(TABLE_BLOB_URI))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
-    when(snapshotRepo.getByBlobUriLive(SNAPSHOT_BLOB_URI)).thenReturn(Optional.empty());
+    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI)).thenReturn(Optional.empty());
 
     assertThrows(io.grpc.StatusRuntimeException.class, () -> service.initScan("corr", PIN));
     assertTrue(repairEnqueued(TABLE_ID));
@@ -272,9 +272,9 @@ class ScanBundleServiceTest {
 
   @Test
   void initScanFailsWhenPinnedSnapshotBlobMissing() {
-    when(tableRepo.getByBlobUriLive(TABLE_BLOB_URI))
+    when(tableRepo.getByBlobUri(TABLE_BLOB_URI))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
-    when(snapshotRepo.getByBlobUriLive(SNAPSHOT_BLOB_URI)).thenReturn(Optional.empty());
+    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI)).thenReturn(Optional.empty());
 
     assertThrows(io.grpc.StatusRuntimeException.class, () -> service.initScan("corr", PIN));
   }

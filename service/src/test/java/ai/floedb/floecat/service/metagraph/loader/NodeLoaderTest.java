@@ -94,6 +94,10 @@ class NodeLoaderTest {
     // Read straight from the pinned blob: no pointer read, no getById fallback to current state.
     assertThat(tableRepo.metaForSafeCount(tableId)).isEqualTo(0);
     assertThat(tableRepo.getByIdCount(tableId)).isEqualTo(0);
+    // And through the cache, not around it. The pinned blob is immutable and content-addressed, so
+    // the live arm buys nothing here; both arms return the same thing in this fake, so only the
+    // counter can tell a converted read from an unconverted one.
+    assertThat(tableRepo.liveBlobReads()).isEqualTo(0);
   }
 
   @Test

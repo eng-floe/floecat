@@ -28,6 +28,8 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
+import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -66,6 +68,7 @@ class QueryContextStoreImplTest {
     store.safetyExpiryMinutes = 10L;
     store.resolvingPinGraceMs = 60_000L;
     store.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
+    store.repairs = RootRepairRequests.disabled();
     store.init();
   }
 
@@ -200,6 +203,28 @@ class QueryContextStoreImplTest {
         .isInstanceOf(BaseResourceRepository.CorruptionException.class)
         .hasMessageContaining("manifest page missing");
     assertThat(store.referencedPinBlobUris()).containsExactly(rootUri);
+  }
+
+  @Test
+  void aVanishedPinnedRootEnqueuesTheTableForRepair() {
+    // The root leg is the one requirePinnedTableBlob/requirePinnedSnapshotBlob do not cover. Before
+    // the up-front probe was removed it reported here; without this the table's committed root can
+    // name data no read can load and nothing ever re-derives it.
+    InMemoryPointerStore repairPointers = new InMemoryPointerStore();
+    store.tableRoots = new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    store.repairs = new RootRepairRequests(new RootResyncQueue(repairPointers));
+    ResourceId tableId = table("t1");
+    String missingRoot =
+        Keys.tableRootBlobUri(tableId.getAccountId(), tableId.getId(), "sha-never-written");
+
+    assertThatThrownBy(() -> store.registerResolvingPinBlobs("q", tableId, List.of(missingRoot)))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("pinned table root is missing");
+
+    assertThat(
+            repairPointers.get(
+                Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId())))
+        .isPresent();
   }
 
   @Test

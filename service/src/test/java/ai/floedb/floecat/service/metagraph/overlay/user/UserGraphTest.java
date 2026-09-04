@@ -93,7 +93,7 @@ class UserGraphTest {
             tableRootRepository,
             new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     graph =
-        new UserGraph(
+        UserGraph.forTest(
             catalogRepository,
             namespaceRepository,
             snapshotRepository,
@@ -275,7 +275,7 @@ class UserGraphTest {
   @Test
   void recordsCacheLoadLatencyWhenEnabled() {
     var instrumentedGraph =
-        new UserGraph(
+        UserGraph.forTest(
             catalogRepository,
             namespaceRepository,
             snapshotRepository,
@@ -303,7 +303,7 @@ class UserGraphTest {
   @Test
   void recordsCacheLoadLatencyWhenDisabled() {
     var instrumentedGraph =
-        new UserGraph(
+        UserGraph.forTest(
             catalogRepository,
             namespaceRepository,
             snapshotRepository,
@@ -326,7 +326,7 @@ class UserGraphTest {
     // meta cache stays warm — the exact condition under which a stale cached meta (a per-process
     // cache with no cross-instance invalidation) could hydrate an old-but-still-readable blob.
     UserGraph g =
-        new UserGraph(
+        UserGraph.forTest(
             catalogRepository,
             namespaceRepository,
             snapshotRepository,

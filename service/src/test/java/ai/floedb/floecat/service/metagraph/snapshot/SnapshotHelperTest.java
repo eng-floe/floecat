@@ -37,7 +37,7 @@ import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.catalog.impl.TableRootMutations;
-import ai.floedb.floecat.service.query.PinValidator;
+import ai.floedb.floecat.service.query.PinnedReadContract;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -61,7 +61,8 @@ class SnapshotHelperTest {
   private TableRootRepository roots;
   private TableRootCommitter committer;
   private InMemoryPointerStore repairPointers;
-  private PinValidator validator;
+  private PinnedReadContract pins;
+  private RootRepairRequests repairs;
 
   @BeforeEach
   void setUp() {
@@ -70,15 +71,14 @@ class SnapshotHelperTest {
     when(tableRepo.metaForSafe(any()))
         .thenReturn(
             MutationMeta.newBuilder().setBlobUri("s3://tbl/table.pb").setEtag("etag-t").build());
-    when(tableRepo.blobEtag("s3://tbl/table.pb")).thenReturn("etag-t");
     roots = new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     committer = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
     // A real repair pipeline over its own in-memory store, so tests can assert which broken-root
     // observations durably enqueue the table for the resync re-drive and which do not.
     repairPointers = new InMemoryPointerStore();
-    validator =
-        new PinValidator(roots, new RootRepairRequests(new RootResyncQueue(repairPointers)));
-    helper = new SnapshotHelper(repository, roots, null, validator);
+    repairs = new RootRepairRequests(new RootResyncQueue(repairPointers));
+    pins = new PinnedReadContract(repairs);
+    helper = new SnapshotHelper(repository, roots, null, pins, repairs);
   }
 
   private boolean repairEnqueued(ResourceId tableId) {
@@ -196,6 +196,10 @@ class SnapshotHelperTest {
             () -> "{}");
 
     assertThat(schema).contains("pinned");
+    // And served it from the cacheable read. The pinned blob is immutable and content-addressed,
+    // so bypassing the cache here buys nothing and costs a GET per table on the warm path; both
+    // arms return the same bytes in this fake, so only the counter can tell them apart.
+    assertThat(repository.liveBlobReads()).isZero();
   }
 
   @Test
@@ -239,7 +243,6 @@ class SnapshotHelperTest {
     assertThat(pin.getTableBlobUri()).isEqualTo("s3://tbl/table.pb");
     assertThat(pin.getSnapshotBlobUri()).isEqualTo("s3://tbl/snap-142.pb");
     assertThat(pin.getRootUri()).isNotEmpty();
-    assertThat(pin.getRootVersion()).isNotEmpty();
     // The pinned root is the immutable object every read follows refs out of.
     TableRoot pinnedRoot = roots.getByBlobUri(pin.getRootUri()).orElseThrow();
     assertThat(pinnedRoot.getCurrentSnapshotId()).isEqualTo(142);
@@ -304,13 +307,12 @@ class SnapshotHelperTest {
   }
 
   @Test
-  void tablePinValidatesAgainstThePinnedRootsRefsNotLivePointers() {
+  void tablePinCarriesThePinnedRootsRefsNotLivePointers() {
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 142, "2024-05-01T00:00:00Z");
     // The root's definition ref names an older blob that is still retrievable at its version,
     // while the live table pointer has advanced (an ALTER whose root commit has not landed yet).
-    // The pin carries and validates the ROOT's ref, not the live pointer.
-    when(tableRepo.blobEtag("s3://tbl/table-v1.pb")).thenReturn("etag-t1");
+    // The pin carries the ROOT's ref, not the live pointer.
     when(tableRepo.metaForSafe(tableId))
         .thenReturn(
             MutationMeta.newBuilder()
@@ -542,7 +544,7 @@ class SnapshotHelperTest {
     // Metadata surfaces (getCommittedCurrent*) still expose 12 as the committed selection.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, pins, repairs);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
     seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
@@ -574,7 +576,7 @@ class SnapshotHelperTest {
     // among finalized entries only; CURRENT never points at it (currency advances at finalize).
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, pins, repairs);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 11, "2024-02-01T00:00:00Z");
     seedSnapshot(tableId, 12, "2024-03-01T00:00:00Z");
@@ -674,7 +676,7 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var flakyHelper = new SnapshotHelper(repository, flakyRoots, null, validator);
+    var flakyHelper = new SnapshotHelper(repository, flakyRoots, null, pins, repairs);
 
     TablePin pin = flakyHelper.tablePinFor("corr", table, null, Optional.empty());
 
@@ -713,7 +715,7 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var deadHelper = new SnapshotHelper(repository, deadRoots, null, validator);
+    var deadHelper = new SnapshotHelper(repository, deadRoots, null, pins, repairs);
 
     assertThatThrownBy(() -> deadHelper.tablePinFor("corr", table, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class);
@@ -723,8 +725,8 @@ class SnapshotHelperTest {
   @Test
   void anEntryWithoutASnapshotRefFailsThePinWithThePreciseError() {
     // Every writer records a snapshot ref; an entry without one is a broken root invariant. The
-    // pin must fail naming that, not construct an empty-URI pin a downstream validator reports
-    // as a generic internal error.
+    // pin must fail naming that, not construct an empty-URI pin that requirePinnedSnapshotBlob
+    // would later report as a generic internal error.
     ResourceId table = tableId("tbl-no-snap-ref");
     var localCommitter = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
     localCommitter.commit(
@@ -739,7 +741,7 @@ class SnapshotHelperTest {
                 .build(),
             BlobRef.newBuilder().setUri("s3://t/table.pb").setVersion("vt").build(),
             true));
-    var localHelper = new SnapshotHelper(repository, roots, null, validator);
+    var localHelper = new SnapshotHelper(repository, roots, null, pins, repairs);
 
     assertThatThrownBy(() -> localHelper.tablePinFor("corr", table, null, Optional.empty()))
         .hasMessageContaining("INTERNAL");
@@ -754,7 +756,7 @@ class SnapshotHelperTest {
     // explicit-id (reject) and AS_OF (skip) paths — not pin a snapshot that would then scan empty.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, pins, repairs);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 7, "2024-02-01T00:00:00Z");
     // Finalize 7 (generation ref present -> becomes current), then remove its generation.
@@ -777,7 +779,7 @@ class SnapshotHelperTest {
     // not be rejected. The gate keys on presence, not on the generation being non-empty.
     var tracking = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(tracking.tracksStatsGenerations()).thenReturn(true);
-    helper = new SnapshotHelper(repository, roots, tracking, validator);
+    helper = new SnapshotHelper(repository, roots, tracking, pins, repairs);
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 3, "2024-02-01T00:00:00Z");
     // The stats-generation ref points at an EMPTY generation — the snapshot is finalized, it just

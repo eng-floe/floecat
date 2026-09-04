@@ -268,7 +268,7 @@ public class SnapshotRepository {
    * Loads a snapshot directly from its immutable blob URI, bypassing the (table, snapshot id)
    * pointer. Used to read the exact snapshot blob a query pinned: an in-place UpdateSnapshot on the
    * same id republishes the pointer to a new blob, so resolving by id could drift the scan to that
-   * newer blob between pin validation and the read — reading the pinned URI cannot.
+   * newer blob between pin construction and the read — reading the pinned URI cannot.
    */
   public Optional<Snapshot> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);
@@ -277,17 +277,6 @@ public class SnapshotRepository {
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
   public Optional<Snapshot> getByBlobUriLive(String blobUri) {
     return repo.getByBlobUriLive(blobUri);
-  }
-
-  /**
-   * The version (etag) of the immutable snapshot blob at {@code blobUri}, or {@code null} if no
-   * blob is there, via a single HEAD. Lets a pin validator confirm the exact pinned snapshot blob
-   * is present and unchanged without going through the (table, snapshot id) pointer, which an
-   * in-place {@code UpdateSnapshot} can repoint to a newer blob while the pinned blob is still
-   * retained.
-   */
-  public String blobEtag(String blobUri) {
-    return repo.blobEtag(blobUri);
   }
 
   public CurrentSnapshotPointerUpdateResult maybeAdvanceCurrentSnapshotPointer(

@@ -70,10 +70,12 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
   // deliberately NOT a liveness witness: the CAS GC min-age fence (floecat.gc.cas.min-age-ms,
   // default 30s) measures age since the blob was WRITTEN, not since it was last referenced, so an
   // old root passes the fence the instant it is superseded — a recent observation proves nothing
-  // about the blob still existing. Liveness checks (PinValidator, requirePinned*) therefore always
-  // HEAD the live store. READ path only: the commit funnel uses metaForSafeLive (a stale CAS
-  // expected-version would only lose and burn retries). TTL 0 disables; tests use the ttl-0
-  // constructors.
+  // about the blob still existing. Callers that need liveness therefore go through
+  // metaForSafeLive, which invalidates before reading -- among them the resolving-pin currency
+  // guard in QueryContextStoreImpl, the pin-construction retry in SnapshotHelper, and the commit
+  // funnel below, where a stale CAS expected-version would only lose and burn retries. Anything
+  // depending on that invalidation side effect should grep for the callers rather than trust this
+  // list. TTL 0 disables; tests use the ttl-0 constructors.
   private final PointerTtlCache<String> pointerCache;
 
   public TableRootRepository(PointerStore pointerStore, BlobStore blobStore) {
@@ -235,11 +237,6 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
    */
   public Optional<TableRoot> getByBlobUriLive(String blobUri) {
     return repo.getByBlobUriLive(blobUri);
-  }
-
-  /** The etag of the root blob at {@code blobUri}, or {@code null} when absent (pin validation). */
-  public String blobEtag(String blobUri) {
-    return repo.blobEtag(blobUri);
   }
 
   /**

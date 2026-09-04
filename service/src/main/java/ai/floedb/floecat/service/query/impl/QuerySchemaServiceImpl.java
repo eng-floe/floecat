@@ -36,7 +36,6 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.query.PinValidator;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleUtils;
@@ -77,7 +76,6 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   @Inject ViewExpansionResolver expansions;
   @Inject QueryContextStore queryStore;
   @Inject CatalogGraphView graphView;
-  @Inject PinValidator pinValidator;
   @Inject Observability observability;
 
   @Override
@@ -286,8 +284,8 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   }
 
   private SchemaDescriptor describeTable(String correlationId, ResourceId rid, TablePin pin) {
-    // Fail hard on a missing/mismatched pinned blob rather than re-reading current catalog state.
-    pinValidator.validate(correlationId, pin);
+    // Read the pinned snapshot, never current catalog state: a pinned read that drifted to
+    // current would answer a different question than the one the query asked.
     SnapshotRef snapshotRef = SnapshotRef.newBuilder().setSnapshotId(pin.getSnapshotId()).build();
     CatalogGraphView.SchemaResolution resolved =
         graphView.schemaFor(
