@@ -77,6 +77,11 @@ class SnapshotRepositoryTest {
   }
 
   @Test
+  void productionCurrentSnapshotPointerConstructorUsesNoopBlobCache() {
+    assertDoesNotThrow(() -> new CurrentSnapshotPointerRepository(ptr, ptr, blobs));
+  }
+
+  @Test
   void snapshotRepoCreateSnapshot() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     String catalogId = UUID.randomUUID().toString();
