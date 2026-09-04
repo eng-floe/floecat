@@ -557,6 +557,40 @@ class IndexArtifactRepositoryTest {
   }
 
   @Test
+  void selectedBundleAllowsExternalIndexSidecarsWithoutAnInheritedGeneration() {
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
+    String filePath = "s3://bucket/file.parquet";
+    IndexArtifactRecord record =
+        indexRecord(714L, filePath).toBuilder()
+            .setArtifactUri("s3://external-indexes/file.parquet")
+            .build();
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(715L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    assertThat(
+            repository.inheritedManagedSidecarGenerations(
+                TABLE_ID,
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle:prior-group",
+                        bundleUri,
+                        bundle.length,
+                        digest,
+                        List.of(),
+                        List.of(filePath)))))
+        .isEmpty();
+  }
+
+  @Test
   void selectedBundleRejectsASidecarGenerationOwnedByAnotherTable() {
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);

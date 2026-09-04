@@ -357,6 +357,10 @@ public class IndexArtifactRepository {
           throw new BaseResourceRepository.CorruptionException(
               "managed reusable index record belongs to another table: " + bundleUri);
         }
+        boolean selected =
+            record.hasTarget()
+                && record.getTarget().hasFile()
+                && requiredPaths.remove(record.getTarget().getFile().getFilePath());
         String sidecarUri = record.getArtifactUri();
         if (!sidecarUri.startsWith("/accounts/") || !sidecarUri.contains(Keys.SEG_INDEX_SIDECARS)) {
           continue;
@@ -366,9 +370,7 @@ public class IndexArtifactRepository {
           throw new BaseResourceRepository.CorruptionException(
               "managed reusable index sidecar is outside the owning table generation");
         }
-        if (record.hasTarget()
-            && record.getTarget().hasFile()
-            && requiredPaths.remove(record.getTarget().getFile().getFilePath())) {
+        if (selected) {
           generations.add(sidecarGeneration);
         }
       }
