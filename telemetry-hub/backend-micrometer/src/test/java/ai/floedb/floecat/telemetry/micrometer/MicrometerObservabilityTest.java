@@ -609,7 +609,7 @@ class MicrometerObservabilityTest {
           new IllegalStateException("s3://sensitive-bucket/private/object-key");
       try (Scope ignored = parent.makeCurrent()) {
         StoreTraceScope scope = observability.storeTraceScope("svc", "store-op");
-        scope.error(failure.getClass());
+        scope.error(failure);
         scope.close();
       } finally {
         parent.end();

@@ -656,13 +656,13 @@ public final class MicrometerObservability implements Observability {
     }
 
     @Override
-    public void error(Class<? extends Throwable> errorType) {
+    public void error(Throwable throwable) {
       if (span.isRecording()) {
         span.addEvent(
             "exception",
             Attributes.of(
                 AttributeKey.stringKey("exception.type"),
-                Objects.requireNonNull(errorType, "errorType").getName()));
+                Objects.requireNonNull(throwable, "throwable").getClass().getName()));
         span.setStatus(StatusCode.ERROR);
       }
     }

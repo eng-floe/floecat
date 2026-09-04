@@ -410,8 +410,8 @@ public final class TestObservability implements Observability {
     }
 
     @Override
-    public void error(Class<? extends Throwable> errorType) {
-      this.errorType = Objects.requireNonNull(errorType, "errorType");
+    public void error(Throwable throwable) {
+      this.errorType = Objects.requireNonNull(throwable, "throwable").getClass();
       success = false;
     }
 
