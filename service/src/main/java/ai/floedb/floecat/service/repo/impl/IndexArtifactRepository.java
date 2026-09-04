@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
+import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -52,6 +53,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -111,9 +113,9 @@ public class IndexArtifactRepository {
       TableBlobReachabilityGuard reachabilityGuard) {
     this.pointerStore = pointerStore;
     this.blobStore = blobStore;
-    this.blobCache = blobCache;
+    this.blobCache = Objects.requireNonNull(blobCache, "blobCache");
     this.reachabilityGuard = reachabilityGuard;
-    this.generationArtifactMap = new GenerationArtifactMap(pointerStore, blobStore, blobCache);
+    this.generationArtifactMap = new GenerationArtifactMap(pointerStore, blobStore, this.blobCache);
   }
 
   public void putIndexArtifact(IndexArtifactRecord value) {
@@ -325,24 +327,21 @@ public class IndexArtifactRepository {
         throw new BaseResourceRepository.CorruptionException(
             "managed reusable index bundle is outside the owning table generation");
       }
-      byte[] bytes;
+      ReusableArtifactBundlePayload bundle;
       try {
-        bytes = blobStore.get(bundleUri);
+        BlobHeader header =
+            blobStore.head(bundleUri).orElseThrow(() -> new StorageNotFoundException(bundleUri));
+        if (header.getContentLength() != selection.payloadBytes()) {
+          throw new BaseResourceRepository.CorruptionException(
+              "managed reusable index bundle metadata does not match: " + bundleUri);
+        }
+        bundle =
+            loadImmutableReusableArtifactBundle(bundleUri)
+                .orElseThrow(() -> new StorageNotFoundException(bundleUri));
       } catch (StorageNotFoundException error) {
         throw new BaseResourceRepository.CorruptionException(
             "managed reusable index bundle is missing: " + bundleUri, error);
-      }
-      if (bytes == null
-          || bytes.length != selection.payloadBytes()
-          || !Hashing.sha256Hex(bytes)
-              .equals(HexFormat.of().formatHex(selection.payloadSha256()))) {
-        throw new BaseResourceRepository.CorruptionException(
-            "managed reusable index bundle metadata does not match: " + bundleUri);
-      }
-      ReusableArtifactBundlePayload bundle;
-      try {
-        bundle = ReusableArtifactBundles.parse(bytes);
-      } catch (InvalidProtocolBufferException error) {
+      } catch (IllegalStateException error) {
         throw new BaseResourceRepository.CorruptionException(
             "managed reusable index bundle is invalid: " + bundleUri, error);
       } catch (IllegalArgumentException error) {
@@ -357,6 +356,10 @@ public class IndexArtifactRepository {
           throw new BaseResourceRepository.CorruptionException(
               "managed reusable index record belongs to another table: " + bundleUri);
         }
+        boolean selected =
+            record.hasTarget()
+                && record.getTarget().hasFile()
+                && requiredPaths.remove(record.getTarget().getFile().getFilePath());
         String sidecarUri = record.getArtifactUri();
         if (!sidecarUri.startsWith("/accounts/") || !sidecarUri.contains(Keys.SEG_INDEX_SIDECARS)) {
           continue;
@@ -366,9 +369,7 @@ public class IndexArtifactRepository {
           throw new BaseResourceRepository.CorruptionException(
               "managed reusable index sidecar is outside the owning table generation");
         }
-        if (record.hasTarget()
-            && record.getTarget().hasFile()
-            && requiredPaths.remove(record.getTarget().getFile().getFilePath())) {
+        if (selected) {
           generations.add(sidecarGeneration);
         }
       }
@@ -658,9 +659,7 @@ public class IndexArtifactRepository {
   }
 
   private Optional<SnapshotCaptureManifest> loadCaptureManifest(String uri) {
-    return blobCache == null
-        ? loadCaptureManifestUncached(uri)
-        : blobCache.get(uri, this::loadCaptureManifestUncached);
+    return blobCache.get(uri, this::loadCaptureManifestUncached);
   }
 
   private Optional<SnapshotCaptureManifest> loadCaptureManifestUncached(String uri) {
@@ -1003,10 +1002,15 @@ public class IndexArtifactRepository {
   private Optional<ReusableArtifactBundlePayload> loadCachedReusableArtifactBundle(
       String bundleUri) {
     Optional<ReusableArtifactBundlePayload> bundle = loadReusableArtifactBundle(bundleUri);
-    if (blobCache != null && blobCache.enabled()) {
+    if (blobCache.enabled()) {
       bundle.ifPresent(value -> blobCache.put(bundleUri, value));
     }
     return bundle;
+  }
+
+  private Optional<ReusableArtifactBundlePayload> loadImmutableReusableArtifactBundle(
+      String bundleUri) {
+    return blobCache.get(bundleUri, this::loadReusableArtifactBundle);
   }
 
   private static void requirePrewrittenRecordMatches(
@@ -1202,9 +1206,8 @@ public class IndexArtifactRepository {
             snapshotId);
       }
       ReusableArtifactBundlePayload bundle =
-          (blobCache == null
-                  ? loadReusableArtifactBundle(pointer.getBlobUri())
-                  : blobCache.get(pointer.getBlobUri(), this::loadReusableArtifactBundle))
+          blobCache
+              .get(pointer.getBlobUri(), this::loadReusableArtifactBundle)
               .orElseThrow(
                   () ->
                       new IllegalStateException(

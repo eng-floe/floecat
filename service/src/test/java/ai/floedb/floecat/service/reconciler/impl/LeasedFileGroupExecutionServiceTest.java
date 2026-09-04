@@ -372,14 +372,6 @@ class LeasedFileGroupExecutionServiceTest {
             eq(resultDescriptor(List.of()).artifactReferencesSha256()));
     var order = inOrder(jobs, statsStore, indexArtifactRepository);
     order
-        .verify(jobs)
-        .completeFileGroupSuccess(
-            eq(CHILD_JOB_ID),
-            eq(LEASE_EPOCH),
-            any(ReconcileFileGroupResultDescriptor.class),
-            anyLong(),
-            eq("Executed file group group-1"));
-    order
         .verify(statsStore)
         .protectPrewrittenStatsObjectsInGeneration(
             any(), anyLong(), anyString(), anyString(), any());
@@ -387,6 +379,14 @@ class LeasedFileGroupExecutionServiceTest {
         .verify(statsStore)
         .markPreparedFileGroup(
             any(), anyLong(), anyString(), anyString(), anyString(), anyString());
+    order
+        .verify(jobs)
+        .completeFileGroupSuccess(
+            eq(CHILD_JOB_ID),
+            eq(LEASE_EPOCH),
+            any(ReconcileFileGroupResultDescriptor.class),
+            anyLong(),
+            eq("Executed file group group-1"));
     verify(idempotencyStore, never())
         .createPending(anyString(), anyString(), anyString(), anyString(), any(), any());
     verify(idempotencyStore, never())
@@ -808,7 +808,7 @@ class LeasedFileGroupExecutionServiceTest {
                 "stats-signature",
                 "index-signature",
                 Map.of(),
-                List.of(inheritedSelection));
+                List.of(inheritedSelection, inheritedSelection));
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of("plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(filePath))
             .withFileExecutionPlans(List.of(executionPlan));
@@ -876,6 +876,17 @@ class LeasedFileGroupExecutionServiceTest {
                 .addFileStatsTargetStorageIds(fileStats.getTargetStorageId())
                 .addIndexArtifactTargetStorageIds(indexArtifact.getTargetStorageId())
                 .build()));
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<Iterable<ReusableArtifactBundleSelection>> inheritedSelections =
+        ArgumentCaptor.forClass(Iterable.class);
+    verify(indexArtifactRepository)
+        .inheritedManagedSidecarGenerations(eq(tableId()), inheritedSelections.capture());
+    List<ReusableArtifactBundleSelection> aggregatedSelections =
+        java.util.stream.StreamSupport.stream(inheritedSelections.getValue().spliterator(), false)
+            .toList();
+    assertEquals(1, aggregatedSelections.size());
+    assertEquals(List.of(filePath), aggregatedSelections.getFirst().indexFilePaths());
 
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<StatsStore.PrewrittenStatsObject>> objects =
@@ -961,12 +972,14 @@ class LeasedFileGroupExecutionServiceTest {
                     artifactBundle(List.of(), List.of())));
 
     assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
-    verify(statsStore, never())
-        .protectPrewrittenStatsObjectsInGeneration(
-            any(), anyLong(), anyString(), anyString(), any());
-    verify(indexArtifactRepository, never())
-        .registerPrewrittenIndexArtifactReferencesInGeneration(
-            any(), anyLong(), anyString(), anyString(), anyString(), any(), any());
+    verify(statsStore)
+        .markPreparedFileGroup(
+            eq(tableId()),
+            eq(SNAPSHOT_ID),
+            eq("full-rescan-" + PARENT_JOB_ID),
+            eq(CHILD_JOB_ID),
+            eq(LEASE_EPOCH),
+            eq(resultDescriptor(List.of()).artifactReferencesSha256()));
     verify(idempotencyStore, never())
         .finalizeSuccess(
             anyString(), anyString(), anyString(), anyString(), any(), any(), any(), any(), any());

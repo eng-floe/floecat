@@ -68,9 +68,12 @@ class IndexArtifactRepositoryTest {
 
   private static final ResourceId TABLE_ID =
       ResourceId.newBuilder().setAccountId("a").setId("t").setKind(ResourceKind.RK_TABLE).build();
+  private static final ImmutableBlobCache DISABLED_BLOB_CACHE =
+      new ImmutableBlobCache(false, 1L, Duration.ZERO);
 
   private static IndexArtifactRepository createRepository(PointerStore pointers, BlobStore blobs) {
-    return new IndexArtifactRepository(pointers, blobs, null, new TableBlobReachabilityGuard());
+    return new IndexArtifactRepository(
+        pointers, blobs, DISABLED_BLOB_CACHE, new TableBlobReachabilityGuard());
   }
 
   private static IndexArtifactRepository createRepository(
@@ -90,6 +93,19 @@ class IndexArtifactRepositoryTest {
               shardKey, 0L, PointerReferences.opaqueMarkerPointer(shardKey, "deleting", 1L)));
     }
     assertThat(pointers.compareAndSetBatch(creates)).isTrue();
+  }
+
+  @Test
+  void requiresBlobCacheDependency() {
+    assertThatThrownBy(
+            () ->
+                new IndexArtifactRepository(
+                    new InMemoryPointerStore(),
+                    new InMemoryBlobStore(),
+                    null,
+                    new TableBlobReachabilityGuard()))
+        .isInstanceOf(NullPointerException.class)
+        .hasMessage("blobCache");
   }
 
   @Test
@@ -554,6 +570,143 @@ class IndexArtifactRepositoryTest {
 
     assertThat(generations)
         .containsExactly(new Keys.GenerationKey(714L, "full-rescan-ancestor-parent"));
+  }
+
+  @Test
+  void selectedBundleAllowsExternalIndexSidecarsWithoutAnInheritedGeneration() {
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
+    String filePath = "s3://bucket/file.parquet";
+    IndexArtifactRecord record =
+        indexRecord(714L, filePath).toBuilder()
+            .setArtifactUri("s3://external-indexes/file.parquet")
+            .build();
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(715L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    assertThat(
+            repository.inheritedManagedSidecarGenerations(
+                TABLE_ID,
+                List.of(
+                    new ReusableArtifactBundleSelection(
+                        "reuse-bundle:prior-group",
+                        bundleUri,
+                        bundle.length,
+                        digest,
+                        List.of(),
+                        List.of(filePath)))))
+        .isEmpty();
+  }
+
+  @Test
+  void selectedBundleValidationUsesTheImmutableBlobCache() {
+    BlobStore blobs = mock(BlobStore.class);
+    ImmutableBlobCache cache = new ImmutableBlobCache(true, 1024 * 1024, Duration.ZERO);
+    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs, cache);
+    String filePath = "s3://bucket/file.parquet";
+    String targetStorageId = "file:" + filePath;
+    String sidecar = managedSidecar(714L, targetStorageId, new byte[] {1});
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(indexRecord(714L, filePath).toBuilder().setArtifactUri(sidecar))
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(715L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    when(blobs.get(bundleUri)).thenReturn(bundle);
+    when(blobs.head(bundleUri))
+        .thenReturn(Optional.of(BlobHeader.newBuilder().setContentLength(bundle.length).build()));
+    ReusableArtifactBundleSelection selection =
+        new ReusableArtifactBundleSelection(
+            "reuse-bundle:prior-group",
+            bundleUri,
+            bundle.length,
+            digest,
+            List.of(),
+            List.of(filePath));
+
+    repository.inheritedManagedSidecarGenerations(TABLE_ID, List.of(selection));
+    repository.inheritedManagedSidecarGenerations(TABLE_ID, List.of(selection));
+
+    verify(blobs, times(1)).get(bundleUri);
+    verify(blobs, times(2)).head(bundleUri);
+  }
+
+  @Test
+  void selectedBundleRejectsDeclaredLengthThatDiffersFromStoredLength() {
+    BlobStore blobs = mock(BlobStore.class);
+    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
+    String filePath = "s3://bucket/file.parquet";
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(indexRecord(714L, filePath))
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(715L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    when(blobs.head(bundleUri))
+        .thenReturn(
+            Optional.of(BlobHeader.newBuilder().setContentLength(bundle.length + 1).build()));
+
+    assertThatThrownBy(
+            () ->
+                repository.inheritedManagedSidecarGenerations(
+                    TABLE_ID,
+                    List.of(
+                        new ReusableArtifactBundleSelection(
+                            "reuse-bundle:prior-group",
+                            bundleUri,
+                            bundle.length,
+                            digest,
+                            List.of(),
+                            List.of(filePath)))))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("metadata does not match");
+    verify(blobs, never()).get(bundleUri);
+  }
+
+  @Test
+  void selectedBundleWrapsUnsupportedFormatAsCorruption() {
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
+    String filePath = "s3://bucket/file.parquet";
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(2)
+            .addIndexArtifacts(indexRecord(714L, filePath))
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(715L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    assertThatThrownBy(
+            () ->
+                repository.inheritedManagedSidecarGenerations(
+                    TABLE_ID,
+                    List.of(
+                        new ReusableArtifactBundleSelection(
+                            "reuse-bundle:prior-group",
+                            bundleUri,
+                            bundle.length,
+                            digest,
+                            List.of(),
+                            List.of(filePath)))))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("unsupported format");
   }
 
   @Test
