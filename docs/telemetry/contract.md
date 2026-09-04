@@ -9,6 +9,7 @@ This lists all metrics currently available in the repository:
 | --- | --- | --- | --- | --- | --- | --- |
 | floecat.core.cache.accounts | GAUGE | count | v1 | Number of accounts in a cache readiness state, tagged by cache name and optionally result. | cache, component, operation | account, cache, component, operation, result |
 | floecat.core.cache.admission.rejected | COUNTER |  | v1 | Values not retained because they exceeded the cache budget, tagged by cache name. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.corruptions | COUNTER |  | v1 | Local cache entries rejected because their stored envelope was corrupt. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.enabled | GAUGE |  | v1 | Indicator that the cache is enabled (1=enabled, 0=disabled). | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.entries | GAUGE | count | v1 | Approximate number of entries in the cache, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.errors | COUNTER |  | v1 | Number of cache operation failures (load errors), tagged by cache name. | cache, component, operation, result | account, cache, component, exception, operation, result |
@@ -16,9 +17,11 @@ This lists all metrics currently available in the repository:
 | floecat.core.cache.evictions | COUNTER |  | v1 | Entries evicted to stay within the cache's budget, tagged by cache name. For a cache with no expiry this is the signal that its budget is too small. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.hits | COUNTER |  | v1 | Number of cache lookup hits, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.latency | TIMER | seconds | v1 | Cache latency distribution for operations. | cache, component, operation, result | account, cache, component, exception, operation, result |
+| floecat.core.cache.live.mappings | GAUGE | count | v1 | Mapped cache entries currently protected from reclamation. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.loads.discarded | COUNTER |  | v1 | Loads whose value was not retained because a write may have raced the key while it was being loaded, tagged by cache name. Raised on both the read-through and the batch path. A sustained rate means the cache is not warming. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.max.weight.bytes | GAUGE | bytes | v1 | Configured maximum weight (bytes) for the cache. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.misses | COUNTER |  | v1 | Number of cache lookup misses, tagged by cache name. | cache, component, operation | account, cache, component, operation |
+| floecat.core.cache.sweep.reclaimed.bytes | COUNTER | bytes | v1 | Local disk bytes reclaimed by cache budget sweeps. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.weighted.size.bytes | GAUGE | bytes | v1 | Total weight (bytes) of cache entries, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.write.through | COUNTER |  | v1 | Write-through publications, tagged by whether they were applied or skipped by the cache's safety guards. | cache, component, operation, result | account, cache, component, operation, result |
 | floecat.core.exec.active | GAUGE | count | v1 | Number of threads actively executing tasks per pool. | component, operation, pool | component, operation, pool |
