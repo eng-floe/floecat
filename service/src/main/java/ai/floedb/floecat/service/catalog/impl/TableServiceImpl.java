@@ -37,6 +37,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceTables;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
@@ -83,6 +84,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject TableRootWriter rootWriter;
   @Inject TableRootRepository tableRoots;
   @Inject EngineHintSchemaCleaner hintCleaner;
+  @Inject HintCache hints;
   @Inject CatalogGraphView graphView;
 
   private static final Set<String> TABLE_MUTABLE_PATHS =
@@ -899,6 +901,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
     // CasBlobGc once the table drops out of the live set. Routed through the repository so the
     // root-pointer cache drops its entry with the pointer (same-process read-your-writes).
     tableRoots.purgeRoot(tableId);
+    hints.deleteRelation(tableId);
   }
 
   /**

@@ -72,6 +72,65 @@ class HintCacheTest {
   }
 
   @Test
+  void recognizesOnlyAnIdenticalCurrentHintSet() {
+    var pointers = new InMemoryPointerStore();
+    var repository = new RelationHintsRepository(pointers, new InMemoryBlobStore());
+    var cache = HintCache.forTesting(repository);
+    UserTableNode table = table("blob://table/v1", Map.of());
+    List<EngineHintPersistence.ColumnHint> columns =
+        List.of(new EngineHintPersistence.ColumnHint("floe.column+proto", 7L, bytes(2)));
+    cache.persist(
+        table.id(),
+        relationMeta(table, pointers),
+        "floedb",
+        "1",
+        "floe.relation+proto",
+        bytes(1),
+        columns);
+
+    assertThat(
+            cache.containsAll(
+                table.id(),
+                table.cacheIdentity(),
+                "floedb",
+                "1",
+                "floe.relation+proto",
+                bytes(1),
+                columns))
+        .isTrue();
+    assertThat(
+            cache.containsAll(
+                table.id(),
+                table.cacheIdentity(),
+                "floedb",
+                "1",
+                "floe.relation+proto",
+                bytes(9),
+                columns))
+        .isFalse();
+    assertThat(
+            cache.containsAll(
+                table.id(),
+                table.cacheIdentity(),
+                "floedb",
+                "1",
+                "floe.relation+proto",
+                bytes(1),
+                List.of(new EngineHintPersistence.ColumnHint("floe.column+proto", 7L, bytes(9)))))
+        .isFalse();
+    assertThat(
+            cache.containsAll(
+                table.id(),
+                "blob://table/v2",
+                "floedb",
+                "1",
+                "floe.relation+proto",
+                bytes(1),
+                columns))
+        .isFalse();
+  }
+
+  @Test
   void engineVersionsCannotOverwriteEachOther() {
     var pointers = new InMemoryPointerStore();
     var repository = new RelationHintsRepository(pointers, new InMemoryBlobStore());

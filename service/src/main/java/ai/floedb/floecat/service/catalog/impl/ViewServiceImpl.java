@@ -36,6 +36,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.catalog.hint.EngineHintSchemaCleaner;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceViews;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
@@ -78,6 +79,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   @Inject IdempotencyRepository idempotencyStore;
   @Inject CatalogGraphView graphView;
   @Inject EngineHintSchemaCleaner hintCleaner;
+  @Inject HintCache hints;
 
   private static final Set<String> VIEW_MUTABLE_PATHS =
       Set.of(
@@ -492,6 +494,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
+                    hints.deleteRelation(viewId);
                     return DeleteViewResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -507,6 +510,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           "view",
                           Map.of("id", viewId.getId()));
 
+                  hints.deleteRelation(viewId);
                   return DeleteViewResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())
