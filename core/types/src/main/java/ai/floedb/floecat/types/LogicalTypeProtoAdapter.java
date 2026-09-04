@@ -205,6 +205,7 @@ public final class LogicalTypeProtoAdapter {
               ai.floedb.floecat.types.rpc.LogicalField.newBuilder()
                   .setName(field.name())
                   .setRequired(!field.nullable())
+                  .setColumnId(field.columnId())
                   .setType(toProto(field.type(), depth + 1)));
         }
         b.setStruct(structShape);
@@ -260,7 +261,11 @@ public final class LogicalTypeProtoAdapter {
         java.util.List<LogicalField> fields = new java.util.ArrayList<>();
         for (ai.floedb.floecat.types.rpc.LogicalField f : p.getStruct().getFieldsList()) {
           fields.add(
-              new LogicalField(f.getName(), !f.getRequired(), fromProto(f.getType(), depth + 1)));
+              new LogicalField(
+                  f.getName(),
+                  !f.getRequired(),
+                  fromProto(f.getType(), depth + 1),
+                  f.getColumnId()));
         }
         return LogicalType.struct(fields);
       }
