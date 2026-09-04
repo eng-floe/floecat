@@ -155,7 +155,7 @@ The exec plugin populates `docs/telemetry/contract.md` and `docs/telemetry/contr
 
 - The service sets `telemetry.strict` (true in `%dev`/`%test`, false in prod) so strict mode throws on contract violations while lenient mode only increments `floecat.core.observability.dropped.tags.total`.
 - Observability instrumentation should never refer to Micrometer directly; only the extensions (e.g., `telemetry-hub-backend-micrometer`, `telemetry-hub-integration-quarkus`) need backend dependencies.
-- Helpers and cache owners like `EngineHintManager`, `MetadataCaches`, and `StorageUsageMetrics` call into the hub’s `Observability` API and rely on the metric definitions described above.
+- Helpers and cache owners like `MetadataCaches`, `HintCache`, and `StorageUsageMetrics` call into the hub’s `Observability` API and rely on the metric definitions described above.
 
 ## Backend/exporter behavior
 
