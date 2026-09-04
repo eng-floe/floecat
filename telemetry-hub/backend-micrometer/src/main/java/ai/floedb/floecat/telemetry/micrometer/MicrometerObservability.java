@@ -34,6 +34,7 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.common.AttributesBuilder;
 import io.opentelemetry.api.trace.Span;
@@ -655,9 +656,13 @@ public final class MicrometerObservability implements Observability {
     }
 
     @Override
-    public void error(Throwable throwable) {
+    public void error(Class<? extends Throwable> errorType) {
       if (span.isRecording()) {
-        span.recordException(throwable);
+        span.addEvent(
+            "exception",
+            Attributes.of(
+                AttributeKey.stringKey("exception.type"),
+                Objects.requireNonNull(errorType, "errorType").getName()));
         span.setStatus(StatusCode.ERROR);
       }
     }

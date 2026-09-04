@@ -22,6 +22,23 @@ All built-in metrics start with `floecat.core.` so dashboards and tooling can ea
 - Each metric has a `since` version (currently `v1`). Bump that value if you rename, retype, or otherwise break the public contract.
 - Every core metric also declares its `origin` (`core`, `service`, etc.). The doc generator groups metrics by origin so consumers can focus on the subsystem they care about.
 
+### Physical store reads
+
+The deployed `PointerStore` and `BlobStore` are observed at their shared interfaces, so every
+selected backend contributes the same production metrics. Use `component="pointer_store"` or
+`component="blob_store"` to select these physical calls; `component="repository"` remains the
+higher-level logical repository view.
+
+- `floecat.core.store.requests` counts calls. One batch is one request.
+- `floecat.core.store.items` counts addressed keys or objects. A batch of eight is eight items.
+- `floecat.core.store.bytes` counts bytes returned when the operation has a byte unit.
+- `floecat.core.store.latency` and `floecat.core.store.errors` retain their existing meanings.
+
+The low-cardinality `operation` tag distinguishes `get`, `get_batch`, `get_range`, `head`, `list`,
+and the pointer prefix operations. Pointer keys, blob URIs, and prefixes are deliberately excluded
+from metric tags and trace attributes. They remain available only in the local store-cost test
+report, where they are needed to identify an unexpected read.
+
 ## Tags: required vs. allowed
 
 The contract differentiates:
@@ -87,7 +104,7 @@ The hub ships several helper classes whose job is to translate your telemetry in
 
 - **`RpcMetrics`** powers gRPC + RPC-level instrumentation. It maintains the active request gauge (`floecat.core.rpc.active`), observes latency/error/retry metrics, normalizes component/operation tags, and exposes `observe(...)` and `recordRequest(...)` helpers so interceptors can focus on status parsing instead of meter plumbing.
 - **`CacheMetrics`** (and its derivatives like `GraphCacheManager` helpers) expose canonical cache gauges/counters such as hits, misses, size, and load latency. They automatically register the necessary meters, enforce the required tags, and forward every emission through the hub’s `Observability` so contract validation and strict/lenient policies apply.
-- **`StoreMetrics`** wraps storage layer counters/timers (`bytes`, `requests`, `latency`) with the right tag set (`component`, `operation`, `result`, `status`). Callers record bytes or durations and the helper ensures every emission matches the `floecat.core.store.*` definitions.
+- **`StoreMetrics`** wraps storage layer counters/timers (`bytes`, `items`, `requests`, `latency`) with the right tag set (`component`, `operation`, `result`). Callers record bytes, addressed items, or durations and the helper ensures every emission matches the `floecat.core.store.*` definitions.
 - **`GcMetrics`** handles scheduler health (enabled, running state, last tick timestamps) for pointer, CAS, and idempotency collectors. Each helper knows its `component`/`operation` pair and tags results/exceptions consistently.
 - **Scheduler-driven gauges** – the GC schedulers (`floecat.service.gc.*`) expose gauges that update when those schedulers run. The GC metrics (`enabled`, `running`, `last.tick.start.ms`, `last.tick.end.ms`) reflect the most recent tick and remain unchanged when the scheduler is disabled (`enabled=0`, `running=0`). CAS GC also publishes per-account pointer-root and known-byte estimates from pointer rows its mark phase already reads; this adds no storage calls. `floecat.service.storage.account.gc_size_coverage` reports the fraction of scanned blob pointers that carried size metadata so dashboards can distinguish a complete known-byte estimate from a lower bound.
 - **Reconcile job GC observability** – reconcile job GC reads the terminal-retention due index and the bounded canonical-quarantine queue only. Its one-time retention backfill queries the three per-account terminal-state partitions rather than walking the canonical-job partition; each terminal row requires one canonical read and one conditional transaction that installs both the cleanup manifest and retention entry without existence reads. Ready, dedupe, and root-summary indexes are deleted atomically with their canonical job through the stored cleanup manifest; GC does not run recurring repair sweeps or table-scan fallbacks for them. It emits `floecat.core.gc.collections` result values for tick, account, retention, delete, quarantine, and retention-backfill work, plus phase durations through `floecat.core.gc.pause`. The scheduler also exposes service gauges under `floecat.service.gc.reconcile_jobs.*` for last-tick account throughput, current cached account-page position, active continuation-token count, last-tick quarantine count, and last-tick delete count. Each completed tick writes one INFO summary log, including backfill scanned/indexed/retryable counts and duration, with the same low-cardinality totals; failures write a WARN and increment `floecat.core.gc.errors` with `gc=reconcile-jobs`.

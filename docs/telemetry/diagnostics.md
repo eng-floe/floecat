@@ -64,6 +64,8 @@ in its own summary event.
 | `fallbacks` | Count of generic fallback paths taken during the RPC. |
 | `repo_<resource>_<operation>_count` | Per-repository operation count, for example `repo_table_get_by_key_count`. |
 | `repo_<resource>_<operation>_ms` | Total time for that repository operation family. |
+| `store_pointer_<operation>_calls` / `store_blob_<operation>_calls` | Physical store calls made by operation during this RPC. |
+| `store_pointer_<operation>_items` / `store_blob_<operation>_items` | Keys or objects addressed by keyed physical calls; a batch contributes one call and all of its items. |
 | `current_snapshot_source` | `pointer` when the dedicated current-snapshot pointer resolved the snapshot; `fallback` when the code had to scan latest-by-time. Fallback is read-only: it diagnoses missing/stale pointer state but does not repair state during query reads. |
 | `snapshot_pin_source` | Where the scan snapshot came from. Today `query_context` means it was already pinned during planning/begin-query. |
 | `storage_authority_source` | Source for storage authority selection. Today `load` means the resolver listed authorities from the repository. Future values may include `cache` or `direct`. |
@@ -78,6 +80,7 @@ How to read it:
 - If `current_snapshot_source=fallback`, the table did not use the O(1) current-snapshot pointer path. Repair should happen through metadata ingestion/reconcile paths, not as a side effect of the read.
 - If `storage_authority_source=load` and `storage_authority_ms` is material, storage authority lookup is a candidate for caching or direct lookup.
 - If `store_ms` is small but `duration_ms` is large, look at the domain summary or caller-side spans.
+- Compare physical `*_calls` with `*_items` to distinguish many round trips from intentional batching.
 
 ## Domain summaries
 
