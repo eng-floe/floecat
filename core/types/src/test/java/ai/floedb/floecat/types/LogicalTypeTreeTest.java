@@ -246,6 +246,15 @@ class LogicalTypeTreeTest {
                 List.of(
                     new LogicalField("sku", false, STRING),
                     new LogicalField("quantities", true, LogicalType.array(INT, true)))),
+            // Stable source ids survive every nested struct level.
+            LogicalType.struct(
+                List.of(
+                    new LogicalField(
+                        "nested",
+                        false,
+                        LogicalType.struct(
+                            List.of(new LogicalField("leaf", true, STRING, 105L))),
+                        104L))),
             // explicitly known empty struct
             LogicalType.struct(List.of()),
             // legacy non-parameterised tags survive too
