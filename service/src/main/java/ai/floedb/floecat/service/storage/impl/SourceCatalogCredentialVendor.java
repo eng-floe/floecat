@@ -16,8 +16,15 @@
 
 package ai.floedb.floecat.service.storage.impl;
 
+import ai.floedb.floecat.catalog.access.CatalogAccessException;
+import ai.floedb.floecat.catalog.access.CatalogCapability;
+import ai.floedb.floecat.catalog.access.CatalogClient;
+import ai.floedb.floecat.catalog.access.CatalogObjectName;
+import ai.floedb.floecat.catalog.access.NamespacePath;
+import ai.floedb.floecat.catalog.access.StorageLocations;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.rpc.AuthConfig;
@@ -31,20 +38,32 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.LogSafeText;
 import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
 import ai.floedb.floecat.connector.spi.SourceCatalogVending;
+import ai.floedb.floecat.integration.rpc.CatalogIntegration;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
+import ai.floedb.floecat.service.integration.CatalogIntegrationAccess;
+import ai.floedb.floecat.service.integration.CatalogUpstreamBudget;
+import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
+import ai.floedb.floecat.service.security.RolePermissions;
+import ai.floedb.floecat.service.security.impl.Authorizer;
+import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
 import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.stream.Stream;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -61,9 +80,29 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * what capture had just written.
  *
  * <p>Callers own admission: this class assumes the caller has already authorized access to the
- * table and decided that no storage authority covers the location. It returns {@code null} for
- * every "this catalog cannot or will not vend" condition so the caller can fall back, and throws
- * only when the catalog actively refused or answered unusably.
+ * table and decided that no storage authority covers the location.
+ *
+ * <p>The two upstream kinds answer differently, and deliberately. A legacy Connector opts in to
+ * vending -- {@code IcebergAccessDelegation.declaresVendedCredentials} is the switch -- so a
+ * connector that does not, or cannot, is answered with {@code null} and the caller falls back to
+ * the storage authority the operator configured instead. A Catalog Integration has no such switch
+ * and no such alternative: nothing on the record names an authority, and {@code
+ * ValidateCatalogIntegration} reports an Integration whose provider cannot vend as invalid rather
+ * than as configured some other way. Reaching for an authority beside an Integration is the
+ * split-brain this feature exists to remove, so every "cannot vend" condition on that path is a
+ * refusal naming the cause, not a fall-back.
+ *
+ * <p>Nothing was lost by that. This vend is reached only once no authority covers the location, so
+ * a {@code null} from the Integration path landed on {@code
+ * StorageAuthorityResolver.buildResponse(null, ...)}, which raises no-matching-authority -- the one
+ * consumer that absorbs that error gates on a {@code ConnectorConfig}. The fall-back could only
+ * ever relabel a specific cause as "you configured no storage authority".
+ *
+ * <p>What it throws is classified, because the reconcile path acts on it: only a condition a retry
+ * cannot change -- an authorization refusal, a vanished upstream table, an incomplete credential
+ * tuple -- travels as a terminal refusal reason. Anything a later attempt could clear stays
+ * retryable, since a wrongly terminal answer permanently fails a capture job while a wrongly
+ * retried one costs time.
  */
 @ApplicationScoped
 public class SourceCatalogCredentialVendor {
@@ -77,10 +116,10 @@ public class SourceCatalogCredentialVendor {
    * A catalog-supplied table identifier, flattened and bounded for a status or a log line.
    *
    * <p>Both halves come off the persisted {@code UpstreamRef}, so neither has a length or character
-   * bound. A status description becomes percent-encoded grpc-message trailer metadata that travels
-   * to every consumer and competes with HTTP/2 header limits, and {@code withReason} copies the
-   * same text into two {@code Any} details -- three carriages of whatever the catalog named its
-   * table. Flattening matters for the log line too: a name containing a newline would forge one.
+   * bound, and a refusal carries this text off the node twice: once in the {@code Error} detail's
+   * {@code detail} parameter, and again as the grpc-message {@code LocalizeErrorsInterceptor}
+   * renders from it -- percent-encoded trailer metadata competing with HTTP/2 header limits.
+   * Flattening matters for the log line too: a name containing a newline would forge one.
    */
   private static String boundedTable(String namespaceFq, String tableName) {
     return LogSafeText.bounded(namespaceFq + "." + tableName, MAX_LOGGED_PREFIX_CHARS);
@@ -116,6 +155,17 @@ public class SourceCatalogCredentialVendor {
       Stream.concat(REGION_KEYS.stream(), Stream.of("aws.region")).toList();
 
   /**
+   * How far a vended expiry may sit in the past before it stops looking like a race.
+   *
+   * <p>Wide enough to absorb the two things that legitimately produce a just-expired credential --
+   * transit time between the catalog issuing it and us reading it, and ordinary NTP-scale
+   * disagreement between floecat's clock and the catalog's -- and far narrower than any credential
+   * lifetime worth vending, so a timestamp that is genuinely stale still reads as stale. See {@link
+   * #requireLiveExpiry}, which is the only reader.
+   */
+  private static final Duration EXPIRY_SKEW_TOLERANCE = Duration.ofSeconds(60);
+
+  /**
    * What the caller will do with the credentials. Selects how strictly they are validated: only the
    * reconcile path renews them, so only it requires a renewable session tuple.
    */
@@ -126,18 +176,61 @@ public class SourceCatalogCredentialVendor {
     QUERY
   }
 
+  /**
+   * Which vend path produced a credential, where the two differ in what shapes are legitimate.
+   *
+   * <p>Separate from {@link CredentialUse}, which says what the caller will do with the credential.
+   * This says where it came from, and only one rule turns on it today: whether a key pair with no
+   * session token and no expiry is acceptable for capture. It retires with the connector path.
+   */
+  enum VendSource {
+    /** A connector's own catalog. Unity vends a long-lived key pair for some external locations. */
+    CONNECTOR,
+    /** A catalog integration, whose contract is delegated temporary credentials. */
+    CATALOG_INTEGRATION
+  }
+
+  @Inject PrincipalProvider principal;
+  @Inject Authorizer authz;
   @Inject ConnectorRepository connectorRepo;
   @Inject CredentialResolver credentialResolver;
   Function<ConnectorConfig, FloecatConnector> connectorFactory = ConnectorFactory::create;
+  @Inject CatalogIntegrationRepository catalogIntegrationRepo;
+  @Inject CatalogIntegrationAccess catalogIntegrationAccess;
 
   @ConfigProperty(name = "floecat.storage.aws.region", defaultValue = "us-east-1")
   String defaultRegion;
 
   /**
-   * Vends credentials for {@code table} from the catalog it was captured from, or returns {@code
-   * null} when that catalog does not delegate and the caller should fall back.
+   * Wall-clock limit on everything one vend asks of an upstream catalog. Matches the default the
+   * validation and discovery paths use for the same calls.
    *
-   * @param table a persisted table, carrying the upstream connector reference
+   * <p>One value for both callers, which is a compromise rather than a preference: the reconcile
+   * vend RPC can afford to wait on a slow catalog, while the query path holds scan planning and
+   * would rather give up and fall back. Nothing shortens it per caller -- {@code
+   * CatalogUpstreamBudget} deliberately does not read the caller's gRPC deadline, for the reason
+   * documented there -- so this default is what a stalled upstream costs a scan.
+   */
+  @ConfigProperty(name = "floecat.storage.source-catalog.upstream-timeout", defaultValue = "PT30S")
+  Duration upstreamTimeout;
+
+  /**
+   * How long a vend waits for its own client to close. Short because teardown is not the answer the
+   * caller is waiting for, and unbounded is what this replaces.
+   */
+  private static final Duration CLOSE_TIMEOUT = Duration.ofSeconds(5);
+
+  Clock clock = Clock.systemUTC();
+  LongSupplier nanoTime = System::nanoTime;
+
+  /**
+   * Vends credentials for {@code table} from the catalog it was captured from.
+   *
+   * <p>Returns {@code null} only where a fall-back is meaningful: a table with no upstream
+   * reference, or a Connector that did not opt in to vending. An Integration-backed table is
+   * answered with credentials or with a refusal naming why not.
+   *
+   * @param table a persisted table, carrying its upstream catalog reference
    * @param responseLocationPrefix prefix to stamp on the returned credential
    * @param use how the caller will use the credentials, which sets how strictly they are validated
    */
@@ -147,10 +240,30 @@ public class SourceCatalogCredentialVendor {
       return null;
     }
     UpstreamRef upstream = table.getUpstream();
-    String tableId = table.getResourceId().getId();
-    if (!upstream.hasConnectorId() || upstream.getTableDisplayName().isBlank()) {
+    ResourceId tableId = table.getResourceId();
+    // The Integration branch first, so its invariant holds for this condition too: every "cannot
+    // vend" on that path names the cause rather than falling through to a missing authority the
+    // operator was never asked to configure. Reachable outside the overlay reconciler --
+    // TableServiceImpl.validateUpstreamRef checks the integration id's resource kind and the
+    // namespace segments but never requires a display name -- and by any record written before the
+    // field was populated.
+    if (upstream.hasCatalogIntegrationId()) {
+      if (upstream.getTableDisplayName().isBlank()) {
+        throw integrationCannotVend(
+            "table " + tableId.getId() + " has no upstream table reference");
+      }
+      return vendFromCatalogIntegration(tableId, upstream, responseLocationPrefix, use);
+    }
+    if (upstream.getTableDisplayName().isBlank()) {
       LOG.infof(
-          "source-catalog vending skipped: table %s has no upstream connector reference", tableId);
+          "source-catalog vending skipped: table %s has no upstream table reference",
+          tableId.getId());
+      return null;
+    }
+    if (!upstream.hasConnectorId()) {
+      LOG.infof(
+          "source-catalog vending skipped: table %s has no upstream catalog reference",
+          tableId.getId());
       return null;
     }
     // Scoped to the table's own account rather than trusting the reference. The upstream ref is
@@ -167,7 +280,7 @@ public class SourceCatalogCredentialVendor {
     if (connector == null) {
       LOG.infof(
           "source-catalog vending skipped: upstream connector %s of table %s not found",
-          LogSafeText.bounded(connectorId.getId(), MAX_LOGGED_PREFIX_CHARS), tableId);
+          LogSafeText.bounded(connectorId.getId(), MAX_LOGGED_PREFIX_CHARS), tableId.getId());
       return null;
     }
 
@@ -230,21 +343,149 @@ public class SourceCatalogCredentialVendor {
       return null;
     }
 
-    noteIgnoredAccessPoint(vended.get(), namespaceFq, upstream.getTableDisplayName());
-    requireUsableCredentials(vended.get(), namespaceFq, upstream.getTableDisplayName(), use);
+    return credentialResponse(
+        vended.get().properties(),
+        vended.get().expiresAt(),
+        resolvedConfig.options(),
+        responsePrefix(
+            vended.get(), responseLocationPrefix, namespaceFq, upstream.getTableDisplayName()),
+        "connector=" + connector.getResourceId().getId(),
+        namespaceFq,
+        upstream.getTableDisplayName(),
+        use,
+        VendSource.CONNECTOR);
+  }
 
-    // A delegating catalog vends credentials, not routing. Polaris returns the session triple and
-    // no region at all, which left every consumer to supply its own: the reconcile worker has a
-    // default and survived, the query scan engine has none and fails the whole scan with "region
-    // is missing" after planning has already succeeded. Region is resolved here so both paths see
-    // the same answer, and written under every alias the authority path emits -- consumers read
-    // different ones, and an authority-backed response has always carried all three.
-    Map<String, String> routing =
-        routingProperties(vended.get().properties(), resolvedConfig.options());
+  private ResolveStorageAuthorityResponse vendFromCatalogIntegration(
+      ResourceId tableId, UpstreamRef upstream, String responseLocationPrefix, CredentialUse use) {
+    ResourceId integrationId =
+        upstream.getCatalogIntegrationId().toBuilder().setAccountId(tableId.getAccountId()).build();
+    CatalogIntegration integration = catalogIntegrationRepo.getById(integrationId).orElse(null);
+    if (integration == null) {
+      throw integrationCannotVend(
+          "upstream Catalog Integration "
+              + LogSafeText.bounded(integrationId.getId(), MAX_LOGGED_PREFIX_CHARS)
+              + " of table "
+              + tableId.getId()
+              + " not found");
+    }
+    if (integration.getType() != CatalogIntegrationType.CIT_ICEBERG_REST) {
+      throw integrationCannotVend(
+          "Catalog Integration "
+              + integration.getResourceId().getId()
+              + " is of a type that does not vend storage credentials");
+    }
+
+    // After the two checks above, not before. Opening an integration resolves its stored secret and
+    // spends an OAuth exchange against the upstream on the caller's behalf, so it takes the same
+    // permission every other site that opens one requires -- CatalogIntegrationsImpl's validate and
+    // upstream listings, and the overlay reconcile. Table authorization admits the caller to this
+    // vend; it does not admit them to the integration's own credential.
+    //
+    // Ordered last of the three because the other two describe the Integration rather than the
+    // caller: a missing record or a type that cannot vend means this vend was never going to
+    // happen, and answering PERMISSION_DENIED there would blame the caller for the configuration.
+    authz.require(principal.get(), RolePermissions.CATALOG_INTEGRATION_USE);
+
+    String namespaceFq = String.join(".", upstream.getNamespacePathList());
+    CatalogObjectName tableName =
+        new CatalogObjectName(
+            new NamespacePath(upstream.getNamespacePathList()), upstream.getTableDisplayName());
+    Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials> vended;
+    // One deadline across the whole conversation with the upstream catalog: opening the client is
+    // itself a config round trip and an OAuth exchange, and loadTable is a third. A catalog that
+    // accepts the connection and then stalls would otherwise hold this thread -- a gRPC handler on
+    // the vend path, scan planning on the query path -- for the sum of three socket timeouts.
+    CatalogUpstreamBudget budget = CatalogUpstreamBudget.start(upstreamTimeout, nanoTime);
+    // Not try-with-resources: the close has to run bounded and exception-swallowing. A close hook
+    // throws would otherwise replace credentials already in hand with an INTERNAL failure, and the
+    // suppression rules make that happen only on the success path, where it is least expected.
+    CatalogClient source = null;
+    try {
+      source =
+          budget.call(
+              () -> catalogIntegrationAccess.open(integration),
+              SourceCatalogCredentialVendor::closeQuietly);
+      // Budgeted like the calls either side of it. It is local for the Iceberg REST provider, but
+      // nothing in the CatalogClient contract says a provider cannot ask the catalog what it
+      // supports, and one that does would sit outside the deadline this method exists to impose.
+      CatalogClient opened = source;
+      if (!budget.call(opened::capabilities).supports(CatalogCapability.VEND_STORAGE_CREDENTIALS)) {
+        throw integrationCannotVend(
+            "Catalog Integration "
+                + integration.getResourceId().getId()
+                + " does not support storage credential vending");
+      }
+      vended = budget.call(() -> opened.vendStorageCredentials(tableName));
+    } catch (StatusRuntimeException e) {
+      throw e;
+    } catch (java.util.concurrent.CancellationException e) {
+      // The budget raises this when the wait is interrupted, and BaseServiceImpl.toStatus maps it
+      // to CANCELLED. Folding it into the classification below would report a caller who went away
+      // as a server fault, and put a cancelled reconcile attempt on the retry path.
+      throw e;
+    } catch (RuntimeException e) {
+      throw catalogIntegrationFailureStatus(
+          e, findCatalogAccessFailure(e), integration, namespaceFq, tableName.name(), use);
+    } finally {
+      closeWithinBudget(source);
+    }
+    if (vended.isEmpty()) {
+      throw integrationCannotVend(
+          "Catalog Integration "
+              + integration.getResourceId().getId()
+              + " vended no storage credentials for "
+              + boundedTable(namespaceFq, tableName.name()));
+    }
+
+    var credentials = vended.get();
+    // The same helper the connector path uses, rather than a second rule beside it. It resolves all
+    // three relations between the vended scope and the location the caller was authorized for: a
+    // broader scope narrows to the request, a narrower one is stamped as itself, and a disjoint one
+    // returns the request with a warning. An earlier inline check here admitted only the first,
+    // which turned a catalog that legitimately scoped to a subtree of the request -- vend
+    // s3://b/db/tbl/data for request s3://b/db/tbl -- into a missing-authority error.
+    //
+    // Nothing is gained by refusing the disjoint case either: this path is reached only once no
+    // storage authority matched, so falling back means failing, while stamping the request lets the
+    // read attempt proceed and lets S3 -- which knows the real grant -- have the final say.
+    String stampedPrefix =
+        responsePrefix(
+            credentials.scopePrefix(), responseLocationPrefix, namespaceFq, tableName.name());
+    return credentialResponse(
+        credentials.properties(),
+        credentials.expiresAt().orElse(null),
+        integration.getPropertiesMap(),
+        stampedPrefix,
+        "catalog-integration=" + integration.getResourceId().getId(),
+        namespaceFq,
+        tableName.name(),
+        use,
+        VendSource.CATALOG_INTEGRATION);
+  }
+
+  private ResolveStorageAuthorityResponse credentialResponse(
+      Map<String, String> properties,
+      Instant expiresAt,
+      Map<String, String> sourceOptions,
+      String responseLocationPrefix,
+      String sourceDescription,
+      String namespaceFq,
+      String tableName,
+      CredentialUse use,
+      VendSource source) {
+    noteIgnoredAccessPoint(properties, namespaceFq, tableName);
+    requireUsableCredentials(
+        properties, expiresAt, clock.instant(), namespaceFq, tableName, use, source);
+
+    // A delegating catalog vends credentials, not necessarily routing. Polaris, for example,
+    // returns the session triple and no region. Resolve non-secret routing once so reconcile and
+    // query consumers receive the same usable answer.
+    Map<String, String> routing = routingProperties(properties, sourceOptions);
 
     LinkedHashMap<String, String> storageConfig = new LinkedHashMap<>();
     storageConfig.put("type", "s3");
-    storageConfig.putAll(vended.get().properties());
+    storageConfig.putAll(properties);
     storageConfig.putAll(routing);
     // Dropped rather than forwarded: the ARN is not acted on anywhere here, and advertising a
     // routing key no consumer honours invites one to start honouring it inconsistently. Same
@@ -252,28 +493,16 @@ public class SourceCatalogCredentialVendor {
     storageConfig.remove("s3.access-point");
     VendedStorageCredential.Builder credential =
         VendedStorageCredential.newBuilder()
-            .setPrefix(
-                responsePrefix(
-                    vended.get(),
-                    responseLocationPrefix,
-                    namespaceFq,
-                    upstream.getTableDisplayName()))
+            .setPrefix(responseLocationPrefix == null ? "" : responseLocationPrefix)
             .putAllConfig(Map.copyOf(storageConfig));
-    Instant expiresAt = vended.get().expiresAt();
     if (expiresAt != null) {
       credential.setExpiresAt(Timestamps.fromMillis(expiresAt.toEpochMilli()));
     }
     LOG.infof(
-        "vended storage credentials from source catalog connector=%s table=%s expiresAt=%s",
-        connector.getResourceId().getId(),
-        boundedTable(namespaceFq, upstream.getTableDisplayName()),
-        expiresAt);
-    // Non-secret routing properties must also travel in client_safe_config. The reconcile worker's
-    // execution-bound (refreshable) merge path applies client_safe_config plus the refreshed
-    // credential triple and never reads storage_credentials[0].config, so region and endpoint
-    // placed only there are silently dropped on the path that matters -- leaving the worker to
-    // guess the endpoint for any non-default region or custom-endpoint bucket. Authority-backed
-    // responses carry routing in client-safe config for exactly this reason.
+        "vended storage credentials from source catalog %s table=%s expiresAt=%s",
+        sourceDescription, boundedTable(namespaceFq, tableName), expiresAt);
+    // Routing must also travel in client_safe_config: the refreshable reconcile path consumes it
+    // separately from the secret credential tuple.
     return ResolveStorageAuthorityResponse.newBuilder()
         .putAllClientSafeConfig(routing)
         .addStorageCredentials(credential)
@@ -303,6 +532,12 @@ public class SourceCatalogCredentialVendor {
       String requestedPrefix,
       String namespaceFq,
       String tableName) {
+    return responsePrefix(
+        vended == null ? null : vended.scopePrefix(), requestedPrefix, namespaceFq, tableName);
+  }
+
+  static String responsePrefix(
+      String vendedScope, String requestedPrefix, String namespaceFq, String tableName) {
     // Both sides normalized, not just the vended one: three of the four exits below return the
     // requested prefix, and that is the common path. The trailing-slash hazard described for the
     // scope applies identically -- credentialScope.location() resolves from table properties or a
@@ -318,7 +553,7 @@ public class SourceCatalogCredentialVendor {
     // travels back and that consumers key a client cache on, so " s3://x " and "s3://x" naming two
     // different scopes is this method's problem to prevent. Trimming cannot widen past the
     // authorization: what is returned still had to clear the containment check below.
-    String raw = vended == null ? null : vended.scopePrefix();
+    String raw = vendedScope;
     // Trailing slash normalized alongside the whitespace, for the same reason: this value travels
     // back as storage_credentials[].prefix, and TableLoadService keys a merged map on it, so
     // "s3://bucket/table/" and "s3://bucket/table" would become two entries and two client FileIO
@@ -333,8 +568,22 @@ public class SourceCatalogCredentialVendor {
     // and is narrower than the unbounded alternative. Otherwise containment is decided by the same
     // path-boundary rule the authority resolver uses -- a plain startsWith would accept
     // "s3://warehouse/tpch_other" as inside "s3://warehouse/tpch".
-    if (requested.isBlank() || StorageAuthorityResolver.matchesLocationPrefix(scope, requested)) {
-      return scope;
+    // Compared with the s3 scheme aliases folded. matchesLocationPrefix normalizes whitespace and
+    // the trailing slash but not the scheme, so an ordinarily-configured catalog reporting
+    // "s3a://warehouse/orders" against an "s3://warehouse/orders/..." request failed both
+    // containment tests and landed in the disjoint branch below -- firing, once per file group, the
+    // WARN that branch reserves for something actually being wrong.
+    String scopeCompared = StorageLocations.normalizeScheme(scope);
+    String requestedCompared = StorageLocations.normalizeScheme(requested);
+    if (requested.isBlank()
+        || StorageAuthorityResolver.matchesLocationPrefix(scopeCompared, requestedCompared)) {
+      // Spelled the way the request spells it, not the way the catalog did. This value is what a
+      // client vend and an Iceberg loadTable hand to the reader, and S3FileIO selects a credential
+      // with a raw storagePath.startsWith(storagePrefix) -- so an "s3a://" prefix is invisible to
+      // an "s3://" data path, which silently falls through to the root client and reads with
+      // ambient credentials or none. Folding the aliases for the comparison without folding what is
+      // returned is what made an unmatchable prefix reachable in the first place.
+      return withSchemeOf(scope, requested);
     }
     // WARN here, unlike the access-point line below, and the difference is the point: a vended
     // access point is benign and common, while a disjoint scope means the credential travels
@@ -347,7 +596,7 @@ public class SourceCatalogCredentialVendor {
     // the credential travels stamped for a location it does not cover and the worker finds out at
     // storage. Still returns the requested prefix, because it is the only bound the caller was
     // authorized for; the log is what turns an opaque 403 into something traceable to the catalog.
-    if (!StorageAuthorityResolver.matchesLocationPrefix(requested, scope)) {
+    if (!StorageAuthorityResolver.matchesLocationPrefix(requestedCompared, scopeCompared)) {
       LOG.warnf(
           "source catalog vended a scope disjoint from the requested location for %s:"
               + " vended=%s requested=%s; returning the requested prefix",
@@ -408,6 +657,31 @@ public class SourceCatalogCredentialVendor {
     return Map.copyOf(routing);
   }
 
+  /**
+   * {@code value} rewritten to carry {@code template}'s scheme, when the two are s3 aliases.
+   *
+   * <p>Only the aliases: {@code s3}, {@code s3a} and {@code s3n} name one store, so choosing
+   * between them is spelling. Anything else is a different store and is left alone -- rewriting
+   * there would not be normalization, it would be pointing the caller somewhere else.
+   */
+  private static String withSchemeOf(String value, String template) {
+    if (template == null || template.isBlank()) {
+      return value;
+    }
+    int valueScheme = value.indexOf("://");
+    int templateScheme = template.indexOf("://");
+    if (valueScheme < 0 || templateScheme < 0) {
+      return value;
+    }
+    String templatePrefix = template.substring(0, templateScheme);
+    // Both sides have to fold to the same store before the spelling is interchangeable.
+    if (!StorageLocations.normalizeScheme(value.substring(0, valueScheme) + "://")
+        .equals(StorageLocations.normalizeScheme(templatePrefix + "://"))) {
+      return value;
+    }
+    return templatePrefix + value.substring(valueScheme);
+  }
+
   private static String firstNonBlank(String... values) {
     if (values == null) {
       return null;
@@ -444,29 +718,74 @@ public class SourceCatalogCredentialVendor {
    * credentials statically and never re-vends, so they expire mid-read with no recovery. Failing at
    * vend time makes that visible here instead of as an opaque 403 partway through a file group.
    *
-   * <p>{@link CredentialUse#QUERY} hands credentials straight to the scan engine's FileIO for reads
-   * that happen now, and registers no refresh provider, so the renewal requirement has no meaning
-   * there. Enforcing it anyway would reject credentials that read perfectly well -- and reject them
-   * with a terminal classification, on a path where nothing is retrying and there is no job to fail
-   * terminally.
+   * <p>Which of those apply is decided by {@link VendSource} first and {@link CredentialUse}
+   * second, because the two sources hold different things. An integration vends only from a
+   * temporary session, so it owes the full triple on either path -- see the reasoning at the {@code
+   * requireSessionTriple} assignment. A connector can legitimately hold a long-lived static key,
+   * and for one of those {@link CredentialUse#QUERY} hands credentials straight to the scan
+   * engine's FileIO for reads that happen now and registers no refresh provider, so the renewal
+   * requirement has no meaning there: enforcing it would reject credentials that read perfectly
+   * well, and reject them terminally on a path where nothing is retrying.
+   *
+   * <p>An expiry that has already passed is the third requirement, split out into {@link
+   * #requireLiveExpiry} because it is the one condition here whose answer depends on how far past
+   * it is.
    */
   static void requireUsableCredentials(
       FloecatConnector.VendedStorageCredentials vended,
+      Instant now,
       String namespaceFq,
       String tableName,
-      CredentialUse use) {
-    Map<String, String> props = vended.properties();
+      CredentialUse use,
+      VendSource source) {
+    requireUsableCredentials(
+        vended.properties(), vended.expiresAt(), now, namespaceFq, tableName, use, source);
+  }
+
+  private static void requireUsableCredentials(
+      Map<String, String> props,
+      Instant expiresAt,
+      Instant now,
+      String namespaceFq,
+      String tableName,
+      CredentialUse use,
+      VendSource source) {
     // A tuple with neither a session token nor an expiry is a long-lived static key, not a session
     // credential missing its renewal fields, and reconcile can use one: it fails
-    // isRefreshableExecutionCredential, so the merge path embeds it statically -- which is the
-    // right answer for a credential that never expires. Unity returns this shape for an external
-    // location backed by long-lived keys, and refusing it here would leave such a table queryable
-    // but never capturable.
+    // isRefreshableExecutionCredential, so the merge path embeds it statically -- the right answer
+    // for a credential that never expires. Unity vends this shape for an external location backed
+    // by long-lived keys, so refusing it would leave such a table queryable but never capturable.
+    //
+    // Connector only, and the reason is what the two sources hold rather than a matter of taste.
+    //
+    // A catalog integration vends only when the credential it holds is itself a temporary session,
+    // and an AWS temporary credential is always the triple. A pair arriving without a session token
+    // therefore does not mean "long-lived and fine": it means the integration is not holding what
+    // it is supposed to. Accepting it would also publish a credential floecat cannot bound -- the
+    // authority path refuses to mint a client-facing credential with no known expiry for the same
+    // reason -- and it would travel into worker payloads and loadTable responses, where a consumer
+    // cannot tell an absent expiry from "never expires".
+    // Reads a null expiry as "permanent", which is only sound while null means the catalog said
+    // nothing. It cannot be tightened by inspecting the raw property instead: this record carries
+    // its expiry as a parsed field independent of the property map -- connectors populate one
+    // without the other -- so by the time the value arrives here, "absent" and "rejected" are the
+    // same null. That is why the connector-side parser deliberately does not reject an out-of-unit
+    // expiry; see FloecatConnector.VendedStorageCredentials.expiryFromEpochMillis.
     String sessionToken = props.get("s3.session-token");
     boolean longLivedStaticKey =
-        (sessionToken == null || sessionToken.isBlank()) && vended.expiresAt() == null;
+        source == VendSource.CONNECTOR
+            && (sessionToken == null || sessionToken.isBlank())
+            && expiresAt == null;
+    // An integration always needs the full triple, on either path. The reason a token-less pair is
+    // refused is what it says about the integration -- it vends only from a temporary session, so a
+    // missing token means it is not holding one -- and that does not depend on what the caller
+    // intends to do with the result. A query vend travels into scan payloads and back over the RPC
+    // just as a reconcile one does, so "read once" is not a reason to publish something unbounded.
+    boolean requireSessionTriple =
+        source == VendSource.CATALOG_INTEGRATION
+            || (use == CredentialUse.RECONCILE && !longLivedStaticKey);
     List<String> required =
-        use == CredentialUse.RECONCILE && !longLivedStaticKey
+        requireSessionTriple
             ? List.of("s3.access-key-id", "s3.secret-access-key", "s3.session-token")
             : List.of("s3.access-key-id", "s3.secret-access-key");
     List<String> missing = new java.util.ArrayList<>();
@@ -476,37 +795,96 @@ public class SourceCatalogCredentialVendor {
         missing.add(key);
       }
     }
-    // Already-expired counts as missing, not as present. RefreshingAwsCredentialsProviderRegistry
-    // reads a past expiry as "refresh now" -- computeRefreshSkew returns Duration.ZERO and
-    // shouldRefresh is then true on every resolveCredentials call -- so a catalog that keeps
-    // returning the same stale timestamp is re-vended once per credential resolution and still
-    // hands back credentials S3 will refuse. Failing here instead names the field once, terminally.
-    // Skipped for the static key above, which has nothing to expire. What stays terminal is the
-    // dangerous middle case: a session token present with an expiry missing or already past. That
-    // one is a session credential floecat cannot renew, so it would lapse mid-capture with nothing
-    // to recover it.
-    if (use == CredentialUse.RECONCILE
-        && !longLivedStaticKey
-        && (vended.expiresAt() == null || !vended.expiresAt().isAfter(Instant.now()))) {
+    // Exempts the static key above, which has nothing to expire. What stays terminal is a
+    // session token whose expiry is absent: that one cannot be renewed and would lapse
+    // mid-capture. Only absent, not past -- the two are disjoint, and an expiry already in the
+    // past belongs to requireLiveExpiry at the end of this method, which weighs it against the
+    // skew tolerance and the calling path instead of folding it in here as a missing field.
+    if (requireSessionTriple && expiresAt == null) {
       missing.add("s3.session-token-expires-at-ms");
     }
-    if (missing.isEmpty()) {
+    if (!missing.isEmpty()) {
+      // The whole tuple, not just the expiry. An access key and secret with an expiry but no
+      // session token satisfies isExecutionBoundStorageCredential yet fails
+      // isRefreshableExecutionCredential, so the reconciler embeds it statically and never renews
+      // -- recreating exactly the defect the expiry check was added to close.
+      //
+      // Structured and terminal: a catalog that omits a field will keep omitting it, and a bare
+      // FAILED_PRECONDITION is classified retryable, so the job would loop forever rather than
+      // fail mid-read.
+      throw SourceCatalogVendingGrpcStatus.vendedCredentialsNotRefreshable(
+          "source catalog vended unusable storage credentials for "
+              + boundedTable(namespaceFq, tableName)
+              + "; missing "
+              + String.join(", ", missing));
+    }
+    requireLiveExpiry(expiresAt, now, namespaceFq, tableName, use, source);
+  }
+
+  /**
+   * Rejects an expiry that has already passed, always as a retryable failure.
+   *
+   * <p>{@link #EXPIRY_SKEW_TOLERANCE} decides whether the timestamp is evidence at all. Inside it,
+   * it is not: a credential can expire between the catalog issuing it and us reading it, and
+   * floecat's clock is not the catalog's. {@link CredentialUse#QUERY} therefore reads it -- it
+   * registers no refresh provider, the credential is almost certainly live, and refusing would fail
+   * a scan that would have worked. {@link CredentialUse#RECONCILE} still asks for a retry, because
+   * it cannot register a refresh provider against an expiry already in the past.
+   *
+   * <p>Outside the tolerance the credential is dead, and both paths fail -- but retryably, not
+   * terminally. A past expiry is a temporal condition: the next vend mints a new credential, which
+   * is why {@code integrationStatus} lists an expired credential among the failures a retry clears.
+   * Terminal belongs to what will not change, such as a tuple missing a field the catalog never
+   * sends, and {@link #requireUsableCredentials} already covers that. The asymmetry decides the
+   * rest: an over-eager terminal permanently fails a capture job, an over-eager retry only costs
+   * time, and the reconciler's own attempt budget bounds the retrying.
+   *
+   * <p>Failing here rather than at S3 still matters. {@code ServerSideFileIoPropertiesResolver}
+   * consults this vendor only once no storage authority covers the location, so there is no
+   * fall-back to lose, and handing a credential known to be dead to the scan engine converts a
+   * diagnosable failure into an opaque 403 partway through a file group.
+   */
+  private static void requireLiveExpiry(
+      Instant expiresAt,
+      Instant now,
+      String namespaceFq,
+      String tableName,
+      CredentialUse use,
+      VendSource source) {
+    // A connector read is exempt, which is where this check started: before the vend paths were
+    // shared it was gated on RECONCILE, and a scan that reads a connector-vended tuple once
+    // registers no refresh provider and has nothing to renew. Sharing the method quietly extended
+    // it to connector queries, failing scans that had been reading fine -- an integration is the
+    // one this branch deliberately made stricter, so the exemption is written by source rather
+    // than left to the shared path.
+    if (source == VendSource.CONNECTOR && use == CredentialUse.QUERY) {
       return;
     }
-    // The whole tuple, not just the expiry. An access key and secret with an expiry but no session
-    // token satisfies isExecutionBoundStorageCredential yet fails isRefreshableExecutionCredential,
-    // so the reconciler embeds it statically and never renews -- recreating exactly the defect the
-    // expiry check was added to close.
-    //
-    // Structured and terminal: a catalog that omits a field will keep omitting it, and a bare
-    // FAILED_PRECONDITION is classified retryable, so the job would loop forever rather than fail
-    // mid-read.
-    throw ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
-        .vendedCredentialsNotRefreshable(
-            "source catalog vended unusable storage credentials for "
-                + boundedTable(namespaceFq, tableName)
-                + "; missing "
-                + String.join(", ", missing));
+    if (expiresAt == null || expiresAt.isAfter(now)) {
+      return;
+    }
+    boolean race = expiresAt.isAfter(now.minus(EXPIRY_SKEW_TOLERANCE));
+    if (race && use == CredentialUse.QUERY) {
+      return;
+    }
+    String detail =
+        "source catalog vended expired storage credentials for "
+            + boundedTable(namespaceFq, tableName)
+            + "; s3.session-token-expires-at-ms is "
+            + expiresAt
+            + ", now "
+            + now;
+    // Retryable regardless of path, and deliberately so even when the timestamp is old. The
+    // mechanism that argues for terminal -- Entry.resolveCredentials swallowing a retryable refusal
+    // while its snapshot is still live, re-vending once per signed request -- only exists once a
+    // provider is registered. It does not reach the first vend, which has no snapshot behind it and
+    // no evidence that re-vending returns the same timestamp, and whose failure the reconciler's
+    // attempt budget does bound. Terminal there would permanently fail a capture job on one stale
+    // or cached response, and on any clock disagreement past the tolerance it would fail every
+    // table at once. The asymmetry decides it: an over-eager terminal is unrecoverable, an
+    // over-eager retry only costs time. Bounding the refresh-path loop belongs in the registry
+    // that swallows the failure, not here.
+    throw retryableVendFailure(detail, null);
   }
 
   /**
@@ -528,8 +906,8 @@ public class SourceCatalogCredentialVendor {
    * is not retargeted, and Iceberg has no property for it at all -- see the enhancement issue.
    */
   private static void noteIgnoredAccessPoint(
-      FloecatConnector.VendedStorageCredentials vended, String namespaceFq, String tableName) {
-    String accessPoint = vended.properties().get("s3.access-point");
+      Map<String, String> properties, String namespaceFq, String tableName) {
+    String accessPoint = properties.get("s3.access-point");
     if (accessPoint == null || accessPoint.isBlank()) {
       return;
     }
@@ -576,7 +954,19 @@ public class SourceCatalogCredentialVendor {
     // bounding an already-bounded string makes the marker describe the intermediate truncation
     // instead of the original -- understating what was dropped, and cutting away the accurate
     // marker to do it.
-    String description = LogSafeText.bounded(raw, MAX_STATUS_DESCRIPTION);
+    // Deliberately not built from raw. Once these refusals carry a keyed template whose body is
+    // the detail parameter, whatever is here becomes the message a client reads -- and raw
+    // interpolates cause.toString(), which is upstream-controlled: a proxy's HTML, an internal host
+    // name, the shape of somebody else's stack. The class name is as much of the throwable as a
+    // caller needs to tell one failure from another; the whole of it stays in the log line below.
+    String description =
+        LogSafeText.bounded(
+            String.format(
+                "source catalog %s failed to vend credentials for %s: %s",
+                connector.getResourceId().getId(),
+                boundedTable(namespaceFq, tableName),
+                cause.getClass().getSimpleName()),
+            MAX_STATUS_DESCRIPTION);
 
     StatusRuntimeException terminal = terminalStatus(cause, description);
     if (terminal != null) {
@@ -625,16 +1015,15 @@ public class SourceCatalogCredentialVendor {
     java.util.Set<Throwable> seen = new java.util.HashSet<>();
     for (Throwable c = cause; c != null && seen.add(c); c = c.getCause()) {
       if (c instanceof org.apache.iceberg.exceptions.NotAuthorizedException) {
-        return io.grpc.Status.UNAUTHENTICATED
-            .withDescription(description)
-            .withCause(cause)
-            .asRuntimeException();
+        return SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(
+            io.grpc.Status.Code.UNAUTHENTICATED, ErrorCode.MC_UNAUTHENTICATED, description, cause);
       }
       if (c instanceof org.apache.iceberg.exceptions.ForbiddenException) {
-        return io.grpc.Status.PERMISSION_DENIED
-            .withDescription(description)
-            .withCause(cause)
-            .asRuntimeException();
+        return SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(
+            io.grpc.Status.Code.PERMISSION_DENIED,
+            ErrorCode.MC_PERMISSION_DENIED,
+            description,
+            cause);
       }
       // Format-neutral refusal for connectors that do not speak Iceberg REST (e.g. Unity Catalog
       // over HTTP): they raise a typed SourceCatalogAccessException rather than an Iceberg
@@ -642,15 +1031,17 @@ public class SourceCatalogCredentialVendor {
       if (c instanceof SourceCatalogAccessException access) {
         return switch (access.denial()) {
           case UNAUTHENTICATED ->
-              io.grpc.Status.UNAUTHENTICATED
-                  .withDescription(description)
-                  .withCause(cause)
-                  .asRuntimeException();
+              SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(
+                  io.grpc.Status.Code.UNAUTHENTICATED,
+                  ErrorCode.MC_UNAUTHENTICATED,
+                  description,
+                  cause);
           case PERMISSION_DENIED ->
-              io.grpc.Status.PERMISSION_DENIED
-                  .withDescription(description)
-                  .withCause(cause)
-                  .asRuntimeException();
+              SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(
+                  io.grpc.Status.Code.PERMISSION_DENIED,
+                  ErrorCode.MC_PERMISSION_DENIED,
+                  description,
+                  cause);
           // Terminal, but not a denial, so it must not travel as one: PERMISSION_DENIED here would
           // report "you may not read this table" for a catalog that simply cannot vend for it. It
           // goes back as the structured vend-refused reason, which the reconciler matches by reason
@@ -659,6 +1050,227 @@ public class SourceCatalogCredentialVendor {
               ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
                   .sourceCatalogVendRefused(description);
         };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Classifies a Catalog Integration vending failure.
+   *
+   * <p>Three outcomes, chosen by whether a retry or a fall-back could produce a better answer.
+   * Terminal where neither can: an authorization refusal, a vanished upstream table, a
+   * configuration that is wrong and will stay wrong. Retryable where the next attempt could
+   * succeed: {@code CREDENTIAL_UNAVAILABLE}, the window while an integration's stored secret is
+   * superseded, and an expired credential, which re-vending replaces. The asymmetry is what decides
+   * the boundary -- an over-eager terminal permanently fails a capture job, an over-eager retry
+   * only costs time -- but it is not a licence to demote a whole code: {@code
+   * INVALID_CONFIGURATION} also covers an upstream 400 and an unrecognised auth configuration,
+   * neither of which any number of retries changes.
+   *
+   * <p>Nothing here falls back. Every {@code CatalogAccessException} from the vend reaches this
+   * method, and an Integration has no storage authority to be handed to instead -- see the class
+   * javadoc for why. So {@code UNSUPPORTED} and {@code CREDENTIAL_SCOPE_INVALID} are refusals like
+   * the rest: they describe the Integration rather than this attempt, and no number of retries
+   * changes an auth mode the SPI does not implement or a scope that does not reach the table.
+   */
+  private static StatusRuntimeException catalogIntegrationFailureStatus(
+      RuntimeException cause,
+      CatalogAccessException accessFailure,
+      CatalogIntegration integration,
+      String namespaceFq,
+      String tableName,
+      CredentialUse use) {
+    String safeCause =
+        accessFailure == null
+            ? cause.getClass().getSimpleName()
+            : accessFailure.code() + ": " + accessFailure.getMessage();
+    // Bounded and flattened exactly as catalogFailureStatus does it, and for the same reasons: both
+    // identifiers come off the persisted UpstreamRef with no length or character limit, a newline
+    // in either forges a log entry, and the text leaves the node as the Error detail's parameter
+    // and as the grpc-message rendered from it. safeCause is already a summary rather than the raw
+    // throwable, so the split here is narrower than the sibling's -- but the long form still
+    // belongs in the log rather than in a trailer.
+    String raw =
+        String.format(
+            "source Catalog Integration %s could not vend credentials for %s: %s",
+            integration.getResourceId().getId(), boundedTable(namespaceFq, tableName), safeCause);
+    String detail = LogSafeText.bounded(raw, MAX_LOGGED_DETAIL_CHARS);
+    // From raw rather than from detail, so the elision marker describes what was actually dropped
+    // instead of an intermediate truncation.
+    String description = LogSafeText.bounded(raw, MAX_STATUS_DESCRIPTION);
+
+    StatusRuntimeException status = integrationStatus(accessFailure, cause, description);
+    // Same split as the connector path, on both axes. A terminal refusal is worth a stack trace. A
+    // retryable one is not on the reconcile path -- vending runs per file group, so a catalog
+    // outage would write one per group per attempt, all describing the same outage, and the
+    // reconciler reports the classified failure anyway. A query vend has neither property: it runs
+    // once per scan session and nothing else reports it, so at debug a transient outage would
+    // leave the caller a bare INTERNAL and the server log empty.
+    //
+    // An INTERNAL carries a third reason, and it is the log or nothing. It is the one answer here
+    // with no floecat Error detail, so BaseServiceImpl rebuilds it -- containsFloecatError is false
+    // -- and GrpcErrors.shouldHideMessage hides every code it does not list, INTERNAL among them,
+    // replacing this description with "Internal error. correlation_id=...". Attaching a detail to
+    // keep the text would be arguing with that rule rather than applying it: the message is hidden
+    // on purpose, and the correlation id is what joins it to the server side. So the server side
+    // has to hold the cause. It also does not flood the way a retryable answer does -- the SPI
+    // raises INTERNAL for a provider that broke its own contract, and an unclassified one is an
+    // exception IcebergRestCatalogErrors.translate did not recognise, neither of which is the
+    // repeating per-group outage the debug branch exists for.
+    if (warrantsWarn(status, use)) {
+      LOG.warnf(cause, "%s", detail);
+    } else {
+      LOG.debugf(cause, "%s", detail);
+    }
+    return status;
+  }
+
+  /**
+   * Whether this vending failure is worth a stack trace, or belongs at debug.
+   *
+   * <p>Package-visible so the matrix is asserted directly rather than by capturing log output. See
+   * the call site for why each arm is where it is.
+   */
+  static boolean warrantsWarn(StatusRuntimeException status, CredentialUse use) {
+    return SourceCatalogVendingGrpcStatus.isSourceCatalogVendRefused(status)
+        || use == CredentialUse.QUERY
+        || status.getStatus().getCode() == io.grpc.Status.Code.INTERNAL;
+  }
+
+  private static StatusRuntimeException integrationStatus(
+      CatalogAccessException accessFailure, RuntimeException cause, String detail) {
+    if (accessFailure == null) {
+      return io.grpc.Status.INTERNAL.withDescription(detail).withCause(cause).asRuntimeException();
+    }
+    return switch (accessFailure.code()) {
+      case UNAUTHENTICATED ->
+          SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(
+              io.grpc.Status.Code.UNAUTHENTICATED, ErrorCode.MC_UNAUTHENTICATED, detail, cause);
+      case PERMISSION_DENIED ->
+          SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(
+              io.grpc.Status.Code.PERMISSION_DENIED, ErrorCode.MC_PERMISSION_DENIED, detail, cause);
+      case NOT_FOUND, INVALID_CONFIGURATION ->
+          SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(detail);
+      // Deterministic descriptions of the Integration, not of this attempt: an auth mode the SPI
+      // does not implement, or a provider reporting that what it holds does not cover the table.
+      case UNSUPPORTED, CREDENTIAL_SCOPE_INVALID ->
+          SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(detail);
+      case CREDENTIAL_UNAVAILABLE, CREDENTIAL_EXPIRED -> retryableVendFailure(detail, cause);
+      // The upstream stalled or fell over: a 503, a RESTException, a socket timeout, this path's
+      // own
+      // budget deadline. Exactly what the retryable reason exists to name, and saying it as a bare
+      // INTERNAL costs the caller the description too -- GrpcErrors hides an INTERNAL message, so
+      // the integration and table named in the detail never reach whoever has to act on it.
+      case UNAVAILABLE, TIMEOUT -> retryableVendFailure(detail, cause);
+      // Not the upstream's fault and not a retry's business: the SPI raises this when a provider
+      // broke its own contract.
+      case INTERNAL ->
+          io.grpc.Status.INTERNAL.withDescription(detail).withCause(cause).asRuntimeException();
+    };
+  }
+
+  /**
+   * A vending failure a later attempt could clear.
+   *
+   * <p>Structured, for the same reason the refusals are: the reconciler classifies only the refusal
+   * reasons terminally, so this keeps the retry behaviour, and {@code UNAVAILABLE} alone cannot be
+   * told apart from floecat's own storage service being unreachable.
+   */
+  private static StatusRuntimeException retryableVendFailure(String detail, Throwable cause) {
+    return SourceCatalogVendingGrpcStatus.sourceCatalogVendUnavailable(detail, cause);
+  }
+
+  /**
+   * Closes a catalog client without letting the close itself become the caller's answer.
+   *
+   * <p>Used on both the abandoned client a timed-out open hands back and the ordinary close, which
+   * try-with-resources would otherwise let escape: a provider whose close hook throws -- an HTTP
+   * pool already shut down, an interrupted keep-alive -- would turn credentials already in hand
+   * into an INTERNAL failure and discard them.
+   */
+  private static void closeQuietly(CatalogClient client) {
+    if (client == null) {
+      return;
+    }
+    try {
+      client.close();
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "closing a catalog client failed");
+    }
+  }
+
+  /**
+   * Closes the client the vend opened, waiting only so long.
+   *
+   * <p>{@link #closeQuietly} bounds exceptions, not time, and it used to run on the request thread
+   * outside the budget that bounds open, capabilities and the vend -- so a provider whose teardown
+   * blocked would hold a gRPC handler or a scan-planning thread past the deadline the budget exists
+   * to impose, and nothing in the {@code CatalogClient} contract says close returns promptly.
+   *
+   * <p>Bounded rather than handed off. Firing it at a virtual thread and not waiting removes the
+   * hold, but nothing then guarantees the client is released before the vend returns, so a burst
+   * holds more of them open than it used to and the release is unobservable. A fresh budget keeps
+   * the ordinary case inline and deterministic while capping the wait; when it lapses the close
+   * carries on where it is and this stops watching.
+   *
+   * <p>A fresh budget, not the vend's: that one may already be spent, and {@code remainingNanos}
+   * refuses to start work on an exhausted budget -- which would leak the client rather than close
+   * it late.
+   */
+  private void closeWithinBudget(CatalogClient client) {
+    if (client == null) {
+      return;
+    }
+    try {
+      CatalogUpstreamBudget.start(CLOSE_TIMEOUT, nanoTime)
+          .call(
+              () -> {
+                client.close();
+                return null;
+              },
+              ignored -> {});
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "closing a catalog client failed or outlasted its budget");
+    }
+  }
+
+  /**
+   * A Catalog Integration that cannot vend for this read.
+   *
+   * <p>Terminal, and deliberately not a {@code null} fall-back. A storage authority is not a second
+   * way for an Integration-backed table to reach its data -- it is the split-brain arrangement this
+   * feature replaces, where floecat authenticates to the catalog and something else supplies the
+   * storage credential. The Integration model has no way to express the alternative: there is no
+   * authority field on the record, and {@code ValidateCatalogIntegration} reports an Integration
+   * whose provider cannot vend as invalid rather than as configured differently.
+   *
+   * <p>So falling back here was never recovery. This vend is reached only once no authority covers
+   * the location, and {@code StorageAuthorityResolver.buildResponse} raises no-matching-authority
+   * for a null one -- the only consumer that absorbs that error gates on a {@code ConnectorConfig},
+   * which an Integration does not have. Returning null therefore replaced a specific cause with
+   * "you configured no storage authority", which is neither true nor actionable.
+   */
+  private static StatusRuntimeException integrationCannotVend(String detail) {
+    String message =
+        LogSafeText.bounded("source-catalog vending refused: " + detail, MAX_STATUS_DESCRIPTION);
+    // Warned, not thrown silently, by the same rule catalogIntegrationFailureStatus applies: a
+    // refusal warns, a retryable answer does not. Every status this helper builds is a refusal, so
+    // the rule always says warn here. It does not flood for the reason it does not there -- a
+    // refusal is terminal, so the reconcile job ends rather than repeating the line per file group
+    // -- and on the query path the caller sees a scan failure and the server log otherwise sees
+    // nothing at all, which is the case these conditions are most likely to be read from.
+    LOG.warnf("%s", message);
+    return SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(message);
+  }
+
+  private static CatalogAccessException findCatalogAccessFailure(Throwable cause) {
+    java.util.Set<Throwable> seen = new java.util.HashSet<>();
+    for (Throwable current = cause;
+        current != null && seen.add(current);
+        current = current.getCause()) {
+      if (current instanceof CatalogAccessException failure) {
+        return failure;
       }
     }
     return null;

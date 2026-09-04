@@ -1206,7 +1206,9 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
           CREDENTIAL_SCOPE_INVALID ->
           GrpcErrors.preconditionFailed(corr, null, Map.of());
       case NOT_FOUND -> GrpcErrors.notFound(corr, null, Map.of());
-      case UNAVAILABLE -> GrpcErrors.unavailable(corr, null, Map.of());
+      // A credential the store cannot resolve yet is a "come back", not a configuration error: the
+      // caller sees the same UNAVAILABLE it gets for an upstream that is briefly unreachable.
+      case CREDENTIAL_UNAVAILABLE, UNAVAILABLE -> GrpcErrors.unavailable(corr, null, Map.of());
       case TIMEOUT -> GrpcErrors.timeout(corr, null, Map.of());
       case INTERNAL -> GrpcErrors.internal(corr, null, Map.of());
     };

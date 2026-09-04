@@ -56,12 +56,33 @@ The Iceberg REST provider currently supports:
   exact vended credentials returned to the caller, without ambient credential fallback; and
 - idempotent ownership of the underlying REST session.
 
-`vendStorageCredentials` performs a fresh `loadTable` request on every call, selects the
-longest-prefix credential matching the table location, and copies only the S3 storage credential
-allowlist. Callers reacquire credentials at the returned expiry. A missing or invalid expiry means
-the result must not be cached. Catalog tokens and ordinary FileIO properties are never treated as
-vended storage credentials, so a server that does not vend returns an empty result instead of
-falling back to catalog authentication, configured storage keys, or Connector behavior.
+`vendStorageCredentials` performs a fresh `loadTable` request on every call and copies only the S3
+storage credential allowlist. Among the credentials covering the table location it selects the
+longest prefix, but only complete renewable sessions are candidates: a longer-prefix credential
+missing a session token or a parseable expiry loses to a shorter complete one. A Catalog Integration
+vends only when what it holds is itself a temporary session, and Floecat does not narrow a
+credential with STS, so a bare key pair is refused rather than returned. Callers reacquire
+credentials at the returned expiry, which this provider always supplies; the SPI itself still
+permits an absent expiry and `CatalogClient.vendStorageCredentials` requires callers to handle one.
+
+A response the provider cannot use is reported rather than returned empty, because an Integration
+has no storage authority to fall back to. `INVALID_CONFIGURATION` covers an incomplete tuple, a
+covering credential that is not a renewable session, and an expiry that does not parse;
+`CREDENTIAL_SCOPE_INVALID` covers a response whose credentials cover no part of the table location.
+An empty result still means "this catalog does not vend", and catalog tokens and ordinary FileIO
+properties are never treated as vended storage credentials -- there is deliberately no fall-back to
+the table's FileIO properties, which cannot distinguish a credential vended for the table from one
+merged in from the client's own configuration.
+
+Two pieces of SPI surface support this. `StorageLocations` holds the one prefix-comparison rule
+shared by providers and callers; it is textual, matching Iceberg's own
+`S3FileIO.clientForStoragePath`, and deliberately differs from
+`StorageAuthorityResolver.matchesLocationPrefix`, which is path-boundary strict because it decides
+what Floecat authorizes rather than what an upstream credential applies to. Never be stricter than
+the component that will use the credential. `CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE`
+separates "the credentials are configured but momentarily unresolvable" -- the window while a stored
+secret generation is superseded, which a retry clears -- from `INVALID_CONFIGURATION`, which will
+stay wrong until someone changes it.
 
 ### Renewable AWS credentials
 

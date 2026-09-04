@@ -8,7 +8,9 @@
 package ai.floedb.floecat.service.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -145,6 +147,68 @@ class CatalogIntegrationAccessTest {
             CatalogAccessException.class, () -> access.resolve(integration(authentication)));
 
     assertEquals(CatalogAccessException.Code.UNSUPPORTED, error.code());
+  }
+
+  @Test
+  void aRecordedGenerationThatIsMomentarilyUnreadableIsRetryable() {
+    // The window CatalogIntegrationCredentialCleanup opens while a secret generation is superseded.
+    // It closes on the next attempt, so a caller that gives up here permanently fails work that
+    // would have succeeded.
+    var authentication =
+        CatalogAuthentication.newBuilder()
+            .setBearer(BearerAuthentication.getDefaultInstance())
+            .setCredentialsConfigured(true)
+            .setCredentialGeneration(1L)
+            .build();
+    CatalogIntegration integration = integration(authentication);
+    when(credentials.resolve(integration)).thenReturn(java.util.Optional.empty());
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> access.open(integration));
+
+    assertEquals(CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE, error.code());
+  }
+
+  @Test
+  void permanentCredentialLossKeepsReportingWhileASupersedeWindowGoesQuiet() {
+    // The distinction the WARN exists to make. Reporting a pair once gave both conditions the same
+    // shape -- one line, then DEBUG forever, which production does not enable -- so an operator
+    // could not tell a superseded generation from a secret that is gone. What separates them is
+    // that loss keeps failing at one generation while a supersede window moves to the next.
+    java.time.Instant t0 = java.time.Instant.parse("2026-09-04T12:00:00Z");
+
+    assertTrue(access.shouldReportCredentialGap("integration-1@7", t0));
+    // The flood this damps: a vend per file group, all inside the interval.
+    assertFalse(access.shouldReportCredentialGap("integration-1@7", t0.plusSeconds(1)));
+    assertFalse(access.shouldReportCredentialGap("integration-1@7", t0.plusSeconds(119)));
+
+    // Still the same generation after the interval, which is what permanent loss looks like.
+    assertTrue(access.shouldReportCredentialGap("integration-1@7", t0.plusSeconds(120)));
+    assertFalse(access.shouldReportCredentialGap("integration-1@7", t0.plusSeconds(121)));
+
+    // A supersede window instead moves the generation on, so it reports once and stops rather than
+    // repeating at the interval.
+    assertTrue(access.shouldReportCredentialGap("integration-1@8", t0.plusSeconds(121)));
+  }
+
+  @Test
+  void credentialsThatWereNeverConfiguredAreNotRetryable() {
+    // Same empty Optional, opposite answer, and the record is what separates them: this one says
+    // no credentials were ever attached, so nothing is coming. Reporting "come back" makes a
+    // reconcile job spend its whole budget and report exhaustion instead of the cause, and tells
+    // an operator validating the integration that it is temporarily unavailable, indefinitely.
+    var authentication =
+        CatalogAuthentication.newBuilder()
+            .setBearer(BearerAuthentication.getDefaultInstance())
+            .setCredentialsConfigured(false)
+            .build();
+    CatalogIntegration integration = integration(authentication);
+    when(credentials.resolve(integration)).thenReturn(java.util.Optional.empty());
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> access.open(integration));
+
+    assertEquals(CatalogAccessException.Code.INVALID_CONFIGURATION, error.code());
   }
 
   @Test

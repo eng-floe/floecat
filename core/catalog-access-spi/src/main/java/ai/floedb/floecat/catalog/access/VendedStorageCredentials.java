@@ -37,6 +37,23 @@ public record VendedStorageCredentials(
   }
 
   /**
+   * Whether these credentials reach {@code location}.
+   *
+   * <p>The scope is what the catalog authorized, and it is not necessarily the location a caller
+   * wants to read: a table can hold data outside its own table prefix.
+   *
+   * <p>Not a guard every caller applies. The one that hands these credentials on for a specific
+   * location deliberately does not: it stamps the location the caller was authorized for and logs a
+   * disjoint scope rather than refusing, because that vend is reached only once no storage
+   * authority covers the read, so refusing guarantees failure while proceeding lets the object
+   * store -- which enforces the real grant -- decide. Its only use today is a provider checking its
+   * own answer before a validation read.
+   */
+  public boolean covers(String location) {
+    return StorageLocations.covers(scopePrefix, location);
+  }
+
+  /**
    * Key names only. The properties carry live storage credentials and the generated form prints
    * them.
    *
