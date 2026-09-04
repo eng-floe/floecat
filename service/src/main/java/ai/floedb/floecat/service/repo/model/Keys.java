@@ -59,6 +59,7 @@ public final class Keys {
   public static final String SUFFIX_INDEX_CAPTURE_MANIFEST_POINTER =
       SEG_INDEX_ARTIFACTS + INDEX_CAPTURE_MANIFEST_POINTER_FILE;
   public static final String SEG_CONSTRAINTS = "/constraints/";
+  public static final String SEG_HINTS = "/hints/";
   public static final String SEG_NAMESPACE_BY_PATH = "/namespaces/by-path/";
   public static final String SEG_TABLES_BY_NAME = "/tables/by-name/";
   public static final String SEG_VIEWS_BY_NAME = "/views/by-name/";
@@ -273,6 +274,49 @@ public final class Keys {
     String tid = req("account_id", accountId);
     String sha = req("sha256", sha256);
     return String.format("/accounts/%s/account/%s.pb", encode(tid), encode(sha));
+  }
+
+  // ===== Relation hints =====
+
+  public static String relationHintsPointer(
+      String accountId, String relationId, String engineKind, String engineVersion) {
+    return String.format(
+        "/accounts/%s/relations/%s/hints/by-engine/%s/%s",
+        encode(req("account_id", accountId)),
+        encode(req("relation_id", relationId)),
+        encode(req("engine_kind", engineKind)),
+        engineVersionSegment(engineVersion));
+  }
+
+  public static String relationHintsPointerPrefix(String accountId, String relationId) {
+    return String.format(
+        "/accounts/%s/relations/%s/hints/by-engine/",
+        encode(req("account_id", accountId)), encode(req("relation_id", relationId)));
+  }
+
+  public static String relationHintsBlobUri(
+      String accountId, String relationId, String engineKind, String engineVersion, String sha256) {
+    return String.format(
+        "/accounts/%s/relations/%s/hints/%s/%s/%s.pb",
+        encode(req("account_id", accountId)),
+        encode(req("relation_id", relationId)),
+        encode(req("engine_kind", engineKind)),
+        engineVersionSegment(engineVersion),
+        encode(req("sha256", sha256)));
+  }
+
+  private static String engineVersionSegment(String engineVersion) {
+    if (engineVersion == null) {
+      throw new IllegalArgumentException("engine_version is required");
+    }
+    if (engineVersion.indexOf('\0') >= 0) {
+      throw new IllegalArgumentException("engine_version must not contain NUL");
+    }
+    return engineVersion.isBlank() ? "%00" : encode(engineVersion);
+  }
+
+  private static String engineVersionFromSegment(String segment) {
+    return "%00".equalsIgnoreCase(segment) ? "" : percentDecode(segment);
   }
 
   // ===== Transactions =====
@@ -2147,6 +2191,14 @@ public final class Keys {
       case "catalog-overlays" ->
           seg.length == 6 && "overlay".equals(seg[4])
               ? catalogOverlayPointerById(account, percentDecode(seg[3]))
+              : null;
+      case "relations" ->
+          seg.length == 8 && "hints".equals(seg[4])
+              ? relationHintsPointer(
+                  account,
+                  percentDecode(seg[3]),
+                  percentDecode(seg[5]),
+                  engineVersionFromSegment(seg[6]))
               : null;
       case "tables" -> seg.length >= 6 ? tableBlobOwner(account, seg) : null;
       default -> null;

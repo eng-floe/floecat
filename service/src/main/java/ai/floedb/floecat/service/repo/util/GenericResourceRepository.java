@@ -229,6 +229,23 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   /**
+   * Returns the body and canonical pointer version from one authoritative mutation read. This is
+   * the read half of an optimistic merge: neither value may come through a query cache.
+   */
+  public Optional<ResourceWithMeta<T>> getByKeyWithMetaForMutation(K key) {
+    return observeRepository(
+        "get_by_key_with_meta_for_mutation",
+        () ->
+            readForMutationWithPointer(schema.canonicalPointerForKey.apply(key))
+                .map(
+                    resolved ->
+                        new ResourceWithMeta<>(
+                            resolved.value(),
+                            pointerMeta(
+                                resolved.pointer(), Timestamps.fromMillis(clock.millis())))));
+  }
+
+  /**
    * Graph-hydration primitive: fetches and parses a resource directly by blob URI, skipping the
    * pointer read, for callers that already resolved a <em>fresh</em> pointer (see {@code
    * NodeLoader#load}). Returns empty when the blob is absent so the caller can fall back to a
