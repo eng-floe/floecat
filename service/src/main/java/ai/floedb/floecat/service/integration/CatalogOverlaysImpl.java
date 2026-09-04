@@ -591,6 +591,8 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
                   .setViewsCreated(result.viewsCreated())
                   .setViewsUpdated(result.viewsUpdated())
                   .setViewsDeleted(result.viewsDeleted())
+                  .setBranchesSkipped(result.branchesSkipped())
+                  .setObjectsSkipped(result.objectsSkipped())
                   .build();
             }),
         correlationId());

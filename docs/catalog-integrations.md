@@ -81,6 +81,26 @@ integration objects lakehouse prod.sales --kinds table,view
 overlay reconcile sales-overlay
 ```
 
+For Unity Catalog with a bearer token, the equivalent Delta integration is:
+
+```text
+integration create databricks unity https://workspace.example \
+  --auth-type bearer --cred token=secret \
+  --props s3.region=us-east-1
+overlay create delta-sales databricks local-catalog --include main.sales
+integration validate databricks
+integration namespaces databricks
+integration namespaces databricks --parent main
+integration objects databricks main.sales --kinds table,view
+overlay reconcile delta-sales
+```
+
+Unity OAuth client credentials use the same `oauth-client-credentials` CLI form as Iceberg REST.
+The configured token URI is optional; when omitted, the Unity provider uses `/oidc/v1/token` on the
+catalog host. Unity Integration discovery currently exposes Delta tables and Unity views. Table
+storage credentials are obtained only from Unity's temporary-table-credentials API and are
+validated without falling back to configured or ambient AWS credentials.
+
 The overlay command accepts either a resource ID or display name for the integration.
 Namespace filters are comma-separated paths supplied with `--include` and `--exclude`. Omitting both
 selects the whole upstream namespace tree.
@@ -116,6 +136,10 @@ COMPOSE_SMOKE_MODES=polaris-integration make compose-smoke
 
 This mode does not create or trigger a legacy Connector resource.
 
+The full LocalStack smoke also exercises the Unity Integration and Overlay path against the same
+TLS-backed Unity/Delta fixture used by the Connector migration scenario. It validates discovery,
+credential vending, a storage read with those credentials, and Overlay materialization.
+
 Authentication types and their properties are:
 
 | `--auth-type` | `--auth` properties | `--cred` properties |
@@ -134,6 +158,24 @@ properties instead of silently dropping them.
 Polaris, `warehouse=<catalog-name>` selects the upstream catalog without putting a query parameter in
 the base URI. Updating properties replaces the complete map; passing `--props` with no values clears
 it.
+
+For Unity Catalog, supported properties are `http.connect.ms`, `http.read.ms`,
+`unity.temporary-table-vend-path`, `s3.region`, `s3.endpoint`, and `s3.path-style-access`. The S3
+properties route validation of credentials vended by Unity; they do not supply storage credentials.
+There is no `s3.access-point` property: validation probes the bucket named in the object URI, which
+is what a reader addresses, so an access point set here would describe an endpoint no scan uses.
+
+`s3.endpoint` must be HTTPS unless the deployment sets
+`FLOECAT_SECURITY_ALLOW_CLEARTEXT_S3_ENDPOINTS=true`. A Unity vend is published only when it carries
+an AWS session token, which travels in a request header and is replayable against the table's
+storage prefix until it expires, and the endpoint is republished to reconcile and query workers. An
+`s3.endpoint` written as a private address literal additionally needs
+`FLOECAT_SECURITY_ALLOW_PRIVATE_CATALOG_ENDPOINTS`; a hostname is never resolved and needs neither.
+See [Operations](operations.md#cleartext-s3-endpoints).
+
+`s3.region` may be spelled `region`, `client.region`, or `aws.region`; whichever is present decides
+the region for both validation and reads. Only when none is set does the deployment's
+`floecat.storage.aws.region` apply.
 
 ## Lifecycle
 

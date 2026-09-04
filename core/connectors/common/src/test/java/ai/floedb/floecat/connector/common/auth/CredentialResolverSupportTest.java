@@ -1051,4 +1051,35 @@ class CredentialResolverSupportTest {
   }
 
   private record CapturedRequest(String body, Headers headers) {}
+
+  /**
+   * The persist-time gate is the domain policy, not the address policy. It used to delegate to the
+   * full check, which resolves the host -- so an operator whose IdP is internal and explicitly
+   * allowlisted was refused at create on a value that works when actually called, and a transient
+   * DNS failure turned a valid create into a field error blaming the operator's URI. DNS can change
+   * between persist and use, so resolving here never answers the question that matters.
+   */
+  @Test
+  void requireAllowedTokenEndpointAppliesTheDomainListWithoutResolvingTheHost() {
+    System.setProperty("floecat.security.allowed-token-endpoint-domains", "idp.corp.example");
+
+    // A name that does not resolve. The full policy raises "could not be resolved" for this.
+    CredentialResolverSupport.requireAllowedTokenEndpoint("https://idp.corp.example/token");
+
+    // Still enforced: the allowlist itself, and the scheme.
+    IllegalArgumentException offList =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                CredentialResolverSupport.requireAllowedTokenEndpoint(
+                    "https://idp.elsewhere.example/token"));
+    assertTrue(offList.getMessage().contains("allowed domain list"), offList.getMessage());
+    IllegalArgumentException cleartext =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                CredentialResolverSupport.requireAllowedTokenEndpoint(
+                    "http://idp.corp.example/token"));
+    assertTrue(cleartext.getMessage().contains("HTTPS"), cleartext.getMessage());
+  }
 }

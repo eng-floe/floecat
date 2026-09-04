@@ -38,6 +38,7 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegrationSpec;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.integration.rpc.CreateCatalogIntegrationRequest;
+import ai.floedb.floecat.integration.rpc.CreateCatalogIntegrationResponse;
 import ai.floedb.floecat.integration.rpc.DeleteCatalogIntegrationRequest;
 import ai.floedb.floecat.integration.rpc.GetCatalogIntegrationRequest;
 import ai.floedb.floecat.integration.rpc.OAuthClientCredentialsAuthentication;
@@ -291,6 +292,77 @@ class CatalogIntegrationsImplTest {
     assertEquals("client-id", oauth.getClientId());
     assertEquals(List.of("catalog.read", "catalog.write"), oauth.getScopesList());
     assertEquals(oauth, response.getIntegration().getAuthentication().getOauthClientCredentials());
+  }
+
+  /**
+   * The default deployment configures no token-endpoint allowlist -- docker-compose passes the
+   * variable through empty and the operator guide documents it as opt-in -- and an unset allowlist
+   * must not mean "no host is allowed". CredentialResolverSupport fails closed there, which is
+   * right for the connector token exchanges that have always gone through it, so applying it
+   * unconditionally to Catalog Integrations rejected every real IdP host on create and update.
+   */
+  @Test
+  void createAcceptsARealTokenEndpointWhenNoAllowlistIsConfigured() {
+    String previous = System.clearProperty(ALLOWED_TOKEN_ENDPOINT_DOMAINS);
+    try {
+      var response = createWithTokenUri("https://login.example.com/oauth2/token");
+      assertEquals(
+          "https://login.example.com/oauth2/token",
+          response.getIntegration().getAuthentication().getOauthClientCredentials().getTokenUri());
+    } finally {
+      if (previous != null) {
+        System.setProperty(ALLOWED_TOKEN_ENDPOINT_DOMAINS, previous);
+      }
+    }
+  }
+
+  /**
+   * Configure an allowlist and it is enforced: that is the point of setting one.
+   *
+   * <p>Only the refusal is asserted, deliberately. The allowlist check runs before {@code
+   * isForbiddenAddress}, so a host outside the list is rejected without touching the network -- but
+   * a host inside it then goes through {@code InetAddress.getAllByName}, which throws for a name
+   * that does not resolve. There is no hostname this can assert acceptance on without depending on
+   * DNS from the test host, so that half belongs in an integration test, not here.
+   */
+  @Test
+  void createRefusesATokenEndpointOutsideAConfiguredAllowlist() {
+    String previous = System.setProperty(ALLOWED_TOKEN_ENDPOINT_DOMAINS, "login.corp.example");
+    try {
+      assertThrows(
+          StatusRuntimeException.class,
+          () -> createWithTokenUri("https://attacker.example.com/oauth2/token"));
+    } finally {
+      if (previous == null) {
+        System.clearProperty(ALLOWED_TOKEN_ENDPOINT_DOMAINS);
+      } else {
+        System.setProperty(ALLOWED_TOKEN_ENDPOINT_DOMAINS, previous);
+      }
+    }
+  }
+
+  private static final String ALLOWED_TOKEN_ENDPOINT_DOMAINS =
+      "floecat.security.allowed-token-endpoint-domains";
+
+  private CreateCatalogIntegrationResponse createWithTokenUri(String tokenUri) {
+    return service
+        .createCatalogIntegration(
+            CreateCatalogIntegrationRequest.newBuilder()
+                .setSpec(
+                    CatalogIntegrationSpec.newBuilder()
+                        .setDisplayName("Warehouse")
+                        .setType(CatalogIntegrationType.CIT_ICEBERG_REST)
+                        .setCatalogUri("https://catalog.example")
+                        .setAuthentication(
+                            CatalogAuthentication.newBuilder()
+                                .setOauthClientCredentials(
+                                    OAuthClientCredentialsAuthentication.newBuilder()
+                                        .setClientId("client-id")
+                                        .setTokenUri(tokenUri))))
+                .setCredentials(oauthCredentials())
+                .build())
+        .await()
+        .indefinitely();
   }
 
   @Test

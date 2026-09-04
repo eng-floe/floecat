@@ -701,6 +701,12 @@ final class IntegrationCliSupport {
     out.printf("views_created: %d%n", response.getViewsCreated());
     out.printf("views_updated: %d%n", response.getViewsUpdated());
     out.printf("views_deleted: %d%n", response.getViewsDeleted());
+    // Non-zero on either means the pass was partial: some upstream branches could not be
+    // enumerated and some objects would not load, so both were excluded from materialization and
+    // from retirement. Without these an operator cannot tell that from a clean pass with nothing to
+    // do, because both report zeros for everything above.
+    out.printf("branches_skipped: %d%n", response.getBranchesSkipped());
+    out.printf("objects_skipped: %d%n", response.getObjectsSkipped());
   }
 
   private static void printIntegrationHeader(PrintStream out) {

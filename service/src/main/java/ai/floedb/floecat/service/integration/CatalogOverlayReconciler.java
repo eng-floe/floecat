@@ -18,10 +18,12 @@ package ai.floedb.floecat.service.integration;
 
 import static ai.floedb.floecat.service.common.BaseServiceImpl.normalizeName;
 
+import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogObjectName;
 import ai.floedb.floecat.catalog.access.CatalogTable;
+import ai.floedb.floecat.catalog.access.CatalogTraversalFailures;
 import ai.floedb.floecat.catalog.access.CatalogView;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
@@ -36,6 +38,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.common.resolver.IcebergSchemaMapper;
+import ai.floedb.floecat.connector.spi.LogSafeText;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
@@ -71,10 +74,24 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
+import org.jboss.logging.Logger;
 
 /** Materializes one Catalog Overlay's selected upstream metadata into its target catalog. */
 @ApplicationScoped
 public class CatalogOverlayReconciler {
+
+  private static final Logger LOG = Logger.getLogger(CatalogOverlayReconciler.class);
+
+  /**
+   * Bound on any upstream-supplied text reaching a log line.
+   *
+   * <p>Catalog, schema, table and view names are upstream text, and so is a provider's failure
+   * message -- {@code UnityCatalogAccessClient} builds one from a column name and its declared
+   * type. A newline in any of them forges a second log entry, and none carry a length of their own.
+   * The neighbouring vend and discovery paths bound theirs the same way.
+   */
+  private static final int MAX_LOGGED_CHARS = 256;
+
   static final String OVERLAY_ID_PROPERTY = "floecat.catalog-overlay.id";
   static final String INTEGRATION_ID_PROPERTY = "floecat.catalog-integration.id";
   static final String EXTERNAL_ID_PROPERTY = "floecat.external-object.id";
@@ -115,8 +132,20 @@ public class CatalogOverlayReconciler {
     Map<NamespacePath, Namespace> localNamespaces =
         reconcileNamespaces(
             overlay, integration, fence, discovery.materializedNamespaces(), result);
-    retireStaleRelations(
-        overlay, fence, discovery.tables(), discovery.views(), localNamespaces, result);
+    // Every path that made the pass partial, not just the branch ones. A cycle in which each
+    // loadTable failed skippably populates only unobserved, and reporting zero there would be
+    // indistinguishable from a clean no-op pass -- which is the confusion these counters exist to
+    // remove.
+    // Unioned, because all three sets are keyed by namespace: summing them counted a namespace
+    // whose table and view listings both failed twice, which made the number neither a branch count
+    // nor a failure count.
+    Set<NamespacePath> skippedBranches = new HashSet<>(discovery.skippedPrefixes());
+    skippedBranches.addAll(discovery.skippedTablePrefixes());
+    skippedBranches.addAll(discovery.skippedViewPrefixes());
+    result.branchesSkipped = skippedBranches.size();
+    result.objectsSkipped =
+        discovery.unobservedTables().size() + discovery.unobservedViews().size();
+    retireStaleRelations(overlay, fence, discovery, localNamespaces, result);
     reconcileTables(
         overlay,
         overlayMeta,
@@ -127,7 +156,7 @@ public class CatalogOverlayReconciler {
         localNamespaces,
         result);
     reconcileViews(overlay, integration, fence, discovery.views(), localNamespaces, result);
-    retireNamespaces(overlay, fence, discovery.materializedNamespaces(), localNamespaces, result);
+    retireNamespaces(overlay, fence, discovery, localNamespaces, result);
     assertFence(overlay, overlayMeta, integration, integrationMeta);
     return result.freeze();
   }
@@ -185,12 +214,82 @@ public class CatalogOverlayReconciler {
     Set<NamespacePath> materialized = new LinkedHashSet<>();
     Map<CatalogObjectName, CatalogTable> discoveredTables = new LinkedHashMap<>();
     Map<CatalogObjectName, CatalogView> discoveredViews = new LinkedHashMap<>();
+    // What the walk could not see, as opposed to what it saw was gone. Retirement reads a relation
+    // missing from the maps above as deleted upstream and hard-deletes the local copy, so a branch
+    // that was skipped or an object that would not load has to be recorded, or tolerating a
+    // transient denial would destroy every overlay-owned relation beneath it on the next cycle.
+    // Split by relation kind. A namespace listing that fails hides both kinds below it, but a
+    // table listing that fails says nothing about views and vice versa -- one shared set meant a
+    // recurring view-only denial kept deleted tables alive indefinitely.
+    Set<NamespacePath> skippedPrefixes = new HashSet<>();
+    Set<NamespacePath> skippedTablePrefixes = new HashSet<>();
+    Set<NamespacePath> skippedViewPrefixes = new HashSet<>();
+    // Failure classes already reported with a stack trace this pass. The two per-object skips
+    // below are unbounded by nature -- a failure class that is per-object in code but catalog-wide
+    // in practice, an output column type no view can represent being the case that motivated the
+    // guard, raises once per object, every cycle. At MAX_NAMESPACES that is tens of thousands of
+    // cause chains a pass, burying the branch-level warnings that need attention.
+    //
+    // Keyed on the class, not the object: the flood is many objects sharing one failure, so keying
+    // on identity would suppress nothing. Per pass and unbounded, unlike the bounded map {@code
+    // CatalogIntegrationAccess} keeps -- its key is tenant-supplied and has to survive across
+    // calls, while this set dies with the walk and has one entry per code. The count of suppressed
+    // repeats is already reported: it is objectsSkipped.
+    Set<CatalogAccessException.Code> tracedSkipTableClasses = new HashSet<>();
+    Set<CatalogAccessException.Code> tracedSkipViewClasses = new HashSet<>();
+    // Split by kind like every other skip set here. One set meant a table whose load was skipped
+    // also made a same-named view unobserved, so a view genuinely deleted upstream was never
+    // retired -- the single place the kind split had not been carried through.
+    Set<CatalogObjectName> unobservedTables = new HashSet<>();
+    Set<CatalogObjectName> unobservedViews = new HashSet<>();
+    // Namespaces where a detail load was skipped. Such a load never reveals the object's stable
+    // identity, and retirement matches a stable-ID relation by identity rather than by name -- so a
+    // table renamed upstream is stored under its old path, is not the name recorded in unobserved,
+    // and would be retired and purged as though the rename were a deletion.
+    //
+    // Recorded per namespace rather than as one flag for the walk. A single object that fails to
+    // load on every pass -- an unrepresentable view column does exactly that -- otherwise disabled
+    // stable-ID retirement across the entire overlay indefinitely, so upstream deletions stopped
+    // propagating anywhere and accumulated with no bound.
+    Set<NamespacePath> tableIdentityUnknownIn = new HashSet<>();
+    Set<NamespacePath> viewIdentityUnknownIn = new HashSet<>();
     Set<NamespacePath> seen = new HashSet<>();
     var pending = new ArrayDeque<NamespacePath>();
     pending.add(NamespacePath.root());
     while (!pending.isEmpty()) {
       NamespacePath parent = pending.removeFirst();
-      for (NamespacePath path : client.listNamespaces(parent).stream().sorted().toList()) {
+      // Normalized before it reaches the include-filter comparison, as the sibling call below is.
+      // The filters are written in normalized form, so an upstream namespace whose raw segments
+      // differ -- surrounding or collapsible whitespace, a non-NFKC form -- would fail to match and
+      // be judged irrelevant when the operator had in fact selected it.
+      NamespacePath normalizedParent = normalizePath(parent);
+      List<NamespacePath> children;
+      try {
+        children = client.listNamespaces(parent);
+      } catch (CatalogAccessException failure) {
+        // Tolerated only where the operator did not ask for this branch. An overlay with no
+        // include filters selects the whole upstream tree -- the documented default -- and a Unity
+        // workspace almost always has a system catalog whose schemas the integration principal
+        // cannot enumerate, so propagating that aborted reconcile for every table in the overlay.
+        // Where include filters name something under this branch, the denial is the answer to a
+        // question the operator actually asked, and it surfaces.
+        if (!tolerateBranchFailure(overlay, normalizedParent, failure, true)) {
+          throw failure;
+        }
+        // Nothing below this parent was enumerated, so nothing below it is known to be gone.
+        // Logged and counted: the skip excludes the branch from materialization as well as from
+        // retirement, so new upstream objects there never appear and the overlay drifts. Silence
+        // would leave an operator no way to tell that from a complete reconcile.
+        LOG.warnf(
+            failure,
+            "overlay %s skipping namespaces under %s: %s",
+            overlay.getResourceId().getId(),
+            LogSafeText.bounded(String.valueOf(parent), MAX_LOGGED_CHARS),
+            LogSafeText.bounded(failure.getMessage(), MAX_LOGGED_CHARS));
+        skippedPrefixes.add(normalizedParent);
+        continue;
+      }
+      for (NamespacePath path : children.stream().sorted().toList()) {
         if (!seen.add(path)) continue;
         if (seen.size() > MAX_NAMESPACES) {
           throw new IllegalStateException("Catalog namespace inventory exceeds " + MAX_NAMESPACES);
@@ -199,8 +298,66 @@ public class CatalogOverlayReconciler {
         if (excluded(overlay, normalizedPath)) continue;
         if (selected(overlay, normalizedPath)) {
           addAncestors(normalizedPath, materialized);
-          for (CatalogObjectName name : client.listTables(path).stream().sorted().toList()) {
-            CatalogTable table = client.loadTable(name);
+          List<CatalogObjectName> tableNames;
+          try {
+            tableNames = client.listTables(path);
+          } catch (CatalogAccessException failure) {
+            if (!tolerateBranchFailure(overlay, normalizedPath, failure, false)) {
+              throw failure;
+            }
+            LOG.warnf(
+                failure,
+                "overlay %s skipping tables in %s: %s",
+                overlay.getResourceId().getId(),
+                LogSafeText.bounded(String.valueOf(normalizedPath), MAX_LOGGED_CHARS),
+                LogSafeText.bounded(failure.getMessage(), MAX_LOGGED_CHARS));
+            skippedTablePrefixes.add(normalizedPath);
+            // Empty, and fall through rather than skip the namespace. Views are listed separately
+            // below and a table denial says nothing about them, but leaving by this path meant they
+            // were never enumerated while only the table skip was recorded -- so retirement read
+            // the gap as a deletion and destroyed local copies of views that were alive upstream.
+            // Falling through also leaves the descent to the enqueue at the foot of the loop, which
+            // is the one place that decides it.
+            tableNames = List.of();
+          }
+          for (CatalogObjectName name : tableNames.stream().sorted().toList()) {
+            CatalogObjectName localTableName =
+                new CatalogObjectName(normalizedPath, normalizeName(name.name()));
+            CatalogTable table;
+            try {
+              table = client.loadTable(name);
+            } catch (CatalogAccessException failure) {
+              // Same treatment as a view that will not load: a table dropped upstream between the
+              // listing and this read answers NOT_FOUND, which used to abort the cycle for every
+              // table and view in the overlay.
+              //
+              // Note what this does not cover. A columns array the strict decoder rejects arrives
+              // as INVALID_RESPONSE -> INTERNAL, which describesOneBranch deliberately excludes, so
+              // it still fails the reconcile. That is the intended reading: a proxy or version
+              // difference that reshapes columns reshapes them for every table, so it is a fault of
+              // the catalog rather than of one object, and walking the inventory to collect the
+              // same answer would bury it.
+              if (!CatalogTraversalFailures.describesOneBranch(failure)) {
+                throw failure;
+              }
+              if (tracedSkipTableClasses.add(failure.code())) {
+                LOG.warnf(
+                    failure,
+                    "overlay %s skipping table %s: %s",
+                    overlay.getResourceId().getId(),
+                    LogSafeText.bounded(String.valueOf(name), MAX_LOGGED_CHARS),
+                    LogSafeText.bounded(failure.getMessage(), MAX_LOGGED_CHARS));
+              } else {
+                LOG.debugf(
+                    "overlay %s skipping table %s (%s again)",
+                    overlay.getResourceId().getId(),
+                    LogSafeText.bounded(String.valueOf(name), MAX_LOGGED_CHARS),
+                    failure.code());
+              }
+              unobservedTables.add(localTableName);
+              tableIdentityUnknownIn.add(normalizedPath);
+              continue;
+            }
             if (!name.equals(table.name())) {
               throw new IllegalStateException(
                   "Catalog provider returned table metadata for the wrong object: expected="
@@ -208,22 +365,76 @@ public class CatalogOverlayReconciler {
                       + " actual="
                       + table.name());
             }
-            CatalogObjectName localName =
-                new CatalogObjectName(normalizedPath, normalizeName(name.name()));
-            if (discoveredTables.putIfAbsent(localName, table) != null) {
+            // The same value localTableName already holds. Two names for one expression made the
+            // invariant that matters -- the unobserved entry and the discoveredTables key must be
+            // the same key, or retirement misjudges the relation -- something a reader had to
+            // verify character by character.
+            if (discoveredTables.putIfAbsent(localTableName, table) != null) {
               throw new IllegalStateException(
-                  "Upstream table names collide after normalization: " + localName);
+                  "Upstream table names collide after normalization: " + localTableName);
             }
           }
           if (listViews) {
-            for (CatalogObjectName name : client.listViews(path).stream().sorted().toList()) {
+            List<CatalogObjectName> viewNames;
+            try {
+              viewNames = client.listViews(path);
+            } catch (CatalogAccessException failure) {
+              // The same guard the table listing beside it carries. For Unity both listings share
+              // one RPC so they rarely disagree, but this reconciler is provider-neutral and a
+              // denial on one namespace's views was aborting the whole overlay.
+              if (!tolerateBranchFailure(overlay, normalizedPath, failure, false)) {
+                throw failure;
+              }
+              LOG.warnf(
+                  failure,
+                  "overlay %s skipping views in %s: %s",
+                  overlay.getResourceId().getId(),
+                  LogSafeText.bounded(String.valueOf(normalizedPath), MAX_LOGGED_CHARS),
+                  LogSafeText.bounded(failure.getMessage(), MAX_LOGGED_CHARS));
+              skippedViewPrefixes.add(normalizedPath);
+              // Falls through like the table listing above it, for the same reason: the enqueue at
+              // the foot of the loop is the one place that decides descent, and a second copy here
+              // is a rule that can drift from it.
+              viewNames = List.of();
+            }
+            for (CatalogObjectName name : viewNames.stream().sorted().toList()) {
               CatalogObjectName localName =
                   new CatalogObjectName(normalizedPath, normalizeName(name.name()));
               if (discoveredTables.containsKey(localName)) {
                 throw new IllegalStateException(
                     "Upstream relation name is both table and view: " + localName);
               }
-              CatalogView view = client.loadView(name);
+              CatalogView view;
+              try {
+                view = client.loadView(name);
+              } catch (CatalogAccessException failure) {
+                // One view cannot cost the overlay every table in it. A listing and a detail read
+                // can disagree -- the Unity /tables listing is parsed leniently, so a deployment
+                // that omits columns there passes a view whose output schema loadView then refuses
+                // by name -- and this call had no guard, so that view aborted reconcile and kept
+                // aborting it until someone dropped it upstream. Recorded as unobserved so
+                // retirement does not read the gap as "deleted upstream" and remove the local copy.
+                if (!CatalogTraversalFailures.describesOneBranch(failure)) {
+                  throw failure;
+                }
+                if (tracedSkipViewClasses.add(failure.code())) {
+                  LOG.warnf(
+                      failure,
+                      "overlay %s skipping view %s: %s",
+                      overlay.getResourceId().getId(),
+                      LogSafeText.bounded(String.valueOf(name), MAX_LOGGED_CHARS),
+                      LogSafeText.bounded(failure.getMessage(), MAX_LOGGED_CHARS));
+                } else {
+                  LOG.debugf(
+                      "overlay %s skipping view %s (%s again)",
+                      overlay.getResourceId().getId(),
+                      LogSafeText.bounded(String.valueOf(name), MAX_LOGGED_CHARS),
+                      failure.code());
+                }
+                unobservedViews.add(localName);
+                viewIdentityUnknownIn.add(normalizedPath);
+                continue;
+              }
               if (!name.equals(view.name())) {
                 throw new IllegalStateException(
                     "Catalog provider returned view metadata for the wrong object: expected="
@@ -246,7 +457,16 @@ public class CatalogOverlayReconciler {
     requireUniqueStableIdentities(
         discoveredViews.values().stream().map(CatalogView::identity).toList(), "view");
     return new Discovery(
-        Set.copyOf(materialized), Map.copyOf(discoveredTables), Map.copyOf(discoveredViews));
+        Set.copyOf(materialized),
+        Map.copyOf(discoveredTables),
+        Map.copyOf(discoveredViews),
+        Set.copyOf(skippedPrefixes),
+        Set.copyOf(skippedTablePrefixes),
+        Set.copyOf(skippedViewPrefixes),
+        Set.copyOf(unobservedTables),
+        Set.copyOf(unobservedViews),
+        Set.copyOf(tableIdentityUnknownIn),
+        Set.copyOf(viewIdentityUnknownIn));
   }
 
   private Map<NamespacePath, Namespace> reconcileNamespaces(
@@ -286,13 +506,23 @@ public class CatalogOverlayReconciler {
     return current;
   }
 
+  /**
+   * Deletes overlay-owned relations the upstream no longer has.
+   *
+   * <p>Only where the walk was in a position to see that. A relation missing from the discovery
+   * maps is either gone upstream or was never looked at, and those call for opposite actions: the
+   * first is the deletion this method exists for, the second is a branch a transient denial hid.
+   * {@link Discovery#observed} tells them apart, and getting it wrong destroys metadata a later
+   * cycle cannot rebuild -- the local copy and its purge state are both gone.
+   */
   private void retireStaleRelations(
       CatalogOverlay overlay,
       PointerConditions fence,
-      Map<CatalogObjectName, CatalogTable> discoveredTables,
-      Map<CatalogObjectName, CatalogView> discoveredViews,
+      Discovery discovery,
       Map<NamespacePath, Namespace> localNamespaces,
       MutableResult result) {
+    Map<CatalogObjectName, CatalogTable> discoveredTables = discovery.tables();
+    Map<CatalogObjectName, CatalogView> discoveredViews = discovery.views();
     Map<String, Table> tablesByIdentity = new HashMap<>();
     Map<CatalogObjectName, Table> tablesByName = new HashMap<>();
     Map<String, View> viewsByIdentity = new HashMap<>();
@@ -330,8 +560,19 @@ public class CatalogOverlayReconciler {
       if (current != null) retainedViewIds.add(current.getResourceId().getId());
     }
 
-    for (Table stale : tablesByName.values()) {
+    for (var staleEntry : tablesByName.entrySet()) {
+      Table stale = staleEntry.getValue();
       if (retainedTableIds.contains(stale.getResourceId().getId())) continue;
+      if (!discovery.observedTable(staleEntry.getKey())) continue;
+      if (discovery.tableIdentityMayBeHidden(staleEntry.getKey().namespace())
+          && stableIdentity(stale.getPropertiesMap()).isPresent()) {
+        // Its name says nothing: a stable-ID relation is matched by identity, and a rename moves it
+        // out from under the name recorded in unobserved. Some load this pass did not reveal its
+        // identity, so this could be that relation under its previous path -- and deleting it here
+        // would purge a resource the next successful pass recreates from scratch, breaking the
+        // stable-identity guarantee the matching above exists to keep.
+        continue;
+      }
       MutationMeta meta = tables.metaFor(stale.getResourceId());
       if (!tables.deleteWhilePointersMatch(
           stale.getResourceId(), meta.getPointerVersion(), fence)) {
@@ -341,8 +582,14 @@ public class CatalogOverlayReconciler {
       relationChanged(stale.getResourceId(), stale.getNamespaceId());
       result.tablesDeleted++;
     }
-    for (View stale : viewsByName.values()) {
+    for (var staleEntry : viewsByName.entrySet()) {
+      View stale = staleEntry.getValue();
       if (retainedViewIds.contains(stale.getResourceId().getId())) continue;
+      if (!discovery.observedView(staleEntry.getKey())) continue;
+      if (discovery.viewIdentityMayBeHidden(staleEntry.getKey().namespace())
+          && stableIdentity(stale.getPropertiesMap()).isPresent()) {
+        continue;
+      }
       MutationMeta meta = views.metaFor(stale.getResourceId());
       if (!views.deleteWhilePointersMatch(stale.getResourceId(), meta.getPointerVersion(), fence)) {
         throw lostFence();
@@ -499,15 +746,24 @@ public class CatalogOverlayReconciler {
     }
   }
 
+  /**
+   * Deletes overlay-owned namespaces the upstream no longer has.
+   *
+   * <p>Guarded the same way as the relations above, and for the same reason: {@code
+   * materializedNamespaces} is truncated by a branch the walk could not enumerate, so without the
+   * check a tolerated denial would delete the namespaces under it as well as their contents.
+   */
   private void retireNamespaces(
       CatalogOverlay overlay,
       PointerConditions fence,
-      Set<NamespacePath> targetPaths,
+      Discovery discovery,
       Map<NamespacePath, Namespace> localNamespaces,
       MutableResult result) {
+    Set<NamespacePath> targetPaths = discovery.materializedNamespaces();
     List<Map.Entry<NamespacePath, Namespace>> stale =
         localNamespaces.entrySet().stream()
             .filter(entry -> !targetPaths.contains(entry.getKey()))
+            .filter(entry -> discovery.observedNamespace(entry.getKey()))
             .filter(entry -> ownedBy(entry.getValue().getPropertiesMap(), overlay))
             .sorted(Map.Entry.<NamespacePath, Namespace>comparingByKey().reversed())
             .toList();
@@ -866,6 +1122,69 @@ public class CatalogOverlayReconciler {
     }
   }
 
+  /**
+   * Whether a listing failure on one branch should be stepped over rather than fail the reconcile.
+   *
+   * <p>Two conditions. The failure has to describe the branch and not the catalog, which {@link
+   * CatalogTraversalFailures#describesOneBranch} decides and {@code CatalogIntegrationDiscovery}
+   * consults for the same question -- one rule, so a catalog that validates cannot then fail to
+   * reconcile on a branch validation skipped.
+   *
+   * <p>And the operator has to not have asked for this branch. With no include filters the overlay
+   * selects the whole tree by default, and an inaccessible corner of a workspace is not a reason to
+   * refuse the rest of it. With include filters, a branch that could hold a selection is one the
+   * operator named, so a denial there is reported rather than silently dropping what they asked
+   * for. {@code descending} distinguishes the two questions: enumerating children of a branch that
+   * may contain a selection, versus listing tables in a branch already selected.
+   */
+  private static boolean tolerateBranchFailure(
+      CatalogOverlay overlay,
+      NamespacePath path,
+      CatalogAccessException failure,
+      boolean descending) {
+    if (!CatalogTraversalFailures.describesOneBranch(failure)) {
+      return false;
+    }
+    // The root listing is not a branch, it is the whole tree. Tolerating it learns nothing about
+    // anything: with no include filters the rule below would skip it, every path would then be
+    // unobserved, and reconcile would return an all-zero result with no exception -- an integration
+    // whose principal has lost listCatalogs would report healthy indefinitely while the overlay
+    // drifts. A caller that cannot enumerate the catalog at all has to hear about it.
+    if (descending && path.segments().isEmpty()) {
+      return false;
+    }
+    if (overlay.getIncludeNamespacesCount() == 0) {
+      return true;
+    }
+    // Named, not merely covered. Reusing selected() here conflated "the operator named an ancestor
+    // of this branch" with "the operator named this branch", and since both non-descending call
+    // sites already sit inside selected(), the test could never tolerate anything once filters
+    // existed: adding --include main turned a stepped-over denial on main.system_schema into an
+    // aborted reconcile for the whole overlay, every cycle, which is the shape the smoke uses.
+    return !(descending
+        ? mustDescendToReachASelection(overlay, path)
+        : namedExactly(overlay, path));
+  }
+
+  /** Whether an include entry names this namespace itself. */
+  private static boolean namedExactly(CatalogOverlay overlay, NamespacePath path) {
+    return overlay.getIncludeNamespacesList().stream()
+        .anyMatch(include -> include.getSegmentsList().equals(path.segments()));
+  }
+
+  /**
+   * Whether something the operator named is at or below this namespace.
+   *
+   * <p>The question a failed {@code listNamespaces} asks: if an include sits underneath this
+   * branch, the walk had to enumerate it to reach what was asked for, and a denial there means the
+   * operator does not get what they selected. A branch merely descended from an include is not that
+   * -- it is one corner of a subtree they asked for wholesale.
+   */
+  private static boolean mustDescendToReachASelection(CatalogOverlay overlay, NamespacePath path) {
+    return overlay.getIncludeNamespacesList().stream()
+        .anyMatch(include -> startsWith(include.getSegmentsList(), path.segments()));
+  }
+
   private static boolean selected(CatalogOverlay overlay, NamespacePath path) {
     if (overlay.getIncludeNamespacesCount() == 0) return true;
     return overlay.getIncludeNamespacesList().stream()
@@ -912,10 +1231,112 @@ public class CatalogOverlayReconciler {
     List<T> load(String token, StringBuilder next);
   }
 
+  /**
+   * One pass over the upstream catalog.
+   *
+   * <p>The skipped and unobserved sets keep the snapshot honest. A relation absent from {@code
+   * tables} or {@code views} is retired, which is correct only where the walk looked and found it
+   * gone. Where a branch could not be enumerated or an object could not be loaded, absence means
+   * nothing and retirement has to leave the local copy alone.
+   *
+   * <p>Per relation kind, because a failure in one says nothing about the other. A namespace
+   * listing that fails hides both kinds beneath it; a table listing that fails hides only tables.
+   */
   private record Discovery(
       Set<NamespacePath> materializedNamespaces,
       Map<CatalogObjectName, CatalogTable> tables,
-      Map<CatalogObjectName, CatalogView> views) {}
+      Map<CatalogObjectName, CatalogView> views,
+      Set<NamespacePath> skippedPrefixes,
+      Set<NamespacePath> skippedTablePrefixes,
+      Set<NamespacePath> skippedViewPrefixes,
+      Set<CatalogObjectName> unobservedTables,
+      Set<CatalogObjectName> unobservedViews,
+      Set<NamespacePath> tableIdentityUnknownIn,
+      Set<NamespacePath> viewIdentityUnknownIn) {
+
+    /** Whether the walk is in a position to say this table is gone upstream. */
+    boolean observedTable(CatalogObjectName name) {
+      return observedRelation(name, unobservedTables, skippedTablePrefixes);
+    }
+
+    /** Whether the walk is in a position to say this view is gone upstream. */
+    boolean observedView(CatalogObjectName name) {
+      return observedRelation(name, unobservedViews, skippedViewPrefixes);
+    }
+
+    private boolean observedRelation(
+        CatalogObjectName name,
+        Set<CatalogObjectName> kindUnobserved,
+        Set<NamespacePath> kindNamespaces) {
+      if (kindUnobserved.contains(name)) {
+        return false;
+      }
+      return strictlyUnderNone(name.namespace(), skippedPrefixes)
+          && notIn(name.namespace(), kindNamespaces);
+    }
+
+    /**
+     * Whether the walk is in a position to say this namespace is gone upstream.
+     *
+     * <p>Both kinds, unlike the relation checks: a namespace is retired only once it holds neither
+     * tables nor views, so either listing being blind makes that judgement unsafe.
+     */
+    boolean observedNamespace(NamespacePath path) {
+      return strictlyUnderNone(path, skippedPrefixes)
+          && notIn(path, skippedTablePrefixes)
+          && notIn(path, skippedViewPrefixes);
+    }
+
+    /**
+     * Whether a table in this namespace might be one whose identity a skipped load hid.
+     *
+     * <p>Scoped to the namespace the skip happened in and to its own relation kind. It covers a
+     * rename within a namespace -- the ordinary case, and the one retirement would otherwise read
+     * as a deletion. A relation moved to a different namespace in the same pass as a skipped load
+     * at its destination is not covered: nothing in a listing correlates the two, and suppressing
+     * overlay-wide to catch it stopped retirement everywhere, permanently, for one object that
+     * never loads. Carrying stable identities in listing results is what would close it properly.
+     */
+    boolean tableIdentityMayBeHidden(NamespacePath namespace) {
+      return tableIdentityUnknownIn.contains(namespace);
+    }
+
+    /** The same, for views. */
+    boolean viewIdentityMayBeHidden(NamespacePath namespace) {
+      return viewIdentityUnknownIn.contains(namespace);
+    }
+
+    /**
+     * Exact: a kind set records that *this* namespace's own relations were not listed.
+     *
+     * <p>Not a prefix match, which is what the wording always meant and the code did not do. A
+     * failed {@code listTables(N)} no longer stops the walk descending -- views in N are still
+     * listed and N is still enqueued -- so N's descendants are visited and their own relations
+     * genuinely observed. Matching by prefix suppressed all of them, which froze retirement for the
+     * whole subtree for as long as N's table listing kept failing: the unbounded suppression that
+     * scoping {@code tableIdentityUnknownIn} per namespace was meant to end.
+     */
+    private static boolean notIn(NamespacePath path, Set<NamespacePath> namespaces) {
+      return !namespaces.contains(path);
+    }
+
+    /**
+     * Strict: {@code skippedPrefixes} records a namespace whose {@code listNamespaces} was denied.
+     *
+     * <p>What that hides is the namespace's children, not itself. Its own relations were listed in
+     * the earlier iteration where it appeared as a child and was selected, so treating the match as
+     * inclusive excluded relations the walk had actually seen -- freezing their retirement for as
+     * long as the denial recurred. The two kind sets say "this namespace's own relations were not
+     * listed" and stay inclusive; this one does not.
+     */
+    private static boolean strictlyUnderNone(NamespacePath path, Set<NamespacePath> prefixes) {
+      return prefixes.stream()
+          .noneMatch(
+              prefix ->
+                  path.segments().size() > prefix.segments().size()
+                      && startsWith(path.segments(), prefix.segments()));
+    }
+  }
 
   public record Result(
       int namespacesCreated,
@@ -925,7 +1346,42 @@ public class CatalogOverlayReconciler {
       int tablesDeleted,
       int viewsCreated,
       int viewsUpdated,
-      int viewsDeleted) {}
+      int viewsDeleted,
+      /**
+       * Branches the walk could not enumerate.
+       *
+       * <p>Non-zero means the reconcile was partial: everything under those branches was excluded
+       * from both materialization and retirement, so the overlay may be missing new upstream
+       * objects. The other counters cannot express this -- a partial pass and a complete pass with
+       * nothing to do both report zeros.
+       */
+      int branchesSkipped,
+      /** Individual objects that listed but would not load, excluded for the same reason. */
+      int objectsSkipped) {
+
+    /** A complete pass, for callers that construct an expected result rather than a partial one. */
+    public Result(
+        int namespacesCreated,
+        int namespacesDeleted,
+        int tablesCreated,
+        int tablesUpdated,
+        int tablesDeleted,
+        int viewsCreated,
+        int viewsUpdated,
+        int viewsDeleted) {
+      this(
+          namespacesCreated,
+          namespacesDeleted,
+          tablesCreated,
+          tablesUpdated,
+          tablesDeleted,
+          viewsCreated,
+          viewsUpdated,
+          viewsDeleted,
+          0,
+          0);
+    }
+  }
 
   private static final class MutableResult {
     private int namespacesCreated;
@@ -936,6 +1392,8 @@ public class CatalogOverlayReconciler {
     private int viewsCreated;
     private int viewsUpdated;
     private int viewsDeleted;
+    private int branchesSkipped;
+    private int objectsSkipped;
 
     private Result freeze() {
       return new Result(
@@ -946,7 +1404,9 @@ public class CatalogOverlayReconciler {
           tablesDeleted,
           viewsCreated,
           viewsUpdated,
-          viewsDeleted);
+          viewsDeleted,
+          branchesSkipped,
+          objectsSkipped);
     }
   }
 }
