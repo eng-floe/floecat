@@ -358,6 +358,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             validated,
             artifactBundle,
             publishesFileStats(lease.scope.capturePolicy()));
+    stageArtifactReferences(staged);
     boolean accepted =
         jobs.completeFileGroupSuccess(
             lease.jobId,
@@ -366,7 +367,6 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
             System.currentTimeMillis(),
             "Executed file group " + plannedTask.groupId());
     requireAcceptedLeaseOutcome(accepted, lease.jobId);
-    stageArtifactReferences(staged);
     return true;
   }
 
