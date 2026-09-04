@@ -44,15 +44,20 @@ final class ReconcileFailureClassifier {
         return terminalInternal(terminalRefresh.getMessage(), terminalRefresh);
       }
       if (cur instanceof StatusRuntimeException sre) {
+        // Any auth failure, wherever it came from -- floecat's own services included, which is why
+        // this stays a raw-code rule rather than folding into the structured check below. A
+        // source-catalog refusal additionally carries SOURCE_CATALOG_VEND_REFUSED under these same
+        // codes, so a consumer that needs to tell the two apart reads the reason, not the code.
         Status.Code code = sre.getStatus().getCode();
         if (code == Status.Code.UNAUTHENTICATED || code == Status.Code.PERMISSION_DENIED) {
           return terminalInternal(sre.getMessage(), sre);
         }
         // Matched by structured reason, not by status code: FAILED_PRECONDITION is shared with
         // lease-precondition failures, which are retryable by design. A catalog that vends an
-        // incomplete session tuple or no expiry will keep doing so, and one that refuses to vend
-        // for this table at all (external access disabled, unknown table id) will keep refusing --
-        // so retrying either only loops.
+        // incomplete session tuple, or refuses for a reason a retry cannot change -- a vanished
+        // upstream table, credentials outside the table's location -- will keep producing the same
+        // answer, so retrying only loops. The vending path deliberately keeps everything a later
+        // attempt could clear off these two reasons.
         if (SourceCatalogVendingGrpcStatus.isVendedCredentialsNotRefreshable(sre)
             || SourceCatalogVendingGrpcStatus.isSourceCatalogVendRefused(sre)) {
           return terminalInternal(sre.getMessage(), sre);

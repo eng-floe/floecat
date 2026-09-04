@@ -100,7 +100,14 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
           namespaces,
           viewCatalog,
           () -> closeCatalog(sessionCatalog),
-          IcebergRestCatalogClient.storageRoutingProperties(properties));
+          // Read back from the catalog, not from what we sent it. RESTSessionCatalog.initialize
+          // ends with super.initialize(name, config.merge(props)), so properties() is the
+          // /v1/config
+          // response merged over ours -- and /v1/config is how an Iceberg REST catalog tells a
+          // client which region and endpoint to reach its storage on. Sourcing routing from the
+          // pre-initialization map dropped s3.endpoint and left the region at floecat's default for
+          // every integration whose operator did not happen to type them into the record.
+          IcebergRestCatalogClient.storageRoutingProperties(sessionCatalog.properties()));
     } catch (RuntimeException | Error e) {
       closeCatalog(sessionCatalog);
       if (e instanceof RuntimeException runtimeException) {

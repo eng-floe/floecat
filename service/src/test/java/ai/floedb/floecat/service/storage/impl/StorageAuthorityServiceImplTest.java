@@ -790,10 +790,10 @@ class StorageAuthorityServiceImplTest {
         props, null, expiry);
   }
 
-  // Relative, not a literal: requireUsableCredentials now rejects an expiry that has already
-  // passed, so a hardcoded "future" epoch becomes a test that starts failing on a calendar date.
-  private static final java.time.Instant EXPIRY =
-      java.time.Instant.now().plus(java.time.Duration.ofHours(1));
+  // Fixed, with every expiry stated relative to it: requireUsableCredentials takes the instant to
+  // compare against, so neither a calendar date nor the suite's own runtime decides these cases.
+  private static final java.time.Instant NOW = java.time.Instant.parse("2026-09-01T14:00:00Z");
+  private static final java.time.Instant EXPIRY = NOW.plus(java.time.Duration.ofHours(1));
 
   /**
    * Every field of the session tuple is required, not just the expiry. Access key plus secret plus
@@ -819,9 +819,11 @@ class StorageAuthorityServiceImplTest {
               () ->
                   SourceCatalogCredentialVendor.requireUsableCredentials(
                       vendedTuple(c.ak(), c.sk(), c.token(), c.expiry()),
+                      NOW,
                       "tpch_10",
                       "customer",
-                      SourceCatalogCredentialVendor.CredentialUse.RECONCILE),
+                      SourceCatalogCredentialVendor.CredentialUse.RECONCILE,
+                      SourceCatalogCredentialVendor.VendSource.CONNECTOR),
               c.name());
       assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode(), c.name());
       // Terminal by structured reason, so the reconciler stops instead of retrying forever.
@@ -836,9 +838,11 @@ class StorageAuthorityServiceImplTest {
   void completeVendedCredentialsAreAccepted() {
     SourceCatalogCredentialVendor.requireUsableCredentials(
         vendedTuple("ASIA", "secret", "token", EXPIRY),
+        NOW,
         "tpch_10",
         "customer",
-        SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
+        SourceCatalogCredentialVendor.CredentialUse.RECONCILE,
+        SourceCatalogCredentialVendor.VendSource.CONNECTOR);
   }
 
   @Test
@@ -850,21 +854,26 @@ class StorageAuthorityServiceImplTest {
     // keys, and refusing it would leave such a table queryable but never capturable.
     SourceCatalogCredentialVendor.requireUsableCredentials(
         vendedTuple("AKIA", "secret", null, null),
+        NOW,
         "tpch_10",
         "customer",
-        SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
+        SourceCatalogCredentialVendor.CredentialUse.RECONCILE,
+        SourceCatalogCredentialVendor.VendSource.CONNECTOR);
 
-    // The middle case stays terminal: a session token floecat cannot renew because the expiry is
-    // absent or already past would lapse mid-capture with nothing to recover it.
-    for (java.time.Instant expiry : new java.time.Instant[] {null, java.time.Instant.EPOCH}) {
+    // The middle case stays terminal: a session token with no expiry cannot be renewed and would
+    // lapse mid-capture. An expiry already in the past is not checked here -- that is a retryable
+    // failure raised before this point, since the next vend mints a fresh credential.
+    for (java.time.Instant expiry : new java.time.Instant[] {null}) {
       assertThrows(
           StatusRuntimeException.class,
           () ->
               SourceCatalogCredentialVendor.requireUsableCredentials(
                   vendedTuple("ASIA", "secret", "token", expiry),
+                  NOW,
                   "tpch_10",
                   "customer",
-                  SourceCatalogCredentialVendor.CredentialUse.RECONCILE),
+                  SourceCatalogCredentialVendor.CredentialUse.RECONCILE,
+                  SourceCatalogCredentialVendor.VendSource.CONNECTOR),
           String.valueOf(expiry));
     }
   }
@@ -879,9 +888,117 @@ class StorageAuthorityServiceImplTest {
     // path where nothing retries and there is no job to fail.
     SourceCatalogCredentialVendor.requireUsableCredentials(
         vendedTuple("AKIA", "secret", null, null),
+        NOW,
         "tpch_10",
         "customer",
-        SourceCatalogCredentialVendor.CredentialUse.QUERY);
+        SourceCatalogCredentialVendor.CredentialUse.QUERY,
+        SourceCatalogCredentialVendor.VendSource.CONNECTOR);
+  }
+
+  @Test
+  void aConnectorQueryReadsAStaleExpiryAsItAlwaysHas() {
+    // The gate this check started behind. A scan reading a connector-vended tuple once registers no
+    // refresh provider and has nothing to renew, so how stale the timestamp is says nothing about
+    // whether the read works -- and a catalog reporting its expiry in seconds parses to 1970, which
+    // would fail every query for every table from it rather than one read. Sharing the vend paths
+    // extended the check here silently; an integration is the one this branch made stricter.
+    SourceCatalogCredentialVendor.requireUsableCredentials(
+        vendedTuple("ASIA", "secret", "token", NOW.minus(java.time.Duration.ofDays(365))),
+        NOW,
+        "tpch_10",
+        "customer",
+        SourceCatalogCredentialVendor.CredentialUse.QUERY,
+        SourceCatalogCredentialVendor.VendSource.CONNECTOR);
+  }
+
+  /**
+   * A past expiry is retryable however stale it is. The tolerance still matters -- inside it the
+   * query path reads the credential rather than failing -- but on reconcile every past expiry asks
+   * for a retry, because the next vend mints a new credential. Asserted directly because the width
+   * of the window is not observable through a vend.
+   */
+  @Test
+  void aPastExpiryIsRetryableOnReconcileHoweverStale() {
+    // Asserted well past the tolerance on purpose. The refresh loop that would argue for terminal
+    // needs a registered provider to exist, so it cannot reach the first vend, whose failure the
+    // attempt budget bounds -- and a terminal answer there is unrecoverable for the table.
+    record Case(String name, java.time.Duration age, boolean terminal) {}
+    for (var c :
+        java.util.List.of(
+            new Case("a second stale", java.time.Duration.ofSeconds(1), false),
+            new Case("at the tolerance", java.time.Duration.ofSeconds(60), false),
+            new Case("an hour stale", java.time.Duration.ofHours(1), false))) {
+      StatusRuntimeException error =
+          assertThrows(
+              StatusRuntimeException.class,
+              () ->
+                  SourceCatalogCredentialVendor.requireUsableCredentials(
+                      vendedTuple("ASIA", "secret", "token", NOW.minus(c.age())),
+                      NOW,
+                      "tpch_10",
+                      "customer",
+                      SourceCatalogCredentialVendor.CredentialUse.RECONCILE,
+                      SourceCatalogCredentialVendor.VendSource.CONNECTOR),
+              c.name());
+      assertEquals(
+          c.terminal(),
+          ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
+              .isVendedCredentialsNotRefreshable(error),
+          c.name());
+      assertEquals(
+          c.terminal() ? io.grpc.Status.Code.FAILED_PRECONDITION : io.grpc.Status.Code.UNAVAILABLE,
+          error.getStatus().getCode(),
+          c.name());
+    }
+  }
+
+  /** A live expiry is not a past one, however close. */
+  @Test
+  void anExpiryStillInTheFutureIsAccepted() {
+    SourceCatalogCredentialVendor.requireUsableCredentials(
+        vendedTuple("ASIA", "secret", "token", NOW.plusMillis(1)),
+        NOW,
+        "tpch_10",
+        "customer",
+        SourceCatalogCredentialVendor.CredentialUse.RECONCILE,
+        SourceCatalogCredentialVendor.VendSource.CONNECTOR);
+  }
+
+  /**
+   * The same tolerance governs an integration's query path, with a milder answer past it. Inside,
+   * the credential is read -- it is almost certainly live and nothing renews it anyway. Outside, it
+   * is refused here rather than at S3, and refused retryably: nothing is retrying on this path, so
+   * the caller is being told the catalog's answer was stale, not that its table is unreadable.
+   *
+   * <p>An integration rather than a connector, because the rule is written by source. A connector
+   * query is exempt entirely -- see {@link #aConnectorQueryReadsAStaleExpiryAsItAlwaysHas}.
+   */
+  @Test
+  void anIntegrationQueryReadsAJustExpiredTupleAndRefusesAStaleOne() {
+    SourceCatalogCredentialVendor.requireUsableCredentials(
+        vendedTuple("ASIA", "secret", "token", NOW.minusSeconds(1)),
+        NOW,
+        "tpch_10",
+        "customer",
+        SourceCatalogCredentialVendor.CredentialUse.QUERY,
+        SourceCatalogCredentialVendor.VendSource.CATALOG_INTEGRATION);
+
+    StatusRuntimeException error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                SourceCatalogCredentialVendor.requireUsableCredentials(
+                    vendedTuple(
+                        "ASIA", "secret", "token", NOW.minus(java.time.Duration.ofHours(1))),
+                    NOW,
+                    "tpch_10",
+                    "customer",
+                    SourceCatalogCredentialVendor.CredentialUse.QUERY,
+                    SourceCatalogCredentialVendor.VendSource.CATALOG_INTEGRATION));
+    assertEquals(io.grpc.Status.Code.UNAVAILABLE, error.getStatus().getCode());
+    assertFalse(
+        ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus
+            .isVendedCredentialsNotRefreshable(error));
   }
 
   @Test
@@ -899,9 +1016,11 @@ class StorageAuthorityServiceImplTest {
           () ->
               SourceCatalogCredentialVendor.requireUsableCredentials(
                   vendedTuple(c.ak(), c.sk(), null, null),
+                  NOW,
                   "tpch_10",
                   "customer",
-                  SourceCatalogCredentialVendor.CredentialUse.QUERY),
+                  SourceCatalogCredentialVendor.CredentialUse.QUERY,
+                  SourceCatalogCredentialVendor.VendSource.CONNECTOR),
           c.name());
     }
   }

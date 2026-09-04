@@ -40,6 +40,29 @@ directly into an Overlay's `include_namespaces` or `exclude_namespaces` selectio
 These operations require `catalog-integration.read` and `catalog-integration.use`. They use the
 catalog-access SPI directly and never call or fall back to the legacy Connector path.
 
+Tables materialized by an Iceberg REST overlay retain their source Catalog Integration identity.
+When no storage authority covers a table read, Floecat reopens that Integration through the
+catalog-access SPI and asks the upstream catalog for table-scoped storage credentials. The query
+path therefore does not reconstruct or depend on a legacy Connector.
+
+A storage authority is not an alternative for an Integration-backed table, and Floecat does not fall
+back to one. Pairing an authority with an Integration is the split-brain this feature removes --
+authenticate to the catalog here, obtain storage credentials somewhere else -- and the Integration
+record has no way to express it: nothing on it names an authority, and `ValidateCatalogIntegration`
+reports an Integration whose provider cannot vend as invalid rather than as configured differently.
+Anything that means "this Integration cannot vend" therefore fails the read naming the cause: a
+provider that does not advertise storage-credential vending, an authentication mode the
+catalog-access SPI does not implement, a provider reporting that what it can vend does not cover the
+upstream table, or a catalog that returns no credentials for it.
+
+One case is not a refusal. When the catalog vends a scope that does not reach the location Floecat
+asked about, the credential is returned stamped with the location the caller was authorized for and
+the mismatch is logged, because the read may still succeed and the object store enforces the real
+grant either way. A scope merely narrower than the request is stamped as itself rather than widened.
+
+A legacy Connector still behaves as it did: it opts in to vending, so one that does not is left to
+the storage authority the operator configured for it.
+
 ## Shell workflow
 
 Create the integration record, then map its selected namespaces into an existing destination

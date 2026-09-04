@@ -6,9 +6,16 @@ Source of truth: `service/src/main/java/ai/floedb/floecat/service/security/RoleP
 
 ## Role Matrix
 
+`catalog-integration.use` is granted to `default` because reading a table an overlay materialized
+from a Catalog Integration is what asks that Integration's catalog to vend storage credentials: no
+storage authority covers such a table, so withholding the permission would leave those tables
+readable only by `administrator`. It is wider than that vend alone --
+`ValidateCatalogIntegration`, `ListUpstreamNamespaces` and `ListUpstreamObjects` require it too --
+and is expected to split into a narrower vend permission later.
+
 | Role name | Purpose | Granted permissions |
 |-----------|---------|---------------------|
-| `default` | Baseline read-only tenant access. Used when no roles are provided in normal (`oidc`) mode. | `account.read`, `catalog.read`, `namespace.read`, `table.read`, `view.read`, `catalog-integration.read`, `catalog-overlay.read` |
+| `default` | Baseline read-only tenant access. Used when no roles are provided in normal (`oidc`) mode. | `account.read`, `catalog.read`, `namespace.read`, `table.read`, `view.read`, `catalog-integration.read`, `catalog-integration.use`, `catalog-overlay.read` |
 | `administrator` | Full tenant-scoped administration of metadata, catalog integrations, catalog overlays, and legacy connectors. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `catalog-integration.read`, `catalog-integration.write`, `catalog-integration.use`, `catalog-overlay.read`, `catalog-overlay.write`, `catalog-overlay.reconcile`, `catalog-overlay.delete`, `system-objects.read`, `account.delete` |
 | `developer` | Development-role equivalent of `administrator`. | `account.read`, `catalog.read`, `catalog.write`, `namespace.read`, `namespace.write`, `table.read`, `table.write`, `view.read`, `view.write`, `connector.manage`, `catalog-integration.read`, `catalog-integration.write`, `catalog-integration.use`, `catalog-overlay.read`, `catalog-overlay.write`, `catalog-overlay.reconcile`, `catalog-overlay.delete`, `system-objects.read`, `account.delete` |
 | `platform-admin` (or configured value of `floecat.auth.platform-admin.role`) | Platform-level account management role from IdP. | `account.read`, `account.write`, `account.delete` |

@@ -85,8 +85,11 @@ public class ServerSideFileIoPropertiesResolver {
       if (vended != null) {
         return mergeStorageAuthorityFileIoConfig(vended);
       }
-      // Nothing vended either: fall through so buildResponse raises the structured
-      // no-matching-authority error rather than silently returning no credentials.
+      // Null only where a fall-back means something: a table with no upstream reference, or a
+      // Connector that did not opt in to vending. Fall through so buildResponse raises the
+      // structured no-matching-authority error rather than silently returning no credentials. An
+      // Integration that cannot vend does not reach here -- it throws, naming the cause, because
+      // there is no authority for it to fall back to.
     }
     ResolveStorageAuthorityResponse response =
         resolver.buildResponse(authority, tableId.getAccountId(), true);
