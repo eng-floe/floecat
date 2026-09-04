@@ -282,6 +282,20 @@ Extensibility points:
   connector lists every table in the namespace, creates missing namespaces in the destination
   catalog, updates `DestinationTarget` pointers, and ingests snapshot stats for each table.
 
+## Compose credential-vending smoke
+
+`COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke` runs an OSS Unity Catalog 0.6.0 server
+against LocalStack STS and a Delta fixture in `floecat-delta-vended`. The fixture bucket is
+intentionally excluded from the storage-authority setup, so metadata capture and the leased query
+scan can succeed only with the temporary AWS session credentials returned by Unity Catalog. The
+smoke first validates the credential response shape without logging its secret fields, then imports
+the table with `databricks.access-delegation=vended-credentials` and checks stats, indexes, and the
+remote scan-file path.
+
+OSS Unity Catalog exposes temporary table credentials under its 2.1 API, whereas Databricks uses
+the 2.0 route consumed by `HttpUnityCatalogClient`. The compose-only TLS proxy translates that one
+route; production code remains aligned with the Databricks API.
+
 ## Cross-References
 
 - [`docs/cli-reference.md`](cli-reference.md)
