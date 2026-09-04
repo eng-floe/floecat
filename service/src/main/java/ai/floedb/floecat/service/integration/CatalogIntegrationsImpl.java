@@ -980,7 +980,37 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       case OAUTH_CLIENT_CREDENTIALS -> {
         var config = requested.getOauthClientCredentials();
         String clientId = normalizeNonBlank(config.getClientId(), "authentication.client_id", corr);
-        if (config.hasTokenUri()) validateCatalogUri(config.getTokenUri(), corr);
+        if (config.hasTokenUri()) {
+          validateCatalogUri(config.getTokenUri(), corr);
+          // And the deployment's token-endpoint allowlist on top of the URI shape, when one is
+          // configured. This value receives the integration's OAuth client credentials in an
+          // Authorization header, so an operator who restricts token endpoints means it to cover
+          // this one too -- validateCatalogUri alone accepts any http/https host.
+          //
+          // Only when configured, though. CredentialResolverSupport fails closed on an unset list,
+          // which suits the connector token exchanges that have always been gated on it, but
+          // docker-compose passes the variable through empty and the operator guide documents it
+          // as opt-in. Applying it unconditionally rejected every real IdP host on create and
+          // update in a default deployment.
+          if (ai.floedb.floecat.connector.common.auth.CredentialResolverSupport
+              .tokenEndpointAllowlistConfigured()) {
+            try {
+              ai.floedb.floecat.connector.common.auth.CredentialResolverSupport
+                  .requireAllowedTokenEndpoint(config.getTokenUri());
+            } catch (IllegalArgumentException refused) {
+              // Chained, not swallowed. validateTokenEndpoint distinguishes a malformed URI, a
+              // non-HTTPS scheme, a forbidden address class and a host outside the allowlist, and
+              // marks those messages safe to surface. Without the cause the operator gets the same
+              // bare field error validateCatalogUri already produces -- and the allowlist is
+              // deployment-wide, so whoever trips it is often not whoever configured it.
+              throw GrpcErrors.invalidArgument(
+                  corr,
+                  FIELD,
+                  Map.of("field", "authentication.oauth_client_credentials.token_uri"),
+                  refused);
+            }
+          }
+        }
         var scopes = new LinkedHashSet<String>();
         for (String scope : config.getScopesList()) {
           scopes.add(normalizeNonBlank(scope, "authentication.scopes", corr));

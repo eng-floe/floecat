@@ -741,6 +741,65 @@ public final class CredentialResolverSupport {
     return token;
   }
 
+  /**
+   * Whether the deployment has configured a token-endpoint allowlist at all.
+   *
+   * <p>An unset list is not "no host is allowed". {@link #requireAllowedTokenEndpoint} fails closed
+   * when nothing is configured, which is right for the connector token exchanges that have always
+   * been gated on it -- they are opt-in by design. A caller newly adopting the policy has to be
+   * able to tell that apart from an operator who has simply not restricted hosts, or it rejects
+   * every real endpoint in a default deployment.
+   */
+  public static boolean tokenEndpointAllowlistConfigured() {
+    return !configuredTokenEndpointDomains().isEmpty();
+  }
+
+  /**
+   * The deterministic half of the deployment's token-endpoint policy: the scheme rule and the
+   * allowed-domain list.
+   *
+   * <p>Public so callers that persist a tenant-supplied token endpoint can apply the domain policy
+   * at the point the value enters, rather than discovering it at exchange time or not at all.
+   * Throws {@link IllegalArgumentException} with a message safe to surface.
+   *
+   * <p>Deliberately not {@link #validateTokenEndpoint}, which also resolves the host. Address-class
+   * policy belongs at exchange time and nowhere else. On a write path resolution makes persisting a
+   * record depend on network state -- a transient DNS failure became a field error blaming the
+   * operator's URI -- and it refuses an internal IdP the operator had explicitly allowlisted, on a
+   * value that would work when actually called. It buys nothing in exchange for that: DNS can
+   * change between persist and use, so the answer here is never the answer that matters.
+   *
+   * <p>The scheme rule is repeated rather than shared with {@code validateTokenEndpoint} so that
+   * this cannot alter what the exchange path enforces.
+   */
+  public static void requireAllowedTokenEndpoint(String endpoint) {
+    URI uri;
+    try {
+      uri = URI.create(endpoint);
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException("Invalid token endpoint");
+    }
+    String scheme = uri.getScheme();
+    String host = uri.getHost();
+    if (scheme == null || host == null || host.isBlank()) {
+      throw new IllegalArgumentException("Invalid token endpoint");
+    }
+    if (!isAllowedTokenEndpointHost(host)) {
+      throw new IllegalArgumentException("Token endpoint host is not in the allowed domain list");
+    }
+    boolean allowLoopback =
+        Boolean.parseBoolean(
+            System.getProperty(
+                "floecat.security.allow-loopback-token-endpoints",
+                System.getenv()
+                    .getOrDefault("FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS", "false")));
+    if ("https".equalsIgnoreCase(scheme)
+        || ("http".equalsIgnoreCase(scheme) && allowLoopback && isLoopbackHost(host))) {
+      return;
+    }
+    throw new IllegalArgumentException("Token endpoint must use HTTPS");
+  }
+
   private static void validateTokenEndpoint(String endpoint) {
     URI uri;
     try {

@@ -495,12 +495,69 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * <p>One byte past the limit is enough to detect the overrun without holding the rest.
    */
   private String readBounded(HttpResponse<InputStream> response) throws IOException {
-    try (InputStream stream = response.body()) {
-      byte[] bytes = stream.readNBytes(maxResponseBytes + 1);
-      // Null, not an exception: the caller decides what an oversized body means, and for a non-2xx
-      // it means nothing -- the status already answered. Throwing here would classify a permanent
-      // 403 whose error page happens to be large as a retryable INVALID_RESPONSE.
-      return bytes.length > maxResponseBytes ? null : new String(bytes, StandardCharsets.UTF_8);
+    InputStream stream = response.body();
+    // Bounded in time as well as in size. The configured read timeout becomes an
+    // HttpRequest.timeout, which only gates receipt of the headers -- ofInputStream returns as soon
+    // as they arrive -- so this read had no deadline at all. Validation and vending sit inside
+    // CatalogUpstreamBudget, but CatalogOverlayReconciler.discover calls this client directly, so
+    // an endpoint that sent headers and then stalled held a reconcile worker with nothing to
+    // release it.
+    byte[] bytes;
+    try {
+      bytes = readWithin(stream, maxResponseBytes, requestTimeout);
+    } finally {
+      closeQuietly(stream);
+    }
+    // Null, not an exception: the caller decides what an oversized body means, and for a non-2xx it
+    // means nothing -- the status already answered. Throwing here would classify a permanent 403
+    // whose error page happens to be large as a retryable INVALID_RESPONSE.
+    return bytes.length > maxResponseBytes ? null : new String(bytes, StandardCharsets.UTF_8);
+  }
+
+  /**
+   * Reads {@code stream} up to {@code limit + 1} bytes, giving up after {@code deadline}.
+   *
+   * <p>On a virtual thread of its own, not {@code CompletableFuture.supplyAsync}'s common pool. The
+   * read blocks for the whole download, and {@code ForkJoinPool.commonPool()} has parallelism one
+   * on a small container -- so two concurrent calls queued behind each other and the waiting one
+   * failed on this deadline while the server had already answered. Every caller here is itself on a
+   * virtual thread, so there is no pool to starve.
+   *
+   * <p>Closing the stream is what releases a genuinely stalled read; abandoning the future alone
+   * would leave the reader blocked in {@code readNBytes}.
+   */
+  private static byte[] readWithin(InputStream stream, int limit, Duration deadline)
+      throws IOException {
+    var body = new java.util.concurrent.CompletableFuture<byte[]>();
+    Thread.ofVirtual()
+        .start(
+            () -> {
+              try {
+                body.complete(stream.readNBytes(limit + 1));
+              } catch (Throwable failure) {
+                body.completeExceptionally(failure);
+              }
+            });
+    try {
+      return body.get(deadline.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
+    } catch (java.util.concurrent.TimeoutException stalled) {
+      closeQuietly(stream);
+      throw new IOException("Unity Catalog response body stalled after " + deadline, stalled);
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      closeQuietly(stream);
+      throw new IOException("Interrupted reading the Unity Catalog response body", interrupted);
+    } catch (java.util.concurrent.ExecutionException failure) {
+      Throwable cause = failure.getCause();
+      throw cause instanceof IOException io ? io : new IOException(cause);
+    }
+  }
+
+  private static void closeQuietly(InputStream stream) {
+    try {
+      stream.close();
+    } catch (IOException ignored) {
+      // Closing is how a stalled read is released; a failure to close adds nothing to report.
     }
   }
 
@@ -617,13 +674,17 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
         return malformedColumns(
             strict, "Expected 'columns' entries to be objects from Unity Catalog");
       }
+      // Absent and "not a partition column" are the same thing, and both have to stay
+      // distinguishable from index 0 -- which is the *first* partition column, not the lack of one.
+      JsonNode partitionIndex = column.path("partition_index");
       columns.add(
           new UnityCatalogTable.Column(
               text(column, "name"),
               text(column, "type_name"),
               text(column, "type_text"),
               text(column, "type_json"),
-              column.path("nullable").asBoolean(true)));
+              column.path("nullable").asBoolean(true),
+              partitionIndex.isIntegralNumber() ? partitionIndex.asInt() : null));
     }
     return columns;
   }
@@ -1039,6 +1100,18 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     }
   }
 
+  /**
+   * The same address-class policy, for another tenant-supplied endpoint in this module's care.
+   *
+   * <p>Exposed rather than copied: {@code UnityOAuthTokenProvider} POSTs the integration's OAuth
+   * client credentials to a URI a tenant chose, which is the one request in the Unity path with a
+   * secret in it, and it was reaching the network with only a scheme-and-shape check. A second
+   * implementation of this rule is how the two drift apart.
+   */
+  public static void assertEndpointAddressAllowed(URI endpoint) {
+    assertAddressClassAllowed(Objects.requireNonNull(endpoint, "endpoint"));
+  }
+
   /** Whether every character is an ASCII digit or a dot. Deliberately not {@code isDigit}. */
   private static boolean isNumericHost(String host) {
     if (host.isEmpty()) {
@@ -1172,6 +1245,21 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
       throw new IllegalArgumentException(field + " must be positive: " + value);
     }
     return value;
+  }
+
+  /**
+   * Whether cleartext HTTP to this endpoint's host is permitted, by the same rule the catalog base
+   * URI follows: loopback only, and only when {@link #ALLOW_LOOPBACK_PROPERTY} is set.
+   *
+   * <p>Exposed so the token endpoint can answer it the same way. A Unity Integration against an
+   * HTTP loopback catalog -- the ordinary local-dev shape -- derives its token endpoint from the
+   * catalog URI and so inherits the {@code http} scheme; holding that endpoint to HTTPS with no
+   * escape hatch made client-credentials authentication impossible to run locally, while the
+   * catalog request beside it was allowed.
+   */
+  public static boolean isCleartextLoopbackAllowed(URI endpoint) {
+    Objects.requireNonNull(endpoint, "endpoint");
+    return allowLoopbackCleartext() && isLoopbackHost(endpoint.getHost());
   }
 
   private static boolean allowLoopbackCleartext() {

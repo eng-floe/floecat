@@ -45,10 +45,29 @@ public record UnityCatalogTable(
     properties = properties == null ? Map.of() : Map.copyOf(properties);
   }
 
+  /**
+   * One column of a Unity table.
+   *
+   * <p>{@code partitionIndex} is the column's ordinal in the partition spec, and {@code null} for a
+   * column that does not partition. Dropping it recorded every partitioned Delta table reached
+   * through a Unity Overlay as unpartitioned, which loses partition pruning for every query against
+   * it.
+   */
   public record Column(
-      String name, String typeName, String typeText, String typeJson, boolean nullable) {
+      String name,
+      String typeName,
+      String typeText,
+      String typeJson,
+      boolean nullable,
+      Integer partitionIndex) {
     public Column {
       name = name == null ? "" : name;
+    }
+
+    /** A column that does not partition, which is most of them. */
+    public Column(
+        String name, String typeName, String typeText, String typeJson, boolean nullable) {
+      this(name, typeName, typeText, typeJson, nullable, null);
     }
   }
 }

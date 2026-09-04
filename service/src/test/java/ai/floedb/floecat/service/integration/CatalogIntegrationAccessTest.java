@@ -9,6 +9,7 @@ package ai.floedb.floecat.service.integration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -32,6 +33,7 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.OAuthClientCredentialsAuthentication;
 import ai.floedb.floecat.integration.rpc.SecretValue;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,6 +47,109 @@ class CatalogIntegrationAccessTest {
     access = new CatalogIntegrationAccess();
     credentials = mock(CatalogIntegrationCredentialStore.class);
     access.credentialStore = credentials;
+    access.defaultRegion = "eu-west-1";
+  }
+
+  /**
+   * A provider module cannot see the deployment's configuration, so the region has to arrive in the
+   * connection properties. Without it the Unity storage validator substituted us-east-1 of its own
+   * and reported storage failure for an ordinary bucket elsewhere, while the read path -- which
+   * does consult this property -- worked, making s3.region effectively required.
+   */
+  @Test
+  void fillsInTheDeploymentRegionWhenAUnityIntegrationStatesNone() {
+    var integration = unityIntegration(Map.of());
+
+    var resolved = access.resolve(integration);
+
+    assertEquals("eu-west-1", resolved.config().properties().get("s3.region"));
+  }
+
+  /**
+   * Unity only. The Iceberg REST provider reads the same map and turns s3.region into
+   * client.region, so defaulting it there would pin a region on an integration that deliberately
+   * set none and was relying on the AWS SDK's own resolution chain.
+   */
+  @Test
+  void leavesAnIcebergRestIntegrationToTheSdkResolutionChain() {
+    var integration = bearerIntegration();
+
+    var resolved = access.resolve(integration);
+
+    assertNull(resolved.config().properties().get("s3.region"));
+  }
+
+  /** An integration that states a region keeps it: the default is a fallback, not an override. */
+  @Test
+  void doesNotOverrideARegionTheIntegrationStates() {
+    var integration = unityIntegration(Map.of("s3.region", "ap-south-1"));
+
+    var resolved = access.resolve(integration);
+
+    assertEquals("ap-south-1", resolved.config().properties().get("s3.region"));
+  }
+
+  /**
+   * However the operator spelled it. Testing s3.region alone was worse than doing nothing: the
+   * injected default does not stay in the validator, and routingProperties reads the vended map
+   * before the connector's aliases -- so a region written as aws.region, region or client.region
+   * was silently replaced by the deployment's, and the bucket read against the wrong one.
+   */
+  @Test
+  void carriesARegionStatedUnderAnyAliasRatherThanDefaultingOverIt() {
+    for (String alias : List.of("s3.region", "region", "client.region", "aws.region")) {
+      var integration = unityIntegration(Map.of(alias, "ap-south-1"));
+
+      var resolved = access.resolve(integration);
+
+      assertEquals(
+          "ap-south-1",
+          resolved.config().properties().get("s3.region"),
+          alias + " must decide the region, not the deployment default");
+    }
+  }
+
+  /** A blank alias states nothing, so the deployment default still applies. */
+  @Test
+  void aBlankRegionAliasIsNotAStatedRegion() {
+    var integration = unityIntegration(Map.of("aws.region", "   "));
+
+    var resolved = access.resolve(integration);
+
+    assertEquals("eu-west-1", resolved.config().properties().get("s3.region"));
+  }
+
+  private CatalogIntegration bearerIntegration() {
+    return bearerIntegration(Map.of());
+  }
+
+  private CatalogIntegration unityIntegration(Map<String, String> properties) {
+    return bearerIntegration(properties, CatalogIntegrationType.CIT_UNITY);
+  }
+
+  private CatalogIntegration bearerIntegration(Map<String, String> properties) {
+    return bearerIntegration(properties, CatalogIntegrationType.CIT_ICEBERG_REST);
+  }
+
+  private CatalogIntegration bearerIntegration(
+      Map<String, String> properties, CatalogIntegrationType type) {
+    var authentication =
+        CatalogAuthentication.newBuilder()
+            .setBearer(BearerAuthentication.getDefaultInstance())
+            .setCredentialsConfigured(true)
+            .setCredentialGeneration(1L)
+            .build();
+    // Properties before the stub: resolve() is stubbed for this exact message, so mutating the
+    // integration afterwards would leave the stub matching a different one.
+    CatalogIntegration integration =
+        integration(authentication).toBuilder().setType(type).putAllProperties(properties).build();
+    when(credentials.resolve(integration))
+        .thenReturn(
+            Optional.of(
+                CatalogIntegrationCredentials.newBuilder()
+                    .setBearerToken(SecretValue.newBuilder().setValue("token"))
+                    .build()));
+    return integration;
   }
 
   @Test
