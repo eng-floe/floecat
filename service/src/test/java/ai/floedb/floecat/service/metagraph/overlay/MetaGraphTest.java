@@ -39,6 +39,7 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
@@ -60,6 +61,7 @@ class MetaGraphTest {
 
   UserGraph user;
   SystemGraph system;
+  HintCache hints;
   MetaGraph meta;
   EngineContext context;
 
@@ -81,13 +83,15 @@ class MetaGraphTest {
   void setup() {
     user = mock(UserGraph.class);
     system = mock(SystemGraph.class);
+    hints = mock(HintCache.class);
+    when(hints.attach(any(), any())).thenAnswer(call -> call.getArgument(0));
 
     EngineContextProvider engine = mock(EngineContextProvider.class);
     context = EngineContext.of("engine", "1");
     when(engine.engineContext()).thenReturn(context);
     when(engine.isPresent()).thenReturn(true);
 
-    meta = new MetaGraph(user, ObjectCache.forTesting(), system, engine);
+    meta = new MetaGraph(user, ObjectCache.forTesting(), hints, system, engine);
   }
 
   @AfterEach
@@ -190,7 +194,20 @@ class MetaGraphTest {
     List<RelationNode> out = meta.listRelations(catalogId);
 
     assertThat(out).containsExactly(s, u);
+    verify(hints).attach(u, context);
     verify(user, never()).listRelations(catalogId);
+  }
+
+  @Test
+  void resolveAttachesHintsUsingTheExplicitRequestEngine() {
+    UserTableNode table = TestNodes.tableNode(usrTable, "{}");
+    EngineContext explicit = EngineContext.of("other", "2");
+    when(system.resolve(usrTable, explicit)).thenReturn(Optional.empty());
+    when(user.resolve(usrTable)).thenReturn(Optional.of(table));
+
+    assertThat(meta.resolve(usrTable, explicit)).contains(table);
+
+    verify(hints).attach(table, explicit);
   }
 
   @Test
@@ -811,7 +828,7 @@ class MetaGraphTest {
     EngineContextProvider engine = mock(EngineContextProvider.class);
     when(engine.isPresent()).thenReturn(false);
 
-    MetaGraph metaNoEngine = new MetaGraph(user, ObjectCache.forTesting(), system, engine);
+    MetaGraph metaNoEngine = new MetaGraph(user, ObjectCache.forTesting(), hints, system, engine);
 
     NameRef ref = NameRef.newBuilder().setName("t").build();
     when(system.resolveTable(ref, EngineContext.empty())).thenReturn(Optional.empty());

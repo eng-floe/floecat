@@ -31,6 +31,9 @@ public enum CacheFamily {
   /** Decoded, engine-neutral SQL metadata whose identity is content-addressed. */
   OBJECT("object"),
 
+  /** Decoded engine-specific relation metadata, isolated by exact engine version. */
+  HINT("hint"),
+
   /** Serialized immutable bodies held on local disk rather than the JVM heap. */
   BLOB("blob");
 

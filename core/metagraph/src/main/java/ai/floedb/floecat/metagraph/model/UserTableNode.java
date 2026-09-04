@@ -74,6 +74,29 @@ public record UserTableNode(
     return blobUri;
   }
 
+  /** Return this immutable relation with one request's engine-specific hint maps attached. */
+  public UserTableNode withEngineHints(
+      Map<EngineHintKey, EngineHint> relationHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints) {
+    return new UserTableNode(
+        id,
+        blobUri,
+        catalogId,
+        namespaceId,
+        displayName,
+        format,
+        columnIdAlgorithm,
+        schemaJson,
+        properties,
+        partitionKeys,
+        currentSnapshot,
+        previousSnapshot,
+        resolvedSnapshots,
+        dependentViews,
+        relationHints,
+        columnHints);
+  }
+
   @Override
   public Map<Long, Map<EngineHintKey, EngineHint>> columnHints() {
     return columnHints;
