@@ -1784,11 +1784,8 @@ entries first.</p>
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/manifests/{generation_id}.pb
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/{generation_id}/{target_id_sha256}/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/{generation_id}/index-artifacts/{target_id_sha256}/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/index-sidecars/{snapshot_id:019d}/{target_id}/{sha}.parquet
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/direct/index-sidecars/{target_id}/{sha}.parquet
 /accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/index-artifacts/capture-manifests/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/reusable-artifact-index/runs/run-manifests/{sha}.pb
-/accounts/{account_id}/tables/{table_id}/reusable-artifact-index/runs/filters/{sha}.bf
-/accounts/{account_id}/tables/{table_id}/reusable-artifact-index/runs/packs/{sha}.pack
 /accounts/{account_id}/tables/{table_id}/constraints/{snapshot_id:019d}/{sha}.pb
 </code></pre></div>
 <p><code>{target_id_sha256}</code> is the lowercase SHA-256 hex digest of the logical target identity. Reusable
@@ -1801,8 +1798,12 @@ and therefore have no blob key.</p>
 /accounts/{account_id}/reconcile/jobs/{job_id}/result-{suffix}.json
 /accounts/{account_id}/reconcile/jobs/{job_id}/result-payloads/v1/snapshot-plans/{parent_job_id}/executions/{lease_epoch_sha256}.pb
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/worker-uploads/{job_id}/{lease_epoch_sha256}/...
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/worker-uploads/{job_id}/{lease_epoch_sha256}/index-sidecars/{target_id}/{sha}.parquet
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/...
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/reuse-manifests/{manifest_sha256}.pb
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/reusable-artifact-index/run-manifests/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/reusable-artifact-index/filters/{sha}.bf
+/accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/full-rescan-{parent_job_id}/finalizer-outputs/reusable-artifact-index/packs/{sha}.pack
 </code></pre></div>
 <h3 id="pointer-keys">Pointer keys<a class="headerlink" href="#pointer-keys" title="Permanent link">&para;</a></h3>
 <p>Catalog hierarchy, lookup indexes, and maintenance markers:</p>
@@ -1836,9 +1837,50 @@ and therefore have no blob key.</p>
 /accounts/{account_id}/deleting
 /accounts/{account_id}/catalogs/{catalog_id}/markers/children
 /accounts/{account_id}/namespaces/{namespace_id}/markers/children
+/accounts/{account_id}/namespaces/{namespace_id}/markers/relations
 /accounts/{account_id}/gc/cas/generation-cursor
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
 </code></pre></div>
+<p>A catalog carries a <code>markers/children</code> marker versioning its set of namespaces. Every writer that
+adds one asserts and advances it in its own batch — the namespace services, the overlay reconciler,
+a catalog move, and bootstrap seeding — and a catalog delete requires both it and the overlays
+marker, removing each with the catalog rather than advancing markers that would then count nothing.
+A marker that has never been written is required <strong>absent</strong> instead: it reads as version zero, so
+advancing it would create a row for a resource the same batch is deleting, and requiring it absent is
+what makes the writer that adds the first child of that kind lose to this delete. A namespace delete asserts nothing about it: removal is the direction that orphans nothing.</p>
+<p>Two operations assert nothing here, and for the same reason: deleting a relation, and deleting a
+child namespace. Both are the removal direction — a namespace delete racing either can only find the
+namespace emptier than it counted, which orphans nothing — so asserting would cost a write to a hot
+key for an exclusion neither needs. A rename asserts its parent's child set but not its catalog's:
+within one catalog the set of namespaces is unchanged, so a concurrent catalog delete counts this row
+and refuses either way.</p>
+<p>A namespace carries two shape markers. <code>markers/children</code> versions its set of child namespaces
+and <code>markers/relations</code> versions its set of tables and views. They are separate because the
+operations that consult them differ: a namespace's <code>by-path</code> pointer is derived from its ancestors'
+names, so a rename re-keys child namespaces, while a relation's <code>by-name</code> pointer carries the
+namespace id and is untouched by a rename. Only a catalog move disturbs both, because the catalog
+appears in both derived keys.</p>
+<p>Every write that changes a namespace's shape asserts the relevant marker at the version it read and
+advances it inside its own pointer transaction, so a shape check and the write it guards commit
+together or neither does:</p>
+<div class="highlight"><pre><span></span><code>                     markers/children              markers/relations
+                       (of the PARENT)                (of the NAMESPACE)
+                            |                              |
+  create a child -----------+                              +------ create a table or view
+  namespace                 |                              |
+  rename namespace ---------+                              |
+  re-parent namespace ------+                              |
+                            |                              +------ move a relation between
+                            |                                      namespaces (destination only)
+  move namespace to --------+------------------------------+
+  another catalog
+
+                     markers/children              markers/relations
+                       (of the NAMESPACE, both removed with the row)
+                            |                              |
+  delete namespace ---------+------------------------------+
+</code></pre></div>
+<p>A writer that loses its assertion retries; one that keeps losing fails with a retryable abort.</p>
 <p>An overlay references an existing Catalog. Its <code>by-integration</code> and <code>by-catalog</code> dependency
 pointers are written and removed atomically with the overlay resource. Fixed generation markers on
 both parents close create/delete races, and the per-overlay deletion marker fences reconciliation
