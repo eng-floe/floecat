@@ -30,6 +30,7 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.credentials.DefaultCredentialResolver;
@@ -82,6 +83,7 @@ class AccountServiceImplTest {
     when(service.durableReconcileJobStore.isResolvable()).thenReturn(false);
     service.catalogIntegrationCredentialCleanup = mock(CatalogIntegrationCredentialCleanup.class);
     service.objects = ObjectCache.forTesting();
+    service.hints = mock(HintCache.class);
     service.blobs = mock(BlobCacheAccess.class);
     installBasePrincipal(service, service.principal);
     when(service.principal.get())
@@ -130,6 +132,7 @@ class AccountServiceImplTest {
     verify(service.secretsManager)
         .delete(
             "acct", StorageAuthorityResolver.STORAGE_AUTHORITY_SECRET_TYPE, authorityId.getId());
+    verify(service.hints).evictAccount("acct");
     verify(service.blobs).evictAccount("acct");
     assertTrue(pointers.get(authorityPointer).isEmpty());
     assertTrue(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
