@@ -217,6 +217,48 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
   }
 
   @Override
+  public Optional<Content> getRange(Key key, long offset, int length, Fill fill, Loader loader) {
+    requireOpen();
+    if (key == null || fill == null || loader == null) {
+      throw new NullPointerException("blob-cache range arguments must not be null");
+    }
+    if (offset < 0L || length < 0) {
+      throw new IllegalArgumentException("blob-cache range is invalid");
+    }
+
+    long started = System.nanoTime();
+    PartitionState partition = partition(key.partition());
+    Optional<Content> whole;
+    partition.lock.readLock().lock();
+    try {
+      whole = partition.retired ? Optional.empty() : readCached(entryPath(key));
+    } finally {
+      partition.lock.readLock().unlock();
+    }
+    if (whole.isPresent()) {
+      try {
+        Content slice = new SliceContent(whole.orElseThrow(), offset, length);
+        events.hit(Duration.ofNanos(System.nanoTime() - started));
+        return Optional.of(slice);
+      } catch (RuntimeException | Error failure) {
+        whole.orElseThrow().close();
+        throw failure;
+      }
+    }
+
+    return get(
+        rangeKey(key, offset, length),
+        fill,
+        () -> {
+          byte[] loaded = loader.load();
+          if (loaded != null && loaded.length != length) {
+            throw new IllegalArgumentException("blob-cache range loader returned the wrong length");
+          }
+          return loaded;
+        });
+  }
+
+  @Override
   public Map<Key, Content> getAll(List<Key> keys, Fill fill, BatchLoader loader) {
     requireOpen();
     if (keys == null || fill == null || loader == null) {
@@ -766,6 +808,12 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
         .resolve(identity + ENTRY_SUFFIX);
   }
 
+  private static Key rangeKey(Key key, long offset, int length) {
+    return new Key(
+        key.partition(),
+        "\u0000range\u0000" + offset + "\u0000" + length + "\u0000" + key.identity());
+  }
+
   private Path partitionPath(String partition) {
     String hash = hexDigest(partition);
     return root.resolve(hash.substring(0, 2)).resolve(hash);
@@ -936,6 +984,45 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
 
     @Override
     public void close() {}
+  }
+
+  private static final class SliceContent implements Content {
+    private final Content whole;
+    private final int offset;
+    private final int length;
+    private final AtomicBoolean released = new AtomicBoolean();
+
+    private SliceContent(Content whole, long offset, int length) {
+      if (offset > whole.size() || (long) length > whole.size() - offset) {
+        throw new IllegalArgumentException("blob-cache range exceeds the cached body");
+      }
+      this.whole = whole;
+      this.offset = Math.toIntExact(offset);
+      this.length = length;
+    }
+
+    @Override
+    public ByteBuffer buffer() {
+      if (released.get()) {
+        throw new IllegalStateException("blob-cache range content is closed");
+      }
+      ByteBuffer bytes = whole.buffer();
+      bytes.position(offset);
+      bytes.limit(offset + length);
+      return bytes.slice().asReadOnlyBuffer();
+    }
+
+    @Override
+    public int size() {
+      return length;
+    }
+
+    @Override
+    public void close() {
+      if (released.compareAndSet(false, true)) {
+        whole.close();
+      }
+    }
   }
 
   private final class MappedContent implements Content {

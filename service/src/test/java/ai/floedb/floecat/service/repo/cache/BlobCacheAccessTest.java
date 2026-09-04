@@ -79,7 +79,7 @@ class BlobCacheAccessTest {
   }
 
   @Test
-  void immutableAdapterPreservesRangeReadsOnAColdMiss() {
+  void immutableAdapterFillsAColdRangeThenServesItFromDisk() {
     var delegate = new CountingBlobStore();
     delegate.put(
         "/accounts/a/pack", "abcdef".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
@@ -89,8 +89,44 @@ class BlobCacheAccessTest {
 
     assertThat(cached.getRange("/accounts/a/pack", 1L, 3))
         .isEqualTo("bcd".getBytes(StandardCharsets.UTF_8));
+    assertThat(cached.getRange("/accounts/a/pack", 1L, 3))
+        .isEqualTo("bcd".getBytes(StandardCharsets.UTF_8));
     assertThat(delegate.rangeGets).hasValue(1);
     assertThat(delegate.pointGets).hasValue(0);
+  }
+
+  @Test
+  void immutableAdapterDoesNotFillRangesWhenAdmissionIsBypassed() {
+    var delegate = new CountingBlobStore();
+    delegate.put(
+        "/accounts/a/pack", "abcdef".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+    var cached =
+        new CachedImmutableBlobStore(
+            delegate,
+            DiskBlobCacheTestSupport.create(tempDir.resolve("range-bypass")),
+            BlobCache.Fill.BYPASS_FILL);
+
+    assertThat(cached.getRange("/accounts/a/pack", 1L, 3))
+        .isEqualTo("bcd".getBytes(StandardCharsets.UTF_8));
+    assertThat(cached.getRange("/accounts/a/pack", 1L, 3))
+        .isEqualTo("bcd".getBytes(StandardCharsets.UTF_8));
+    assertThat(delegate.rangeGets).hasValue(2);
+  }
+
+  @Test
+  void immutableAdapterSlicesAResidentWholeBody() {
+    var delegate = new CountingBlobStore();
+    String uri = "/accounts/a/pack";
+    delegate.put(uri, "abcdef".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+    var cached =
+        new CachedImmutableBlobStore(
+            delegate, DiskBlobCacheTestSupport.create(tempDir.resolve("whole-range")));
+
+    assertThat(cached.get(uri)).isEqualTo("abcdef".getBytes(StandardCharsets.UTF_8));
+    assertThat(cached.getRange(uri, 1L, 3)).isEqualTo("bcd".getBytes(StandardCharsets.UTF_8));
+
+    assertThat(delegate.pointGets).hasValue(1);
+    assertThat(delegate.rangeGets).hasValue(0);
   }
 
   @Test
@@ -123,6 +159,14 @@ class BlobCacheAccessTest {
 
     @Override
     public java.util.Optional<Content> get(Key key, Fill fill, Loader loader) {
+      keys.add(key);
+      loader.load();
+      return java.util.Optional.empty();
+    }
+
+    @Override
+    public java.util.Optional<Content> getRange(
+        Key key, long offset, int length, Fill fill, Loader loader) {
       keys.add(key);
       loader.load();
       return java.util.Optional.empty();
