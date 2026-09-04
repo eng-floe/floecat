@@ -24,11 +24,15 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
 import ai.floedb.floecat.connector.spi.AuthProvider;
+import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
+import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -401,12 +405,619 @@ class UnityDeltaConnectorTest {
   }
 
   @Test
+  void vendStorageCredentialsMapsAwsCredentials() {
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "table-id", "EXTERNAL", "DELTA", null)));
+    Instant expiry = Instant.parse("2030-01-01T00:00:00Z");
+    when(catalog.generateTemporaryTableCredentials(
+            "table-id", UnityCatalogClient.TableOperation.READ))
+        .thenReturn(
+            new TemporaryTableCredentials(
+                new TemporaryTableCredentials.AwsCredentials(
+                    "key", "secret", "token", "arn:aws:s3:us-east-1:123:accesspoint/orders"),
+                false,
+                Long.toString(expiry.toEpochMilli()),
+                "s3://bucket/orders"));
+
+    var result = connector.vendStorageCredentials("cat.schema", "orders");
+
+    assertThat(result).isPresent();
+    assertThat(result.orElseThrow().properties())
+        .containsEntry("s3.access-key-id", "key")
+        .containsEntry("s3.secret-access-key", "secret")
+        .containsEntry("s3.session-token", "token")
+        .containsEntry("s3.access-point", "arn:aws:s3:us-east-1:123:accesspoint/orders");
+    assertThat(result.orElseThrow().expiresAt()).isEqualTo(expiry);
+    assertThat(result.orElseThrow().scopePrefix()).isEqualTo("s3://bucket/orders");
+  }
+
+  @Test
+  void vendStorageCredentialsFallsBackForAnUnsupportedCloud() {
+    // A cloud this connector does not map is "cannot vend": a configured storage authority is the
+    // right answer, so this falls back rather than failing.
+    when(catalog.getTableWithLenientColumns("cat.schema.azure"))
+        .thenReturn(Optional.of(table("azure", "id", "EXTERNAL", "DELTA", null)));
+    when(catalog.generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ))
+        .thenReturn(new TemporaryTableCredentials(null, true, null, null));
+
+    assertThat(connector.vendStorageCredentials("cat.schema", "azure")).isEmpty();
+  }
+
+  @Test
+  void vendStorageCredentialsFallsBackForAnUnrecognizedCredentialShape() {
+    // Neither an AWS tuple nor a cloud this client knows about -- a UC response shape newer than
+    // this code. "Cannot vend" must stay a fallback to a storage authority: handing back an empty
+    // credential object instead would reach the service's usability check and fail the reconcile
+    // job terminally on a condition the caller can recover from.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    when(catalog.generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ))
+        .thenReturn(new TemporaryTableCredentials(null, false, "1893456000000", "s3://b/orders"));
+
+    assertThat(connector.vendStorageCredentials("cat.schema", "orders")).isEmpty();
+  }
+
+  @Test
+  void vendStorageCredentialsClassifiesPermanentNonAuthRefusalsAsTerminal() {
+    // Databricks answers with 400 + error_code when the workspace lacks EXTERNAL USE SCHEMA, and
+    // with 404 for a table id it no longer knows. Both are permanent; left unclassified they
+    // escape as a retryable INTERNAL and the reconciler loops on a job that can never succeed.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    for (UnityCatalogException.Failure failure :
+        new UnityCatalogException.Failure[] {
+          UnityCatalogException.Failure.INVALID_REQUEST, UnityCatalogException.Failure.NOT_FOUND
+        }) {
+      // doThrow, not when(...).thenThrow: when() would evaluate the already-stubbed call and
+      // rethrow the previous iteration's exception before it could re-stub.
+      // errorCode set: only a failure Databricks itself envelopes is permanent. See
+      // notFoundWithoutAnErrorEnvelopeStaysRetryable.
+      doThrow(new UnityCatalogException(failure, 400, "RESOURCE_DOES_NOT_EXIST", "refused", null))
+          .when(catalog)
+          .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+      assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+          .as(failure.name())
+          .isInstanceOfSatisfying(
+              SourceCatalogAccessException.class,
+              error ->
+                  assertThat(error.denial())
+                      .isEqualTo(SourceCatalogAccessException.Denial.UNSUPPORTED));
+    }
+  }
+
+  @Test
+  void aTableLookupNotFoundStaysRetryable() {
+    // The same carve-out on the lookup rather than the credentials POST: getTable erases the
+    // envelope by folding NOT_FOUND into an empty Optional, so this leg cannot terminalize either.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders")).thenReturn(Optional.empty());
+
+    assertThat(connector.vendStorageCredentials("cat.schema", "orders")).isEmpty();
+    verify(catalog, never())
+        .generateTemporaryTableCredentials(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+  }
+
+  @Test
+  void aLocalAuthFailureIsTerminalDespiteHavingNoEnvelope() {
+    // statusCode -1: the request never reached the workspace. A misconfigured auth provider, or one
+    // returning a header the request cannot carry, never clears on retry, so the missing envelope
+    // must not buy it the ambiguity carve-out -- and it is an authentication failure, not the
+    // "catalog will not vend for this table" that UNSUPPORTED reports.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    doThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.INVALID_REQUEST,
+                -1,
+                "Unity Catalog authentication is misconfigured"))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error ->
+                assertThat(error.denial())
+                    .isEqualTo(SourceCatalogAccessException.Denial.UNAUTHENTICATED));
+  }
+
+  @Test
+  void aMalformedCredentialPayloadIsTerminalButAGarbledBodyIsNot() {
+    // Both are INVALID_RESPONSE; the status separates them. No status means the client rejected the
+    // shape of a body that had already parsed -- aws_temp_credentials without an access key and
+    // secret -- which the catalog will send again, so untyped it becomes INTERNAL at the service
+    // and retries forever. A real status means the body never became JSON at all, which is what a
+    // proxy answering mid-deploy looks like, and that may parse on the next attempt.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+
+    doThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.INVALID_RESPONSE,
+                -1,
+                "Unity Catalog returned aws_temp_credentials without an access key and secret"))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error ->
+                assertThat(error.denial())
+                    .isEqualTo(SourceCatalogAccessException.Denial.UNSUPPORTED));
+
+    UnityCatalogException garbled =
+        new UnityCatalogException(
+            UnityCatalogException.Failure.INVALID_RESPONSE, 200, "response was not JSON");
+    doThrow(garbled)
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    // Escapes untyped, which is what keeps it retryable at the service.
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isSameAs(garbled);
+  }
+
+  @Test
+  void aVendLookupFailureDoesNotCarryTheResponseBodyIntoTheTerminalReason() {
+    // The table lookup on the vend path is wrapped like every other one. Without it a proxy's error
+    // page reaches describeRefusal, which builds the terminal reason -- so the body would land in
+    // the gRPC status description and the persisted reconcile failure text.
+    String proxyPage = "<html>The requested URL was not found on this server.</html>";
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.PERMISSION_DENIED,
+                403,
+                "PERMISSION_DENIED",
+                true,
+                "Unity Catalog returned HTTP 403 for cat.schema.orders: " + proxyPage,
+                null));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error -> {
+              assertThat(error.getMessage()).doesNotContain("requested URL");
+              assertThat(error.getMessage().toLowerCase(java.util.Locale.ROOT))
+                  .doesNotContain("not found");
+              assertThat(error.denial())
+                  .isEqualTo(SourceCatalogAccessException.Denial.PERMISSION_DENIED);
+            });
+  }
+
+  @Test
+  void aVendSucceedsWhenOnlyTheColumnMetadataIsMalformed() {
+    // Vending reads the table id and nothing else. The strict decode would refuse the response for
+    // a columns field this path never looks at, and classifyAccessFailure would read that
+    // INVALID_RESPONSE as a permanent refusal -- failing the vend on unrelated metadata.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    when(catalog.generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ))
+        .thenReturn(
+            new TemporaryTableCredentials(
+                new TemporaryTableCredentials.AwsCredentials("ak", "sk", "tok", null),
+                false,
+                null,
+                "s3://bucket/orders"));
+
+    assertThat(connector.vendStorageCredentials("cat.schema", "orders")).isPresent();
+    verify(catalog, org.mockito.Mockito.never()).getTable("cat.schema.orders");
+  }
+
+  @Test
+  void noVendFailureLeavesAMessageTheReconcilerReadsAsAMissingTable() {
+    // The real client message shape, not a stand-in. JavaConnectorCaptureEngine catches the storage
+    // RPC failure inside its try-with-resources and matches "http 404" on the top-level message;
+    // ReconcileExecutor maps TABLE_MISSING to OBSOLETE, retiring the source table. A wrong
+    // unity.temporary-table-vend-path is enough to produce that 404.
+    record Case(String name, UnityCatalogException failure) {}
+    String credentialsPath = "/api/2.0/unity-catalog/temporary-table-credentials";
+    var cases =
+        List.of(
+            // Enveloped 404 from the credentials leg: terminal, and must not read as missing.
+            new Case(
+                "enveloped credentials 404",
+                new UnityCatalogException(
+                    UnityCatalogException.Failure.NOT_FOUND,
+                    404,
+                    "RESOURCE_DOES_NOT_EXIST",
+                    true,
+                    "Unity Catalog returned HTTP 404 for " + credentialsPath,
+                    null)),
+            // Unenveloped 404: the carve-out keeps it retryable, which the heuristic would undo.
+            new Case(
+                "unenveloped credentials 404",
+                new UnityCatalogException(
+                    UnityCatalogException.Failure.NOT_FOUND,
+                    404,
+                    "Unity Catalog returned HTTP 404 for " + credentialsPath)),
+            // The second vector: errorCode is unfiltered on the lookup route, so the catalog can
+            // put the trigger phrase in the reason of a call that was wrapped.
+            // Reaches the switch default. Not producible from the client today -- the credentials
+            // leg suppresses bodies and the lookup leg is scrubbed on the way in -- so this pins
+            // the arm as a guard rather than a fix for a live path.
+            new Case(
+                "retryable failure carrying the phrase",
+                new UnityCatalogException(
+                    UnityCatalogException.Failure.SERVER_ERROR,
+                    502,
+                    "Unity Catalog returned HTTP 502 for " + credentialsPath + ": not found")),
+            new Case(
+                "error_code carrying the phrase",
+                new UnityCatalogException(
+                    UnityCatalogException.Failure.INVALID_REQUEST,
+                    400,
+                    "table not found",
+                    true,
+                    "Unity Catalog returned HTTP 400 for " + credentialsPath,
+                    null)));
+
+    for (Case c : cases) {
+      when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+          .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+      doThrow(c.failure())
+          .when(catalog)
+          .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+      assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+          .as(c.name())
+          .isInstanceOfSatisfying(
+              RuntimeException.class,
+              thrown -> {
+                String message = String.valueOf(thrown.getMessage()).toLowerCase(Locale.ROOT);
+                assertThat(message).as(c.name()).doesNotContain("http 404");
+                assertThat(message).as(c.name()).doesNotContain("status 404");
+                assertThat(message).as(c.name()).doesNotContain("not found");
+                assertThat(message).as(c.name()).doesNotContain("does not exist");
+              });
+    }
+  }
+
+  @Test
+  void aLocalFailureKeepsTheTextThatNamesWhatToFix() {
+    // A negative status carries no body, so there is nothing to suppress -- and the wrapper used to
+    // replace this with "INVALID_REQUEST [-1]", which is the whole explanation an operator gets,
+    // since SourceCatalogAccessException carries no cause.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.INVALID_REQUEST,
+                -1,
+                "Unity Catalog authentication is misconfigured"));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error -> {
+              assertThat(error.getMessage()).contains("authentication is misconfigured");
+              assertThat(error.denial())
+                  .isEqualTo(SourceCatalogAccessException.Denial.UNAUTHENTICATED);
+            });
+  }
+
+  @Test
+  void aTerminalRefusalCarriesTheErrorCode() {
+    // The vending route suppresses response bodies, so the message alone is a bare "returned HTTP
+    // 400". Once the refusal is terminal, the code is the only thing naming which permanent cause
+    // fired -- a workspace without EXTERNAL USE SCHEMA, or a table with external access off.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    doThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.INVALID_REQUEST,
+                400,
+                "PERMISSION_DENIED",
+                "Unity Catalog returned HTTP 400 for /api/2.0/unity-catalog/…",
+                null))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOf(SourceCatalogAccessException.class)
+        .hasMessageContaining("PERMISSION_DENIED")
+        .hasMessageContaining("returned HTTP 400");
+  }
+
+  @Test
+  void anOverlongErrorCodeAlreadyInTheMessageIsNotAppendedAgain() {
+    // The client interpolated the full code into its own message on this route. Comparing the
+    // bounded form against it would never match, so the code would be appended a second time in
+    // its truncated shape.
+    String code = "PERMISSION_DENIED_" + "X".repeat(300);
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    doThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.PERMISSION_DENIED,
+                403,
+                code,
+                "Unity Catalog returned HTTP 403 (" + code + ") for /api/…",
+                null))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error -> assertThat(error.getMessage()).doesNotContain("chars)"));
+  }
+
+  @Test
+  void anErrorCodeIsFlattenedAndBoundedLikeTheMessage() {
+    // The client shape-checks error_code only on the route that suppresses response bodies, so on
+    // the table lookup it is whatever the catalog put in the envelope.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.PERMISSION_DENIED,
+                403,
+                "PERM\nDENIED" + "x".repeat(300),
+                "Unity Catalog returned HTTP 403 for /api/2.1/unity-catalog/tables/…",
+                null));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error -> {
+              assertThat(error.getMessage()).doesNotContain("\n");
+              assertThat(error.getMessage()).hasSizeLessThan(400);
+            });
+  }
+
+  @Test
+  void aRefusalWithNeitherMessageNorCodeNamesTheFailureKind() {
+    // A terminal exception with a null message is a permanently failed job carrying no reason at
+    // all. The kind is thin, but it is not nothing.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    doThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.PERMISSION_DENIED, 403, null, null, null))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error -> assertThat(error.getMessage()).isEqualTo("PERMISSION_DENIED"));
+  }
+
+  @Test
+  void aRefusalMessageIsFlattenedBeforeItBecomesAStatusDescription() {
+    // The message carries up to two thousand characters of catalog or proxy body, and it ends up in
+    // a log line and a gRPC status description.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.PERMISSION_DENIED,
+                403,
+                "PERMISSION_DENIED",
+                "Unity Catalog returned HTTP 403 for /api/…: <html>\n2030-01-01 ERROR forged</html>",
+                null));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error -> {
+              assertThat(error.getMessage()).doesNotContain("\n");
+              assertThat(error.getMessage()).contains("PERMISSION_DENIED");
+            });
+  }
+
+  @Test
+  void aMessagelessRefusalStillReportsItsErrorCode() {
+    // The code is the whole diagnostic here, and it feeds a terminal exception: folding this in
+    // with "the code is already in the message" would leave a human reading a bare null.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    doThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.PERMISSION_DENIED,
+                403,
+                "PERMISSION_DENIED",
+                null,
+                null))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error -> assertThat(error.getMessage()).isEqualTo("PERMISSION_DENIED"));
+  }
+
+  @Test
+  void anErrorCodeTheClientAlreadyInterpolatedIsNotRepeated() {
+    // Every route except the credentials POST keeps the response body, and the client puts the code
+    // in that message itself. The table lookup is one of them, so appending again would print the
+    // code twice in the whole diagnostic left by a job that will not be retried.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    doThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.PERMISSION_DENIED,
+                403,
+                "PERMISSION_DENIED",
+                "Unity Catalog returned HTTP 403 (PERMISSION_DENIED) for /api/2.1/…: "
+                    + "{\"error_code\":\"PERMISSION_DENIED\"}",
+                null))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error -> {
+              assertThat(error.denial())
+                  .isEqualTo(SourceCatalogAccessException.Denial.PERMISSION_DENIED);
+              assertThat(error.getMessage()).endsWith("}");
+              assertThat(error.getMessage().split("PERMISSION_DENIED", -1)).hasSize(3);
+            });
+  }
+
+  @Test
+  void anEnvelopedRefusalWhoseCodeWasWithheldSaysSo() {
+    // Terminality already turns on the envelope. Without saying so here the operator reads a
+    // permanently failed job as though the catalog gave no reason, when it is in the audit log.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    doThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.INVALID_REQUEST,
+                400,
+                null,
+                true,
+                "Unity Catalog returned HTTP 400 for /api/2.0/unity-catalog/…",
+                null))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error -> assertThat(error.getMessage()).endsWith("(error code withheld)"));
+  }
+
+  @Test
+  void anEnvelopedRefusalWhoseCodeWasWithheldIsStillTerminal() {
+    // The vending route withholds a code it judges unsafe to show. Reading that as "no envelope"
+    // would hand an enveloped permanent refusal back to be retried forever.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    doThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.INVALID_REQUEST,
+                400,
+                null,
+                true,
+                "Unity Catalog returned HTTP 400 for /api/2.0/unity-catalog/…",
+                null))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOf(SourceCatalogAccessException.class);
+  }
+
+  @Test
+  void anUnenvelopedInvalidRequestStaysRetryable() {
+    // 405 and 422 come from status alone, and so does a 3xx the client declines to follow -- an SSO
+    // proxy's redirect to a login page. None of those is the workspace refusing the request.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+
+    for (int status : new int[] {405, 422, 302}) {
+      doThrow(new UnityCatalogException(UnityCatalogException.Failure.INVALID_REQUEST, status, "?"))
+          .when(catalog)
+          .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+      assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+          .as("HTTP %d", status)
+          .isInstanceOf(UnityCatalogException.class)
+          .isNotInstanceOf(SourceCatalogAccessException.class);
+    }
+  }
+
+  @Test
+  void notFoundWithoutAnErrorEnvelopeStaysRetryable() {
+    // The client types 404 as NOT_FOUND on status alone, so an HTML 404 from a load balancer in
+    // front of the workspace -- what one serves mid-deploy -- is indistinguishable here from an
+    // unknown table id except by the error_code envelope. Without one it must stay unclassified:
+    // classifying it terminally fails the reconcile job on a condition that recovers by itself.
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    doThrow(new UnityCatalogException(UnityCatalogException.Failure.NOT_FOUND, 404, "<html/>"))
+        .when(catalog)
+        .generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ);
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOf(UnityCatalogException.class)
+        .isNotInstanceOf(SourceCatalogAccessException.class);
+  }
+
+  /**
+   * The credentials endpoint keys on table_id, so a table without one can never be vended for, and
+   * a catalog that omits it will keep omitting it. An untyped failure escapes classification and
+   * comes back from the service as a retryable INTERNAL, looping the reconcile job forever.
+   */
+  @Test
+  void vendStorageCredentialsTreatsAMissingTableIdAsTerminal() {
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", " ", "EXTERNAL", "DELTA", null)));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error ->
+                assertThat(error.denial())
+                    .isEqualTo(SourceCatalogAccessException.Denial.UNSUPPORTED));
+  }
+
+  @Test
   void closeReleasesTheCatalogTransport() {
     connector.close();
 
     verify(catalog).close();
   }
 
+  @Test
+  void vendStorageCredentialsPreservesIncompleteAwsTupleForServiceValidation() {
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    when(catalog.generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ))
+        .thenReturn(
+            new TemporaryTableCredentials(
+                new TemporaryTableCredentials.AwsCredentials("key", "secret", null, null),
+                false,
+                "not-a-number",
+                null));
+
+    var result = connector.vendStorageCredentials("cat.schema", "orders");
+
+    assertThat(result).isPresent();
+    assertThat(result.orElseThrow().properties())
+        .containsEntry("s3.access-key-id", "key")
+        .containsEntry("s3.secret-access-key", "secret")
+        .doesNotContainKey("s3.session-token");
+    // A malformed expiry folds to null rather than failing the vend, per the shared parser.
+    assertThat(result.orElseThrow().expiresAt()).isNull();
+  }
+
+  @Test
+  void vendStorageCredentialsClassifiesAuthenticationFailures() {
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenThrow(
+            new UnityCatalogException(
+                UnityCatalogException.Failure.UNAUTHENTICATED, 401, "HTTP 401"));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOfSatisfying(
+            SourceCatalogAccessException.class,
+            error ->
+                assertThat(error.denial())
+                    .isEqualTo(SourceCatalogAccessException.Denial.UNAUTHENTICATED));
+  }
+
+  @Test
+  void vendStorageCredentialsLeavesServerFailuresRetryable() {
+    when(catalog.getTableWithLenientColumns("cat.schema.orders"))
+        .thenReturn(Optional.of(table("orders", "id", "EXTERNAL", "DELTA", null)));
+    when(catalog.generateTemporaryTableCredentials("id", UnityCatalogClient.TableOperation.READ))
+        .thenThrow(
+            new UnityCatalogException(UnityCatalogException.Failure.SERVER_ERROR, 503, "HTTP 503"));
+
+    assertThatThrownBy(() -> connector.vendStorageCredentials("cat.schema", "orders"))
+        .isInstanceOf(UnityCatalogException.class)
+        .isNotInstanceOf(SourceCatalogAccessException.class);
+  }
+
+  /**
+   * A connector is built per vend, so an auth provider that owns an HTTP client leaks a selector
+   * thread and an executor on every call unless {@code close()} releases it alongside the catalog
+   * transport.
+   */
   @Test
   void closeReleasesTheAuthProvider() {
     var auth = new ClosableAuthProvider();
