@@ -63,6 +63,11 @@ public final class BlobCacheAccess {
     return cache.get(immutableKey(uri), fill, loader);
   }
 
+  public Optional<BlobCache.Content> immutableRange(
+      String uri, long offset, int length, BlobCache.Fill fill, BlobCache.Loader loader) {
+    return cache.getRange(immutableKey(uri), offset, length, fill, loader);
+  }
+
   public Optional<BlobCache.Content> versioned(
       Pointer pointer, BlobCache.Fill fill, BlobCache.Loader loader) {
     Objects.requireNonNull(pointer, "pointer");

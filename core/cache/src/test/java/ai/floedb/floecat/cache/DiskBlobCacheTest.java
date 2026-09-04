@@ -17,6 +17,7 @@
 package ai.floedb.floecat.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -66,6 +67,70 @@ class DiskBlobCacheTest {
           .containsExactly(expected);
       assertThat(read(cache, key, BlobCache.Fill.BYPASS_FILL, () -> load(loads, expected)))
           .containsExactly(expected);
+    }
+
+    assertThat(loads).hasValue(2);
+  }
+
+  @Test
+  void aFilledRangeIsServedWithoutReloading() throws Exception {
+    BlobCache.Key key = new BlobCache.Key("account-a", "sha-a");
+    AtomicInteger loads = new AtomicInteger();
+    byte[] expected = "range".getBytes(StandardCharsets.UTF_8);
+
+    try (var first = cache()) {
+      assertThat(readRange(first, key, 20L, expected.length, () -> load(loads, expected)))
+          .containsExactly(expected);
+    }
+    try (var restarted = cache()) {
+      assertThat(readRange(restarted, key, 20L, expected.length, () -> load(loads, expected)))
+          .containsExactly(expected);
+      assertThat(readRange(restarted, key, 21L, expected.length, () -> load(loads, expected)))
+          .containsExactly(expected);
+    }
+
+    assertThat(loads).hasValue(2);
+  }
+
+  @Test
+  void aResidentWholeBodyServesAMappedRange() throws Exception {
+    BlobCache.Key key = new BlobCache.Key("account-a", "sha-a");
+    byte[] whole = "whole-payload".getBytes(StandardCharsets.UTF_8);
+
+    try (var cache =
+        new DiskBlobCache(root, 1024 * 1024, 1, Duration.ZERO, BlobCacheEvents.none())) {
+      read(cache, key, BlobCache.Fill.FILL, () -> whole);
+
+      BlobCache.Content range =
+          cache
+              .getRange(
+                  key,
+                  6L,
+                  7,
+                  BlobCache.Fill.FILL,
+                  () -> {
+                    throw new AssertionError("a resident whole body must satisfy its range");
+                  })
+              .orElseThrow();
+      assertThat(bytes(range)).isEqualTo("payload".getBytes(StandardCharsets.UTF_8));
+      assertThat(cache.liveMappings()).isOne();
+      range.close();
+      assertThat(cache.liveMappings()).isZero();
+      assertThat(cache.entryCount()).isOne();
+    }
+  }
+
+  @Test
+  void aTruncatedRangeIsRejectedWithoutAdmission() throws Exception {
+    BlobCache.Key key = new BlobCache.Key("account-a", "sha-a");
+    AtomicInteger loads = new AtomicInteger();
+
+    try (var cache = cache()) {
+      assertThatThrownBy(() -> readRange(cache, key, 20L, 2, () -> load(loads, new byte[] {1})))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("wrong length");
+      assertThat(readRange(cache, key, 20L, 2, () -> load(loads, new byte[] {1, 2})))
+          .containsExactly(1, 2);
     }
 
     assertThat(loads).hasValue(2);
@@ -348,6 +413,15 @@ class DiskBlobCacheTest {
       BlobCache cache, BlobCache.Key key, BlobCache.Fill fill, BlobCache.Loader loader)
       throws Exception {
     try (BlobCache.Content content = cache.get(key, fill, loader).orElse(null)) {
+      return content == null ? null : bytes(content);
+    }
+  }
+
+  private static byte[] readRange(
+      BlobCache cache, BlobCache.Key key, long offset, int length, BlobCache.Loader loader)
+      throws Exception {
+    try (BlobCache.Content content =
+        cache.getRange(key, offset, length, BlobCache.Fill.FILL, loader).orElse(null)) {
       return content == null ? null : bytes(content);
     }
   }
