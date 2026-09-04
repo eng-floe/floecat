@@ -152,7 +152,7 @@ public class TableRepository {
       String pageToken,
       StringBuilder nextOut) {
     String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
-    return repo.listByPrefixConsistent(prefix, limit, pageToken, nextOut);
+    return repo.listByPrefixForMutation(prefix, limit, pageToken, nextOut);
   }
 
   public int count(String accountId, String catalogId, String namespaceId) {
@@ -168,7 +168,7 @@ public class TableRepository {
    * the version the write itself produced, and the delete commits over a live relation.
    */
   public int countConsistent(String accountId, String catalogId, String namespaceId) {
-    return repo.countByPrefixConsistent(
+    return repo.countByPrefixForMutation(
         Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 
@@ -253,6 +253,12 @@ public class TableRepository {
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
   public MutationMeta pointerMetaForSafe(ResourceId tableResourceId) {
     return repo.pointerMetaForSafe(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
+  /** The same read, past the cache, for a caller whose verdict a stale pointer would invert. */
+  public MutationMeta pointerMetaForSafeConsistent(ResourceId tableResourceId) {
+    return repo.pointerMetaForSafeConsistent(
         new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 

@@ -52,7 +52,6 @@ import ai.floedb.floecat.service.common.FenceRetry;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -167,7 +166,6 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject TransactionIntentApplierSupport intentApplierSupport;
-  @Inject UserGraph metadataGraph;
   @Inject TableRootWriter rootWriter;
   @Inject RootResyncQueue rootResyncQueue;
   @Inject CatalogGraphView graphView;
@@ -2242,9 +2240,8 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
     cleanupIntentsBestEffort(intents);
   }
 
-  /** Post-apply convergence: graph caches and table roots re-derive from committed pointers. */
+  /** Post-apply convergence: table roots re-derive from committed pointers. */
   private void convergeAfterApply(List<TransactionIntent> intents) {
-    invalidateTouchedGraphEntries(intents);
     resyncTouchedTableRoots(intents);
   }
 
@@ -2310,27 +2307,6 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
           "root resync for table %s failed AND its re-drive marker could not be recorded; the"
               + " root stays divergent until the table's next write",
           tableId.getId());
-    }
-  }
-
-  private void invalidateTouchedGraphEntries(List<TransactionIntent> intents) {
-    if (intents == null || intents.isEmpty() || metadataGraph == null) {
-      return;
-    }
-    for (var intent : intents) {
-      if (intent == null) {
-        continue;
-      }
-      String tableId = tableIdFromByIdPointer(intent.getTargetPointerKey());
-      if (tableId == null || tableId.isBlank()) {
-        continue;
-      }
-      metadataGraph.invalidate(
-          ResourceId.newBuilder()
-              .setAccountId(intent.getAccountId())
-              .setKind(ResourceKind.RK_TABLE)
-              .setId(tableId)
-              .build());
     }
   }
 

@@ -12,6 +12,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexEntry;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -41,13 +42,23 @@ import org.jboss.logging.Logger;
 final class GenerationArtifactMap {
   private static final Logger LOG = Logger.getLogger(GenerationArtifactMap.class);
   private final PointerStore pointerStore;
+  private final PointerStore pointerReads;
   private final BlobStore blobStore;
   private final ImmutableBlobCache blobCache;
   private final ReusableArtifactIndexStore indexStore;
 
   GenerationArtifactMap(
       PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
-    this.pointerStore = pointerStore;
+    this(pointerStore, pointerStore, blobStore, blobCache);
+  }
+
+  GenerationArtifactMap(
+      PointerStore pointerStore,
+      PointerStore pointerReads,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache) {
+    this.pointerStore = AuthoritativePointerStore.of(pointerStore);
+    this.pointerReads = pointerReads;
     this.blobStore = blobStore;
     this.blobCache = blobCache;
     this.indexStore = new ReusableArtifactIndexStore(blobStore);
@@ -152,7 +163,7 @@ final class GenerationArtifactMap {
 
   Optional<SnapshotCaptureManifest> manifest(
       ResourceId tableId, long snapshotId, String generationId) {
-    Pointer pointer = pointerStore.get(key(tableId, snapshotId, generationId)).orElse(null);
+    Pointer pointer = pointerReads.get(key(tableId, snapshotId, generationId)).orElse(null);
     if (pointer == null) {
       return Optional.empty();
     }

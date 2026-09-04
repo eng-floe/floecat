@@ -48,7 +48,6 @@ import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -78,7 +77,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
   @Inject CatalogGraphView graphView;
   @Inject EngineHintSchemaCleaner hintCleaner;
@@ -243,7 +241,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                       // when the name is held by any relation, not only a same-kind view.
                       throw relationNameConflict(corr, accountId, spec, normName);
                     }
-                    metadataGraph.invalidate(viewResourceId);
                     topology.evictRelationRefs(view.getNamespaceId());
                     var meta = viewRepo.metaForSafe(viewResourceId);
                     return CreateViewResponse.newBuilder().setView(view).setMeta(meta).build();
@@ -335,7 +332,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           this::correlationId,
                           View::parseFrom);
 
-                  metadataGraph.invalidate(result.body.getResourceId());
                   topology.evictRelationRefs(result.body.getNamespaceId());
                   return CreateViewResponse.newBuilder()
                       .setView(result.body)
@@ -466,8 +462,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                   if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
                     topology.evictRelationRefs(desired.getNamespaceId());
                   }
-                  metadataGraph.invalidate(viewId);
-
                   var outMeta = viewRepo.metaForSafe(viewId);
                   var latest = viewRepo.getById(viewId).orElse(desired);
                   return UpdateViewResponse.newBuilder().setView(latest).setMeta(outMeta).build();
@@ -507,7 +501,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
                     topology.evict(viewId);
-                    metadataGraph.invalidate(viewId);
                     return DeleteViewResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -524,7 +517,6 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           Map.of("id", viewId.getId()));
 
                   topology.evict(viewId);
-                  metadataGraph.invalidate(viewId);
                   return DeleteViewResponse.newBuilder().setMeta(out).build();
                 }),
             correlationId())

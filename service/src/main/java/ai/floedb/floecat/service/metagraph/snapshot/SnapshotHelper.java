@@ -138,11 +138,10 @@ public class SnapshotHelper {
     if (root == null && rootMeta != null && !rootMeta.getBlobUri().isEmpty()) {
       // The root was superseded and its blob swept between the pointer read and the blob read —
       // the pointer has necessarily moved on, so follow it once instead of failing a live table.
-      // The retry MUST bypass the TTL pointer cache (which would hand back the same dead URI for
-      // the rest of the TTL); metaForSafeLive also invalidates the stale entry as a side effect.
+      // The retry reads past the cache, which would otherwise hand back the same dead URI.
       // Still null after the retry means the re-read pointer is also unreadable (corruption, or a
       // pathological second race): fall through to the per-pin-kind not-found handling below.
-      rootMeta = roots.metaForSafeLive(tableId);
+      rootMeta = roots.metaForSafeConsistent(tableId);
       root = loadRoot(rootMeta);
       if (root == null && rootMeta != null && !rootMeta.getBlobUri().isEmpty()) {
         // The re-read pointer still names an unreadable blob (a vanished pointer would be a

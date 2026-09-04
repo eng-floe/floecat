@@ -143,6 +143,12 @@ public final class FakeViewRepository extends ViewRepository {
   }
 
   @Override
+  public MutationMeta pointerMetaForSafeConsistent(ResourceId id) {
+    // No cache in the fake, so the consistent read is the same read.
+    return pointerMetaForSafe(id);
+  }
+
+  @Override
   public MutationMeta pointerMetaForSafe(ResourceId id) {
     // The fake's meta map is the single source of truth for both meta variants.
     return metaForSafe(id);

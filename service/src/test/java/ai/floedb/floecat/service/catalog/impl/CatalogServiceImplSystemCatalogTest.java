@@ -21,7 +21,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -38,7 +37,6 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -60,7 +58,6 @@ class CatalogServiceImplSystemCatalogTest {
   private CatalogGraphView graphView;
   private EngineContextProvider engineContext;
   private MarkerStore markerStore;
-  private UserGraph metadataGraph;
   private IdempotencyRepository idempotencyStore;
 
   @BeforeEach
@@ -73,7 +70,6 @@ class CatalogServiceImplSystemCatalogTest {
     engineContext = mock(EngineContextProvider.class);
     graphView = mock(CatalogGraphView.class);
     markerStore = mock(MarkerStore.class);
-    metadataGraph = mock(UserGraph.class);
     idempotencyStore = mock(IdempotencyRepository.class);
 
     svc.catalogRepo = catalogRepo;
@@ -82,7 +78,6 @@ class CatalogServiceImplSystemCatalogTest {
     svc.engineContext = engineContext;
     svc.graphView = graphView;
     svc.markerStore = markerStore;
-    svc.metadataGraph = metadataGraph;
     svc.idempotencyStore = idempotencyStore;
 
     var pc = mock(PrincipalContext.class);
@@ -148,7 +143,6 @@ class CatalogServiceImplSystemCatalogTest {
     var response = svc.deleteCatalog(req).await().indefinitely();
 
     assertEquals(0L, response.getMeta().getPointerVersion());
-    verify(metadataGraph).invalidate(id);
   }
 
   @Test

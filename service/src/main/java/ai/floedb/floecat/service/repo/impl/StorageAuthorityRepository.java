@@ -24,6 +24,7 @@ import ai.floedb.floecat.service.repo.model.StorageAuthorityKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -38,7 +39,8 @@ public class StorageAuthorityRepository {
   private final GenericResourceRepository<StorageAuthority, StorageAuthorityKey> repo;
 
   @Inject
-  public StorageAuthorityRepository(PointerStore pointerStore, BlobStore blobStore) {
+  public StorageAuthorityRepository(
+      @CachedPointerStore PointerStore pointerStore, BlobStore blobStore) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -102,7 +104,7 @@ public class StorageAuthorityRepository {
 
   public List<StorageAuthority> listConsistent(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefixConsistent(
+    return repo.listByPrefixForMutation(
         Keys.storageAuthorityPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 

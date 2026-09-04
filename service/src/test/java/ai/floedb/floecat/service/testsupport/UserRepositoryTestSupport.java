@@ -71,6 +71,12 @@ public final class UserRepositoryTestSupport {
     }
 
     @Override
+    public MutationMeta pointerMetaForSafeConsistent(ResourceId id) {
+      // No cache in the fake, so the consistent read is the same read.
+      return pointerMetaForSafe(id);
+    }
+
+    @Override
     public MutationMeta pointerMetaForSafe(ResourceId id) {
       return metaForSafe(id);
     }
@@ -126,6 +132,12 @@ public final class UserRepositoryTestSupport {
     @Override
     public MutationMeta metaForSafe(ResourceId id) {
       throw new StorageNotFoundException("unused");
+    }
+
+    @Override
+    public MutationMeta pointerMetaForSafeConsistent(ResourceId id) {
+      // No cache in the fake, so the consistent read is the same read.
+      return pointerMetaForSafe(id);
     }
 
     @Override
@@ -203,6 +215,12 @@ public final class UserRepositoryTestSupport {
     @Override
     public MutationMeta metaForSafe(ResourceId id) {
       throw new StorageNotFoundException("unused");
+    }
+
+    @Override
+    public MutationMeta pointerMetaForSafeConsistent(ResourceId id) {
+      // No cache in the fake, so the consistent read is the same read.
+      return pointerMetaForSafe(id);
     }
 
     @Override
@@ -292,6 +310,12 @@ public final class UserRepositoryTestSupport {
     @Override
     public MutationMeta metaForSafe(ResourceId id) {
       throw new StorageNotFoundException("unused");
+    }
+
+    @Override
+    public MutationMeta pointerMetaForSafeConsistent(ResourceId id) {
+      // No cache in the fake, so the consistent read is the same read.
+      return pointerMetaForSafe(id);
     }
 
     @Override

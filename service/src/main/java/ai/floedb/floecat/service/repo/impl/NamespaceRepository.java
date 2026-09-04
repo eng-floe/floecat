@@ -293,7 +293,7 @@ public class NamespaceRepository {
       String pageToken,
       StringBuilder nextOut) {
     String prefix = Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty);
-    return repo.listByPrefixConsistent(prefix, limit, pageToken, nextOut);
+    return repo.listByPrefixForMutation(prefix, limit, pageToken, nextOut);
   }
 
   /**
@@ -306,7 +306,7 @@ public class NamespaceRepository {
    */
   public int countConsistent(
       String accountId, String catalogId, List<String> parentSegmentsOrEmpty) {
-    return repo.countByPrefixConsistent(
+    return repo.countByPrefixForMutation(
         Keys.namespacePointerByPathPrefix(accountId, catalogId, parentSegmentsOrEmpty));
   }
 
@@ -420,6 +420,12 @@ public class NamespaceRepository {
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
   public MutationMeta pointerMetaForSafe(ResourceId namespaceResourceId) {
     return repo.pointerMetaForSafe(
+        new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
+  }
+
+  /** The same read, past the cache, for a caller whose verdict a stale pointer would invert. */
+  public MutationMeta pointerMetaForSafeConsistent(ResourceId namespaceResourceId) {
+    return repo.pointerMetaForSafeConsistent(
         new NamespaceKey(namespaceResourceId.getAccountId(), namespaceResourceId.getId()));
   }
 

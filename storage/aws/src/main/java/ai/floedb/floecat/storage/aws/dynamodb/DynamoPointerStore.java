@@ -18,11 +18,13 @@ package ai.floedb.floecat.storage.aws.dynamodb;
 
 import ai.floedb.floecat.storage.kv.dynamodb.ps.KvPointerStore;
 import ai.floedb.floecat.storage.kv.dynamodb.ps.PointerStoreEntity;
+import ai.floedb.floecat.storage.spi.RawPointerStore;
 import io.quarkus.arc.properties.IfBuildProperty;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 
 @Singleton
+@RawPointerStore
 @IfBuildProperty(name = "floecat.kv", stringValue = "dynamodb")
 public final class DynamoPointerStore extends KvPointerStore {
 

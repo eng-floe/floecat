@@ -416,9 +416,9 @@ public class TableRootWriter {
   /** Deletes the table's root pointer; true when gone (or already absent), false on contention. */
   private boolean deleteRoot(ResourceId tableId) {
     for (int attempt = 0; attempt < 2; attempt++) {
-      // Live, never the TTL cache: this is a write-funnel CAS expected-version read — a stale
+      // Live, never the pointer cache: this is a write-funnel CAS expected-version read — a stale
       // cached version would burn the first of the two attempts unconditionally.
-      MutationMeta meta = roots.metaForSafeLive(tableId);
+      MutationMeta meta = roots.metaForSafeConsistent(tableId);
       if (meta == null || meta.getPointerVersion() == 0L) {
         return true;
       }

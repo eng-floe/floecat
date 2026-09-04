@@ -45,7 +45,6 @@ import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -78,7 +77,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
 
@@ -317,7 +315,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           this::correlationId,
                           Namespace::parseFrom);
 
-                  metadataGraph.invalidate(namespaceProto.body.getResourceId());
                   topology.evictNamespaceRefs(namespaceProto.body.getCatalogId());
 
                   return CreateNamespaceResponse.newBuilder()
@@ -373,7 +370,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
             () ->
                 namespaceRepo.createWhilePointersMatch(
                     ns, namespaceCreateFence(catalogId, parentList)));
-        metadataGraph.invalidate(rid);
         topology.evictNamespaceRefs(catalogId);
       } catch (BaseResourceRepository.NameConflictException nce) {
         if (namespaceRepo.getByPath(accountId, catalogId.getId(), chain).isPresent()) {
@@ -491,8 +487,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                   }
                   topology.evictNamespaceRefs(current.getCatalogId());
                   topology.evictNamespaceRefs(desired.getCatalogId());
-                  metadataGraph.invalidate(nsId);
-
                   var outMeta = namespaceRepo.metaForSafe(nsId);
                   var latest = namespaceRepo.getById(nsId).orElse(desired);
                   return UpdateNamespaceResponse.newBuilder()
@@ -539,7 +533,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
                     topology.evictRelationRefs(namespaceId);
-                    metadataGraph.invalidate(namespaceId);
                     return DeleteNamespaceResponse.newBuilder().setMeta(safe).build();
                   }
 
@@ -577,7 +570,6 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
 
                   topology.evictRelationRefs(namespaceId);
                   topology.evictNamespaceRefs(catalogId);
-                  metadataGraph.invalidate(namespaceId);
                   return DeleteNamespaceResponse.newBuilder().setMeta(meta).build();
                 }),
             correlationId())
