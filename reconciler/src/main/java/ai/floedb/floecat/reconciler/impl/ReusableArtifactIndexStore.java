@@ -18,6 +18,7 @@ import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexRunReference;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.BlobStore.ScopedObjects;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.ByteArrayOutputStream;
@@ -71,19 +72,6 @@ public final class ReusableArtifactIndexStore {
       };
 
   private final BlobStore blobStore;
-
-  /** Optional capability for keeping batched disk-cache mappings alive while they are decoded. */
-  public interface ScopedBatchBlobStore {
-    ScopedObjects getBatchScoped(List<String> uris);
-  }
-
-  /** Read-only batch whose buffers remain valid until it is closed. */
-  public interface ScopedObjects extends AutoCloseable {
-    ByteBuffer get(String uri);
-
-    @Override
-    void close();
-  }
 
   public ReusableArtifactIndexStore(BlobStore blobStore) {
     if (blobStore == null) {
@@ -990,10 +978,7 @@ public final class ReusableArtifactIndexStore {
     if (missing.isEmpty()) {
       return emptyObjects();
     }
-    ScopedObjects loaded =
-        blobStore instanceof ScopedBatchBlobStore scoped
-            ? scoped.getBatchScoped(missing)
-            : heapObjects(blobStore.getBatch(missing));
+    ScopedObjects loaded = blobStore.getBatchScoped(missing);
     try {
       for (String uri : missing) {
         ByteBuffer bytes = loaded.get(uri);
@@ -1010,16 +995,10 @@ public final class ReusableArtifactIndexStore {
   }
 
   private static ScopedObjects emptyObjects() {
-    return heapObjects(Map.of());
-  }
-
-  private static ScopedObjects heapObjects(Map<String, byte[]> loaded) {
-    Map<String, byte[]> contents = Map.copyOf(loaded);
     return new ScopedObjects() {
       @Override
       public ByteBuffer get(String uri) {
-        byte[] bytes = contents.get(uri);
-        return bytes == null ? null : ByteBuffer.wrap(bytes).asReadOnlyBuffer();
+        return null;
       }
 
       @Override
