@@ -94,6 +94,52 @@ message DeleteAccountResponse {
   ai.floedb.floecat.common.MutationMeta meta = 1;
 }
 
+// ====== Internal account ownership control ======
+
+// Process-local serving state installed by Core. This is not a lease and never expires.
+enum AccountServingMode {
+  ASM_UNSPECIFIED = 0;
+  ASM_UNASSIGNED = 1;
+  ASM_SERVING = 2;
+  ASM_DRAINING = 3;
+}
+
+message ApplyAccountModeRequest {
+  string account_id = 1;
+  int64 assignment_version = 2;
+  // Exact process incarnation returned by GetAccountStatus. A pod ordinal is insufficient because
+  // a replacement process must not inherit the previous process's authority.
+  string target_process_incarnation = 3;
+  AccountServingMode mode = 4;
+  bool gc_allowed = 5;
+}
+
+message GetAccountStatusRequest {
+  string account_id = 1;
+}
+
+message AccountOwnershipStatus {
+  string account_id = 1;
+  int64 assignment_version = 2;
+  string process_incarnation = 3;
+  AccountServingMode mode = 4;
+  bool gc_allowed = 5;
+  int64 active_resolutions = 6;
+  int64 active_mutations = 7;
+  int64 active_gc = 8;
+  int64 referenced_roots = 9;
+  string pointer_cache_state = 10;
+  bool drained = 11;
+}
+
+message ApplyAccountModeResponse {
+  AccountOwnershipStatus status = 1;
+}
+
+message GetAccountStatusResponse {
+  AccountOwnershipStatus status = 1;
+}
+
 // ====== Service ======
 
 service AccountService {
@@ -102,4 +148,10 @@ service AccountService {
   rpc CreateAccount (CreateAccountRequest) returns (CreateAccountResponse);
   rpc UpdateAccount (UpdateAccountRequest) returns (UpdateAccountResponse);
   rpc DeleteAccount (DeleteAccountRequest) returns (DeleteAccountResponse);
+}
+
+// Core-to-Floecat control only. Floecat never calls Core or another Floecat.
+service AccountOwnershipControl {
+  rpc ApplyAccountMode(ApplyAccountModeRequest) returns (ApplyAccountModeResponse);
+  rpc GetAccountStatus(GetAccountStatusRequest) returns (GetAccountStatusResponse);
 }

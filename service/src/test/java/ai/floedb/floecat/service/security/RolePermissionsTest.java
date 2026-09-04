@@ -191,4 +191,13 @@ class RolePermissionsTest {
     assertThat(permissions).containsExactlyInAnyOrderElementsOf(RECONCILE_WORKER_PERMS);
     assertThat(permissions).doesNotContain(RolePermissions.CATALOG_OVERLAY_DELETE);
   }
+
+  @Test
+  void accountOwnershipControllerHasOnlyItsInternalControlPermission() {
+    var permissions =
+        RolePermissions.permissionsForRoles(
+            List.of(RolePermissions.ACCOUNT_OWNERSHIP_CONTROLLER_ROLE), false);
+
+    assertThat(permissions).containsExactly(RolePermissions.ACCOUNT_OWNERSHIP_CONTROL_INTERNAL);
+  }
 }

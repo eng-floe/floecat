@@ -345,6 +345,24 @@ public final class ServiceMetrics {
         new MetricId(
             "floecat.service.gc.cas.oldest_sweep_age", MetricType.GAUGE, "ms", CONTRACT, "service");
 
+    /** Managed accounts held in each local ownership mode, tagged by {@code mode}. */
+    public static final MetricId ACCOUNT_OWNERSHIP_STATES =
+        new MetricId(
+            "floecat.service.account_ownership.accounts",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+
+    /** Managed accounts for which this exact process incarnation may currently collect. */
+    public static final MetricId ACCOUNT_GC_ALLOWED =
+        new MetricId(
+            "floecat.service.account_ownership.gc_allowed_accounts",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+
     public static final MetricId RECONCILE_JOB_ACCOUNTS_LAST_TICK =
         new MetricId(
             "floecat.service.gc.reconcile_jobs.accounts.last_tick",

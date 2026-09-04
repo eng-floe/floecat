@@ -92,6 +92,21 @@ public interface QueryContextStore extends AutoCloseable {
   Set<String> referencedPinBlobUris();
 
   /**
+   * Number of process-local immutable roots currently protecting one account.
+   *
+   * <p>This is a control-path status value, not a query-path lookup. Counting the existing root set
+   * keeps handoff readiness derived from the same source CAS GC uses instead of maintaining a
+   * second lifecycle that could drift from it.
+   */
+  default long referencedPinBlobCount(String accountId) {
+    if (accountId == null || accountId.isBlank()) {
+      return 0L;
+    }
+    String prefix = ai.floedb.floecat.service.repo.model.Keys.accountRootPrefix(accountId);
+    return referencedPinBlobUris().stream().filter(uri -> uri.startsWith(prefix)).count();
+  }
+
+  /**
    * Register {@code blobUris} of pins being resolved for {@code queryId} as transient GC roots.
    * This closes the window between resolving a pin (capturing a table/snapshot blob that is current
    * now) and persisting it into a cached context: without it a concurrent table change could
