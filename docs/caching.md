@@ -29,8 +29,9 @@ cannot replace a newer value after eviction.
 
 | Discipline | Implementation | What it holds | Freshness contract |
 |------------|----------------|---------------|--------------------|
-| Pointers | `PointerCache` behind `CachingPointerStore` | Eleven complete SQL-addressing families plus an admission-controlled remainder for every other pointer family | No expiry. The first addressing read loads the account's four durable subtrees consistently; once complete, point misses, prefix listings and counts are authoritative and cost no store reads. Complete entries never evict. Writes **publish** rather than invalidate and are version-ordered; deletes remove. A failed load or exhausted budget marks the account degraded and falls back to the store. The unqualified `PointerStore` remains authoritative by default; query-serving repositories opt into `@CachedPointerStore` once at wiring. |
+| Pointers | `PointerCache` behind `CachingPointerStore` | Twelve complete query families, including per-engine hint pointers, plus an admission-controlled remainder for every other pointer family | No expiry. The first query-pointer read loads the account's five durable subtrees consistently; once complete, point misses, prefix listings and counts are authoritative and cost no store reads. Complete entries never evict. Writes **publish** rather than invalidate and are version-ordered; deletes remove. A failed load or exhausted budget marks the account degraded and falls back to the store. The unqualified `PointerStore` remains authoritative by default; query-serving repositories opt into `@CachedPointerStore` once at wiring. |
 | Current SQL objects | `ObjectCache` | Engine-neutral assembled relations and mapped schemas, current constraint bundles, and small snapshot facts | Immutable identities need no invalidation. Stats writers publish facts under the generation identity committed to the table root; pinned generations remain isolated. Entries may evict because a miss is a safe reload. Account deletion evicts the account partition. |
+| Engine hints | `HintCache` | Opaque relation and column payloads for one user relation and exact `(engine kind, engine version)` | One content-addressed resource per engine version. The relation blob URI in the resource rejects hints for an older relation shape; the hint blob URI is the decoded-cache identity. Runtime writes merge through an authoritative CAS read and are fenced by the live relation pointer. Older property-backed hints remain a read fallback. System hints are already materialized in immutable `SystemNodeRegistry` snapshots and do not use this cache. |
 | Serialized blobs | `DiskBlobCache` behind `BlobCacheAccess` | CAS metadata, snapshot-manifest pages, stats generation manifests, target-stats records and reusable artifact bundles/index objects | Local NVMe, no resident entry index and no TTL. URI-keyed for immutable bodies, including newly written target-stat records; target records with logical-only URIs remain process-and-pointer-version-keyed while they are readable. Checksummed atomic files, single-flight fills, scoped mmap reads, fenced account-partition eviction, and background budget sweeping. Immutable range reads use a resident whole body when available or admit only the requested range. Bulk listings consume hits but do not fill misses. |
 | Per-query state | `QueryContextStore` and per-query memos | `QueryContext` (pins, snapshot set, expansion map) keyed by query ID | Scoped to one query lease; consistency comes from pinning, not freshness. |
 
@@ -73,7 +74,7 @@ sizing harness use the same arithmetic.
 | `CaffeineMemoryCache` | The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Cold loads are single-flight and may compose other keys from the same cache. Refuses a non-positive budget at construction. |
 | `CacheWeights` | Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (`WeightedValue` first, then protobuf, text, `byte[]`, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte. |
 | `BlobCache` / `DiskBlobCache` | Scoped serialized whole-body and range reads with fill or bypass-fill intent, unconditional publication, key/account eviction, mmap lifetime tracking, and sweeping. A range hit can slice a resident whole body; a miss admits only that exact range, avoiding a full-object fetch for a small block. Files are addressed directly from hashed identities, so restart does not require rebuilding a heap index. Disk failures fail open to the source store; corrupt entries are discarded and refilled. |
-| `CacheFamily` | Stable telemetry identities: `POINTER`, `OBJECT`, and `BLOB` today. Pointer and Object use the shared heap budget; Blob has an independent physical-volume budget. |
+| `CacheFamily` | Stable telemetry identities: `POINTER`, `OBJECT`, `HINT`, and `BLOB`. Pointer, Object and Hint use the shared heap budget; Blob has an independent physical-volume budget. |
 | `CacheBudget` / `CacheBudgetResolver` | One total split across the families. Pure arithmetic in `CacheBudget.split`; `CacheBudgetResolver` (`service/cache/`) reads the configuration and runs it at startup. |
 | `CacheEvents` | The common event baseline: `hit` (with how long it took to serve, so a caller that waited on someone else's load is not an instant hit), `miss`, `loadTime`, `loadFailed`, `loadDiscarded`, `admissionRejected`, `writeThrough` and `evicted`. Write-through reports whether the cache applied the publication or skipped it through a safety guard. Bulk reads report hits and misses per distinct key and one duration per loader invocation. A disk cache can reuse these metrics and add mapping/sweep signals without implementing `MemoryCache`. The module reports events; the container names the metrics. |
 
@@ -92,16 +93,18 @@ Only implemented families appear in `CacheFamily`. `CacheBudgetResolver` assigns
 families with heap share/max-byte configuration; Blob is constructed from
 `floecat.cache.blob.disk.*` and therefore cannot accidentally consume the in-memory budget.
 
-`floecat.cache.pointer.share` is 0.096, from the reference sizing scenario: a 100,000-table account
-at 100 columns needs 0.32 GB of addressing out of the 3.34 GB the memory caches hold between them
-(Pointers, Objects and Hints). The share resolves against that total, not against the heap — the
+`floecat.cache.pointer.share` is 0.123, from the reference sizing scenario: a 100,000-table account
+at 100 columns and two engine versions needs about 0.42 GB of query pointers out of the 3.44 GB the
+memory caches hold between them (Pointers, Objects and Hints). This includes the 0.10 GB of hint
+pointers required to make an absent hint authoritative without a KV read. The share resolves
+against that total, not against the heap — the
 heap is one `heap-share` step above it. That is a starting point, not a law.
 Addressing is width-independent — it costs the same whatever the columns look like — so a
 proportional share over-allocates it on a wide catalog and starves it on a narrow one, where the
 same fixed need is a much larger fraction of a much smaller total. `max-bytes` is what pins it
 against that, and exceeding the budget costs store reads rather than wrong answers.
 
-`floecat.cache.object.share` is 0.775. Objects holds one engine-neutral assembled `RelationInfo`
+`floecat.cache.object.share` is 0.752. Objects holds one engine-neutral assembled `RelationInfo`
 and its mapped `SchemaDescriptor` per immutable relation identity, mapped schemas by their real
 mapping inputs, decoded constraint bundles by immutable content URI, and the two small snapshot
 facts used by relation assembly. A table relation key hashes the definition and schema identities
@@ -126,7 +129,17 @@ publication race. Immutable relation, schema, constraint, and current-generation
 no mutation invalidation. Account deletion drops the account partition while the deletion fence is
 held.
 
-The pointer and object caches are the first specialized layers built on the shared in-memory
+`floecat.cache.hint.share` is 0.125. Hints uses the same `MemoryCache` implementation and metric
+contract as Objects, but a separate budget because its entries change with engine versions rather
+than relation or ingest identities. `MetaGraph` attaches only the requested engine's hints to user
+relations; callers never select storage or cache behavior. A warm lookup still resolves the hint
+pointer through Pointers, then finds the decoded body by immutable URI, so it performs no KV or S3
+read. The runtime persistence adapter compares submitted payloads with that decoded entry before
+entering the authoritative mutation path, so reusing a complete warm hint does not re-read or
+rewrite it. Table/view deletion removes every engine-version pointer, and account deletion fences
+and evicts the full partition.
+
+The pointer, object, and hint caches are the specialized layers built on the shared in-memory
 contract. The pointer cache's independent durable subtrees load through a bounded metadata
 fan-out; `floecat.cache.pointer.load-parallelism=0` derives the bound from the processors available
 to the JVM, while a positive value pins it. A failed or capacity-rejected index remains store-backed
@@ -182,6 +195,10 @@ that a cache is there holding nothing.
 `floecat.cache.object.enabled=false` keeps the same object-facing APIs but loads every relation,
 schema, constraint bundle, and snapshot-facts value directly. Callers do not select cached versus
 uncached reads themselves.
+
+`floecat.cache.hint.enabled=false` keeps the same graph-facing API and loads the current hint body
+directly. It does not revert storage to relation properties; that map is compatibility input for
+data written by older releases only.
 
 `floecat.cache.blob.disk.enabled=false` preserves the same repository API and reads serialized
 bodies directly from object storage. The disk path is not opened when disabled.

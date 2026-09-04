@@ -43,8 +43,9 @@ facade sit inside `service/metagraph`. The split looks like this:
   DirectoryService’s ResolveFQ list/prefix semantics.
 - `service/metagraph/snapshot/` – `SnapshotHelper` encapsulates snapshot pinning and schema resolution,
   wrapping the SnapshotService RPC stub.
-- `service/metagraph/hint/` – `EngineHintManager` routes registered hint providers, matches them
-  against `EngineKey`, and caches payloads so planners never race over engine versions.
+- `service/cache/HintCache` – resolves, caches, and attaches persisted user-relation hints for the
+  exact requested engine. `service/metagraph/hint/EngineHintPersistenceImpl` is the runtime SPI
+  adapter that writes through this module.
 - `service/metagraph/overlay/` – `UserGraph` (the Metadata Graph façade, see
   `service/metagraph/overlay/user/UserGraph.java`) composes the helpers above, exposes the public API,
   and keeps a `CatalogGraphView`-friendly view via `MetaGraph`. `SystemGraph` (in
@@ -75,10 +76,10 @@ Common fields:
 | `engineHints()`        | Map keyed by `EngineHintKey(engineKind, engineVersion, payloadType)` → opaque `EngineHint`.  |
 
 ### Engine Hints
-`EngineHint` is a small struct with `payloadType`, `payload`, and optional metadata; the `payloadType` string
-matches the hint provider’s advertised `payloadType`/`payload_type` so callers can fetch the right payload. Planners can register
-adapters that compute hints on demand and stash them inside the node map. Consumers should treat the
-payload as immutable and versioned.
+`EngineHint` is a small immutable value with `payloadType`, opaque bytes, and optional metadata.
+User-relation hints are persisted in one dedicated resource per `(relation, engine kind, engine
+version)` and attached by `MetaGraph`; system-node hints are materialized directly from builtin
+definitions. Consumers read the node map and do not know which source supplied it.
 
 ### Version‑Specificity and Matching Semantics
 Engine‑specific hint providers rely on `EngineSpecificMatcher`, which compares an engine’s
@@ -107,14 +108,14 @@ Each `engine_specific` block may also attach arbitrary key/value `properties`. W
 materialises a `(engine_kind, engine_version)` bundle it keeps only the rules that match the requested
 engine/version, so the filtered catalog (and `GetSystemObjects` response) contains exactly the
 entries that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in every rule;
-entries that omit it inherit the file’s engine kind. Builtin nodes intentionally stay rule-free; the
-`SystemCatalogHintProvider` exposes the matching rules’ properties through publisher-defined payload
-types (the `payload_type` field in the catalog rule), so planners request the hint whose `payloadType`
-matches the catalog payload. Documented payload types live alongside the catalog definitions. Catalog
+entries that omit it inherit the file’s engine kind. The registry materializes matching rules as
+immutable node hints under publisher-defined payload types (the `payload_type` field in the catalog
+rule), so planners request the hint whose `payloadType` matches the catalog payload. Documented
+payload types live alongside the catalog definitions. Catalog
 authors should prefer stable, namespaced strings (e.g., `builtin.systemcatalog.function.semantic+json`
 or `floe.type+proto`) so that consumers can register decoders per payload family and avoid accidental
 collisions. Catalog authors control override behavior by ordering `engine_specific` rules intentionally:
-entries stay in pbtxt order (including overlay merges), and the provider treats the *last* matching
+entries stay in pbtxt order (including overlay merges), and the mapper treats the *last* matching
 rule as the one to publish.
 
 The matcher applies all engine-specific constraints eagerly when materialising builtin bundles. For a
@@ -128,15 +129,13 @@ recomputing the catalog data, and because builtin catalogs are immutable per eng
 keeps them entirely in memory until FloeCAT restarts.
 
 ### Deterministic Hint Caching
-The hint system used by builtin catalog providers and other planners is backed by a weight-bounded
-Caffeine cache in `EngineHintManager`, keyed on `(resourceId, cacheIdentity, engineHintKey,
-fingerprint)`. `cacheIdentity` is the node's content-stable identity (blob URI for user nodes), so
-a DDL that writes a new blob naturally keys new hint entries without invalidation. The fingerprint
-is provider‑defined and ensures that changes in provider logic (e.g., version of a builtin
-definition, rule filtering logic, or planner‑specific metadata) produce new cached entries. Cache
-eviction is weight‑aware (`floecat.metadata.hint.cache-max-weight`, default 64 MB, 30‑minute
-access TTL): inserts that exceed the configured maximum immediately trigger synchronous eviction
-when running in test mode, and asynchronous eviction in production.
+`HintCache` owns the only dynamic hint cache. Its key includes account, relation, exact engine
+identity, and the content-addressed hint blob URI. A pointer move therefore selects a new decoded
+entry without invalidation, while a warm pointer and body lookup performs no store reads. The
+resource also records the relation blob URI whose metadata produced the payload; a mismatch is a
+safe miss and the runtime recomputes the hint. Legacy `engine.hint.*` relation properties remain a
+fallback during migration, but new writes never rewrite the relation blob. Builtin hints do not
+need this cache: `SystemNodeRegistry` already caches complete immutable engine-version snapshots.
 
 ## Graph APIs
 The `UserGraph` façade (CDI `@ApplicationScoped`, see `service/metagraph/overlay/user/UserGraph.java`)
@@ -155,9 +154,11 @@ exposes the Metadata Graph APIs that higher layers call. Key methods:
 
 ### Engine Hint Retrieval
 All tables and views participating in planning may embed engine‑specific hints. The Metadata Graph
-delegates hint evaluation to the EngineHintManager, which selects providers based on node kind,
-hint type, and engine availability. Hints are cached per fingerprint and engine key so that
-planners requesting different engine versions or planner modes never interfere with one another.
+attaches only the exact requested engine version through `HintCache`. Floecat-runtime still owns
+hint validation, reuse, and computation through `EngineMetadataDecorator`; it reads the attached
+maps from `relation.node()`, computes missing or stale payloads, and persists the result through
+`EngineHintPersistence`. Engine versions cannot overwrite one another because they have different
+pointers and blobs.
 
 Internally `resolve(ResourceId)`:
 
