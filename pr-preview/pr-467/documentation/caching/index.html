@@ -1843,7 +1843,7 @@ Target-stats record blobs are deliberately <strong>not</strong> in the <code>Imm
 deterministic (not content-addressed) URIs and a re-capture may overwrite one in place, so
 URI-keyed caching would be unsound for them.</p>
 <h2 id="deliberately-live-reads">Deliberately live reads<a class="headerlink" href="#deliberately-live-reads" title="Permanent link">&para;</a></h2>
-<p>Six reads bypass every cache because their result is a detector, not content:</p>
+<p>These reads bypass every cache because their result is a detector, not content:</p>
 <table>
 <thead>
 <tr>
@@ -1854,9 +1854,9 @@ URI-keyed caching would be unsound for them.</p>
 </thead>
 <tbody>
 <tr>
-<td>Pin-root HEAD</td>
-<td><code>PinValidator.validate</code></td>
-<td>The pin's integrity contract: one HEAD confirms the pinned root blob exists at the pinned version. The CAS GC min-age fence measures age since the blob was <em>written</em>, so a recently observed etag proves nothing about the blob still existing.</td>
+<td>Resolving-pin root guard, currency and manifest proof</td>
+<td><code>QueryContextStoreImpl.requirePinnedRootLive</code></td>
+<td>Asks whether a pinned root is still <em>present</em> before it is registered as a GC root — the bytes are immutable, but their presence is exactly what a sweep changes, so a cache hit cannot answer the question. The same read then follows a <em>mutable</em> pointer to decide whether the root is current, and proves the manifest head or chain is still live.</td>
 </tr>
 <tr>
 <td>Frozen stats-manifest read</td>
@@ -1864,27 +1864,37 @@ URI-keyed caching would be unsound for them.</p>
 <td>This read <em>is</em> the scan's retention guard. A cached generation ID would let a scan page "successfully" over a reclaimed generation — empty pages, silently truncated results — exactly when the guard must fire.</td>
 </tr>
 <tr>
-<td>Pinned table + snapshot loads</td>
-<td><code>ScanBundleService.initScan</code></td>
-<td><code>requirePinned*</code>'s contract is that a missing pinned blob fails as catalog-integrity corruption; a still-resident decode must not mask a swept blob. Once per scan session, not per page.</td>
+<td>Published-generation and manifest-page checks</td>
+<td><code>StatsRepository.requirePublishedGenerationLive</code>, <code>TableRootRepository.getManifestPageLive</code></td>
+<td>Same shape: emptiness is the retention verdict.</td>
 </tr>
 <tr>
-<td>Pinned snapshot schema load</td>
-<td><code>SnapshotHelper.schemaJsonFor</code></td>
-<td>Same pin-integrity contract for the schema read from the pinned snapshot blob.</td>
+<td>Dangling-pointer verdict</td>
+<td><code>NodeLoader.reload</code></td>
+<td>Emptiness is the verdict itself: a resident decode would report a healthy node over a pointer whose blob is gone.</td>
 </tr>
 <tr>
-<td>Pinned table-node load</td>
-<td><code>NodeLoader.tableFromBlob</code></td>
-<td>A query pinned to a blob must read that exact blob; a miss fails hard instead of drifting to current state.</td>
+<td>Reusable-candidate load</td>
+<td><code>SnapshotRepository.loadReusableCandidate</code></td>
+<td>Emptiness raises a retryable storage abort: the candidate is expected to be there, so a resident decode of a swept blob would let the reuse path proceed on a candidate the store no longer holds.</td>
 </tr>
 <tr>
-<td>Pinned constraints load</td>
-<td><code>PlannerStatsBundleService</code></td>
-<td>Emptiness is the broken-retention detector (pinned blobs are GC-rooted for the query's lifetime); a resident decode must not suppress the warning where cache warmth is highest.</td>
+<td>Commit funnel, pointer and blob</td>
+<td><code>TableRootCommitter</code></td>
+<td>The CAS needs an expected version no cached pointer can supply, and the base blob's emptiness is the corruption detector.</td>
 </tr>
 </tbody>
 </table>
+<p>Pinned <strong>blob</strong> reads are not among them. The blob a pin names is immutable and content-addressed,
+so a resident decode of it <em>is</em> the pinned content rather than a stale view — the pinned table,
+snapshot, schema, node and constraint loads all read through the cache. For the table, snapshot,
+schema and node legs a genuinely missing pinned blob still fails as catalog-integrity corruption
+through <code>requirePinned*</code>, and still enqueues the table for the resync re-drive. The constraints leg
+does neither: it logs a broken-retention warning and degrades that relation to an <code>ERROR</code>
+resolution, with no repair report — and on a cache hit over a swept blob it does not fire at all.</p>
+<p>Nor is a pinned read preceded by a probe of its root. A pin whose blobs still read is coherent
+whatever has happened to the live pointer meanwhile, and a probe could only report what the read
+that needs the blob reports anyway.</p>
 <p>The repository API encodes the split: <code>getByBlobUri</code> serves cached content — a present result does
 <strong>not</strong> prove the blob still exists — while <code>getByBlobUriLive</code> bypasses the cache for reads whose
 emptiness is load-bearing.</p>
