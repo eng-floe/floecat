@@ -50,20 +50,15 @@ public final class CachedImmutableBlobStore implements BlobStore {
       throw new IllegalArgumentException("blob range is invalid");
     }
     Optional<BlobCache.Content> content =
-        cache.immutable(uri, BlobCache.Fill.BYPASS_FILL, () -> null);
+        cache.immutableRange(
+            uri, offset, length, fill, () -> delegate.getRange(uri, offset, length));
     if (content.isEmpty()) {
-      return delegate.getRange(uri, offset, length);
+      return null;
     }
     try (BlobCache.Content body = content.orElseThrow()) {
-      if (offset > body.size() || (long) length > body.size() - offset) {
-        throw new IllegalArgumentException("blob range exceeds the object");
-      }
-      var bytes = body.buffer();
-      bytes.position(Math.toIntExact(offset));
-      bytes.limit(Math.toIntExact(offset + length));
-      byte[] range = new byte[length];
-      bytes.get(range);
-      return range;
+      byte[] bytes = new byte[body.size()];
+      body.buffer().get(bytes);
+      return bytes;
     }
   }
 

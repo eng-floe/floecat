@@ -72,6 +72,13 @@ public interface BlobCache {
 
   Optional<Content> get(Key key, Fill fill, Loader loader);
 
+  /**
+   * Reads one immutable byte range. A resident whole body may satisfy the request; otherwise the
+   * exact range is cached independently so a small lookup never admits the complete large object.
+   * The loader must return exactly {@code length} bytes when the source object is present.
+   */
+  Optional<Content> getRange(Key key, long offset, int length, Fill fill, Loader loader);
+
   /** Read a batch under the same fill-fencing rules as {@link #get}. */
   Map<Key, Content> getAll(List<Key> keys, Fill fill, BatchLoader loader);
 
@@ -107,6 +114,22 @@ public interface BlobCache {
       @Override
       public Optional<Content> get(Key key, Fill fill, Loader loader) {
         byte[] loaded = loader.load();
+        return Optional.ofNullable(loaded).map(HeapContent::new);
+      }
+
+      @Override
+      public Optional<Content> getRange(
+          Key key, long offset, int length, Fill fill, Loader loader) {
+        if (key == null || fill == null || loader == null) {
+          throw new NullPointerException("blob-cache range arguments must not be null");
+        }
+        if (offset < 0L || length < 0) {
+          throw new IllegalArgumentException("blob-cache range is invalid");
+        }
+        byte[] loaded = loader.load();
+        if (loaded != null && loaded.length != length) {
+          throw new IllegalArgumentException("blob-cache range loader returned the wrong length");
+        }
         return Optional.ofNullable(loaded).map(HeapContent::new);
       }
 
