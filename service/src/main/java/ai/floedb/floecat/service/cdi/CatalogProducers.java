@@ -17,9 +17,7 @@
 package ai.floedb.floecat.service.cdi;
 
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
-import ai.floedb.floecat.metagraph.hint.EngineHintProvider;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
 import ai.floedb.floecat.systemcatalog.provider.ServiceLoaderSystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
@@ -50,13 +48,6 @@ public class CatalogProducers {
   public SystemNodeRegistry produceBuiltinNodeRegistry(
       SystemDefinitionRegistry defs, ServiceLoaderSystemCatalogProvider loader) {
     return new SystemNodeRegistry(defs, loader.internalProvider(), loader.providers());
-  }
-
-  @Produces
-  @ApplicationScoped
-  public EngineHintProvider produceSystemCatalogHintProvider(
-      SystemNodeRegistry registry, SystemDefinitionRegistry definitionRegistry) {
-    return new SystemCatalogHintProvider(registry, definitionRegistry);
   }
 
   @Produces
