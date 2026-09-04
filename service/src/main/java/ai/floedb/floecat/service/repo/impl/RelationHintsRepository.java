@@ -79,11 +79,11 @@ public final class RelationHintsRepository {
   }
 
   /** Resolve the current pointer while a caller-owned decoded cache reads the immutable body. */
-  public Optional<RelationHintsResource> getThrough(
+  public <R> Optional<R> getThrough(
       ResourceId relationId,
       String engineKind,
       String engineVersion,
-      Function<String, Optional<RelationHintsResource>> bodyReader) {
+      Function<String, Optional<R>> bodyReader) {
     return repo.getByKeyThrough(key(relationId, engineKind, engineVersion), bodyReader);
   }
 

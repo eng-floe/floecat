@@ -114,6 +114,27 @@ public record ViewNode(
     return blobUri;
   }
 
+  /** Return this immutable relation with one request's engine-specific hint maps attached. */
+  public ViewNode withEngineHints(
+      Map<EngineHintKey, EngineHint> relationHints,
+      Map<Long, Map<EngineHintKey, EngineHint>> columnHints) {
+    return new ViewNode(
+        id,
+        blobUri,
+        catalogId,
+        namespaceId,
+        displayName,
+        sqlDefinitions,
+        outputColumns,
+        baseRelations,
+        creationSearchPath,
+        origin,
+        properties,
+        owner,
+        columnHints,
+        relationHints);
+  }
+
   public String sql() {
     return preferredSqlDefinition().map(ViewSqlDefinition::getSql).orElse("");
   }

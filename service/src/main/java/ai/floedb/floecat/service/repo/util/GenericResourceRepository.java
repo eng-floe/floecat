@@ -191,7 +191,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * cached body with metadata from another version or omit the authoritative retry when a selected
    * blob vanished.
    */
-  public Optional<T> getByKeyThrough(K key, Function<String, Optional<T>> bodyReader) {
+  public <R> Optional<R> getByKeyThrough(K key, Function<String, Optional<R>> bodyReader) {
     Objects.requireNonNull(bodyReader, "bodyReader");
     return observeRepository(
         "get_by_key", () -> readThrough(schema.canonicalPointerForKey.apply(key), bodyReader));

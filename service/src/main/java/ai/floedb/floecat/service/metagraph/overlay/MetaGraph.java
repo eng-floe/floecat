@@ -34,6 +34,7 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.PageTokens;
 import ai.floedb.floecat.service.context.EngineContextProvider;
@@ -66,6 +67,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
 
   private final UserGraph userGraph;
   private final ObjectCache objects;
+  private final HintCache hints;
   private final SystemGraph systemGraph;
   private final EngineContextProvider engine;
 
@@ -73,10 +75,12 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
   public MetaGraph(
       UserGraph userGraph,
       ObjectCache objects,
+      HintCache hints,
       SystemGraph systemGraph,
       EngineContextProvider engine) {
     this.userGraph = userGraph;
     this.objects = objects;
+    this.hints = hints;
     this.systemGraph = systemGraph;
     this.engine = engine;
   }
@@ -116,7 +120,9 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
     if (sys.isPresent()) {
       return sys;
     }
-    return userGraph.resolve(id);
+    return userGraph
+        .resolve(id)
+        .map(node -> node instanceof RelationNode relation ? hints.attach(relation, ctx) : node);
   }
 
   /**
@@ -132,7 +138,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
   public List<RelationNode> listRelations(ResourceId catalogId) {
     EngineContext ctx = engineContext();
     return mergeLists(
-        () -> systemGraph.listRelations(catalogId, ctx), () -> listUserRelations(catalogId));
+        () -> systemGraph.listRelations(catalogId, ctx), () -> listUserRelations(catalogId, ctx));
   }
 
   /**
@@ -150,7 +156,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
     EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx),
-        () -> listUserRelations(catalogId, namespaceId));
+        () -> listUserRelations(catalogId, namespaceId, ctx));
   }
 
   /**
@@ -736,26 +742,28 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
         .toList();
   }
 
-  private List<RelationNode> listUserRelations(ResourceId catalogId) {
+  private List<RelationNode> listUserRelations(ResourceId catalogId, EngineContext context) {
     List<RelationNode> result = new ArrayList<>();
     for (TopologyGraph.NamespaceRef namespace : userGraph.listNamespaceRefs(catalogId)) {
-      result.addAll(listUserRelations(catalogId, namespace.id()));
+      result.addAll(listUserRelations(catalogId, namespace.id(), context));
     }
     return result;
   }
 
-  private List<RelationNode> listUserRelations(ResourceId catalogId, ResourceId namespaceId) {
+  private List<RelationNode> listUserRelations(
+      ResourceId catalogId, ResourceId namespaceId, EngineContext context) {
     return userGraph.listRelationRefs(catalogId, namespaceId).stream()
-        .map(this::resolveUserRelation)
+        .map(ref -> resolveUserRelation(ref, context))
         .flatMap(Optional::stream)
         .toList();
   }
 
-  private Optional<RelationNode> resolveUserRelation(TopologyGraph.RelationRef ref) {
+  private Optional<RelationNode> resolveUserRelation(
+      TopologyGraph.RelationRef ref, EngineContext context) {
     if (ref.kind() == ResourceKind.RK_VIEW) {
-      return userGraph.view(ref.id()).map(RelationNode.class::cast);
+      return userGraph.view(ref.id()).map(node -> hints.attach(node, context));
     }
-    return userGraph.table(ref.id()).map(RelationNode.class::cast);
+    return userGraph.table(ref.id()).map(node -> hints.attach(node, context));
   }
 
   @Override
