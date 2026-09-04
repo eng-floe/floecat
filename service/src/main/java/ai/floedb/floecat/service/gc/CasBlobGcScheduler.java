@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.account.AccountGcAuthority;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
@@ -55,6 +56,7 @@ public class CasBlobGcScheduler {
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<CasBlobGc> casBlobGc;
   @Inject Provider<StorageUsageMetrics> storageUsageMetrics;
+  @Inject AccountGcAuthority accountAuthority;
   @Inject Observability observability;
 
   private GcMetrics gcMetrics;
@@ -208,7 +210,34 @@ public class CasBlobGcScheduler {
         String accountId = account.getResourceId().getId();
         CasBlobGc.Result result;
         try {
-          result = gc.runForAccount(accountId, deadline);
+          if (accountAuthority == null) {
+            result = gc.runForAccount(accountId, deadline);
+          } else {
+            var acquired = accountAuthority.tryAcquireGc(accountId);
+            if (acquired.isEmpty()) {
+              gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "account-not-owner"));
+              if (!fromPage) {
+                gc.abandonContinuation();
+                continuationAccountId = "";
+                consecutiveContinuationTicks = 0;
+              } else if (advanceAccountCursor(gc)) {
+                break;
+              }
+              continue;
+            }
+            try (var permit = acquired.orElseThrow()) {
+              result = gc.runForAccount(accountId, deadline, permit);
+            }
+          }
+        } catch (AccountGcAuthority.GcPermitRevokedException revoked) {
+          gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "account-revoked"));
+          gc.abandonContinuation();
+          continuationAccountId = "";
+          consecutiveContinuationTicks = 0;
+          if (fromPage && advanceAccountCursor(gc)) {
+            break;
+          }
+          continue;
         } catch (RuntimeException e) {
           // Isolate one account's failure from the rest of the tick. A version-targeted delete
           // throws StorageAbortRetryableException on a transient SDK fault and maps non-404 S3

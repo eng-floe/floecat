@@ -30,6 +30,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.account.AccountGcAuthority;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
@@ -110,6 +111,31 @@ class CasBlobGcSchedulerTest {
 
     verify(storageUsageMetrics, never())
         .recordGcEstimate(anyString(), anyInt(), anyLong(), anyInt(), anyInt());
+  }
+
+  @Test
+  void managedSchedulerSkipsAnAccountWithoutLocalGcAuthority() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any())).thenReturn(List.of(account("acct-a")));
+    RecordingGc gc = new RecordingGc();
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
+    scheduler.accountAuthority = mock(AccountGcAuthority.class);
+    when(scheduler.accountAuthority.tryAcquireGc("acct-a")).thenReturn(Optional.empty());
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+    }
+
+    assertTrue(gc.accountIds.isEmpty());
   }
 
   @Test

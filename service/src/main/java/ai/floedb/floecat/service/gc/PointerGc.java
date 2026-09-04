@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.account.AccountGcAuthority;
 import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -97,6 +98,11 @@ public class PointerGc {
   }
 
   public Result runForAccount(String accountId, long deadlineMs) {
+    return runForAccount(accountId, deadlineMs, null);
+  }
+
+  Result runForAccount(String accountId, long deadlineMs, AccountGcAuthority.GcPermit permit) {
+    requirePermit(accountId, permit);
     int pageSize =
         ConfigProvider.getConfig()
             .getOptionalValue("floecat.gc.pointer.page-size", Integer.class)
@@ -113,8 +119,6 @@ public class PointerGc {
     int missingBlobs = 0;
     int staleSecondaries = 0;
 
-    String acct = encode(accountId);
-
     List<String> tableIds = new ArrayList<>();
 
     Result tablesById =
@@ -125,13 +129,14 @@ public class PointerGc {
             blobCache,
             p -> true,
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += tablesById.scanned;
     deleted += tablesById.deleted;
     missingBlobs += tablesById.missingBlobs;
     staleSecondaries += tablesById.staleSecondaries;
 
-    collectIds(Keys.tablePointerByIdPrefix(accountId), pageSize, tableIds);
+    collectIds(Keys.tablePointerByIdPrefix(accountId), pageSize, tableIds, permit);
 
     Result catalogsById =
         scanPrefix(
@@ -141,7 +146,8 @@ public class PointerGc {
             blobCache,
             p -> true,
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += catalogsById.scanned;
     deleted += catalogsById.deleted;
     missingBlobs += catalogsById.missingBlobs;
@@ -155,7 +161,8 @@ public class PointerGc {
             blobCache,
             p -> true,
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += namespacesById.scanned;
     deleted += namespacesById.deleted;
     missingBlobs += namespacesById.missingBlobs;
@@ -169,7 +176,8 @@ public class PointerGc {
             blobCache,
             p -> true,
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += viewsById.scanned;
     deleted += viewsById.deleted;
     missingBlobs += viewsById.missingBlobs;
@@ -183,7 +191,8 @@ public class PointerGc {
             blobCache,
             p -> true,
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += connectorsById.scanned;
     deleted += connectorsById.deleted;
     missingBlobs += connectorsById.missingBlobs;
@@ -197,7 +206,8 @@ public class PointerGc {
             blobCache,
             p -> true,
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += connectorsByName.scanned;
     deleted += connectorsByName.deleted;
     missingBlobs += connectorsByName.missingBlobs;
@@ -211,7 +221,8 @@ public class PointerGc {
             blobCache,
             p -> true,
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += integrationsById.scanned;
     deleted += integrationsById.deleted;
     missingBlobs += integrationsById.missingBlobs;
@@ -225,7 +236,8 @@ public class PointerGc {
             blobCache,
             p -> true,
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += integrationsByName.scanned;
     deleted += integrationsByName.deleted;
     missingBlobs += integrationsByName.missingBlobs;
@@ -239,7 +251,8 @@ public class PointerGc {
             blobCache,
             p -> true,
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += overlaysById.scanned;
     deleted += overlaysById.deleted;
     missingBlobs += overlaysById.missingBlobs;
@@ -259,7 +272,8 @@ public class PointerGc {
                       || key.contains("/by-catalog/"));
             },
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += overlaySecondaryPointers.scanned;
     deleted += overlaySecondaryPointers.deleted;
     missingBlobs += overlaySecondaryPointers.missingBlobs;
@@ -273,7 +287,8 @@ public class PointerGc {
             blobCache,
             p -> true,
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += catalogsByName.scanned;
     deleted += catalogsByName.deleted;
     missingBlobs += catalogsByName.missingBlobs;
@@ -293,19 +308,22 @@ public class PointerGc {
                       || key.contains(Keys.SEG_VIEWS_BY_NAME));
             },
             nowMs,
-            minAgeMs);
+            minAgeMs,
+            permit);
     scanned += catalogIndexPointers.scanned;
     deleted += catalogIndexPointers.deleted;
     missingBlobs += catalogIndexPointers.missingBlobs;
     staleSecondaries += catalogIndexPointers.staleSecondaries;
 
     for (String tableId : tableIds) {
+      requirePermit(accountId, permit);
       if (System.currentTimeMillis() >= deadlineMs) {
         break;
       }
       String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
       Result snapshotById =
-          scanPrefix(snapshotsById, pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs);
+          scanPrefix(
+              snapshotsById, pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs, permit);
       scanned += snapshotById.scanned;
       deleted += snapshotById.deleted;
       missingBlobs += snapshotById.missingBlobs;
@@ -313,7 +331,8 @@ public class PointerGc {
 
       String snapshotsByTime = Keys.snapshotPointerByTimePrefix(accountId, tableId);
       Result snapshotByTime =
-          scanPrefix(snapshotsByTime, pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs);
+          scanPrefix(
+              snapshotsByTime, pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs, permit);
       scanned += snapshotByTime.scanned;
       deleted += snapshotByTime.deleted;
       missingBlobs += snapshotByTime.missingBlobs;
@@ -328,7 +347,8 @@ public class PointerGc {
               blobCache,
               p -> p.getKey() != null && p.getKey().contains(Keys.SEG_STATS),
               nowMs,
-              minAgeMs);
+              minAgeMs,
+              permit);
       scanned += statsPointers.scanned;
       deleted += statsPointers.deleted;
       missingBlobs += statsPointers.missingBlobs;
@@ -346,6 +366,18 @@ public class PointerGc {
       Predicate<Pointer> filter,
       long nowMs,
       long minAgeMs) {
+    return scanPrefix(prefix, pageSize, deadlineMs, blobCache, filter, nowMs, minAgeMs, null);
+  }
+
+  private Result scanPrefix(
+      String prefix,
+      int pageSize,
+      long deadlineMs,
+      Map<String, Boolean> blobCache,
+      Predicate<Pointer> filter,
+      long nowMs,
+      long minAgeMs,
+      AccountGcAuthority.GcPermit permit) {
     String token = "";
     int scanned = 0;
     int deleted = 0;
@@ -353,6 +385,7 @@ public class PointerGc {
     int staleSecondaries = 0;
 
     while (System.currentTimeMillis() < deadlineMs) {
+      requirePermit(null, permit);
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       if (pointers.isEmpty()) {
@@ -360,6 +393,7 @@ public class PointerGc {
       }
 
       for (Pointer p : pointers) {
+        requirePermit(null, permit);
         if (System.currentTimeMillis() >= deadlineMs) {
           break;
         }
@@ -376,6 +410,7 @@ public class PointerGc {
         }
         String blobUri = p.getBlobUri();
         if (blobUri == null || blobUri.isBlank()) {
+          requirePermit(null, permit);
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             deleted++;
           }
@@ -405,6 +440,7 @@ public class PointerGc {
 
         if (!exists) {
           missingBlobs++;
+          requirePermit(null, permit);
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             deleted++;
           }
@@ -419,6 +455,7 @@ public class PointerGc {
         Optional<Pointer> canonical = pointerStore.get(canonicalKey);
         if (canonical.isEmpty() || !blobUri.equals(canonical.get().getBlobUri())) {
           staleSecondaries++;
+          requirePermit(null, permit);
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             deleted++;
           }
@@ -434,9 +471,11 @@ public class PointerGc {
     return new Result(scanned, deleted, missingBlobs, staleSecondaries);
   }
 
-  private void collectIds(String prefix, int pageSize, List<String> out) {
+  private void collectIds(
+      String prefix, int pageSize, List<String> out, AccountGcAuthority.GcPermit permit) {
     String token = "";
     while (true) {
+      requirePermit(null, permit);
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       for (Pointer p : pointers) {
@@ -450,6 +489,16 @@ public class PointerGc {
         break;
       }
     }
+  }
+
+  private static void requirePermit(String accountId, AccountGcAuthority.GcPermit permit) {
+    if (permit == null) {
+      return;
+    }
+    if (accountId != null && !accountId.equals(permit.accountId())) {
+      throw new IllegalArgumentException("GC permit does not match account");
+    }
+    permit.requireValid();
   }
 
   private static boolean shouldSkipPointer(String key) {

@@ -22,7 +22,9 @@ import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.cache.CacheFamily;
 import ai.floedb.floecat.cache.DiskBlobCache;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
+import ai.floedb.floecat.service.account.AccountGcAuthority;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
+import ai.floedb.floecat.service.repo.cache.AccountFencedPointerStore;
 import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.cache.CachingPointerStore;
@@ -67,9 +69,11 @@ public class MetadataCaches {
   public PointerStore cachedPointerStore(
       @RawPointerStore PointerStore raw,
       PointerCache pointers,
+      AccountGcAuthority authority,
       @ConfigProperty(name = "floecat.cache.pointer.enabled", defaultValue = "true")
           boolean enabled) {
-    return enabled ? new CachingPointerStore(raw, pointers) : raw;
+    PointerStore serving = enabled ? new CachingPointerStore(raw, pointers) : raw;
+    return new AccountFencedPointerStore(serving, authority);
   }
 
   /**

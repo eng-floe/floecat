@@ -24,6 +24,7 @@ import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.service.account.AccountGcAuthority;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -115,6 +116,7 @@ public class CasBlobGc {
   private static final String SCAN_COMPLETE = "\u0000";
   private PassContinuation continuation;
   private long activeDeadlineMs = Long.MAX_VALUE;
+  private AccountGcAuthority.GcPermit activePermit;
 
   private static final class DeferredPageState {
     private final String prefix;
@@ -185,6 +187,8 @@ public class CasBlobGc {
 
   private static final class PassContinuation {
     private final String accountId;
+    private final long assignmentVersion;
+    private final String processIncarnation;
     private final long passStartedAtMs;
     private final ReferenceIndex referenced;
     private final long referenceCapacity;
@@ -222,6 +226,8 @@ public class CasBlobGc {
 
     private PassContinuation(
         String accountId,
+        long assignmentVersion,
+        String processIncarnation,
         long passStartedAtMs,
         ReferenceIndex referenced,
         long referenceCapacity,
@@ -229,6 +235,8 @@ public class CasBlobGc {
         int maxTableIds,
         int maxGenerationKeys) {
       this.accountId = accountId;
+      this.assignmentVersion = assignmentVersion;
+      this.processIncarnation = processIncarnation;
       this.passStartedAtMs = passStartedAtMs;
       this.referenced = referenced;
       this.referenceCapacity = referenceCapacity;
@@ -383,13 +391,26 @@ public class CasBlobGc {
   }
 
   public synchronized Result runForAccount(String accountId, long deadlineMs) {
+    return runForAccount(accountId, deadlineMs, null);
+  }
+
+  synchronized Result runForAccount(
+      String accountId, long deadlineMs, AccountGcAuthority.GcPermit permit) {
+    requirePermit(accountId, permit);
     if (continuation != null && !continuation.accountId.equals(accountId)) {
       // Only one local mark epoch is retained, which gives the process a hard memory bound. The
       // scheduler prioritizes this account on the next tick; callers reaching another account in
       // the same tick receive a safe pending result without replacing the incomplete mark.
       return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false, true);
     }
+    if (continuation != null && !sameOwnershipEpoch(continuation, permit)) {
+      // A mark epoch belongs to the exact owner incarnation and assignment version that created
+      // it. Reusing it after a handoff would allow a newly assigned process to delete from an old
+      // ownership view.
+      clearContinuation();
+    }
     activeDeadlineMs = deadlineMs;
+    activePermit = permit;
     try {
       while (true) {
         try {
@@ -398,6 +419,10 @@ public class CasBlobGc {
           return result;
         } catch (DeadlineReached ignored) {
           return incompleteResult(continuation);
+        } catch (AccountGcAuthority.GcPermitRevokedException revoked) {
+          Result result = incompleteResult(continuation);
+          clearContinuation();
+          return result;
         } catch (StatsRepository.GenerationGcCapacityExceededException e) {
           if (skipOversizedGenerationTable(accountId, e)) {
             continue;
@@ -423,8 +448,26 @@ public class CasBlobGc {
         }
       }
     } finally {
+      activePermit = null;
       activeDeadlineMs = Long.MAX_VALUE;
     }
+  }
+
+  private static boolean sameOwnershipEpoch(
+      PassContinuation pass, AccountGcAuthority.GcPermit permit) {
+    long version = permit == null ? 0L : permit.assignmentVersion();
+    String incarnation = permit == null ? "" : permit.processIncarnation();
+    return pass.assignmentVersion == version && pass.processIncarnation.equals(incarnation);
+  }
+
+  private static void requirePermit(String accountId, AccountGcAuthority.GcPermit permit) {
+    if (permit == null) {
+      return;
+    }
+    if (!accountId.equals(permit.accountId())) {
+      throw new IllegalArgumentException("GC permit does not match account");
+    }
+    permit.requireValid();
   }
 
   private boolean skipOversizedGenerationTable(
@@ -578,9 +621,19 @@ public class CasBlobGc {
   }
 
   private void checkDeadline() {
+    if (activePermit != null) {
+      activePermit.requireValid();
+    }
     if (System.currentTimeMillis() >= activeDeadlineMs) {
       throw DeadlineReached.INSTANCE;
     }
+  }
+
+  private boolean deleteBlob(String key, String versionId) {
+    if (activePermit != null) {
+      activePermit.requireValid();
+    }
+    return blobStore.delete(key, versionId);
   }
 
   private boolean isRetainedContinuationIndex(ReferenceIndex index) {
@@ -659,6 +712,8 @@ public class CasBlobGc {
       continuation =
           new PassContinuation(
               accountId,
+              activePermit == null ? 0L : activePermit.assignmentVersion(),
+              activePermit == null ? "" : activePermit.processIncarnation(),
               passStart,
               newReferenceIndex(
                   referenceCapacity,
@@ -1365,7 +1420,7 @@ public class CasBlobGc {
         // the entire GC tick.
         var guarded =
             reachabilityGuard.deleteIfUnchanged(
-                state.remarkProof, () -> blobStore.delete(candidate.key(), candidate.versionId()));
+                state.remarkProof, () -> deleteBlob(candidate.key(), candidate.versionId()));
         if (guarded.changed()) {
           state.publicationAfterDelete |= !state.deletedKeys.isEmpty();
           resetDeferredRemark(tableId, state);
@@ -2359,7 +2414,7 @@ public class CasBlobGc {
           // and
           // the act name the same immutable object and the pointer stays resolvable in every
           // interleaving.
-          if (blobStore.delete(key, versionId)) {
+          if (deleteBlob(key, versionId)) {
             progress.deleted++;
             // Defensive post-delete corruption detector. The sweep only reaches here on a
             // versioned store (unversioned/blank-version blobs fail closed above), where a

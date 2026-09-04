@@ -34,9 +34,13 @@ import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.account.AccountGcAuthority;
 import ai.floedb.floecat.service.concurrent.UninterruptibleBlocker;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
+import ai.floedb.floecat.service.repo.cache.PointerCache;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
@@ -57,6 +61,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -166,6 +171,99 @@ public class QueryInputResolverTest {
       blockingGraph.allowSlowPin.countDown();
     }
     resolution.join();
+  }
+
+  @Test
+  void drainingWaitsForAnAdmittedResolutionToRootItsPinAndRejectsTheNextOne() throws Exception {
+    String accountId = "acct-owned";
+    String queryId = "q-owned";
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var context =
+        ai.floedb.floecat.service.query.impl.QueryContext.newActive(
+            queryId,
+            ai.floedb.floecat.common.rpc.PrincipalContext.newBuilder()
+                .setAccountId(accountId)
+                .build(),
+            new byte[0],
+            new byte[0],
+            new byte[0],
+            new byte[0],
+            60_000L,
+            1L,
+            rid("catalog"));
+    org.mockito.Mockito.when(store.get(queryId)).thenReturn(Optional.of(context));
+    Config config = org.mockito.Mockito.mock(Config.class);
+    org.mockito.Mockito.when(
+            config.getOptionalValue("floecat.account-ownership.mode", String.class))
+        .thenReturn(Optional.of("managed"));
+    org.mockito.Mockito.when(
+            config.getOptionalValue("floecat.account-ownership.pod-uid", String.class))
+        .thenReturn(Optional.of("pod-a"));
+    org.mockito.Mockito.when(
+            config.getOptionalValue("floecat.cache.pointer.enabled", Boolean.class))
+        .thenReturn(Optional.of(true));
+    var authority =
+        new AccountGcAuthority(config, store, org.mockito.Mockito.mock(PointerCache.class));
+    String incarnation = authority.processIncarnation();
+    authority.apply(accountId, 1L, incarnation, AccountGcAuthority.AccountMode.SERVING, false);
+
+    CountDownLatch pinStarted = new CountDownLatch(1);
+    CountDownLatch allowPin = new CountDownLatch(1);
+    metadataGraph.beforeTablePin =
+        ignored -> {
+          pinStarted.countDown();
+          try {
+            if (!allowPin.await(10, TimeUnit.SECONDS)) {
+              throw new AssertionError("timed out waiting to finish pin resolution");
+            }
+          } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(interrupted);
+          }
+        };
+    ResourceId tableId =
+        ResourceId.newBuilder()
+            .setAccountId(accountId)
+            .setId("table-owned")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    var withAuthority =
+        new QueryInputResolver(metadataGraph, store, RepositoryReads.directPolicy(), authority);
+    CompletableFuture<Void> admitted =
+        CompletableFuture.runAsync(
+            () ->
+                withAuthority.resolveInputs(
+                    queryId,
+                    "cid",
+                    List.of(QueryInput.newBuilder().setTableId(tableId).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    new SnapshotPinMemo(),
+                    null));
+
+    assertTrue(pinStarted.await(10, TimeUnit.SECONDS));
+    authority.apply(accountId, 2L, incarnation, AccountGcAuthority.AccountMode.DRAINING, false);
+    assertEquals(1L, authority.status(accountId).activeResolutions());
+    assertThrows(
+        StorageAbortRetryableException.class,
+        () ->
+            withAuthority.resolveInputs(
+                queryId,
+                "cid-2",
+                List.of(QueryInput.newBuilder().setTableId(tableId).build()),
+                Optional.empty(),
+                Optional.empty(),
+                new SnapshotPinMemo(),
+                null));
+
+    allowPin.countDown();
+    admitted.get(10, TimeUnit.SECONDS);
+    org.mockito.Mockito.verify(store)
+        .registerResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq(queryId),
+            org.mockito.ArgumentMatchers.eq(tableId),
+            org.mockito.ArgumentMatchers.anyCollection());
+    assertEquals(0L, authority.status(accountId).activeResolutions());
   }
 
   @Test
