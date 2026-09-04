@@ -1897,6 +1897,14 @@ it.</p>
 properties route validation of credentials vended by Unity; they do not supply storage credentials.
 There is no <code>s3.access-point</code> property: validation probes the bucket named in the object URI, which
 is what a reader addresses, so an access point set here would describe an endpoint no scan uses.</p>
+<p><code>s3.endpoint</code> must be HTTPS unless the deployment sets
+<code>FLOECAT_SECURITY_ALLOW_CLEARTEXT_S3_ENDPOINTS=true</code>. A Unity vend is published only when it carries
+an AWS session token, which travels in a request header and is replayable against the table's
+storage prefix until it expires, and the endpoint is republished to reconcile and query workers. See
+<a href="../operations/#cleartext-s3-endpoints">Operations</a>.</p>
+<p><code>s3.region</code> may be spelled <code>region</code>, <code>client.region</code>, or <code>aws.region</code>; whichever is present decides
+the region for both validation and reads. Only when none is set does the deployment's
+<code>floecat.storage.aws.region</code> apply.</p>
 <h2 id="lifecycle">Lifecycle<a class="headerlink" href="#lifecycle" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Overlay creation requires an existing integration.</li>

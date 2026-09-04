@@ -523,6 +523,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#cleartext-s3-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cleartext S3 endpoints
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#reconciler-deployment-modes" class="md-nav__link">
     <span class="md-ellipsis">
       Reconciler deployment modes
@@ -1807,6 +1816,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#cleartext-s3-endpoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cleartext S3 endpoints
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#reconciler-deployment-modes" class="md-nav__link">
     <span class="md-ellipsis">
       Reconciler deployment modes
@@ -1944,7 +1962,26 @@ auth resolution path, not a connector-specific feature.</p>
   does not disable the private-address or loopback HTTP guards.</li>
 <li>The same shared validation applies to Delta/Unity, Iceberg REST, and any other connector auth
   flow that performs service-side token acquisition.</li>
+<li>Where the allowlist is set, it is also applied when a Catalog Integration's OAuth
+  client-credentials <code>token_uri</code> is created or updated, for every integration type. An integration
+  whose <code>token_uri</code> is outside the list cannot be written until the list covers it. This is a
+  write-path check only: records persisted before the check existed are not re-validated, and the
+  endpoint derived from <code>catalog_uri</code> when <code>token_uri</code> is omitted is not covered.</li>
 </ul>
+<h3 id="cleartext-s3-endpoints">Cleartext S3 endpoints<a class="headerlink" href="#cleartext-s3-endpoints" title="Permanent link">&para;</a></h3>
+<p>A Unity Catalog Integration may set <code>s3.endpoint</code> to reach an S3-compatible store. Floecat requires
+HTTPS there by default, because a Unity storage vend is only published when it carries an AWS
+session token: that token travels in the <code>X-Amz-Security-Token</code> header on every signed request, and
+anyone who observes it can replay it against the table's storage prefix until it expires. The value
+is also republished to reconcile and query workers, so the exposure is not limited to validation.</p>
+<ul>
+<li><code>FLOECAT_SECURITY_ALLOW_CLEARTEXT_S3_ENDPOINTS=true</code> – permits an <code>http://</code> <code>s3.endpoint</code>. Set
+  this only where the network between Floecat, its workers, and the object store is trusted; MinIO
+  and LocalStack deployments are the usual reason. The bundled Docker Compose sets it because its
+  S3 is LocalStack over HTTP.</li>
+</ul>
+<p>The address-class guard applies to <code>s3.endpoint</code> under either scheme: a link-local, wildcard, or
+multicast address is refused whether or not cleartext is permitted.</p>
 <h3 id="reconciler-deployment-modes">Reconciler deployment modes<a class="headerlink" href="#reconciler-deployment-modes" title="Permanent link">&para;</a></h3>
 <p>The reconciler runs in three shapes from the same artifact:</p>
 <ul>
