@@ -27,6 +27,7 @@ import ai.floedb.floecat.catalog.rpc.RelationHintsResource;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.hint.EngineHintMetadata;
+import ai.floedb.floecat.metagraph.hint.EngineHintPersistence;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
@@ -37,6 +38,7 @@ import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.repo.impl.RelationHintsRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import com.google.protobuf.ByteString;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -93,6 +95,47 @@ public final class HintCache {
     return withHints(node, hints);
   }
 
+  /**
+   * Whether the current resource already contains every supplied hint for this relation identity.
+   *
+   * <p>This is the warm-path guard for the runtime's best-effort persistence callback. The runtime
+   * may submit hints that it just reused from the relation node; proving they are already current
+   * through the query-serving pointer and decoded caches avoids entering the authoritative mutation
+   * path merely to discover a no-op. A false answer is only a hint to attempt the fenced merge
+   * below; mutation correctness never relies on this read.
+   */
+  public boolean containsAll(
+      ResourceId relationId,
+      String relationIdentity,
+      String engineKind,
+      String engineVersion,
+      String relationPayloadType,
+      byte[] relationPayload,
+      List<EngineHintPersistence.ColumnHint> columnHints) {
+    Objects.requireNonNull(relationId, "relationId");
+    if (!enabled || relationIdentity == null || relationIdentity.isBlank()) {
+      return false;
+    }
+    Optional<CachedHints> current =
+        repository.getThrough(
+            relationId,
+            engineKind,
+            engineVersion,
+            blobUri -> readBody(relationId, engineKind, engineVersion, blobUri));
+    return current
+        .filter(cached -> relationIdentity.equals(cached.relationIdentity()))
+        .map(
+            cached ->
+                containsAll(
+                    cached.hints(),
+                    relationPayloadType,
+                    relationPayload,
+                    columnHints,
+                    engineKind,
+                    engineVersion))
+        .orElse(false);
+  }
+
   /** Merge one decorator result and publish the committed immutable body into this process. */
   public void persist(
       ResourceId relationId,
@@ -101,7 +144,7 @@ public final class HintCache {
       String engineVersion,
       String relationPayloadType,
       byte[] relationPayload,
-      List<ai.floedb.floecat.metagraph.hint.EngineHintPersistence.ColumnHint> columnHints) {
+      List<EngineHintPersistence.ColumnHint> columnHints) {
     Objects.requireNonNull(relationId, "relationId");
     Objects.requireNonNull(relation, "relation");
     String relationIdentity = requireText(relation.getBlobUri(), "relation blob identity");
@@ -232,7 +275,7 @@ public final class HintCache {
       RelationHintsResource base,
       String relationPayloadType,
       byte[] relationPayload,
-      List<ai.floedb.floecat.metagraph.hint.EngineHintPersistence.ColumnHint> columnHints) {
+      List<EngineHintPersistence.ColumnHint> columnHints) {
     RelationHintsResource.Builder builder = base.toBuilder();
     if (relationPayload != null) {
       builder.putRelationHints(
@@ -341,6 +384,43 @@ public final class HintCache {
 
   private static boolean matches(EngineHintKey key, String engineKind, String engineVersion) {
     return key.engineKind().equals(engineKind) && key.engineVersion().equals(engineVersion);
+  }
+
+  private static boolean containsAll(
+      Hints current,
+      String relationPayloadType,
+      byte[] relationPayload,
+      List<EngineHintPersistence.ColumnHint> columnHints,
+      String engineKind,
+      String engineVersion) {
+    if (relationPayload != null
+        && !contains(
+            current.relation(),
+            new EngineHintKey(engineKind, engineVersion, relationPayloadType),
+            relationPayload)) {
+      return false;
+    }
+    if (columnHints == null) {
+      return true;
+    }
+    for (var hint : columnHints) {
+      if (hint == null || hint.payload() == null || hint.columnId() <= 0L) {
+        continue;
+      }
+      if (!contains(
+          current.columns().getOrDefault(hint.columnId(), Map.of()),
+          new EngineHintKey(engineKind, engineVersion, hint.payloadType()),
+          hint.payload())) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static boolean contains(
+      Map<EngineHintKey, EngineHint> current, EngineHintKey key, byte[] payload) {
+    EngineHint hint = current.get(key);
+    return hint != null && Arrays.equals(hint.payload(), payload);
   }
 
   private static RelationNode withHints(RelationNode node, Hints hints) {
