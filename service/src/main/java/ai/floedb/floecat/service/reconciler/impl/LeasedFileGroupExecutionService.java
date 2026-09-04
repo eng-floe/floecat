@@ -46,8 +46,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
-import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleSelection;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultRequest;
 import ai.floedb.floecat.reconciler.rpc.CommitLeasedFileGroupResultResponse;
 import ai.floedb.floecat.reconciler.rpc.FileGroupArtifactBundleDescriptor;
@@ -642,11 +642,9 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
 
   private Set<Keys.GenerationKey> inheritedIndexSidecarGenerations(
       ResourceId tableId, ReconcileFileGroupTask plannedTask) {
-    List<ReusableArtifactBundleSelection> selections = new ArrayList<>();
-    for (ReconcileFileExecutionPlan executionPlan : plannedTask.fileExecutionPlans()) {
-      selections.addAll(executionPlan.reusableArtifactBundleSelections());
-    }
-    return indexArtifactRepository.inheritedManagedSidecarGenerations(tableId, selections);
+    return indexArtifactRepository.inheritedManagedSidecarGenerations(
+        tableId,
+        ReusableArtifactBundles.inheritedIndexArtifactBundleSelections(List.of(plannedTask)));
   }
 
   private void stageArtifactReferences(StagedArtifactReferences staged) {

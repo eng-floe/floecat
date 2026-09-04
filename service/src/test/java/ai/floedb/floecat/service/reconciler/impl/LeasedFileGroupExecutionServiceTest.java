@@ -808,7 +808,7 @@ class LeasedFileGroupExecutionServiceTest {
                 "stats-signature",
                 "index-signature",
                 Map.of(),
-                List.of(inheritedSelection));
+                List.of(inheritedSelection, inheritedSelection));
     ReconcileFileGroupTask plannedGroup =
         ReconcileFileGroupTask.of("plan-1", "group-1", TABLE_ID, SNAPSHOT_ID, List.of(filePath))
             .withFileExecutionPlans(List.of(executionPlan));
@@ -876,6 +876,17 @@ class LeasedFileGroupExecutionServiceTest {
                 .addFileStatsTargetStorageIds(fileStats.getTargetStorageId())
                 .addIndexArtifactTargetStorageIds(indexArtifact.getTargetStorageId())
                 .build()));
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<Iterable<ReusableArtifactBundleSelection>> inheritedSelections =
+        ArgumentCaptor.forClass(Iterable.class);
+    verify(indexArtifactRepository)
+        .inheritedManagedSidecarGenerations(eq(tableId()), inheritedSelections.capture());
+    List<ReusableArtifactBundleSelection> aggregatedSelections =
+        java.util.stream.StreamSupport.stream(inheritedSelections.getValue().spliterator(), false)
+            .toList();
+    assertEquals(1, aggregatedSelections.size());
+    assertEquals(List.of(filePath), aggregatedSelections.getFirst().indexFilePaths());
 
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<StatsStore.PrewrittenStatsObject>> objects =
