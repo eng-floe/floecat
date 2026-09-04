@@ -1833,7 +1833,8 @@ longest prefix, but only complete renewable sessions are candidates: a longer-pr
 missing a session token or a parseable expiry loses to a shorter complete one. A Catalog Integration
 vends only when what it holds is itself a temporary session, and Floecat does not narrow a
 credential with STS, so a bare key pair is refused rather than returned. Callers reacquire
-credentials at the returned expiry, which is always present.</p>
+credentials at the returned expiry, which this provider always supplies; the SPI itself still
+permits an absent expiry and <code>CatalogClient.vendStorageCredentials</code> requires callers to handle one.</p>
 <p>A response the provider cannot use is reported rather than returned empty, because an Integration
 has no storage authority to fall back to. <code>INVALID_CONFIGURATION</code> covers an incomplete tuple, a
 covering credential that is not a renewable session, and an expiry that does not parse;
