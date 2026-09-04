@@ -9,7 +9,6 @@ package ai.floedb.floecat.service.repo.cache;
 
 import ai.floedb.floecat.cache.BlobCache;
 import ai.floedb.floecat.common.rpc.BlobHeader;
-import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import java.nio.ByteBuffer;
 import java.util.LinkedHashSet;
@@ -25,8 +24,7 @@ import java.util.Optional;
  * the reusable-artifact index). It must never wrap mutable objects: URI-only cache identity is
  * deliberately stronger than the general blob-store contract.
  */
-public final class CachedImmutableBlobStore
-    implements BlobStore, ReusableArtifactIndexStore.ScopedBatchBlobStore {
+public final class CachedImmutableBlobStore implements BlobStore {
   private final BlobStore delegate;
   private final BlobCacheAccess cache;
   private final BlobCache.Fill fill;
@@ -76,11 +74,11 @@ public final class CachedImmutableBlobStore
   }
 
   @Override
-  public ReusableArtifactIndexStore.ScopedObjects getBatchScoped(List<String> uris) {
+  public BlobStore.ScopedObjects getBatchScoped(List<String> uris) {
     BlobCacheAccess.Contents contents =
         cache.immutableContents(
             new LinkedHashSet<>(uris).stream().toList(), fill, delegate::getBatch);
-    return new ReusableArtifactIndexStore.ScopedObjects() {
+    return new BlobStore.ScopedObjects() {
       @Override
       public ByteBuffer get(String uri) {
         return contents.get(uri).orElse(null);
