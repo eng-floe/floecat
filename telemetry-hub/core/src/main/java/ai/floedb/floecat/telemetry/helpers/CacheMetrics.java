@@ -70,6 +70,19 @@ public final class CacheMetrics extends BaseMetrics {
     observability.counter(Telemetry.Metrics.CACHE_LOADS_DISCARDED, 1, metricTags(extraTags));
   }
 
+  /** One valid value not retained because it did not fit the cache budget. */
+  public void recordAdmissionRejected(Tag... extraTags) {
+    observability.counter(Telemetry.Metrics.CACHE_ADMISSION_REJECTED, 1, metricTags(extraTags));
+  }
+
+  /** One write-through publication, tagged by whether it retained the proposed value. */
+  public void recordWriteThrough(boolean applied, Tag... extraTags) {
+    List<Tag> dynamic = new ArrayList<>();
+    dynamic.add(Tag.of(TagKey.RESULT, applied ? "applied" : "skipped"));
+    addExtra(dynamic, extraTags);
+    observability.counter(Telemetry.Metrics.CACHE_WRITE_THROUGH, 1, metricTags(dynamic));
+  }
+
   public void trackSize(Supplier<? extends Number> supplier, String description, Tag... extraTags) {
     registerGauge(Telemetry.Metrics.CACHE_SIZE, supplier, description, metricTags(extraTags));
   }

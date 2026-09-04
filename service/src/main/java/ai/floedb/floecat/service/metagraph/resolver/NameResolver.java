@@ -18,16 +18,16 @@ package ai.floedb.floecat.service.metagraph.resolver;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
-import ai.floedb.floecat.catalog.rpc.Catalog;
-import ai.floedb.floecat.catalog.rpc.Namespace;
-import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.spi.TopologyGraph;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository.CatalogRef;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
@@ -40,6 +40,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -52,7 +53,7 @@ import java.util.function.Supplier;
  * <p>MetadataGraph and FullyQualifiedResolver delegate to this class so the main façade stays
  * focused on caching and orchestration.
  *
- * <p>No caching — pure repository calls.
+ * <p>No cache of its own — repository calls inherit the pointer cache below the store seam.
  */
 @ApplicationScoped
 public final class NameResolver {
@@ -97,7 +98,7 @@ public final class NameResolver {
         "resolve_catalog_id",
         cid,
         accountId,
-        () -> catalogByName(accountId, catalogName).map(Catalog::getResourceId));
+        () -> catalogByName(accountId, catalogName).map(CatalogRef::id));
   }
 
   public Optional<ResourceId> resolveNamespaceId(String cid, String accountId, NameRef ref) {
@@ -110,7 +111,7 @@ public final class NameResolver {
 
           return catalogByName(accountId, ref.getCatalog())
               .flatMap(catalog -> namespaceByPath(accountId, catalog, fullPath))
-              .map(Namespace::getResourceId);
+              .map(NamespaceRef::id);
         });
   }
 
@@ -127,12 +128,12 @@ public final class NameResolver {
                             .flatMap(
                                 ns ->
                                     tableRepository
-                                        .getByName(
+                                        .getRefByName(
                                             accountId,
-                                            catalog.getResourceId().getId(),
-                                            ns.getResourceId().getId(),
+                                            catalog.id().getId(),
+                                            ns.id().getId(),
                                             ref.getName())
-                                        .map(Table::getResourceId)
+                                        .map(RelationRef::id)
                                         .map(this::requireCanonicalTableId))));
   }
 
@@ -149,12 +150,12 @@ public final class NameResolver {
                             .flatMap(
                                 ns ->
                                     viewRepository
-                                        .getByName(
+                                        .getRefByName(
                                             accountId,
-                                            catalog.getResourceId().getId(),
-                                            ns.getResourceId().getId(),
+                                            catalog.id().getId(),
+                                            ns.id().getId(),
                                             ref.getName())
-                                        .map(View::getResourceId))));
+                                        .map(RelationRef::id))));
   }
 
   /**
@@ -164,48 +165,36 @@ public final class NameResolver {
    * the shared relation-name claim), so the table-first order is deterministic.
    */
   public Optional<ResourceId> resolveRelationId(String accountId, NameRef ref) {
-    return resolveRelationId(accountId, ref, newScopeMemo(accountId));
+    return resolveRelation(accountId, ref);
   }
 
-  /**
-   * Batch variant of {@link #resolveRelationId}: names sharing a catalog/namespace resolve their
-   * scope once per call instead of once per name.
-   */
+  /** Batch variant of {@link #resolveRelationId}; duplicate names are resolved once per call. */
   public Map<NameRef, Optional<ResourceId>> resolveRelationIds(
       String accountId, List<NameRef> refs) {
-    ScopeMemo memo = newScopeMemo(accountId);
     var out = new LinkedHashMap<NameRef, Optional<ResourceId>>(refs.size());
     for (NameRef ref : refs) {
-      out.computeIfAbsent(ref, r -> resolveRelationId(accountId, r, memo));
+      out.computeIfAbsent(ref, r -> resolveRelation(accountId, r));
     }
     return out;
   }
 
-  private ScopeMemo newScopeMemo(String accountId) {
-    return new ScopeMemo(
-        name -> catalogByName(accountId, name),
-        (catalog, path) -> namespaceByPath(accountId, catalog, path));
-  }
-
-  private Optional<ResourceId> resolveRelationId(String accountId, NameRef ref, ScopeMemo memo) {
+  private Optional<ResourceId> resolveRelation(String accountId, NameRef ref) {
     return diagnose(
         "resolve_relation_id",
         "",
         accountId,
         () -> {
-          // Name validity is per-ref; a blank name must not consult the shared scope memo (keyed by
-          // catalog + path, name-independent) or it would starve valid siblings in this batch.
           if (!validName(ref) || !validCatalog(ref)) {
             return Optional.<ResourceId>empty();
           }
-          return memo.catalog(ref.getCatalog())
+          return catalogByName(accountId, ref.getCatalog())
               .flatMap(
                   catalog ->
-                      memo.namespace(catalog, ref.getPathList())
+                      namespaceByPath(accountId, catalog, ref.getPathList())
                           .flatMap(
                               ns -> {
-                                String catalogId = catalog.getResourceId().getId();
-                                String namespaceId = ns.getResourceId().getId();
+                                String catalogId = catalog.id().getId();
+                                String namespaceId = ns.id().getId();
                                 // One pointer read (no blob fetch) answers both kind and id via the
                                 // shared relation-name claim written by every create and rename.
                                 Optional<ResourceId> claimed =
@@ -221,15 +210,16 @@ public final class NameResolver {
                                 // Claimless rows (pre-claim): kind-specific probes.
                                 Optional<ResourceId> table =
                                     tableRepository
-                                        .getByName(accountId, catalogId, namespaceId, ref.getName())
-                                        .map(Table::getResourceId)
+                                        .getRefByName(
+                                            accountId, catalogId, namespaceId, ref.getName())
+                                        .map(RelationRef::id)
                                         .map(this::requireCanonicalTableId);
                                 if (table.isPresent()) {
                                   return table;
                                 }
                                 return viewRepository
-                                    .getByName(accountId, catalogId, namespaceId, ref.getName())
-                                    .map(View::getResourceId);
+                                    .getRefByName(accountId, catalogId, namespaceId, ref.getName())
+                                    .map(RelationRef::id);
                               }));
         });
   }
@@ -247,21 +237,18 @@ public final class NameResolver {
               .flatMap(
                   scope ->
                       tableRepository
-                          .getByName(
+                          .getRefByName(
                               accountId,
-                              scope.catalog().getResourceId().getId(),
-                              scope.namespace().getResourceId().getId(),
+                              scope.catalog().id().getId(),
+                              scope.namespace().id().getId(),
                               ref.getName())
                           .map(
-                              t -> {
-                                ResourceId tableId = requireCanonicalTableId(t.getResourceId());
+                              table -> {
+                                ResourceId tableId = requireCanonicalTableId(table.id());
                                 return new ResolvedRelation(
                                     tableId,
                                     canonicalName(
-                                        scope.catalog(),
-                                        scope.namespace(),
-                                        t.getDisplayName(),
-                                        tableId));
+                                        scope.catalog(), scope.namespace(), table.name(), tableId));
                               }));
         });
   }
@@ -271,36 +258,34 @@ public final class NameResolver {
   // ----------------------------------------------------------------------
 
   /** A validated (catalog, namespace) pair a relation name resolves within. */
-  private record Scope(Catalog catalog, Namespace namespace) {}
+  private record Scope(CatalogRef catalog, NamespaceRef namespace) {}
 
   /**
-   * Resolves the catalog and namespace a relation name lives in. The scope depends only on the
-   * catalog and path, not the relation name — so callers that memoize by {@code scopeKey} (catalog
-   * + path) must gate on {@link #validName} themselves rather than have a blank-name ref poison the
-   * shared scope entry. Shared by the relation resolution methods so the lookup is written once.
+   * Resolves the catalog and namespace a relation name lives in. Shared by the relation resolution
+   * methods so the lookup is written once.
    */
   private Optional<Scope> resolveScope(String accountId, NameRef ref) {
     if (!validCatalog(ref)) {
       return Optional.empty();
     }
-    Optional<Catalog> catalogOpt = catalogRepository.getByName(accountId, ref.getCatalog());
+    Optional<CatalogRef> catalogOpt = catalogRepository.getRefByName(accountId, ref.getCatalog());
     if (catalogOpt.isEmpty()) {
       return Optional.empty();
     }
-    Catalog catalog = catalogOpt.get();
+    CatalogRef catalog = catalogOpt.get();
     return namespaceRepository
-        .getByPath(accountId, catalog.getResourceId().getId(), ref.getPathList())
+        .getRefByPath(accountId, catalog.id().getId(), ref.getPathList())
         .map(ns -> new Scope(catalog, ns));
   }
 
-  private Optional<Catalog> catalogByName(String accountId, String name) {
-    return catalogRepository.getByName(accountId, name);
+  private Optional<CatalogRef> catalogByName(String accountId, String name) {
+    return catalogRepository.getRefByName(accountId, name);
   }
 
-  private Optional<Namespace> namespaceByPath(
-      String accountId, Catalog catalog, List<String> parents) {
+  private Optional<NamespaceRef> namespaceByPath(
+      String accountId, CatalogRef catalog, List<String> parents) {
 
-    return namespaceRepository.getByPath(accountId, catalog.getResourceId().getId(), parents);
+    return namespaceRepository.getRefByPath(accountId, catalog.id().getId(), parents);
   }
 
   // ----------------------------------------------------------------------
@@ -318,16 +303,11 @@ public final class NameResolver {
   }
 
   // canonical: namespace parents + its own display name
-  private NameRef canonicalName(Catalog catalog, Namespace ns, String displayName, ResourceId id) {
-
-    List<String> path = new ArrayList<>(ns.getParentsList());
-    if (!ns.getDisplayName().isBlank()) {
-      path.add(ns.getDisplayName());
-    }
-
+  private NameRef canonicalName(
+      CatalogRef catalog, NamespaceRef namespace, String displayName, ResourceId id) {
     return NameRef.newBuilder()
-        .setCatalog(catalog.getDisplayName())
-        .addAllPath(path)
+        .setCatalog(catalog.name())
+        .addAllPath(namespace.pathSegments())
         .setName(displayName)
         .setResourceId(id)
         .build();
@@ -349,9 +329,56 @@ public final class NameResolver {
   // Listing helpers
   // ----------------------------------------------------------------------
 
+  /** Lists lightweight namespace refs from pointers, without materializing namespace blobs. */
+  public List<TopologyGraph.NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
+    return namespaceRepository.listRefs(catalogId.getAccountId(), catalogId.getId());
+  }
+
+  /** Resolves selected namespace names by exact pointer lookup. */
+  public List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(
+      ResourceId catalogId, Set<String> names) {
+    if (names == null || names.isEmpty()) {
+      return List.of();
+    }
+    return namespaceRepository.listRefsByName(catalogId.getAccountId(), catalogId.getId(), names);
+  }
+
+  /** Lists lightweight table and view refs from the complete pointer index. */
+  public List<TopologyGraph.RelationRef> listRelationRefs(
+      ResourceId catalogId, ResourceId namespaceId) {
+    List<TopologyGraph.RelationRef> refs = new ArrayList<>();
+    refs.addAll(
+        tableRepository.listRefs(catalogId.getAccountId(), catalogId.getId(), namespaceId.getId()));
+    refs.addAll(
+        viewRepository.listRefs(catalogId.getAccountId(), catalogId.getId(), namespaceId.getId()));
+    return List.copyOf(refs);
+  }
+
+  /** Resolves selected relation names by exact table and view pointer lookups. */
+  public List<TopologyGraph.RelationRef> listRelationRefsByName(
+      ResourceId catalogId, ResourceId namespaceId, Set<String> names) {
+    if (names == null || names.isEmpty()) {
+      return List.of();
+    }
+    List<TopologyGraph.RelationRef> refs = new ArrayList<>();
+    refs.addAll(
+        tableRepository.listRefsByName(
+            catalogId.getAccountId(), catalogId.getId(), namespaceId.getId(), names));
+    refs.addAll(
+        viewRepository.listRefsByName(
+            catalogId.getAccountId(), catalogId.getId(), namespaceId.getId(), names));
+    return List.copyOf(refs);
+  }
+
   public List<ResourceId> listNamespaces(String accountId, String catalogId) {
     return diagnose(
-        "list_namespaces", "", accountId, () -> namespaceRepository.listIds(accountId, catalogId));
+        "list_namespaces",
+        "",
+        accountId,
+        () ->
+            namespaceRepository.listRefs(accountId, catalogId).stream()
+                .map(NamespaceRef::id)
+                .toList());
   }
 
   public List<ResourceId> listTableIds(String accountId, String catalogId) {
@@ -360,13 +387,14 @@ public final class NameResolver {
         "",
         accountId,
         () -> {
-          List<ResourceId> nsIds = namespaceRepository.listIds(accountId, catalogId);
-          if (nsIds.isEmpty()) return List.of();
-          if (nsIds.size() == 1) {
-            return listTableIdsInNamespace(accountId, catalogId, nsIds.get(0).getId());
+          List<NamespaceRef> namespaces = namespaceRepository.listRefs(accountId, catalogId);
+          if (namespaces.isEmpty()) return List.of();
+          if (namespaces.size() == 1) {
+            return listTableIdsInNamespace(
+                accountId, catalogId, namespaces.getFirst().id().getId());
           }
           return parallelScan(
-              nsIds, ns -> listTableIdsInNamespace(accountId, catalogId, ns.getId()));
+              namespaces, ns -> listTableIdsInNamespace(accountId, catalogId, ns.id().getId()));
         });
   }
 
@@ -377,11 +405,8 @@ public final class NameResolver {
         "",
         accountId,
         () -> {
-          List<Table> tables =
-              tableRepository.list(
-                  accountId, catalogId, namespaceId, Integer.MAX_VALUE, "", new StringBuilder());
-          return tables.stream()
-              .map(Table::getResourceId)
+          return tableRepository.listRefs(accountId, catalogId, namespaceId).stream()
+              .map(RelationRef::id)
               .map(this::requireCanonicalTableId)
               .toList();
         });
@@ -395,14 +420,14 @@ public final class NameResolver {
    * held under the process-wide (tier-2) ceiling automatically at the store, so aggregate load
    * stays bounded without this fan-out wiring any admission itself.
    */
-  private <T> List<T> parallelScan(
-      List<ResourceId> nsIds, java.util.function.Function<ResourceId, List<T>> task) {
+  private <T, N> List<T> parallelScan(
+      List<N> namespaces, java.util.function.Function<N, List<T>> task) {
     BooleanSupplier cancelled = PropagatedContext.currentCancellation();
     MetadataFanout fanout = MetadataFanout.concurrent(MAX_PARALLEL_NS_SCANS);
     List<List<T>> results =
         cancelled == null
-            ? fanout.mapOrdered(nsIds, task)
-            : fanout.mapOrdered(nsIds, task, cancelled);
+            ? fanout.mapOrdered(namespaces, task)
+            : fanout.mapOrdered(namespaces, task, cancelled);
     return results.stream().flatMap(List::stream).toList();
   }
 
@@ -422,13 +447,13 @@ public final class NameResolver {
         "",
         accountId,
         () -> {
-          List<ResourceId> nsIds = namespaceRepository.listIds(accountId, catalogId);
-          if (nsIds.isEmpty()) return List.of();
-          if (nsIds.size() == 1) {
-            return listViewIdsInNamespace(accountId, catalogId, nsIds.get(0).getId());
+          List<NamespaceRef> namespaces = namespaceRepository.listRefs(accountId, catalogId);
+          if (namespaces.isEmpty()) return List.of();
+          if (namespaces.size() == 1) {
+            return listViewIdsInNamespace(accountId, catalogId, namespaces.getFirst().id().getId());
           }
           return parallelScan(
-              nsIds, ns -> listViewIdsInNamespace(accountId, catalogId, ns.getId()));
+              namespaces, ns -> listViewIdsInNamespace(accountId, catalogId, ns.id().getId()));
         });
   }
 
@@ -439,10 +464,9 @@ public final class NameResolver {
         "",
         accountId,
         () -> {
-          List<View> views =
-              viewRepository.list(
-                  accountId, catalogId, namespaceId, Integer.MAX_VALUE, "", new StringBuilder());
-          return views.stream().map(View::getResourceId).toList();
+          return viewRepository.listRefs(accountId, catalogId, namespaceId).stream()
+              .map(RelationRef::id)
+              .toList();
         });
   }
 

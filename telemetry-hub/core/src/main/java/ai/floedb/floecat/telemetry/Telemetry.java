@@ -187,6 +187,11 @@ public final class Telemetry {
               "floecat.core.cache.evicted.weight.bytes", MetricType.COUNTER, "bytes", "v1", "core");
       public static final MetricId LOADS_DISCARDED =
           new MetricId("floecat.core.cache.loads.discarded", MetricType.COUNTER, "", "v1", "core");
+      public static final MetricId ADMISSION_REJECTED =
+          new MetricId(
+              "floecat.core.cache.admission.rejected", MetricType.COUNTER, "", "v1", "core");
+      public static final MetricId WRITE_THROUGH =
+          new MetricId("floecat.core.cache.write.through", MetricType.COUNTER, "", "v1", "core");
     }
 
     public static final class Gc {
@@ -254,6 +259,8 @@ public final class Telemetry {
     public static final MetricId CACHE_EVICTIONS = Cache.EVICTIONS;
     public static final MetricId CACHE_EVICTED_WEIGHT = Cache.EVICTED_WEIGHT;
     public static final MetricId CACHE_LOADS_DISCARDED = Cache.LOADS_DISCARDED;
+    public static final MetricId CACHE_ADMISSION_REJECTED = Cache.ADMISSION_REJECTED;
+    public static final MetricId CACHE_WRITE_THROUGH = Cache.WRITE_THROUGH;
     public static final MetricId GC_COLLECTIONS = Gc.COLLECTIONS;
     public static final MetricId GC_PAUSE = Gc.PAUSE;
     public static final MetricId GC_ERRORS = Gc.ERRORS;
@@ -404,6 +411,7 @@ public final class Telemetry {
       Set<String> cacheBase = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.CACHE_NAME);
       Set<String> cacheWithAccount = addTags(cacheBase, TagKey.ACCOUNT);
       Set<String> cacheWithResult = addTags(cacheBase, TagKey.RESULT);
+      Set<String> cacheAccountsAllowed = addTags(cacheWithAccount, TagKey.RESULT);
       Set<String> cacheLatencyAllowed = addTags(cacheWithResult, TagKey.ACCOUNT, TagKey.EXCEPTION);
       add(
           definitions,
@@ -441,6 +449,19 @@ public final class Telemetry {
               + " path. A sustained rate means the cache is not warming.");
       add(
           definitions,
+          CACHE_ADMISSION_REJECTED,
+          cacheBase,
+          cacheWithAccount,
+          "Values not retained because they exceeded the cache budget, tagged by cache name.");
+      add(
+          definitions,
+          CACHE_WRITE_THROUGH,
+          cacheWithResult,
+          addTags(cacheWithResult, TagKey.ACCOUNT),
+          "Write-through publications, tagged by whether they were applied or skipped by the"
+              + " cache's safety guards.");
+      add(
+          definitions,
           CACHE_ENABLED,
           cacheBase,
           cacheWithAccount,
@@ -461,8 +482,9 @@ public final class Telemetry {
           definitions,
           CACHE_ACCOUNTS,
           cacheBase,
-          cacheWithAccount,
-          "Number of accounts with an active cache entry, tagged by cache name.");
+          cacheAccountsAllowed,
+          "Number of accounts in a cache readiness state, tagged by cache name and optionally"
+              + " result.");
       add(
           definitions,
           CACHE_WEIGHTED_SIZE,

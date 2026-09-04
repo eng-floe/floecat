@@ -19,9 +19,8 @@ package ai.floedb.floecat.service.repo.cache;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.cache.CacheEvents;
-import ai.floedb.floecat.cache.CacheFamily;
-import ai.floedb.floecat.cache.CaffeineMemoryCache;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -33,6 +32,8 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
@@ -40,24 +41,21 @@ class CachingPointerStoreTest {
 
   private static final String ACCT = "acct-1";
   private static final String TBL = "tbl-1";
+  private static final long CACHE_BYTES = 1024L * 1024L;
 
   private final InMemoryPointerStore store = new InMemoryPointerStore();
-  private final CaffeineMemoryCache<String, Pointer> cache =
-      new CaffeineMemoryCache<>(
-          CacheFamily.POINTER, 1024L * 1024L, key -> 2L * key.length(), CacheEvents.none());
+  private final PointerCache cache = cacheFor(store);
   private final CachingPointerStore caching = new CachingPointerStore(store, cache);
+
+  private static PointerCache cacheFor(PointerStore source) {
+    return new PointerCache(AuthoritativePointerStore.of(source), CACHE_BYTES, CacheEvents.none());
+  }
 
   private static Pointer pointer(String key, String blobUri, long version) {
     return Pointer.newBuilder().setKey(key).setBlobUri(blobUri).setVersion(version).build();
   }
 
-  /**
-   * A store whose reads block until released, so a write can be interleaved with a fill.
-   *
-   * <p>The two races this class guards are both "a write landed while a read-through was in
-   * flight". Nothing in a single-threaded test can produce that interleaving, which is why they
-   * went unnoticed: the fill window is invisible unless something holds it open.
-   */
+  /** Holds a source read open so tests can place a write inside the cache-fill window. */
   private static final class BlockingReads extends InMemoryPointerStore {
     private final CountDownLatch reading = new CountDownLatch(1);
     private final CountDownLatch release = new CountDownLatch(1);
@@ -72,14 +70,22 @@ class CachingPointerStoreTest {
 
     @Override
     public Optional<Pointer> get(String key) {
-      if (!armed) {
-        return super.get(key);
-      }
-      armed = false;
+      return blockIfArmed(super.get(key));
+    }
+
+    @Override
+    public Optional<Pointer> getConsistent(String key) {
+      return blockIfArmed(super.getConsistent(key));
+    }
+
+    private Optional<Pointer> blockIfArmed(Optional<Pointer> asOfNow) {
       // Read FIRST, then hold. The interleaving that matters is a loader that already has the
       // pre-write value in hand when the write lands -- blocking before the read would simply
       // observe the write and install the right thing, which proves nothing.
-      Optional<Pointer> asOfNow = super.get(key);
+      if (!armed) {
+        return asOfNow;
+      }
+      armed = false;
       reading.countDown();
       try {
         release.await(10, TimeUnit.SECONDS);
@@ -90,12 +96,483 @@ class CachingPointerStoreTest {
     }
   }
 
+  private static class CountingReads extends InMemoryPointerStore {
+    final AtomicInteger consistentPointReads = new AtomicInteger();
+    final AtomicInteger listingReads = new AtomicInteger();
+
+    @Override
+    public Optional<Pointer> getConsistent(String key) {
+      consistentPointReads.incrementAndGet();
+      return super.getConsistent(key);
+    }
+
+    @Override
+    public List<Pointer> listPointersByPrefix(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      listingReads.incrementAndGet();
+      return super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+    }
+  }
+
+  private static final class FailingListings extends CountingReads {
+    @Override
+    public List<Pointer> listPointersByPrefixConsistent(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      listingReads.incrementAndGet();
+      throw new IllegalStateException("listing unavailable");
+    }
+  }
+
+  private static final class BlockingListings extends CountingReads {
+    private final CountDownLatch loaded = new CountDownLatch(1);
+    private final CountDownLatch release = new CountDownLatch(1);
+    private volatile boolean armed;
+
+    void armOneListing() {
+      armed = true;
+    }
+
+    @Override
+    public List<Pointer> listPointersByPrefix(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      List<Pointer> asOfNow = super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+      if (!armed) {
+        return asOfNow;
+      }
+      armed = false;
+      loaded.countDown();
+      try {
+        release.await(10, TimeUnit.SECONDS);
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        throw new AssertionError("interrupted while holding the listing race open", interrupted);
+      }
+      return asOfNow;
+    }
+
+    @Override
+    public List<Pointer> listPointersByPrefixConsistent(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      return listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+    }
+  }
+
+  private static final class ConcurrentListings extends InMemoryPointerStore {
+    private final CountDownLatch entered = new CountDownLatch(4);
+    private final AtomicInteger active = new AtomicInteger();
+    private final AtomicInteger maximumActive = new AtomicInteger();
+
+    @Override
+    public List<Pointer> listPointersByPrefix(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      int now = active.incrementAndGet();
+      maximumActive.accumulateAndGet(now, Math::max);
+      entered.countDown();
+      try {
+        if (!entered.await(10, TimeUnit.SECONDS)) {
+          throw new AssertionError("complete-index subtree loads did not run concurrently");
+        }
+        return super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        throw new AssertionError("interrupted while loading pointer subtrees", interrupted);
+      } finally {
+        active.decrementAndGet();
+      }
+    }
+
+    @Override
+    public List<Pointer> listPointersByPrefixConsistent(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      return listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+    }
+  }
+
+  private static final class BlockingDelete extends InMemoryPointerStore {
+    private final CountDownLatch deleted = new CountDownLatch(1);
+    private final CountDownLatch recreated = new CountDownLatch(1);
+    private final CountDownLatch release = new CountDownLatch(1);
+    private volatile boolean armed;
+    private volatile boolean holdingDelete;
+
+    void armOneDelete() {
+      armed = true;
+    }
+
+    @Override
+    public boolean delete(String key) {
+      boolean result = super.delete(key);
+      if (!armed) {
+        return result;
+      }
+      armed = false;
+      holdingDelete = true;
+      deleted.countDown();
+      try {
+        release.await(10, TimeUnit.SECONDS);
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        throw new AssertionError("interrupted while holding the delete race open", interrupted);
+      }
+      return result;
+    }
+
+    @Override
+    public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+      boolean result = super.compareAndSet(key, expectedVersion, next);
+      if (holdingDelete && expectedVersion == 0L) {
+        recreated.countDown();
+      }
+      return result;
+    }
+  }
+
+  private static final class BlockingConsistentRead extends InMemoryPointerStore {
+    private final CountDownLatch read = new CountDownLatch(1);
+    private final CountDownLatch wrote = new CountDownLatch(1);
+    private final CountDownLatch release = new CountDownLatch(1);
+    private volatile boolean armed;
+    private volatile boolean holdingRead;
+
+    void armOneRead() {
+      armed = true;
+    }
+
+    @Override
+    public Optional<Pointer> getConsistent(String key) {
+      Optional<Pointer> result = super.getConsistent(key);
+      if (!armed) {
+        return result;
+      }
+      armed = false;
+      holdingRead = true;
+      read.countDown();
+      try {
+        release.await(10, TimeUnit.SECONDS);
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        throw new AssertionError("interrupted while holding the consistent read open", interrupted);
+      } finally {
+        holdingRead = false;
+      }
+      return result;
+    }
+
+    @Override
+    public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+      boolean result = super.compareAndSet(key, expectedVersion, next);
+      if (holdingRead && expectedVersion == 1L) {
+        wrote.countDown();
+      }
+      return result;
+    }
+  }
+
+  private static final class ConcurrentUpdateWinsDelete extends InMemoryPointerStore {
+    private boolean armed;
+
+    void arm() {
+      armed = true;
+    }
+
+    @Override
+    public synchronized boolean delete(String key) {
+      if (!armed) {
+        return super.delete(key);
+      }
+      armed = false;
+      Pointer current = super.getConsistent(key).orElseThrow();
+      super.compareAndSet(
+          key, current.getVersion(), current.toBuilder().setBlobUri("s3://winner").build());
+      return false;
+    }
+  }
+
+  @Test
+  void aCompleteListingLoadsOnceThenPaginatesWithoutStoreReads() {
+    CountingReads reads = new CountingReads();
+    CachingPointerStore caching = new CachingPointerStore(reads, cacheFor(reads));
+    String prefix = Keys.tablePointerByNamePrefix(ACCT, "cat", "ns");
+    String first = Keys.tablePointerByName(ACCT, "cat", "ns", "a");
+    String second = Keys.tablePointerByName(ACCT, "cat", "ns", "b");
+    reads.compareAndSet(first, 0L, pointer(first, "s3://a", 0L));
+    reads.compareAndSet(second, 0L, pointer(second, "s3://b", 0L));
+
+    StringBuilder next = new StringBuilder();
+    assertThat(caching.listPointersByPrefix(prefix, 1, "", next))
+        .extracting(Pointer::getKey)
+        .containsExactly(first);
+    assertThat(next).isNotEmpty();
+    int readsAfterLoad = reads.listingReads.get();
+
+    StringBuilder end = new StringBuilder();
+    assertThat(caching.listPointersByPrefix(prefix, 1, next.toString(), end))
+        .extracting(Pointer::getKey)
+        .containsExactly(second);
+    assertThat(end).isEmpty();
+    assertThat(reads.listingReads).hasValue(readsAfterLoad);
+    assertThat(reads.listingReads)
+        .as("one consistent scan for each complete account subtree")
+        .hasValue(4);
+  }
+
+  @Test
+  void accountSubtreesLoadWithTheConfiguredParallelism() {
+    ConcurrentListings reads = new ConcurrentListings();
+    PointerCache cache =
+        new PointerCache(
+            AuthoritativePointerStore.of(reads),
+            CACHE_BYTES,
+            CacheEvents.none(),
+            MetadataFanout.concurrent(4));
+    CachingPointerStore caching = new CachingPointerStore(reads, cache);
+
+    assertThat(caching.get(Keys.relationPointerByName(ACCT, "cat", "ns", "missing"))).isEmpty();
+
+    assertThat(reads.maximumActive).hasValue(4);
+  }
+
+  @Test
+  void completeIndexEventsCarryTheLogicalAccount() {
+    String account = "account/with/slashes";
+    AtomicReference<String> observedAccount = new AtomicReference<>();
+    CacheEvents events =
+        new CacheEvents() {
+          @Override
+          public CacheEvents forAccount(String accountId) {
+            observedAccount.set(accountId);
+            return this;
+          }
+        };
+    var pointers = new PointerCache(AuthoritativePointerStore.of(store), CACHE_BYTES, events);
+    var cached = new CachingPointerStore(store, pointers);
+
+    assertThat(cached.get(Keys.relationPointerByName(account, "cat", "ns", "missing"))).isEmpty();
+
+    assertThat(observedAccount).hasValue(account);
+  }
+
+  @Test
+  void allElevenAddressingFamiliesAreComplete() {
+    CountingReads reads = new CountingReads();
+    CachingPointerStore caching = new CachingPointerStore(reads, cacheFor(reads));
+    List<String> keys =
+        List.of(
+            Keys.accountPointerById(ACCT),
+            Keys.accountPointerByName("account"),
+            Keys.catalogPointerById(ACCT, "cat"),
+            Keys.catalogPointerByName(ACCT, "catalog"),
+            Keys.namespacePointerById(ACCT, "ns"),
+            Keys.namespacePointerByPath(ACCT, "cat", List.of("namespace")),
+            Keys.tablePointerById(ACCT, "table"),
+            Keys.tablePointerByName(ACCT, "cat", "ns", "table"),
+            Keys.viewPointerById(ACCT, "view"),
+            Keys.viewPointerByName(ACCT, "cat", "ns", "view"),
+            Keys.relationPointerByName(ACCT, "cat", "ns", "relation"));
+    keys.forEach(key -> reads.compareAndSet(key, 0L, pointer(key, "s3://" + key, 0L)));
+
+    assertThat(caching.getBatch(keys)).containsOnlyKeys(keys.toArray(String[]::new));
+    assertThat(reads.listingReads)
+        .as("two global and four account subtree scans load every complete family")
+        .hasValue(6);
+
+    keys.forEach(reads::delete);
+    assertThat(caching.getBatch(keys)).containsOnlyKeys(keys.toArray(String[]::new));
+    assertThat(reads.listingReads).hasValue(6);
+  }
+
+  @Test
+  void everySourcePageIsExhaustedBeforeAbsenceBecomesAuthoritative() {
+    CountingReads reads = new CountingReads();
+    CachingPointerStore caching = new CachingPointerStore(reads, cacheFor(reads));
+    String last = "";
+    for (int index = 0; index <= 1_000; index++) {
+      last = Keys.tablePointerByName(ACCT, "cat", "ns", String.format("table-%04d", index));
+      reads.compareAndSet(last, 0L, pointer(last, "s3://table/" + index, 0L));
+    }
+    String missing = Keys.tablePointerByName(ACCT, "cat", "ns", "missing");
+
+    assertThat(caching.get(last)).isPresent();
+    assertThat(caching.get(missing)).isEmpty();
+    int readsAfterLoad = reads.listingReads.get();
+
+    assertThat(readsAfterLoad).isEqualTo(5);
+    assertThat(caching.get(missing)).isEmpty();
+    assertThat(reads.listingReads).hasValue(readsAfterLoad);
+  }
+
+  @Test
+  void aFailedIndexLoadNeverMakesAbsenceAuthoritative() {
+    FailingListings reads = new FailingListings();
+    PointerCache cache = cacheFor(reads);
+    CachingPointerStore caching = new CachingPointerStore(reads, cache);
+    String missing = Keys.relationPointerByName(ACCT, "cat", "ns", "missing");
+
+    assertThat(caching.get(missing)).isEmpty();
+    int sourceReadsAfterFailure = reads.consistentPointReads.get();
+
+    assertThat(cache.completeAccountCount()).isZero();
+    assertThat(cache.degradedAccountCount()).isEqualTo(1L);
+    assertThat(caching.get(missing)).isEmpty();
+    assertThat(reads.consistentPointReads.get()).isGreaterThan(sourceReadsAfterFailure);
+  }
+
+  @Test
+  void anEncodedAccountSegmentLoadsItsActualDurablePartition() {
+    CountingReads reads = new CountingReads();
+    CachingPointerStore caching = new CachingPointerStore(reads, cacheFor(reads));
+    String account = "account/with/slashes";
+    String key = Keys.relationPointerByName(account, "cat", "ns", "table");
+    reads.compareAndSet(key, 0L, pointer(key, "s3://relation", 0L));
+
+    assertThat(caching.get(key).map(Pointer::getBlobUri)).contains("s3://relation");
+
+    assertThat(reads.listingReads).hasValue(4);
+  }
+
+  @Test
+  void aControlPointerInsideALoadedSubtreeIsNotMistakenForComplete() {
+    CountingReads reads = new CountingReads();
+    CachingPointerStore caching = new CachingPointerStore(reads, cacheFor(reads));
+    String complete = Keys.catalogPointerByName(ACCT, "catalog");
+    String control = Keys.catalogOverlaysMarker(ACCT, "cat");
+    reads.compareAndSet(complete, 0L, pointer(complete, "s3://catalog", 0L));
+    reads.compareAndSet(control, 0L, pointer(control, "s3://marker", 0L));
+
+    assertThat(caching.get(complete)).isPresent();
+    reads.delete(control);
+
+    assertThat(caching.get(control)).isEmpty();
+    assertThat(reads.consistentPointReads).hasValue(1);
+  }
+
+  @Test
+  void aDescendantOfACompleteLeafIsNotMistakenForAnotherAddressingPointer() {
+    CountingReads reads = new CountingReads();
+    CachingPointerStore caching = new CachingPointerStore(reads, cacheFor(reads));
+    String complete = Keys.catalogPointerById(ACCT, "cat");
+    String control = complete + "/control";
+    reads.compareAndSet(complete, 0L, pointer(complete, "s3://catalog", 0L));
+    reads.compareAndSet(control, 0L, pointer(control, "s3://control", 0L));
+
+    assertThat(caching.get(complete)).isPresent();
+    reads.delete(control);
+
+    assertThat(caching.get(control)).isEmpty();
+    assertThat(reads.consistentPointReads).hasValue(1);
+  }
+
+  @Test
+  void absenceIsAuthoritativeAfterTheAccountIndexLoads() {
+    CountingReads reads = new CountingReads();
+    CachingPointerStore caching = new CachingPointerStore(reads, cacheFor(reads));
+    String missing = Keys.relationPointerByName(ACCT, "cat", "ns", "missing");
+
+    assertThat(caching.get(missing)).isEmpty();
+    int sourceReadsAfterLoad = reads.consistentPointReads.get();
+    int listingReadsAfterLoad = reads.listingReads.get();
+
+    assertThat(caching.get(missing)).isEmpty();
+    assertThat(reads.consistentPointReads).hasValue(sourceReadsAfterLoad);
+    assertThat(reads.listingReads).hasValue(listingReadsAfterLoad);
+  }
+
+  @Test
+  void aWritePublishesAPreviouslyAbsentKeyIntoACompleteIndex() {
+    CountingReads reads = new CountingReads();
+    CachingPointerStore caching = new CachingPointerStore(reads, cacheFor(reads));
+    String key = Keys.tablePointerByName(ACCT, "cat", "ns", "new_table");
+
+    assertThat(caching.get(key)).isEmpty();
+    assertThat(caching.compareAndSet(key, 0L, pointer(key, "s3://new", 0L))).isTrue();
+    int sourceReadsAfterWrite = reads.consistentPointReads.get();
+    int listingReadsAfterWrite = reads.listingReads.get();
+
+    assertThat(caching.get(key).map(Pointer::getBlobUri)).contains("s3://new");
+    assertThat(reads.consistentPointReads).hasValue(sourceReadsAfterWrite);
+    assertThat(reads.listingReads).hasValue(listingReadsAfterWrite);
+  }
+
+  @Test
+  void anOrdinaryWriteConflictRepairsRatherThanDegradingACompleteAccount() {
+    CountingReads reads = new CountingReads();
+    PointerCache cache = cacheFor(reads);
+    CachingPointerStore caching = new CachingPointerStore(reads, cache);
+    String key = Keys.tablePointerByName(ACCT, "cat", "ns", "orders");
+    reads.compareAndSet(key, 0L, pointer(key, "s3://current", 0L));
+    assertThat(caching.get(key)).isPresent();
+
+    assertThat(caching.compareAndSet(key, 0L, pointer(key, "s3://stale-client", 0L))).isFalse();
+
+    assertThat(cache.completeAccountCount()).isEqualTo(1L);
+    assertThat(cache.degradedAccountCount()).isZero();
+    assertThat(caching.get(key).map(Pointer::getBlobUri)).contains("s3://current");
+  }
+
+  @Test
+  void anEqualConsistentReadDoesNotEvictAResidentPointer() {
+    CountingReads reads = new CountingReads();
+    CachingPointerStore caching = new CachingPointerStore(reads, cacheFor(reads));
+    String key = Keys.tableRootByTable(ACCT, TBL);
+    reads.compareAndSet(key, 0L, pointer(key, "s3://root", 0L));
+
+    assertThat(caching.get(key)).isPresent();
+    assertThat(caching.getConsistent(key)).isPresent();
+    assertThat(caching.get(key)).isPresent();
+
+    assertThat(reads.consistentPointReads).hasValue(2);
+  }
+
+  @Test
+  void aWriteRacingTheAccountLoadWinsTheCompleteIndex() throws Exception {
+    BlockingListings reads = new BlockingListings();
+    PointerCache cache = cacheFor(reads);
+    CachingPointerStore caching = new CachingPointerStore(reads, cache);
+    String key = Keys.tablePointerByName(ACCT, "cat", "ns", "orders");
+    reads.compareAndSet(key, 0L, pointer(key, "s3://v1", 0L));
+    reads.armOneListing();
+
+    CompletableFuture<Optional<Pointer>> loading =
+        CompletableFuture.supplyAsync(() -> caching.get(key));
+    assertThat(reads.loaded.await(10, TimeUnit.SECONDS)).isTrue();
+    CompletableFuture<Boolean> writing =
+        CompletableFuture.supplyAsync(
+            () -> caching.compareAndSet(key, 1L, pointer(key, "s3://v2", 0L)));
+
+    reads.release.countDown();
+    loading.get(10, TimeUnit.SECONDS);
+    assertThat(writing.get(10, TimeUnit.SECONDS)).isTrue();
+    int readsAfterWrite = reads.listingReads.get();
+
+    assertThat(caching.get(key).map(Pointer::getBlobUri)).contains("s3://v2");
+    assertThat(reads.listingReads).hasValue(readsAfterWrite);
+  }
+
+  @Test
+  void anAccountThatDoesNotFitDegradesToCorrectStoreReads() {
+    CountingReads reads = new CountingReads();
+    String prefix = Keys.tablePointerByNamePrefix(ACCT, "cat", "ns");
+    String key = Keys.tablePointerByName(ACCT, "cat", "ns", "too_large");
+    reads.compareAndSet(key, 0L, pointer(key, "s3://large", 0L));
+    CachingPointerStore caching =
+        new CachingPointerStore(
+            reads, new PointerCache(AuthoritativePointerStore.of(reads), 1L, CacheEvents.none()));
+
+    assertThat(caching.listPointersByPrefix(prefix, 10, "", new StringBuilder()))
+        .extracting(Pointer::getKey)
+        .containsExactly(key);
+    int readsAfterFirst = reads.listingReads.get();
+
+    assertThat(caching.listPointersByPrefix(prefix, 10, "", new StringBuilder()))
+        .extracting(Pointer::getKey)
+        .containsExactly(key);
+    assertThat(reads.listingReads.get()).isGreaterThan(readsAfterFirst);
+  }
+
   @Test
   void aPublishDuringAFillIsNotLeftBehindByTheOlderValue() throws Exception {
     BlockingReads blocking = new BlockingReads();
-    CaffeineMemoryCache<String, Pointer> cache =
-        new CaffeineMemoryCache<>(
-            CacheFamily.POINTER, 1024L * 1024L, key -> 2L * key.length(), CacheEvents.none());
+    PointerCache cache = cacheFor(blocking);
     CachingPointerStore caching = new CachingPointerStore(blocking, cache);
     String key = Keys.tableRootByTable(ACCT, TBL);
     blocking.compareAndSet(key, 0L, pointer(key, "s3://v1", 0L));
@@ -127,9 +604,7 @@ class CachingPointerStoreTest {
   @Test
   void aPrefixDeleteDuringAFillDoesNotLeaveTheDeletedPointerCached() throws Exception {
     BlockingReads blocking = new BlockingReads();
-    CaffeineMemoryCache<String, Pointer> cache =
-        new CaffeineMemoryCache<>(
-            CacheFamily.POINTER, 1024L * 1024L, key -> 2L * key.length(), CacheEvents.none());
+    PointerCache cache = cacheFor(blocking);
     CachingPointerStore caching = new CachingPointerStore(blocking, cache);
     String key = Keys.tableRootByTable(ACCT, TBL);
     blocking.compareAndSet(key, 0L, pointer(key, "s3://gone", 0L));
@@ -146,6 +621,82 @@ class CachingPointerStoreTest {
     reader.get(10, TimeUnit.SECONDS);
 
     assertThat(cache.peek(key)).isEmpty();
+  }
+
+  @Test
+  void anAccountSweepDropsReadinessBeforeTheAccountIdCanBeReused() {
+    CountingReads reads = new CountingReads();
+    PointerCache cache = cacheFor(reads);
+    CachingPointerStore caching = new CachingPointerStore(reads, cache);
+    String key = Keys.tablePointerByName(ACCT, "cat", "ns", "orders");
+    reads.compareAndSet(key, 0L, pointer(key, "s3://old", 0L));
+    assertThat(caching.get(key)).isPresent();
+
+    caching.deleteByPrefix(Keys.accountRootPrefix(ACCT));
+    reads.compareAndSet(key, 0L, pointer(key, "s3://new", 0L));
+
+    assertThat(caching.get(key).map(Pointer::getBlobUri)).contains("s3://new");
+    assertThat(cache.completeAccountCount()).isEqualTo(1L);
+  }
+
+  @Test
+  void sweepingTheGlobalAccountsRootDoesNotParseItAsOneAccount() {
+    assertThat(caching.deleteByPrefix(Keys.accountRootPrefix())).isZero();
+  }
+
+  @Test
+  void aDeleteCannotRemoveANewerRecreationFromTheCompleteIndex() throws Exception {
+    BlockingDelete store = new BlockingDelete();
+    PointerCache cache = cacheFor(store);
+    CachingPointerStore caching = new CachingPointerStore(store, cache);
+    String key = Keys.tablePointerByName(ACCT, "cat", "ns", "orders");
+    store.compareAndSet(key, 0L, pointer(key, "s3://old", 0L));
+    assertThat(caching.get(key)).isPresent();
+    store.armOneDelete();
+
+    CompletableFuture<Boolean> deleting = CompletableFuture.supplyAsync(() -> caching.delete(key));
+    assertThat(store.deleted.await(10, TimeUnit.SECONDS)).isTrue();
+    CompletableFuture<Boolean> recreating =
+        CompletableFuture.supplyAsync(
+            () -> caching.compareAndSet(key, 0L, pointer(key, "s3://new", 0L)));
+
+    // Without a mutation fence, the recreation reaches the store and publishes while the older
+    // delete is paused. With the fence it waits here; either way release after a bounded probe.
+    if (store.recreated.await(1, TimeUnit.SECONDS)) {
+      assertThat(recreating.get(10, TimeUnit.SECONDS)).isTrue();
+    }
+    store.release.countDown();
+    assertThat(deleting.get(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(recreating.get(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(caching.get(key).map(Pointer::getBlobUri)).contains("s3://new");
+  }
+
+  @Test
+  void anOlderConsistentReadCannotOverwriteANewerLocalWrite() throws Exception {
+    BlockingConsistentRead store = new BlockingConsistentRead();
+    PointerCache cache = cacheFor(store);
+    CachingPointerStore caching = new CachingPointerStore(store, cache);
+    String key = Keys.tableRootByTable(ACCT, TBL);
+    store.compareAndSet(key, 0L, pointer(key, "s3://old", 0L));
+    assertThat(caching.get(key)).isPresent();
+    store.armOneRead();
+
+    CompletableFuture<Optional<Pointer>> reading =
+        CompletableFuture.supplyAsync(() -> caching.getConsistent(key));
+    assertThat(store.read.await(10, TimeUnit.SECONDS)).isTrue();
+    CompletableFuture<Boolean> writing =
+        CompletableFuture.supplyAsync(
+            () -> caching.compareAndSet(key, 1L, pointer(key, "s3://new", 0L)));
+
+    // Without a shared fence, the write reaches the store while the older read is paused and that
+    // read later repairs the cache backwards. With the fence, the write waits until repair ends.
+    if (store.wrote.await(1, TimeUnit.SECONDS)) {
+      assertThat(writing.get(10, TimeUnit.SECONDS)).isTrue();
+    }
+    store.release.countDown();
+    assertThat(reading.get(10, TimeUnit.SECONDS).map(Pointer::getBlobUri)).contains("s3://old");
+    assertThat(writing.get(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(caching.get(key).map(Pointer::getBlobUri)).contains("s3://new");
   }
 
   @Test
@@ -263,7 +814,7 @@ class CachingPointerStoreTest {
   }
 
   @Test
-  void aRejectedWriteDropsTheStaleVersionAClientMayHaveUsed() {
+  void aRejectedWriteRepairsTheStaleVersionAClientMayHaveUsed() {
     String key = Keys.connectorPointerById(ACCT, "connector");
     store.compareAndSet(key, 0L, pointer(key, "s3://v1", 1L));
     caching.get(key);
@@ -271,12 +822,12 @@ class CachingPointerStoreTest {
     store.compareAndSet(key, 1L, pointer(key, "s3://v2", 2L)); // another replica
 
     assertThat(caching.compareAndSet(key, 1L, pointer(key, "s3://loser", 2L))).isFalse();
-    assertThat(cache.peek(key)).isEmpty();
+    assertThat(cache.peek(key).map(Pointer::getBlobUri)).contains("s3://v2");
     assertThat(caching.get(key).map(Pointer::getBlobUri)).contains("s3://v2");
   }
 
   @Test
-  void aRejectedBatchDropsEveryPossiblyStalePrecondition() {
+  void aRejectedBatchRepairsEveryPossiblyStalePrecondition() {
     String first = Keys.connectorPointerById(ACCT, "first");
     String second = Keys.connectorPointerById(ACCT, "second");
     store.compareAndSet(first, 0L, pointer(first, "s3://first-v1", 1L));
@@ -290,8 +841,24 @@ class CachingPointerStoreTest {
                 List.of(
                     new PointerStore.CasCheck(first, 1L), new PointerStore.CasCheck(second, 1L))))
         .isFalse();
-    assertThat(cache.peek(first)).isEmpty();
-    assertThat(cache.peek(second)).isEmpty();
+    assertThat(cache.peek(first).map(Pointer::getBlobUri)).contains("s3://first-v1");
+    assertThat(cache.peek(second).map(Pointer::getBlobUri)).contains("s3://second-v2");
+  }
+
+  @Test
+  void aDeleteLostToAConcurrentUpdateRepairsInsteadOfPublishingAbsence() {
+    ConcurrentUpdateWinsDelete store = new ConcurrentUpdateWinsDelete();
+    PointerCache cache = cacheFor(store);
+    CachingPointerStore caching = new CachingPointerStore(store, cache);
+    String key = Keys.tablePointerByName(ACCT, "cat", "ns", "table");
+    store.compareAndSet(key, 0L, pointer(key, "s3://old", 0L));
+    assertThat(caching.get(key)).isPresent();
+    store.arm();
+
+    assertThat(caching.delete(key)).isFalse();
+
+    assertThat(cache.peek(key).map(Pointer::getBlobUri)).contains("s3://winner");
+    assertThat(caching.get(key).map(Pointer::getBlobUri)).contains("s3://winner");
   }
 
   @Test
@@ -325,12 +892,13 @@ class CachingPointerStoreTest {
   }
 
   @Test
-  void successfulBatchChecksDropCachedAnswersTheyCannotRepublish() {
+  void successfulBatchChecksKeepOnlyACompleteAnswerTheyProve() {
     String present = Keys.tablePointerById(ACCT, "present-check");
     String absent = Keys.tablePointerById(ACCT, "absent-check");
     store.compareAndSet(present, 0L, pointer(present, "s3://present", 1L));
+    store.compareAndSet(absent, 0L, pointer(absent, "s3://stale", 1L));
     caching.get(present);
-    cache.put(absent, pointer(absent, "s3://stale", 1L));
+    store.delete(absent);
 
     assertThat(
             caching.compareAndSetBatch(
@@ -339,7 +907,7 @@ class CachingPointerStoreTest {
                     new PointerStore.CasCheckAbsent(absent))))
         .isTrue();
 
-    assertThat(cache.peek(present)).isEmpty();
+    assertThat(cache.peek(present).map(Pointer::getVersion)).contains(1L);
     assertThat(cache.peek(absent)).isEmpty();
   }
 
@@ -361,59 +929,13 @@ class CachingPointerStoreTest {
   }
 
   @Test
-  void aConsistentReadRepairsWhatItDisproves() {
-    // A consistent read is authoritative, and the store interface has no invalidation door -- so a
-    // caller that has just proved the cached entry wrong has no other way to say so.
-    String key = Keys.tablePointerById(ACCT, TBL);
-    store.compareAndSet(key, 0L, pointer(key, "s3://v1", 1L));
-    caching.get(key);
-
-    store.compareAndSet(key, 1L, pointer(key, "s3://v2", 2L)); // behind the cache's back
-    assertThat(cache.peek(key).orElseThrow().getBlobUri()).isEqualTo("s3://v1");
-
-    assertThat(caching.getConsistent(key).orElseThrow().getBlobUri()).isEqualTo("s3://v2");
-    assertThat(cache.peek(key)).isEmpty();
-    assertThat(caching.get(key).orElseThrow().getBlobUri()).isEqualTo("s3://v2");
-  }
-
-  @Test
-  void aConsistentReadRepairsAKeyWhoseVersionWENTBACKWARDS() {
-    // Delete and recreate elsewhere restarts the key at version 1, so the authoritative value is
-    // legitimately below the cached one. A version-guarded write-back would refuse it forever.
-    String key = Keys.relationPointerByName(ACCT, "cat", "ns", "sales");
-    store.compareAndSet(key, 0L, pointer(key, "s3://t1", 1L));
-    store.compareAndSet(key, 1L, pointer(key, "s3://t1", 2L));
-    store.compareAndSet(key, 2L, pointer(key, "s3://t1", 3L));
-    caching.get(key);
-    assertThat(cache.peek(key).orElseThrow().getVersion()).isEqualTo(3L);
-
-    store.delete(key); // dropped and recreated on another replica
-    store.compareAndSet(key, 0L, pointer(key, "s3://t2", 1L));
-
-    assertThat(caching.getConsistent(key).orElseThrow().getBlobUri()).isEqualTo("s3://t2");
-    assertThat(cache.peek(key)).isEmpty();
-    assertThat(caching.get(key).orElseThrow().getBlobUri()).isEqualTo("s3://t2");
-  }
-
-  @Test
-  void aConsistentReadDropsAnEntryTheStoreNoLongerHas() {
-    String key = Keys.tablePointerById(ACCT, TBL);
-    store.compareAndSet(key, 0L, pointer(key, "s3://v1", 1L));
-    caching.get(key);
-
-    store.delete(key); // behind the cache's back
-    assertThat(caching.getConsistent(key)).isEmpty();
-    assertThat(cache.peek(key)).isEmpty();
-  }
-
-  @Test
   void aBatchReadHoldsWhatItLoaded() {
     // A batch load runs outside the per-entry lock, so a value it returns may already have been
     // superseded by a write that found the key absent and skipped its presence-guarded publish.
     // Each key here carries the fence its peek observed, so such a write leaves the key absent
     // instead of the batch making the older value permanent.
-    String hit = Keys.tablePointerById(ACCT, "hit");
-    String miss = Keys.tablePointerById(ACCT, "miss");
+    String hit = Keys.connectorPointerById(ACCT, "hit");
+    String miss = Keys.connectorPointerById(ACCT, "miss");
     store.compareAndSet(hit, 0L, pointer(hit, "s3://hit", 1L));
     store.compareAndSet(miss, 0L, pointer(miss, "s3://miss", 1L));
     caching.get(hit);
@@ -453,31 +975,6 @@ class CachingPointerStoreTest {
 
     assertThat(cache.peek(table)).isPresent();
     assertThat(cache.peek(connector)).isPresent();
-  }
-
-  @Test
-  void aConsistentListRepairsCachedEntriesBelowItsPrefix() {
-    String key = Keys.tablePointerById(ACCT, TBL);
-    store.compareAndSet(key, 0L, pointer(key, "s3://a", 1L));
-    caching.get(key);
-    store.delete(key);
-
-    StringBuilder next = new StringBuilder();
-    assertThat(
-            caching.listPointersByPrefixConsistent(Keys.tablePointerByIdPrefix(ACCT), 10, "", next))
-        .isEmpty();
-    assertThat(caching.get(key)).isEmpty();
-  }
-
-  @Test
-  void aConsistentCountRepairsCachedEntriesBelowItsPrefix() {
-    String key = Keys.tablePointerById(ACCT, TBL);
-    store.compareAndSet(key, 0L, pointer(key, "s3://a", 1L));
-    caching.get(key);
-    store.delete(key);
-
-    assertThat(caching.countByPrefixConsistent(Keys.tablePointerByIdPrefix(ACCT))).isZero();
-    assertThat(caching.get(key)).isEmpty();
   }
 
   @Test

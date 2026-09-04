@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.model.CatalogKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -36,6 +37,9 @@ import java.util.function.Function;
 
 @ApplicationScoped
 public class CatalogRepository {
+
+  /** The catalog identity carried by a name pointer; resolving it needs no catalog blob. */
+  public record CatalogRef(ResourceId id, String name) {}
 
   private final GenericResourceRepository<Catalog, CatalogKey> repo;
 
@@ -118,6 +122,12 @@ public class CatalogRepository {
     return repo.get(Keys.catalogPointerByName(accountId, displayName));
   }
 
+  /** Resolves a catalog name from pointer metadata without fetching its blob. */
+  public Optional<CatalogRef> getRefByName(String accountId, String displayName) {
+    return repo.refByPointer(Keys.catalogPointerByName(accountId, displayName))
+        .flatMap(pointer -> toCatalogRef(accountId, pointer));
+  }
+
   public List<Catalog> list(String accountId, int limit, String pageToken, StringBuilder nextOut) {
     return repo.listByPrefix(Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
@@ -178,11 +188,32 @@ public class CatalogRepository {
 
   public List<ResourceId> listIds(String accountId) {
     String prefix = Keys.catalogPointerByNamePrefix(accountId);
-    List<Catalog> catalogs = repo.listByPrefix(prefix, Integer.MAX_VALUE, "", new StringBuilder());
-    List<ResourceId> ids = new java.util.ArrayList<>(catalogs.size());
-    for (Catalog c : catalogs) {
-      ids.add(c.getResourceId());
+    return repo.listRefsByPrefix(prefix).stream()
+        .map(pointer -> toCatalogRef(accountId, pointer))
+        .flatMap(Optional::stream)
+        .map(CatalogRef::id)
+        .toList();
+  }
+
+  private static Optional<CatalogRef> toCatalogRef(
+      String accountId, ai.floedb.floecat.common.rpc.Pointer pointer) {
+    String name =
+        pointer.getDisplayName().isEmpty()
+            ? Keys.extractLastSegment(pointer.getKey())
+            : pointer.getDisplayName();
+    ResourceId id = pointer.getResourceId();
+    if (id.getId().isEmpty()) {
+      String rawId = Keys.extractResourceIdFromBlobUri(pointer.getBlobUri());
+      if (rawId.isEmpty()) {
+        return Optional.empty();
+      }
+      id =
+          ResourceId.newBuilder()
+              .setAccountId(accountId)
+              .setId(rawId)
+              .setKind(ResourceKind.RK_CATALOG)
+              .build();
     }
-    return ids;
+    return Optional.of(new CatalogRef(id, name));
   }
 }

@@ -16,16 +16,15 @@
 
 package ai.floedb.floecat.service.metagraph.resolver;
 
-import ai.floedb.floecat.catalog.rpc.Catalog;
-import ai.floedb.floecat.catalog.rpc.Namespace;
-import ai.floedb.floecat.catalog.rpc.Table;
-import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository.CatalogRef;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
@@ -47,8 +46,8 @@ public class FullyQualifiedResolver {
 
   private final CatalogRepository catalogRepository;
   private final NamespaceRepository namespaceRepository;
-  private final TableRepository tableRepository;
-  private final ViewRepository viewRepository;
+  private final RelationAccess tables;
+  private final RelationAccess views;
 
   public FullyQualifiedResolver(
       CatalogRepository catalogRepository,
@@ -58,8 +57,20 @@ public class FullyQualifiedResolver {
 
     this.catalogRepository = catalogRepository;
     this.namespaceRepository = namespaceRepository;
-    this.tableRepository = tableRepository;
-    this.viewRepository = viewRepository;
+    this.tables =
+        new RelationAccess(
+            ResourceKind.RK_TABLE,
+            GeneratedErrorMessages.MessageKey.TABLE_NAME_MISSING,
+            tableRepository::getRefByName,
+            tableRepository::listRefs,
+            tableRepository::count);
+    this.views =
+        new RelationAccess(
+            ResourceKind.RK_VIEW,
+            GeneratedErrorMessages.MessageKey.VIEW_NAME_MISSING,
+            viewRepository::getRefByName,
+            viewRepository::listRefs,
+            viewRepository::count);
   }
 
   // ----------------------------------------------------------------------
@@ -68,53 +79,12 @@ public class FullyQualifiedResolver {
 
   public ResolveResult resolveTableList(
       String cid, String accountId, List<NameRef> names, int limit, String pageToken) {
-
-    validateListToken(cid, pageToken);
-
-    if (names == null || names.isEmpty()) {
-      return new ResolveResult(List.of(), 0, "");
-    }
-
-    int max = Math.min(names.size(), normalizeLimit(limit));
-    List<QualifiedRelation> out = new ArrayList<>(max);
-    var memo =
-        new ScopeMemo(
-            name -> catalogByName(cid, accountId, name),
-            (catalog, path) -> namespaceByPath(cid, accountId, catalog, path));
-
-    for (int i = 0; i < max; i++) {
-      var tblEntry = resolveTableEntry(memo, cid, accountId, names.get(i));
-      if (tblEntry.isPresent()) {
-        out.add(tblEntry.get());
-      }
-    }
-
-    return new ResolveResult(out, out.size(), "");
+    return resolveList(cid, accountId, names, limit, pageToken, tables);
   }
 
   public ResolveResult resolveViewList(
       String cid, String accountId, List<NameRef> names, int limit, String pageToken) {
-
-    validateListToken(cid, pageToken);
-
-    if (names == null || names.isEmpty()) {
-      return new ResolveResult(List.of(), 0, "");
-    }
-
-    int max = Math.min(names.size(), normalizeLimit(limit));
-    List<QualifiedRelation> out = new ArrayList<>(max);
-    var memo =
-        new ScopeMemo(
-            name -> catalogByName(cid, accountId, name),
-            (catalog, path) -> namespaceByPath(cid, accountId, catalog, path));
-
-    for (int i = 0; i < max; i++) {
-      var viewEntry = resolveViewEntry(memo, cid, accountId, names.get(i));
-      if (viewEntry.isPresent()) {
-        out.add(viewEntry.get());
-      }
-    }
-    return new ResolveResult(out, out.size(), "");
+    return resolveList(cid, accountId, names, limit, pageToken, views);
   }
 
   // ----------------------------------------------------------------------
@@ -123,81 +93,12 @@ public class FullyQualifiedResolver {
 
   public ResolveResult resolveTablesByPrefix(
       String cid, String accountId, NameRef prefix, int limit, String token) {
-
-    Optional<Catalog> catalogOpt = catalogByName(cid, accountId, prefix.getCatalog());
-    if (catalogOpt.isEmpty()) {
-      return new ResolveResult(List.of(), 0, "");
-    }
-    Catalog catalog = catalogOpt.get();
-
-    List<String> nsPath = namespacePath(prefix);
-    Optional<Namespace> nsOpt = namespaceByPath(cid, accountId, catalog, nsPath);
-    if (nsOpt.isEmpty()) {
-      return new ResolveResult(List.of(), 0, "");
-    }
-    Namespace ns = nsOpt.get();
-
-    StringBuilder next = new StringBuilder();
-
-    List<Table> entries = listTables(cid, accountId, catalog, ns, limit, token, next);
-    int total =
-        tableRepository.count(
-            accountId, catalog.getResourceId().getId(), ns.getResourceId().getId());
-
-    List<QualifiedRelation> out = new ArrayList<>(entries.size());
-
-    for (Table t : entries) {
-      ResourceId tableId = requireCanonicalTableId(t.getResourceId());
-      NameRef fq =
-          NameRef.newBuilder()
-              .setCatalog(catalog.getDisplayName())
-              .addAllPath(nsPath)
-              .setName(t.getDisplayName())
-              .setResourceId(tableId)
-              .build();
-      out.add(new QualifiedRelation(fq, tableId));
-    }
-
-    return new ResolveResult(out, total, next.toString());
+    return resolveByPrefix(cid, accountId, prefix, limit, token, tables);
   }
 
   public ResolveResult resolveViewsByPrefix(
       String cid, String accountId, NameRef prefix, int limit, String token) {
-
-    Optional<Catalog> catalogOpt = catalogByName(cid, accountId, prefix.getCatalog());
-    if (catalogOpt.isEmpty()) {
-      return new ResolveResult(List.of(), 0, "");
-    }
-    Catalog catalog = catalogOpt.get();
-
-    List<String> nsPath = namespacePath(prefix);
-    Optional<Namespace> nsOpt = namespaceByPath(cid, accountId, catalog, nsPath);
-    if (nsOpt.isEmpty()) {
-      return new ResolveResult(List.of(), 0, "");
-    }
-    Namespace ns = nsOpt.get();
-
-    StringBuilder next = new StringBuilder();
-
-    List<View> entries = listViews(cid, accountId, catalog, ns, limit, token, next);
-    int total =
-        viewRepository.count(
-            accountId, catalog.getResourceId().getId(), ns.getResourceId().getId());
-
-    List<QualifiedRelation> out = new ArrayList<>(entries.size());
-
-    for (View v : entries) {
-      NameRef fq =
-          NameRef.newBuilder()
-              .setCatalog(catalog.getDisplayName())
-              .addAllPath(nsPath)
-              .setName(v.getDisplayName())
-              .setResourceId(v.getResourceId())
-              .build();
-      out.add(new QualifiedRelation(fq, v.getResourceId()));
-    }
-
-    return new ResolveResult(out, total, next.toString());
+    return resolveByPrefix(cid, accountId, prefix, limit, token, views);
   }
 
   /**
@@ -207,160 +108,132 @@ public class FullyQualifiedResolver {
    * probe whose rows and cursor are discarded.
    */
   public int countTablesByPrefix(String cid, String accountId, NameRef prefix) {
-    Optional<Catalog> catalogOpt = catalogByName(cid, accountId, prefix.getCatalog());
-    if (catalogOpt.isEmpty()) {
-      return 0;
-    }
-    Catalog catalog = catalogOpt.get();
-    Optional<Namespace> nsOpt = namespaceByPath(cid, accountId, catalog, namespacePath(prefix));
-    if (nsOpt.isEmpty()) {
-      return 0;
-    }
-    return tableRepository.count(
-        accountId, catalog.getResourceId().getId(), nsOpt.get().getResourceId().getId());
+    return countByPrefix(accountId, prefix, tables);
   }
 
   /**
    * Counts user views under a prefix without fetching any rows. See {@link #countTablesByPrefix}.
    */
   public int countViewsByPrefix(String cid, String accountId, NameRef prefix) {
-    Optional<Catalog> catalogOpt = catalogByName(cid, accountId, prefix.getCatalog());
-    if (catalogOpt.isEmpty()) {
-      return 0;
-    }
-    Catalog catalog = catalogOpt.get();
-    Optional<Namespace> nsOpt = namespaceByPath(cid, accountId, catalog, namespacePath(prefix));
-    if (nsOpt.isEmpty()) {
-      return 0;
-    }
-    return viewRepository.count(
-        accountId, catalog.getResourceId().getId(), nsOpt.get().getResourceId().getId());
+    return countByPrefix(accountId, prefix, views);
   }
 
   // ----------------------------------------------------------------------
   // Internal helpers (canonical entry resolution)
   // ----------------------------------------------------------------------
 
-  private Optional<QualifiedRelation> resolveTableEntry(
-      ScopeMemo memo, String cid, String accountId, NameRef ref) {
-
+  private Optional<QualifiedRelation> resolveEntry(
+      String cid, String accountId, NameRef ref, RelationAccess relations) {
     validateNameRef(cid, ref);
-    validateRelationName(cid, ref, "table");
+    validateRelationName(cid, ref, relations);
 
-    Optional<Catalog> catalogOpt = memo.catalog(ref.getCatalog());
+    Optional<CatalogRef> catalogOpt = catalogByName(accountId, ref.getCatalog());
     if (catalogOpt.isEmpty()) {
       return Optional.empty();
     }
-    Catalog catalog = catalogOpt.get();
+    CatalogRef catalog = catalogOpt.get();
 
-    Optional<Namespace> nsOpt = memo.namespace(catalog, ref.getPathList());
+    Optional<NamespaceRef> nsOpt = namespaceByPath(catalog, ref.getPathList());
     if (nsOpt.isEmpty()) {
       return Optional.empty();
     }
-    Namespace ns = nsOpt.get();
+    NamespaceRef ns = nsOpt.get();
 
-    return tableRepository
-        .getByName(
-            accountId, catalog.getResourceId().getId(), ns.getResourceId().getId(), ref.getName())
-        .map(
-            t -> {
-              ResourceId tableId = requireCanonicalTableId(t.getResourceId());
-              NameRef canonical =
-                  NameRef.newBuilder()
-                      .setCatalog(catalog.getDisplayName())
-                      .addAllPath(namespacePath(ns))
-                      .setName(t.getDisplayName())
-                      .setResourceId(tableId)
-                      .build();
-              return new QualifiedRelation(canonical, tableId);
-            });
-  }
-
-  private Optional<QualifiedRelation> resolveViewEntry(
-      ScopeMemo memo, String cid, String accountId, NameRef ref) {
-
-    validateNameRef(cid, ref);
-    validateRelationName(cid, ref, "view");
-
-    Optional<Catalog> catalogOpt = memo.catalog(ref.getCatalog());
-    if (catalogOpt.isEmpty()) {
-      return Optional.empty();
-    }
-    Catalog catalog = catalogOpt.get();
-
-    Optional<Namespace> nsOpt = memo.namespace(catalog, ref.getPathList());
-    if (nsOpt.isEmpty()) {
-      return Optional.empty();
-    }
-    Namespace ns = nsOpt.get();
-
-    return viewRepository
-        .getByName(
-            accountId, catalog.getResourceId().getId(), ns.getResourceId().getId(), ref.getName())
-        .map(
-            v -> {
-              NameRef canonical =
-                  NameRef.newBuilder()
-                      .setCatalog(catalog.getDisplayName())
-                      .addAllPath(namespacePath(ns))
-                      .setName(v.getDisplayName())
-                      .setResourceId(v.getResourceId())
-                      .build();
-              return new QualifiedRelation(canonical, v.getResourceId());
-            });
+    return relations
+        .get(accountId, catalog.id().getId(), ns.id().getId(), ref.getName())
+        .map(relation -> qualify(catalog, ns, relation, relations.kind()));
   }
 
   // ----------------------------------------------------------------------
   // Repository calls
   // ----------------------------------------------------------------------
 
-  private Optional<Catalog> catalogByName(String cid, String accountId, String name) {
-    return catalogRepository.getByName(accountId, name);
-  }
-
-  private Optional<Namespace> namespaceByPath(
-      String cid, String accountId, Catalog catalog, List<String> path) {
-
-    return namespaceRepository.getByPath(accountId, catalog.getResourceId().getId(), path);
-  }
-
-  private List<Table> listTables(
+  private ResolveResult resolveList(
       String cid,
       String accountId,
-      Catalog catalog,
-      Namespace ns,
+      List<NameRef> names,
       int limit,
-      String token,
-      StringBuilder nextOut) {
-
-    try {
-      return tableRepository.list(
-          accountId,
-          catalog.getResourceId().getId(),
-          ns.getResourceId().getId(),
-          normalizeLimit(limit),
-          token,
-          nextOut);
-    } catch (IllegalArgumentException ex) {
-      throw GrpcErrors.invalidArgument(
-          cid, GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID, Map.of("page_token", token));
+      String pageToken,
+      RelationAccess relations) {
+    validateListToken(cid, pageToken);
+    if (names == null || names.isEmpty()) {
+      return new ResolveResult(List.of(), 0, "");
     }
+
+    int max = Math.min(names.size(), normalizeLimit(limit));
+    List<QualifiedRelation> out = new ArrayList<>(max);
+    for (int i = 0; i < max; i++) {
+      resolveEntry(cid, accountId, names.get(i), relations).ifPresent(out::add);
+    }
+    return new ResolveResult(out, out.size(), "");
   }
 
-  private List<View> listViews(
+  private ResolveResult resolveByPrefix(
       String cid,
       String accountId,
-      Catalog catalog,
-      Namespace ns,
+      NameRef prefix,
+      int limit,
+      String token,
+      RelationAccess relations) {
+    Optional<ResolvedScope> scope = resolveScope(accountId, prefix, namespacePath(prefix));
+    if (scope.isEmpty()) {
+      return new ResolveResult(List.of(), 0, "");
+    }
+
+    CatalogRef catalog = scope.orElseThrow().catalog();
+    NamespaceRef namespace = scope.orElseThrow().namespace();
+    StringBuilder next = new StringBuilder();
+    List<RelationRef> refs =
+        listRefs(relations, cid, accountId, catalog, namespace, limit, token, next);
+    List<QualifiedRelation> qualified =
+        refs.stream().map(ref -> qualify(catalog, namespace, ref, relations.kind())).toList();
+    return new ResolveResult(
+        qualified,
+        relations.count(accountId, catalog.id().getId(), namespace.id().getId()),
+        next.toString());
+  }
+
+  private int countByPrefix(String accountId, NameRef prefix, RelationAccess relations) {
+    return resolveScope(accountId, prefix, namespacePath(prefix))
+        .map(
+            scope ->
+                relations.count(
+                    accountId, scope.catalog().id().getId(), scope.namespace().id().getId()))
+        .orElse(0);
+  }
+
+  private Optional<ResolvedScope> resolveScope(
+      String accountId, NameRef ref, List<String> namespacePath) {
+    return catalogByName(accountId, ref.getCatalog())
+        .flatMap(
+            catalog ->
+                namespaceByPath(catalog, namespacePath)
+                    .map(namespace -> new ResolvedScope(catalog, namespace)));
+  }
+
+  private Optional<CatalogRef> catalogByName(String accountId, String name) {
+    return catalogRepository.getRefByName(accountId, name);
+  }
+
+  private Optional<NamespaceRef> namespaceByPath(CatalogRef catalog, List<String> path) {
+    return namespaceRepository.getRefByPath(
+        catalog.id().getAccountId(), catalog.id().getId(), path);
+  }
+
+  private List<RelationRef> listRefs(
+      RelationAccess relations,
+      String cid,
+      String accountId,
+      CatalogRef catalog,
+      NamespaceRef namespace,
       int limit,
       String token,
       StringBuilder nextOut) {
-
     try {
-      return viewRepository.list(
+      return relations.list(
           accountId,
-          catalog.getResourceId().getId(),
-          ns.getResourceId().getId(),
+          catalog.id().getId(),
+          namespace.id().getId(),
           normalizeLimit(limit),
           token,
           nextOut);
@@ -392,29 +265,31 @@ public class FullyQualifiedResolver {
     }
   }
 
-  private void validateRelationName(String cid, NameRef ref, String type) {
+  private void validateRelationName(String cid, NameRef ref, RelationAccess relations) {
     if (ref.getName().isBlank()) {
       throw GrpcErrors.invalidArgument(
-          cid, relationNameMissingKey(type), Map.of("name", ref.getName()));
+          cid, relations.nameMissingKey(), Map.of("name", ref.getName()));
     }
   }
 
-  private GeneratedErrorMessages.MessageKey relationNameMissingKey(String type) {
-    return switch (type) {
-      case "table" -> GeneratedErrorMessages.MessageKey.TABLE_NAME_MISSING;
-      case "view" -> GeneratedErrorMessages.MessageKey.VIEW_NAME_MISSING;
-      default -> GeneratedErrorMessages.MessageKey.FIELD;
-    };
-  }
-
-  private ResourceId requireCanonicalTableId(ResourceId tableId) {
-    if (tableId == null
-        || tableId.getId().isBlank()
-        || tableId.getAccountId().isBlank()
-        || tableId.getKind() != ResourceKind.RK_TABLE) {
-      throw new IllegalStateException("non-canonical table resource id in fq resolver");
+  private QualifiedRelation qualify(
+      CatalogRef catalog, NamespaceRef namespace, RelationRef relation, ResourceKind expectedKind) {
+    ResourceId id = relation.id();
+    if (id == null
+        || id.getId().isBlank()
+        || id.getAccountId().isBlank()
+        || id.getKind() != expectedKind
+        || relation.kind() != expectedKind) {
+      throw new IllegalStateException("non-canonical relation ref in fq resolver");
     }
-    return tableId;
+    NameRef canonical =
+        NameRef.newBuilder()
+            .setCatalog(catalog.name())
+            .addAllPath(namespace.pathSegments())
+            .setName(relation.name())
+            .setResourceId(id)
+            .build();
+    return new QualifiedRelation(canonical, id);
   }
 
   // ----------------------------------------------------------------------
@@ -431,15 +306,56 @@ public class FullyQualifiedResolver {
     return out;
   }
 
-  private List<String> namespacePath(Namespace ns) {
-    List<String> out = new ArrayList<>(ns.getParentsList());
-    if (!ns.getDisplayName().isBlank()) {
-      out.add(ns.getDisplayName());
-    }
-    return out;
-  }
-
   public record QualifiedRelation(NameRef name, ResourceId resourceId) {}
 
   public record ResolveResult(List<QualifiedRelation> relations, int totalSize, String nextToken) {}
+
+  private record ResolvedScope(CatalogRef catalog, NamespaceRef namespace) {}
+
+  private record RelationAccess(
+      ResourceKind kind,
+      GeneratedErrorMessages.MessageKey nameMissingKey,
+      RelationLookup lookup,
+      RelationListing listing,
+      RelationCount counter) {
+
+    Optional<RelationRef> get(String accountId, String catalogId, String namespaceId, String name) {
+      return lookup.get(accountId, catalogId, namespaceId, name);
+    }
+
+    List<RelationRef> list(
+        String accountId,
+        String catalogId,
+        String namespaceId,
+        int limit,
+        String token,
+        StringBuilder nextOut) {
+      return listing.list(accountId, catalogId, namespaceId, limit, token, nextOut);
+    }
+
+    int count(String accountId, String catalogId, String namespaceId) {
+      return counter.count(accountId, catalogId, namespaceId);
+    }
+  }
+
+  @FunctionalInterface
+  private interface RelationLookup {
+    Optional<RelationRef> get(String accountId, String catalogId, String namespaceId, String name);
+  }
+
+  @FunctionalInterface
+  private interface RelationListing {
+    List<RelationRef> list(
+        String accountId,
+        String catalogId,
+        String namespaceId,
+        int limit,
+        String token,
+        StringBuilder nextOut);
+  }
+
+  @FunctionalInterface
+  private interface RelationCount {
+    int count(String accountId, String catalogId, String namespaceId);
+  }
 }

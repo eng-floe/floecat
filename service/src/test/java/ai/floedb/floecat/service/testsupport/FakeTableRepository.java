@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.testsupport;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -29,6 +31,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public final class FakeTableRepository extends TableRepository {
@@ -51,6 +54,10 @@ public final class FakeTableRepository extends TableRepository {
     entries.put(table.getResourceId(), table);
     metas.put(table.getResourceId(), meta);
     indexBlob(meta, table);
+  }
+
+  public void put(Table table) {
+    put(table, null);
   }
 
   @Override
@@ -136,6 +143,39 @@ public final class FakeTableRepository extends TableRepository {
   }
 
   @Override
+  public Optional<RelationRef> getRefByName(
+      String accountId, String catalogId, String namespaceId, String displayName) {
+    return getByName(accountId, catalogId, namespaceId, displayName).map(this::ref);
+  }
+
+  @Override
+  public List<RelationRef> listRefs(String accountId, String catalogId, String namespaceId) {
+    return matchingTables(accountId, catalogId, namespaceId).stream().map(this::ref).toList();
+  }
+
+  @Override
+  public List<RelationRef> listRefs(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      int limit,
+      String pageToken,
+      StringBuilder nextOut) {
+    return list(accountId, catalogId, namespaceId, limit, pageToken, nextOut).stream()
+        .map(this::ref)
+        .toList();
+  }
+
+  @Override
+  public List<RelationRef> listRefsByName(
+      String accountId, String catalogId, String namespaceId, Set<String> names) {
+    return matchingTables(accountId, catalogId, namespaceId).stream()
+        .filter(table -> names.contains(table.getDisplayName()))
+        .map(this::ref)
+        .toList();
+  }
+
+  @Override
   public List<Table> list(
       String accountId,
       String catalogId,
@@ -216,5 +256,9 @@ public final class FakeTableRepository extends TableRepository {
       }
     }
     throw new IllegalArgumentException("bad token");
+  }
+
+  private RelationRef ref(Table table) {
+    return new RelationRef(table.getResourceId(), table.getDisplayName(), ResourceKind.RK_TABLE);
   }
 }

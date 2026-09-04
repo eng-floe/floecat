@@ -39,7 +39,6 @@ import ai.floedb.floecat.service.common.PageTokens;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.cache.CatalogTopologyCache;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.systemcatalog.graph.SystemCatalogTranslator;
@@ -69,20 +68,17 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
   private final LogicalSchemaMapper schemaMapper;
   private final SystemGraph systemGraph;
   private final EngineContextProvider engine;
-  private final CatalogTopologyCache topologyCache;
 
   @Inject
   public MetaGraph(
       UserGraph userGraph,
       LogicalSchemaMapper schemaMapper,
       SystemGraph systemGraph,
-      EngineContextProvider engine,
-      CatalogTopologyCache topologyCache) {
+      EngineContextProvider engine) {
     this.userGraph = userGraph;
     this.schemaMapper = schemaMapper;
     this.systemGraph = systemGraph;
     this.engine = engine;
-    this.topologyCache = topologyCache;
   }
 
   private EngineContext engineContext() {
@@ -136,8 +132,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
   public List<RelationNode> listRelations(ResourceId catalogId) {
     EngineContext ctx = engineContext();
     return mergeLists(
-        () -> systemGraph.listRelations(catalogId, ctx),
-        () -> listUserRelationsFromTopology(catalogId));
+        () -> systemGraph.listRelations(catalogId, ctx), () -> listUserRelations(catalogId));
   }
 
   /**
@@ -155,7 +150,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
     EngineContext ctx = engineContext();
     return mergeLists(
         () -> systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx),
-        () -> listUserRelationsFromTopology(catalogId, namespaceId));
+        () -> listUserRelations(catalogId, namespaceId));
   }
 
   /**
@@ -194,8 +189,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
   public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
     EngineContext ctx = engineContext();
     return mergeLists(
-        () -> systemGraph.listNamespaces(catalogId, ctx),
-        () -> listUserNamespacesFromTopology(catalogId));
+        () -> systemGraph.listNamespaces(catalogId, ctx), () -> listUserNamespaces(catalogId));
   }
 
   @Override
@@ -347,8 +341,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
 
   /**
    * Batch kind-agnostic name resolution: system names answer from the in-memory registry; the rest
-   * resolve through the user graph in one batch so names sharing a catalog/namespace resolve their
-   * scope once.
+   * resolve through the pointer-backed user graph, with duplicate names resolved once.
    */
   @Override
   public Map<NameRef, Optional<ResourceId>> resolveNames(String correlationId, List<NameRef> refs) {
@@ -735,25 +728,24 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
     return result;
   }
 
-  private List<NamespaceNode> listUserNamespacesFromTopology(ResourceId catalogId) {
-    return topologyCache.listNamespaceRefs(catalogId).stream()
+  private List<NamespaceNode> listUserNamespaces(ResourceId catalogId) {
+    return userGraph.listNamespaceRefs(catalogId).stream()
         .map(TopologyGraph.NamespaceRef::id)
         .map(userGraph::namespace)
         .flatMap(Optional::stream)
         .toList();
   }
 
-  private List<RelationNode> listUserRelationsFromTopology(ResourceId catalogId) {
+  private List<RelationNode> listUserRelations(ResourceId catalogId) {
     List<RelationNode> result = new ArrayList<>();
-    for (TopologyGraph.NamespaceRef namespace : topologyCache.listNamespaceRefs(catalogId)) {
-      result.addAll(listUserRelationsFromTopology(catalogId, namespace.id()));
+    for (TopologyGraph.NamespaceRef namespace : userGraph.listNamespaceRefs(catalogId)) {
+      result.addAll(listUserRelations(catalogId, namespace.id()));
     }
     return result;
   }
 
-  private List<RelationNode> listUserRelationsFromTopology(
-      ResourceId catalogId, ResourceId namespaceId) {
-    return topologyCache.listRelationRefs(catalogId, namespaceId).stream()
+  private List<RelationNode> listUserRelations(ResourceId catalogId, ResourceId namespaceId) {
+    return userGraph.listRelationRefs(catalogId, namespaceId).stream()
         .map(this::resolveUserRelation)
         .flatMap(Optional::stream)
         .toList();
@@ -940,7 +932,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
     return out;
   }
 
-  // ---- Lightweight ref listing and topology-cache invalidation ----
+  // ---- Lightweight pointer-backed ref listing ----
 
   @Override
   public boolean supportsLightweightRefs() {
@@ -951,7 +943,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
   public List<TopologyGraph.NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
     EngineContext ctx = engineContext();
     List<NamespaceNode> sysNs = systemGraph.listNamespaces(catalogId, ctx);
-    List<TopologyGraph.NamespaceRef> userNs = topologyCache.listNamespaceRefs(catalogId);
+    List<TopologyGraph.NamespaceRef> userNs = userGraph.listNamespaceRefs(catalogId);
     if (sysNs.isEmpty()) {
       return userNs;
     }
@@ -979,8 +971,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
                     names.contains(
                         TopologyNames.namespaceName(ns.pathSegments(), ns.displayName())))
             .toList();
-    List<TopologyGraph.NamespaceRef> userNs =
-        topologyCache.listNamespaceRefsByName(catalogId, names);
+    List<TopologyGraph.NamespaceRef> userNs = userGraph.listNamespaceRefsByName(catalogId, names);
     if (sysNs.isEmpty()) {
       return userNs;
     }
@@ -999,8 +990,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
       ResourceId catalogId, ResourceId namespaceId) {
     EngineContext ctx = engineContext();
     List<RelationNode> sysRels = systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx);
-    List<TopologyGraph.RelationRef> userRels =
-        topologyCache.listRelationRefs(catalogId, namespaceId);
+    List<TopologyGraph.RelationRef> userRels = userGraph.listRelationRefs(catalogId, namespaceId);
     if (sysRels.isEmpty()) {
       return userRels;
     }
@@ -1025,7 +1015,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
             .filter(r -> names.contains(r.displayName()))
             .toList();
     List<TopologyGraph.RelationRef> userRels =
-        topologyCache.listRelationRefsByName(catalogId, namespaceId, names);
+        userGraph.listRelationRefsByName(catalogId, namespaceId, names);
     if (sysRels.isEmpty()) {
       return userRels;
     }
@@ -1036,20 +1026,5 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
     }
     result.addAll(userRels);
     return result;
-  }
-
-  @Override
-  public void evict(ResourceId resourceId) {
-    topologyCache.evict(resourceId);
-  }
-
-  @Override
-  public void evictRelationRefs(ResourceId namespaceId) {
-    topologyCache.evictRelationRefs(namespaceId);
-  }
-
-  @Override
-  public void evictNamespaceRefs(ResourceId catalogId) {
-    topologyCache.evictNamespaceRefs(catalogId);
   }
 }
