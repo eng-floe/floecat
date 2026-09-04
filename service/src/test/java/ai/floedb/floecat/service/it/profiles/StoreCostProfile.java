@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.it.profiles;
 
 import io.quarkus.test.junit.QuarkusTestProfile;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -49,6 +50,18 @@ public class StoreCostProfile implements QuarkusTestProfile {
 
     // Not @Scheduled: the reconciler's own auto-drive loop.
     overrides.put("floecat.reconciler.auto.enabled", "false");
+
+    // Cost gates must exercise the same disk implementation as a query-serving deployment. The
+    // application default remains off until an NVMe volume is provisioned, so opt this profile in
+    // explicitly and isolate each test JVM's files. PointerListingStoreCostIT overrides this one
+    // setting because that suite deliberately exposes blob reads while testing pointer behaviour.
+    overrides.put("floecat.cache.blob.disk.enabled", "true");
+    overrides.put(
+        "floecat.cache.blob.disk.path",
+        Path.of(
+                System.getProperty("java.io.tmpdir"),
+                "floecat-store-cost-" + ProcessHandle.current().pid())
+            .toString());
 
     return overrides;
   }
