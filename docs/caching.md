@@ -186,6 +186,13 @@ uncached reads themselves.
 `floecat.cache.blob.disk.enabled=false` preserves the same repository API and reads serialized
 bodies directly from object storage. The disk path is not opened when disabled.
 
+A query-serving deployment should enable the disk tier after mounting capacity-managed local
+storage at `floecat.cache.blob.disk.path`. It remains opt-in at the application level because this
+repository does not own the production volume mount, and creating `/mnt/nvme/floecat` alone cannot
+prove that it is backed by NVMe rather than the container root filesystem. The local Compose
+service enables a bounded 1 GiB ephemeral cache under `/tmp`; that exercises the production path
+but is not a performance substitute for NVMe. Reconciler executors remain source-backed.
+
 A budget of zero is *not* the switch — it is refused at startup, because a cache sized zero reports
 a 0% hit rate that reads as a cache which is not helping rather than one that was turned off.
 
