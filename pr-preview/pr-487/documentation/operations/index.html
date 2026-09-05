@@ -1953,7 +1953,13 @@ auth resolution path, not a connector-specific feature.</p>
 <li><code>FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=true</code> – permits allowlisted
   HTTPS hosts that resolve to private or loopback addresses.</li>
 <li><code>FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS=true</code> – permits loopback-only HTTP token
-  endpoints for local development.</li>
+  endpoints for local development, on the shared connector auth-resolution path.</li>
+<li><code>FLOECAT_SECURITY_ALLOW_LOOPBACK_CATALOG_ENDPOINTS=true</code> – the equivalent for a Unity Catalog
+  Integration. Its provider holds its own token endpoint to the <em>catalog</em> setting rather than the
+  token one, because when <code>token_uri</code> is omitted the endpoint is derived from <code>catalog_uri</code> and
+  inherits its scheme: gating the two differently would let a cleartext token endpoint outlive the
+  cleartext catalog it came from. A Unity Integration against an <code>http://localhost</code> catalog
+  therefore needs this variable, not the token one.</li>
 </ul>
 <p>Important behavior:</p>
 <ul>
@@ -1980,8 +1986,17 @@ is also republished to reconcile and query workers, so the exposure is not limit
   and LocalStack deployments are the usual reason. The bundled Docker Compose sets it because its
   S3 is LocalStack over HTTP.</li>
 </ul>
-<p>The address-class guard applies to <code>s3.endpoint</code> under either scheme: a link-local, wildcard, or
-multicast address is refused whether or not cleartext is permitted.</p>
+<p>The address-class guard applies to <code>s3.endpoint</code> under either scheme, and it is a separate control
+from the one above. Link-local, wildcard and multicast literals -- including <code>169.254.169.254</code> -- are
+always refused. A <strong>private address literal</strong> (10/8, 172.16/12, 192.168/16, IPv6 unique-local) is
+also refused unless <code>floecat.security.allow-private-catalog-endpoints=true</code> (or
+<code>FLOECAT_SECURITY_ALLOW_PRIVATE_CATALOG_ENDPOINTS=true</code>) -- the same property that governs a Unity
+catalog URI, described in <a href="../connectors-delta/">Delta connectors</a>. Permitting cleartext does not
+permit a private address, so a MinIO or LocalStack endpoint written as an IP needs both settings.</p>
+<p>As with the catalog URI, these checks apply only to address <em>literals</em>: a hostname is never resolved
+during validation, so an endpoint written as a hostname passes the address guard regardless of what
+it resolves to. That is why the bundled Compose stack, which addresses LocalStack as <code>localstack</code>,
+needs only the cleartext setting.</p>
 <h3 id="reconciler-deployment-modes">Reconciler deployment modes<a class="headerlink" href="#reconciler-deployment-modes" title="Permanent link">&para;</a></h3>
 <p>The reconciler runs in three shapes from the same artifact:</p>
 <ul>
