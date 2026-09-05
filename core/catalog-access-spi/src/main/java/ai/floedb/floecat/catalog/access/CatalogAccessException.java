@@ -19,6 +19,14 @@ public final class CatalogAccessException extends RuntimeException {
     UNAVAILABLE,
     TIMEOUT,
     CREDENTIAL_EXPIRED,
+    /**
+     * The credentials this catalog needs are configured but not resolvable right now -- typically
+     * the window while a stored secret generation is superseded. Distinct from {@link
+     * #INVALID_CONFIGURATION}, which says the configuration itself is wrong and will stay wrong:
+     * this one clears on its own, so a caller that retries recovers where a caller that gives up
+     * permanently fails work that would have succeeded.
+     */
+    CREDENTIAL_UNAVAILABLE,
     CREDENTIAL_SCOPE_INVALID,
     UNSUPPORTED,
     INTERNAL

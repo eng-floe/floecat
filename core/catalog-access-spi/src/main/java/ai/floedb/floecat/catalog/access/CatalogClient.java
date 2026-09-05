@@ -39,6 +39,15 @@ public interface CatalogClient extends AutoCloseable {
    * Re-loads the table through the upstream protocol and returns only credentials from its
    * dedicated vending channel. Call again when credentials expire; an absent expiry must not be
    * treated as non-expiring.
+   *
+   * <p>An implementation must return credentials whose {@link VendedStorageCredentials#scopePrefix}
+   * covers the table's own storage location, or raise {@link
+   * CatalogAccessException.Code#CREDENTIAL_SCOPE_INVALID}. It must never widen the scope it reports
+   * to make a credential look usable, and nothing downstream will catch it if it does: a caller
+   * takes the reported scope as the narrowest bound it knows, stamps the location it was authorized
+   * for, and hands the credentials on. An over-stated scope is therefore not refused anywhere -- it
+   * surfaces as a 403 from the object store partway through a read, far from the provider that
+   * mis-reported it.
    */
   Optional<VendedStorageCredentials> vendStorageCredentials(CatalogObjectName table);
 
