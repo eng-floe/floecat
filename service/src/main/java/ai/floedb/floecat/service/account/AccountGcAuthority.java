@@ -82,6 +82,19 @@ public class AccountGcAuthority {
     }
   }
 
+  /** Process-wide lifecycle status consumed by the deployment drain hook. */
+  public record ProcessStatus(
+      String processIncarnation,
+      boolean draining,
+      boolean drained,
+      long accounts,
+      long servingAccounts,
+      long drainingAccounts,
+      long activeResolutions,
+      long activeMutations,
+      long activeGc,
+      long referencedRoots) {}
+
   public interface Permit extends AutoCloseable {
     @Override
     void close();
@@ -129,14 +142,13 @@ public class AccountGcAuthority {
     }
   }
 
-  private static final Permit NOOP_PERMIT = () -> {};
-
   private final DeploymentMode deploymentMode;
   private final String processIncarnation;
   private final ToLongFunction<String> referencedRoots;
   private final Consumer<String> prepareCache;
   private final Function<String, String> cacheState;
   private final ConcurrentHashMap<String, AccountState> accounts = new ConcurrentHashMap<>();
+  private final AtomicBoolean processDraining = new AtomicBoolean();
 
   @Inject Observability observability;
 
@@ -180,15 +192,16 @@ public class AccountGcAuthority {
 
   public Optional<GcPermit> tryAcquireGc(String accountId) {
     String account = requireText(accountId, "accountId");
-    if (deploymentMode == DeploymentMode.STANDALONE) {
-      return Optional.of(new UnrestrictedGcPermit(account, processIncarnation));
-    }
-    AccountState state = accounts.get(account);
-    if (state == null) {
+    if (processDraining.get()) {
       return Optional.empty();
     }
+    AccountState state = accounts.computeIfAbsent(account, ignored -> new AccountState());
     synchronized (state) {
-      if (state.mode != AccountMode.SERVING || !state.gcAllowed) {
+      if (deploymentMode == DeploymentMode.STANDALONE && state.mode == AccountMode.UNASSIGNED) {
+        state.mode = AccountMode.SERVING;
+        state.gcAllowed = true;
+      }
+      if (processDraining.get() || state.mode != AccountMode.SERVING || !state.gcAllowed) {
         return Optional.empty();
       }
       state.activeGc++;
@@ -219,9 +232,15 @@ public class AccountGcAuthority {
       throw new IllegalArgumentException("command targets a different process incarnation");
     }
     AccountMode desiredMode = Objects.requireNonNull(mode, "mode");
+    if (processDraining.get() && desiredMode == AccountMode.SERVING) {
+      throw new IllegalStateException("process is draining");
+    }
     boolean desiredGc = gcAllowed && desiredMode == AccountMode.SERVING;
     AccountState state = stateForApply(account);
     synchronized (state) {
+      if (processDraining.get() && desiredMode == AccountMode.SERVING) {
+        throw new IllegalStateException("process is draining");
+      }
       if (assignmentVersion < state.assignmentVersion) {
         throw new IllegalArgumentException("stale account ownership command");
       }
@@ -249,6 +268,12 @@ public class AccountGcAuthority {
   public Status status(String accountId) {
     String account = requireText(accountId, "accountId");
     if (deploymentMode == DeploymentMode.STANDALONE) {
+      AccountState state = accounts.get(account);
+      if (state != null) {
+        synchronized (state) {
+          return status(account, state);
+        }
+      }
       return new Status(
           account,
           0L,
@@ -282,6 +307,65 @@ public class AccountGcAuthority {
 
   public String processIncarnation() {
     return processIncarnation;
+  }
+
+  /**
+   * Closes this process to new managed work and transitions every locally served account to {@link
+   * AccountMode#DRAINING}. The operation is idempotent and deliberately does not touch KV.
+   */
+  public ProcessStatus beginProcessDrain() {
+    processDraining.set(true);
+    for (AccountState state : accounts.values()) {
+      synchronized (state) {
+        if (state.mode == AccountMode.SERVING) {
+          state.mode = AccountMode.DRAINING;
+        }
+        state.gcAllowed = false;
+      }
+    }
+    return processStatus();
+  }
+
+  /** Returns a process-wide snapshot suitable for a scaler drain/readiness decision. */
+  public ProcessStatus processStatus() {
+    long serving = 0L;
+    long draining = 0L;
+    long activeResolutions = 0L;
+    long activeMutations = 0L;
+    long activeGc = 0L;
+    long rootCount = 0L;
+    for (var entry : accounts.entrySet()) {
+      AccountState state = entry.getValue();
+      synchronized (state) {
+        if (state.mode == AccountMode.SERVING) {
+          serving++;
+        } else if (state.mode == AccountMode.DRAINING) {
+          draining++;
+        }
+        activeResolutions += state.activeResolutions;
+        activeMutations += state.activeMutations;
+        activeGc += state.activeGc;
+      }
+      rootCount += this.referencedRoots.applyAsLong(entry.getKey());
+    }
+    boolean drained =
+        processDraining.get()
+            && serving == 0L
+            && activeResolutions == 0L
+            && activeMutations == 0L
+            && activeGc == 0L
+            && rootCount == 0L;
+    return new ProcessStatus(
+        processIncarnation,
+        processDraining.get(),
+        drained,
+        accounts.size(),
+        serving,
+        draining,
+        activeResolutions,
+        activeMutations,
+        activeGc,
+        rootCount);
   }
 
   public boolean managed() {
@@ -333,15 +417,16 @@ public class AccountGcAuthority {
 
   private Permit admit(String accountId, Activity activity) {
     String account = requireText(accountId, "accountId");
-    if (deploymentMode == DeploymentMode.STANDALONE) {
-      return NOOP_PERMIT;
-    }
-    AccountState state = accounts.get(account);
-    if (state == null) {
+    if (processDraining.get()) {
       throw notServing(account);
     }
+    AccountState state = accounts.computeIfAbsent(account, ignored -> new AccountState());
     synchronized (state) {
-      if (state.mode != AccountMode.SERVING) {
+      if (deploymentMode == DeploymentMode.STANDALONE && state.mode == AccountMode.UNASSIGNED) {
+        state.mode = AccountMode.SERVING;
+        state.gcAllowed = true;
+      }
+      if (processDraining.get() || state.mode != AccountMode.SERVING) {
         throw notServing(account);
       }
       if (activity == Activity.RESOLUTION) {
@@ -505,42 +590,6 @@ public class AccountGcAuthority {
       synchronized (state) {
         state.activeGc--;
       }
-    }
-  }
-
-  private static final class UnrestrictedGcPermit implements GcPermit {
-    private final String accountId;
-    private final String incarnation;
-    private final AtomicBoolean closed = new AtomicBoolean();
-
-    private UnrestrictedGcPermit(String accountId, String incarnation) {
-      this.accountId = accountId;
-      this.incarnation = incarnation;
-    }
-
-    @Override
-    public String accountId() {
-      return accountId;
-    }
-
-    @Override
-    public long assignmentVersion() {
-      return 0L;
-    }
-
-    @Override
-    public String processIncarnation() {
-      return incarnation;
-    }
-
-    @Override
-    public boolean valid() {
-      return !closed.get();
-    }
-
-    @Override
-    public void close() {
-      closed.set(true);
     }
   }
 }

@@ -93,6 +93,30 @@ class AccountGcAuthorityTest {
   }
 
   @Test
+  void processDrainClosesEveryAccountAndReportsWhenThePodIsSafeToDelete() {
+    AtomicLong references = new AtomicLong(1);
+    AccountGcAuthority authority = managed(references);
+    authority.apply(ACCOUNT, 1, INCARNATION, AccountMode.SERVING, true);
+    authority.apply("account-2", 1, INCARNATION, AccountMode.SERVING, true);
+    var resolution = authority.admitResolution(ACCOUNT);
+
+    var draining = authority.beginProcessDrain();
+
+    assertThat(draining.draining()).isTrue();
+    assertThat(draining.drained()).isFalse();
+    assertThat(draining.servingAccounts()).isZero();
+    assertThat(draining.drainingAccounts()).isEqualTo(2);
+    assertThatThrownBy(
+            () -> authority.apply("account-2", 2, INCARNATION, AccountMode.SERVING, true))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("draining");
+
+    resolution.close();
+    references.set(0);
+    assertThat(authority.processStatus().drained()).isTrue();
+  }
+
+  @Test
   void commandsAreIncarnationTargetedVersionedAndIdempotent() {
     AtomicInteger warms = new AtomicInteger();
     AccountGcAuthority authority =
