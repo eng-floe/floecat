@@ -161,6 +161,13 @@
       </exclusions>
     </dependency>
 
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-mapreduce-client-core</artifactId>
+      <version>${version.hadoop}</version>
+      <scope>test</scope>
+    </dependency>
+
     <!-- Test deps (connectors-common has plain JUnit5 tests) -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
