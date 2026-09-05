@@ -127,11 +127,7 @@ public final class ParquetAvgWidthProvider {
         long blockRowCount = block.getRowCount();
         Set<String> columnsCountedInBlock = new HashSet<>();
         for (ColumnChunkMetaData col : block.getColumns()) {
-          // Parquet column paths are dot-separated; use the first component as the top-level name.
-          // Use indexOf instead of split() to avoid regex allocation per column chunk.
-          String dotStr = col.getPath().toDotString();
-          int dot = dotStr.indexOf('.');
-          String colName = dot == -1 ? dotStr : dotStr.substring(0, dot);
+          String colName = col.getPath().toDotString();
           AvgWidthAcc acc = sinks.get(colName);
           if (acc != null) {
             acc.addBytes(col.getTotalUncompressedSize());
