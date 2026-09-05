@@ -71,11 +71,13 @@ poll:
 GET /internal/drain
 ```
 
-It may delete the pod only after the response is HTTP `200` and contains `"drained":true`. HTTP
-`202` means that queries, mutations, collectors, or in-memory pin roots are still retiring. A
-timeout is not permission to delete the pod: the scaler must leave the old owner in place and retry
-or apply its explicit cancellation policy. The endpoint is lifecycle control only; it never writes
-KV and must remain on the internal management path.
+Normal completion is HTTP `200` with `"drained":true`. HTTP `202` means that queries, mutations,
+collectors, or in-memory pin roots are still retiring. The deployment hook has a bounded grace
+period; if that boundary expires, the platform's explicit cancellation/retry policy may terminate
+the pod, and Core must wait for the old pod to disappear before releasing its ownership fence. The
+endpoint is lifecycle control only; it never writes KV and must remain on the internal management
+path. Floecat also starts the same drain fence from its local shutdown observer, so a failed
+kubelet HTTP hook cannot skip admission shutdown.
 
 ### Outbound token endpoint allowlist
 

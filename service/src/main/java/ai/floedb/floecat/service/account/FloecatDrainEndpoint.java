@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.account;
 
+import io.quarkus.runtime.ShutdownEvent;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
@@ -46,6 +47,16 @@ public class FloecatDrainEndpoint {
   void routes(@Observes Router router) {
     router.post(PATH).handler(this::startDrain);
     router.get(PATH).handler(this::getDrain);
+  }
+
+  /**
+   * Keep the safety fence effective even when a kubelet cannot reach the HTTP hook (for example
+   * while the pod network policy is being torn down). Kubernetes still gives this observer the
+   * pod's termination grace period, so SIGTERM is a local fallback for the same drain contract.
+   */
+  void onShutdown(@Observes ShutdownEvent ignored) {
+    authority.beginProcessDrain();
+    awaitDrained(Math.max(0L, defaultTimeoutMs));
   }
 
   /**

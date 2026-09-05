@@ -365,10 +365,13 @@ using `METADATA_AND_CAPTURE`.
 Before a managed pod is restarted or removed, the deployment lifecycle hook calls
 `GET /internal/drain?wait=true`. The endpoint closes local account admission, revokes new GC
 admissions, and waits for already-admitted resolutions, mutations, GC permits, and query pin roots
-to retire. HTTP `200` with `drained=true` is the deletion barrier; `202` means the caller must keep
-the pod alive and poll again. A plain `GET /internal/drain` is a read-only status probe and
-`POST /internal/drain` is the explicit management-controller form. The endpoint never writes the
-KV store and is restricted to the internal management path by the production mesh policy.
+to retire. HTTP `200` with `drained=true` is normal completion; `202` means the caller must keep
+the pod alive and poll again. The deployment has a bounded cancellation/retry boundary for
+pathological work, and Core waits for the old pod to disappear before releasing its ownership
+fence. A local shutdown observer starts the same drain fence if the kubelet cannot reach the HTTP
+hook. A plain `GET /internal/drain` is a read-only status probe and `POST /internal/drain` is the
+explicit management-controller form. The endpoint never writes the KV store and is restricted to
+the internal management path by the production mesh policy.
 
 Core performs the account-level handoff over the existing ownership RPC: it drains the old owner,
 restarts only queries that have not started spooling, waits for the Floecat ownership status to
