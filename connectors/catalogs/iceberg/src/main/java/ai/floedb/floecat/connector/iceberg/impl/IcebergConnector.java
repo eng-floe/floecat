@@ -1625,13 +1625,38 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
     Set<String> effectiveColumns =
         FloecatConnector.resolveIncludedColumns(
-            schema.columns().stream().map(Types.NestedField::name).toList(),
-            includeColumns,
-            columnSelectorPolicy);
+            defaultStatisticsColumns(schema), includeColumns, columnSelectorPolicy);
     if (effectiveColumns.isEmpty()) {
       return Set.of();
     }
     return resolveFieldIdsNested(schema, effectiveColumns);
+  }
+
+  /** Returns non-repeated primitive paths eligible for scalar statistics capture. */
+  static List<String> defaultStatisticsColumns(Schema schema) {
+    if (schema == null) {
+      return List.of();
+    }
+    List<String> paths = new ArrayList<>();
+    for (Types.NestedField field : schema.columns()) {
+      collectNonRepeatedPrimitivePaths(field, field.name(), paths);
+    }
+    return List.copyOf(paths);
+  }
+
+  private static void collectNonRepeatedPrimitivePaths(
+      Types.NestedField field, String path, List<String> out) {
+    Type type = field.type();
+    if (type.isPrimitiveType()) {
+      out.add(path);
+      return;
+    }
+    if (!type.isStructType()) {
+      return;
+    }
+    for (Types.NestedField child : type.asStructType().fields()) {
+      collectNonRepeatedPrimitivePaths(child, path + "." + child.name(), out);
+    }
   }
 
   private static Set<Integer> resolveFieldIdsNested(Schema schema, Set<String> selectors) {
