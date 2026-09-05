@@ -45,7 +45,20 @@ public class FloecatDrainEndpoint {
 
   void routes(@Observes Router router) {
     router.post(PATH).handler(this::startDrain);
-    router.get(PATH).handler(this::status);
+    router.get(PATH).handler(this::getDrain);
+  }
+
+  /**
+   * Kubernetes lifecycle hooks can issue only an HTTP GET. A plain GET remains a cheap status
+   * probe, while {@code ?wait=true} uses the same drain path as the explicit POST contract.
+   */
+  private void getDrain(RoutingContext context) {
+    String wait = context.request().getParam("wait");
+    if (wait == null || wait.isBlank()) {
+      status(context);
+      return;
+    }
+    startDrain(context);
   }
 
   private void startDrain(RoutingContext context) {
