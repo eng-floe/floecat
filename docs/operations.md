@@ -69,7 +69,13 @@ The relevant settings are:
 - `FLOECAT_SECURITY_ALLOW_PRIVATE_TOKEN_ENDPOINTS_FOR_ALLOWED_HOSTS=true` – permits allowlisted
   HTTPS hosts that resolve to private or loopback addresses.
 - `FLOECAT_SECURITY_ALLOW_LOOPBACK_TOKEN_ENDPOINTS=true` – permits loopback-only HTTP token
-  endpoints for local development.
+  endpoints for local development, on the shared connector auth-resolution path.
+- `FLOECAT_SECURITY_ALLOW_LOOPBACK_CATALOG_ENDPOINTS=true` – the equivalent for a Unity Catalog
+  Integration. Its provider holds its own token endpoint to the *catalog* setting rather than the
+  token one, because when `token_uri` is omitted the endpoint is derived from `catalog_uri` and
+  inherits its scheme: gating the two differently would let a cleartext token endpoint outlive the
+  cleartext catalog it came from. A Unity Integration against an `http://localhost` catalog
+  therefore needs this variable, not the token one.
 
 Important behavior:
 
@@ -78,6 +84,37 @@ Important behavior:
   does not disable the private-address or loopback HTTP guards.
 - The same shared validation applies to Delta/Unity, Iceberg REST, and any other connector auth
   flow that performs service-side token acquisition.
+- Where the allowlist is set, it is also applied when a Catalog Integration's OAuth
+  client-credentials `token_uri` is created or updated, for every integration type. An integration
+  whose `token_uri` is outside the list cannot be written until the list covers it. This is a
+  write-path check only: records persisted before the check existed are not re-validated, and the
+  endpoint derived from `catalog_uri` when `token_uri` is omitted is not covered.
+
+### Cleartext S3 endpoints
+
+A Unity Catalog Integration may set `s3.endpoint` to reach an S3-compatible store. Floecat requires
+HTTPS there by default, because a Unity storage vend is only published when it carries an AWS
+session token: that token travels in the `X-Amz-Security-Token` header on every signed request, and
+anyone who observes it can replay it against the table's storage prefix until it expires. The value
+is also republished to reconcile and query workers, so the exposure is not limited to validation.
+
+- `FLOECAT_SECURITY_ALLOW_CLEARTEXT_S3_ENDPOINTS=true` – permits an `http://` `s3.endpoint`. Set
+  this only where the network between Floecat, its workers, and the object store is trusted; MinIO
+  and LocalStack deployments are the usual reason. The bundled Docker Compose sets it because its
+  S3 is LocalStack over HTTP.
+
+The address-class guard applies to `s3.endpoint` under either scheme, and it is a separate control
+from the one above. Link-local, wildcard and multicast literals -- including `169.254.169.254` -- are
+always refused. A **private address literal** (10/8, 172.16/12, 192.168/16, IPv6 unique-local) is
+also refused unless `floecat.security.allow-private-catalog-endpoints=true` (or
+`FLOECAT_SECURITY_ALLOW_PRIVATE_CATALOG_ENDPOINTS=true`) -- the same property that governs a Unity
+catalog URI, described in [Delta connectors](connectors-delta.md). Permitting cleartext does not
+permit a private address, so a MinIO or LocalStack endpoint written as an IP needs both settings.
+
+As with the catalog URI, these checks apply only to address *literals*: a hostname is never resolved
+during validation, so an endpoint written as a hostname passes the address guard regardless of what
+it resolves to. That is why the bundled Compose stack, which addresses LocalStack as `localstack`,
+needs only the cleartext setting.
 
 ### Reconciler deployment modes
 

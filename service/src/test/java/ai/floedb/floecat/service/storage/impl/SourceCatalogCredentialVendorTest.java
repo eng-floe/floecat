@@ -158,6 +158,44 @@ class SourceCatalogCredentialVendorTest {
     verify(client).close();
   }
 
+  /**
+   * A Unity integration vend carries the whole session triple. The fixture used to omit the session
+   * token while still supplying an expiry, which is not a shape Unity produces -- {@code
+   * generateTemporaryTableCredentials} mints an AWS temporary credential and those always carry a
+   * token -- and it stopped compiling as a valid case once an integration was required to hold the
+   * triple on the query path too, not only on reconcile.
+   */
+  @Test
+  void vendsForAUnityCatalogIntegrationOrigin() {
+    integration = integration.toBuilder().setType(CatalogIntegrationType.CIT_UNITY).build();
+    when(integrations.getById(INTEGRATION_ID)).thenReturn(Optional.of(integration));
+    when(access.open(integration)).thenReturn(client);
+    when(client.capabilities())
+        .thenReturn(CatalogCapabilities.of(CatalogCapability.VEND_STORAGE_CREDENTIALS));
+    when(client.vendStorageCredentials(new CatalogObjectName(NamespacePath.of("sales"), "orders")))
+        .thenReturn(
+            Optional.of(
+                new VendedStorageCredentials(
+                    Map.of(
+                        "s3.access-key-id", "ASIA-UNITY",
+                        "s3.secret-access-key", "secret-unity",
+                        "s3.session-token", "session-unity"),
+                    "s3://warehouse/orders",
+                    Optional.of(EXPIRY))));
+
+    var response =
+        vendor.vendForTable(
+            integrationTable(),
+            "s3://warehouse/orders/data.parquet",
+            SourceCatalogCredentialVendor.CredentialUse.QUERY);
+
+    assertEquals(1, response.getStorageCredentialsCount());
+    var credential = response.getStorageCredentials(0);
+    assertEquals("ASIA-UNITY", credential.getConfigMap().get("s3.access-key-id"));
+    assertEquals("session-unity", credential.getConfigMap().get("s3.session-token"));
+    verify(client).close();
+  }
+
   @Test
   void refusesWhenTheCatalogProviderDoesNotVend() {
     // Not a fall-back. A storage authority is not a second way for an Integration-backed table to
@@ -861,6 +899,41 @@ class SourceCatalogCredentialVendorTest {
                     SourceCatalogCredentialVendor.CredentialUse.RECONCILE));
 
     assertTrue(SourceCatalogVendingGrpcStatus.isVendedCredentialsNotRefreshable(failure));
+    assertThat(failure.getStatus().getDescription()).contains("s3.session-token-expires-at-ms");
+  }
+
+  /**
+   * The other tuple that cannot be renewed, and the one the exemption does not cover: a session
+   * token present but no expiry. The case above is refused because an integration should not be
+   * holding a static key at all; this one because the reconciler registers a refresh provider only
+   * when it can see an expiry, so it would embed a token that lapses mid-capture with no recovery.
+   */
+  @Test
+  void reconcileRefusesASessionTokenWithNoExpiry() {
+    when(client.capabilities())
+        .thenReturn(CatalogCapabilities.of(CatalogCapability.VEND_STORAGE_CREDENTIALS));
+    when(client.vendStorageCredentials(any()))
+        .thenReturn(
+            Optional.of(
+                new VendedStorageCredentials(
+                    Map.of(
+                        "s3.access-key-id", "ASIA-VENDED",
+                        "s3.secret-access-key", "secret-vended",
+                        "s3.session-token", "session-vended"),
+                    "s3://warehouse/orders",
+                    Optional.empty())));
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                vendor.vendForTable(
+                    integrationTable(),
+                    "s3://warehouse/orders",
+                    SourceCatalogCredentialVendor.CredentialUse.RECONCILE));
+
+    assertTrue(SourceCatalogVendingGrpcStatus.isVendedCredentialsNotRefreshable(failure));
+    assertThat(failure.getStatus().getDescription()).contains("s3.session-token-expires-at-ms");
   }
 
   @Test

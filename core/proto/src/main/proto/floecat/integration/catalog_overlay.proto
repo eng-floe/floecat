@@ -136,6 +136,12 @@ message ReconcileCatalogOverlayResponse {
   uint32 views_created = 7;
   uint32 views_updated = 8;
   uint32 views_deleted = 9;
+
+  // Non-zero means the pass was partial: some upstream branches could not be enumerated and some
+  // objects would not load, so both are excluded from materialization and from retirement. Without
+  // these, a partial pass and a clean pass with nothing to do are both all zeros.
+  uint32 branches_skipped = 10;
+  uint32 objects_skipped = 11;
 }
 
 service CatalogOverlays {

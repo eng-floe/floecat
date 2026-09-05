@@ -4,12 +4,13 @@ The catalog-access SPI is the Connector-independent boundary for communicating w
 catalogs. Catalog Integrations will use this boundary for connection validation, discovery, and
 provider metadata access without creating or reading legacy Connector resources.
 
-The SPI and its first provider are separate Maven modules:
+The SPI and its providers are separate Maven modules:
 
 | Module | Responsibility |
 | --- | --- |
 | `core/catalog-access-spi` | Provider-neutral connection, authentication, credentials, capabilities, namespace, table, view, and client contracts. |
 | `catalog-access/iceberg-rest` | Iceberg REST client provider and ServiceLoader registration. |
+| `catalog-access/unity` | Unity Catalog client provider, OAuth token refresh, Delta metadata mapping, credential vending, storage validation, and ServiceLoader registration. |
 
 Neither module depends on Connector protobufs or `FloecatConnector`.
 
@@ -39,6 +40,36 @@ try (CatalogClient client = CatalogClientFactory.load().open(config, credentials
 
 Provider lookup is by `CatalogProtocol`, which describes the catalog protocol/provider rather than
 the table format. Missing and duplicate providers fail explicitly.
+
+## Unity Catalog slice
+
+The Unity Catalog provider adapts the transport-neutral client in
+`connectors/clients/unity-catalog` onto the catalog-access SPI. It supports:
+
+- bearer tokens and OAuth client credentials, with catalog-token refresh kept separate from
+  storage credential vending;
+- catalog/schema discovery mapped onto hierarchical namespace paths;
+- Delta table and view discovery, metadata loading, and stable identity through Unity table IDs;
+- table-scoped AWS credentials from Unity Catalog's temporary-table-credentials endpoint; and
+- non-mutating validation of the vended credentials against the table's Delta log, without ambient
+  AWS credential fallback.
+
+The provider consumes Integration configuration directly and has no dependency on Connector
+resources or `FloecatConnector`. Unity-hosted non-Delta tables are not exposed by this provider;
+Iceberg catalogs use the Iceberg REST integration path.
+
+OAuth client credentials use `oauth2-server-uri` and optional `scope` authentication properties.
+When no token URI is configured, the provider resolves `/oidc/v1/token` against the catalog URI.
+Provider connection properties include `http.connect.ms`, `http.read.ms`,
+`unity.temporary-table-vend-path`, `s3.region`, `s3.endpoint`, and `s3.path-style-access`.
+
+Table schemas reported through this slice are the ones Unity holds, not the ones the Delta log
+holds. The Unity Delta *Connector* prefers the log for a table with a storage location and falls
+back to Unity's column list only when the log will not read, because for an externally written
+table Unity's columns can lag the log. This provider has no Delta reader, so an Overlay-materialized
+table can report an older schema than the Connector-imported copy of the same upstream table, and
+the Overlay is the stale side. Closing the gap means reading the log from `catalog-access/unity`;
+until then, treat overlay schemas as catalog-reported.
 
 ## Iceberg REST slice
 
@@ -135,7 +166,8 @@ to Connector behavior.
 ## Current boundary
 
 The service resolves persisted Catalog Integration OAuth, bearer, and explicit static SigV4
-credentials onto this SPI. It exposes read-only RPCs for full connection validation, direct-child
+credentials onto this SPI. Iceberg REST and Unity Catalog have registered providers. The service
+exposes read-only RPCs for full connection validation, direct-child
 namespace listing, and lightweight table/view listing. Validation succeeds only after catalog
 connection, authentication, discovery, credential vending, and a non-mutating storage read all
 pass. Authentication, expiry, scope, and storage failures remain distinct in the public validation

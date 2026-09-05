@@ -37,7 +37,12 @@ COMPOSE_SMOKE_UPSTREAM_ICEBERG_METADATA_PREFIX=${COMPOSE_SMOKE_UPSTREAM_ICEBERG_
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT:-true}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI:-https://unity-proxy:8443}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_VEND_PATH=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_VEND_PATH:-/api/2.1/unity-catalog/temporary-table-credentials}
-COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS:-unity.default}
+# A schema this smoke owns, not the sample one. unitycatalog:v0.6.0 ships unity.default
+# pre-populated with marksheet, marksheet_uniform, numbers and user_countries -- all DELTA,
+# so an Overlay including that schema materializes them alongside the table under test and
+# the tables_created assertion below cannot hold. The catalog and schema POSTs tolerate
+# ALREADY_EXISTS, so a schema of our own costs nothing and keeps the count exact.
+COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS:-unity.floecat_smoke}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_TABLE=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_TABLE:-call_center}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG:-unity_import}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_NS=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_NS:-unity_smoke}
@@ -1230,12 +1235,75 @@ quit")
       return 1
     fi
 
+    # The call_center fixture's own schema, in Delta log order. Registered explicitly because this
+    # provider has no Delta reader: the Connector path prefers describeTableSchemaJson and reads the
+    # log, but an Integration overlay's copy is whatever Unity was told. Registering nothing left
+    # the table with an empty schema, which loadTable now refuses per object -- so the completeness
+    # assertions below are what check the schema arrived: without it the reconcile reports
+    # tables_created: 0 and objects_skipped: 1.
+    #
+    # Unity rejects a column with no type_json ("Column <n> has null/empty typeJson"), so each entry
+    # carries the Spark form the Delta log itself records.
+    local unity_column_specs=(
+      cc_call_center_sk:INT:integer
+      cc_call_center_id:STRING:string
+      cc_rec_start_date:DATE:date
+      cc_rec_end_date:DATE:date
+      cc_closed_date_sk:LONG:long
+      cc_open_date_sk:LONG:long
+      cc_name:STRING:string
+      cc_class:STRING:string
+      cc_employees:LONG:long
+      cc_sq_ft:LONG:long
+      cc_hours:STRING:string
+      cc_manager:STRING:string
+      cc_mkt_id:LONG:long
+      cc_mkt_class:STRING:string
+      cc_mkt_desc:STRING:string
+      cc_market_manager:STRING:string
+      cc_division:LONG:long
+      cc_division_name:STRING:string
+      cc_company:LONG:long
+      cc_company_name:STRING:string
+      cc_street_number:STRING:string
+      cc_street_name:STRING:string
+      cc_street_type:STRING:string
+      cc_suite_number:STRING:string
+      cc_city:STRING:string
+      cc_county:STRING:string
+      cc_state:STRING:string
+      cc_zip:STRING:string
+      cc_country:STRING:string
+      "cc_gmt_offset:DECIMAL:decimal(5,2)"
+      "cc_tax_percentage:DECIMAL:decimal(5,2)"
+    )
+    local unity_columns=""
+    local unity_column_position=0
+    local unity_column_spec
+    for unity_column_spec in "${unity_column_specs[@]}"; do
+      local col_name="${unity_column_spec%%:*}"
+      local col_rest="${unity_column_spec#*:}"
+      local col_type_name="${col_rest%%:*}"
+      local col_type_text="${col_rest#*:}"
+      local col_extra=""
+      if [ "$col_type_name" = "DECIMAL" ]; then
+        local col_scale_spec="${col_type_text#decimal(}"
+        col_scale_spec="${col_scale_spec%)}"
+        col_extra=",\"type_precision\":${col_scale_spec%%,*},\"type_scale\":${col_scale_spec##*,}"
+      fi
+      if [ -n "$unity_columns" ]; then
+        unity_columns="${unity_columns},"
+      fi
+      unity_columns="${unity_columns}{\"name\":\"${col_name}\",\"type_name\":\"${col_type_name}\",\"type_text\":\"${col_type_text}\",\"type_json\":\"{\\\"name\\\":\\\"${col_name}\\\",\\\"type\\\":\\\"${col_type_text}\\\",\\\"nullable\\\":true,\\\"metadata\\\":{}}\",\"nullable\":true,\"position\":${unity_column_position}${col_extra}}"
+      unity_column_position=$((unity_column_position + 1))
+    done
+
     local unity_table_resp
     unity_table_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -sS \
       -w "\n%{http_code}\n" \
       -X POST "http://unity:8080/api/2.1/unity-catalog/tables" \
       -H "Content-Type: application/json" \
-      -d "{\"name\":\"$unity_source_table\",\"catalog_name\":\"$unity_catalog\",\"schema_name\":\"$unity_schema\",\"table_type\":\"EXTERNAL\",\"data_source_format\":\"DELTA\",\"storage_location\":\"$unity_storage_location\"}")
+      -d "{\"name\":\"$unity_source_table\",\"catalog_name\":\"$unity_catalog\",\"schema_name\":\"$unity_schema\",\"table_type\":\"EXTERNAL\",\"data_source_format\":\"DELTA\",\"storage_location\":\"$unity_storage_location\",\"columns\":[$unity_columns]}")
     local unity_table_code
     unity_table_code=$(printf "%s\n" "$unity_table_resp" | tail -n1)
     if [ "$unity_table_code" != "200" ] \
@@ -1335,6 +1403,75 @@ quit")
       "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_EXPECTED_TABLE" \
       "${COMPOSE_SMOKE_STATS_RETRIES:-45}" \
       "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
+
+    echo "==> [SMOKE] upstream delta Unity Catalog Integration overlay reconciliation"
+    local unity_integration_name="smoke-unity-integration"
+    local unity_overlay_name="smoke-unity-overlay"
+    local unity_integration_catalog="${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG}_integration"
+    local unity_integration_expected_table="${unity_integration_catalog}.${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS}.${unity_source_table}"
+    local unity_integration_setup_out
+    unity_integration_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
+catalog create $unity_integration_catalog --desc compose-smoke-unity-integration
+integration create $unity_integration_name unity $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI --auth-type bearer --cred token=compose-smoke --props unity.temporary-table-vend-path=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_VEND_PATH s3.endpoint=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT s3.path-style-access=true s3.region=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION
+overlay create $unity_overlay_name $unity_integration_name $unity_integration_catalog --include $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS
+quit")
+    echo "$unity_integration_setup_out"
+    assert_contains "$label Unity integration setup" "$unity_integration_setup_out" "INTEGRATION_ID"
+    assert_contains "$label Unity overlay setup" "$unity_integration_setup_out" "OVERLAY_ID"
+    assert_not_contains "$label Unity integration setup reported no error" "$unity_integration_setup_out" "! "
+
+    local unity_integration_validation_out
+    unity_integration_validation_out=$(run_cli_script "$compose_cmd" "account t-0001
+integration validate $unity_integration_name
+quit")
+    echo "$unity_integration_validation_out"
+    assert_contains "$label Unity integration validation" "$unity_integration_validation_out" "valid: true"
+    assert_contains "$label Unity discovery validation" "$unity_integration_validation_out" "DISCOVERY"
+    assert_contains "$label Unity credential vending validation" "$unity_integration_validation_out" "CREDENTIAL_VENDING"
+    assert_contains "$label Unity storage access validation" "$unity_integration_validation_out" "STORAGE_ACCESS"
+
+    # Split from the object listing on purpose. run_cli_script echoes the script it runs into the
+    # captured output, so any assertion on a string the script itself contains passes whatever the
+    # server returned. Listing schemas under $unity_catalog echoes only "unity", which makes a
+    # later assertion on "unity.<schema>" a real check on the response rather than on the echo.
+    local unity_namespace_discovery_out
+    unity_namespace_discovery_out=$(run_cli_script "$compose_cmd" "account t-0001
+integration namespaces $unity_integration_name
+integration namespaces $unity_integration_name --parent $unity_catalog
+quit")
+    echo "$unity_namespace_discovery_out"
+    assert_contains "$label Unity catalog discovery" "$unity_namespace_discovery_out" \
+      "$unity_catalog.$unity_schema"
+
+    local unity_integration_discovery_out
+    unity_integration_discovery_out=$(run_cli_script "$compose_cmd" "account t-0001
+integration objects $unity_integration_name $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS
+quit")
+    echo "$unity_integration_discovery_out"
+    assert_contains "$label Unity object discovery" "$unity_integration_discovery_out" "$unity_source_table"
+    assert_contains "$label Unity table-kind discovery" "$unity_integration_discovery_out" "TABLE"
+
+    local unity_overlay_reconcile_out
+    unity_overlay_reconcile_out=$(run_cli_script "$compose_cmd" "account t-0001
+overlay reconcile $unity_overlay_name
+quit")
+    echo "$unity_overlay_reconcile_out"
+    assert_contains "$label Unity overlay reconciliation" "$unity_overlay_reconcile_out" "tables_created: 1"
+    # A complete pass, not merely a successful one: a reconcile that stepped over part of the
+    # upstream also reports tables_created, and only these two say whether it did.
+    assert_contains "$label Unity overlay completeness" "$unity_overlay_reconcile_out" "branches_skipped: 0"
+    assert_contains "$label Unity overlay completeness" "$unity_overlay_reconcile_out" "objects_skipped: 0"
+
+    local unity_integration_table_out
+    unity_integration_table_out=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table $unity_integration_expected_table
+describe table $unity_integration_expected_table
+quit")
+    echo "$unity_integration_table_out"
+    assert_contains "$label Unity overlay table materialized" "$unity_integration_table_out" "table id:"
+    assert_contains "$label Unity overlay avoids Connector identity" "$unity_integration_table_out" "connector_id: -"
+    assert_contains "$label Unity overlay carries Integration identity" "$unity_integration_table_out" "floecat.catalog-integration.id ="
+    assert_contains "$label Unity overlay carries Overlay identity" "$unity_integration_table_out" "floecat.catalog-overlay.id ="
 
     if [ "$label" = "localstack-remote" ]; then
       local unity_query_begin_out
