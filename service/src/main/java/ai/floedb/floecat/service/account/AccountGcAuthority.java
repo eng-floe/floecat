@@ -372,11 +372,6 @@ public class AccountGcAuthority {
     return deploymentMode == DeploymentMode.MANAGED;
   }
 
-  /** Global account-directory GC needs separate leadership in managed multi-replica deployments. */
-  public boolean ownsGlobalGc() {
-    return deploymentMode == DeploymentMode.STANDALONE;
-  }
-
   void registerGauges(@Observes StartupEvent startup) {
     Tag component = Tag.of(TagKey.COMPONENT, "service");
     Tag operation = Tag.of(TagKey.OPERATION, "account_ownership");

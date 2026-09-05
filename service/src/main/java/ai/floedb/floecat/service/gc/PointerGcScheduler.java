@@ -111,15 +111,17 @@ public class PointerGcScheduler {
 
     long tickStart = System.nanoTime();
     try {
-      if (accountAuthority == null || accountAuthority.ownsGlobalGc()) {
-        var globalResult = gc.runGlobalAccountPointers(deadline);
-        gcMetrics.recordCollection(globalResult.scanned(), Tag.of(TagKey.RESULT, "global-scanned"));
-        gcMetrics.recordCollection(globalResult.deleted(), Tag.of(TagKey.RESULT, "global-deleted"));
-        gcMetrics.recordCollection(
-            globalResult.missingBlobs(), Tag.of(TagKey.RESULT, "missing-blobs"));
-        gcMetrics.recordCollection(
-            globalResult.staleSecondaries(), Tag.of(TagKey.RESULT, "stale-secondaries"));
-      }
+      // Global account-directory cleanup is CAS-idempotent: concurrent replicas can inspect the
+      // same pointer and only the replica that still owns its version deletes it. Running this
+      // small global pass on every Floecat keeps managed deployments from silently losing their
+      // only cleanup owner; account-scoped GC remains fenced by AccountGcAuthority below.
+      var globalResult = gc.runGlobalAccountPointers(deadline);
+      gcMetrics.recordCollection(globalResult.scanned(), Tag.of(TagKey.RESULT, "global-scanned"));
+      gcMetrics.recordCollection(globalResult.deleted(), Tag.of(TagKey.RESULT, "global-deleted"));
+      gcMetrics.recordCollection(
+          globalResult.missingBlobs(), Tag.of(TagKey.RESULT, "missing-blobs"));
+      gcMetrics.recordCollection(
+          globalResult.staleSecondaries(), Tag.of(TagKey.RESULT, "stale-secondaries"));
 
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
       Collections.shuffle(allAccounts);
