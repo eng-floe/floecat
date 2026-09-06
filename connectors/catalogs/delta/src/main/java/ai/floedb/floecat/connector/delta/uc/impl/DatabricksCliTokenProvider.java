@@ -26,12 +26,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 final class DatabricksCliTokenProvider implements AccessTokenProvider {
   private static final ObjectMapper M = new ObjectMapper();
   private static final long SKEW_SECONDS = 60;
+  private static final int TIMEOUT_MS = 15000;
 
   private final HttpClient http;
   private final String host;
@@ -45,15 +47,37 @@ final class DatabricksCliTokenProvider implements AccessTokenProvider {
   private volatile String cachedRefresh;
 
   DatabricksCliTokenProvider(String host, String cachePath, String clientId, String scope) {
+    // The path is resolved in the argument list, before the client is built. Arguments are
+    // evaluated left to right and the delegated constructor's body runs after all of them, so
+    // resolving inside it -- as this did -- meant an unusable cache_path threw only once the
+    // HttpClient had already started its selector thread, with no reference left to close it.
+    this(
+        host,
+        resolveCachePath(cachePath),
+        clientId,
+        scope,
+        HttpClient.newBuilder().connectTimeout(Duration.ofMillis(TIMEOUT_MS)).build());
+  }
+
+  DatabricksCliTokenProvider(
+      String host, String cachePath, String clientId, String scope, HttpClient http) {
+    this(host, resolveCachePath(cachePath), clientId, scope, http);
+  }
+
+  private DatabricksCliTokenProvider(
+      String host, Path cachePath, String clientId, String scope, HttpClient http) {
     this.host = (host == null ? "" : host.trim()).replaceAll("/+$", "");
-    this.cachePath =
-        cachePath == null
-            ? Path.of(System.getProperty("user.home"), ".databricks", "token-cache.json")
-            : Path.of(cachePath);
+    this.cachePath = cachePath;
     this.clientId = (clientId == null || clientId.isBlank()) ? "databricks-cli" : clientId;
     this.scope = (scope == null) ? "" : scope;
-    this.timeoutMs = 15000;
-    this.http = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(timeoutMs)).build();
+    this.timeoutMs = TIMEOUT_MS;
+    this.http = Objects.requireNonNull(http, "http");
+  }
+
+  private static Path resolveCachePath(String cachePath) {
+    return cachePath == null
+        ? Path.of(System.getProperty("user.home"), ".databricks", "token-cache.json")
+        : Path.of(cachePath);
   }
 
   @Override
@@ -182,5 +206,10 @@ final class DatabricksCliTokenProvider implements AccessTokenProvider {
       return TimeUnit.MINUTES.toSeconds(5);
     }
     return expiresInSeconds;
+  }
+
+  @Override
+  public void close() {
+    http.close();
   }
 }

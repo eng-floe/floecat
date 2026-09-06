@@ -36,6 +36,26 @@ class PersistedSecretPropertyValidatorTest {
   }
 
   @Test
+  void deltaConnectorOptionsArePersistable() {
+    // These are connector configuration, not credentials, and a connector carrying any of them must
+    // be creatable. unity.temporary-table-vend-path is named to avoid the "credentials" phrase for
+    // this reason: unity.credentials-path was rejected here, which failed connector creation in the
+    // Unity smoke scenario.
+    assertFalse(
+        PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey(
+            "unity.temporary-table-vend-path"));
+    assertFalse(
+        PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey(
+            "databricks.access-delegation"));
+    assertFalse(PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey("delta.source"));
+    assertFalse(PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey("s3.region"));
+
+    // The validator itself is unchanged: a name carrying the phrase is still refused.
+    assertTrue(
+        PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey("unity.credentials-path"));
+  }
+
+  @Test
   void ignoresNormalMetadataKeys() {
     assertFalse(PersistedSecretPropertyValidator.isForbiddenPersistedSecretKey("location"));
     assertFalse(
