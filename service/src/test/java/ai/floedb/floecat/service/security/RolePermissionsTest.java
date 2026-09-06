@@ -31,6 +31,7 @@ class RolePermissionsTest {
           "table.read",
           "view.read",
           RolePermissions.CATALOG_INTEGRATION_READ,
+          RolePermissions.CATALOG_INTEGRATION_USE,
           RolePermissions.CATALOG_OVERLAY_READ);
   private static final List<String> FULL_PERMS =
       List.of(
@@ -95,6 +96,25 @@ class RolePermissionsTest {
     var permissions = RolePermissions.permissionsForRoles(List.of("default"), false);
 
     assertThat(permissions).containsExactlyInAnyOrderElementsOf(READ_PERMS);
+  }
+
+  @Test
+  void anOrdinaryReaderCanVendFromTheIntegrationBehindATable() {
+    // Reading a table an overlay materialized from an Iceberg REST Integration reaches
+    // SourceCatalogCredentialVendor, which requires this permission: no storage authority covers
+    // such a table, so the scan asks the upstream catalog to vend one. Without it every role but
+    // administrator gets PERMISSION_DENIED on exactly the read-back path the Integration exists to
+    // provide.
+    var permissions = RolePermissions.permissionsForRoles(List.of("default"), false);
+
+    assertThat(permissions).contains(RolePermissions.CATALOG_INTEGRATION_USE);
+  }
+
+  @Test
+  void anUnrecognizedRoleAlsoGetsTheVendPermission() {
+    var permissions = RolePermissions.permissionsForRoles(List.of("data-analyst"), false);
+
+    assertThat(permissions).contains(RolePermissions.CATALOG_INTEGRATION_USE);
   }
 
   @Test

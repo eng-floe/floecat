@@ -1289,6 +1289,15 @@ public interface FloecatConnector extends Closeable {
      * depends on the catalog-access SPI, not this one -- and repeats the rule rather than
      * diverging.
      *
+     * <p>Deliberately does not reject a value in the wrong unit, unlike the Iceberg REST provider's
+     * copy of this rule. Seconds read as milliseconds land in 1970, and folding that to null would
+     * be the honest answer -- except that this record carries its expiry as a parsed field
+     * independent of the property map, so a rejected value is indistinguishable from an absent one
+     * by the time anything reads it, and {@code SourceCatalogCredentialVendor} reads an absent
+     * expiry on the connector path as "long-lived static key, no renewal needed". Rejecting here
+     * would turn a loud refusal into a credential embedded statically and never renewed. The
+     * provider's copy can reject because nothing on that path infers permanence from absence.
+     *
      * <p>Null (absent, blank, out of range, or unparseable) is deliberately not "never expires":
      * callers that cache must treat it as "do not cache", and the reconcile path refuses a
      * credential with no expiry because it cannot schedule a renewal for one. A malformed value is

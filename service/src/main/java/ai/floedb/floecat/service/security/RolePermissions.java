@@ -41,6 +41,17 @@ public final class RolePermissions {
   public static final String CATALOG_OVERLAY_WRITE = "catalog-overlay.write";
   public static final String CATALOG_OVERLAY_RECONCILE = "catalog-overlay.reconcile";
   public static final String CATALOG_OVERLAY_DELETE = "catalog-overlay.delete";
+
+  /**
+   * What an ordinary reader gets, and the fallback for a role this service does not recognise.
+   *
+   * <p>{@link #CATALOG_INTEGRATION_USE} is in here because reading a table an overlay materialized
+   * from an Iceberg REST Integration <em>is</em> using that Integration's credential: no storage
+   * authority covers such a table, so the scan asks the upstream catalog to vend one. Withholding
+   * the permission does not protect anything a reader cannot already reach -- the vend is reached
+   * only after table authorization has admitted the caller, and for one table's location -- it just
+   * makes those tables unreadable for every role except administrator.
+   */
   private static final List<String> READ_PERMS =
       List.of(
           "account.read",
@@ -49,7 +60,9 @@ public final class RolePermissions {
           "table.read",
           "view.read",
           CATALOG_INTEGRATION_READ,
+          CATALOG_INTEGRATION_USE,
           CATALOG_OVERLAY_READ);
+
   private static final List<String> FULL_PERMS =
       List.of(
           "account.read",
