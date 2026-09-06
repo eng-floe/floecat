@@ -33,6 +33,7 @@ import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import org.apache.parquet.column.statistics.Statistics;
 import org.apache.parquet.hadoop.ParquetFileReader;
@@ -117,8 +118,26 @@ public final class ParquetFooterStats {
     }
   }
 
+  @FunctionalInterface
+  public interface ColumnResolver {
+    /** Returns the logical output name, or {@code null} when the footer column is not selected. */
+    String resolve(List<String> parquetPath, Integer fieldId);
+  }
+
   public static BasicFileStats read(
       InputFile in, Set<String> includeNames, Map<String, LogicalType> nameToLogical) {
+    return read(
+        in,
+        nameToLogical,
+        (parquetPath, fieldId) -> {
+          String name = String.join(".", parquetPath);
+          return includeNames.isEmpty() || includeNames.contains(name) ? name : null;
+        });
+  }
+
+  public static BasicFileStats read(
+      InputFile in, Map<String, LogicalType> nameToLogical, ColumnResolver columnResolver) {
+    Objects.requireNonNull(columnResolver, "columnResolver");
 
     try (ParquetFileReader r = ParquetFileReader.open(new InputFileAdapter(in))) {
       List<BlockMetaData> rowGroups = r.getFooter().getBlocks();
@@ -129,8 +148,11 @@ public final class ParquetFooterStats {
         totalRows += rg.getRowCount();
 
         for (ColumnChunkMetaData c : rg.getColumns()) {
-          String colName = String.join(".", c.getPath().toArray());
-          if (!includeNames.isEmpty() && !includeNames.contains(colName)) {
+          var parquetId = c.getPrimitiveType().getId();
+          String colName =
+              columnResolver.resolve(
+                  List.of(c.getPath().toArray()), parquetId == null ? null : parquetId.intValue());
+          if (colName == null || colName.isBlank()) {
             continue;
           }
 

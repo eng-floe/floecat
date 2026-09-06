@@ -20,6 +20,7 @@ import ai.floedb.floecat.connector.common.ParquetFooterStats;
 import ai.floedb.floecat.connector.common.PlannedFile;
 import ai.floedb.floecat.connector.common.Planner;
 import ai.floedb.floecat.connector.common.ndv.NdvProvider;
+import ai.floedb.floecat.connector.delta.identity.DeltaResolvedSchema;
 import ai.floedb.floecat.types.LogicalCoercions;
 import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalKind;
@@ -49,13 +50,11 @@ import io.delta.kernel.types.DataType;
 import io.delta.kernel.types.DateType;
 import io.delta.kernel.types.DecimalType;
 import io.delta.kernel.types.DoubleType;
-import io.delta.kernel.types.FieldMetadata;
 import io.delta.kernel.types.FloatType;
 import io.delta.kernel.types.IntegerType;
 import io.delta.kernel.types.LongType;
 import io.delta.kernel.types.ShortType;
 import io.delta.kernel.types.StringType;
-import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.types.TimestampNTZType;
 import io.delta.kernel.types.TimestampType;
@@ -79,7 +78,6 @@ import java.util.stream.Collectors;
 import org.apache.parquet.io.InputFile;
 
 final class DeltaPlanner implements Planner<String> {
-  static final String COLUMN_MAPPING_PHYSICAL_NAME_KEY = "delta.columnMapping.physicalName";
   static final String STATS_PARSED_FIELD = "stats_parsed";
   static final String ADD_FIELD = "add";
   static final String PATH_FIELD = "path";
@@ -89,13 +87,15 @@ final class DeltaPlanner implements Planner<String> {
 
   private final List<PlannedFile<String>> files = new ArrayList<>();
   private final Map<String, LogicalType> nameToLogical = new LinkedHashMap<>();
-  private final Map<String, String> statsNameToLogical = new LinkedHashMap<>();
+  private final DeltaResolvedSchema deltaSchema;
   private final NdvProvider ndvProvider;
   private final Set<String> columnSet;
   private final Set<String> plannedFilePaths;
   private final boolean allowFooterFallback;
   private final Engine engine;
   private final Snapshot snapshot;
+  private final StructType statsDataSchema;
+  private final Set<String> statsColumnSet;
   private final String storageLocation;
   private final List<DeletionVectorDescriptor> diskDeletionVectors = new ArrayList<>();
   private final Map<String, DeletionVectorDescriptor> deletionVectorsByFile = new LinkedHashMap<>();
@@ -136,12 +136,11 @@ final class DeltaPlanner implements Planner<String> {
     this.snapshot = snapshot;
 
     final StructType schema = snapshot.getSchema();
-    if (nameToType == null || nameToType.isEmpty()) {
-      nameToLogical.putAll(DeltaTypeMapper.deltaTypeMap(schema));
-    } else {
+    this.deltaSchema = DeltaColumnMapping.resolveSchema(snapshot);
+    nameToLogical.putAll(DeltaTypeMapper.deltaStatsTypeMap(schema));
+    if (nameToType != null && !nameToType.isEmpty()) {
       nameToLogical.putAll(nameToType);
     }
-    statsNameToLogical.putAll(statsNameMap(schema));
 
     if (includeColumns == null || includeColumns.isEmpty()) {
       this.columnSet = Collections.unmodifiableSet(new LinkedHashSet<>(nameToLogical.keySet()));
@@ -152,6 +151,8 @@ final class DeltaPlanner implements Planner<String> {
               .collect(Collectors.toCollection(LinkedHashSet::new));
       this.columnSet = Collections.unmodifiableSet(filtered);
     }
+    this.statsDataSchema = DeltaColumnMapping.statsDataSchema(snapshot, deltaSchema);
+    this.statsColumnSet = deltaSchema.statsKeysFor(columnSet);
 
     final ScanBuilder sb = snapshot.getScanBuilder();
     final Scan scan = sb.build();
@@ -199,7 +200,7 @@ final class DeltaPlanner implements Planner<String> {
             String partitionJson = encodePartition(add);
 
             if (includeStats) {
-              Optional<DataFileStatistics> optStats = add.getStats(snapshot.getSchema());
+              Optional<DataFileStatistics> optStats = add.getStats(statsDataSchema);
               if (optStats.isEmpty()) {
                 optStats = checkpointStatsForPath(path);
                 if (optStats.isPresent()) {
@@ -216,7 +217,7 @@ final class DeltaPlanner implements Planner<String> {
                 if (nc != null && !nc.isEmpty()) {
                   nullCounts = new LinkedHashMap<>(nc.size());
                   for (var e : nc.entrySet()) {
-                    String colName = resolveStatsColumnName(firstName(e.getKey()));
+                    String colName = resolveStatsColumnName(e.getKey());
                     Long n = e.getValue();
                     if (colName != null && n != null) nullCounts.put(colName, n);
                   }
@@ -233,7 +234,7 @@ final class DeltaPlanner implements Planner<String> {
                 if (minsMap != null && !minsMap.isEmpty()) {
                   mins = new LinkedHashMap<>(minsMap.size());
                   for (var e : minsMap.entrySet()) {
-                    String colName = resolveStatsColumnName(firstName(e.getKey()));
+                    String colName = resolveStatsColumnName(e.getKey());
                     if (colName != null) {
                       var lt = nameToLogical.get(colName);
                       Object raw = (e.getValue() == null) ? null : e.getValue().getValue();
@@ -248,7 +249,7 @@ final class DeltaPlanner implements Planner<String> {
                 if (maxsMap != null && !maxsMap.isEmpty()) {
                   maxs = new LinkedHashMap<>(maxsMap.size());
                   for (var e : maxsMap.entrySet()) {
-                    String colName = resolveStatsColumnName(firstName(e.getKey()));
+                    String colName = resolveStatsColumnName(e.getKey());
                     if (colName != null) {
                       var lt = nameToLogical.get(colName);
                       Object raw = (e.getValue() == null) ? null : e.getValue().getValue();
@@ -267,7 +268,13 @@ final class DeltaPlanner implements Planner<String> {
                 }
                 var in = parquetInput.apply(path);
 
-                var bfs = ParquetFooterStats.read(in, columnSet, nameToLogical);
+                var bfs =
+                    ParquetFooterStats.read(
+                        in,
+                        nameToLogical,
+                        (parquetPath, fieldId) ->
+                            DeltaColumnMapping.logicalNameForFooter(
+                                parquetPath, fieldId, deltaSchema, columnSet));
 
                 rowCount = bfs.rowCount;
                 nullCounts = new LinkedHashMap<>();
@@ -429,7 +436,8 @@ final class DeltaPlanner implements Planner<String> {
       return Map.of();
     }
 
-    StructType projectedSchema = projectedStatsDataSchema(snapshot.getSchema(), columnSet);
+    StructType projectedSchema =
+        DeltaColumnMapping.projectedStatsDataSchema(statsDataSchema, statsColumnSet);
     StructType statsSchema = StatsSchemaHelper.getStatsSchema(projectedSchema, Set.of());
     if (statsSchema.length() == 0) {
       return Map.of();
@@ -462,7 +470,7 @@ final class DeltaPlanner implements Planner<String> {
             if (!plannedFilePaths.isEmpty() && !plannedFilePaths.contains(resolvedPath)) {
               continue;
             }
-            checkpointStructStatsFromAddRow(addRow, statsNameToLogical, columnSet)
+            checkpointStructStatsFromAddRow(addRow)
                 .ifPresent(stats -> byPath.put(resolvedPath, stats));
           }
         }
@@ -473,8 +481,7 @@ final class DeltaPlanner implements Planner<String> {
     return Collections.unmodifiableMap(byPath);
   }
 
-  static Optional<DataFileStatistics> checkpointStructStatsFromAddRow(
-      Row addFileRow, Map<String, String> statsNameToLogical, Set<String> columnSet) {
+  static Optional<DataFileStatistics> checkpointStructStatsFromAddRow(Row addFileRow) {
     if (addFileRow == null) {
       return Optional.empty();
     }
@@ -496,17 +503,11 @@ final class DeltaPlanner implements Planner<String> {
     long numRecords = readLongLike(statsRow, numRecordsOrdinal);
 
     Map<Column, Literal> minValues =
-        readLiteralStruct(
-            statsRow, statsSchema.indexOf(StatsSchemaHelper.MIN), statsNameToLogical, columnSet);
+        readLiteralStruct(statsRow, statsSchema.indexOf(StatsSchemaHelper.MIN));
     Map<Column, Literal> maxValues =
-        readLiteralStruct(
-            statsRow, statsSchema.indexOf(StatsSchemaHelper.MAX), statsNameToLogical, columnSet);
+        readLiteralStruct(statsRow, statsSchema.indexOf(StatsSchemaHelper.MAX));
     Map<Column, Long> nullCounts =
-        readNullCountStruct(
-            statsRow,
-            statsSchema.indexOf(StatsSchemaHelper.NULL_COUNT),
-            statsNameToLogical,
-            columnSet);
+        readNullCountStruct(statsRow, statsSchema.indexOf(StatsSchemaHelper.NULL_COUNT));
 
     return Optional.of(
         new DataFileStatistics(numRecords, minValues, maxValues, nullCounts, Optional.empty()));
@@ -524,19 +525,6 @@ final class DeltaPlanner implements Planner<String> {
     return checkpointRow.getStruct(addOrdinal);
   }
 
-  static StructType projectedStatsDataSchema(StructType schema, Set<String> includeColumns) {
-    if (schema == null || includeColumns == null || includeColumns.isEmpty()) {
-      return schema;
-    }
-    StructType projected = new StructType();
-    for (StructField field : schema.fields()) {
-      if (includeColumns.contains(field.getName())) {
-        projected = projected.add(field);
-      }
-    }
-    return projected;
-  }
-
   static String absoluteDataPath(String storageLocation, String addPath) {
     if (addPath == null || addPath.isBlank()) {
       return addPath;
@@ -548,8 +536,7 @@ final class DeltaPlanner implements Planner<String> {
     return new Path(new Path(storageLocation), candidate).toString();
   }
 
-  private static Map<Column, Literal> readLiteralStruct(
-      Row parentRow, int ordinal, Map<String, String> statsNameToLogical, Set<String> columnSet) {
+  private static Map<Column, Literal> readLiteralStruct(Row parentRow, int ordinal) {
     if (ordinal < 0 || parentRow.isNullAt(ordinal)) {
       return Map.of();
     }
@@ -558,26 +545,30 @@ final class DeltaPlanner implements Planner<String> {
       return Map.of();
     }
     LinkedHashMap<Column, Literal> values = new LinkedHashMap<>();
-    StructType schema = structRow.getSchema();
-    for (int i = 0; i < schema.length(); i++) {
-      if (structRow.isNullAt(i)) {
-        continue;
-      }
-      DataType dataType = schema.at(i).getDataType();
-      if (isContainerStatsType(dataType)) {
-        continue;
-      }
-      String name = resolveStatsColumnName(schema.at(i).getName(), statsNameToLogical, columnSet);
-      if (name == null) {
-        continue;
-      }
-      values.put(new Column(name), toLiteral(structRow, i, dataType));
-    }
+    readLiteralStruct(structRow, List.of(), values);
     return values;
   }
 
-  private static Map<Column, Long> readNullCountStruct(
-      Row parentRow, int ordinal, Map<String, String> statsNameToLogical, Set<String> columnSet) {
+  private static void readLiteralStruct(Row row, List<String> prefix, Map<Column, Literal> values) {
+    StructType schema = row.getSchema();
+    for (int i = 0; i < schema.length(); i++) {
+      if (row.isNullAt(i)) {
+        continue;
+      }
+      DataType dataType = schema.at(i).getDataType();
+      List<String> path = append(prefix, schema.at(i).getName());
+      if (dataType instanceof StructType) {
+        Row nested = row.getStruct(i);
+        if (nested != null) {
+          readLiteralStruct(nested, path, values);
+        }
+      } else if (!dataType.isNested()) {
+        values.put(column(path), toLiteral(row, i, dataType));
+      }
+    }
+  }
+
+  private static Map<Column, Long> readNullCountStruct(Row parentRow, int ordinal) {
     if (ordinal < 0 || parentRow.isNullAt(ordinal)) {
       return Map.of();
     }
@@ -586,64 +577,42 @@ final class DeltaPlanner implements Planner<String> {
       return Map.of();
     }
     LinkedHashMap<Column, Long> values = new LinkedHashMap<>();
-    StructType schema = structRow.getSchema();
-    for (int i = 0; i < schema.length(); i++) {
-      if (structRow.isNullAt(i)) {
-        continue;
-      }
-      if (isContainerStatsType(schema.at(i).getDataType())) {
-        continue;
-      }
-      String name = resolveStatsColumnName(schema.at(i).getName(), statsNameToLogical, columnSet);
-      if (name == null) {
-        continue;
-      }
-      values.put(new Column(name), readLongLike(structRow, i));
-    }
+    readNullCountStruct(structRow, List.of(), values);
     return values;
   }
 
-  private String resolveStatsColumnName(String statsName) {
-    return resolveStatsColumnName(statsName, statsNameToLogical, columnSet);
-  }
-
-  private static String resolveStatsColumnName(
-      String statsName, Map<String, String> statsNameToLogical, Set<String> columnSet) {
-    if (statsName == null || statsName.isBlank()) {
-      return null;
-    }
-    String logicalName = statsNameToLogical.get(statsName);
-    if (logicalName != null && columnSet.contains(logicalName)) {
-      return logicalName;
-    }
-    return columnSet.contains(statsName) ? statsName : null;
-  }
-
-  private static boolean isContainerStatsType(DataType dataType) {
-    return dataType instanceof StructType;
-  }
-
-  static Map<String, String> statsNameMap(StructType schema) {
-    if (schema == null) {
-      return Map.of();
-    }
-    LinkedHashMap<String, String> mapping = new LinkedHashMap<>();
-    for (StructField field : schema.fields()) {
-      String logicalName = field.getName();
-      if (logicalName == null || logicalName.isBlank()) {
+  private static void readNullCountStruct(Row row, List<String> prefix, Map<Column, Long> values) {
+    StructType schema = row.getSchema();
+    for (int i = 0; i < schema.length(); i++) {
+      if (row.isNullAt(i)) {
         continue;
       }
-      mapping.put(logicalName, logicalName);
-      String physicalName = physicalName(field.getMetadata());
-      if (physicalName != null && !physicalName.isBlank()) {
-        mapping.put(physicalName, logicalName);
+      DataType dataType = schema.at(i).getDataType();
+      List<String> path = append(prefix, schema.at(i).getName());
+      if (dataType instanceof StructType) {
+        Row nested = row.getStruct(i);
+        if (nested != null) {
+          readNullCountStruct(nested, path, values);
+        }
+      } else if (!dataType.isNested()) {
+        values.put(column(path), readLongLike(row, i));
       }
     }
-    return Collections.unmodifiableMap(mapping);
   }
 
-  static String physicalName(FieldMetadata metadata) {
-    return metadata == null ? null : metadata.getString(COLUMN_MAPPING_PHYSICAL_NAME_KEY);
+  private String resolveStatsColumnName(Column statsColumn) {
+    return DeltaColumnMapping.logicalNameForStats(statsColumn, deltaSchema, columnSet);
+  }
+
+  private static List<String> append(List<String> prefix, String name) {
+    List<String> path = new ArrayList<>(prefix.size() + 1);
+    path.addAll(prefix);
+    path.add(name);
+    return path;
+  }
+
+  private static Column column(List<String> path) {
+    return new Column(path.toArray(String[]::new));
   }
 
   private static io.delta.kernel.utils.CloseableIterator<io.delta.kernel.utils.FileStatus>
@@ -848,15 +817,6 @@ final class DeltaPlanner implements Planner<String> {
   @Override
   public Set<String> columns() {
     return columnSet;
-  }
-
-  private static String firstName(Column c) {
-    try {
-      String[] names = (c == null) ? null : c.getNames();
-      return (names == null || names.length == 0) ? null : names[0];
-    } catch (Throwable ignore) {
-      return null;
-    }
   }
 
   static Object canonicalizeStatValue(LogicalType logicalType, Object raw) {
