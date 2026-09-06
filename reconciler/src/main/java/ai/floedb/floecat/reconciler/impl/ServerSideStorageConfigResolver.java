@@ -23,7 +23,7 @@ import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.common.auth.TerminalCredentialRefreshException;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
-import ai.floedb.floecat.connector.spi.IcebergAccessDelegation;
+import ai.floedb.floecat.connector.spi.SourceCatalogVending;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
@@ -289,10 +289,14 @@ public class ServerSideStorageConfigResolver {
       // validation failures, so matching the code alone turned a real configuration error into a
       // silent fallback whose cause only resurfaced as an opaque FileIO failure much later.
       //
-      // Only "no authority covers this location" is recoverable by delegation: the catalog client
-      // holds vended credentials of its own, so the untouched config is what it needs.
+      // Only "no authority covers this location" is recoverable by delegation, and only for a
+      // catalog whose own client applies vended credentials when it loads the table -- for that
+      // one the untouched config is exactly what it needs. Deliberately not the broader
+      // "declares vending" gate: Delta/Unity vend only on request and build their S3 client from
+      // the connector's own s3.* options, so absorbing there would replace a precise
+      // missing-authority failure with an opaque 403 on the first read.
       if (SourceCatalogVendingGrpcStatus.isNoMatchingStorageAuthority(e)
-          && IcebergAccessDelegation.declaresVendedCredentials(config)) {
+          && SourceCatalogVending.clientAppliesVendedCredentials(config)) {
         return config;
       }
       throw e;
@@ -381,13 +385,26 @@ public class ServerSideStorageConfigResolver {
       return base;
     }
     LinkedHashMap<String, String> merged = new LinkedHashMap<>(base);
-    if (refreshableExecutionCredentials) {
+    boolean replacesCredentials =
+        includeStorageCredentials && response.getStorageCredentialsCount() > 0;
+    // Cleared whenever a fresh tuple is about to land, not only on the refreshable path. The
+    // response is applied key by key, so it overwrites only what it carries: a vend of key and
+    // secret with no session token would otherwise leave the connector's own stale s3.session-token
+    // beside it, and a mismatched triple fails at storage as a 403 that reads like a bad vend
+    // rather than a bad merge.
+    //
+    // The provider keys go too, and that is the part that matters most here: a leftover provider id
+    // does not merely linger, it wins. IcebergConnectorFactory.applyStorageAuth short-circuits on
+    // it and then deletes s3.access-key-id, s3.secret-access-key and s3.session-token outright,
+    // and DeltaConnectorFactory.resolveCredentials returns the registry-backed provider before it
+    // ever reads them -- so leaving a stale id here silently discards the credentials just vended.
+    if (refreshableExecutionCredentials || replacesCredentials) {
       clearStorageCredentialProperties(merged);
     }
     response
         .getClientSafeConfigMap()
         .forEach((key, value) -> putStorageProperty(merged, key, value));
-    if (!includeStorageCredentials || response.getStorageCredentialsCount() == 0) {
+    if (!replacesCredentials) {
       return Map.copyOf(merged);
     }
     if (refreshableExecutionCredentials) {
@@ -447,11 +464,25 @@ public class ServerSideStorageConfigResolver {
                         + " session token, and expiresAt"));
   }
 
+  /**
+   * Whether a failed refresh will keep failing.
+   *
+   * <p>The two structured vending reasons belong here as well as in {@code
+   * ReconcileFailureClassifier}: a refresh failure that is merely "ordinary" is suppressed by
+   * {@code RefreshingAwsCredentialsProviderRegistry} while the previous tuple is still valid, so a
+   * source catalog that refuses to vend for this table -- or vends an unrenewable tuple -- would be
+   * re-asked on every refresh until the tuple expires, instead of failing the job at once. Matched
+   * by reason, not by code: {@code FAILED_PRECONDITION} also carries conditions this method
+   * classifies on their own terms -- a lease-precondition failure is terminal here by the first
+   * clause -- so the code alone cannot tell the two apart.
+   */
   static boolean isTerminalExecutionCredentialRefresh(StatusRuntimeException error) {
     Status.Code code = error.getStatus().getCode();
     return ReconcileLeaseGrpcStatus.isLeasePreconditionFailure(error)
         || code == Status.Code.UNAUTHENTICATED
-        || code == Status.Code.PERMISSION_DENIED;
+        || code == Status.Code.PERMISSION_DENIED
+        || SourceCatalogVendingGrpcStatus.isVendedCredentialsNotRefreshable(error)
+        || SourceCatalogVendingGrpcStatus.isSourceCatalogVendRefused(error);
   }
 
   static Optional<ResolvedStorageCredentials> resolvedStorageCredentials(

@@ -387,9 +387,8 @@ class SourceCatalogVendingTest {
     assertThat(SourceCatalogVending.clientAppliesVendedCredentials(unity)).isFalse();
     assertThat(SourceCatalogVending.clientAppliesVendedCredentials(delta)).isFalse();
     assertThat(SourceCatalogVending.clientAppliesVendedCredentials(iceberg)).isTrue();
-    // Per source, because absorbing a missing-authority error is only safe where the client fetches
-    // credentials itself. glue and rest are the same REST client here; filesystem reads a static
-    // table and would be handed a config it cannot read from.
+    // Per source, because absorbing is only safe where the client fetches credentials itself. glue
+    // and rest are the same REST client here, so their FileIO uses what loadTable vended.
     for (String reachesACatalog : new String[] {"rest", "glue", "GLUE"}) {
       assertThat(
               SourceCatalogVending.clientAppliesVendedCredentials(
@@ -403,6 +402,10 @@ class SourceCatalogVendingTest {
           .as(reachesACatalog)
           .isTrue();
     }
+    // filesystem must not absorb. It has no loadTable to carry credentials, and auth.scheme=none is
+    // legal for an s3:// URI, so the untouched config can resolve through the AWS default chain --
+    // floecat's own role. Absorbing would turn a missing authority into a read under the wrong
+    // principal rather than into an error.
     for (String staticTable : new String[] {"filesystem", "FileSystem", " filesystem "}) {
       assertThat(
               SourceCatalogVending.clientAppliesVendedCredentials(

@@ -42,6 +42,18 @@ import software.amazon.awssdk.services.s3.model.S3Object;
 final class S3V2FileSystemClient implements FileIO {
   private final RefreshingAwsClient<S3Client> s3;
 
+  /**
+   * Addresses the bucket named in each URI, always.
+   *
+   * <p>There is deliberately no override. Substituting a vended S3 access-point ARN for the host
+   * was tried and removed: it retargets every URI, including the absolute paths in another bucket
+   * that a Delta log may carry and a shallow clone always does, so a foreign path would be read
+   * from the access point's bucket -- silently, when a key happens to exist there. A vend carrying
+   * an access point has the ARN dropped at {@code SourceCatalogCredentialVendor} and is used
+   * against the bucket, so nothing here is retargeted -- but do not read that as a guarantee that
+   * no such credential arrives: one does, minus its ARN, and a grant that is genuinely
+   * access-point-only fails at storage rather than here.
+   */
   S3V2FileSystemClient(RefreshingAwsClient<S3Client> s3) {
     this.s3 = s3;
   }
