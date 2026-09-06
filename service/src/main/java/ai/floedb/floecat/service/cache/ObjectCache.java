@@ -21,6 +21,7 @@ import ai.floedb.floecat.cache.CacheFamily;
 import ai.floedb.floecat.cache.CaffeineMemoryCache;
 import ai.floedb.floecat.cache.MemoryCache;
 import ai.floedb.floecat.cache.WeightedValue;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -128,6 +129,25 @@ public final class ObjectCache {
     return get(key, SchemaDescriptor.class, () -> schemaMapper.map(table, effectiveSchema));
   }
 
+  /** Map a canonical schema once for its schema and authoritative identity-map inputs. */
+  public SchemaDescriptor mappedSchema(
+      UserTableNode table, String schemaJson, ColumnIdentityMap columnIdentityMap) {
+    Objects.requireNonNull(table, "table");
+    Objects.requireNonNull(columnIdentityMap, "columnIdentityMap");
+    String effectiveSchema =
+        schemaJson == null || schemaJson.isBlank() ? table.schemaJson() : schemaJson;
+    String identity =
+        Hashing.sha256Hex(
+            schemaIdentity(table, effectiveSchema)
+                + '\0'
+                + columnIdentityMap.getFingerprint());
+    Key key = new Key(table.id().getAccountId(), Kind.SCHEMA, identity);
+    return get(
+        key,
+        SchemaDescriptor.class,
+        () -> schemaMapper.map(table, effectiveSchema, columnIdentityMap));
+  }
+
   /**
    * Resolve a pinned schema by the immutable identities already carried on the pin. The backing
    * table and snapshot are read only on a miss, which keeps callers from resolving cache
@@ -168,7 +188,8 @@ public final class ObjectCache {
               schemaJson == null || schemaJson.isBlank()
                   ? resolved.table().schemaJson()
                   : schemaJson;
-          return schemaMapper.map(resolved.table(), effectiveSchema);
+          return schemaMapper.map(
+              resolved.table(), effectiveSchema, resolved.columnIdentityMap());
         });
   }
 
@@ -409,8 +430,10 @@ public final class ObjectCache {
 
   private static String pinnedSchemaScope(TablePin pin) {
     String scope = QueryPins.schemaScope(pin);
-    return requireIdentity(
-        scope.isBlank() ? pin.getSnapshotBlobUri() : scope, "pinned schema identity");
+    String schemaIdentity =
+        requireIdentity(
+            scope.isBlank() ? pin.getSnapshotBlobUri() : scope, "pinned schema identity");
+    return Hashing.sha256Hex(schemaIdentity + '\0' + pin.getColumnIdentityFingerprint());
   }
 
   private static String account(ResourceId id) {

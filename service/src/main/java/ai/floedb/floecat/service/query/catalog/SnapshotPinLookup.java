@@ -24,6 +24,11 @@ import java.util.OptionalLong;
 interface SnapshotPinLookup {
   OptionalLong pinnedSnapshotId(ResourceId tableId);
 
+  /** Column identity fingerprint frozen on the query's table pin. */
+  default Optional<String> pinnedColumnIdentityFingerprint(ResourceId tableId) {
+    return Optional.empty();
+  }
+
   /**
    * The stats generation ref frozen on this table's pin. Empty means no pin, no stats generation at
    * pin time, or a store that does not track stats generations.

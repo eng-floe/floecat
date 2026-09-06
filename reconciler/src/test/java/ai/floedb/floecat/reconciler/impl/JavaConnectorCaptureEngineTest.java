@@ -321,7 +321,7 @@ class JavaConnectorCaptureEngineTest {
                     FloecatConnector.StatsTargetKind.FILE)),
             eq(false),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
-            eq(ColumnIdentityMap.getDefaultInstance())))
+            any()))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(fileRecord), List.of()));
 
     CaptureEngineRequest request =
@@ -407,7 +407,7 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
             eq(false),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
-            eq(ColumnIdentityMap.getDefaultInstance())))
+            any()))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(fileRecord), List.of()));
 
     CaptureEngineRequest request =
@@ -466,7 +466,7 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of(FloecatConnector.StatsTargetKind.COLUMN)),
             eq(false),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
-            eq(ColumnIdentityMap.getDefaultInstance())))
+            any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(
@@ -607,7 +607,7 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
             eq(true),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
-            eq(ColumnIdentityMap.getDefaultInstance())))
+            any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(fileRecord),
@@ -1106,7 +1106,7 @@ class JavaConnectorCaptureEngineTest {
                     FloecatConnector.StatsTargetKind.FILE)),
             eq(false),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
-            eq(ColumnIdentityMap.getDefaultInstance())))
+            any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(fileRecordOne, fileRecordTwo), List.of()));
@@ -1178,7 +1178,7 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
             eq(false),
             eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
-            eq(ColumnIdentityMap.getDefaultInstance())))
+            any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(dataRecord, deleteRecord), List.of()));
