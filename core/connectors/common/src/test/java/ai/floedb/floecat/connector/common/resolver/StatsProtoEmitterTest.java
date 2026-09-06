@@ -69,6 +69,11 @@ public class StatsProtoEmitterTest {
         ref, "int", rowCount, null, null, null, null, null, null, Map.of());
   }
 
+  private static FloecatConnector.ColumnRef canonicalRef(
+      String name, String physicalPath, int ordinal, long canonicalId) {
+    return new FloecatConnector.ColumnRef(name, physicalPath, ordinal, 0, canonicalId);
+  }
+
   @Test
   public void toColumnStats_pathOrdinal_resolvesByCanonicalSchemaPath() {
     // Schema path = a[].b
@@ -142,6 +147,79 @@ public class StatsProtoEmitterTest {
     assertEquals(1, out.size(), "unresolvable column must be skipped safely");
     assertEquals("id", out.get(0).getScalar().getDisplayName());
     assertEquals(10L, out.get(0).getScalar().getRowCount());
+  }
+
+  @Test
+  public void toColumnStats_canonicalMap_skipsColumnWithoutUnambiguousId() {
+    SchemaDescriptor schema =
+        schemaWithColumns(schemaCol("id", "id", 1, 0, true).toBuilder().setId(7L).build());
+
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStats(
+            rid("t1"),
+            1L,
+            1700000000000L,
+            ConnectorFormat.CF_DELTA,
+            ColumnIdAlgorithm.CID_CANONICAL_MAP,
+            schema,
+            List.of(view(ref("ambiguous", "a.b", 0, 0), 10L)));
+
+    assertTrue(out.isEmpty(), "ambiguous canonical column must be skipped safely");
+  }
+
+  @Test
+  public void toColumnStatsFromViews_canonicalMap_emitsAuthoritativeId() {
+    // The connector-view emitters have no schema descriptor to consult, so the canonical ID on the
+    // ref is the ONLY identity available: deriving one from name/path/ordinal is exactly what
+    // CID_CANONICAL_MAP forbids. Without this, every Delta column stat is silently dropped.
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStatsFromViews(
+            rid("t1"),
+            7L,
+            ColumnIdAlgorithm.CID_CANONICAL_MAP,
+            List.of(view(canonicalRef("id", "id", 1, 42L), 10L)));
+
+    assertEquals(1, out.size());
+    assertEquals(42L, out.get(0).getTarget().getColumn().getColumnId());
+  }
+
+  @Test
+  public void toFileStatsFromViews_canonicalMap_emitsAuthoritativeId() {
+    var perFile =
+        List.of(
+            new FloecatConnector.FileColumnStatsView(
+                "s3://bucket/path/file1.parquet",
+                "parquet",
+                100,
+                2048,
+                FileContent.FC_DATA,
+                "{\"partitionValues\":[]}",
+                0,
+                List.of(),
+                0L,
+                List.of(view(canonicalRef("id", "id", 1, 42L), 100L))));
+
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetFileStatsFromViews(
+            rid("t1"), 7L, ColumnIdAlgorithm.CID_CANONICAL_MAP, perFile);
+
+    assertEquals(1, out.size());
+    assertEquals(1, out.get(0).getFile().getColumnsCount());
+    assertEquals(42L, out.get(0).getFile().getColumns(0).getColumnId());
+  }
+
+  @Test
+  public void toColumnStatsFromViews_fieldId_ignoresAbsentCanonicalId() {
+    // Non-canonical algorithms must keep deriving their ID from the ref exactly as before.
+    List<TargetStatsRecord> out =
+        StatsProtoEmitter.toTargetColumnStatsFromViews(
+            rid("t1"),
+            7L,
+            ColumnIdAlgorithm.CID_FIELD_ID,
+            List.of(view(ref("id", "id", 1, 11), 10L)));
+
+    assertEquals(1, out.size());
+    assertEquals(11L, out.get(0).getTarget().getColumn().getColumnId());
   }
 
   @Test

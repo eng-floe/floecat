@@ -17,8 +17,14 @@
 package ai.floedb.floecat.connector.common.resolver;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityPathElement;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.schema.identity.ColumnPath;
+import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.SchemaIdentityEntry;
+import ai.floedb.floecat.schema.identity.SchemaIdentityState;
 import ai.floedb.floecat.types.LogicalField;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
@@ -49,7 +55,10 @@ import io.delta.kernel.types.TimestampNTZType;
 import io.delta.kernel.types.TimestampType;
 import io.delta.kernel.types.VariantType;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.OptionalInt;
 import java.util.Set;
 
 /**
@@ -68,13 +77,26 @@ final class DeltaSchemaMapper {
 
   static SchemaDescriptor map(
       ColumnIdAlgorithm cid_algo, String schemaJson, Set<String> partitionKeys) {
+    return map(cid_algo, schemaJson, partitionKeys, ColumnIdentityMap.getDefaultInstance());
+  }
+
+  static SchemaDescriptor map(
+      ColumnIdAlgorithm cid_algo,
+      String schemaJson,
+      Set<String> partitionKeys,
+      ColumnIdentityMap columnIdentityMap) {
+    Set<String> effectivePartitionKeys = partitionKeys == null ? Set.of() : partitionKeys;
+    Map<ColumnPath, Long> canonicalIds = canonicalIds(columnIdentityMap);
+    SchemaDescriptor descriptor;
     try {
-      Set<String> effectivePartitionKeys = partitionKeys == null ? Set.of() : partitionKeys;
       try {
         StructType root = DataTypeJsonSerDe.deserializeStructType(schemaJson);
         SchemaDescriptor.Builder sb = SchemaDescriptor.newBuilder();
-        walkDeltaStruct(cid_algo, sb, root, "", effectivePartitionKeys);
-        return sb.build();
+        walkDeltaStruct(
+            cid_algo, canonicalIds, sb, root, ColumnPath.ROOT, "", effectivePartitionKeys);
+        descriptor = sb.build();
+      } catch (CanonicalIdentityException identityFailure) {
+        throw identityFailure;
       } catch (Exception kernelFailure) {
         // The kernel walk can throw mid-traversal (e.g. malformed field metadata), after having
         // already emitted columns — the fallback must start from a fresh builder and ordinal
@@ -85,18 +107,24 @@ final class DeltaSchemaMapper {
           throw new IllegalArgumentException("Delta schema JSON must contain a 'fields' array");
         }
         SchemaDescriptor.Builder sb = SchemaDescriptor.newBuilder();
-        walkFallbackStruct(cid_algo, sb, root, "", effectivePartitionKeys);
-        return sb.build();
+        walkFallbackStruct(
+            cid_algo, canonicalIds, sb, root, ColumnPath.ROOT, "", effectivePartitionKeys);
+        descriptor = sb.build();
       }
+    } catch (CanonicalIdentityException e) {
+      throw e;
     } catch (Exception e) {
       throw new IllegalArgumentException("Failed to parse Delta schema JSON", e);
     }
+    return validateCanonicalCoverage(cid_algo, canonicalIds, descriptor);
   }
 
   private static void walkDeltaStruct(
       ColumnIdAlgorithm cid_algo,
+      Map<ColumnPath, Long> canonicalIds,
       SchemaDescriptor.Builder sb,
       StructType structType,
+      ColumnPath logicalPrefix,
       String prefix,
       Set<String> partitionKeys) {
     if (structType == null) {
@@ -107,7 +135,15 @@ final class DeltaSchemaMapper {
     for (StructField field : structType.fields()) {
       String name = field.getName();
       String physical = prefix.isEmpty() ? name : prefix + "." + name;
-      walkDeltaField(cid_algo, sb, field, physical, partitionKeys, ++ordinal);
+      walkDeltaField(
+          cid_algo,
+          canonicalIds,
+          sb,
+          field,
+          logicalPrefix.field(name),
+          physical,
+          partitionKeys,
+          ++ordinal);
     }
   }
 
@@ -120,8 +156,10 @@ final class DeltaSchemaMapper {
    */
   private static void walkDeltaField(
       ColumnIdAlgorithm cid_algo,
+      Map<ColumnPath, Long> canonicalIds,
       SchemaDescriptor.Builder sb,
       StructField field,
+      ColumnPath logicalPath,
       String physical,
       Set<String> partitionKeys,
       int ordinal) {
@@ -132,27 +170,51 @@ final class DeltaSchemaMapper {
     boolean isPartition = partitionKeys.contains(physical);
     LogicalType logicalType = toLogicalType(dataType);
 
-    sb.addColumns(
-        ColumnIdComputer.withComputedId(
-            cid_algo,
-            SchemaColumn.newBuilder()
-                .setName(field.getName())
-                .setType(LogicalTypeProtoAdapter.toProto(logicalType))
-                .setFieldId(extractFieldId(field.getMetadata()))
-                .setNullable(field.isNullable())
-                .setPhysicalPath(physical)
-                .setPartitionKey(isPartition)
-                .setOrdinal(ordinal)
-                .setLeaf(!isContainerType(dataType))
-                .build()));
+    SchemaColumn source =
+        SchemaColumn.newBuilder()
+            .setName(field.getName())
+            .setType(LogicalTypeProtoAdapter.toProto(logicalType))
+            .setFieldId(extractFieldId(field.getMetadata()))
+            .setNullable(field.isNullable())
+            .setPhysicalPath(physical)
+            .setPartitionKey(isPartition)
+            .setOrdinal(ordinal)
+            .setLeaf(!isContainerType(dataType))
+            .build();
+    sb.addColumns(withCanonicalId(cid_algo, canonicalIds, logicalPath, source));
 
     if (dataType instanceof StructType nestedStruct) {
-      walkDeltaStruct(cid_algo, sb, nestedStruct, physical, partitionKeys);
+      walkDeltaStruct(
+          cid_algo, canonicalIds, sb, nestedStruct, logicalPath, physical, partitionKeys);
     } else if (dataType instanceof ArrayType arrayType) {
-      walkDeltaField(cid_algo, sb, arrayType.getElementField(), physical + "[]", partitionKeys, 1);
+      walkDeltaField(
+          cid_algo,
+          canonicalIds,
+          sb,
+          arrayType.getElementField(),
+          logicalPath.arrayElement(),
+          physical + "[]",
+          partitionKeys,
+          1);
     } else if (dataType instanceof MapType mapType) {
-      walkDeltaField(cid_algo, sb, mapType.getKeyField(), physical + ".key", partitionKeys, 1);
-      walkDeltaField(cid_algo, sb, mapType.getValueField(), physical + "{}", partitionKeys, 2);
+      walkDeltaField(
+          cid_algo,
+          canonicalIds,
+          sb,
+          mapType.getKeyField(),
+          logicalPath.mapKey(),
+          physical + ".key",
+          partitionKeys,
+          1);
+      walkDeltaField(
+          cid_algo,
+          canonicalIds,
+          sb,
+          mapType.getValueField(),
+          logicalPath.mapValue(),
+          physical + "{}",
+          partitionKeys,
+          2);
     }
   }
 
@@ -225,8 +287,10 @@ final class DeltaSchemaMapper {
 
   private static void walkFallbackStruct(
       ColumnIdAlgorithm cid_algo,
+      Map<ColumnPath, Long> canonicalIds,
       SchemaDescriptor.Builder sb,
       JsonNode node,
+      ColumnPath logicalPrefix,
       String prefix,
       Set<String> partitionKeys) {
     if (node == null || !node.has("fields")) {
@@ -240,11 +304,13 @@ final class DeltaSchemaMapper {
       String physical = prefix.isEmpty() ? name : prefix + "." + name;
       walkFallbackField(
           cid_algo,
+          canonicalIds,
           sb,
           name,
           field.get("type"),
           field.path("nullable").asBoolean(true),
           fallbackFieldId(field),
+          logicalPrefix.field(name),
           physical,
           partitionKeys,
           i + 1);
@@ -254,11 +320,13 @@ final class DeltaSchemaMapper {
   /** Fallback-branch counterpart of walkDeltaField: same node set and path notation. */
   private static void walkFallbackField(
       ColumnIdAlgorithm cid_algo,
+      Map<ColumnPath, Long> canonicalIds,
       SchemaDescriptor.Builder sb,
       String name,
       JsonNode typeNode,
       boolean nullable,
       int fieldId,
+      ColumnPath logicalPath,
       String physical,
       Set<String> partitionKeys,
       int ordinal) {
@@ -267,60 +335,166 @@ final class DeltaSchemaMapper {
     boolean isPartition = partitionKeys.contains(physical);
     LogicalType logicalType = fallbackLogicalType(typeNode);
 
-    sb.addColumns(
-        ColumnIdComputer.withComputedId(
-            cid_algo,
-            SchemaColumn.newBuilder()
-                .setName(name)
-                .setType(LogicalTypeProtoAdapter.toProto(logicalType))
-                .setFieldId(fieldId)
-                .setNullable(nullable)
-                .setPhysicalPath(physical)
-                .setPartitionKey(isPartition)
-                .setOrdinal(ordinal)
-                .setLeaf(!fallbackContainerType(typeNode))
-                .build()));
+    SchemaColumn source =
+        SchemaColumn.newBuilder()
+            .setName(name)
+            .setType(LogicalTypeProtoAdapter.toProto(logicalType))
+            .setFieldId(fieldId)
+            .setNullable(nullable)
+            .setPhysicalPath(physical)
+            .setPartitionKey(isPartition)
+            .setOrdinal(ordinal)
+            .setLeaf(!fallbackContainerType(typeNode))
+            .build();
+    sb.addColumns(withCanonicalId(cid_algo, canonicalIds, logicalPath, source));
 
     if (typeNode == null || !typeNode.isObject()) {
       return;
     }
     String tag = typeNode.path("type").asText("");
     switch (tag) {
-      case "struct" -> walkFallbackStruct(cid_algo, sb, typeNode, physical, partitionKeys);
+      case "struct" ->
+          walkFallbackStruct(
+              cid_algo, canonicalIds, sb, typeNode, logicalPath, physical, partitionKeys);
       case "array" ->
           walkFallbackField(
               cid_algo,
+              canonicalIds,
               sb,
               "element",
               typeNode.get("elementType"),
               typeNode.path("containsNull").asBoolean(true),
               0,
+              logicalPath.arrayElement(),
               physical + "[]",
               partitionKeys,
               1);
       case "map" -> {
         walkFallbackField(
             cid_algo,
+            canonicalIds,
             sb,
             "key",
             typeNode.get("keyType"),
             false,
             0,
+            logicalPath.mapKey(),
             physical + ".key",
             partitionKeys,
             1);
         walkFallbackField(
             cid_algo,
+            canonicalIds,
             sb,
             "value",
             typeNode.get("valueType"),
             typeNode.path("valueContainsNull").asBoolean(true),
             0,
+            logicalPath.mapValue(),
             physical + "{}",
             partitionKeys,
             2);
       }
       default -> {}
+    }
+  }
+
+  private static SchemaColumn withCanonicalId(
+      ColumnIdAlgorithm algorithm,
+      Map<ColumnPath, Long> canonicalIds,
+      ColumnPath path,
+      SchemaColumn source) {
+    if (canonicalIds.isEmpty()) {
+      return ColumnIdComputer.withComputedId(algorithm, source);
+    }
+    Long canonicalId = canonicalIds.get(path);
+    if (canonicalId == null || canonicalId <= 0) {
+      throw new CanonicalIdentityException("Column identity map has no ID for " + path.display());
+    }
+    return source.toBuilder().setId(canonicalId).build();
+  }
+
+  private static Map<ColumnPath, Long> canonicalIds(ColumnIdentityMap identityMap) {
+    if (identityMap == null || identityMap.equals(ColumnIdentityMap.getDefaultInstance())) {
+      return Map.of();
+    }
+    if (identityMap.getFormatVersion() != 1) {
+      throw new IllegalArgumentException(
+          "Unsupported column identity map format " + identityMap.getFormatVersion());
+    }
+    IdentityMode mode =
+        switch (identityMap.getMode()) {
+          case COLUMN_IDENTITY_MODE_NATIVE_FIELD_ID -> IdentityMode.NATIVE_FIELD_ID;
+          case COLUMN_IDENTITY_MODE_STRUCTURED_PATH -> IdentityMode.STRUCTURED_PATH;
+          default -> throw new IllegalArgumentException("Column identity map has no mode");
+        };
+    List<SchemaIdentityEntry> entries =
+        identityMap.getEntriesList().stream()
+            .map(
+                entry ->
+                    new SchemaIdentityEntry(
+                        path(entry.getPathList()),
+                        entry.hasNativeFieldId()
+                            ? OptionalInt.of(entry.getNativeFieldId())
+                            : OptionalInt.empty(),
+                        entry.getColumnId()))
+            .toList();
+    SchemaIdentityState state =
+        SchemaIdentityState.restore(
+            identityMap.getSourceVersion(),
+            identityMap.getHighWaterMark(),
+            mode,
+            entries,
+            identityMap.getFingerprint());
+    Map<ColumnPath, Long> result = new LinkedHashMap<>();
+    state
+        .entries()
+        .forEach(
+            entry -> {
+              Long duplicate = result.putIfAbsent(entry.path(), entry.canonicalId());
+              if (duplicate != null) {
+                throw new IllegalArgumentException(
+                    "Duplicate column identity path " + entry.path().display());
+              }
+            });
+    return Map.copyOf(result);
+  }
+
+  private static SchemaDescriptor validateCanonicalCoverage(
+      ColumnIdAlgorithm algorithm,
+      Map<ColumnPath, Long> canonicalIds,
+      SchemaDescriptor descriptor) {
+    if (algorithm != ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+      return descriptor;
+    }
+    if (canonicalIds.isEmpty()) {
+      throw new CanonicalIdentityException("Canonical column identity map is required");
+    }
+    if (descriptor.getColumnsCount() != canonicalIds.size()) {
+      throw new CanonicalIdentityException(
+          "Column identity map does not exactly match the Delta schema");
+    }
+    return descriptor;
+  }
+
+  private static ColumnPath path(List<ColumnIdentityPathElement> elements) {
+    ColumnPath result = ColumnPath.ROOT;
+    for (ColumnIdentityPathElement element : elements) {
+      result =
+          switch (element.getKind()) {
+            case COLUMN_IDENTITY_PATH_ELEMENT_KIND_FIELD -> result.field(element.getName());
+            case COLUMN_IDENTITY_PATH_ELEMENT_KIND_ARRAY_ELEMENT -> result.arrayElement();
+            case COLUMN_IDENTITY_PATH_ELEMENT_KIND_MAP_KEY -> result.mapKey();
+            case COLUMN_IDENTITY_PATH_ELEMENT_KIND_MAP_VALUE -> result.mapValue();
+            default -> throw new IllegalArgumentException("Column identity path has no kind");
+          };
+    }
+    return result;
+  }
+
+  private static final class CanonicalIdentityException extends IllegalArgumentException {
+    private CanonicalIdentityException(String message) {
+      super(message);
     }
   }
 

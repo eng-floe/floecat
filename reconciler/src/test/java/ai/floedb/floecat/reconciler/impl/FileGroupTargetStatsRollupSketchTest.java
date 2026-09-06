@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
@@ -425,6 +426,27 @@ class FileGroupTargetStatsRollupSketchTest {
     assertTrue(
         preserved.getSketchesList().stream()
             .anyMatch(s -> s.getSketchType().equals("apache-datasketches-tdigest-v1")));
+  }
+
+  @Test
+  void fileRecordRollupRejectsMixedColumnIdentityFingerprints() {
+    TargetStatsRecord current =
+        fileRecord(1L, scalarWithSketches(50, null, null)).toBuilder()
+            .setColumnIdentityFingerprint("sha256:current")
+            .build();
+    TargetStatsRecord stale =
+        fileRecord(1L, scalarWithSketches(70, null, null)).toBuilder()
+            .setColumnIdentityFingerprint("sha256:stale")
+            .build();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+                TABLE,
+                1L,
+                Set.of(FloecatConnector.StatsTargetKind.TABLE),
+                List.of(current, stale)));
   }
 
   private static TargetStatsRecord fileRecord(long columnId, ScalarStats scalar) {

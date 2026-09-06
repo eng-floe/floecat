@@ -292,7 +292,8 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
             correlationId, rid, snapshotRef, pin.getTableBlobUri(), pin.getSnapshotBlobUri());
     // Planner-facing logical schema: synthetic element/key/value placeholder rows are stats
     // plumbing; the planner reads nested typing from the columns' type trees.
-    SchemaDescriptor mapped = schemaMapper.map(resolved.table(), resolved.schemaJson());
+    SchemaDescriptor mapped =
+        schemaMapper.map(resolved.table(), resolved.schemaJson(), resolved.columnIdentityMap());
     return UserObjectBundleUtils.qualifyNestedColumnNames(
         mapped.toBuilder()
             .clearColumns()

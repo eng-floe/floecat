@@ -164,7 +164,7 @@ public final class UnityDeltaConnector extends DeltaConnector {
         table.storageLocation(),
         schemaJson,
         List.of(),
-        ColumnIdAlgorithm.CID_PATH_ORDINAL,
+        ColumnIdAlgorithm.CID_CANONICAL_MAP,
         descriptorProperties);
   }
 
