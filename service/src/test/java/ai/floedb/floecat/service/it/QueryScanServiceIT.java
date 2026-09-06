@@ -357,7 +357,7 @@ class QueryScanServiceIT {
     var spec =
         ConnectorSpec.newBuilder()
             .setDisplayName("qs-" + suffix)
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_GLUE)
             .setUri("dummy://ignored")
             .setSource(source)
             .setDestination(destination)

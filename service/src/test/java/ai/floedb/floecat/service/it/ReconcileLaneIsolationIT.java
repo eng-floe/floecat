@@ -87,7 +87,7 @@ class ReconcileLaneIsolationIT {
             connectors,
             ConnectorSpec.newBuilder()
                 .setDisplayName("lane-isolation")
-                .setKind(ConnectorKind.CK_UNITY)
+                .setKind(ConnectorKind.CK_GLUE)
                 .setUri("dummy://lane-isolation")
                 .setSource(
                     SourceSelector.newBuilder()

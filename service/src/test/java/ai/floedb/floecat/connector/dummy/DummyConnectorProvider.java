@@ -26,7 +26,7 @@ public final class DummyConnectorProvider implements ConnectorProvider {
 
   @Override
   public String kind() {
-    return "unity";
+    return "glue";
   }
 
   @Override

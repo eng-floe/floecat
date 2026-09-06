@@ -39,7 +39,6 @@ public final class ConnectorFactory {
           case ICEBERG -> "iceberg";
           case DELTA -> "delta";
           case GLUE -> "glue";
-          case UNITY -> "unity";
         };
     ConnectorProvider p = PROVIDERS.get(kindId);
     if (p == null) {

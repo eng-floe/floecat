@@ -26,7 +26,6 @@ public final class ConnectorConfigMapper {
           case CK_ICEBERG -> ConnectorConfig.Kind.ICEBERG;
           case CK_DELTA -> ConnectorConfig.Kind.DELTA;
           case CK_GLUE -> ConnectorConfig.Kind.GLUE;
-          case CK_UNITY -> ConnectorConfig.Kind.UNITY;
           default -> throw new IllegalArgumentException("unsupported kind: " + c.getKind());
         };
 

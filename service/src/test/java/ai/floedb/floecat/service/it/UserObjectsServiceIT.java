@@ -411,7 +411,7 @@ class UserObjectsServiceIT {
     ConnectorSpec spec =
         ConnectorSpec.newBuilder()
             .setDisplayName("qc-" + suffix)
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_GLUE)
             .setUri("dummy://ignored")
             .setSource(source)
             .setDestination(destination)

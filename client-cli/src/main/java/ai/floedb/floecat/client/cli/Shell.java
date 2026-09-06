@@ -601,7 +601,7 @@ public class Shell implements Runnable {
          connectors
          connector list [--kind <KIND>]
          connector get <display_name|id>
-         connector create <display_name> <source_type (ICEBERG|DELTA|GLUE|UNITY)> <uri> <source_namespace (a[.b[.c]...])> <destination_catalog (name)>
+         connector create <display_name> <source_type (ICEBERG|DELTA|GLUE)> <uri> <source_namespace (a[.b[.c]...])> <destination_catalog (name)>
              [--source-table <name>] [--source-cols c1,#id2,...]
              [--dest-ns <a.b[.c]>] [--dest-table <name>]
              [--desc <text>] [--auth-scheme <scheme>] [--auth k=v ...]

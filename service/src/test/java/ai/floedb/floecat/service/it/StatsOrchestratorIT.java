@@ -371,7 +371,7 @@ class StatsOrchestratorIT {
     var spec =
         ConnectorSpec.newBuilder()
             .setDisplayName(PREFIX + suffix)
-            .setKind(ConnectorKind.CK_UNITY)
+            .setKind(ConnectorKind.CK_GLUE)
             .setUri("dummy://ignored")
             .setSource(source)
             .setDestination(destination)
