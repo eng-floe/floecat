@@ -468,10 +468,16 @@ public final class UserGraph {
                             Map.of("id", tblId.getId())))
             : pinnedReads.requirePinnedTableBlob(
                 nodes.tableFromBlob(tblId, tableBlobUri), cid, tblId);
-    return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri));
+    SchemaResolution resolved =
+        snapshots.schemaFor(cid, tbl, snapshot, snapshotBlobUri, tbl::schemaJson);
+    return new SchemaResolution(
+        resolved.table(), resolved.schemaJson(), resolved.columnIdentityMap());
   }
 
-  public record SchemaResolution(UserTableNode table, String schemaJson) {}
+  public record SchemaResolution(
+      UserTableNode table,
+      String schemaJson,
+      ai.floedb.floecat.catalog.rpc.ColumnIdentityMap columnIdentityMap) {}
 
   // ----------------------------------------------------------------------
   // Name resolution

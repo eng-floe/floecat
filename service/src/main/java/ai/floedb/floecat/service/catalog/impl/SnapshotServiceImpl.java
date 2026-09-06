@@ -395,6 +395,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                   if (spec.hasMetadataLocation() && !spec.getMetadataLocation().isBlank()) {
                     snapBuilder.setMetadataLocation(spec.getMetadataLocation());
                   }
+                  applyColumnIdentity(spec, snapBuilder, corr);
                   var snap = snapBuilder.build();
 
                   if (idempotencyKey == null) {
@@ -715,7 +716,9 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           "manifest_list",
           "summary",
           "schema_id",
-          "metadata_location");
+          "metadata_location",
+          "column_identity_map",
+          "column_identity_fingerprint");
 
   private Snapshot applySnapshotSpecPatch(
       Snapshot current, SnapshotSpec spec, FieldMask mask, String corr) {
@@ -786,6 +789,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
           }
           builder.setMetadataLocation(spec.getMetadataLocation());
         }
+        case "column_identity_map", "column_identity_fingerprint" ->
+            applyColumnIdentity(spec, builder, corr);
         default ->
             throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_PATH_INVALID, Map.of("path", path));
       }
@@ -841,7 +846,36 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     if (spec.hasMetadataLocation()) {
       c.scalar("metadata_location", spec.getMetadataLocation());
     }
+    if (spec.hasColumnIdentityMap()) {
+      c.scalar(
+          "column_identity_map",
+          java.util.Base64.getEncoder().encodeToString(spec.getColumnIdentityMap().toByteArray()));
+      c.scalar("column_identity_fingerprint", spec.getColumnIdentityFingerprint());
+    }
     return c.bytes();
+  }
+
+  private static void applyColumnIdentity(
+      SnapshotSpec spec, Snapshot.Builder builder, String correlationId) {
+    if (!spec.hasColumnIdentityMap()) {
+      if (!spec.getColumnIdentityFingerprint().isBlank()) {
+        throw GrpcErrors.invalidArgument(
+            correlationId,
+            SNAPSHOT_COLUMN_IDENTITY_INVALID,
+            Map.of("reason", "column identity fingerprint requires a mapping"));
+      }
+      return;
+    }
+    String mapFingerprint = spec.getColumnIdentityMap().getFingerprint();
+    if (mapFingerprint.isBlank() || !mapFingerprint.equals(spec.getColumnIdentityFingerprint())) {
+      throw GrpcErrors.invalidArgument(
+          correlationId,
+          SNAPSHOT_COLUMN_IDENTITY_INVALID,
+          Map.of("reason", "column identity fingerprint does not match its mapping"));
+    }
+    builder
+        .setColumnIdentityMap(spec.getColumnIdentityMap())
+        .setColumnIdentityFingerprint(mapFingerprint);
   }
 
   private static void canonicalResourceId(Canonicalizer c, String key, ResourceId id) {
