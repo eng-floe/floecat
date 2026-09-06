@@ -32,5 +32,16 @@
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
+    <!--
+      Test scope only, so this module keeps its empty production dependency graph. It exists so one
+      test can render the same prefixes through both copies of the redaction rules and fail when
+      they disagree; without it each copy is only ever tested against itself.
+    -->
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-connectors-spi</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>

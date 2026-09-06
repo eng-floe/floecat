@@ -54,6 +54,13 @@ public final class SourceCatalogVendingGrpcStatus {
   public static final String VENDED_CREDENTIALS_NOT_REFRESHABLE_REASON =
       "VENDED_CREDENTIALS_NOT_REFRESHABLE";
 
+  /**
+   * The source catalog permanently refused to vend for this table for a reason that is neither
+   * authentication nor authorization -- Databricks' HTTP 400 for a table without external access,
+   * or a 404 for a table id it no longer knows. Terminal: the answer will not change on retry.
+   */
+  public static final String SOURCE_CATALOG_VEND_REFUSED_REASON = "SOURCE_CATALOG_VEND_REFUSED";
+
   private static final String REASON_PARAM = "reason";
 
   private SourceCatalogVendingGrpcStatus() {}
@@ -81,6 +88,18 @@ public final class SourceCatalogVendingGrpcStatus {
   public static boolean isVendedCredentialsNotRefreshable(Throwable error) {
     return hasReason(
         error, Status.Code.FAILED_PRECONDITION, VENDED_CREDENTIALS_NOT_REFRESHABLE_REASON);
+  }
+
+  public static StatusRuntimeException sourceCatalogVendRefused(String description) {
+    return withReason(
+        Status.Code.FAILED_PRECONDITION,
+        ErrorCode.MC_PRECONDITION_FAILED,
+        SOURCE_CATALOG_VEND_REFUSED_REASON,
+        description);
+  }
+
+  public static boolean isSourceCatalogVendRefused(Throwable error) {
+    return hasReason(error, Status.Code.FAILED_PRECONDITION, SOURCE_CATALOG_VEND_REFUSED_REASON);
   }
 
   private static StatusRuntimeException withReason(

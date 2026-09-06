@@ -46,6 +46,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind;
+import ai.floedb.floecat.connector.spi.LogSafeText;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.protobuf.ByteString;
@@ -1860,10 +1861,17 @@ public abstract class IcebergConnector implements FloecatConnector {
           // misconfigures FileIO for any other region, a custom endpoint, or path-style access.
           "s3.region",
           "s3.endpoint",
+          // Deliberately no "s3.access-point": Iceberg has no such property. S3FileIOProperties
+          // keys access points per bucket as "s3.access-points.<bucket>", so a literal lookup can
+          // never match and listing it would read as coverage that does not exist. Unity Catalog
+          // is the only source that vends an access point today, through the Delta connector.
           "s3.path-style-access");
 
   /** Iceberg's key for when vended session credentials stop working. */
   private static final String VENDED_EXPIRY_KEY = "s3.session-token-expires-at-ms";
+
+  /** Enough of an unparseable expiry to recognise it, and no more. */
+  private static final int MAX_LOGGED_EXPIRY_CHARS = 64;
 
   @Override
   public Optional<VendedStorageCredentials> vendStorageCredentials(
@@ -1899,7 +1907,11 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (!vended.containsKey("s3.access-key-id")) {
       return Optional.empty();
     }
-    return Optional.of(new VendedStorageCredentials(vended, parseVendedExpiry(ioProps)));
+    // No scope. These properties may be the connector's own static credentials, merged into every
+    // table's FileIO by the catalog -- the ambiguity this whole branch is built around. Stamping
+    // the table location on them would assert a restriction the credential does not have, and the
+    // consumer treats a non-null prefix as a bound to intersect with.
+    return Optional.of(new VendedStorageCredentials(vended, null, parseVendedExpiry(ioProps)));
   }
 
   /**
@@ -1946,7 +1958,11 @@ public abstract class IcebergConnector implements FloecatConnector {
     if (!vended.containsKey("s3.access-key-id")) {
       return Optional.empty();
     }
-    return Optional.of(new VendedStorageCredentials(vended, parseVendedExpiry(best.config())));
+    // Whatever the catalog named, and nothing when it named nothing. The table location is not a
+    // safe stand-in: write.data.path, write.metadata.path and add_files can all put files outside
+    // it, so substituting it would hand the consumer a bound that does not cover the scan.
+    return Optional.of(
+        new VendedStorageCredentials(vended, best.prefix(), parseVendedExpiry(best.config())));
   }
 
   private static Map<String, String> filterVendedKeys(Map<String, String> source) {
@@ -1961,21 +1977,24 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   /**
-   * Reads the credential expiry, or null when absent or unparseable.
+   * Reads the credential expiry, or null when absent, out of range, or unparseable.
    *
    * <p>Null is deliberately not "never expires": callers are documented to treat it as "do not
-   * cache". Guessing a TTL here would produce credentials that fail mid-read.
+   * cache". Guessing a TTL here would produce credentials that fail mid-read. Delegates to the
+   * shared parser so every vending connector agrees on the epoch-millis semantics.
    */
   private static Instant parseVendedExpiry(Map<String, String> ioProps) {
     String raw = ioProps.get(VENDED_EXPIRY_KEY);
-    if (raw == null || raw.isBlank()) {
-      return null;
+    Instant expiry = VendedStorageCredentials.expiryFromEpochMillis(raw);
+    if (expiry == null && raw != null && !raw.isBlank()) {
+      // Not classified. The parser folds absent, non-positive, out-of-range and unparseable into
+      // the same null, and separating them here cost more than it told anyone -- the operator's
+      // next step is the catalog either way. The raw value is bounded because it came off
+      // loadTable.
+      LOG.warnf(
+          "ignoring unusable %s from delegated loadTable: %s",
+          VENDED_EXPIRY_KEY, LogSafeText.bounded(raw, MAX_LOGGED_EXPIRY_CHARS));
     }
-    try {
-      return Instant.ofEpochMilli(Long.parseLong(raw.trim()));
-    } catch (NumberFormatException e) {
-      LOG.warnf("ignoring unparseable %s from delegated loadTable: %s", VENDED_EXPIRY_KEY, raw);
-      return null;
-    }
+    return expiry;
   }
 }
