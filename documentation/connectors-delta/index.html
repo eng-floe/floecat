@@ -1840,6 +1840,7 @@ typed Unity Catalog client boundary, and custom file readers for S3.</p>
 <li><strong><code>DeltaConnector</code></strong> – Abstract <code>FloecatConnector</code> that centralizes snapshot/stat logic.</li>
 <li><strong><code>UnityDeltaConnector</code></strong> – Unity Catalog-backed connector that:</li>
 <li>Uses <code>UnityCatalogClient</code> to list catalogs/schemas/tables.</li>
+<li>Vends table-scoped storage credentials through the client's temporary-credentials operation.</li>
 <li>Uses Delta Kernel (<code>io.delta.kernel.Table</code>) for schema and snapshot access.</li>
 <li>Reads Parquet data with <code>S3V2FileSystemClient</code> and <code>ParquetS3V2InputFile</code> for NDV/statistics.</li>
 <li>Plans files using <code>DeltaPlanner</code>, emitting <code>ScanFile</code>s for data/delete manifests.</li>
@@ -1978,6 +1979,16 @@ Per-file S3 range readers are closed by their consumers.</p>
   tenant-supplied: on a success the call fails as <code>INVALID_RESPONSE</code>; on an error response the body
   is dropped for diagnostics while the HTTP status still decides the classification. Raise it for a
   catalog whose listing pages exceed the default.</li>
+<li><code>databricks.access-delegation=vended-credentials</code> – Explicitly enables table-scoped temporary
+  AWS credentials from Unity Catalog when no storage authority matches the table. The Databricks
+  metastore must allow external access and the caller needs <code>EXTERNAL USE SCHEMA</code> on the parent
+  schema. Azure, GCP, and R2 credential shapes are not yet consumed and fall back to a configured
+  storage authority. Accepted values are <code>vended-credentials</code>, <code>true</code>, <code>1</code>, <code>yes</code> (enabled) and
+  <code>false</code>, <code>0</code>, <code>no</code>, <code>none</code> (disabled), with underscores accepted in place of hyphens so the
+  spelling DuckDB sends works here too; anything else is rejected at create/update time rather
+  than read as "disabled". Honored only for <code>delta.source=unity</code> (the default): on
+  <code>delta.source=glue</code> or <code>delta.source=filesystem</code> the option is accepted and then ignored, since
+  neither has a Unity credential endpoint to vend from.</li>
 <li><code>s3.region</code> / <code>aws.region</code> – Region for the S3 client used to read Parquet files.</li>
 <li><code>stats.ndv.*</code> – Sampling knobs identical to the Iceberg connector.</li>
 <li>Authentication-specific options (<code>auth.scheme</code>, <code>auth.properties</code>) – <code>auth.scheme=oauth2</code>
