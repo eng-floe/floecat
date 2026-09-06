@@ -48,7 +48,7 @@ services:
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
       - ${HOME}/.aws:/home/jboss/.aws:ro
-      - ./certs/runtime-truststore.p12:/opt/floecat-certs/runtime-truststore.p12:ro
+      - ${FLOECAT_RUNTIME_TRUSTSTORE_FILE:-./certs/runtime-truststore.p12}:/opt/floecat-certs/runtime-truststore.p12:ro
   executor:
     image: ${FLOECAT_SERVICE_IMAGE:-floecat-service:local}
     pull_policy: ${FLOECAT_PULL_POLICY:-never}
@@ -87,7 +87,7 @@ services:
     volumes:
       - ${HOME}/.aws:/root/.aws:ro
       - ${HOME}/.aws:/home/jboss/.aws:ro
-      - ./certs/runtime-truststore.p12:/opt/floecat-certs/runtime-truststore.p12:ro
+      - ${FLOECAT_RUNTIME_TRUSTSTORE_FILE:-./certs/runtime-truststore.p12}:/opt/floecat-certs/runtime-truststore.p12:ro
 
   iceberg-rest:
     image: ${FLOECAT_ICEBERG_REST_IMAGE:-floecat-iceberg-rest:local}
@@ -308,14 +308,48 @@ services:
       - floecat
 
   unity:
-    image: ${FLOECAT_UNITY_IMAGE:-unitycatalog/unitycatalog:latest}
+    image: ${FLOECAT_UNITY_IMAGE:-unitycatalog/unitycatalog:v0.6.0}
     pull_policy: if_not_present
     ports:
       - "${FLOECAT_UNITY_HOST_PORT:-8083}:8080"
+    environment:
+      AWS_ACCESS_KEY_ID: ${FLOECAT_STORAGE_AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY:-test}
+      AWS_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
+      AWS_DEFAULT_REGION: ${FLOECAT_STORAGE_AWS_REGION:-us-east-1}
+      AWS_EC2_METADATA_DISABLED: "true"
+      JAVA_TOOL_OPTIONS: "-Djavax.net.ssl.trustStore=/etc/unity/tls/runtime-truststore.p12 -Djavax.net.ssl.trustStorePassword=password -Djavax.net.ssl.trustStoreType=PKCS12"
+    depends_on:
+      localstack:
+        condition: service_started
+    volumes:
+      - ./unity/server.properties:/home/unitycatalog/etc/conf/server.properties:ro
+      - ${FLOECAT_RUNTIME_TRUSTSTORE_FILE:-./certs/runtime-truststore.p12}:/etc/unity/tls/runtime-truststore.p12:ro
     profiles:
       - unity
     networks:
       - floecat
+
+  unity-proxy:
+    image: nginx:1.27-alpine
+    pull_policy: if_not_present
+    ports:
+      - "${FLOECAT_UNITY_HTTPS_HOST_PORT:-8444}:8443"
+    depends_on:
+      unity:
+        condition: service_started
+    volumes:
+      - ./unity/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${FLOECAT_UNITY_TLS_CERT_FILE:-./unity/server.crt}:/etc/unity/tls/server.crt:ro
+      - ${FLOECAT_UNITY_TLS_KEY_FILE:-./unity/server.key}:/etc/unity/tls/server.key:ro
+    profiles:
+      - unity
+    networks:
+      floecat:
+        aliases:
+          # UC 0.6.0 uses AWS SDK 2.24.0, which predates configured endpoint URLs. Resolve its
+          # normal regional STS host to this TLS proxy so AssumeRole remains local.
+          - sts.us-east-1.amazonaws.com
 
 networks:
   floecat:
