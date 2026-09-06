@@ -146,6 +146,9 @@ message TablePin {
    * manifest entries; the token then falls back to snapshot_blob_version. Server-side only.
    */
   string schema_fingerprint = 17;
+
+  /** Authoritative column identity fingerprint frozen with this snapshot pin. */
+  string column_identity_fingerprint = 18;
 }
 
 /**
@@ -256,4 +259,7 @@ message RelationPinIdentity {
    * must not fragment the schema cache identity).
    */
   string constraints_ref_version = 7;
+
+  /** Authoritative column identity fingerprint for planner stats compatibility. */
+  string column_identity_fingerprint = 8;
 }
