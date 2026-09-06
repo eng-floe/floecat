@@ -73,6 +73,20 @@ public final class ConnectorStatsViewBuilder {
       java.util.function.ToIntFunction<K> fieldIdOf,
       java.util.function.Function<K, LogicalType> typeOf,
       long tableTotalRows) {
+    return toColumnStatsView(
+        columns, nameOf, physicalPathOf, ordinalOf, fieldIdOf, null, typeOf, tableTotalRows);
+  }
+
+  /** Converts aggregate columns while attaching an authoritative canonical ID when available. */
+  public static <K> List<FloecatConnector.ColumnStatsView> toColumnStatsView(
+      Map<K, StatsEngine.ColumnAgg> columns,
+      java.util.function.Function<K, String> nameOf,
+      java.util.function.Function<K, String> physicalPathOf,
+      java.util.function.ToIntFunction<K> ordinalOf,
+      java.util.function.ToIntFunction<K> fieldIdOf,
+      java.util.function.ToLongFunction<K> canonicalIdOf,
+      java.util.function.Function<K, LogicalType> typeOf,
+      long tableTotalRows) {
 
     List<FloecatConnector.ColumnStatsView> out = new ArrayList<>(columns.size());
     for (var e : columns.entrySet()) {
@@ -83,6 +97,7 @@ public final class ConnectorStatsViewBuilder {
       String physicalPath = physicalPathOf == null ? "" : physicalPathOf.apply(key);
       int ordinal = ordinalOf == null ? 0 : Math.max(0, ordinalOf.applyAsInt(key));
       int fieldId = fieldIdOf == null ? 0 : Math.max(0, fieldIdOf.applyAsInt(key));
+      long canonicalId = canonicalIdOf == null ? 0L : Math.max(0L, canonicalIdOf.applyAsLong(key));
       LogicalType lt = typeOf.apply(key);
 
       // Populate ref as fully as we can.
@@ -92,7 +107,7 @@ public final class ConnectorStatsViewBuilder {
               physicalPath == null ? "" : physicalPath,
               ordinal,
               fieldId,
-              0L);
+              canonicalId);
 
       String logicalTypeStr = (lt == null) ? "" : LogicalTypeProtoAdapter.encodeLogicalType(lt);
 
@@ -203,6 +218,18 @@ public final class ConnectorStatsViewBuilder {
       java.util.function.ToIntFunction<K> ordinalOf,
       java.util.function.ToIntFunction<K> fieldIdOf,
       java.util.function.Function<K, LogicalType> typeOf) {
+    return toFileColumnStatsView(files, nameOf, physicalPathOf, ordinalOf, fieldIdOf, null, typeOf);
+  }
+
+  /** Converts per-file aggregates with authoritative canonical IDs when available. */
+  public static <K> List<FloecatConnector.FileColumnStatsView> toFileColumnStatsView(
+      List<StatsEngine.FileAgg<K>> files,
+      java.util.function.Function<K, String> nameOf,
+      java.util.function.Function<K, String> physicalPathOf,
+      java.util.function.ToIntFunction<K> ordinalOf,
+      java.util.function.ToIntFunction<K> fieldIdOf,
+      java.util.function.ToLongFunction<K> canonicalIdOf,
+      java.util.function.Function<K, LogicalType> typeOf) {
 
     if (files == null || files.isEmpty()) return List.of();
 
@@ -212,7 +239,14 @@ public final class ConnectorStatsViewBuilder {
       // building logic
       var cols =
           toColumnStatsView(
-              fa.columns(), nameOf, physicalPathOf, ordinalOf, fieldIdOf, typeOf, fa.rowCount());
+              fa.columns(),
+              nameOf,
+              physicalPathOf,
+              ordinalOf,
+              fieldIdOf,
+              canonicalIdOf,
+              typeOf,
+              fa.rowCount());
 
       out.add(
           new FloecatConnector.FileColumnStatsView(

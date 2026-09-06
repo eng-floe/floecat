@@ -68,6 +68,7 @@ public final class ColumnIdComputer {
     return switch (algo) {
       case CID_FIELD_ID -> computeFieldId(fieldId);
       case CID_PATH_ORDINAL -> computePathOrdinal(name, physicalPath, ordinal);
+      case CID_CANONICAL_MAP -> 0L;
       case CID_UNKNOWN, UNRECOGNIZED -> 0L;
       default -> 0L;
     };

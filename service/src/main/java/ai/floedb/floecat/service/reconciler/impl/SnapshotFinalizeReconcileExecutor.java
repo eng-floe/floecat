@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutor;
 import ai.floedb.floecat.reconciler.impl.RemoteLeasedJob;
 import ai.floedb.floecat.reconciler.impl.RemoteSnapshotFinalizeReconcileExecutor;
@@ -36,7 +37,9 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -59,6 +62,8 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
   @Inject CurrentSnapshotPointerService currentSnapshotPointerService;
   @Inject LeasedSnapshotFinalizeInputService finalizeInputService;
   @Inject LeasedSnapshotFinalizeExecutionService finalizeExecutionService;
+  @Inject SnapshotRepository snapshotRepo;
+  @Inject CatalogGraphView graphView;
   @Inject BlobStore blobStore;
 
   @ConfigProperty(
@@ -520,7 +525,31 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
       return 0L;
     }
     return persistence.persistEmptySnapshotCompletionMarker(
-        tableId, snapshotTask.snapshotId(), lease.fullRescan);
+        tableId,
+        snapshotTask.snapshotId(),
+        lease.fullRescan,
+        columnIdentityFingerprint(tableId, snapshotTask.snapshotId()));
+  }
+
+  private String columnIdentityFingerprint(ResourceId tableId, long snapshotId) {
+    boolean identityBearingTable =
+        graphView == null
+            || graphView
+                .resolve(tableId)
+                .map(
+                    node ->
+                        node instanceof UserTableNode table
+                            && table.columnIdAlgorithm()
+                                == ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm
+                                    .CID_CANONICAL_MAP)
+                .orElse(true);
+    if (!identityBearingTable || snapshotRepo == null) {
+      return "";
+    }
+    return snapshotRepo
+        .getById(tableId, snapshotId)
+        .map(snapshot -> snapshot.getColumnIdentityFingerprint())
+        .orElse("");
   }
 
   private List<String> fileGroupChildDescriptions(

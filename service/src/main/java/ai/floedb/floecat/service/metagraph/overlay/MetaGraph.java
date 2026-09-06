@@ -46,6 +46,8 @@ import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import com.google.protobuf.Timestamp;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
@@ -707,7 +709,8 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
     if (delegate == null) {
       return null;
     }
-    return new SchemaResolution(delegate.table(), delegate.schemaJson());
+    return new SchemaResolution(
+        delegate.table(), delegate.schemaJson(), delegate.columnIdentityMap());
   }
 
   /**
@@ -769,6 +772,31 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
 
   private List<SchemaColumn> schemaForTable(TableNode table) {
     if (table instanceof UserTableNode ut) {
+      if (ut.columnIdAlgorithm()
+          == ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP) {
+        UserGraph.SchemaResolution resolved;
+        try {
+          resolved =
+              userGraph.schemaFor(
+                  "table-schema",
+                  ut.id(),
+                  SnapshotRef.newBuilder()
+                      .setSpecial(ai.floedb.floecat.common.rpc.SpecialSnapshot.SS_CURRENT)
+                      .build(),
+                  "",
+                  "");
+        } catch (StatusRuntimeException error) {
+          if (error.getStatus().getCode() == Status.Code.NOT_FOUND) {
+            return List.of();
+          }
+          throw error;
+        }
+        return resolved == null
+            ? List.of()
+            : schemaMapper
+                .map(resolved.table(), resolved.schemaJson(), resolved.columnIdentityMap())
+                .getColumnsList();
+      }
       return schemaMapper.map(ut).getColumnsList();
     }
     if (table instanceof SystemTableNode st) {

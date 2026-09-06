@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.common.resolver;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
@@ -38,6 +39,10 @@ public class LogicalSchemaMapper {
    * schema).
    */
   public SchemaDescriptor map(Table table, String schemaJson) {
+    return map(table, schemaJson, ColumnIdentityMap.getDefaultInstance());
+  }
+
+  public SchemaDescriptor map(Table table, String schemaJson, ColumnIdentityMap columnIdentityMap) {
     if (schemaJson == null || schemaJson.isBlank()) {
       return SchemaDescriptor.getDefaultInstance();
     }
@@ -46,11 +51,16 @@ public class LogicalSchemaMapper {
     ColumnIdAlgorithm cid_algo = table.getUpstream().getColumnIdAlgorithm();
     Set<String> partitionKeys = new HashSet<>(table.getUpstream().getPartitionKeysList());
 
-    return mapInternal(cid_algo, fmt, schemaJson, partitionKeys);
+    return mapInternal(cid_algo, fmt, schemaJson, partitionKeys, columnIdentityMap);
   }
 
   /** Builds a logical schema descriptor directly from a cached {@link UserTableNode}. */
   public SchemaDescriptor map(UserTableNode node, String overrideSchemaJson) {
+    return map(node, overrideSchemaJson, ColumnIdentityMap.getDefaultInstance());
+  }
+
+  public SchemaDescriptor map(
+      UserTableNode node, String overrideSchemaJson, ColumnIdentityMap columnIdentityMap) {
     String schemaJson =
         (overrideSchemaJson == null || overrideSchemaJson.isBlank())
             ? node.schemaJson()
@@ -59,7 +69,11 @@ public class LogicalSchemaMapper {
       return SchemaDescriptor.getDefaultInstance();
     }
     return mapInternal(
-        node.columnIdAlgorithm(), node.format(), schemaJson, new HashSet<>(node.partitionKeys()));
+        node.columnIdAlgorithm(),
+        node.format(),
+        schemaJson,
+        new HashSet<>(node.partitionKeys()),
+        columnIdentityMap);
   }
 
   public SchemaDescriptor map(UserTableNode node) {
@@ -77,17 +91,39 @@ public class LogicalSchemaMapper {
     }
 
     Set<String> pk = (partitionKeys == null) ? Set.of() : partitionKeys;
-    return mapInternal(cid_algo, format, schemaJson, new HashSet<>(pk));
+    return mapInternal(
+        cid_algo, format, schemaJson, new HashSet<>(pk), ColumnIdentityMap.getDefaultInstance());
+  }
+
+  /** Maps raw schema JSON using the supplied authoritative column identity map. */
+  public SchemaDescriptor mapRaw(
+      ColumnIdAlgorithm cidAlgo,
+      TableFormat format,
+      String schemaJson,
+      Set<String> partitionKeys,
+      ColumnIdentityMap columnIdentityMap) {
+    if (schemaJson == null || schemaJson.isBlank()) {
+      return SchemaDescriptor.getDefaultInstance();
+    }
+    Set<String> keys = partitionKeys == null ? Set.of() : partitionKeys;
+    return mapInternal(
+        cidAlgo,
+        format,
+        schemaJson,
+        new HashSet<>(keys),
+        columnIdentityMap == null ? ColumnIdentityMap.getDefaultInstance() : columnIdentityMap);
   }
 
   private SchemaDescriptor mapInternal(
       ColumnIdAlgorithm cid_algo,
       TableFormat format,
       String schemaJson,
-      Set<String> partitionKeys) {
+      Set<String> partitionKeys,
+      ColumnIdentityMap columnIdentityMap) {
     return switch (format) {
       case TF_ICEBERG -> IcebergSchemaMapper.map(cid_algo, schemaJson, partitionKeys);
-      case TF_DELTA -> DeltaSchemaMapper.map(cid_algo, schemaJson, partitionKeys);
+      case TF_DELTA ->
+          DeltaSchemaMapper.map(cid_algo, schemaJson, partitionKeys, columnIdentityMap);
       default -> GenericSchemaMapper.map(cid_algo, schemaJson);
     };
   }

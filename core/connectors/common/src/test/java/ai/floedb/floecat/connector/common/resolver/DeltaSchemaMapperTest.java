@@ -20,8 +20,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityEntry;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMode;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityPathElement;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityPathElementKind;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.schema.identity.ColumnPath;
+import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.ResolvedSchema;
+import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
+import ai.floedb.floecat.schema.identity.SchemaNode;
 import io.delta.kernel.internal.types.DataTypeJsonSerDe;
 import io.delta.kernel.types.FieldMetadata;
 import io.delta.kernel.types.LongType;
@@ -29,6 +39,9 @@ import io.delta.kernel.types.StringType;
 import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.types.VariantType;
+import java.util.List;
+import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -555,6 +568,60 @@ class DeltaSchemaMapperTest {
     assertThatThrownBy(() -> DeltaSchemaMapper.map(CID, "{not-valid-json", Set.of()))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Failed to parse Delta schema JSON");
+  }
+
+  @Test
+  void canonicalAlgorithmRequiresIdentityMap() {
+    assertThatThrownBy(
+            () ->
+                DeltaSchemaMapper.map(
+                    ColumnIdAlgorithm.CID_CANONICAL_MAP, singleFieldSchema("x", "long"), Set.of()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Canonical column identity map is required");
+  }
+
+  @Test
+  void canonicalAlgorithmUsesAuthoritativeId() {
+    var state =
+        SchemaIdentityReconciler.reconcile(
+                ResolvedSchema.of(
+                    List.of(
+                        new SchemaNode(
+                            ColumnPath.ROOT.field("x"),
+                            1,
+                            true,
+                            OptionalInt.empty(),
+                            Optional.empty()))),
+                0L,
+                IdentityMode.STRUCTURED_PATH,
+                Optional.empty())
+            .state();
+    ColumnIdentityMap identityMap =
+        ColumnIdentityMap.newBuilder()
+            .setFormatVersion(1)
+            .setSourceVersion(state.sourceVersion())
+            .setHighWaterMark(state.highWaterMark())
+            .setMode(ColumnIdentityMode.COLUMN_IDENTITY_MODE_STRUCTURED_PATH)
+            .setFingerprint(state.fingerprint())
+            .addEntries(
+                ColumnIdentityEntry.newBuilder()
+                    .setColumnId(1L)
+                    .addPath(
+                        ColumnIdentityPathElement.newBuilder()
+                            .setKind(
+                                ColumnIdentityPathElementKind
+                                    .COLUMN_IDENTITY_PATH_ELEMENT_KIND_FIELD)
+                            .setName("x")))
+            .build();
+
+    SchemaDescriptor descriptor =
+        DeltaSchemaMapper.map(
+            ColumnIdAlgorithm.CID_CANONICAL_MAP,
+            singleFieldSchema("x", "long"),
+            Set.of(),
+            identityMap);
+
+    assertThat(descriptor.getColumns(0).getId()).isEqualTo(1L);
   }
 
   private static String typeTag(ai.floedb.floecat.query.rpc.SchemaColumn column) {

@@ -176,10 +176,13 @@ public final class TargetStatsRecords {
       return record;
     }
     return fileRecord(
-        record.getTableId(),
-        record.getSnapshotId(),
-        record.getFile(),
-        record.hasMetadata() ? record.getMetadata() : null);
+            record.getTableId(),
+            record.getSnapshotId(),
+            record.getFile(),
+            record.hasMetadata() ? record.getMetadata() : null)
+        .toBuilder()
+        .setColumnIdentityFingerprint(record.getColumnIdentityFingerprint())
+        .build();
   }
 
   /**

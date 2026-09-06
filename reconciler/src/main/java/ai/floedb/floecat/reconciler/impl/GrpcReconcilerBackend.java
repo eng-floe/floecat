@@ -555,6 +555,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (snapshotId < 0) {
       return Optional.empty();
     }
+    ai.floedb.floecat.catalog.rpc.ColumnIdentityMap identityMap =
+        fetchSnapshot(ctx, tableId, snapshotId)
+            .map(Snapshot::getColumnIdentityMap)
+            .orElse(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
     return withSourceConnector(
         ctx,
         tableId,
@@ -572,7 +576,13 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
               planned.isPresent(),
               planned.map(plan -> plan.dataFiles().size()).orElse(0),
               planned.map(plan -> plan.deleteFiles().size()).orElse(0));
-          return planned;
+          return planned.map(
+              plan ->
+                  new FloecatConnector.SnapshotFilePlan(
+                      plan.dataFiles(),
+                      plan.deleteFiles(),
+                      ColumnIdentityExecutionSchema.attach(
+                          plan.executionSchemaJson(), identityMap)));
         });
   }
 
@@ -582,17 +592,30 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (baseSnapshotId < 0 || targetSnapshotId < 0 || targetSnapshotId == baseSnapshotId) {
       return Optional.empty();
     }
+    ai.floedb.floecat.catalog.rpc.ColumnIdentityMap identityMap =
+        fetchSnapshot(ctx, tableId, targetSnapshotId)
+            .map(Snapshot::getColumnIdentityMap)
+            .orElse(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance());
     return withSourceConnector(
         ctx,
         tableId,
         Optional.empty(),
         (source, sourceCtx) ->
-            source.planSnapshotFileDelta(
-                sourceCtx.sourceNamespace(),
-                sourceCtx.sourceTable(),
-                tableId,
-                baseSnapshotId,
-                targetSnapshotId));
+            source
+                .planSnapshotFileDelta(
+                    sourceCtx.sourceNamespace(),
+                    sourceCtx.sourceTable(),
+                    tableId,
+                    baseSnapshotId,
+                    targetSnapshotId)
+                .map(
+                    delta ->
+                        new FloecatConnector.SnapshotFileDelta(
+                            delta.addedDataFiles(),
+                            delta.removedDataFilePaths(),
+                            delta.deleteArtifactsChanged(),
+                            ColumnIdentityExecutionSchema.attach(
+                                delta.executionSchemaJson(), identityMap))));
   }
 
   @Override
@@ -638,7 +661,11 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       ctx.executionJobId(),
                       ctx.executionLeaseEpoch(),
                       () -> false,
-                      ColumnIdentityMap.getDefaultInstance()),
+                      fetchSnapshot(ctx, request.tableId(), request.snapshotId())
+                          .map(Snapshot::getColumnIdentityMap)
+                          .orElse(
+                              ai.floedb.floecat.catalog.rpc.ColumnIdentityMap
+                                  .getDefaultInstance())),
                   (completedFileStats, completedPageIndexEntries) -> {
                     fileStats.addAll(completedFileStats);
                     pageIndexEntries.addAll(completedPageIndexEntries);

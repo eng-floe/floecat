@@ -127,6 +127,15 @@ class QueryPinsTest {
   }
 
   @Test
+  void sameSnapshotDifferentColumnIdentityFingerprintConflicts() {
+    TablePin existing =
+        explicit("t", 7).toBuilder().setColumnIdentityFingerprint("sha256:a").build();
+    TablePin incoming =
+        explicit("t", 7).toBuilder().setColumnIdentityFingerprint("sha256:b").build();
+    assertThat(QueryPins.compatible(existing, incoming)).isFalse();
+  }
+
+  @Test
   void uncapturedBlobVersionCannotProveConflict() {
     // A pin that never captured a blob version (empty etag) cannot manufacture a blob conflict.
     TablePin captured = explicit("t", 7).toBuilder().setSnapshotBlobVersion("etag-a").build();
@@ -199,6 +208,11 @@ class QueryPinsTest {
     // The snapshot blob version (immutable data identity) changes the fingerprint.
     assertThat(
             QueryPins.identity(pin.toBuilder().setSnapshotBlobVersion("etag-s2").build())
+                .getPinFingerprint())
+        .isNotEqualTo(identity.getPinFingerprint());
+    assertThat(
+            QueryPins.identity(
+                    pin.toBuilder().setColumnIdentityFingerprint("sha256:identity").build())
                 .getPinFingerprint())
         .isNotEqualTo(identity.getPinFingerprint());
     // The table blob version is per-touch provenance, not identity: it must NOT change the

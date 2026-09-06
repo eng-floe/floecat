@@ -159,7 +159,7 @@ public class StandaloneJavaFileGroupExecutionRunner {
                     java.util.Optional.of(payload.jobId()),
                     java.util.Optional.of(payload.leaseEpoch()),
                     stop,
-                    ColumnIdentityMap.getDefaultInstance()),
+                    ColumnIdentityExecutionSchema.identityMap(payload.executionSchemaJson())),
                 (fileStats, pageIndexEntries) -> {
                   List<TargetStatsRecord> completedFileStats =
                       fileStats == null ? List.of() : fileStats;
