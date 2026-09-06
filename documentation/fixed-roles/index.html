@@ -1722,6 +1722,12 @@
 <p>This document defines the fixed role names recognized by Floecat and the permissions each role grants.</p>
 <p>Source of truth: <code>service/src/main/java/ai/floedb/floecat/service/security/RolePermissions.java</code>.</p>
 <h2 id="role-matrix">Role Matrix<a class="headerlink" href="#role-matrix" title="Permanent link">&para;</a></h2>
+<p><code>catalog-integration.use</code> is granted to <code>default</code> because reading a table an overlay materialized
+from a Catalog Integration is what asks that Integration's catalog to vend storage credentials: no
+storage authority covers such a table, so withholding the permission would leave those tables
+readable only by <code>administrator</code>. It is wider than that vend alone --
+<code>ValidateCatalogIntegration</code>, <code>ListUpstreamNamespaces</code> and <code>ListUpstreamObjects</code> require it too --
+and is expected to split into a narrower vend permission later.</p>
 <table>
 <thead>
 <tr>
@@ -1734,7 +1740,7 @@
 <tr>
 <td><code>default</code></td>
 <td>Baseline read-only tenant access. Used when no roles are provided in normal (<code>oidc</code>) mode.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>namespace.read</code>, <code>table.read</code>, <code>view.read</code>, <code>catalog-integration.read</code>, <code>catalog-overlay.read</code></td>
+<td><code>account.read</code>, <code>catalog.read</code>, <code>namespace.read</code>, <code>table.read</code>, <code>view.read</code>, <code>catalog-integration.read</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code></td>
 </tr>
 <tr>
 <td><code>administrator</code></td>
