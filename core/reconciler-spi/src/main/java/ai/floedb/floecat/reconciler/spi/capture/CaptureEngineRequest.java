@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.spi.capture;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -44,7 +45,49 @@ public record CaptureEngineRequest(
     Optional<String> authorizationToken,
     Optional<String> executionJobId,
     Optional<String> executionLeaseEpoch,
-    BooleanSupplier shouldStop) {
+    BooleanSupplier shouldStop,
+    ColumnIdentityMap columnIdentityMap) {
+  public CaptureEngineRequest(
+      Connector sourceConnector,
+      String sourceNamespace,
+      String sourceTable,
+      ResourceId tableId,
+      long snapshotId,
+      String planId,
+      String groupId,
+      List<String> plannedFilePaths,
+      Set<String> statsColumns,
+      Set<String> indexColumns,
+      FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
+      Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
+      boolean capturePageIndex,
+      Optional<String> storageLocation,
+      Optional<String> authorizationToken,
+      Optional<String> executionJobId,
+      Optional<String> executionLeaseEpoch,
+      BooleanSupplier shouldStop) {
+    this(
+        sourceConnector,
+        sourceNamespace,
+        sourceTable,
+        tableId,
+        snapshotId,
+        planId,
+        groupId,
+        plannedFilePaths,
+        statsColumns,
+        indexColumns,
+        columnSelectorPolicy,
+        requestedStatsTargetKinds,
+        capturePageIndex,
+        storageLocation,
+        authorizationToken,
+        executionJobId,
+        executionLeaseEpoch,
+        shouldStop,
+        ColumnIdentityMap.getDefaultInstance());
+  }
+
   public CaptureEngineRequest {
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceTable = sourceTable == null ? "" : sourceTable.trim();
@@ -84,6 +127,8 @@ public record CaptureEngineRequest(
             ? Optional.empty()
             : executionLeaseEpoch.map(String::trim).filter(leaseEpoch -> !leaseEpoch.isBlank());
     shouldStop = shouldStop == null ? () -> false : shouldStop;
+    columnIdentityMap =
+        columnIdentityMap == null ? ColumnIdentityMap.getDefaultInstance() : columnIdentityMap;
   }
 
   private static Set<String> normalizeSelectors(Set<String> selectors) {

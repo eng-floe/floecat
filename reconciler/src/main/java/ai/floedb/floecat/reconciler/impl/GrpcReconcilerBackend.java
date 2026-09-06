@@ -686,7 +686,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                 includeTargetKinds == null ? Set.of() : Set.copyOf(includeTargetKinds),
                 columnSelectorPolicy == null
                     ? FloecatConnector.ColumnSelectorPolicy.defaults()
-                    : columnSelectorPolicy));
+                    : columnSelectorPolicy,
+                fetchSnapshot(ctx, tableId, snapshotId)
+                    .map(Snapshot::getColumnIdentityMap)
+                    .orElse(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance())));
   }
 
   private boolean hasAnyCapturedStats(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
@@ -1488,6 +1491,11 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (snapshot.hasMetadataLocation() && !snapshot.getMetadataLocation().isBlank()) {
       builder.setMetadataLocation(snapshot.getMetadataLocation());
     }
+    if (snapshot.hasColumnIdentityMap()) {
+      builder
+          .setColumnIdentityMap(snapshot.getColumnIdentityMap())
+          .setColumnIdentityFingerprint(snapshot.getColumnIdentityFingerprint());
+    }
     return builder.build();
   }
 
@@ -1516,6 +1524,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     }
     if (spec.hasMetadataLocation()) {
       mask.addPaths("metadata_location");
+    }
+    if (spec.hasColumnIdentityMap()) {
+      mask.addPaths("column_identity_map").addPaths("column_identity_fingerprint");
     }
     return mask.build();
   }
