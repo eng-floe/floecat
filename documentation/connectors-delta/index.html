@@ -1133,6 +1133,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#compose-credential-vending-smoke" class="md-nav__link">
+    <span class="md-ellipsis">
+      Compose credential-vending smoke
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cross-references" class="md-nav__link">
     <span class="md-ellipsis">
       Cross-References
@@ -1794,6 +1803,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#compose-credential-vending-smoke" class="md-nav__link">
+    <span class="md-ellipsis">
+      Compose credential-vending smoke
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cross-references" class="md-nav__link">
     <span class="md-ellipsis">
       Cross-References
@@ -2098,6 +2116,17 @@ guide listed below.</p>
   connector lists every table in the namespace, creates missing namespaces in the destination
   catalog, updates <code>DestinationTarget</code> pointers, and ingests snapshot stats for each table.</li>
 </ul>
+<h2 id="compose-credential-vending-smoke">Compose credential-vending smoke<a class="headerlink" href="#compose-credential-vending-smoke" title="Permanent link">&para;</a></h2>
+<p><code>COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke</code> runs an OSS Unity Catalog 0.6.0 server
+against LocalStack STS and a Delta fixture in <code>floecat-delta-vended</code>. The fixture bucket is
+intentionally excluded from the storage-authority setup, so metadata capture and the leased query
+scan can succeed only with the temporary AWS session credentials returned by Unity Catalog. The
+smoke first validates the credential response shape without logging its secret fields, then imports
+the table with <code>databricks.access-delegation=vended-credentials</code> and checks stats, indexes, and the
+remote scan-file path.</p>
+<p>OSS Unity Catalog exposes temporary table credentials under its 2.1 API, whereas Databricks uses
+the 2.0 route consumed by <code>HttpUnityCatalogClient</code>. The compose-only TLS proxy translates that one
+route; production code remains aligned with the Databricks API.</p>
 <h2 id="cross-references">Cross-References<a class="headerlink" href="#cross-references" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../cli-reference/"><code>docs/cli-reference.md</code></a></li>
