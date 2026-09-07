@@ -797,6 +797,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#unity-catalog-slice" class="md-nav__link">
+    <span class="md-ellipsis">
+      Unity Catalog slice
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#iceberg-rest-slice" class="md-nav__link">
     <span class="md-ellipsis">
       Iceberg REST slice
@@ -1710,6 +1719,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#unity-catalog-slice" class="md-nav__link">
+    <span class="md-ellipsis">
+      Unity Catalog slice
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#iceberg-rest-slice" class="md-nav__link">
     <span class="md-ellipsis">
       Iceberg REST slice
@@ -1770,7 +1788,7 @@
 <p>The catalog-access SPI is the Connector-independent boundary for communicating with upstream
 catalogs. Catalog Integrations will use this boundary for connection validation, discovery, and
 provider metadata access without creating or reading legacy Connector resources.</p>
-<p>The SPI and its first provider are separate Maven modules:</p>
+<p>The SPI and its providers are separate Maven modules:</p>
 <table>
 <thead>
 <tr>
@@ -1786,6 +1804,10 @@ provider metadata access without creating or reading legacy Connector resources.
 <tr>
 <td><code>catalog-access/iceberg-rest</code></td>
 <td>Iceberg REST client provider and ServiceLoader registration.</td>
+</tr>
+<tr>
+<td><code>catalog-access/unity</code></td>
+<td>Unity Catalog client provider, OAuth token refresh, Delta metadata mapping, credential vending, storage validation, and ServiceLoader registration.</td>
 </tr>
 </tbody>
 </table>
@@ -1812,6 +1834,32 @@ redacts property and header values.</p>
 </code></pre></div>
 <p>Provider lookup is by <code>CatalogProtocol</code>, which describes the catalog protocol/provider rather than
 the table format. Missing and duplicate providers fail explicitly.</p>
+<h2 id="unity-catalog-slice">Unity Catalog slice<a class="headerlink" href="#unity-catalog-slice" title="Permanent link">&para;</a></h2>
+<p>The Unity Catalog provider adapts the transport-neutral client in
+<code>connectors/clients/unity-catalog</code> onto the catalog-access SPI. It supports:</p>
+<ul>
+<li>bearer tokens and OAuth client credentials, with catalog-token refresh kept separate from
+  storage credential vending;</li>
+<li>catalog/schema discovery mapped onto hierarchical namespace paths;</li>
+<li>Delta table and view discovery, metadata loading, and stable identity through Unity table IDs;</li>
+<li>table-scoped AWS credentials from Unity Catalog's temporary-table-credentials endpoint; and</li>
+<li>non-mutating validation of the vended credentials against the table's Delta log, without ambient
+  AWS credential fallback.</li>
+</ul>
+<p>The provider consumes Integration configuration directly and has no dependency on Connector
+resources or <code>FloecatConnector</code>. Unity-hosted non-Delta tables are not exposed by this provider;
+Iceberg catalogs use the Iceberg REST integration path.</p>
+<p>OAuth client credentials use <code>oauth2-server-uri</code> and optional <code>scope</code> authentication properties.
+When no token URI is configured, the provider resolves <code>/oidc/v1/token</code> against the catalog URI.
+Provider connection properties include <code>http.connect.ms</code>, <code>http.read.ms</code>,
+<code>unity.temporary-table-vend-path</code>, <code>s3.region</code>, <code>s3.endpoint</code>, and <code>s3.path-style-access</code>.</p>
+<p>Table schemas reported through this slice are the ones Unity holds, not the ones the Delta log
+holds. The Unity Delta <em>Connector</em> prefers the log for a table with a storage location and falls
+back to Unity's column list only when the log will not read, because for an externally written
+table Unity's columns can lag the log. This provider has no Delta reader, so an Overlay-materialized
+table can report an older schema than the Connector-imported copy of the same upstream table, and
+the Overlay is the stale side. Closing the gap means reading the log from <code>catalog-access/unity</code>;
+until then, treat overlay schemas as catalog-reported.</p>
 <h2 id="iceberg-rest-slice">Iceberg REST slice<a class="headerlink" href="#iceberg-rest-slice" title="Permanent link">&para;</a></h2>
 <p>The Iceberg REST provider currently supports:</p>
 <ul>
@@ -1894,7 +1942,8 @@ incomplete or unknown credential properties, and endpoint protocols fail instead
 to Connector behavior.</p>
 <h2 id="current-boundary">Current boundary<a class="headerlink" href="#current-boundary" title="Permanent link">&para;</a></h2>
 <p>The service resolves persisted Catalog Integration OAuth, bearer, and explicit static SigV4
-credentials onto this SPI. It exposes read-only RPCs for full connection validation, direct-child
+credentials onto this SPI. Iceberg REST and Unity Catalog have registered providers. The service
+exposes read-only RPCs for full connection validation, direct-child
 namespace listing, and lightweight table/view listing. Validation succeeds only after catalog
 connection, authentication, discovery, credential vending, and a non-mutating storage read all
 pass. Authentication, expiry, scope, and storage failures remain distinct in the public validation
