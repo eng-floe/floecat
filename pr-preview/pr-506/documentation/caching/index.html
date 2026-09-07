@@ -1,0 +1,2290 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reference and operational guides for Floecat">
+      
+      
+      
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/caching/">
+      
+      
+        <link rel="prev" href="../service/">
+      
+      
+        <link rel="next" href="../operations/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>Caching - Floecat Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#caching" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Floecat Documentation" class="md-header__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Floecat Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Caching
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Floecat Documentation" class="md-nav__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Floecat Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Documentation Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Contributing to Docs
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../style-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docs Style Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docker Local Stack
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Service Runtime
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Caching
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Caching
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Principles
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-cache-disciplines" class="md-nav__link">
+    <span class="md-ellipsis">
+      The cache disciplines
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-shared-cache-contract-corecache" class="md-nav__link">
+    <span class="md-ellipsis">
+      The shared cache contract (core/cache)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-cache-reports" class="md-nav__link">
+    <span class="md-ellipsis">
+      What a cache reports
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#turning-memory-caches-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      Turning memory caches off
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deliberately-live-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliberately live reads
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#staleness-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      Staleness bounds
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Operations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting-errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    APIs and Clients
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            APIs and Clients
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-access/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    API Access
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../client-cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Client CLI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    CLI Reference
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../iceberg-rest-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg REST Gateway
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../arrow-flight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Arrow Flight
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Catalog and Metadata
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Catalog and Metadata
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-integration-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integration Architecture and Delivery Plan
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-integrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integrations and Overlays
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-access-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Access SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metadata-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Metadata Graph
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Objects
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans-grpc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans gRPC
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconciler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Reconciler
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../transactions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Transactions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-common/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector Common
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-iceberg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-delta/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Delta Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extension-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Example Catalog Extension
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Types and Builtins
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Types and Builtins
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Types
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../builtin-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Builtin Catalog Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../proto/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Protobuf and RPC Contracts
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../statistics-engine-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Statistics Engine SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Storage and Security
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Storage and Security
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Layout
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-aws/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage AWS
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Memory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../secrets-manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Secrets Manager
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    External Authentication
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fixed-roles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Fixed Roles
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Observability
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Observability
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Logging Directory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/demo-grafana/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Grafana Demo
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Principles
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-cache-disciplines" class="md-nav__link">
+    <span class="md-ellipsis">
+      The cache disciplines
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-shared-cache-contract-corecache" class="md-nav__link">
+    <span class="md-ellipsis">
+      The shared cache contract (core/cache)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-cache-reports" class="md-nav__link">
+    <span class="md-ellipsis">
+      What a cache reports
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#turning-memory-caches-off" class="md-nav__link">
+    <span class="md-ellipsis">
+      Turning memory caches off
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deliberately-live-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliberately live reads
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#staleness-bounds" class="md-nav__link">
+    <span class="md-ellipsis">
+      Staleness bounds
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/eng-floe/floecat/edit/mr-account-authority-and-gc/docs/caching.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="caching">Caching<a class="headerlink" href="#caching" title="Permanent link">&para;</a></h1>
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>Floecat's read path separates mutable addressing, current decoded metadata, and serialized blob
+residency. Each has a different correctness contract, so they share metrics and budgeting
+vocabulary without being forced through one storage-shaped interface.</p>
+<h2 id="principles">Principles<a class="headerlink" href="#principles" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Cache identity carries freshness.</strong> Immutable bodies use their content URI. A mutable body uses
+  process incarnation, pointer key, pointer version, and URI, so rewriting a deterministic URI
+  cannot make old bytes reachable from the new pointer. Mutable entries deliberately start cold
+  after restart because delete/recreate may reuse pointer version one; immutable entries remain
+  reusable across restarts.</li>
+<li><strong>Serialized residency never proves existence.</strong> A resident body may outlive the durable blob (GC
+  can sweep a superseded blob while its cached copy remains). Any read whose emptiness is
+  load-bearing — a liveness or integrity probe — must hit the live store. The complete pointer
+  index is deliberately different: after its account load completes, a missing addressing key is
+  authoritative absence.</li>
+</ul>
+<h2 id="the-cache-disciplines">The cache disciplines<a class="headerlink" href="#the-cache-disciplines" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Discipline</th>
+<th>Implementation</th>
+<th>What it holds</th>
+<th>Freshness contract</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pointers</td>
+<td><code>PointerCache</code> behind <code>CachingPointerStore</code></td>
+<td>Twelve complete query families, including per-engine hint pointers, plus an admission-controlled remainder for every other pointer family</td>
+<td>No expiry. The first query-pointer read loads the account's five durable subtrees consistently; once complete, point misses, prefix listings and counts are authoritative and cost no store reads. Complete entries never evict. Writes <strong>publish</strong> rather than invalidate and are version-ordered; deletes remove. A failed load or exhausted budget marks the account degraded and falls back to the store. The unqualified <code>PointerStore</code> remains authoritative by default; query-serving repositories opt into <code>@CachedPointerStore</code> once at wiring.</td>
+</tr>
+<tr>
+<td>Current SQL objects</td>
+<td><code>ObjectCache</code></td>
+<td>Engine-neutral assembled relations and mapped schemas, current constraint bundles, and small snapshot facts</td>
+<td>Immutable identities need no invalidation. Stats writers publish facts under the generation identity committed to the table root; pinned generations remain isolated. Entries may evict because a miss is a safe reload. Account deletion evicts the account partition.</td>
+</tr>
+<tr>
+<td>Engine hints</td>
+<td><code>HintCache</code></td>
+<td>Opaque relation and column payloads for one user relation and exact <code>(engine kind, engine version)</code></td>
+<td>One content-addressed resource per engine version. The relation blob URI in the resource rejects hints for an older relation shape; the hint blob URI is the decoded-cache identity. Runtime writes merge through an authoritative CAS read and are fenced by the live relation pointer. Older property-backed hints remain a read fallback. System hints are already materialized in immutable <code>SystemNodeRegistry</code> snapshots and do not use this cache.</td>
+</tr>
+<tr>
+<td>Serialized blobs</td>
+<td><code>DiskBlobCache</code> behind <code>BlobCacheAccess</code></td>
+<td>CAS metadata, snapshot-manifest pages, stats generation manifests, target-stats records and reusable artifact bundles/index objects</td>
+<td>Local NVMe, no resident entry index and no TTL. URI-keyed for immutable bodies, including newly written target-stat records; target records with logical-only URIs remain process-and-pointer-version-keyed while they are readable. Checksummed atomic files, single-flight fills, scoped mmap reads, fenced account-partition eviction, and background budget sweeping. Immutable range reads use a resident whole body when available or admit only the requested range. Bulk listings consume hits but do not fill misses.</td>
+</tr>
+<tr>
+<td>Per-query state</td>
+<td><code>QueryContextStore</code> and per-query memos</td>
+<td><code>QueryContext</code> (pins, snapshot set, expansion map) keyed by query ID</td>
+<td>Scoped to one query lease; consistency comes from pinning, not freshness.</td>
+</tr>
+</tbody>
+</table>
+<p>The blob-cache budget is <strong>shared across tenants</strong> on the local volume. Entries are physically
+partitioned by account so account deletion can remove the whole partition while its durable
+deletion fence is held. A deleted account-id partition remains non-admitting for the rest of the
+process, so a writer that loses the deletion race cannot recreate local state afterward; account
+ids are immutable and are not reused. One-shot bulk reads do not admit misses, preventing an
+unfiltered stats scan from replacing the hot disk set. Derived graph nodes and decoded planner
+stats are no longer cached separately: assembled query metadata belongs to <code>ObjectCache</code>, and
+serialized stats belong to <code>DiskBlobCache</code>.</p>
+<p>Mapped reads avoid an intermediate full-body <code>byte[]</code> while hashing and parsing large bundles.
+The returned protobuf still owns decoded fields, including heap-backed <code>ByteString</code> sketch data,
+because the repository API outlives the scoped mapping. True zero-copy sketch forwarding requires
+a response-scoped ownership API that keeps <code>BlobCache.Content</code> open through gRPC serialization; it
+is not safe to alias mapped memory and close the arena at repository return. Compression likewise
+belongs to the <code>SketchPayload.data</code> format contract, not this cache envelope; this layer preserves
+those bytes unchanged.</p>
+<h2 id="the-shared-cache-contract-corecache">The shared cache contract (<code>core/cache</code>)<a class="headerlink" href="#the-shared-cache-contract-corecache" title="Permanent link">&para;</a></h2>
+<p>The future cache layers share this module's operational and telemetry vocabulary, but not one
+storage-shaped interface or one resource pool. <code>MemoryCache&lt;K, V&gt;</code> is the in-memory primitive used
+by object and hint caches and as storage inside the pointer-cache layer. The pointer layer belongs
+behind <code>PointerStore</code> and owns strict version publication, race fencing, complete name indexes and
+account readiness. Blob content gets a separate disk-oriented interface and volume budget, so
+callers never emulate scoped disk reads, mappings or sweeping through memory-cache operations.</p>
+<p>The module is container-free — Caffeine and protobuf, no CDI, no Quarkus. A cache is built with
+<code>new</code> and wired by whoever owns the container, which is what lets the service, its tests and any
+sizing harness use the same arithmetic.</p>
+<table>
+<thead>
+<tr>
+<th>Piece</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MemoryCache&lt;K, V&gt;</code></td>
+<td>Read-through <code>get</code>; batch <code>getAll</code>, which owns miss detection, loading and safe publication; uncounted <code>peek</code>; unconditional <code>put</code>; <code>evict</code> by key and <code>evictPartition</code> by caller-supplied membership; <code>bytes()</code>/<code>entryCount()</code> for the budget. A load racing a mutation cannot restore its stale value. Partition eviction is an infrequent O(n) scan of resident keys. No expiry: staleness is bounded by publication, not by a clock. Pointer version ordering deliberately is not part of this generic contract.</td>
+</tr>
+<tr>
+<td><code>CaffeineMemoryCache</code></td>
+<td>The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Cold loads are single-flight and may compose other keys from the same cache. Refuses a non-positive budget at construction.</td>
+</tr>
+<tr>
+<td><code>CacheWeights</code></td>
+<td>Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (<code>WeightedValue</code> first, then protobuf, text, <code>byte[]</code>, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte.</td>
+</tr>
+<tr>
+<td><code>BlobCache</code> / <code>DiskBlobCache</code></td>
+<td>Scoped serialized whole-body and range reads with fill or bypass-fill intent, unconditional publication, key/account eviction, mmap lifetime tracking, and sweeping. A range hit can slice a resident whole body; a miss admits only that exact range, avoiding a full-object fetch for a small block. Files are addressed directly from hashed identities, so restart does not require rebuilding a heap index. Disk failures fail open to the source store; corrupt entries are discarded and refilled.</td>
+</tr>
+<tr>
+<td><code>CacheFamily</code></td>
+<td>Stable telemetry identities: <code>POINTER</code>, <code>OBJECT</code>, <code>HINT</code>, and <code>BLOB</code>. Pointer, Object and Hint use the shared heap budget; Blob has an independent physical-volume budget.</td>
+</tr>
+<tr>
+<td><code>CacheBudget</code> / <code>CacheBudgetResolver</code></td>
+<td>One total split across the families. Pure arithmetic in <code>CacheBudget.split</code>; <code>CacheBudgetResolver</code> (<code>service/cache/</code>) reads the configuration and runs it at startup.</td>
+</tr>
+<tr>
+<td><code>CacheEvents</code></td>
+<td>The common event baseline: <code>hit</code> (with how long it took to serve, so a caller that waited on someone else's load is not an instant hit), <code>miss</code>, <code>loadTime</code>, <code>loadFailed</code>, <code>loadDiscarded</code>, <code>admissionRejected</code>, <code>writeThrough</code> and <code>evicted</code>. Write-through reports whether the cache applied the publication or skipped it through a safety guard. Bulk reads report hits and misses per distinct key and one duration per loader invocation. A disk cache can reuse these metrics and add mapping/sweep signals without implementing <code>MemoryCache</code>. The module reports events; the container names the metrics.</td>
+</tr>
+</tbody>
+</table>
+<p>Budgets resolve from the container rather than from a compiled-in figure. The JVM already sizes its
+heap from the container memory limit, so <code>floecat.cache.heap-share</code> (0.5) of the maximum heap
+follows the container without reading cgroups; <code>floecat.cache.total-bytes</code> pins the total instead
+and skips the derivation. Each family then claims <code>floecat.cache.&lt;tag&gt;.max-bytes</code> if set, otherwise
+<code>floecat.cache.&lt;tag&gt;.share</code>, resolved by tag over <code>CacheFamily.values()</code> — so a new cache is
+configured by adding its two properties and nothing else. A claim that resolves to zero bytes —
+including a share small enough to round away against a small total — fails at startup, as do
+claims that together exceed the total. A family whose configuration is <em>absent</em> is the allowed
+case and takes nothing; what refuses that is the cache built for it, which will not accept a
+budget of zero.</p>
+<p>Only implemented families appear in <code>CacheFamily</code>. <code>CacheBudgetResolver</code> assigns heap only to
+families with heap share/max-byte configuration; Blob is constructed from
+<code>floecat.cache.blob.disk.*</code> and therefore cannot accidentally consume the in-memory budget.</p>
+<p><code>floecat.cache.pointer.share</code> is 0.123, from the reference sizing scenario: a 100,000-table account
+at 100 columns and two engine versions needs about 0.42 GB of query pointers out of the 3.44 GB the
+memory caches hold between them (Pointers, Objects and Hints). This includes the 0.10 GB of hint
+pointers required to make an absent hint authoritative without a KV read. The share resolves
+against that total, not against the heap — the
+heap is one <code>heap-share</code> step above it. That is a starting point, not a law.
+Addressing is width-independent — it costs the same whatever the columns look like — so a
+proportional share over-allocates it on a wide catalog and starves it on a narrow one, where the
+same fixed need is a much larger fraction of a much smaller total. <code>max-bytes</code> is what pins it
+against that, and exceeding the budget costs store reads rather than wrong answers.</p>
+<p><code>floecat.cache.object.share</code> is 0.752. Objects holds one engine-neutral assembled <code>RelationInfo</code>
+and its mapped <code>SchemaDescriptor</code> per immutable relation identity, mapped schemas by their real
+mapping inputs, decoded constraint bundles by immutable content URI, and the two small snapshot
+facts used by relation assembly. A table relation key hashes the definition and schema identities
+before any ingredient is loaded, so a warm relation skips pinned-schema resolution and
+mapping entirely. Pinned schema reads use those same immutable pin identities, so planner schema
+RPCs also avoid resolving their table and snapshot ingredients on a hit. Names, projection, stats
+attachment, pin identity, and engine decoration are
+applied after lookup, so a single cached relation survives renames, data-only ingests, and requests
+from different engines. Constraints use their own content-keyed entry because they are served by a
+separate RPC and are not part of <code>RelationInfo</code>; changing them does not invalidate the relation.
+Mapped schema and assembled relation entries use the measured mapped-proto
+retained-heap multiplier; relation entries conservatively charge their schema reference again so
+eviction order cannot make retained memory invisible to the budget.</p>
+<p>Absent constraints and stats are not cached. Current snapshot facts distinguish the mutable live
+view from immutable pinned stats generations, preserving stable-plan semantics when generations
+overlap for the same snapshot. Historical and time-travel facts read through without admission, so
+they cannot displace current SQL metadata. Writers publish facts only under the exact generation
+identity successfully committed to the table root and evict the mutable live entry when that
+identity or the table record is unavailable. That avoids guessing which generation won a concurrent
+publication race. Immutable relation, schema, constraint, and current-generation fact entries need
+no mutation invalidation. Account deletion drops the account partition while the deletion fence is
+held.</p>
+<p><code>floecat.cache.hint.share</code> is 0.125. Hints uses the same <code>MemoryCache</code> implementation and metric
+contract as Objects, but a separate budget because its entries change with engine versions rather
+than relation or ingest identities. <code>MetaGraph</code> attaches only the requested engine's hints to user
+relations; callers never select storage or cache behavior. A warm lookup still resolves the hint
+pointer through Pointers, then finds the decoded body by immutable URI, so it performs no KV or S3
+read. The runtime persistence adapter compares submitted payloads with that decoded entry before
+entering the authoritative mutation path, so reusing a complete warm hint does not re-read or
+rewrite it. Table/view deletion removes every engine-version pointer, and account deletion fences
+and evicts the full partition.</p>
+<p>The pointer, object, and hint caches are the specialized layers built on the shared in-memory
+contract. The pointer cache's independent durable subtrees load through a bounded metadata
+fan-out; <code>floecat.cache.pointer.load-parallelism=0</code> derives the bound from the processors available
+to the JVM, while a positive value pins it. A failed or capacity-rejected index remains store-backed
+until the first read after <code>floecat.cache.pointer.degraded-retry-seconds</code>, when one caller retries
+the complete load and concurrent callers continue through the store. Complete-index events,
+including eager-load duration, carry the logical account tag through the same <code>CacheEvents</code>
+contract.</p>
+<p>Cache selection stops at the repository boundary. Service and graph callers ask repositories for
+objects or lightweight refs; they never inject a cached, authoritative, or raw pointer-store view.
+Repositories use the cached view for query reads, while mutation and GC repositories retain the
+authoritative default. <code>ConsistentReadRulesTest</code> enforces both that boundary and the absence of
+per-call consistency selection.</p>
+<h2 id="what-a-cache-reports">What a cache reports<a class="headerlink" href="#what-a-cache-reports" title="Permanent link">&para;</a></h2>
+<p>A cache built on the <code>core/cache</code> contract publishes the same baseline series, tagged by family,
+so the layers are comparable. Disk adds only lifecycle signals that do not apply to heap caches.</p>
+<table>
+<thead>
+<tr>
+<th>question</th>
+<th>series</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Is it on?</td>
+<td><code>floecat_core_cache_enabled</code></td>
+</tr>
+<tr>
+<td>Is it being used, and is it working?</td>
+<td><code>floecat_core_cache_hits</code> / <code>..._misses</code></td>
+</tr>
+<tr>
+<td>What does a miss cost?</td>
+<td><code>floecat_core_cache_latency</code>, recorded per load</td>
+</tr>
+<tr>
+<td>Are loads failing?</td>
+<td><code>floecat_core_cache_errors</code></td>
+</tr>
+<tr>
+<td>How full is it?</td>
+<td><code>floecat_core_cache_weighted_size_bytes</code> against <code>..._max_weight_bytes</code></td>
+</tr>
+<tr>
+<td>How many entries?</td>
+<td><code>floecat_core_cache_entries</code></td>
+</tr>
+<tr>
+<td>Is the budget too small?</td>
+<td><code>floecat_core_cache_evictions</code> and <code>..._evicted_weight_bytes</code></td>
+</tr>
+<tr>
+<td>Has it stopped warming?</td>
+<td><code>floecat_core_cache_loads_discarded</code> — a load whose value was not retained because a write may have raced it</td>
+</tr>
+<tr>
+<td>Is the budget rejecting valid entries?</td>
+<td><code>floecat_core_cache_admission_rejected</code></td>
+</tr>
+<tr>
+<td>Are write-through publications being applied or safety-guarded?</td>
+<td><code>floecat_core_cache_write_through{result="applied\|skipped"}</code></td>
+</tr>
+<tr>
+<td>Are pointer indexes ready?</td>
+<td><code>floecat_core_cache_accounts</code>, tagged <code>result=loading|complete|degraded</code></td>
+</tr>
+<tr>
+<td>Is local disk content corrupt?</td>
+<td><code>floecat_core_cache_corruptions</code></td>
+</tr>
+<tr>
+<td>Is the sweeper reclaiming space?</td>
+<td><code>floecat_core_cache_sweep_reclaimed_bytes</code></td>
+</tr>
+<tr>
+<td>Are mapped files preventing reclamation?</td>
+<td><code>floecat_core_cache_live_mappings</code></td>
+</tr>
+</tbody>
+</table>
+<p>Hits and misses are counted as they happen rather than derived from a running total, because a rate
+computed from a cumulative gauge cannot tell an idle cache from one that is missing everything.
+An account retrying a degraded index moves through <code>degraded</code> to <code>loading</code> and then <code>complete</code> in
+the readiness counts; another failure returns it to <code>degraded</code>.</p>
+<p>Nothing expires in the pointer cache. The eviction series count only capacity-driven removals;
+explicit deletes, prefix sweeps, and authoritative-read repairs are not included. A non-zero
+eviction rate therefore directly signals size pressure. The weight alongside the count
+distinguishes many small evictions from a few large ones.</p>
+<h2 id="turning-memory-caches-off">Turning memory caches off<a class="headerlink" href="#turning-memory-caches-off" title="Permanent link">&para;</a></h2>
+<p><code>floecat.cache.pointer.enabled=false</code> installs the raw pointer store instead of the caching
+decorator, so the read path becomes the pre-cache one. Off means the decorator is not there, not
+that a cache is there holding nothing.</p>
+<p><code>floecat.cache.object.enabled=false</code> keeps the same object-facing APIs but loads every relation,
+schema, constraint bundle, and snapshot-facts value directly. Callers do not select cached versus
+uncached reads themselves.</p>
+<p><code>floecat.cache.hint.enabled=false</code> keeps the same graph-facing API and loads the current hint body
+directly. It does not revert storage to relation properties; that map is compatibility input for
+data written by older releases only.</p>
+<p><code>floecat.cache.blob.disk.enabled=false</code> preserves the same repository API and reads serialized
+bodies directly from object storage. The disk path is not opened when disabled.</p>
+<p>A query-serving deployment should enable the disk tier after mounting capacity-managed local
+storage at <code>floecat.cache.blob.disk.path</code>. It remains opt-in at the application level because this
+repository does not own the production volume mount, and creating <code>/mnt/nvme/floecat</code> alone cannot
+prove that it is backed by NVMe rather than the container root filesystem. The local Compose
+service enables a bounded 1 GiB ephemeral cache under <code>/tmp</code>; that exercises the production path
+but is not a performance substitute for NVMe. Reconciler executors remain source-backed.</p>
+<p>A budget of zero is <em>not</em> the switch — it is refused at startup, because a cache sized zero reports
+a 0% hit rate that reads as a cache which is not helping rather than one that was turned off.</p>
+<p>There is also no flag that stops publishing while leaving the cache populated, and there should not
+be: publishing is what keeps a pointer current — nothing expires — so a populated cache that is not
+published to serves whatever it last loaded, indefinitely.</p>
+<h2 id="deliberately-live-reads">Deliberately live reads<a class="headerlink" href="#deliberately-live-reads" title="Permanent link">&para;</a></h2>
+<p>These reads bypass every cache because their result is a detector, not content:</p>
+<table>
+<thead>
+<tr>
+<th>Read</th>
+<th>Site</th>
+<th>Why it must be live</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Resolving-pin root guard, currency and manifest proof</td>
+<td><code>QueryContextStoreImpl.requirePinnedRootLive</code></td>
+<td>Asks whether a pinned root is still <em>present</em> before it is registered as a GC root — the bytes are immutable, but their presence is exactly what a sweep changes, so a cache hit cannot answer the question. The same read then follows a <em>mutable</em> pointer to decide whether the root is current, and proves the manifest head or chain is still live.</td>
+</tr>
+<tr>
+<td>Frozen stats-manifest read</td>
+<td><code>StatsRepository.listTargetStatsInGeneration</code> (per scan page)</td>
+<td>This read <em>is</em> the scan's retention guard. A cached generation ID would let a scan page "successfully" over a reclaimed generation — empty pages, silently truncated results — exactly when the guard must fire.</td>
+</tr>
+<tr>
+<td>Published-generation and manifest-page checks</td>
+<td><code>StatsRepository.requirePublishedGenerationLive</code>, <code>TableRootRepository.getManifestPageLive</code></td>
+<td>Same shape: emptiness is the retention verdict.</td>
+</tr>
+<tr>
+<td>Dangling-pointer verdict</td>
+<td><code>NodeLoader.reload</code></td>
+<td>Emptiness is the verdict itself: a resident decode would report a healthy node over a pointer whose blob is gone.</td>
+</tr>
+<tr>
+<td>Reusable-candidate load</td>
+<td><code>SnapshotRepository.loadReusableCandidate</code></td>
+<td>Emptiness raises a retryable storage abort: the candidate is expected to be there, so a resident decode of a swept blob would let the reuse path proceed on a candidate the store no longer holds.</td>
+</tr>
+<tr>
+<td>Commit funnel, pointer and blob</td>
+<td><code>TableRootCommitter</code></td>
+<td>The CAS needs an expected version no cached pointer can supply, and the base blob's emptiness is the corruption detector.</td>
+</tr>
+<tr>
+<td>Every pointer read in the GC</td>
+<td><code>PointerGc</code>, <code>CasBlobGc</code>, <code>ReconcileJobGc</code>, <code>TransactionGc</code></td>
+<td>The GC deletes based on what it reads. A stale canonical pointer makes a live name pointer look orphaned and CAS-deletes it; a stale root pointer puts a superseded blob in the mark set and omits the current one, which is then swept. <code>ConsistentReadRulesTest</code> holds the line.</td>
+</tr>
+</tbody>
+</table>
+<p>Pinned <strong>blob</strong> reads are not among them. The blob a pin names is immutable and content-addressed,
+so a resident decode of it <em>is</em> the pinned content rather than a stale view — the pinned table,
+snapshot, schema, node and constraint loads all read through the cache. For the table, snapshot,
+schema and node legs a genuinely missing pinned blob still fails as catalog-integrity corruption
+through <code>requirePinned*</code>, and still enqueues the table for the resync re-drive. The constraints leg
+does neither: it logs a broken-retention warning and degrades that relation to an <code>ERROR</code>
+resolution, with no repair report — and on a cache hit over a swept blob it does not fire at all.</p>
+<p>Nor is a pinned read preceded by a probe of its root. A pin whose blobs still read is coherent
+whatever has happened to the live pointer meanwhile, and a probe could only report what the read
+that needs the blob reports anyway.</p>
+<p>The repository API encodes the split: <code>getByBlobUri</code> serves cached content — a present result does
+<strong>not</strong> prove the blob still exists — while <code>getByBlobUriLive</code> bypasses the cache for reads whose
+emptiness is load-bearing.</p>
+<h2 id="staleness-bounds">Staleness bounds<a class="headerlink" href="#staleness-bounds" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Observation</th>
+<th>Bound</th>
+<th>Governed by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cross-instance DDL visibility (which blob a definition pointer names)</td>
+<td><strong>unbounded by time</strong></td>
+<td>Nothing expires. A publish refreshes the replica that made the write; another replica holding the same key keeps its value until it writes that key or reads it authoritatively. Reads that cannot tolerate this do not take it: the commit funnel, the pin guards and the whole GC receive the unqualified authoritative store view, which repairs the cached entry on the way back.</td>
+</tr>
+<tr>
+<td>Table currency (which root is current)</td>
+<td>none within the replica that committed; cross-instance as above</td>
+<td><code>CachingPointerStore</code> publishing under the store, version-guarded</td>
+</tr>
+<tr>
+<td>Catalog/namespace listings</td>
+<td>none within the owning replica; degraded accounts read through</td>
+<td>Complete pointer indexes maintained by <code>CachingPointerStore</code></td>
+</tr>
+<tr>
+<td>Pinned data read within a query</td>
+<td>None by construction</td>
+<td>Immutable blobs plus live integrity reads</td>
+</tr>
+</tbody>
+</table>
+<p>Cache budgets derive from the container: <code>floecat.cache.total-bytes</code> defaults to a share of the
+maximum heap, which the JVM already sizes from the container memory limit, and each cache takes a
+share of that. The shared knobs are <code>floecat.cache.total-bytes</code> and
+<code>floecat.cache.heap-share</code>. Each family accepts <code>floecat.cache.&lt;tag&gt;.share</code>,
+<code>floecat.cache.&lt;tag&gt;.max-bytes</code>, and <code>floecat.cache.&lt;tag&gt;.enabled</code>; the max pins an absolute size
+instead of a share. Pointer-specific knobs are
+<code>floecat.cache.pointer.load-parallelism</code> and
+<code>floecat.cache.pointer.degraded-retry-seconds</code>; a share outside <code>(0, 1]</code> fails at startup.
+<code>heap-share</code>, <code>pointer.share</code>, and <code>object.share</code> carry defaults in
+<code>service/src/main/resources/application.properties</code>. The independent disk knobs are
+<code>floecat.cache.blob.disk.enabled</code>, <code>.path</code>, <code>.max-bytes</code>, <code>.mmap-threshold-bytes</code>,
+<code>.access-touch-interval-seconds</code>, and <code>.sweep-interval</code>; <code>total-bytes</code> and the per-heap-family
+<code>max-bytes</code> properties are unset.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tracking", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+        <script src="../assets/javascripts/docs-navigation.js"></script>
+      
+    
+  </body>
+</html>
