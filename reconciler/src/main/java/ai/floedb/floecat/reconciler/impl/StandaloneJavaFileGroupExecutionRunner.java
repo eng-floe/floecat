@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.reconciler.auth.ReconcileWorkerAuthProvider;
@@ -157,7 +158,8 @@ public class StandaloneJavaFileGroupExecutionRunner {
                     authorizationHeader,
                     java.util.Optional.of(payload.jobId()),
                     java.util.Optional.of(payload.leaseEpoch()),
-                    stop),
+                    stop,
+                    ColumnIdentityMap.getDefaultInstance()),
                 (fileStats, pageIndexEntries) -> {
                   List<TargetStatsRecord> completedFileStats =
                       fileStats == null ? List.of() : fileStats;

@@ -507,7 +507,8 @@ abstract class AbstractReconcilerServiceTestBase {
         Set<String> indexColumns,
         Set<StatsTargetKind> includeTargetKinds,
         boolean captureIndexes,
-        ColumnSelectorPolicy columnSelectorPolicy) {
+        ColumnSelectorPolicy columnSelectorPolicy,
+        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap columnIdentityMap) {
       return FileGroupCaptureResult.empty();
     }
 

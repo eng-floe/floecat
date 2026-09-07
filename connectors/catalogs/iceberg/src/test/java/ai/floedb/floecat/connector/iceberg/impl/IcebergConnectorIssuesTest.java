@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -165,7 +166,8 @@ class IcebergConnectorIssuesTest {
                 123L,
                 Set.of("#1"),
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
-                List.of(oldFileEntry, newFileEntry))
+                List.of(oldFileEntry, newFileEntry),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
 
     assertEquals(
@@ -182,7 +184,8 @@ class IcebergConnectorIssuesTest {
                 Set.of(),
                 new FloecatConnector.ColumnSelectorPolicy(
                     FloecatConnector.DefaultColumnScope.FIRST_N, 1),
-                List.of(oldFileEntry, newFileEntry))
+                List.of(oldFileEntry, newFileEntry),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
     assertEquals(2, selectedByDefault.size());
     assertTrue(
@@ -201,7 +204,8 @@ class IcebergConnectorIssuesTest {
                 123L,
                 Set.of("#2"),
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
-                List.of(oldFileEntry, newFileEntry))
+                List.of(oldFileEntry, newFileEntry),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
     assertEquals(2, selectedAddedColumn.size());
     assertTrue(
@@ -223,7 +227,8 @@ class IcebergConnectorIssuesTest {
                 Set.of("s3://bucket/unsupported.parquet"),
                 List.of(),
                 List.of(
-                    new FloecatConnector.ParquetRowGroup("s3://bucket/unsupported.parquet", 0, 19)))
+                    new FloecatConnector.ParquetRowGroup("s3://bucket/unsupported.parquet", 0, 19)),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
     assertEquals(1, noDecodedColumns.size());
     assertEquals(19, noDecodedColumns.getFirst().rowCount());
@@ -239,7 +244,8 @@ class IcebergConnectorIssuesTest {
                     123L,
                     Set.of("#3"),
                     FloecatConnector.ColumnSelectorPolicy.defaults(),
-                    List.of(oldFileEntry)));
+                    List.of(oldFileEntry),
+                    ColumnIdentityMap.getDefaultInstance()));
     assertTrue(initialDefaultError.getMessage().contains("non-null initial default"));
   }
 
@@ -583,7 +589,8 @@ class IcebergConnectorIssuesTest {
                   FloecatConnector.StatsTargetKind.COLUMN,
                   FloecatConnector.StatsTargetKind.FILE),
               false,
-              FloecatConnector.ColumnSelectorPolicy.defaults());
+              FloecatConnector.ColumnSelectorPolicy.defaults(),
+              ColumnIdentityMap.getDefaultInstance());
 
       assertTrue(
           captured.statsRecords().stream()

@@ -88,7 +88,11 @@ public final class ConnectorStatsViewBuilder {
       // Populate ref as fully as we can.
       var ref =
           new FloecatConnector.ColumnRef(
-              name == null ? "" : name, physicalPath == null ? "" : physicalPath, ordinal, fieldId);
+              name == null ? "" : name,
+              physicalPath == null ? "" : physicalPath,
+              ordinal,
+              fieldId,
+              0L);
 
       String logicalTypeStr = (lt == null) ? "" : LogicalTypeProtoAdapter.encodeLogicalType(lt);
 

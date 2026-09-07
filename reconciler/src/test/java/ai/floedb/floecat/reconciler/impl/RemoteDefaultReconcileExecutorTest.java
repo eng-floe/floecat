@@ -25,6 +25,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -57,7 +58,8 @@ class RemoteDefaultReconcileExecutorTest {
             "s3://bucket/manifests/snapshot-42.avro",
             Map.of("operation", "append"),
             3,
-            "s3://bucket/metadata/v7.metadata.json");
+            "s3://bucket/metadata/v7.metadata.json",
+            ColumnIdentityMap.getDefaultInstance());
     var historical =
         new FloecatConnector.SnapshotBundle(
             42L,
@@ -69,7 +71,8 @@ class RemoteDefaultReconcileExecutorTest {
             "s3://bucket/manifests/reported-differently.avro",
             Map.of("operation", "overwrite"),
             4,
-            null);
+            null,
+            ColumnIdentityMap.getDefaultInstance());
 
     assertEquals("42", RemoteDefaultReconcileExecutor.sourceRevision(current, 42L));
     assertEquals(
@@ -91,7 +94,8 @@ class RemoteDefaultReconcileExecutorTest {
             "s3://bucket/manifests/snapshot-42.avro",
             Map.of("operation", "append"),
             3,
-            "s3://bucket/metadata/v7.metadata.json");
+            "s3://bucket/metadata/v7.metadata.json",
+            ColumnIdentityMap.getDefaultInstance());
     var historical =
         new FloecatConnector.SnapshotBundle(
             42L,
@@ -103,7 +107,8 @@ class RemoteDefaultReconcileExecutorTest {
             "s3://bucket/manifests/snapshot-42.avro",
             Map.of("operation", "append"),
             3,
-            null);
+            null,
+            ColumnIdentityMap.getDefaultInstance());
 
     assertEquals(
         RemoteDefaultReconcileExecutor.metadataFingerprint(current, 42L),

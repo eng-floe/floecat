@@ -278,49 +278,13 @@ public interface FloecatConnector extends Closeable {
       ResourceId destinationTableId,
       long snapshotId,
       Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds) {
-    return captureSnapshotTargetStatsDirect(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        snapshotId,
-        includeColumns,
-        includeTargetKinds,
-        ColumnSelectorPolicy.defaults());
-  }
-
-  default Optional<DirectSnapshotStatsCapture> captureSnapshotTargetStatsDirect(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> includeColumns,
-      Set<StatsTargetKind> includeTargetKinds,
-      ColumnSelectorPolicy columnSelectorPolicy) {
-    return Optional.empty();
-  }
-
-  /** Captures direct stats using the snapshot's authoritative column identity map. */
-  default Optional<DirectSnapshotStatsCapture> captureSnapshotTargetStatsDirect(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds,
       ColumnSelectorPolicy columnSelectorPolicy,
       ColumnIdentityMap columnIdentityMap) {
-    return captureSnapshotTargetStatsDirect(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        snapshotId,
-        includeColumns,
-        includeTargetKinds,
-        columnSelectorPolicy);
+    return Optional.empty();
   }
 
-  /** Captures requested outputs for one planned file-group within a snapshot. */
+  /** Captures a planned group using the snapshot's authoritative column identity map. */
   FileGroupCaptureResult capturePlannedFileGroup(
       String namespaceFq,
       String tableName,
@@ -331,33 +295,8 @@ public interface FloecatConnector extends Closeable {
       Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy);
-
-  /** Captures a planned group using the snapshot's authoritative column identity map. */
-  default FileGroupCaptureResult capturePlannedFileGroup(
-      String namespaceFq,
-      String tableName,
-      ResourceId destinationTableId,
-      long snapshotId,
-      Set<String> plannedFilePaths,
-      Set<String> includeColumns,
-      Set<String> indexColumns,
-      Set<StatsTargetKind> includeTargetKinds,
-      boolean captureIndexes,
       ColumnSelectorPolicy columnSelectorPolicy,
-      ColumnIdentityMap columnIdentityMap) {
-    return capturePlannedFileGroup(
-        namespaceFq,
-        tableName,
-        destinationTableId,
-        snapshotId,
-        plannedFilePaths,
-        includeColumns,
-        indexColumns,
-        includeTargetKinds,
-        captureIndexes,
-        columnSelectorPolicy);
-  }
+      ColumnIdentityMap columnIdentityMap);
 
   /**
    * Applies connector-specific selector semantics to decoded Parquet page-index entries.
@@ -366,27 +305,6 @@ public interface FloecatConnector extends Closeable {
    * return a present value for explicit selectors whose stable IDs or logical names need
    * format-specific resolution.
    */
-  default Optional<List<ParquetPageIndexEntry>> selectPageIndexEntries(
-      String namespaceFq,
-      String tableName,
-      long snapshotId,
-      Set<String> selectors,
-      ColumnSelectorPolicy columnSelectorPolicy,
-      List<ParquetPageIndexEntry> entries) {
-    Set<String> plannedFilePaths = pageIndexPlannedFilePaths(entries);
-    List<ParquetRowGroup> rowGroups = pageIndexRowGroups(entries);
-    return selectPageIndexEntries(
-        namespaceFq,
-        tableName,
-        snapshotId,
-        selectors,
-        columnSelectorPolicy,
-        plannedFilePaths,
-        entries,
-        rowGroups);
-  }
-
-  /** Applies connector-specific selector semantics using the authoritative column identity map. */
   default Optional<List<ParquetPageIndexEntry>> selectPageIndexEntries(
       String namespaceFq,
       String tableName,
@@ -444,25 +362,9 @@ public interface FloecatConnector extends Closeable {
   }
 
   /**
-   * Applies connector-specific selector semantics with complete planned-file and row-group
-   * metadata, including files for which no decodable page-index entry was produced.
-   */
-  default Optional<List<ParquetPageIndexEntry>> selectPageIndexEntries(
-      String namespaceFq,
-      String tableName,
-      long snapshotId,
-      Set<String> selectors,
-      ColumnSelectorPolicy columnSelectorPolicy,
-      Set<String> plannedFilePaths,
-      List<ParquetPageIndexEntry> entries,
-      List<ParquetRowGroup> rowGroups) {
-    return Optional.empty();
-  }
-
-  /**
    * Applies connector-specific selector semantics using the authoritative column identity map.
    *
-   * <p>Connectors without canonical identity requirements retain the legacy selection behavior.
+   * <p>Connectors without canonical identity requirements may ignore the identity map.
    */
   default Optional<List<ParquetPageIndexEntry>> selectPageIndexEntries(
       String namespaceFq,
@@ -474,15 +376,7 @@ public interface FloecatConnector extends Closeable {
       List<ParquetPageIndexEntry> entries,
       List<ParquetRowGroup> rowGroups,
       ColumnIdentityMap columnIdentityMap) {
-    return selectPageIndexEntries(
-        namespaceFq,
-        tableName,
-        snapshotId,
-        selectors,
-        columnSelectorPolicy,
-        plannedFilePaths,
-        entries,
-        rowGroups);
+    return Optional.empty();
   }
 
   record FileGroupCaptureResult(
@@ -661,75 +555,118 @@ public interface FloecatConnector extends Closeable {
               : previousColumnIdentityMap;
     }
 
-    public SnapshotEnumerationOptions(
-        boolean fullRescan,
-        Set<Long> knownSnapshotIds,
-        Set<Long> targetSnapshotIds,
-        SnapshotSelectionKind selectionKind,
-        Set<Long> selectionSnapshotIds,
-        int latestN) {
-      this(
-          fullRescan,
-          knownSnapshotIds,
-          targetSnapshotIds,
-          selectionKind,
-          selectionSnapshotIds,
-          latestN,
-          ColumnIdentityMap.getDefaultInstance());
-    }
-
     public static SnapshotEnumerationOptions full(boolean fullRescan) {
       return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0);
+          fullRescan,
+          Set.of(),
+          Set.of(),
+          SnapshotSelectionKind.ALL,
+          Set.of(),
+          0,
+          ColumnIdentityMap.getDefaultInstance());
     }
 
     public static SnapshotEnumerationOptions full(boolean fullRescan, Set<Long> targetSnapshotIds) {
       return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), targetSnapshotIds, SnapshotSelectionKind.ALL, Set.of(), 0);
+          fullRescan,
+          Set.of(),
+          targetSnapshotIds,
+          SnapshotSelectionKind.ALL,
+          Set.of(),
+          0,
+          ColumnIdentityMap.getDefaultInstance());
     }
 
     public static SnapshotEnumerationOptions incremental(Set<Long> knownSnapshotIds) {
       return new SnapshotEnumerationOptions(
-          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.ALL, Set.of(), 0);
+          false,
+          knownSnapshotIds,
+          Set.of(),
+          SnapshotSelectionKind.ALL,
+          Set.of(),
+          0,
+          ColumnIdentityMap.getDefaultInstance());
     }
 
     public static SnapshotEnumerationOptions incremental(
         Set<Long> knownSnapshotIds, Set<Long> targetSnapshotIds) {
       return new SnapshotEnumerationOptions(
-          false, knownSnapshotIds, targetSnapshotIds, SnapshotSelectionKind.ALL, Set.of(), 0);
+          false,
+          knownSnapshotIds,
+          targetSnapshotIds,
+          SnapshotSelectionKind.ALL,
+          Set.of(),
+          0,
+          ColumnIdentityMap.getDefaultInstance());
     }
 
     public static SnapshotEnumerationOptions fullCurrent(boolean fullRescan) {
       return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.CURRENT, Set.of(), 0);
+          fullRescan,
+          Set.of(),
+          Set.of(),
+          SnapshotSelectionKind.CURRENT,
+          Set.of(),
+          0,
+          ColumnIdentityMap.getDefaultInstance());
     }
 
     public static SnapshotEnumerationOptions incrementalCurrent(Set<Long> knownSnapshotIds) {
       return new SnapshotEnumerationOptions(
-          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.CURRENT, Set.of(), 0);
+          false,
+          knownSnapshotIds,
+          Set.of(),
+          SnapshotSelectionKind.CURRENT,
+          Set.of(),
+          0,
+          ColumnIdentityMap.getDefaultInstance());
     }
 
     public static SnapshotEnumerationOptions fullLatestN(boolean fullRescan, int latestN) {
       return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.LATEST_N, Set.of(), latestN);
+          fullRescan,
+          Set.of(),
+          Set.of(),
+          SnapshotSelectionKind.LATEST_N,
+          Set.of(),
+          latestN,
+          ColumnIdentityMap.getDefaultInstance());
     }
 
     public static SnapshotEnumerationOptions incrementalLatestN(
         Set<Long> knownSnapshotIds, int latestN) {
       return new SnapshotEnumerationOptions(
-          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.LATEST_N, Set.of(), latestN);
+          false,
+          knownSnapshotIds,
+          Set.of(),
+          SnapshotSelectionKind.LATEST_N,
+          Set.of(),
+          latestN,
+          ColumnIdentityMap.getDefaultInstance());
     }
 
     public static SnapshotEnumerationOptions fullExplicit(
         boolean fullRescan, Set<Long> snapshotIds) {
       return new SnapshotEnumerationOptions(
-          fullRescan, Set.of(), Set.of(), SnapshotSelectionKind.EXPLICIT, snapshotIds, 0);
+          fullRescan,
+          Set.of(),
+          Set.of(),
+          SnapshotSelectionKind.EXPLICIT,
+          snapshotIds,
+          0,
+          ColumnIdentityMap.getDefaultInstance());
     }
 
     public static SnapshotEnumerationOptions incrementalExplicit(
         Set<Long> knownSnapshotIds, Set<Long> snapshotIds) {
       return new SnapshotEnumerationOptions(
-          false, knownSnapshotIds, Set.of(), SnapshotSelectionKind.EXPLICIT, snapshotIds, 0);
+          false,
+          knownSnapshotIds,
+          Set.of(),
+          SnapshotSelectionKind.EXPLICIT,
+          snapshotIds,
+          0,
+          ColumnIdentityMap.getDefaultInstance());
     }
   }
 
@@ -820,11 +757,7 @@ public interface FloecatConnector extends Closeable {
       int ordinal, // 1-based within parent struct, or 0 if unknown
       int fieldId, // 0 if unknown
       long canonicalId // authoritative snapshot identity, or 0 if unavailable
-      ) {
-    public ColumnRef(String name, String physicalPath, int ordinal, int fieldId) {
-      this(name, physicalPath, ordinal, fieldId, 0L);
-    }
-  }
+      ) {}
 
   record ColumnStatsView(
       ColumnRef ref,
@@ -864,31 +797,6 @@ public interface FloecatConnector extends Closeable {
       int schemaId,
       String metadataLocation,
       ColumnIdentityMap columnIdentityMap) {
-    public SnapshotBundle(
-        long snapshotId,
-        long parentId,
-        long upstreamCreatedAtMs,
-        String schemaJson,
-        PartitionSpecInfo partitionSpec,
-        long sequenceNumber,
-        String manifestList,
-        Map<String, String> summary,
-        int schemaId,
-        String metadataLocation) {
-      this(
-          snapshotId,
-          parentId,
-          upstreamCreatedAtMs,
-          schemaJson,
-          partitionSpec,
-          sequenceNumber,
-          manifestList,
-          summary,
-          schemaId,
-          metadataLocation,
-          ColumnIdentityMap.getDefaultInstance());
-    }
-
     public SnapshotBundle {
       columnIdentityMap =
           columnIdentityMap == null ? ColumnIdentityMap.getDefaultInstance() : columnIdentityMap;
