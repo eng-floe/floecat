@@ -31,6 +31,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.connector.spi.IcebergAccessDelegation;
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
@@ -122,7 +123,8 @@ class CredentialResolverSupportTest {
             "name",
             "uri",
             Map.of(),
-            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+            new ConnectorConfig.Auth(
+                "oauth2", Map.of(), Map.of("X-Iceberg-Access-Delegation", "vended-credentials")));
 
     ConnectorConfig applied =
         CredentialResolverSupport.apply(
@@ -131,6 +133,9 @@ class CredentialResolverSupportTest {
             new ai.floedb.floecat.connector.spi.AuthResolutionContext("subject-token", ""));
 
     assertEquals("exchanged", applied.auth().props().get("token"));
+    // Operator routing survives the exchange; only the credential material is replaced.
+    assertEquals(
+        "vended-credentials", applied.auth().headerHints().get("X-Iceberg-Access-Delegation"));
     assertNull(applied.auth().props().get("oauth2-server-uri"));
 
     CapturedRequest req = captured.get();
@@ -188,7 +193,8 @@ class CredentialResolverSupportTest {
             "name",
             "uri",
             Map.of(),
-            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+            new ConnectorConfig.Auth(
+                "oauth2", Map.of(), Map.of("X-Iceberg-Access-Delegation", "vended-credentials")));
 
     ConnectorConfig applied =
         CredentialResolverSupport.apply(
@@ -196,6 +202,9 @@ class CredentialResolverSupportTest {
             creds,
             new ai.floedb.floecat.connector.spi.AuthResolutionContext("subject-token", ""));
     assertEquals("azure-token", applied.auth().props().get("token"));
+    // Operator routing survives the exchange; only the credential material is replaced.
+    assertEquals(
+        "vended-credentials", applied.auth().headerHints().get("X-Iceberg-Access-Delegation"));
 
     CapturedRequest req = captured.get();
     Map<String, String> form = parseForm(req.body);
@@ -253,7 +262,8 @@ class CredentialResolverSupportTest {
             "name",
             "uri",
             Map.of(),
-            new ConnectorConfig.Auth("oauth2", Map.of(), Map.of()));
+            new ConnectorConfig.Auth(
+                "oauth2", Map.of(), Map.of("X-Iceberg-Access-Delegation", "vended-credentials")));
 
     ConnectorConfig applied =
         CredentialResolverSupport.apply(
@@ -261,6 +271,9 @@ class CredentialResolverSupportTest {
             creds,
             new ai.floedb.floecat.connector.spi.AuthResolutionContext("subject-token", ""));
     assertEquals("gcp-token", applied.auth().props().get("token"));
+    // Operator routing survives the exchange; only the credential material is replaced.
+    assertEquals(
+        "vended-credentials", applied.auth().headerHints().get("X-Iceberg-Access-Delegation"));
 
     CapturedRequest req = captured.get();
     Map<String, String> form = parseForm(req.body);
@@ -405,6 +418,62 @@ class CredentialResolverSupportTest {
     assertEquals("scope-x", form.get("scope"));
     assertEquals("value", form.get("extra"));
     assertNull(req.headers.getFirst("X-Test"));
+  }
+
+  @Test
+  void clientCredentialsExchangeKeepsHeaderHints() throws Exception {
+    // The exchange replaces auth props so the client id and secret do not travel on past it. It
+    // must not take header hints with them: those are the operator's routing, not credential
+    // material, and the credential's own headers are a separate map this exchange consumes.
+    //
+    // Concretely, dropping them removed header.X-Iceberg-Access-Delegation from the catalog
+    // properties IcebergConnectorFactory builds, so an Iceberg connector configured for vended
+    // credentials never asked its catalog to vend -- IcebergAccessDelegation still reported it as
+    // declaring delegation, because that reads the stored record rather than the resolved config,
+    // so the vend was attempted, came back empty, and fell through to a storage authority.
+    System.setProperty("floecat.security.allow-loopback-token-endpoints", "true");
+    server = createServer();
+    server.createContext(
+        "/token",
+        exchange -> {
+          byte[] response =
+              "{\"access_token\":\"client-token\",\"token_type\":\"Bearer\",\"expires_in\":3600}"
+                  .getBytes(StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().set("Content-Type", "application/json");
+          exchange.sendResponseHeaders(200, response.length);
+          exchange.getResponseBody().write(response);
+          exchange.close();
+        });
+    server.start();
+
+    String endpoint = "http://localhost:" + server.getAddress().getPort() + "/token";
+    var creds =
+        AuthCredentials.newBuilder()
+            .setClient(
+                AuthCredentials.ClientCredentials.newBuilder()
+                    .setEndpoint(endpoint)
+                    .setClientId("client-id")
+                    .setClientSecret("client-secret"))
+            .build();
+    var cfg =
+        new ConnectorConfig(
+            ConnectorConfig.Kind.ICEBERG,
+            "name",
+            "uri",
+            Map.of(),
+            new ConnectorConfig.Auth(
+                "oauth2",
+                Map.of("scope", "scope-x"),
+                Map.of("X-Iceberg-Access-Delegation", "vended-credentials")));
+
+    ConnectorConfig applied = CredentialResolverSupport.apply(cfg, creds);
+
+    assertEquals("client-token", applied.auth().props().get("token"));
+    assertEquals(
+        "vended-credentials", applied.auth().headerHints().get("X-Iceberg-Access-Delegation"));
+    // The exchanged secret still must not survive.
+    assertNull(applied.auth().props().get("client_secret"));
+    assertTrue(IcebergAccessDelegation.declaresVendedCredentials(applied));
   }
 
   @Test
@@ -689,7 +758,10 @@ class CredentialResolverSupportTest {
                 "name",
                 "uri",
                 Map.of(),
-                new ConnectorConfig.Auth("oauth2", Map.of(), Map.of())),
+                new ConnectorConfig.Auth(
+                    "oauth2",
+                    Map.of(),
+                    Map.of("X-Iceberg-Access-Delegation", "vended-credentials"))),
             creds,
             new ai.floedb.floecat.connector.spi.AuthResolutionContext("subject-token", ""));
 
@@ -699,7 +771,11 @@ class CredentialResolverSupportTest {
     assertFalse(applied.auth().props().containsKey("gcp.service_account_email"));
     assertFalse(applied.auth().props().containsKey("gcp.delegated_user"));
     assertFalse(applied.auth().headerHints().containsKey("Authorization"));
-    assertEquals(Map.of(), applied.auth().headerHints());
+    // Asserted together: the bootstrap Authorization header the exchange consumed does not
+    // reach the connector, and the operator's own routing hint does. With an empty base hint
+    // map the first assertion held whether or not the second did.
+    assertEquals(
+        Map.of("X-Iceberg-Access-Delegation", "vended-credentials"), applied.auth().headerHints());
   }
 
   @Test
