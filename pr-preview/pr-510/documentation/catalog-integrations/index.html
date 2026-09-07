@@ -1866,6 +1866,11 @@ needs <code>connector trigger</code>, which an Overlay-materialized table has no
 <p>The full LocalStack smoke also exercises the Unity Integration and Overlay path against the same
 TLS-backed Unity/Delta fixture used by the Connector migration scenario. It validates discovery,
 credential vending, a storage read with those credentials, and Overlay materialization.</p>
+<p>The Unity Integration finishes with the same gateway <code>loadTable</code> check as the Polaris one. No
+authority has to be removed there: that fixture is copied to a bucket deliberately absent from
+<code>COMPOSE_SMOKE_LOCALSTACK_BUCKETS</code>, which the scenario asserts rather than assumes. Its upstream
+namespace has two levels, so the URL uses the <code>%1F</code> separator the gateway's own <code>/v1/config</code>
+advertises.</p>
 <p>Authentication types and their properties are:</p>
 <table>
 <thead>
