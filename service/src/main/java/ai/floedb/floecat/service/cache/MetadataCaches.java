@@ -82,7 +82,10 @@ public class MetadataCaches {
   @Produces
   @ApplicationScoped
   public MemoryCache<String, Pointer> pointers(
-      CacheBudgetResolver budgets, Observability observability) {
+      CacheBudgetResolver budgets,
+      Observability observability,
+      @ConfigProperty(name = "floecat.cache.pointer.enabled", defaultValue = "true")
+          boolean enabled) {
     var metrics = metricsFor(CacheFamily.POINTER, observability);
     var cache =
         new CaffeineMemoryCache<String, Pointer>(
@@ -91,7 +94,7 @@ public class MetadataCaches {
             // The key's own bytes, which the weigher adds to the entry's machinery and payload.
             key -> 2L * key.length(),
             events(metrics));
-    report(cache, budgets, metrics);
+    report(cache, budgets, metrics, enabled);
     return cache;
   }
 
@@ -146,13 +149,12 @@ public class MetadataCaches {
    * telemetry with it instead of being remembered separately.
    */
   private static void report(
-      MemoryCache<?, ?> cache, CacheBudgetResolver budgets, CacheMetrics metrics) {
+      MemoryCache<?, ?> cache, CacheBudgetResolver budgets, CacheMetrics metrics, boolean enabled) {
     String tag = cache.family().tag();
     // Fixed at construction, so both gauges read the same captured value rather than one of them
     // re-resolving the budget on every scrape.
     long budget = budgets.bytesFor(cache.family());
-    metrics.trackEnabled(
-        () -> budget > 0 ? 1.0 : 0.0, "Whether the " + tag + " cache holds anything");
+    metrics.trackEnabled(() -> enabled ? 1.0 : 0.0, "Whether the " + tag + " cache holds anything");
     metrics.trackSize(cache::entryCount, "Entries held by the " + tag + " cache");
     metrics.trackWeightedSize(
         () -> (double) cache.bytes(), "Retained bytes held by the " + tag + " cache");
