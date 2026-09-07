@@ -1845,16 +1845,22 @@ overlay delete &lt;name|id&gt;
 <div class="highlight"><pre><span></span><code>COMPOSE_SMOKE_MODES=polaris-integration make compose-smoke
 </code></pre></div>
 <p>This mode does not create or trigger a legacy Connector resource.</p>
-<p>After the Overlay materializes, the Polaris scenario removes the covering <code>s3://floecat/</code> storage
-authority and loads the Overlay table through Floecat's own Iceberg REST gateway with
-<code>X-Iceberg-Access-Delegation: vended-credentials</code>, and requires a complete session tuple in the
-response.</p>
-<p>That is the whole assertion, and it is a proof rather than a coincidence because of what is
-established around it: the scenario asserts the covering authority is gone from
-<code>storage-authority list</code>, each remaining authority is scoped to a different bucket, and the table
-was already asserted to carry no Connector. <code>vendFromCatalogIntegration</code> is then the only code
-that can put a credential in that response. The authority is restored afterwards for the sections
-that still read through it.</p>
+<p>After the Overlay materializes, the Polaris scenario disables <strong>every</strong> storage authority whose
+prefix covers the table location, then loads the Overlay table through Floecat's own Iceberg REST
+gateway with <code>X-Iceberg-Access-Delegation: vended-credentials</code> and requires a complete session
+tuple in the response.</p>
+<p>Every covering authority matters, not just the one the smoke created. <code>matchesLocationPrefix</code>
+strips a trailing slash from the configured prefix and then requires a path boundary, so the
+seeded <code>fixture-floecat</code> authority at <code>s3://floecat</code> covers <code>s3://floecat/sales/...</code> exactly as the
+smoke's own <code>s3://floecat/</code> does — and leaving it enabled means the read resolves through it and
+never reaches the vend. The scenario computes coverage with that same rule, disables what it finds,
+and re-lists to confirm nothing still covers before reading. They are disabled rather than deleted
+so re-enabling restores the exact record, which recreating a seeded fixture from guessed arguments
+would not.</p>
+<p>With nothing covering the location and the table already asserted to carry no Connector,
+<code>vendFromCatalogIntegration</code> is the only code that can put a credential in that response, so the
+response carries the whole assertion. The authorities are re-enabled afterwards for the sections
+that still read through them.</p>
 <p>The gateway is used rather than a capture because <code>overlay reconcile</code> is metadata-only and capture
 needs <code>connector trigger</code>, which an Overlay-materialized table has no Connector for.</p>
 <p>The full LocalStack smoke also exercises the Unity Integration and Overlay path against the same
