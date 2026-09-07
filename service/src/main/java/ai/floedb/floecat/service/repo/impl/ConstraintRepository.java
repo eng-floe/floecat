@@ -47,7 +47,12 @@ public class ConstraintRepository {
   private final ObjectCache objects;
 
   public ConstraintRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, pointerStore, blobStore, BlobCacheAccess.disabled(), ObjectCache.forTesting());
+    this(
+        pointerStore,
+        pointerStore,
+        blobStore,
+        BlobCacheAccess.disabled(),
+        ObjectCache.forTesting());
   }
 
   public ConstraintRepository(
