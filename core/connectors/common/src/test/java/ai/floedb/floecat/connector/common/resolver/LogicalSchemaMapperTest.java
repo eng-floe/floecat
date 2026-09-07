@@ -197,16 +197,16 @@ class LogicalSchemaMapperTest {
   void deltaSchemaParsesStructs() {
     String deltaJson =
         """
-        {
+        {"type":"struct",
           "fields":[
             {"name":"id","type":"long","nullable":false},
             {"name":"location","type":{
                  "type":"struct",
                  "fields":[
-                   {"name":"lat","type":"double"},
-                   {"name":"lon","type":"double"}
+                   {"name":"lat","type":"double","nullable":true},
+                   {"name":"lon","type":"double","nullable":true}
                  ]
-              }}
+              },"nullable":true}
           ]
         }
         """;
@@ -403,7 +403,7 @@ class LogicalSchemaMapperTest {
   void buildColumnOrdinalsUsesPhysicalPathsForNestedFields() {
     String deltaJson =
         """
-        {"fields":[
+        {"type":"struct","fields":[
           {"name":"id","type":"long","nullable":false},
           {"name":"location","type":{
             "type":"struct",

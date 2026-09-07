@@ -548,7 +548,11 @@ public class SnapshotFinalizeReconcileExecutor implements ReconcileExecutor {
     }
     return snapshotRepo
         .getById(tableId, snapshotId)
-        .map(snapshot -> snapshot.getColumnIdentityFingerprint())
+        .map(
+            snapshot ->
+                snapshot.hasColumnIdentityMap()
+                    ? snapshot.getColumnIdentityMap().getFingerprint()
+                    : "")
         .orElse("");
   }
 
