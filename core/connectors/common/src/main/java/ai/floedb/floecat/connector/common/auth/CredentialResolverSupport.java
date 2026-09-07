@@ -113,17 +113,21 @@ public final class CredentialResolverSupport {
 
     Map<String, String> options = new HashMap<>(base.options());
     Map<String, String> authProps = new HashMap<>(base.auth().props());
-    Map<String, String> headerHints = new HashMap<>(base.auth().headerHints());
+    // Final so the compiler enforces what the branches below used to assert one at a time:
+    // header hints survive every credential shape. Four exchange branches replaced this with
+    // an empty map, which dropped header.X-Iceberg-Access-Delegation and left an Iceberg
+    // connector configured for vended credentials never asking its catalog to vend. Leaving
+    // the variable alone states that in one place rather than seven, and a future change that
+    // populates hints before the switch cannot be silently discarded by a branch.
+    final Map<String, String> headerHints = new HashMap<>(base.auth().headerHints());
 
     switch (credential.getCredentialCase()) {
       case BEARER -> {
         authProps = new HashMap<>(base.auth().props());
-        headerHints = new HashMap<>(base.auth().headerHints());
         putIfNotBlank(authProps, "token", credential.getBearer().getToken());
       }
       case CLIENT -> {
         authProps = new HashMap<>(base.auth().props());
-        headerHints = new HashMap<>(base.auth().headerHints());
         var client = credential.getClient();
         String tokenEndpoint =
             firstNonBlank(client.getEndpoint(), authProps.get("oauth2-server-uri"));
@@ -138,8 +142,14 @@ public final class CredentialResolverSupport {
                   scope,
                   credential.getPropertiesMap(),
                   credential.getHeadersMap());
+          // authProps is replaced so the client id and secret do not travel on to the connector
+          // once they have been exchanged; only the bearer token should. Header hints are not
+          // credential material -- they are the operator's `--head` routing, kept separately from
+          // the credential headers this exchange consumes -- so they survive, as they already do
+          // on the branch below that skips the exchange. Dropping them silently removed
+          // `header.X-Iceberg-Access-Delegation`, so a connector configured for vended
+          // credentials never asked its catalog to vend and fell back to a storage authority.
           authProps = new HashMap<>();
-          headerHints = new HashMap<>();
           putIfNotBlank(authProps, "token", token);
         } else {
           putIfNotBlank(authProps, "client_id", client.getClientId());
@@ -149,7 +159,6 @@ public final class CredentialResolverSupport {
       }
       case CLI -> {
         authProps = new HashMap<>(base.auth().props());
-        headerHints = new HashMap<>(base.auth().headerHints());
         var cli = credential.getCli();
         String provider =
             cli.getProvider() == null ? "" : cli.getProvider().trim().toLowerCase(Locale.ROOT);
@@ -174,8 +183,9 @@ public final class CredentialResolverSupport {
       case AWS, AWS_WEB_IDENTITY, AWS_ASSUME_ROLE ->
           applyAwsStorageCredentials(options, credential);
       case RFC8693_TOKEN_EXCHANGE -> {
+        // Cleared for the same reason as the client-credentials exchange above, and header
+        // hints kept for the same reason: they are routing, not credential material.
         authProps = new HashMap<>();
-        headerHints = new HashMap<>();
         String token =
             exchangeRfc8693(
                 requireBase(credential.getRfc8693TokenExchange()),
@@ -185,8 +195,9 @@ public final class CredentialResolverSupport {
         putIfNotBlank(authProps, "token", token);
       }
       case AZURE_TOKEN_EXCHANGE -> {
+        // Cleared for the same reason as the client-credentials exchange above, and header
+        // hints kept for the same reason: they are routing, not credential material.
         authProps = new HashMap<>();
-        headerHints = new HashMap<>();
         String token =
             exchangeAzureObo(
                 requireBase(credential.getAzureTokenExchange()),
@@ -196,8 +207,9 @@ public final class CredentialResolverSupport {
         putIfNotBlank(authProps, "token", token);
       }
       case GCP_TOKEN_EXCHANGE -> {
+        // Cleared for the same reason as the client-credentials exchange above, and header
+        // hints kept for the same reason: they are routing, not credential material.
         authProps = new HashMap<>();
-        headerHints = new HashMap<>();
         String token =
             exchangeGoogleDwd(
                 credential.getGcpTokenExchange(),
