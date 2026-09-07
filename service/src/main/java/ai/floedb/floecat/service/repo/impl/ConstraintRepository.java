@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.repo.model.SnapshotConstraintsKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -62,7 +63,7 @@ public class ConstraintRepository {
             SnapshotConstraints::toByteArray,
             "application/x-protobuf",
             blobCache,
-            ai.floedb.floecat.service.repo.util.RepositoryReads.direct(pointerReads, blobStore));
+            RepositoryReads.direct(pointerReads, blobStore));
   }
 
   /**
