@@ -74,6 +74,7 @@ public final class FileGroupTargetStatsRollup {
     if (captured == null || captured.isEmpty()) {
       return List.of();
     }
+    identityFingerprint(captured);
 
     List<TargetStatsRecord> fileRecords =
         captured.stream().filter(TargetStatsRecord::hasFile).toList();
@@ -140,6 +141,7 @@ public final class FileGroupTargetStatsRollup {
     if (partials == null || partials.isEmpty()) {
       return List.of();
     }
+    identityFingerprint(partials);
     LinkedHashMap<String, TargetStatsRecord> merged = new LinkedHashMap<>();
     if (requestedKinds.contains(FloecatConnector.StatsTargetKind.TABLE)) {
       TargetStatsRecord tableRecord = aggregateTableFromPartials(tableId, snapshotId, partials);

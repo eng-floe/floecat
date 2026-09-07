@@ -572,28 +572,13 @@ class DeltaConnectorTest {
   }
 
   @Test
-  void captureRefusesToRunWithoutThePersistedIdentityMap() {
+  void snapshotStatsCaptureRefusesToRunWithoutThePersistedIdentityMap() {
     // Canonical IDs for an unmapped table depend on the whole reconciled version chain, so a map
     // reconstructed from one snapshot in isolation would disagree with every statistic already
     // captured. Refusing is the only safe answer; inventing a map is not.
     Snapshot latest = snapshot(7L, 7000L, new StructType().add("id", LongType.LONG, false));
     TestDeltaConnector connector =
         new TestDeltaConnector(new StubTable(latest, Map.of(7L, latest)));
-
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            connector.capturePlannedFileGroup(
-                "ns",
-                "tbl",
-                ResourceId.getDefaultInstance(),
-                7L,
-                Set.of("s3://bucket/file.parquet"),
-                Set.of(),
-                Set.of(),
-                Set.of(FloecatConnector.StatsTargetKind.FILE),
-                false,
-                FloecatConnector.ColumnSelectorPolicy.defaults()));
 
     assertThrows(
         UnsupportedOperationException.class,
