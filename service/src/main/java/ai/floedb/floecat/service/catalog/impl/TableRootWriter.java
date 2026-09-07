@@ -308,7 +308,8 @@ public class TableRootWriter {
                 SnapshotManifestEntry entry = null;
                 var pointer = snapshots.latestRegisteredSnapshotPointerConsistent(tableId);
                 if (pointer.isPresent()) {
-                  entry = snapshotEntry(tableId, pointer.get().getSnapshotId()).orElse(null);
+                  entry =
+                      snapshotEntryConsistent(tableId, pointer.get().getSnapshotId()).orElse(null);
                   if (entry == null) {
                     // Committed current snapshot has no resolvable blob yet: nothing coherent to
                     // force. NOT converged — the marker stays and the re-drive retries later.
