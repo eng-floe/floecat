@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -446,7 +447,8 @@ class DeltaConnectorTest {
                 7L,
                 Set.of("#" + stableColumnId),
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
-                List.of(entry))
+                List.of(entry),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
 
     assertEquals(1, selected.size());
@@ -461,7 +463,8 @@ class DeltaConnectorTest {
                 7L,
                 Set.of(),
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
-                List.of(entry))
+                List.of(entry),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
     assertEquals(
         Set.of("#" + stableColumnId, "id"), selectedByDefault.getFirst().selectorAliases());
@@ -514,7 +517,8 @@ class DeltaConnectorTest {
                 List.of(
                     pageIndexEntry(oldFile, "id"),
                     pageIndexEntry(newFile, "id"),
-                    pageIndexEntry(newFile, "added")))
+                    pageIndexEntry(newFile, "added")),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
 
     assertEquals(
@@ -540,7 +544,8 @@ class DeltaConnectorTest {
                 8L,
                 Set.of("#" + addedColumnId),
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
-                List.of(pageIndexEntry(oldFile, "id")))
+                List.of(pageIndexEntry(oldFile, "id")),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
     assertEquals(1, schemaOnlyAddition.size());
     assertEquals("added", schemaOnlyAddition.getFirst().columnName());
@@ -556,7 +561,8 @@ class DeltaConnectorTest {
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
                 Set.of(oldFile),
                 List.of(),
-                List.of(new FloecatConnector.ParquetRowGroup(oldFile, 0, 17)))
+                List.of(new FloecatConnector.ParquetRowGroup(oldFile, 0, 17)),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
     assertEquals(1, noDecodedColumns.size());
     assertEquals(17, noDecodedColumns.getFirst().rowCount());
@@ -603,7 +609,8 @@ class DeltaConnectorTest {
                 9L,
                 Set.of("logical_id"),
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
-                List.of(physicalEntry))
+                List.of(physicalEntry),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
 
     assertEquals(1, selected.size());
@@ -749,7 +756,17 @@ class DeltaConnectorTest {
   private static FloecatConnector.SnapshotBundle snapshotBundle(
       long snapshotId, String schemaJson) {
     return new FloecatConnector.SnapshotBundle(
-        snapshotId, 0L, 0L, schemaJson, null, 0L, null, Map.of(), 0, null);
+        snapshotId,
+        0L,
+        0L,
+        schemaJson,
+        null,
+        0L,
+        null,
+        Map.of(),
+        0,
+        null,
+        ColumnIdentityMap.getDefaultInstance());
   }
 
   private static FloecatConnector.ParquetPageIndexEntry pageIndexEntry(

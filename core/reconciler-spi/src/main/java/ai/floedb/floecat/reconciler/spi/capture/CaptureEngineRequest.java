@@ -47,47 +47,6 @@ public record CaptureEngineRequest(
     Optional<String> executionLeaseEpoch,
     BooleanSupplier shouldStop,
     ColumnIdentityMap columnIdentityMap) {
-  public CaptureEngineRequest(
-      Connector sourceConnector,
-      String sourceNamespace,
-      String sourceTable,
-      ResourceId tableId,
-      long snapshotId,
-      String planId,
-      String groupId,
-      List<String> plannedFilePaths,
-      Set<String> statsColumns,
-      Set<String> indexColumns,
-      FloecatConnector.ColumnSelectorPolicy columnSelectorPolicy,
-      Set<FloecatConnector.StatsTargetKind> requestedStatsTargetKinds,
-      boolean capturePageIndex,
-      Optional<String> storageLocation,
-      Optional<String> authorizationToken,
-      Optional<String> executionJobId,
-      Optional<String> executionLeaseEpoch,
-      BooleanSupplier shouldStop) {
-    this(
-        sourceConnector,
-        sourceNamespace,
-        sourceTable,
-        tableId,
-        snapshotId,
-        planId,
-        groupId,
-        plannedFilePaths,
-        statsColumns,
-        indexColumns,
-        columnSelectorPolicy,
-        requestedStatsTargetKinds,
-        capturePageIndex,
-        storageLocation,
-        authorizationToken,
-        executionJobId,
-        executionLeaseEpoch,
-        shouldStop,
-        ColumnIdentityMap.getDefaultInstance());
-  }
-
   public CaptureEngineRequest {
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceTable = sourceTable == null ? "" : sourceTable.trim();
