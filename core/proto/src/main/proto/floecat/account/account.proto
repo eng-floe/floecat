@@ -96,7 +96,8 @@ message DeleteAccountResponse {
 
 // ====== Internal account ownership control ======
 
-// Process-local serving state installed by Core. This is not a lease and never expires.
+// Process-local serving state installed by Core. The assignment is fenced by the process
+// incarnation and version; destructive GC additionally requires a short-lived lease.
 enum AccountServingMode {
   ASM_UNSPECIFIED = 0;
   ASM_UNASSIGNED = 1;
@@ -112,6 +113,8 @@ message ApplyAccountModeRequest {
   string target_process_incarnation = 3;
   AccountServingMode mode = 4;
   bool gc_allowed = 5;
+  // Positive only when gc_allowed is true. Equal-version commands renew this lease.
+  int64 gc_lease_ttl_ms = 6;
 }
 
 message GetAccountStatusRequest {
@@ -130,6 +133,7 @@ message AccountOwnershipStatus {
   int64 referenced_roots = 9;
   string pointer_cache_state = 10;
   bool drained = 11;
+  int64 gc_lease_remaining_ms = 12;
 }
 
 message ApplyAccountModeResponse {

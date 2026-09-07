@@ -27,6 +27,7 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
+import java.time.Duration;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -71,7 +72,8 @@ public class AccountGcAuthority {
       long activeMutations,
       long activeGc,
       long referencedRoots,
-      String pointerCacheState) {
+      String pointerCacheState,
+      long gcLeaseRemainingMillis) {
 
     public boolean drained() {
       return mode == AccountMode.DRAINING
@@ -144,6 +146,7 @@ public class AccountGcAuthority {
 
   private final DeploymentMode deploymentMode;
   private final String processIncarnation;
+  private final long maxGcLeaseNanos;
   private final ToLongFunction<String> referencedRoots;
   private final Consumer<String> prepareCache;
   private final Function<String, String> cacheState;
@@ -160,6 +163,9 @@ public class AccountGcAuthority {
                 .getOptionalValue("floecat.account-ownership.mode", String.class)
                 .orElse("standalone")),
         processIncarnation(config),
+        config
+            .getOptionalValue("floecat.account-ownership.gc-lease.max", Duration.class)
+            .orElse(Duration.ofMinutes(1)),
         queryContexts::referencedPinBlobCount,
         config.getOptionalValue("floecat.cache.pointer.enabled", Boolean.class).orElse(true)
             ? pointers::resetAndWarm
@@ -172,11 +178,13 @@ public class AccountGcAuthority {
   private AccountGcAuthority(
       DeploymentMode deploymentMode,
       String processIncarnation,
+      Duration maxGcLease,
       ToLongFunction<String> referencedRoots,
       Consumer<String> prepareCache,
       Function<String, String> cacheState) {
     this.deploymentMode = Objects.requireNonNull(deploymentMode, "deploymentMode");
     this.processIncarnation = requireText(processIncarnation, "processIncarnation");
+    this.maxGcLeaseNanos = requireLeaseNanos(maxGcLease);
     this.referencedRoots = Objects.requireNonNull(referencedRoots, "referencedRoots");
     this.prepareCache = Objects.requireNonNull(prepareCache, "prepareCache");
     this.cacheState = Objects.requireNonNull(cacheState, "cacheState");
@@ -201,7 +209,7 @@ public class AccountGcAuthority {
         state.mode = AccountMode.SERVING;
         state.gcAllowed = true;
       }
-      if (processDraining.get() || state.mode != AccountMode.SERVING || !state.gcAllowed) {
+      if (processDraining.get() || state.mode != AccountMode.SERVING || !gcLeaseActive(state)) {
         return Optional.empty();
       }
       state.activeGc++;
@@ -221,6 +229,22 @@ public class AccountGcAuthority {
       String targetIncarnation,
       AccountMode mode,
       boolean gcAllowed) {
+    return apply(
+        accountId,
+        assignmentVersion,
+        targetIncarnation,
+        mode,
+        gcAllowed,
+        gcAllowed ? Duration.ofSeconds(30).toMillis() : 0L);
+  }
+
+  public Status apply(
+      String accountId,
+      long assignmentVersion,
+      String targetIncarnation,
+      AccountMode mode,
+      boolean gcAllowed,
+      long gcLeaseTtlMillis) {
     if (deploymentMode != DeploymentMode.MANAGED) {
       throw new IllegalStateException("account ownership control requires managed mode");
     }
@@ -236,6 +260,7 @@ public class AccountGcAuthority {
       throw new IllegalStateException("process is draining");
     }
     boolean desiredGc = gcAllowed && desiredMode == AccountMode.SERVING;
+    long leaseNanos = leaseNanos(desiredGc, gcLeaseTtlMillis);
     AccountState state = stateForApply(account);
     synchronized (state) {
       if (processDraining.get() && desiredMode == AccountMode.SERVING) {
@@ -247,6 +272,9 @@ public class AccountGcAuthority {
       if (assignmentVersion == state.assignmentVersion) {
         if (state.mode != desiredMode || state.gcAllowed != desiredGc) {
           throw new IllegalArgumentException("conflicting account ownership command version");
+        }
+        if (desiredGc) {
+          state.gcLeaseDeadlineNanos = System.nanoTime() + leaseNanos;
         }
         return status(account, state);
       }
@@ -261,6 +289,7 @@ public class AccountGcAuthority {
       state.assignmentVersion = assignmentVersion;
       state.mode = desiredMode;
       state.gcAllowed = desiredGc;
+      state.gcLeaseDeadlineNanos = desiredGc ? System.nanoTime() + leaseNanos : 0L;
       return status(account, state);
     }
   }
@@ -284,7 +313,8 @@ public class AccountGcAuthority {
           0L,
           0L,
           referencedRoots.applyAsLong(account),
-          cacheState.apply(account));
+          cacheState.apply(account),
+          0L);
     }
     AccountState state = accounts.get(account);
     if (state == null) {
@@ -298,7 +328,8 @@ public class AccountGcAuthority {
           0L,
           0L,
           referencedRoots.applyAsLong(account),
-          cacheState.apply(account));
+          cacheState.apply(account),
+          0L);
     }
     synchronized (state) {
       return status(account, state);
@@ -321,6 +352,7 @@ public class AccountGcAuthority {
           state.mode = AccountMode.DRAINING;
         }
         state.gcAllowed = false;
+        state.gcLeaseDeadlineNanos = 0L;
       }
     }
     return processStatus();
@@ -396,6 +428,7 @@ public class AccountGcAuthority {
     return new AccountGcAuthority(
         DeploymentMode.STANDALONE,
         "standalone/test",
+        Duration.ofMinutes(1),
         ignored -> 0L,
         ignored -> {},
         ignored -> "UNLOADED");
@@ -407,7 +440,12 @@ public class AccountGcAuthority {
       Consumer<String> prepareCache,
       Function<String, String> cacheState) {
     return new AccountGcAuthority(
-        DeploymentMode.MANAGED, incarnation, referencedRoots, prepareCache, cacheState);
+        DeploymentMode.MANAGED,
+        incarnation,
+        Duration.ofMinutes(1),
+        referencedRoots,
+        prepareCache,
+        cacheState);
   }
 
   private Permit admit(String accountId, Activity activity) {
@@ -439,12 +477,13 @@ public class AccountGcAuthority {
         state.assignmentVersion,
         processIncarnation,
         state.mode,
-        state.gcAllowed,
+        gcLeaseActive(state),
         state.activeResolutions,
         state.activeMutations,
         state.activeGc,
         referencedRoots.applyAsLong(accountId),
-        cacheState.apply(accountId));
+        cacheState.apply(accountId),
+        remainingLeaseMillis(state));
   }
 
   private AccountState stateForApply(String accountId) {
@@ -472,7 +511,7 @@ public class AccountGcAuthority {
         .filter(
             state -> {
               synchronized (state) {
-                return state.mode == AccountMode.SERVING && state.gcAllowed;
+                return state.mode == AccountMode.SERVING && gcLeaseActive(state);
               }
             })
         .count();
@@ -507,6 +546,7 @@ public class AccountGcAuthority {
     private long activeResolutions;
     private long activeMutations;
     private long activeGc;
+    private long gcLeaseDeadlineNanos;
   }
 
   private static final class CountedPermit implements Permit {
@@ -573,7 +613,7 @@ public class AccountGcAuthority {
         return !closed.get()
             && state.assignmentVersion == assignmentVersion
             && state.mode == AccountMode.SERVING
-            && state.gcAllowed;
+            && gcLeaseActive(state);
       }
     }
 
@@ -585,6 +625,50 @@ public class AccountGcAuthority {
       synchronized (state) {
         state.activeGc--;
       }
+    }
+  }
+
+  private boolean gcLeaseActive(AccountState state) {
+    return deploymentMode == DeploymentMode.STANDALONE
+        || (state.gcAllowed && state.gcLeaseDeadlineNanos > System.nanoTime());
+  }
+
+  private long remainingLeaseMillis(AccountState state) {
+    if (deploymentMode == DeploymentMode.STANDALONE || !state.gcAllowed) {
+      return 0L;
+    }
+    long remainingNanos = state.gcLeaseDeadlineNanos - System.nanoTime();
+    return remainingNanos <= 0L ? 0L : remainingNanos / 1_000_000L;
+  }
+
+  private long leaseNanos(boolean required, long ttlMillis) {
+    if (!required) {
+      return 0L;
+    }
+    if (ttlMillis <= 0L) {
+      throw new IllegalArgumentException("gc lease ttl must be positive");
+    }
+    long ttlNanos;
+    try {
+      ttlNanos = Math.multiplyExact(ttlMillis, 1_000_000L);
+    } catch (ArithmeticException overflow) {
+      throw new IllegalArgumentException("gc lease ttl is too large", overflow);
+    }
+    if (ttlNanos > maxGcLeaseNanos) {
+      throw new IllegalArgumentException("gc lease ttl exceeds configured maximum");
+    }
+    return ttlNanos;
+  }
+
+  private static long requireLeaseNanos(Duration duration) {
+    Objects.requireNonNull(duration, "maxGcLease");
+    if (duration.isZero() || duration.isNegative()) {
+      throw new IllegalArgumentException("maxGcLease must be positive");
+    }
+    try {
+      return duration.toNanos();
+    } catch (ArithmeticException overflow) {
+      throw new IllegalArgumentException("maxGcLease is too large", overflow);
     }
   }
 }

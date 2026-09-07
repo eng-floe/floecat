@@ -44,7 +44,7 @@ class AccountOwnershipControlImplTest {
     when(service.principalProvider.get()).thenReturn(principal);
     doNothing().when(service.authorizer).require(any(), org.mockito.ArgumentMatchers.anyString());
     when(service.authority.apply(
-            "acct-1", 4L, "pod-a/start-1", AccountGcAuthority.AccountMode.DRAINING, false))
+            "acct-1", 4L, "pod-a/start-1", AccountGcAuthority.AccountMode.DRAINING, false, 0L))
         .thenReturn(
             new AccountGcAuthority.Status(
                 "acct-1",
@@ -56,7 +56,8 @@ class AccountOwnershipControlImplTest {
                 2L,
                 0L,
                 3L,
-                "COMPLETE"));
+                "COMPLETE",
+                0L));
 
     var response =
         service

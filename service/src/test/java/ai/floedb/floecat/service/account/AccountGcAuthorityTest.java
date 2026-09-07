@@ -141,6 +141,25 @@ class AccountGcAuthorityTest {
   }
 
   @Test
+  void gcLeaseExpiresAndCanBeRenewedWithoutChangingAssignment() throws Exception {
+    AccountGcAuthority authority = managed(new AtomicLong());
+    authority.apply(ACCOUNT, 1, INCARNATION, AccountMode.SERVING, true, 10L);
+    assertThat(authority.status(ACCOUNT).gcAllowed()).isTrue();
+
+    Thread.sleep(30L);
+
+    assertThat(authority.status(ACCOUNT).gcAllowed()).isFalse();
+    assertThat(authority.tryAcquireGc(ACCOUNT)).isEmpty();
+
+    var renewed = authority.apply(ACCOUNT, 1, INCARNATION, AccountMode.SERVING, true, 1000L);
+    assertThat(renewed.gcAllowed()).isTrue();
+    assertThat(renewed.assignmentVersion()).isEqualTo(1L);
+    try (var gc = authority.tryAcquireGc(ACCOUNT).orElseThrow()) {
+      assertThat(gc.valid()).isTrue();
+    }
+  }
+
+  @Test
   void thePointerStoreSeamFencesEveryAccountScopedPublication() {
     AccountGcAuthority authority = managed(new AtomicLong());
     InMemoryPointerStore durable = new InMemoryPointerStore();

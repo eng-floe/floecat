@@ -61,7 +61,8 @@ public class AccountOwnershipControlImpl extends BaseServiceImpl
                     request.getAssignmentVersion(),
                     request.getTargetProcessIncarnation(),
                     fromProto(request.getMode()),
-                    request.getGcAllowed());
+                    request.getGcAllowed(),
+                    request.getGcLeaseTtlMs());
           } catch (IllegalArgumentException | IllegalStateException rejected) {
             throw Status.FAILED_PRECONDITION
                 .withDescription(rejected.getMessage())
@@ -121,6 +122,7 @@ public class AccountOwnershipControlImpl extends BaseServiceImpl
         .setActiveMutations(status.activeMutations())
         .setActiveGc(status.activeGc())
         .setReferencedRoots(status.referencedRoots())
+        .setGcLeaseRemainingMs(status.gcLeaseRemainingMillis())
         .setPointerCacheState(status.pointerCacheState())
         .setDrained(status.drained())
         .build();
