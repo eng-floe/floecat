@@ -432,8 +432,12 @@ class TransactionGcTest {
                 .setBlobUri("s3://t/table.pb")
                 .setEtag("e1")
                 .build());
+    when(tables.metaForSafeConsistent(any()))
+        .thenAnswer(inv -> tables.metaForSafe(inv.getArgument(0)));
     var snapshots = mock(ai.floedb.floecat.service.repo.impl.SnapshotRepository.class);
     when(snapshots.latestRegisteredSnapshotPointer(any())).thenReturn(Optional.empty());
+    when(snapshots.latestRegisteredSnapshotPointerConsistent(any()))
+        .thenAnswer(inv -> snapshots.latestRegisteredSnapshotPointer(inv.getArgument(0)));
     var statsStore = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
     when(statsStore.tracksStatsGenerations()).thenReturn(true);
     var writer =
@@ -480,6 +484,8 @@ class TransactionGcTest {
             roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     var tables = mock(ai.floedb.floecat.service.repo.impl.TableRepository.class);
     when(tables.metaForSafe(any())).thenThrow(new IllegalStateException("store down"));
+    when(tables.metaForSafeConsistent(any()))
+        .thenAnswer(inv -> tables.metaForSafe(inv.getArgument(0)));
     var writer =
         new ai.floedb.floecat.service.catalog.impl.TableRootWriter(
             roots,
