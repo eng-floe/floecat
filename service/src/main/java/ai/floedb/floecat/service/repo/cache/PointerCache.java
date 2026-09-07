@@ -178,6 +178,10 @@ public final class PointerCache {
       }
       partition.lock.readLock().lock();
       try {
+        if (partition.readiness != Readiness.COMPLETE) {
+          fallback.add(key);
+          continue;
+        }
         Pointer pointer = partition.entries.get(key);
         if (pointer != null) {
           answer.put(key, pointer);
@@ -208,28 +212,31 @@ public final class PointerCache {
 
     partition.lock.readLock().lock();
     try {
-      int pageSize = Math.max(1, limit);
-      NavigableMap<String, Pointer> tail =
-          cachedAfter == null
-              ? partition.entries.tailMap(prefix, true)
-              : partition.entries.tailMap(cachedAfter, false);
-      List<Pointer> page = new ArrayList<>();
-      boolean hasMore = false;
-      for (Map.Entry<String, Pointer> entry : tail.entrySet()) {
-        if (!entry.getKey().startsWith(prefix)) {
-          break;
+      if (partition.readiness == Readiness.COMPLETE) {
+        int pageSize = Math.max(1, limit);
+        NavigableMap<String, Pointer> tail =
+            cachedAfter == null
+                ? partition.entries.tailMap(prefix, true)
+                : partition.entries.tailMap(cachedAfter, false);
+        List<Pointer> page = new ArrayList<>();
+        boolean hasMore = false;
+        for (Map.Entry<String, Pointer> entry : tail.entrySet()) {
+          if (!entry.getKey().startsWith(prefix)) {
+            break;
+          }
+          if (page.size() == pageSize) {
+            hasMore = true;
+            break;
+          }
+          page.add(entry.getValue());
         }
-        if (page.size() == pageSize) {
-          hasMore = true;
-          break;
-        }
-        page.add(entry.getValue());
+        setNextToken(nextTokenOut, hasMore ? encodeToken(page.getLast().getKey()) : "");
+        return List.copyOf(page);
       }
-      setNextToken(nextTokenOut, hasMore ? encodeToken(page.getLast().getKey()) : "");
-      return List.copyOf(page);
     } finally {
       partition.lock.readLock().unlock();
     }
+    return source.listPointersByPrefix(prefix, limit, tokenForSource(pageToken), nextTokenOut);
   }
 
   int count(String prefix) {
@@ -243,10 +250,13 @@ public final class PointerCache {
     }
     partition.lock.readLock().lock();
     try {
-      return countHeld(partition, prefix);
+      if (partition.readiness == Readiness.COMPLETE) {
+        return countHeld(partition, prefix);
+      }
     } finally {
       partition.lock.readLock().unlock();
     }
+    return source.countByPrefix(prefix);
   }
 
   String pageTokenAfterKey(String key) {
@@ -482,7 +492,9 @@ public final class PointerCache {
       if (partition != null && partition.readiness == Readiness.COMPLETE) {
         partition.lock.readLock().lock();
         try {
-          return Optional.ofNullable(partition.entries.get(key));
+          if (partition.readiness == Readiness.COMPLETE) {
+            return Optional.ofNullable(partition.entries.get(key));
+          }
         } finally {
           partition.lock.readLock().unlock();
         }
