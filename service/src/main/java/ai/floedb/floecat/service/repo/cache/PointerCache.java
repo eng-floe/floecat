@@ -139,7 +139,9 @@ public final class PointerCache {
       if (partition != null) {
         partition.lock.readLock().lock();
         try {
-          return Optional.ofNullable(partition.entries.get(key));
+          if (partition.readiness == Readiness.COMPLETE) {
+            return Optional.ofNullable(partition.entries.get(key));
+          }
         } finally {
           partition.lock.readLock().unlock();
         }
