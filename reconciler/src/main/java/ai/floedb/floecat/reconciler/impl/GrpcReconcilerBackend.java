@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
@@ -636,7 +637,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       ctx.authorizationToken(),
                       ctx.executionJobId(),
                       ctx.executionLeaseEpoch(),
-                      () -> false),
+                      () -> false,
+                      ColumnIdentityMap.getDefaultInstance()),
                   (completedFileStats, completedPageIndexEntries) -> {
                     fileStats.addAll(completedFileStats);
                     pageIndexEntries.addAll(completedPageIndexEntries);

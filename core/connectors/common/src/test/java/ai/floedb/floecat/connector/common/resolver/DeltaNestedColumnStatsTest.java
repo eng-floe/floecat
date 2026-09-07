@@ -71,7 +71,7 @@ public class DeltaNestedColumnStatsTest {
   private static FloecatConnector.ColumnRef ref(
       String name, String physicalPath, int ordinal, int fieldId) {
     return new FloecatConnector.ColumnRef(
-        name == null ? "" : name, physicalPath == null ? "" : physicalPath, ordinal, fieldId);
+        name == null ? "" : name, physicalPath == null ? "" : physicalPath, ordinal, fieldId, 0L);
   }
 
   private static FloecatConnector.ColumnStatsView view(
