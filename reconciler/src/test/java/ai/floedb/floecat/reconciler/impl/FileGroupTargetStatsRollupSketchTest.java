@@ -449,6 +449,71 @@ class FileGroupTargetStatsRollupSketchTest {
                 List.of(current, stale)));
   }
 
+  @Test
+  void fileOnlyCompletionRejectsMixedColumnIdentityFingerprints() {
+    TargetStatsRecord current =
+        fileRecord(1L, scalarWithSketches(50, null, null)).toBuilder()
+            .setColumnIdentityFingerprint("sha256:current")
+            .build();
+    TargetStatsRecord stale =
+        fileRecord(2L, scalarWithSketches(70, null, null)).toBuilder()
+            .setColumnIdentityFingerprint("sha256:stale")
+            .build();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+                TABLE, 1L, Set.of(FloecatConnector.StatsTargetKind.FILE), List.of(current, stale)));
+  }
+
+  @Test
+  void completionWithoutFileRecordsRejectsMixedColumnIdentityFingerprints() {
+    TargetStatsRecord current =
+        TargetStatsRecords.columnRecord(TABLE, 1L, 1L, scalarWithSketches(50, null, null), null)
+            .toBuilder()
+            .setColumnIdentityFingerprint("sha256:current")
+            .build();
+    TargetStatsRecord stale =
+        TargetStatsRecords.columnRecord(TABLE, 1L, 2L, scalarWithSketches(70, null, null), null)
+            .toBuilder()
+            .setColumnIdentityFingerprint("sha256:stale")
+            .build();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            new FileGroupTargetStatsRollup()
+                .complete(
+                    TABLE,
+                    1L,
+                    Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+                    List.of(current, stale)));
+  }
+
+  @Test
+  void partialMergeRejectsDisjointColumnIdentityFingerprints() {
+    TargetStatsRecord current =
+        TargetStatsRecords.columnRecord(TABLE, 1L, 1L, scalarWithSketches(50, null, null), null)
+            .toBuilder()
+            .setColumnIdentityFingerprint("sha256:current")
+            .build();
+    TargetStatsRecord stale =
+        TargetStatsRecords.columnRecord(TABLE, 1L, 2L, scalarWithSketches(70, null, null), null)
+            .toBuilder()
+            .setColumnIdentityFingerprint("sha256:stale")
+            .build();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            FileGroupTargetStatsRollup.mergeSnapshotAggregatePartials(
+                TABLE,
+                1L,
+                Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+                List.of(current, stale)));
+  }
+
   private static TargetStatsRecord fileRecord(long columnId, ScalarStats scalar) {
     return TargetStatsRecord.newBuilder()
         .setTableId(TABLE)
