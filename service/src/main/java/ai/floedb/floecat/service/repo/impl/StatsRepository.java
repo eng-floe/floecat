@@ -1834,7 +1834,8 @@ public class StatsRepository implements StatsStore {
         pointer -> readActiveGeneration(tableId, snapshotId, manifestPointer, pointer, live));
   }
 
-  private Optional<String> activeStatsGenerationConsistent(ResourceId tableId, long snapshotId) {
+  @Override
+  public Optional<String> activeStatsGenerationConsistent(ResourceId tableId, long snapshotId) {
     String manifestPointer =
         Keys.snapshotTargetStatsManifestPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId);

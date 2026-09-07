@@ -240,6 +240,15 @@ public interface StatsStore {
   }
 
   /**
+   * Authoritative form of {@link #activeStatsGeneration} for repair and mutation decisions.
+   * Implementations backed by a cached pointer view must override this method to read the live
+   * pointer store; the default preserves the behaviour of stores without a separate cache.
+   */
+  default Optional<String> activeStatsGenerationConsistent(ResourceId tableId, long snapshotId) {
+    return activeStatsGeneration(tableId, snapshotId);
+  }
+
+  /**
    * Like {@link #listTargetStats}, but reads within the specific generation named by {@code
    * generationToken} — a token previously returned by {@link #activeStatsGeneration} — instead of
    * resolving the live active generation. A reader that froze its generation at first touch keeps a

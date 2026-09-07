@@ -128,6 +128,12 @@ public class TableRepository {
     return repo.getByKey(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
+  /** Loads the table through the mutation read path, bypassing the query pointer cache. */
+  public Optional<Table> getByIdConsistent(ResourceId tableResourceId) {
+    return repo.getByKeyForMutation(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
   public Optional<Table> getByName(
       String accountId, String catalogId, String namespaceId, String tableName) {
     return repo.get(Keys.tablePointerByName(accountId, catalogId, namespaceId, tableName));
@@ -248,6 +254,12 @@ public class TableRepository {
 
   public MutationMeta metaForSafe(ResourceId tableResourceId) {
     return repo.metaForSafe(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
+  /** Reads table metadata through the mutation path, bypassing the query pointer cache. */
+  public MutationMeta metaForSafeConsistent(ResourceId tableResourceId) {
+    return repo.metaForSafeConsistent(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */

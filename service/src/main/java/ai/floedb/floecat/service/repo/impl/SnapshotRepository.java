@@ -237,6 +237,12 @@ public class SnapshotRepository {
     return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
+  /** Loads a snapshot through the mutation read path, bypassing the query pointer cache. */
+  public Optional<Snapshot> getByIdConsistent(ResourceId tableId, long snapshotId) {
+    return repo.getByKeyForMutation(
+        new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
+  }
+
   /**
    * Records the system-owned finalized reuse manifest without replacing concurrent updates. Returns
    * the exact snapshot revision written so callers do not need a racy follow-up read.
@@ -661,6 +667,15 @@ public class SnapshotRepository {
     return currentPointerRepo.get(tableId);
   }
 
+  /** Reads the current-snapshot pointer through the mutation path, bypassing the query cache. */
+  public Optional<CurrentSnapshotPointer> latestRegisteredSnapshotPointerConsistent(
+      ResourceId tableId) {
+    if (tableId == null) {
+      return Optional.empty();
+    }
+    return currentPointerRepo.getForMutation(tableId);
+  }
+
   private CurrentSnapshotPointer buildCurrentPointer(ResourceId tableId, Snapshot snapshot) {
     CurrentSnapshotPointer.Builder builder =
         CurrentSnapshotPointer.newBuilder()
@@ -737,6 +752,13 @@ public class SnapshotRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
+  /** Lists registered snapshots through the mutation read path, bypassing the query cache. */
+  public List<Snapshot> listConsistent(
+      ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
+    String prefix = Keys.snapshotPointerByIdPrefix(tableId.getAccountId(), tableId.getId());
+    return repo.listByPrefixForMutation(prefix, limit, pageToken, nextOut);
+  }
+
   public List<Snapshot> listByTime(
       ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
     String prefix = Keys.snapshotPointerByTimePrefix(tableId.getAccountId(), tableId.getId());
@@ -759,6 +781,12 @@ public class SnapshotRepository {
 
   public MutationMeta metaForSafe(ResourceId tableId, long snapshotId) {
     return repo.metaForSafe(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
+  }
+
+  /** Reads snapshot metadata through the mutation path, bypassing the query pointer cache. */
+  public MutationMeta metaForSafeConsistent(ResourceId tableId, long snapshotId) {
+    return repo.metaForSafeConsistent(
+        new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
   private Optional<Snapshot> latestSnapshotByTime(ResourceId tableId) {

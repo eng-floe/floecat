@@ -89,6 +89,11 @@ public abstract class TableScopedPointerRepository<T> {
     return repo.getByKey(key(tableId));
   }
 
+  /** Loads the pointer through the mutation read path, bypassing the query pointer cache. */
+  public Optional<T> getForMutation(ResourceId tableId) {
+    return repo.getByKeyForMutation(key(tableId));
+  }
+
   public boolean createIfAbsent(T value) {
     return repo.createIfAbsent(value);
   }
