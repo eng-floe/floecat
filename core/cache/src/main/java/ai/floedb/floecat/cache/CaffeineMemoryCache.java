@@ -192,13 +192,18 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
     Map<K, ReadStamp> misses = new LinkedHashMap<>();
     for (K key : distinctKeys) {
       long startNanos = System.nanoTime();
+      // Sample before probing the cache.  If an eviction moves this fence after the sample,
+      // dropIfFenceMoved will remove a value this bulk load installs, even when the eviction
+      // completes between the probe and this bookkeeping step.  This is the same ordering used by
+      // get(); evictPartition moves every stripe, so it is covered by the same check.
+      StampedLock fence = fenceFor(key);
+      long stamp = fence.tryOptimisticRead();
       CachedValue<V> value = entries.getIfPresent(key);
       if (value != null) {
         result.put(key, value.value());
         events.hit(Duration.ofNanos(System.nanoTime() - startNanos));
       } else {
-        StampedLock fence = fenceFor(key);
-        misses.put(key, new ReadStamp(fence, fence.tryOptimisticRead()));
+        misses.put(key, new ReadStamp(fence, stamp));
         events.miss();
       }
     }
