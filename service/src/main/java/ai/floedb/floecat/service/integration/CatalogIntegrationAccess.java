@@ -20,6 +20,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URI;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /** Resolves one persisted Catalog Integration into a short-lived catalog-access client. */
@@ -72,6 +73,21 @@ public class CatalogIntegrationAccess {
   java.time.Clock clock = java.time.Clock.systemUTC();
 
   @Inject CatalogIntegrationCredentialStore credentialStore;
+
+  /**
+   * The region a provider should assume when the integration names none.
+   *
+   * <p>The same property {@code SourceCatalogCredentialVendor} falls back to, and defaulted here
+   * because a provider module cannot see the deployment's configuration. Without it the Unity
+   * storage validator substituted {@code us-east-1} of its own: cross-region access is off by
+   * default, so validation reported storage failure for an ordinary bucket elsewhere while the read
+   * path -- which does consult this property -- worked. That made {@code s3.region} effectively
+   * required on every non-{@code us-east-1} integration, which is not what the docs say.
+   */
+  @org.eclipse.microprofile.config.inject.ConfigProperty(
+      name = "floecat.storage.aws.region",
+      defaultValue = "us-east-1")
+  String defaultRegion;
 
   // Package-private so unit tests can install a provider without using ServiceLoader.
   ClientOpener clientOpener = CatalogClientFactory.load()::open;
@@ -189,11 +205,67 @@ public class CatalogIntegrationAccess {
         new CatalogConnectionConfig(
             protocol,
             URI.create(integration.getCatalogUri()),
-            integration.getPropertiesMap(),
+            withDefaultRegion(integration, protocol),
             new ai.floedb.floecat.catalog.access.CatalogAuthentication(
                 scheme, Map.copyOf(authenticationProperties)));
     return new ResolvedAccess(
         config, new ResolvedCatalogCredentials(Map.copyOf(credentialProperties), Map.of(), null));
+  }
+
+  /**
+   * Where an operator may have spelled the region. Mirrors {@code
+   * SourceCatalogCredentialVendor.REGION_ALIAS_KEYS}, which is what reads them on the vend path;
+   * kept here rather than shared because that class is in another package, and duplicated
+   * deliberately rather than approximated -- checking fewer spellings here is precisely the defect
+   * this list exists to prevent.
+   */
+  private static final List<String> REGION_ALIAS_KEYS =
+      List.of("s3.region", "region", "client.region", "aws.region");
+
+  /**
+   * The integration's properties with {@code s3.region} resolved, for Unity.
+   *
+   * <p>Unity only. The Iceberg REST provider reads the same map and turns {@code s3.region} into
+   * {@code client.region}, so defaulting it there would pin a region on an integration that
+   * deliberately set none and was relying on the AWS SDK's own resolution chain -- replacing a
+   * provider-managed default with this deployment's. Unity's storage validator has no such chain:
+   * without a region it assumed {@code us-east-1} and disagreed with the read path.
+   *
+   * <p>Resolved across every spelling, not just {@code s3.region}. The provider reads only that key
+   * and the validation probe builds its S3 client from it, so a region written another way has to
+   * be carried across -- and the deployment default is only correct when the operator stated none
+   * at all.
+   *
+   * <p>Testing {@code s3.region} alone was worse than doing nothing. What is injected here does not
+   * stay in the validator: the provider copies {@code s3.region} into its routing, the vend merges
+   * that routing into the credential properties, and {@code
+   * SourceCatalogCredentialVendor.routingProperties} reads the vended map before the connector's
+   * aliases. So an operator who wrote {@code aws.region}, {@code region} or {@code client.region}
+   * had the deployment default silently substituted for it -- their bucket in one region read
+   * against another and answered PermanentRedirect -- which is the exact outcome that alias list
+   * exists to prevent.
+   */
+  private Map<String, String> withDefaultRegion(
+      CatalogIntegration integration, CatalogProtocol protocol) {
+    Map<String, String> properties = integration.getPropertiesMap();
+    if (protocol != CatalogProtocol.UNITY_CATALOG) {
+      return properties;
+    }
+    String stated = null;
+    for (String key : REGION_ALIAS_KEYS) {
+      String value = properties.get(key);
+      if (value != null && !value.isBlank()) {
+        stated = value.trim();
+        break;
+      }
+    }
+    String region = stated != null ? stated : (defaultRegion == null ? null : defaultRegion.trim());
+    if (region == null || region.isBlank() || region.equals(properties.get("s3.region"))) {
+      return properties;
+    }
+    LinkedHashMap<String, String> defaulted = new LinkedHashMap<>(properties);
+    defaulted.put("s3.region", region);
+    return Map.copyOf(defaulted);
   }
 
   private CatalogIntegrationCredentials requireStored(

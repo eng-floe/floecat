@@ -255,6 +255,551 @@ class CatalogOverlayReconcilerTest {
     assertNotEquals(oldId, newId);
   }
 
+  /**
+   * Tolerating a branch must not turn into deleting it. Retirement reads a relation missing from
+   * the discovery snapshot as gone upstream and hard-deletes the local copy along with its purge
+   * state, so a branch the walk could not enumerate has to be excluded -- otherwise a temporary ACL
+   * change becomes permanent metadata loss on the very next cycle, which no later reconcile can
+   * undo.
+   */
+  @Test
+  void aToleratedTableListingDenialDoesNotRetireWhatItCouldNotSee() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+    // Unfiltered, because that is the case a denial is tolerated in. Where the operator names the
+    // branch explicitly the denial surfaces instead, and no retirement runs at all.
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    reconcileWith(unfiltered);
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .isPresent());
+
+    // The upstream is still there; we simply cannot read it this cycle.
+    client.deniedTableListings.add(sales);
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(0, result.tablesDeleted(), "a denial is not evidence the table is gone");
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .isPresent(),
+        "the local table must survive a branch the walk could not enumerate");
+  }
+
+  /**
+   * The same for namespaces, on a branch below the root. A cycle that cannot descend into a catalog
+   * must not retire the namespaces it materialized under that catalog on an earlier cycle -- they
+   * are unobserved, not gone, and deleting them takes their tables with them.
+   */
+  @Test
+  void aToleratedNamespaceListingDenialDoesNotRetireItsNamespaces() {
+    NamespacePath system = NamespacePath.of("system");
+    NamespacePath info = NamespacePath.of("system", "information_schema");
+    CatalogObjectName audit = new CatalogObjectName(info, "audit");
+    client.children.put(NamespacePath.root(), List.of(system));
+    client.children.put(system, List.of(info));
+    client.children.put(info, List.of());
+    client.tables.put(audit, catalogTable(audit, "audit-uuid"));
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    reconcileWith(unfiltered);
+    assertTrue(
+        namespaces
+            .getByPath("acct", "catalog", List.of("system", "information_schema"))
+            .isPresent());
+
+    // The catalog is still there; this cycle just cannot enumerate its schemas.
+    client.deniedNamespaceListings.add(system);
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(0, result.namespacesDeleted(), "a denial is not evidence the namespace is gone");
+    assertEquals(0, result.tablesDeleted());
+    assertEquals(1, result.branchesSkipped());
+    assertTrue(
+        namespaces
+            .getByPath("acct", "catalog", List.of("system", "information_schema"))
+            .isPresent());
+  }
+
+  /**
+   * A root listing failure is the whole tree, not a branch. Tolerating it made every path
+   * unobserved and returned an all-zero result with no exception, so an integration whose principal
+   * had lost listCatalogs reported healthy while the overlay drifted.
+   */
+  @Test
+  void aRootListingFailureIsNotTolerated() {
+    client.deniedNamespaceListings.add(NamespacePath.root());
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    assertThrows(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.class,
+        () -> reconcileWith(unfiltered));
+  }
+
+  /**
+   * One table that lists but will not load costs that table, not the overlay. The listing and the
+   * detail read can disagree, and a table dropped upstream between them answers NOT_FOUND.
+   */
+  @Test
+  void aTableThatWillNotLoadIsSkippedRatherThanFailingTheCycle() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    CatalogObjectName broken = new CatalogObjectName(sales, "broken");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+    client.tables.put(broken, catalogTable(broken, "broken-uuid"));
+    client.unloadableTables.add(broken);
+
+    var result = reconcile();
+
+    assertEquals(1, result.tablesCreated(), "the loadable table still materializes");
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .isPresent());
+    assertTrue(
+        tables.getByName("acct", "catalog", namespace.getResourceId().getId(), "broken").isEmpty());
+  }
+
+  /**
+   * A skipped table is unobserved, not absent, so a later cycle must not retire the local copy it
+   * created on an earlier one when the load recovers or keeps failing.
+   */
+  @Test
+  void aTableThatStopsLoadingIsNotRetired() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+
+    reconcile();
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+
+    client.unloadableTables.add(orders);
+    var result = reconcile();
+
+    assertEquals(0, result.tablesDeleted(), "a failed load is not evidence the table is gone");
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .isPresent());
+  }
+
+  /** A partial reconcile says so, because zeros alone cannot distinguish it from a quiet one. */
+  @Test
+  void aSkippedBranchIsCountedInTheResult() {
+    NamespacePath sales = NamespacePath.of("sales");
+    NamespacePath system = NamespacePath.of("system");
+    client.children.put(NamespacePath.root(), List.of(sales, system));
+    client.children.put(sales, List.of());
+    client.deniedNamespaceListings.add(system);
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(1, result.branchesSkipped());
+  }
+
+  /**
+   * The failure this whole line of fixes exists to remove, on the one listing that still had no
+   * guard. Unity serves both listings from one RPC so they rarely disagree, but the reconciler is
+   * provider-neutral.
+   */
+  @Test
+  void aDeniedViewListingDoesNotAbortTheOverlay() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+    client.deniedViewListings.add(sales);
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(1, result.tablesCreated(), "the tables in that namespace still materialize");
+    assertEquals(1, result.branchesSkipped());
+  }
+
+  /**
+   * The skip path used to re-implement the enqueue and leave by {@code continue}. Dropping that
+   * copy in favour of falling through to the enqueue at the foot of the loop -- the one place that
+   * decides descent, as the table skip beside it already does -- has to keep reaching children.
+   */
+  @Test
+  void aDeniedViewListingStillDescendsToItsChildNamespaces() {
+    NamespacePath sales = NamespacePath.of("sales");
+    NamespacePath eu = NamespacePath.of("sales", "eu");
+    CatalogObjectName orders = new CatalogObjectName(eu, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of(eu));
+    client.children.put(eu, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+    client.deniedViewListings.add(sales);
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(1, result.tablesCreated(), "the child namespace must still be reached");
+  }
+
+  /**
+   * A rename plus a failed load must not read as a deletion. Retirement matches a stable-ID table
+   * by identity, and a skipped load never reveals one -- so the local copy still sits under its old
+   * path, is not the name recorded as unobserved, and would be deleted and purged, losing the
+   * identity the next successful pass would otherwise have preserved.
+   */
+  @Test
+  void aRenamedTableIsNotRetiredWhenItsLoadWasSkipped() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    CatalogObjectName renamed = new CatalogObjectName(sales, "orders_v2");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+
+    reconcile();
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    ResourceId original =
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow()
+            .getResourceId();
+
+    // Renamed upstream, and this pass cannot read it -- so its identity stays unknown.
+    client.tables.clear();
+    client.tables.put(renamed, catalogTable(renamed, "orders-uuid"));
+    client.unloadableTables.add(renamed);
+    var result = reconcile();
+
+    assertEquals(0, result.tablesDeleted(), "an unknown identity is not a deletion");
+    assertEquals(1, result.objectsSkipped());
+    assertEquals(
+        original,
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .orElseThrow()
+            .getResourceId(),
+        "the original resource survives so a later pass can still match it by identity");
+  }
+
+  /** A pass where only loads failed is still partial, and the counters have to say so. */
+  @Test
+  void skippedObjectsAreCountedEvenWhenNoBranchWasSkipped() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName broken = new CatalogObjectName(sales, "broken");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(broken, catalogTable(broken, "broken-uuid"));
+    client.unloadableTables.add(broken);
+
+    var result = reconcile();
+
+    assertEquals(0, result.branchesSkipped());
+    assertEquals(1, result.objectsSkipped(), "a load-only skip still makes the pass partial");
+  }
+
+  /**
+   * Narrowing an overlay must not make it more fragile. Both non-descending call sites sit inside
+   * selected(), so testing selected() again could never tolerate anything once filters existed:
+   * --include main turned a stepped-over denial on one schema into an aborted reconcile for the
+   * whole overlay. The operator asked for everything under main, not for that schema specifically.
+   */
+  @Test
+  void aDeniedListingUnderAnIncludedPrefixIsStillTolerated() {
+    NamespacePath main = NamespacePath.of("main");
+    NamespacePath sales = NamespacePath.of("main", "sales");
+    NamespacePath systemSchema = NamespacePath.of("main", "system_schema");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(main));
+    client.children.put(main, List.of(sales, systemSchema));
+    client.children.put(sales, List.of());
+    client.children.put(systemSchema, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+    client.deniedTableListings.add(systemSchema);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder().addSegments("main"))
+            .build();
+
+    var result = reconcileWith(included);
+
+    assertEquals(1, result.tablesCreated(), "the reachable schema still materializes");
+    assertEquals(1, result.branchesSkipped());
+  }
+
+  /** But a denial on the branch the operator named itself is the answer to their question. */
+  @Test
+  void aDeniedListingOnTheNamedBranchStillSurfaces() {
+    NamespacePath main = NamespacePath.of("main");
+    NamespacePath sales = NamespacePath.of("main", "sales");
+    client.children.put(NamespacePath.root(), List.of(main));
+    client.children.put(main, List.of(sales));
+    client.children.put(sales, List.of());
+    client.deniedTableListings.add(sales);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("main")
+                    .addSegments("sales"))
+            .build();
+
+    assertThrows(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.class,
+        () -> reconcileWith(included));
+  }
+
+  /**
+   * And a denial on the way down to what they named surfaces too: they do not get their selection.
+   */
+  @Test
+  void aDeniedDescentTowardsTheNamedBranchStillSurfaces() {
+    NamespacePath main = NamespacePath.of("main");
+    client.children.put(NamespacePath.root(), List.of(main));
+    client.deniedNamespaceListings.add(main);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("main")
+                    .addSegments("sales"))
+            .build();
+
+    assertThrows(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.class,
+        () -> reconcileWith(included));
+  }
+
+  /**
+   * A relation listing that fails says nothing about the namespace's children. The skip used to
+   * jump past the enqueue at the foot of the walk, so on a provider with more than two namespace
+   * levels one denial dropped the whole subtree -- new tables below it never appeared, existing
+   * ones stopped being updated, and the pass reported a single skipped branch for all of it.
+   */
+  @Test
+  void aDeniedRelationListingStillDescendsIntoChildNamespaces() {
+    NamespacePath parent = NamespacePath.of("a");
+    NamespacePath child = NamespacePath.of("a", "b");
+    CatalogObjectName nested = new CatalogObjectName(child, "orders");
+    client.children.put(NamespacePath.root(), List.of(parent));
+    client.children.put(parent, List.of(child));
+    client.children.put(child, List.of());
+    client.tables.put(nested, catalogTable(nested, "orders-uuid"));
+    // The parent's own relation listing is denied; its child's is fine.
+    client.deniedTableListings.add(parent);
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(1, result.tablesCreated(), "the child namespace must still be walked");
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("a", "b")).orElseThrow();
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .isPresent());
+  }
+
+  /**
+   * Suppressing retirement where an identity might be hidden is right; suppressing it everywhere is
+   * not. One object that fails to load on every pass would otherwise stop upstream deletions
+   * propagating anywhere in the overlay, with no bound and nothing to clear it.
+   */
+  @Test
+  void aSkippedLoadSuppressesRetirementOnlyInItsOwnNamespace() {
+    NamespacePath broken = NamespacePath.of("broken");
+    NamespacePath healthy = NamespacePath.of("healthy");
+    CatalogObjectName unloadable = new CatalogObjectName(broken, "bad");
+    CatalogObjectName gone = new CatalogObjectName(healthy, "gone");
+    client.children.put(NamespacePath.root(), List.of(broken, healthy));
+    client.children.put(broken, List.of());
+    client.children.put(healthy, List.of());
+    client.tables.put(unloadable, catalogTable(unloadable, "bad-uuid"));
+    client.tables.put(gone, catalogTable(gone, "gone-uuid"));
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    reconcileWith(unfiltered);
+    var healthyNs = namespaces.getByPath("acct", "catalog", List.of("healthy")).orElseThrow();
+    assertTrue(
+        tables.getByName("acct", "catalog", healthyNs.getResourceId().getId(), "gone").isPresent());
+
+    // One object stops loading, and separately a table in an unrelated namespace is dropped
+    // upstream. The second must still be retired.
+    client.unloadableTables.add(unloadable);
+    client.tables.remove(gone);
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(1, result.objectsSkipped());
+    assertEquals(1, result.tablesDeleted(), "an unrelated namespace still retires normally");
+    assertTrue(
+        tables.getByName("acct", "catalog", healthyNs.getResourceId().getId(), "gone").isEmpty());
+  }
+
+  /**
+   * A view listing that fails says nothing about tables. Sharing one skipped-prefix set meant a
+   * recurring view-only denial kept every deleted table in that namespace alive indefinitely.
+   */
+  @Test
+  void aDeniedViewListingDoesNotSuppressTableRetirement() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    reconcileWith(unfiltered);
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+
+    // The table really is gone upstream, and only the view listing is blind.
+    client.tables.remove(orders);
+    client.deniedViewListings.add(sales);
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(1, result.tablesDeleted(), "a view denial is not evidence about tables");
+    assertTrue(
+        tables.getByName("acct", "catalog", namespace.getResourceId().getId(), "orders").isEmpty());
+  }
+
+  /**
+   * And the converse: a denied table listing must not keep a deleted view alive. Paired with {@link
+   * #aDeniedTableListingDoesNotDeleteLiveViews}, because this one asserts a deletion happens and on
+   * its own could not tell a correct retirement from a blind one.
+   */
+  @Test
+  void aDeniedTableListingDoesNotSuppressViewRetirement() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName report = new CatalogObjectName(sales, "report");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.views.put(report, catalogView(report, "report-uuid"));
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    reconcileWith(unfiltered);
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+
+    client.views.remove(report);
+    client.deniedTableListings.add(sales);
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(1, result.viewsDeleted(), "a table denial is not evidence about views");
+    assertTrue(
+        views.getByName("acct", "catalog", namespace.getResourceId().getId(), "report").isEmpty());
+  }
+
+  /**
+   * A denied table listing must not delete views. The tolerated skip jumped out of the selected
+   * block before the view listing ran, so views were never enumerated -- yet only the table skip
+   * was recorded, leaving retirement to read the gap as a deletion and destroy local copies of
+   * views that are alive upstream.
+   */
+  @Test
+  void aDeniedTableListingDoesNotDeleteLiveViews() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName report = new CatalogObjectName(sales, "report");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.views.put(report, catalogView(report, "report-uuid"));
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    reconcileWith(unfiltered);
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    assertTrue(
+        views
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "report")
+            .isPresent());
+
+    // The view is still there upstream; only the table listing is denied.
+    client.deniedTableListings.add(sales);
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(0, result.viewsDeleted(), "a table denial is not evidence about views");
+    assertTrue(
+        views.getByName("acct", "catalog", namespace.getResourceId().getId(), "report").isPresent(),
+        "a live upstream view must survive a denied table listing");
+  }
+
+  /**
+   * A denied listNamespaces hides that namespace's children, not its own relations -- those were
+   * listed in the earlier iteration where it appeared as a selected child. Matching the skipped
+   * prefix inclusively excluded relations the walk had actually seen, freezing their retirement for
+   * as long as the denial recurred.
+   */
+  @Test
+  void aDeniedNamespaceListingStillRetiresRelationsInThatNamespace() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName orders = new CatalogObjectName(sales, "orders");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    reconcileWith(unfiltered);
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .isPresent());
+
+    // The table is genuinely gone, and sales' own relation listing still succeeds; only the descent
+    // into its children is denied.
+    client.tables.remove(orders);
+    client.deniedNamespaceListings.add(sales);
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(
+        1, result.tablesDeleted(), "the namespace's own relations were listed, so they retire");
+    assertTrue(
+        tables.getByName("acct", "catalog", namespace.getResourceId().getId(), "orders").isEmpty());
+  }
+
+  /**
+   * A failed table listing suppresses that namespace, not its subtree. The walk no longer stops on
+   * such a failure -- it falls through and still descends -- so descendants are visited and their
+   * relations genuinely observed. Matching the skip by prefix suppressed all of them, freezing
+   * retirement across the subtree for as long as the parent's listing kept failing.
+   */
+  @Test
+  void aDeniedTableListingDoesNotFreezeRetirementBelowIt() {
+    NamespacePath parent = NamespacePath.of("a");
+    NamespacePath child = NamespacePath.of("a", "b");
+    CatalogObjectName nested = new CatalogObjectName(child, "orders");
+    client.children.put(NamespacePath.root(), List.of(parent));
+    client.children.put(parent, List.of(child));
+    client.children.put(child, List.of());
+    client.tables.put(nested, catalogTable(nested, "orders-uuid"));
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    reconcileWith(unfiltered);
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("a", "b")).orElseThrow();
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .isPresent());
+
+    // The nested table is genuinely gone, and only the parent's own listing is denied.
+    client.tables.remove(nested);
+    client.deniedTableListings.add(parent);
+    var result = reconcileWith(unfiltered);
+
+    assertEquals(1, result.tablesDeleted(), "the child namespace was walked, so its table retires");
+    assertTrue(
+        tables.getByName("acct", "catalog", namespace.getResourceId().getId(), "orders").isEmpty());
+  }
+
   @Test
   void retiresRenameDestinationBeforeMovingAStableTable() {
     NamespacePath sales = NamespacePath.of("sales");
@@ -430,6 +975,58 @@ class CatalogOverlayReconcilerTest {
         tables
             .getByName("acct", "catalog", namespace.getResourceId().getId(), "summary")
             .isPresent());
+  }
+
+  /**
+   * The documented default selects the whole upstream tree, and a Unity workspace almost always
+   * exposes a system catalog whose schemas the integration principal cannot enumerate. Propagating
+   * that denial aborted reconcile for every table in the overlay -- and validation already treats
+   * the same failure as skippable, so an integration could validate and then never reconcile.
+   */
+  @Test
+  void anInaccessibleBranchDoesNotAbortAnUnfilteredOverlay() {
+    NamespacePath sales = NamespacePath.of("sales");
+    NamespacePath system = NamespacePath.of("system");
+    client.children.put(NamespacePath.root(), List.of(sales, system));
+    client.children.put(sales, List.of());
+    client.deniedNamespaceListings.add(system);
+    var unfiltered = overlay.toBuilder().clearIncludeNamespaces().build();
+
+    reconcileWith(unfiltered);
+
+    // The reachable branch materialized; the denied one was stepped over rather than fatal.
+    assertTrue(
+        listLocalNamespaces().stream().anyMatch(n -> "sales".equals(n.getDisplayName())),
+        "sales should have materialized past the denied system catalog");
+  }
+
+  /**
+   * Tolerance is scoped to branches nobody asked for. Where include filters name something under
+   * the branch, the denial answers a question the operator actually asked, and skipping it would
+   * publish an overlay silently missing what they selected.
+   */
+  @Test
+  void anInaccessibleBranchStillFailsWhenItWasExplicitlyIncluded() {
+    NamespacePath system = NamespacePath.of("system");
+    client.children.put(NamespacePath.root(), List.of(system));
+    client.deniedNamespaceListings.add(system);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("system")
+                    .addSegments("information_schema"))
+            .build();
+
+    assertThrows(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.class,
+        () ->
+            reconciler.reconcile(
+                included,
+                overlays.metaFor(overlay.getResourceId()),
+                integration,
+                integrations.metaFor(integration.getResourceId())));
   }
 
   @Test
@@ -660,8 +1257,27 @@ class CatalogOverlayReconcilerTest {
         integrations.metaFor(integration.getResourceId()));
   }
 
+  /** Reconciles a variant of the fixture overlay without persisting the variant. */
+  private CatalogOverlayReconciler.Result reconcileWith(CatalogOverlay variant) {
+    return reconciler.reconcile(
+        variant,
+        overlays.metaFor(overlay.getResourceId()),
+        integration,
+        integrations.metaFor(integration.getResourceId()));
+  }
+
   private List<Namespace> listLocalNamespaces() {
     return namespaces.listConsistent("acct", "catalog", List.of(), 200, "", new StringBuilder());
+  }
+
+  private static CatalogView catalogView(CatalogObjectName name, String stableIdentity) {
+    return new CatalogView(
+        name,
+        ExternalObjectIdentity.stable(stableIdentity),
+        SCHEMA_JSON,
+        List.of(new CatalogViewDefinition("select 1", "ansi")),
+        name.namespace(),
+        Map.of());
   }
 
   private static CatalogTable catalogTable(CatalogObjectName name, String stableIdentity) {
@@ -698,23 +1314,55 @@ class CatalogOverlayReconcilerTest {
     @Override
     public void validate() {}
 
+    /** Branches whose schema listing the principal cannot enumerate. */
+    final java.util.Set<NamespacePath> deniedNamespaceListings = new java.util.HashSet<>();
+
     @Override
     public List<NamespacePath> listNamespaces(NamespacePath parent) {
+      if (deniedNamespaceListings.contains(parent)) {
+        throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.Code.PERMISSION_DENIED,
+            "cannot list schemas under " + parent);
+      }
       return children.getOrDefault(parent, List.of());
     }
 
+    /** Namespaces whose table listing the principal cannot read. */
+    final java.util.Set<NamespacePath> deniedTableListings = new java.util.HashSet<>();
+
     @Override
     public List<CatalogObjectName> listTables(NamespacePath namespace) {
+      if (deniedTableListings.contains(namespace)) {
+        throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.Code.PERMISSION_DENIED,
+            "cannot list tables in " + namespace);
+      }
       return tables.keySet().stream().filter(name -> name.namespace().equals(namespace)).toList();
     }
 
+    /** Tables that list but will not load, as a lenient listing and a strict read can disagree. */
+    final java.util.Set<CatalogObjectName> unloadableTables = new java.util.HashSet<>();
+
     @Override
     public CatalogTable loadTable(CatalogObjectName table) {
+      if (unloadableTables.contains(table)) {
+        throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.Code.NOT_FOUND,
+            "table vanished between listing and load: " + table);
+      }
       return tables.get(table);
     }
 
+    /** Namespaces whose view listing the principal cannot read. */
+    final java.util.Set<NamespacePath> deniedViewListings = new java.util.HashSet<>();
+
     @Override
     public List<CatalogObjectName> listViews(NamespacePath namespace) {
+      if (deniedViewListings.contains(namespace)) {
+        throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.Code.PERMISSION_DENIED,
+            "cannot list views in " + namespace);
+      }
       return views.keySet().stream().filter(name -> name.namespace().equals(namespace)).toList();
     }
 

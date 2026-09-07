@@ -39,7 +39,6 @@ import ai.floedb.floecat.connector.spi.LogSafeText;
 import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
 import ai.floedb.floecat.connector.spi.SourceCatalogVending;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
-import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
 import ai.floedb.floecat.service.integration.CatalogIntegrationAccess;
 import ai.floedb.floecat.service.integration.CatalogUpstreamBudget;
@@ -369,22 +368,15 @@ public class SourceCatalogCredentialVendor {
               + tableId.getId()
               + " not found");
     }
-    if (integration.getType() != CatalogIntegrationType.CIT_ICEBERG_REST) {
-      throw integrationCannotVend(
-          "Catalog Integration "
-              + integration.getResourceId().getId()
-              + " is of a type that does not vend storage credentials");
-    }
-
-    // After the two checks above, not before. Opening an integration resolves its stored secret and
-    // spends an OAuth exchange against the upstream on the caller's behalf, so it takes the same
-    // permission every other site that opens one requires -- CatalogIntegrationsImpl's validate and
-    // upstream listings, and the overlay reconcile. Table authorization admits the caller to this
-    // vend; it does not admit them to the integration's own credential.
+    // Opening an integration resolves its stored secret and spends an OAuth exchange against the
+    // upstream on the caller's behalf, so it takes the same permission every other site that opens
+    // one requires -- CatalogIntegrationsImpl's validate and upstream listings, and the overlay
+    // reconcile. Table authorization admits the caller to this vend; it does not admit them to the
+    // integration's own credential.
     //
-    // Ordered last of the three because the other two describe the Integration rather than the
-    // caller: a missing record or a type that cannot vend means this vend was never going to
-    // happen, and answering PERMISSION_DENIED there would blame the caller for the configuration.
+    // Ordered after the record lookup, because that one describes the Integration rather than the
+    // caller: a missing record means this vend was never going to happen, and answering
+    // PERMISSION_DENIED there would blame the caller for the configuration.
     authz.require(principal.get(), RolePermissions.CATALOG_INTEGRATION_USE);
 
     String namespaceFq = String.join(".", upstream.getNamespacePathList());
