@@ -233,11 +233,12 @@ ETags for load responses are representation-aware and vary by `snapshots` mode.
   view lifecycle checks in LocalStack mode. To exercise split reconciler deployment, run
   `COMPOSE_SMOKE_MODES=localstack-remote make compose-smoke`, which starts the service in
   `reconciler-control` mode and enables the remote `executor` profile. The Trino block creates and
-  replaces an Iceberg view via SQL and verifies both definitions are queryable. The same
-  `localstack-remote` smoke run also exercises upstream Polaris Iceberg REST credential vending by
+  replaces an Iceberg view via SQL and verifies both definitions are queryable. The `localstack` and
+  `localstack-remote` smoke runs also exercise upstream Polaris Iceberg REST credential vending by
   verifying that Polaris `loadTable` returns non-empty `storage-credentials` when sent
   `X-Iceberg-Access-Delegation: vended-credentials`, then importing the upstream table through that
-  vended-credentials path in the same stack. For the OIDC split deployment, run
+  vended-credentials path with every storage authority covering it disabled, so the import cannot
+  resolve through one instead. For the OIDC split deployment, run
   `COMPOSE_SMOKE_MODES=localstack-oidc-remote make compose-smoke`, which adds Keycloak and
   exercises remote executor worker machine auth as well as user-propagated OIDC auth.
 

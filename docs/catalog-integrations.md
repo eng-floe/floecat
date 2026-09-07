@@ -136,9 +136,37 @@ COMPOSE_SMOKE_MODES=polaris-integration make compose-smoke
 
 This mode does not create or trigger a legacy Connector resource.
 
+After the Overlay materializes, the Polaris scenario disables **every** storage authority whose
+prefix covers the table location, then loads the Overlay table through Floecat's own Iceberg REST
+gateway with `X-Iceberg-Access-Delegation: vended-credentials` and requires a complete session
+tuple in the response.
+
+Every covering authority matters, not just the one the smoke created. `matchesLocationPrefix`
+strips a trailing slash from the configured prefix and then requires a path boundary, so the
+seeded `fixture-floecat` authority at `s3://floecat` covers `s3://floecat/sales/...` exactly as the
+smoke's own `s3://floecat/` does — and leaving it enabled means the read resolves through it and
+never reaches the vend. The scenario computes coverage with that same rule, disables what it finds,
+and re-lists to confirm nothing still covers before reading. They are disabled rather than deleted
+so re-enabling restores the exact record, which recreating a seeded fixture from guessed arguments
+would not.
+
+With nothing covering the location and the table already asserted to carry no Connector,
+`vendFromCatalogIntegration` is the only code that can put a credential in that response, so the
+response carries the whole assertion. The authorities are re-enabled afterwards for the sections
+that still read through them.
+
+The gateway is used rather than a capture because `overlay reconcile` is metadata-only and capture
+needs `connector trigger`, which an Overlay-materialized table has no Connector for.
+
 The full LocalStack smoke also exercises the Unity Integration and Overlay path against the same
 TLS-backed Unity/Delta fixture used by the Connector migration scenario. It validates discovery,
 credential vending, a storage read with those credentials, and Overlay materialization.
+
+The Unity Integration finishes with the same gateway `loadTable` check as the Polaris one. No
+authority has to be removed there: that fixture is copied to a bucket deliberately absent from
+`COMPOSE_SMOKE_LOCALSTACK_BUCKETS`, which the scenario asserts rather than assumes. Its upstream
+namespace has two levels, so the URL uses the `%1F` separator the gateway's own `/v1/config`
+advertises.
 
 Authentication types and their properties are:
 

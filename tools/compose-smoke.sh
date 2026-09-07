@@ -337,6 +337,171 @@ assert_remote_file_group_worker_activity() {
     "commitLeasedFileGroupResult"
 }
 
+# Ids of enabled storage authorities covering a location, one per line, on stdout only.
+#
+# Mirrors StorageAuthorityResolver.matchesLocationPrefix, which strips a trailing slash and then
+# requires a path boundary. A substring test is wrong both ways: it misses s3://floecat covering
+# s3://floecat/sales/..., and counts s3://floecat-delta as covering s3://floecat-delta-vended/...
+authorities_covering() {
+  local compose_cmd="$1"
+  local location="$2"
+
+  run_cli_script "$compose_cmd" "account t-0001
+storage-authority list
+quit" | COVERED_LOCATION="$location" python3 -c '
+import os
+import re
+import sys
+
+location = os.environ["COVERED_LOCATION"].strip()
+
+
+def covers(prefix):
+    prefix = prefix.strip().rstrip("/")
+    if not prefix or not location.startswith(prefix):
+        return False
+    return len(location) == len(prefix) or location[len(prefix)] == "/"
+
+
+UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+rows = 0
+for line in sys.stdin:
+    parts = line.split()
+    # Only the last two fields are at a fixed offset, and the enabled flag reading true or false is
+    # what identifies a row. Keyed on the id rather than the name because the field count is not
+    # fixed either: a blank TYPE collapses to four fields and a multi-word name adds fields in the
+    # middle. storage-authority update takes an id directly.
+    if len(parts) < 4 or parts[-2] not in ("true", "false"):
+        continue
+    identifier = None
+    for part in parts:
+        if UUID.match(part):
+            identifier = part
+            break
+    if identifier is None:
+        continue
+    rows += 1
+    if parts[-2] == "true" and covers(parts[-1]):
+        print(identifier)
+
+# Recognising nothing is a broken parse, not an empty catalog: every caller reads no output as
+# "no authority covers this", so a column change would turn each of them green asserting nothing.
+if rows == 0:
+    print("parsed no storage-authority rows; the list columns may have changed", file=sys.stderr)
+    sys.exit(1)
+'
+}
+
+# Flips the enabled flag on each authority named on stdin.
+#
+# Disabled rather than deleted, so re-enabling restores the exact record; a seeded fixture cannot
+# be recreated from arguments guessed at the call site. Callers use a here-string, not a pipe: as a
+# pipeline sink this runs in a subshell that inherits the ERR trap under set -E, so a failed update
+# would run the mode handler there, destroy the stack, then run it again in the parent.
+set_authorities_enabled() {
+  local compose_cmd="$1"
+  local label="$2"
+  local enabled="$3"
+  local authority_name
+  local -a authority_names=()
+
+  # Drained before the first update runs. run_cli_script pipes its own script into the container
+  # and so leaves this stdin alone, but a reader should not have to confirm that to trust the loop.
+  while IFS= read -r authority_name; do
+    [ -n "$authority_name" ] || continue
+    authority_names+=("$authority_name")
+  done
+
+  if [ "${#authority_names[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  # One shell invocation for the whole set. The CLI takes a multi-command script, as the setup
+  # blocks in this file already rely on, and a container start per authority adds up: two covering
+  # authorities across four disable and re-enable rounds is eight of them per localstack mode.
+  local script="account t-0001"
+  for authority_name in "${authority_names[@]}"; do
+    script="$script
+storage-authority update $authority_name --enabled $enabled"
+  done
+  script="$script
+quit"
+
+  local out
+  out=$(run_cli_script "$compose_cmd" "$script")
+  echo "$out"
+  # The combined output names whichever update failed, so one assertion over all of them keeps the
+  # signal without a label per authority.
+  assert_not_contains "$label storage authority enabled=$enabled" "$out" "! "
+}
+
+# Fails unless no enabled storage authority covers the location.
+assert_no_authority_covers() {
+  local compose_cmd="$1"
+  local label="$2"
+  local location="$3"
+  local still_covering
+
+  still_covering=$(authorities_covering "$compose_cmd" "$location")
+  if [ -n "$still_covering" ]; then
+    echo "[FAIL] $label storage authorities still cover $location"
+    printf '%s\n' "$still_covering"
+    return 1
+  fi
+  echo "[PASS] $label no storage authority covers $location"
+}
+
+# Fails unless a gateway loadTable returns a complete vended session tuple.
+#
+# Shared by the Polaris and Unity checks, which differ only in label and URL. The body is never
+# echoed: it carries live temporary storage credentials, the same reason the Polaris loadTable
+# precondition omits its own. The status is safe and is reported.
+assert_gateway_vends_session_tuple() {
+  local compose_project="$1"
+  local label="$2"
+  local url="$3"
+
+  local resp
+  resp=$(docker run --rm --network "${compose_project}_floecat" \
+    curlimages/curl:8.12.1 -k -sS \
+    -w '\n%{http_code}' \
+    -X GET "$url" \
+    -H "X-Iceberg-Access-Delegation: vended-credentials")
+  local code
+  code=$(printf '%s' "$resp" | tail -n1)
+  local body
+  body=$(printf '%s' "$resp" | sed '$d')
+  echo "$label gateway loadTable http=${code}"
+
+  if ! python3 - "$body" <<'PY'
+import json
+import sys
+
+# Guarded so a non-JSON body exits quietly rather than printing itself in a traceback; it may
+# carry live credentials. The session token is what separates a real vend from a bare key pair.
+try:
+    payload = json.loads(sys.argv[1])
+    creds = payload.get("storage-credentials")
+    if not isinstance(creds, list) or not creds:
+        sys.exit(1)
+    config = creds[0].get("config") or {}
+    for required in ("s3.access-key-id", "s3.secret-access-key", "s3.session-token"):
+        if not config.get(required):
+            sys.exit(1)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(1)
+PY
+  then
+    echo "[FAIL] $label gateway loadTable returned no vended session tuple (http=${code})"
+    echo "[FAIL] response body omitted because it may contain storage credentials"
+    return 1
+  fi
+  echo "[PASS] $label gateway credential vending"
+}
+
 assert_table_stats_available() {
   local compose_cmd="$1"
   local label="$2"
@@ -650,6 +815,9 @@ run_mode() {
   local executor_scale="${9:-}"
   local smoke_scope="${10:-full}"
 
+  # Disabled by a scenario and not yet re-enabled. Restored from the mode handlers so a failure
+  # inside that window does not leave a preserved stack with fixture-floecat switched off.
+  local disabled_authorities_pending=""
   local compose_project="floecat-smoke-$label"
   local compose_profiles="${compose_profiles_override:-$profile}"
   if [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT"; then
@@ -711,6 +879,25 @@ run_mode() {
   done
 
   local compose_cmd="${mode_env}${DOCKER_COMPOSE_MAIN}"
+  # Deliberately assertion-free and failure-tolerant: this runs from an ERR handler, where a
+  # non-zero command would recurse or mask the failure being reported.
+  restore_disabled_authorities() {
+    [ -n "$disabled_authorities_pending" ] || return 0
+    local pending="$disabled_authorities_pending"
+    disabled_authorities_pending=""
+    echo "==> [SMOKE] re-enabling storage authorities disabled for this scenario"
+    local authority_name
+    while IFS= read -r authority_name; do
+      [ -n "$authority_name" ] || continue
+      # Bounded, unlike every other call in this file. Each re-enable is a compose run that starts
+      # the cli service and its dependencies, and this path runs on a stack that has just failed,
+      # so an unbounded wait would postpone the diagnostics that explain the failure.
+      run_cli_script "$compose_cmd" "account t-0001
+storage-authority update $authority_name --enabled true
+quit" 60 || true
+    done <<< "$pending"
+  }
+
   on_mode_error() {
     echo "==> [SMOKE][FAIL] mode=$label"
     eval "$compose_cmd ps" || true
@@ -723,7 +910,11 @@ run_mode() {
     eval "$compose_cmd logs --no-color --tail=120" || true
     save_mode_logs "$compose_cmd" "${label}-fail"
     save_mode_container_diagnostics "$compose_cmd" "${label}-fail"
+    # Only where the stack survives. Against one about to be down -v'd it writes to a doomed
+    # volume, and each re-enable waits on the service being healthy -- so on the failures that
+    # reach here it would burn its timeout first. After the diagnostics, which record the failure.
     if should_keep_on_fail || should_keep_on_exit; then
+      restore_disabled_authorities
       echo "==> [SMOKE][KEEP] preserving compose stack for mode=$label (COMPOSE_SMOKE_KEEP_ON_FAIL=$COMPOSE_SMOKE_KEEP_ON_FAIL)"
     else
       cleanup_mode "$compose_cmd"
@@ -746,6 +937,7 @@ run_mode() {
       save_mode_logs "$compose_cmd" "${label}-fail"
       save_mode_container_diagnostics "$compose_cmd" "${label}-fail"
       if should_keep_on_fail || should_keep_on_exit; then
+        restore_disabled_authorities
         echo "==> [SMOKE][KEEP] preserving compose stack for mode=$label (COMPOSE_SMOKE_KEEP_ON_FAIL=$COMPOSE_SMOKE_KEEP_ON_FAIL)"
       else
         cleanup_mode "$compose_cmd"
@@ -897,7 +1089,6 @@ quit")
     local source_namespace="$COMPOSE_SMOKE_UPSTREAM_ICEBERG_SOURCE_NS"
     local source_table="$COMPOSE_SMOKE_UPSTREAM_ICEBERG_TABLE"
     local localstack_storage_bucket_resource_list=""
-    local localstack_storage_authority_name=""
     local bucket
     for bucket in $COMPOSE_SMOKE_LOCALSTACK_BUCKETS; do
       local storage_authority_name
@@ -912,19 +1103,11 @@ storage-authority create $storage_authority_name --location-prefix s3://$storage
 quit")
         echo "$localstack_authority_setup_out"
         assert_contains "$label upstream iceberg storage authority setup (${storage_bucket})" "$localstack_authority_setup_out" "$storage_authority_name"
-
-        if [ "$storage_bucket" = "floecat" ]; then
-          localstack_storage_authority_name="$storage_authority_name"
-        fi
       fi
 
       localstack_storage_bucket_resource_list+="\\\"arn:aws:s3:::${storage_bucket}\\\",\\\"arn:aws:s3:::${storage_bucket}/*\\\","
     done
     localstack_storage_bucket_resource_list=${localstack_storage_bucket_resource_list%,}
-    if [ "$smoke_scope" = "full" ] && [ -z "$localstack_storage_authority_name" ]; then
-      echo "[FAIL] $label upstream iceberg expected floecat storage authority name not resolved"
-      return 1
-    fi
 
     docker exec "$localstack_container" sh -lc "cat > /tmp/polaris-trust.json <<'JSON'
 {\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\"Action\":\"sts:AssumeRole\"}]}
@@ -1029,22 +1212,33 @@ EOF
       local scenario_suffix="$2"
       local access_delegation_header="$3"
       local expect_vended_creds="$4"
-      local scenario_storage_authority_name="$localstack_storage_authority_name"
+      # The table root, not the bucket root: a bucket root cannot see an authority scoped beneath
+      # it, and one at s3://floecat/sales covers this table without covering s3://floecat.
+      # metadata_uri is the registered metadata file, so /metadata/... strips to the table root.
+      local scenario_authority_location="${metadata_uri%/metadata/*}"
       local scenario_connector_name="smoke-upstream-iceberg${scenario_suffix}"
       local scenario_catalog_name="${COMPOSE_SMOKE_UPSTREAM_ICEBERG_DEST_CATALOG}${scenario_suffix}"
       local scenario_expected_table="${scenario_catalog_name}.${COMPOSE_SMOKE_UPSTREAM_ICEBERG_EXPECTED_TABLE#*.}"
       local access_delegation_arg=""
 
       if [ "$expect_vended_creds" = "true" ]; then
-        # The baseline scenario deliberately proves the storage-authority path. Remove that
-        # authority before the delegated scenario so a successful import cannot silently use the
-        # same authority and pass without ever consuming the credentials returned by Polaris.
-        local authority_remove_out
-        authority_remove_out=$(run_cli_script "$compose_cmd" "account t-0001
-storage-authority delete $scenario_storage_authority_name
-quit")
-        echo "$authority_remove_out"
-        assert_contains "$label upstream iceberg ${scenario_key} storage authority removal" "$authority_remove_out" "ok"
+        # The baseline scenario proves the authority path; take it away here so a successful import
+        # cannot pass without consuming Polaris credentials. Every covering authority, not just the
+        # one this smoke created: leaving the seeded fixture-floecat at s3://floecat behind is what
+        # let this scenario pass without ever vending.
+        local scenario_covering_authorities
+        scenario_covering_authorities=$(authorities_covering "$compose_cmd" "$scenario_authority_location")
+        if [ -z "$scenario_covering_authorities" ]; then
+          echo "[FAIL] $label upstream iceberg ${scenario_key} found no authority covering $scenario_authority_location to take away"
+          return 1
+        fi
+        echo "disabling storage authorities covering ${scenario_authority_location}:"
+        printf '%s\n' "$scenario_covering_authorities"
+        disabled_authorities_pending="$scenario_covering_authorities"
+        set_authorities_enabled "$compose_cmd" "$label upstream iceberg ${scenario_key}" false \
+          <<< "$scenario_covering_authorities"
+        assert_no_authority_covers "$compose_cmd" \
+          "$label upstream iceberg ${scenario_key}" "$scenario_authority_location"
 
         local load_table_resp
         load_table_resp=$(docker run --rm --network "${compose_project}_floecat" curlimages/curl:8.12.1 -k -sS \
@@ -1107,22 +1301,19 @@ quit")
         "${COMPOSE_SMOKE_STATS_SLEEP_SECONDS:-2}"
 
       if [ "$expect_vended_creds" = "true" ]; then
-        # Later smoke sections still exercise authority-backed reads. Restore the authority only
-        # after every delegated assertion has completed, keeping the vending scenario honest.
-        local authority_restore_out
-        authority_restore_out=$(run_cli_script "$compose_cmd" "account t-0001
-storage-authority create $scenario_storage_authority_name --location-prefix s3://floecat/ --type s3 --region us-east-1 --endpoint http://localstack:4566 --path-style-access true --assume-role-arn arn:aws:iam::000000000000:role/polaris --duration-seconds 900 --cred-type aws --cred access_key_id=test --cred secret_access_key=test
-quit")
-        echo "$authority_restore_out"
-        assert_contains "$label upstream iceberg ${scenario_key} storage authority restoration" "$authority_restore_out" "$scenario_storage_authority_name"
+        # Later smoke sections still exercise authority-backed reads. Re-enable only after every
+        # delegated assertion has completed, keeping the vending scenario honest.
+        set_authorities_enabled "$compose_cmd" "$label upstream iceberg ${scenario_key}" true \
+          <<< "$scenario_covering_authorities"
+        disabled_authorities_pending=""
       fi
     }
 
     if [ "$smoke_scope" = "full" ]; then
       run_upstream_iceberg_scenario "storage-authority" "" "" "false"
-      if [ "$label" = "localstack-remote" ] || [ "$label" = "localstack-oidc-remote" ]; then
-        run_upstream_iceberg_scenario "polaris-vended-creds" "_vended_creds" "vended-credentials" "true"
-      fi
+      # Both variants, not only -remote. localstack-oidc-remote never reaches this section, so the
+      # old gate left one variant carrying all Connector vending coverage.
+      run_upstream_iceberg_scenario "polaris-vended-creds" "_vended_creds" "vended-credentials" "true"
     fi
 
     echo "==> [SMOKE] upstream iceberg Catalog Integration overlay reconciliation"
@@ -1177,6 +1368,48 @@ quit")
     assert_contains "$label Polaris overlay avoids Connector identity" "$integration_table_out" "connector_id: -"
     assert_contains "$label Polaris overlay carries Integration identity" "$integration_table_out" "floecat.catalog-integration.id ="
     assert_contains "$label Polaris overlay carries Overlay identity" "$integration_table_out" "floecat.catalog-overlay.id ="
+
+    # A read of the Overlay table, which the assertions above do not reach: they resolve through
+    # the covering authority. overlay reconcile is metadata-only and capture needs a Connector, so
+    # the gateway is the only surface that reaches vendForTable here.
+    #
+    # The table root, not the bucket root: a bucket root cannot see an authority scoped beneath it.
+    # metadata_uri is the registered metadata file, so /metadata/... strips to the table root.
+    local integration_table_location="${metadata_uri%/metadata/*}"
+    local integration_covering_authorities
+    integration_covering_authorities=$(authorities_covering "$compose_cmd" "$integration_table_location")
+    echo "==> [SMOKE] upstream iceberg Catalog Integration credential vending"
+    # A failure, not a skip: the proof below matters most when nothing covers, so guarding the body
+    # on having something to disable would drop the assertion exactly when it is free.
+    if [ -z "$integration_covering_authorities" ]; then
+      echo "[FAIL] $label Polaris integration found no enabled authority covering ${integration_table_location}"
+      echo "[FAIL] the fixture is expected to have one; an empty list means the parse or the seed changed"
+      return 1
+    fi
+    echo "disabling storage authorities covering ${integration_table_location}:"
+    printf '%s\n' "$integration_covering_authorities"
+    disabled_authorities_pending="$integration_covering_authorities"
+    set_authorities_enabled "$compose_cmd" "$label Polaris integration" false \
+      <<< "$integration_covering_authorities"
+    assert_no_authority_covers "$compose_cmd" "$label Polaris integration" \
+      "$integration_table_location"
+
+    local integration_ns="${integration_expected_table#*.}"
+    integration_ns="${integration_ns%.*}"
+    # Same Iceberg REST separator the Unity check uses. The default table has a single-level
+    # namespace so dots never appear, but an override with a nested one would 404 and read as a
+    # broken gateway rather than a mis-encoded path.
+    integration_ns="${integration_ns//./%1F}"
+    local integration_table_leaf="${integration_expected_table##*.}"
+
+    assert_gateway_vends_session_tuple "$compose_project" \
+      "$label upstream iceberg Catalog Integration" \
+      "http://iceberg-rest:9200/v1/${integration_catalog_name}/namespaces/${integration_ns}/tables/${integration_table_leaf}"
+
+    # Re-enabled for the sections that follow, which still read through these authorities.
+    set_authorities_enabled "$compose_cmd" "$label Polaris integration" true \
+      <<< "$integration_covering_authorities"
+    disabled_authorities_pending=""
   elif [ "$profile" = "localstack" ]; then
     echo "==> [SMOKE] skipping upstream iceberg rest import (set COMPOSE_SMOKE_UPSTREAM_ICEBERG_IMPORT=false to disable)"
   fi
@@ -1374,6 +1607,12 @@ quit")
     assert_contains "$label upstream delta unity connector setup names the connector" "$unity_setup_out" "smoke-upstream-delta-unity"
     assert_not_contains "$label upstream delta unity connector setup reported no error" "$unity_setup_out" "! "
 
+    # What makes the stats and index assertions below evidence of vending. The fixture bucket is
+    # absent from COMPOSE_SMOKE_LOCALSTACK_BUCKETS, but that is an overridable default, so it is
+    # asserted rather than assumed -- and before the trigger, so it fails fast.
+    assert_no_authority_covers "$compose_cmd" \
+      "$label upstream delta unity fixture bucket" "$unity_storage_location"
+
     run_connector_trigger_and_wait \
       "$compose_cmd" \
       "$label upstream delta unity connector" \
@@ -1473,6 +1712,20 @@ quit")
     assert_contains "$label Unity overlay carries Integration identity" "$unity_integration_table_out" "floecat.catalog-integration.id ="
     assert_contains "$label Unity overlay carries Overlay identity" "$unity_integration_table_out" "floecat.catalog-overlay.id ="
 
+    # The Unity Integration vend. integration validate reports CREDENTIAL_VENDING through
+    # CatalogIntegrationDiscovery, not through vendForTable, so it does not cover this. Nothing has
+    # to be disabled: the fixture bucket has no authority, which is asserted below.
+    assert_no_authority_covers "$compose_cmd" \
+      "$label Unity integration" "$unity_storage_location"
+
+    # A two-level upstream namespace, so the Iceberg REST separator applies: the gateway's own
+    # /v1/config advertises namespace-separator=%1F and NamespacePaths splits on 0x1F.
+    local unity_integration_ns_path="${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS//./%1F}"
+
+    assert_gateway_vends_session_tuple "$compose_project" \
+      "$label upstream delta unity Catalog Integration" \
+      "http://iceberg-rest:9200/v1/${unity_integration_catalog}/namespaces/${unity_integration_ns_path}/tables/${unity_source_table}"
+
     if [ "$label" = "localstack-remote" ]; then
       local unity_query_begin_out
       unity_query_begin_out=$(run_cli_script "$compose_cmd" "account t-0001
@@ -1499,13 +1752,6 @@ quit")
       echo "$unity_scan_out"
       assert_contains "$label upstream delta unity remote scan" "$unity_scan_out" "data_files:"
       assert_contains "$label upstream delta unity remote scan location" "$unity_scan_out" "$unity_storage_location"
-
-      local unity_vending_logs
-      unity_vending_logs=$(eval "$compose_cmd logs --no-color service executor" 2>&1)
-      assert_contains \
-        "$label upstream delta unity source-catalog vending path" \
-        "$unity_vending_logs" \
-        "vended storage credentials from source catalog"
     fi
   elif [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ]; then
     echo "==> [SMOKE] skipping upstream delta unity import (set COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=true to enable)"
