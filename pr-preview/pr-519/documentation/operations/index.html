@@ -2039,7 +2039,9 @@ materialized table.</p>
 <li><code>delta.sharing.reader-features</code> -- a comma-separated list of Delta reader features this deployment
   can process, empty by default. The capability header tells the server what the client can handle,
   and claiming a feature the read path cannot process turns a refusal the server would have made
-  into a failure partway through a scan.</li>
+  into a failure partway through a scan. Enforcement is the server's: the list is sent on the
+  metadata call and is not compared against the features the server reports back, so a server that
+  ignores the header is not caught here.</li>
 </ul>
 <h3 id="reconciler-deployment-modes">Reconciler deployment modes<a class="headerlink" href="#reconciler-deployment-modes" title="Permanent link">&para;</a></h3>
 <p>The reconciler runs in three shapes from the same artifact:</p>
