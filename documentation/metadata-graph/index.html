@@ -2056,14 +2056,13 @@ facade sit inside <code>service/metagraph</code>. The split looks like this:</p>
 <li><code>core/metagraph/model/</code> – Immutable node records (<code>CatalogNode</code>, <code>NamespaceNode</code>, <code>TableNode</code>,
   <code>ViewNode</code>, <code>SystemViewNode</code>) plus shared enums (<code>GraphNodeKind</code>, <code>EngineKey</code>, <code>EngineHint</code>,
   <code>GraphNodeOrigin</code>, etc.).</li>
-<li><code>service/metagraph/cache/</code> – <code>CatalogTopologyCache</code> holds namespace and relation ref listings.
-  Derived nodes are not cached here: they live content-keyed by blob URI in the process-wide
-  <code>ImmutableBlobCache</code> (<code>service/repo/cache/</code>), and the pointers naming them live in the pointer
-  cache under the store.</li>
+<li><code>service/repo/cache/</code> – the pointer cache owns complete namespace and relation-name indexes;
+  derived nodes live content-keyed by blob URI in the process-wide <code>ImmutableBlobCache</code>.</li>
 <li><code>service/metagraph/loader/</code> – <code>NodeLoader</code> wraps the catalog/namespace/table/view repositories to
   hydrate immutable nodes from protobuf metadata (<code>metaForSafe</code> + pointer fetches).</li>
-<li><code>service/metagraph/resolver/</code> – <code>NameResolver</code> handles catalog/namespace/table/view lookups, while
-  <code>FullyQualifiedResolver</code> mirrors DirectoryService’s ResolveFQ list/prefix semantics.</li>
+<li><code>service/metagraph/resolver/</code> – <code>NameResolver</code> handles catalog/namespace/table/view lookups and
+  lightweight pointer-backed ref listings, while <code>FullyQualifiedResolver</code> mirrors
+  DirectoryService’s ResolveFQ list/prefix semantics.</li>
 <li><code>service/metagraph/snapshot/</code> – <code>SnapshotHelper</code> encapsulates snapshot pinning and schema resolution,
   wrapping the SnapshotService RPC stub.</li>
 <li><code>service/metagraph/hint/</code> – <code>EngineHintManager</code> routes registered hint providers, matches them
@@ -2243,14 +2242,18 @@ planners requesting different engine versions or planner modes never interfere w
 </ul>
 <h3 id="name-resolution-semantics">Name Resolution Semantics<a class="headerlink" href="#name-resolution-semantics" title="Permanent link">&para;</a></h3>
 <p><code>resolveName</code> first short-circuits when the NameRef embeds a <code>ResourceId</code>. Otherwise it performs the
-table/view lookups directly (using the same repositories DirectoryService previously used) and
-throws the same ambiguity/unresolved error codes as <code>DirectoryService.Resolve*</code>. Graph callers get
-consistent NameRef → ResourceId translations without depending on a secondary RPC hop.</p>
+catalog, namespace, and relation lookups through lightweight repository refs backed entirely by
+pointer metadata. It throws the same ambiguity/unresolved error codes as
+<code>DirectoryService.Resolve*</code>; graph callers get consistent NameRef → ResourceId translations without
+depending on a secondary RPC hop or hydrating metadata blobs.</p>
 <h3 id="fully-qualified-resolvefq-semantics">Fully Qualified (ResolveFQ*) Semantics<a class="headerlink" href="#fully-qualified-resolvefq-semantics" title="Permanent link">&para;</a></h3>
 <p><code>resolveTables/resolveViews</code> mirror the <code>ResolveFQ*</code> RPCs. The helpers accept either a list selector
 or a namespace prefix, apply input validation, paginate using Directory-compatible tokens, and
 return canonical <code>NameRef</code> + <code>ResourceId</code> pairs. DirectoryService delegates to these helpers so
-the graph defines the single source of truth for list/prefix resolution.</p>
+the graph defines the single source of truth for list/prefix resolution. Both exact selectors and
+paged prefix selectors return lightweight refs directly from the complete pointer index; full
+catalog, namespace, table, and view blobs are loaded only by APIs that actually return their
+contents.</p>
 <h2 id="usage-guidelines">Usage Guidelines<a class="headerlink" href="#usage-guidelines" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Always go through the graph</strong> for read paths instead of hitting repositories directly. This keeps
