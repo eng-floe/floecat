@@ -52,6 +52,17 @@ COMPOSE_SMOKE_UNITY_HEALTH_PATH=${COMPOSE_SMOKE_UNITY_HEALTH_PATH:-/api/2.1/unit
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_STORAGE_LOCATION=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_STORAGE_LOCATION:-s3://floecat-delta-vended/call_center}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT:-http://localstack:4566}
 COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION=${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION:-us-east-1}
+# A Delta Sharing recipient over the same Delta fixture, served by the stub in docker/delta-sharing.
+# The storage location is a bucket deliberately absent from COMPOSE_SMOKE_LOCALSTACK_BUCKETS, so no
+# Floecat storage authority can make the validation read pass without the share vending credentials.
+COMPOSE_SMOKE_DELTA_SHARING_IMPORT=${COMPOSE_SMOKE_DELTA_SHARING_IMPORT:-true}
+COMPOSE_SMOKE_DELTA_SHARING_URI=${COMPOSE_SMOKE_DELTA_SHARING_URI:-https://delta-sharing-stub:8443}
+COMPOSE_SMOKE_DELTA_SHARING_SHARE=${COMPOSE_SMOKE_DELTA_SHARING_SHARE:-floecat_smoke}
+COMPOSE_SMOKE_DELTA_SHARING_SCHEMA=${COMPOSE_SMOKE_DELTA_SHARING_SCHEMA:-sharing}
+COMPOSE_SMOKE_DELTA_SHARING_TABLE=${COMPOSE_SMOKE_DELTA_SHARING_TABLE:-call_center}
+COMPOSE_SMOKE_DELTA_SHARING_TOKEN=${COMPOSE_SMOKE_DELTA_SHARING_TOKEN:-smoke-recipient-token}
+COMPOSE_SMOKE_DELTA_SHARING_STORAGE_LOCATION=${COMPOSE_SMOKE_DELTA_SHARING_STORAGE_LOCATION:-s3://floecat-sharing-vended/call_center}
+COMPOSE_SMOKE_DELTA_SHARING_DEST_CATALOG=${COMPOSE_SMOKE_DELTA_SHARING_DEST_CATALOG:-sharing_import}
 COMPOSE_SMOKE_LOCALSTACK_BUCKETS="${COMPOSE_SMOKE_LOCALSTACK_BUCKETS:-bucket floecat floecat-delta floecat-dev staged-fixtures warehouse yb-iceberg-tpcds}"
 COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX=${COMPOSE_SMOKE_ICEBERG_FORMAT_MATRIX:-true}
 COMPOSE_SMOKE_STATS_RETRIES=${COMPOSE_SMOKE_STATS_RETRIES:-45}
@@ -452,6 +463,32 @@ assert_no_authority_covers() {
   echo "[PASS] $label no storage authority covers $location"
 }
 
+# Fails unless the Delta Sharing stub was asked for temporary credentials for one table.
+#
+# The stub records every request it answered and serves the list back. A validation run that passed
+# its storage read against a bucket no authority covers already implies a vend happened; this names
+# the request, so a pass cannot come from anywhere else.
+assert_stub_vended_credentials() {
+  local compose_project="$1"
+  local label="$2"
+  local share="$3"
+  local schema="$4"
+  local table="$5"
+  local expected="POST /shares/$share/schemas/$schema/tables/$table/temporary-table-credentials"
+
+  local requests
+  requests=$(docker run --rm --network "${compose_project}_floecat" \
+    curlimages/curl:8.12.1 -k -sS \
+    -X GET "https://delta-sharing-stub:8443/_smoke/requests")
+
+  if ! printf '%s' "$requests" | grep -qF "$expected"; then
+    echo "[FAIL] $label share was never asked for temporary credentials for $share.$schema.$table"
+    printf '%s\n' "$requests"
+    return 1
+  fi
+  echo "[PASS] $label share vended temporary credentials for $share.$schema.$table"
+}
+
 # Fails unless a gateway loadTable returns a complete vended session tuple.
 #
 # Shared by the Polaris and Unity checks, which differ only in label and URL. The body is never
@@ -629,7 +666,7 @@ cleanup_mode() {
   eval "$compose_cmd down --remove-orphans -v" >/dev/null 2>&1 || true
 }
 
-prepare_unity_tls() {
+prepare_smoke_tls() {
   local tls_dir="$1"
   local cert_file="$tls_dir/server.crt"
   local key_file="$tls_dir/server.key"
@@ -644,7 +681,7 @@ prepare_unity_tls() {
     -out "$cert_file" \
     -days 1 \
     -subj /CN=unity-proxy \
-    -addext 'subjectAltName=DNS:unity-proxy,DNS:localhost,IP:127.0.0.1,DNS:sts.us-east-1.amazonaws.com' \
+    -addext 'subjectAltName=DNS:unity-proxy,DNS:delta-sharing-stub,DNS:localhost,IP:127.0.0.1,DNS:sts.us-east-1.amazonaws.com' \
     >/dev/null 2>&1
   keytool -delete \
     -alias unity-proxy \
@@ -662,22 +699,23 @@ prepare_unity_tls() {
   chmod 644 "$cert_file" "$truststore_file"
 }
 
-cleanup_unity_tls() {
+cleanup_smoke_tls() {
   local tls_dir="$1"
   if [ -z "$tls_dir" ]; then
     return 0
   fi
   case "${tls_dir##*/}" in
-    floecat-unity-tls.*) ;;
+    floecat-smoke-tls.*) ;;
     *)
-      echo "refusing to clean unexpected Unity TLS directory: $tls_dir" >&2
+      echo "refusing to clean unexpected smoke TLS directory: $tls_dir" >&2
       return 1
       ;;
   esac
   rm -f \
     "$tls_dir/server.crt" \
     "$tls_dir/server.key" \
-    "$tls_dir/runtime-truststore.p12"
+    "$tls_dir/runtime-truststore.p12" \
+    "$tls_dir/schema.json"
   rmdir "$tls_dir" 2>/dev/null || true
 }
 
@@ -826,21 +864,27 @@ run_mode() {
   if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
     compose_profiles="${compose_profiles},unity"
   fi
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_DELTA_SHARING_IMPORT"; then
+    compose_profiles="${compose_profiles},delta-sharing"
+  fi
   if [ "$smoke_scope" = "full" ] && { [ "$profile" = "localstack" ] || [ "$profile" = "localstack-oidc" ]; } && should_run_client trino; then
     compose_profiles="${compose_profiles},trino"
   fi
 
-  local unity_tls_dir=""
-  local unity_tls_cert_file=""
-  local unity_tls_key_file=""
-  local unity_runtime_truststore_file=""
-  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT"; then
-    unity_tls_dir=$(mktemp -d "${TMPDIR:-/tmp}/floecat-unity-tls.XXXXXX")
-    unity_tls_cert_file="$unity_tls_dir/server.crt"
-    unity_tls_key_file="$unity_tls_dir/server.key"
-    unity_runtime_truststore_file="$unity_tls_dir/runtime-truststore.p12"
-    if ! prepare_unity_tls "$unity_tls_dir"; then
-      cleanup_unity_tls "$unity_tls_dir"
+  local smoke_tls_dir=""
+  local smoke_tls_cert_file=""
+  local smoke_tls_key_file=""
+  local smoke_runtime_truststore_file=""
+  # One certificate for both TLS endpoints in this stack: the Unity proxy and the Delta Sharing
+  # stub. Either scenario needs Floecat to trust it, and the truststore is a single file.
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] &&
+    { is_truthy "$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT" || is_truthy "$COMPOSE_SMOKE_DELTA_SHARING_IMPORT"; }; then
+    smoke_tls_dir=$(mktemp -d "${TMPDIR:-/tmp}/floecat-smoke-tls.XXXXXX")
+    smoke_tls_cert_file="$smoke_tls_dir/server.crt"
+    smoke_tls_key_file="$smoke_tls_dir/server.key"
+    smoke_runtime_truststore_file="$smoke_tls_dir/runtime-truststore.p12"
+    if ! prepare_smoke_tls "$smoke_tls_dir"; then
+      cleanup_smoke_tls "$smoke_tls_dir"
       return 1
     fi
   fi
@@ -851,11 +895,27 @@ run_mode() {
     "COMPOSE_PROJECT_NAME=$compose_project"
   )
 
-  if [ -n "$unity_tls_dir" ]; then
+  if [ -n "$smoke_tls_dir" ]; then
     mode_env_args+=(
-      "FLOECAT_RUNTIME_TRUSTSTORE_FILE=$unity_runtime_truststore_file"
-      "FLOECAT_UNITY_TLS_CERT_FILE=$unity_tls_cert_file"
-      "FLOECAT_UNITY_TLS_KEY_FILE=$unity_tls_key_file"
+      "FLOECAT_RUNTIME_TRUSTSTORE_FILE=$smoke_runtime_truststore_file"
+      "FLOECAT_UNITY_TLS_CERT_FILE=$smoke_tls_cert_file"
+      "FLOECAT_UNITY_TLS_KEY_FILE=$smoke_tls_key_file"
+      "FLOECAT_DELTA_SHARING_TLS_CERT_FILE=$smoke_tls_cert_file"
+      "FLOECAT_DELTA_SHARING_TLS_KEY_FILE=$smoke_tls_key_file"
+    )
+  fi
+
+  # Compose reads these when the service starts, so everything fixed about the share is set here.
+  # The schema is not: it comes off the fixture, which does not exist until the stack is up, so the
+  # stub reads it from a file in the configuration directory on each metadata request instead.
+  if [[ ",$compose_profiles," == *",delta-sharing,"* ]]; then
+    mode_env_args+=(
+      "FLOECAT_DELTA_SHARING_SHARE=$COMPOSE_SMOKE_DELTA_SHARING_SHARE"
+      "FLOECAT_DELTA_SHARING_SCHEMA=$COMPOSE_SMOKE_DELTA_SHARING_SCHEMA"
+      "FLOECAT_DELTA_SHARING_TABLE=$COMPOSE_SMOKE_DELTA_SHARING_TABLE"
+      "FLOECAT_DELTA_SHARING_TABLE_LOCATION=$COMPOSE_SMOKE_DELTA_SHARING_STORAGE_LOCATION"
+      "FLOECAT_DELTA_SHARING_BEARER_TOKEN=$COMPOSE_SMOKE_DELTA_SHARING_TOKEN"
+      "FLOECAT_DELTA_SHARING_CONFIG_DIR=$smoke_tls_dir"
     )
   fi
 
@@ -931,7 +991,7 @@ quit" 60 || true
         echo "==> [SMOKE][KEEP] preserving compose stack for mode=$label (COMPOSE_SMOKE_KEEP_ON_EXIT=$COMPOSE_SMOKE_KEEP_ON_EXIT)"
       else
         cleanup_mode "$compose_cmd"
-        cleanup_unity_tls "$unity_tls_dir"
+        cleanup_smoke_tls "$smoke_tls_dir"
       fi
     else
       save_mode_logs "$compose_cmd" "${label}-fail"
@@ -941,7 +1001,7 @@ quit" 60 || true
         echo "==> [SMOKE][KEEP] preserving compose stack for mode=$label (COMPOSE_SMOKE_KEEP_ON_FAIL=$COMPOSE_SMOKE_KEEP_ON_FAIL)"
       else
         cleanup_mode "$compose_cmd"
-        cleanup_unity_tls "$unity_tls_dir"
+        cleanup_smoke_tls "$smoke_tls_dir"
       fi
     fi
     return "$rc"
@@ -963,6 +1023,13 @@ quit" 60 || true
       pre_services="localstack unity unity-proxy"
     elif [[ ",$pre_services," != *",unity,"* ]]; then
       pre_services="$pre_services unity unity-proxy"
+    fi
+  fi
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_DELTA_SHARING_IMPORT"; then
+    if [ -z "$pre_services" ]; then
+      pre_services="localstack delta-sharing-stub"
+    elif [[ ",$pre_services," != *",delta-sharing-stub,"* ]]; then
+      pre_services="$pre_services delta-sharing-stub"
     fi
   fi
 
@@ -992,7 +1059,15 @@ quit" 60 || true
       "https://localhost:${unity_https_host_port}${COMPOSE_SMOKE_UNITY_HEALTH_PATH}" \
       180 \
       "Unity Catalog TLS proxy health" \
-      "$unity_tls_cert_file"
+      "$smoke_tls_cert_file"
+  fi
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_DELTA_SHARING_IMPORT"; then
+    # The request log, which needs no recipient token and so answers before anything is configured.
+    wait_for_url_with_ca \
+      "https://localhost:${FLOECAT_DELTA_SHARING_HOST_PORT:-8445}/_smoke/requests" \
+      180 \
+      "Delta Sharing stub health" \
+      "$smoke_tls_cert_file"
   fi
 
   local compose_up_cmd="$compose_cmd up -d"
@@ -1755,6 +1830,219 @@ quit")
     fi
   elif [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ]; then
     echo "==> [SMOKE] skipping upstream delta unity import (set COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_IMPORT=true to enable)"
+  fi
+
+  if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && is_truthy "$COMPOSE_SMOKE_DELTA_SHARING_IMPORT"; then
+    echo "==> [SMOKE] Delta Sharing Catalog Integration overlay reconciliation"
+
+    local sharing_namespace="$COMPOSE_SMOKE_DELTA_SHARING_SHARE.$COMPOSE_SMOKE_DELTA_SHARING_SCHEMA"
+    local sharing_location="$COMPOSE_SMOKE_DELTA_SHARING_STORAGE_LOCATION"
+    local sharing_integration_name="smoke-delta-sharing-integration"
+    local sharing_overlay_name="smoke-delta-sharing-overlay"
+    local sharing_catalog="$COMPOSE_SMOKE_DELTA_SHARING_DEST_CATALOG"
+    local sharing_expected_table="$sharing_catalog.$sharing_namespace.$COMPOSE_SMOKE_DELTA_SHARING_TABLE"
+    local sharing_aws_cli
+    sharing_aws_cli="docker run --rm --network ${compose_project}_floecat -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_DEFAULT_REGION=us-east-1 amazon/aws-cli:2.17.50"
+
+    # SeedRunner writes the canonical Delta fixture to floecat-delta. Copy it to a bucket that is
+    # deliberately absent from COMPOSE_SMOKE_LOCALSTACK_BUCKETS, so no Floecat storage authority
+    # can make the validation read or the gateway vend pass without the share issuing credentials.
+    $sharing_aws_cli --endpoint-url http://localstack:4566 s3 cp \
+      "s3://floecat-delta/$COMPOSE_SMOKE_DELTA_SHARING_TABLE/" \
+      "$sharing_location/" \
+      --recursive >/dev/null
+
+    # The stub answers metadata with the fixture's own schema, read from the log the copy above
+    # just placed. Written to the directory the stub reads per request, because the fixture does
+    # not exist until the stack is up and the container is already running by then.
+    local sharing_log_json
+    sharing_log_json=$($sharing_aws_cli --endpoint-url http://localstack:4566 s3 cp \
+      "$sharing_location/_delta_log/00000000000000000000.json" - 2>/dev/null)
+    if [ -z "$sharing_log_json" ]; then
+      echo "[FAIL] $label could not read the Delta log for $sharing_location"
+      return 1
+    fi
+    if [ -z "$smoke_tls_dir" ]; then
+      echo "[FAIL] $label Delta Sharing stub has no configuration directory"
+      return 1
+    fi
+    if ! printf '%s' "$sharing_log_json" | SHARING_SCHEMA_OUT="$smoke_tls_dir/schema.json" python3 -c '
+import json
+import os
+import sys
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    action = json.loads(line)
+    if "metaData" in action:
+        schema = action["metaData"].get("schemaString", "")
+        if not schema:
+            break
+        with open(os.environ["SHARING_SCHEMA_OUT"], "w", encoding="utf-8") as handle:
+            handle.write(schema)
+        sys.exit(0)
+sys.exit(1)
+' ; then
+      echo "[FAIL] $label Delta log for $sharing_location carried no metaData schemaString"
+      return 1
+    fi
+
+    # Before anything is created: the whole scenario rests on this bucket having no authority, and
+    # a seeded fixture that happened to cover it would make every assertion below vacuous.
+    assert_no_authority_covers "$compose_cmd" \
+      "$label Delta Sharing integration" "$sharing_location"
+
+    local sharing_setup_out
+    sharing_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
+catalog create $sharing_catalog --desc compose-smoke-delta-sharing
+integration create $sharing_integration_name delta-sharing $COMPOSE_SMOKE_DELTA_SHARING_URI --auth-type bearer --cred token=$COMPOSE_SMOKE_DELTA_SHARING_TOKEN --props s3.endpoint=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT s3.path-style-access=true s3.region=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION
+overlay create $sharing_overlay_name $sharing_integration_name $sharing_catalog --include $sharing_namespace
+quit")
+    echo "$sharing_setup_out"
+    assert_contains "$label Delta Sharing integration setup" "$sharing_setup_out" "INTEGRATION_ID"
+    assert_contains "$label Delta Sharing overlay setup" "$sharing_setup_out" "OVERLAY_ID"
+    assert_not_contains "$label Delta Sharing setup reported no error" "$sharing_setup_out" "! "
+
+    local sharing_validation_out
+    sharing_validation_out=$(run_cli_script "$compose_cmd" "account t-0001
+integration validate $sharing_integration_name
+quit")
+    echo "$sharing_validation_out"
+    assert_contains "$label Delta Sharing integration validation" "$sharing_validation_out" "valid: true"
+    assert_contains "$label Delta Sharing discovery validation" "$sharing_validation_out" "DISCOVERY"
+    assert_contains "$label Delta Sharing credential vending validation" "$sharing_validation_out" "CREDENTIAL_VENDING"
+    assert_contains "$label Delta Sharing storage access validation" "$sharing_validation_out" "STORAGE_ACCESS"
+
+    # The share was asked, not merely reachable. STORAGE_ACCESS above reads the object store with
+    # whatever the vend returned, and no authority covers that bucket, so a pass already implies
+    # this -- but only this names the request, which is what distinguishes a vend from a fallback.
+    assert_stub_vended_credentials "$compose_project" "$label Delta Sharing" \
+      "$COMPOSE_SMOKE_DELTA_SHARING_SHARE" "$COMPOSE_SMOKE_DELTA_SHARING_SCHEMA" \
+      "$COMPOSE_SMOKE_DELTA_SHARING_TABLE"
+
+    # Split from the object listing for the reason the Unity block states: run_cli_script echoes
+    # the script it runs, so listing under the share makes the schema assertion a real check.
+    local sharing_namespace_out
+    sharing_namespace_out=$(run_cli_script "$compose_cmd" "account t-0001
+integration namespaces $sharing_integration_name
+integration namespaces $sharing_integration_name --parent $COMPOSE_SMOKE_DELTA_SHARING_SHARE
+quit")
+    echo "$sharing_namespace_out"
+    assert_contains "$label Delta Sharing share discovery" "$sharing_namespace_out" "$sharing_namespace"
+
+    local sharing_objects_out
+    sharing_objects_out=$(run_cli_script "$compose_cmd" "account t-0001
+integration objects $sharing_integration_name $sharing_namespace
+quit")
+    echo "$sharing_objects_out"
+    assert_contains "$label Delta Sharing object discovery" "$sharing_objects_out" "$COMPOSE_SMOKE_DELTA_SHARING_TABLE"
+    assert_contains "$label Delta Sharing table-kind discovery" "$sharing_objects_out" "TABLE"
+
+    local sharing_reconcile_out
+    sharing_reconcile_out=$(run_cli_script "$compose_cmd" "account t-0001
+overlay reconcile $sharing_overlay_name
+quit")
+    echo "$sharing_reconcile_out"
+    assert_contains "$label Delta Sharing overlay reconciliation" "$sharing_reconcile_out" "tables_created: 1"
+    assert_contains "$label Delta Sharing overlay completeness" "$sharing_reconcile_out" "branches_skipped: 0"
+    assert_contains "$label Delta Sharing overlay completeness" "$sharing_reconcile_out" "objects_skipped: 0"
+
+    local sharing_table_out
+    sharing_table_out=$(run_cli_script "$compose_cmd" "account t-0001
+resolve table $sharing_expected_table
+describe table $sharing_expected_table
+quit")
+    echo "$sharing_table_out"
+    assert_contains "$label Delta Sharing table materialized" "$sharing_table_out" "table id:"
+    assert_contains "$label Delta Sharing avoids Connector identity" "$sharing_table_out" "connector_id: -"
+    assert_contains "$label Delta Sharing carries Integration identity" "$sharing_table_out" "floecat.catalog-integration.id ="
+    assert_contains "$label Delta Sharing carries Overlay identity" "$sharing_table_out" "floecat.catalog-overlay.id ="
+
+    # A two-level upstream namespace, share then schema, so the Iceberg REST separator applies the
+    # same way the Unity block describes.
+    local sharing_ns_path="${sharing_namespace//./%1F}"
+    assert_gateway_vends_session_tuple "$compose_project" \
+      "$label Delta Sharing Catalog Integration" \
+      "http://iceberg-rest:9200/v1/${sharing_catalog}/namespaces/${sharing_ns_path}/tables/${COMPOSE_SMOKE_DELTA_SHARING_TABLE}"
+
+    # A recipient token the share does not accept must fail, or none of the above proves the token
+    # was ever checked. Its own integration, so the working one is left as it is.
+    local sharing_wrong_token_out
+    sharing_wrong_token_out=$(run_cli_script "$compose_cmd" "account t-0001
+integration create smoke-delta-sharing-wrong-token delta-sharing $COMPOSE_SMOKE_DELTA_SHARING_URI --auth-type bearer --cred token=not-the-recipient-token
+integration validate smoke-delta-sharing-wrong-token
+quit")
+    echo "$sharing_wrong_token_out"
+    assert_contains "$label Delta Sharing rejects a wrong recipient token" "$sharing_wrong_token_out" "valid: false"
+
+    # The reference-server shape, which is the one a real recipient meets and the one the stub was
+    # hiding by always answering generously: no accessModes, and no location on either the listing
+    # or the metaData action, so the credential response is the only surface that names it. This is
+    # where the ask-rather-than-refuse default and the credential-response location fallback are
+    # actually exercised; unit tests cover them, nothing end to end did.
+    echo "==> [SMOKE] Delta Sharing reference-server response shape"
+    local sharing_bare_catalog="${sharing_catalog}_bare"
+    local sharing_bare_integration="smoke-delta-sharing-bare"
+    local sharing_bare_overlay="smoke-delta-sharing-bare-overlay"
+    if ! FLOECAT_DELTA_SHARING_ACCESS_MODES="" \
+      FLOECAT_DELTA_SHARING_STATE_LOCATION=false \
+      eval "$compose_cmd up -d --force-recreate delta-sharing-stub" >/dev/null; then
+      echo "[FAIL] $label could not restate the Delta Sharing stub"
+      return 1
+    fi
+    wait_for_url_with_ca \
+      "https://localhost:${FLOECAT_DELTA_SHARING_HOST_PORT:-8445}/_smoke/requests" \
+      180 \
+      "Delta Sharing stub health after restatement" \
+      "$smoke_tls_cert_file"
+
+    local sharing_bare_out
+    sharing_bare_out=$(run_cli_script "$compose_cmd" "account t-0001
+catalog create $sharing_bare_catalog --desc compose-smoke-delta-sharing-bare
+integration create $sharing_bare_integration delta-sharing $COMPOSE_SMOKE_DELTA_SHARING_URI --auth-type bearer --cred token=$COMPOSE_SMOKE_DELTA_SHARING_TOKEN --props s3.endpoint=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT s3.path-style-access=true s3.region=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION
+overlay create $sharing_bare_overlay $sharing_bare_integration $sharing_bare_catalog --include $sharing_namespace
+integration validate $sharing_bare_integration
+overlay reconcile $sharing_bare_overlay
+quit")
+    echo "$sharing_bare_out"
+    # Validation has to reach the storage probe, which for this shape can only resolve the location
+    # from the credential response.
+    assert_contains "$label Delta Sharing bare-shape validation" "$sharing_bare_out" "valid: true"
+    assert_contains "$label Delta Sharing bare-shape storage access" "$sharing_bare_out" "STORAGE_ACCESS"
+    assert_contains "$label Delta Sharing bare-shape reconciliation" "$sharing_bare_out" "tables_created: 1"
+    assert_contains "$label Delta Sharing bare-shape completeness" "$sharing_bare_out" "objects_skipped: 0"
+
+    # And the table carries a location a reader can open, rather than the Integration's catalog URI.
+    local sharing_bare_table_out
+    sharing_bare_table_out=$(run_cli_script "$compose_cmd" "account t-0001
+describe table $sharing_bare_catalog.$sharing_namespace.$COMPOSE_SMOKE_DELTA_SHARING_TABLE
+quit")
+    echo "$sharing_bare_table_out"
+    assert_contains "$label Delta Sharing bare-shape storage location" \
+      "$sharing_bare_table_out" "$sharing_location"
+
+    # The flat legacy shape, which a server ignoring the capability header answers with.
+    echo "==> [SMOKE] Delta Sharing legacy response format"
+    if ! FLOECAT_DELTA_SHARING_RESPONSE_FORMAT=parquet \
+      eval "$compose_cmd up -d --force-recreate delta-sharing-stub" >/dev/null; then
+      echo "[FAIL] $label could not restate the Delta Sharing stub to the legacy format"
+      return 1
+    fi
+    wait_for_url_with_ca \
+      "https://localhost:${FLOECAT_DELTA_SHARING_HOST_PORT:-8445}/_smoke/requests" \
+      180 \
+      "Delta Sharing stub health after legacy restatement" \
+      "$smoke_tls_cert_file"
+    local sharing_flat_out
+    sharing_flat_out=$(run_cli_script "$compose_cmd" "account t-0001
+integration validate $sharing_integration_name
+quit")
+    echo "$sharing_flat_out"
+    assert_contains "$label Delta Sharing legacy-format validation" "$sharing_flat_out" "valid: true"
+  elif [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ]; then
+    echo "==> [SMOKE] skipping Delta Sharing integration (set COMPOSE_SMOKE_DELTA_SHARING_IMPORT=true to enable)"
   fi
 
   if [ "$smoke_scope" = "full" ] && [ "$profile" = "localstack" ] && should_run_client trino; then
