@@ -216,7 +216,9 @@ final class RelationBundleBuilder {
     // via the per-column type tree; the flattened node set remains available for stats and
     // catalog traversal.
     List<SchemaColumn> schemaColumns =
-        SchemaColumns.topLevelOnly(template.schema().getColumnsList());
+        relation.node() instanceof ViewNode
+            ? template.schema().getColumnsList()
+            : SchemaColumns.topLevelOnly(template.schema().getColumnsList());
 
     List<SchemaColumn> pruned =
         UserObjectBundleUtils.pruneSchema(schemaColumns, relation.candidate(), correlationId);
@@ -371,7 +373,14 @@ final class RelationBundleBuilder {
 
   private RelationInfo buildTemplate(
       ResolvedRelation relation, SchemaDescriptor schema, String correlationId) {
-    List<SchemaColumn> schemaColumns = SchemaColumns.topLevelOnly(schema.getColumnsList());
+    // View output columns are already the user-facing relation columns. Their physical paths may
+    // intentionally differ from their names (for example an aliased expression), so applying the
+    // table-only top-level filter would silently drop them from both the cached template and every
+    // response built from it.
+    List<SchemaColumn> schemaColumns =
+        relation.node() instanceof ViewNode
+            ? schema.getColumnsList()
+            : SchemaColumns.topLevelOnly(schema.getColumnsList());
     Origin origin = mapOrigin(relation.node().origin());
     List<ColumnInfo> columns =
         UserObjectBundleUtils.columnsFor(schemaColumns, schemaColumns, origin, correlationId);

@@ -400,7 +400,13 @@ class RelationBundleBuilderTest {
             .setKind(ResourceKind.RK_VIEW)
             .build();
     List<SchemaColumn> schema =
-        List.of(SchemaColumn.newBuilder().setId(1).setName("answer").setOrdinal(1).build());
+        List.of(
+            SchemaColumn.newBuilder()
+                .setId(1)
+                .setName("answer")
+                .setPhysicalPath("expression.answer")
+                .setOrdinal(1)
+                .build());
     ViewNode view =
         new ViewNode(
             viewId,
@@ -452,6 +458,9 @@ class RelationBundleBuilderTest {
     assertThat(info.getViewDefinition().getEngineSpecificList())
         .extracting(EngineSpecific::getPayloadType)
         .containsExactly("test.view-decoration");
+    assertThat(info.getColumnsList())
+        .extracting(ColumnResult::getColumnName)
+        .containsExactly("answer");
   }
 
   @Test
