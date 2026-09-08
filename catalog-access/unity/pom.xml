@@ -26,6 +26,11 @@
     </dependency>
     <dependency>
       <groupId>ai.floedb.floecat</groupId>
+      <artifactId>floecat-http-endpoint-guards</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-unity-catalog-client</artifactId>
       <version>${project.version}</version>
     </dependency>

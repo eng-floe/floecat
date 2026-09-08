@@ -17,6 +17,7 @@ import ai.floedb.floecat.catalog.access.ResolvedCatalogCredentials;
 import ai.floedb.floecat.client.unity.HttpUnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogAuthentication;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
+import ai.floedb.floecat.http.guards.HttpEndpointGuards;
 import java.net.URI;
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -198,77 +199,16 @@ public final class UnityCatalogClientProvider implements CatalogClientProvider {
   /**
    * Rejects an {@code s3.endpoint} that names somewhere the service should not be made to reach.
    *
-   * <p>Checked when the client is opened, before anything connects. The value is tenant-supplied
-   * and reaches {@code endpointOverride}, so validation would otherwise issue signed S3 requests
-   * wherever it pointed, and the same value travels on as client-safe routing to reconcile and
-   * query workers. The catalog and OAuth endpoints in this same integration are already held to
-   * this policy; this one was not.
-   *
-   * <p>HTTPS unless a deployment says otherwise. The earlier rule allowed cleartext outright, on
-   * the reasoning that an S3 request carries a SigV4 signature rather than a bearer secret -- which
-   * stopped being true here: this provider refuses to publish a vend without {@code
-   * s3.session-token}, so every signed request carries that token in {@code X-Amz-Security-Token},
-   * and a session token is replayable against the table's prefix by anyone who sees it for as long
-   * as it lives. The exposure is not confined to the validation probe either, because {@code
-   * s3.endpoint} travels on to query workers as client-safe routing.
-   *
-   * <p>The escape hatch stays, because an S3-compatible endpoint on a private network commonly is
-   * HTTP -- MinIO and LocalStack both -- but it is now a deployment saying so rather than a
-   * default: {@value #ALLOW_CLEARTEXT_S3_PROPERTY}, or the environment variable {@value
-   * #ALLOW_CLEARTEXT_S3_ENV}. The address-class rule still applies on top of either scheme: it is
-   * the one that refuses {@code 169.254.169.254}.
+   * <p>The policy and its reasoning live in {@link
+   * HttpEndpointGuards#requireUsableStorageEndpoint}, which the Delta Sharing provider holds its
+   * own storage endpoint to for the same reason: both publish a vend carrying a session token.
    */
-  static final String ALLOW_CLEARTEXT_S3_PROPERTY = "floecat.security.allow-cleartext-s3-endpoints";
-
-  static final String ALLOW_CLEARTEXT_S3_ENV = "FLOECAT_SECURITY_ALLOW_CLEARTEXT_S3_ENDPOINTS";
-
-  private static boolean allowCleartextS3Endpoints() {
-    return Boolean.parseBoolean(
-        System.getProperty(
-            ALLOW_CLEARTEXT_S3_PROPERTY,
-            System.getenv().getOrDefault(ALLOW_CLEARTEXT_S3_ENV, "false")));
-  }
-
   private static void requireUsableEndpoint(String endpoint) {
-    if (endpoint == null) {
-      return;
-    }
-    URI uri;
     try {
-      uri = URI.create(endpoint);
-    } catch (IllegalArgumentException malformed) {
-      throw new CatalogAccessException(
-          CatalogAccessException.Code.INVALID_CONFIGURATION,
-          "Unity Catalog s3.endpoint is not a valid URI",
-          malformed);
-    }
-    String scheme = uri.getScheme();
-    if (!uri.isAbsolute()
-        || uri.getHost() == null
-        || !("https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme))
-        || uri.getRawUserInfo() != null
-        || uri.getRawQuery() != null
-        || uri.getRawFragment() != null) {
-      throw new CatalogAccessException(
-          CatalogAccessException.Code.INVALID_CONFIGURATION,
-          "Unity Catalog s3.endpoint must be an absolute http or https URI with no userinfo,"
-              + " query or fragment");
-    }
-    if ("http".equalsIgnoreCase(scheme) && !allowCleartextS3Endpoints()) {
-      throw new CatalogAccessException(
-          CatalogAccessException.Code.INVALID_CONFIGURATION,
-          "Unity Catalog s3.endpoint must use HTTPS: a vended credential carries a session token,"
-              + " which travels in a header and is replayable. Set "
-              + ALLOW_CLEARTEXT_S3_ENV
-              + "=true to allow cleartext on a trusted network");
-    }
-    try {
-      HttpUnityCatalogClient.assertEndpointAddressAllowed(uri);
+      HttpEndpointGuards.requireUsableStorageEndpoint(endpoint, "Unity Catalog s3.endpoint");
     } catch (IllegalArgumentException refused) {
       throw new CatalogAccessException(
-          CatalogAccessException.Code.INVALID_CONFIGURATION,
-          "Unity Catalog s3.endpoint names an address class that is not allowed",
-          refused);
+          CatalogAccessException.Code.INVALID_CONFIGURATION, refused.getMessage(), refused);
     }
   }
 
