@@ -481,6 +481,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-shared-cache-contract-corecache" class="md-nav__link">
+    <span class="md-ellipsis">
+      The shared cache contract (core/cache)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#deliberately-live-reads" class="md-nav__link">
     <span class="md-ellipsis">
       Deliberately live reads
@@ -1731,6 +1740,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#the-shared-cache-contract-corecache" class="md-nav__link">
+    <span class="md-ellipsis">
+      The shared cache contract (core/cache)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#deliberately-live-reads" class="md-nav__link">
     <span class="md-ellipsis">
       Deliberately live reads
@@ -1842,6 +1860,75 @@ are cached and mutation paths invalidate explicitly (10-minute write TTL as a ba
 Target-stats record blobs are deliberately <strong>not</strong> in the <code>ImmutableBlobCache</code>: they are written to
 deterministic (not content-addressed) URIs and a re-capture may overwrite one in place, so
 URI-keyed caching would be unsound for them.</p>
+<h2 id="the-shared-cache-contract-corecache">The shared cache contract (<code>core/cache</code>)<a class="headerlink" href="#the-shared-cache-contract-corecache" title="Permanent link">&para;</a></h2>
+<p>The future cache layers share this module's operational and telemetry vocabulary, but not one
+storage-shaped interface or one resource pool. <code>MemoryCache&lt;K, V&gt;</code> is the in-memory primitive used
+by object and hint caches and as storage inside the pointer-cache layer. The pointer layer belongs
+behind <code>PointerStore</code> and owns strict version publication, race fencing, complete name indexes and
+account readiness. Blob content gets a separate disk-oriented interface and volume budget, so
+callers never emulate scoped disk reads, mappings or sweeping through memory-cache operations.</p>
+<p>The module is container-free — Caffeine and protobuf, no CDI, no Quarkus. A cache is built with
+<code>new</code> and wired by whoever owns the container, which is what lets the service, its tests and any
+sizing harness use the same arithmetic.</p>
+<table>
+<thead>
+<tr>
+<th>Piece</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MemoryCache&lt;K, V&gt;</code></td>
+<td>Read-through <code>get</code>; batch <code>getAll</code>, which owns miss detection, loading and safe publication; uncounted <code>peek</code>; unconditional <code>put</code>; <code>evict</code> by key and <code>evictPartition</code> by caller-supplied membership; <code>bytes()</code>/<code>entryCount()</code> for the budget. A load racing a mutation cannot restore its stale value. Partition eviction is an infrequent O(n) scan of resident keys. No expiry: staleness is bounded by publication, not by a clock. Pointer version ordering deliberately is not part of this generic contract.</td>
+</tr>
+<tr>
+<td><code>CaffeineMemoryCache</code></td>
+<td>The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction.</td>
+</tr>
+<tr>
+<td><code>CacheWeights</code></td>
+<td>Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (<code>WeightedValue</code> first, then protobuf, text, <code>byte[]</code>, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte.</td>
+</tr>
+<tr>
+<td><code>CacheFamily</code></td>
+<td>The independently budgeted in-memory families that actually use this module — <code>POINTER</code> today. Each is its own cache, never a tag inside a shared one, so a burst in the fastest-moving family cannot evict the slowest. Add <code>OBJECT</code> and <code>HINT</code> when those implementations land; do not add disk blob caching to this enum. The tag is both the metric dimension and the config segment.</td>
+</tr>
+<tr>
+<td><code>CacheBudget</code> / <code>CacheBudgetResolver</code></td>
+<td>One total split across the families. Pure arithmetic in <code>CacheBudget.split</code>; <code>CacheBudgetResolver</code> (<code>service/cache/</code>) reads the configuration and runs it at startup.</td>
+</tr>
+<tr>
+<td><code>CacheEvents</code></td>
+<td>The common event baseline: <code>hit</code> (with how long it took to serve, so a caller that waited on someone else's load is not an instant hit), <code>miss</code>, <code>loadTime</code>, <code>loadFailed</code>, <code>loadDiscarded</code> and <code>evicted</code>. Bulk reads report hits and misses per distinct key and one duration per loader invocation. A disk cache can reuse these metrics and add mapping/sweep signals without implementing <code>MemoryCache</code>. The module reports events; the container names the metrics.</td>
+</tr>
+</tbody>
+</table>
+<p>Budgets resolve from the container rather than from a compiled-in figure. The JVM already sizes its
+heap from the container memory limit, so <code>floecat.cache.heap-share</code> (0.5) of the maximum heap
+follows the container without reading cgroups; <code>floecat.cache.total-bytes</code> pins the total instead
+and skips the derivation. Each family then claims <code>floecat.cache.&lt;tag&gt;.max-bytes</code> if set, otherwise
+<code>floecat.cache.&lt;tag&gt;.share</code>, resolved by tag over <code>CacheFamily.values()</code> — so a new cache is
+configured by adding its two properties and nothing else. A claim that resolves to zero bytes —
+including a share small enough to round away against a small total — fails at startup, as do
+claims that together exceed the total. A family whose configuration is <em>absent</em> is the allowed
+case and takes nothing; what refuses that is the cache built for it, which will not accept a
+budget of zero.</p>
+<p>Only implemented in-memory families appear in <code>CacheFamily</code>; this avoids publishing configuration
+and metric dimensions for caches that do not exist yet. The existing <code>ImmutableBlobCache</code> remains
+under <code>floecat.blob.cache.max-weight-bytes</code>. A future disk blob cache can reuse the cache module's
+telemetry vocabulary while exposing its own lifecycle-shaped interface and volume budget.</p>
+<p><code>floecat.cache.pointer.share</code> is 0.096, from the reference sizing scenario: a 100,000-table account
+at 100 columns needs 0.32 GB of addressing out of the 3.34 GB the memory caches hold between them
+(Pointers, Objects and Hints). The share resolves against that total, not against the heap — the
+heap is one <code>heap-share</code> step above it. That is a starting point, not a law.
+Addressing is width-independent — it costs the same whatever the columns look like — so a
+proportional share over-allocates it on a wide catalog and starves it on a narrow one, where the
+same fixed need is a much larger fraction of a much smaller total. <code>max-bytes</code> is what pins it
+against that, and exceeding the budget costs store reads rather than wrong answers.</p>
+<p>The caches in the table above are unchanged: nothing is wired to this contract yet. What exists is
+the in-memory primitive, its weigher, and the budget derivation. The pointer-cache layer will add
+pointer-specific publication and authoritative listing semantics at the <code>PointerStore</code> boundary.</p>
 <h2 id="deliberately-live-reads">Deliberately live reads<a class="headerlink" href="#deliberately-live-reads" title="Permanent link">&para;</a></h2>
 <p>These reads bypass every cache because their result is a detector, not content:</p>
 <table>
