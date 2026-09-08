@@ -8,13 +8,14 @@ or views. The graph provides:
 - Immutable node models that can be safely reused across requests. Nodes are pure derivations of
   their source blob and are cached content-addressed (keyed by `blobUri + "#node"`) in the
   process-wide `ImmutableBlobCache`, so they need no invalidation.
-- A short-TTL pointer-meta cache (`GraphCacheManager`) that bounds how stale a resource-ID →
-  current-blob resolution can be (`floecat.metadata.graph.meta-cache-ttl-seconds`, default 2).
+- Resource-ID → current-blob resolution served by the pointer cache (`CachingPointerStore`), which
+  is refreshed on write and does not expire, so a commit is visible to the replica that made it as
+  soon as it lands.
 - Helper APIs for name resolution (Directory RPC parity) and snapshot pinning (Snapshot RPC parity).
 - Extension points (`EngineHint`) so planners/executors can attach engine-specific payloads without
   mutating the base metadata structures.
 
-The graph's caches are two of the service-wide caching disciplines described in
+The graph reads through the service-wide caching disciplines described in
 [`docs/caching.md`](caching.md).
 
 ```
@@ -33,10 +34,10 @@ facade sit inside `service/metagraph`. The split looks like this:
 - `core/metagraph/model/` – Immutable node records (`CatalogNode`, `NamespaceNode`, `TableNode`,
   `ViewNode`, `SystemViewNode`) plus shared enums (`GraphNodeKind`, `EngineKey`, `EngineHint`,
   `GraphNodeOrigin`, etc.).
-- `service/metagraph/cache/` – `GraphCacheManager` wraps the shared `PointerTtlCache`
-  (`service/repo/cache/`) for pointer metadata and exposes hit/miss counters and size gauges;
-  `CatalogTopologyCache` caches namespace/relation ref listings. Derived nodes themselves live in
-  the process-wide `ImmutableBlobCache` (`service/repo/cache/`), not here.
+- `service/metagraph/cache/` – `CatalogTopologyCache` holds namespace and relation ref listings.
+  Derived nodes are not cached here: they live content-keyed by blob URI in the process-wide
+  `ImmutableBlobCache` (`service/repo/cache/`), and the pointers naming them live in the pointer
+  cache under the store.
 - `service/metagraph/loader/` – `NodeLoader` wraps the catalog/namespace/table/view repositories to
   hydrate immutable nodes from protobuf metadata (`metaForSafe` + pointer fetches).
 - `service/metagraph/resolver/` – `NameResolver` handles catalog/namespace/table/view lookups, while
@@ -152,7 +153,6 @@ exposes the Metadata Graph APIs that higher layers call. Key methods:
 | `ResolveResult resolveViews(String cid, List<NameRef> list, int limit, String token)` | Resolves explicit view names, returning canonical `NameRef`s and resource IDs. |
 | `ResolveResult resolveViews(String cid, NameRef prefix, int limit, String token)` | Lists views below a prefix with next-page tokens and total counts. |
 | `SnapshotPin snapshotPinFor(String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault)` | Normalises snapshot selection (override → as-of → current). |
-| `void invalidate(ResourceId id)` | Evicts the cached pointer meta for an ID (call after successful mutations). Derived nodes are content-keyed and need no invalidation. |
 
 ### Engine Hint Retrieval
 All tables and views participating in planning may embed engine‑specific hints. The Metadata Graph
@@ -162,12 +162,10 @@ planners requesting different engine versions or planner modes never interfere w
 
 Internally `resolve(ResourceId)`:
 
-1. Probes the pointer-meta cache; a hit names the current blob URI, and the derived node at
-   `blobUri + "#node"` is returned from the `ImmutableBlobCache` when present.
-2. Otherwise re-reads a fresh pointer (`metaForSafe`) before hydrating. The meta cache is trusted
-   only to short-circuit to an already-cached node: hydrating from a cached (possibly superseded)
-   blob URI could serve stale content as current, so `load()` only ever receives a freshly read
-   pointer.
+1. Reads the pointer through `nodes.mutationMeta(id)`. There is no graph-level meta cache to probe
+   first: the pointer cache now sits under the store, so this read is a memory lookup when the key
+   is resident and a store read when it is not.
+2. Returns the derived node at `blobUri + "#node"` from the `ImmutableBlobCache` when present.
 3. Rehydrates the protobuf record (`Catalog`, `Namespace`, `Table`, `View`) into the immutable node
    and stores it content-keyed under `blobUri + "#node"`.
 4. Serves the node from cache for as long as the blob stays hot; a DDL writes a new blob, so the
@@ -194,10 +192,11 @@ the graph defines the single source of truth for list/prefix resolution.
 ## Usage Guidelines
 - **Always go through the graph** for read paths instead of hitting repositories directly. This keeps
   cache hit rate predictable and ensures planner/executor code sees immutable snapshots.
-- **Call `invalidate`** whenever a catalog/namespace/table/view mutation succeeds. It evicts the
-  pointer meta so same-process readers see the new pointer immediately instead of waiting out the
-  meta TTL; cross-instance staleness stays bounded by the TTL. Node entries never need eviction —
-  they are content-keyed by blob URI.
+- **Nothing to invalidate after a mutation.** The pointer cache sits under the store and the writer
+  publishes its own new value, so a successful mutation is visible to same-process readers without
+  a call. Cross-instance staleness is not time-bounded: another replica keeps its value until it
+  writes that key or reads it consistently. Node entries never need eviction — they are
+  content-keyed by blob URI.
 - **Treat node instances as read-only**. They are immutable records but they may still be shared
   across requests via the cache, so do not mutate maps or lists after retrieval.
 - **Attach engine hints sparingly**. Hints should be small (think JSON blobs or compact protobufs)
@@ -224,8 +223,7 @@ Graph cache metrics are emitted through the shared `CacheMetrics` helper under t
 
 | Cache name | What is tracked |
 |------------|-----------------|
-| `graph-meta-cache` | Pointer-meta cache: enabled gauge, configured max entries, estimated entries, and per-account hit/miss counters. |
-| `graph-cache` | Node-load latency timer (`GraphCacheManager.recordLoad`) and load-failure counter. |
+| `graph-cache` | Node-load latency timer and load-failure counter, recorded by `UserGraph` around each node load. |
 | `blob-cache` | Node/blob caching itself: the `ImmutableBlobCache` registers enabled, max weight, entries, weighted size, and hit/miss under this name. |
 
 ## Testing

@@ -47,6 +47,12 @@ final class RepoTestPointerStores {
       return delegate.get(key);
     }
 
+    /** A decorator, so the delegate's consistent read -- not this class's ordinary one. */
+    @Override
+    public Optional<Pointer> getConsistent(String key) {
+      return delegate.getConsistent(key);
+    }
+
     @Override
     public Map<String, Pointer> getBatch(List<String> keys) {
       return delegate.getBatch(keys);

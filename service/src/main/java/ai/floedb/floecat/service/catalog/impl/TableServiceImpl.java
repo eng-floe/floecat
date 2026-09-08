@@ -49,7 +49,6 @@ import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -80,7 +79,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
-  @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
   @Inject MarkerStore markerStore;
   @Inject PointerStore pointerStore;
@@ -240,7 +238,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                               "namespace_id", spec.getNamespaceId().getId()));
                     }
                     // The namespace's relation marker advanced inside the create batch above.
-                    metadataGraph.invalidate(tableResourceId);
                     topology.evictRelationRefs(table.getNamespaceId());
                     var meta = tableRepo.metaForSafe(tableResourceId);
                     commitDefinitionToRoot(tableResourceId, meta);
@@ -340,7 +337,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           this::correlationId,
                           Table::parseFrom);
 
-                  metadataGraph.invalidate(result.body.getResourceId());
                   topology.evictRelationRefs(result.body.getNamespaceId());
 
                   // Parity with the non-idempotent path: record the definition on the root at
@@ -484,8 +480,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                         hasMeaningfulPrecondition(request.getPrecondition()));
                   }
                   topology.evict(tableId);
-                  metadataGraph.invalidate(tableId);
-
                   if (!current.getNamespaceId().getId().equals(desired.getNamespaceId().getId())) {
                     topology.evictRelationRefs(desired.getNamespaceId());
                   }
@@ -542,7 +536,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         correlationId, safe, request.getPrecondition());
                     topology.evict(tableId);
-                    metadataGraph.invalidate(tableId);
                     purgeSnapshotsAndStats(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   } catch (BaseResourceRepository.CorruptionException corrupt) {
@@ -566,7 +559,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           tableRepo.metaForSafe(tableId).getPointerVersion());
                     }
                     topology.evict(tableId);
-                    metadataGraph.invalidate(tableId);
                     purgeSnapshotsAndStats(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
                   }
@@ -584,7 +576,6 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           Map.of("id", tableId.getId()));
 
                   topology.evict(tableId);
-                  metadataGraph.invalidate(tableId);
                   purgeSnapshotsAndStats(tableId);
                   return DeleteTableResponse.newBuilder().setMeta(out).build();
                 }),

@@ -128,6 +128,12 @@ public class TableRepository {
     return repo.getByKey(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
+  /** Loads the table through the mutation read path, bypassing the query pointer cache. */
+  public Optional<Table> getByIdConsistent(ResourceId tableResourceId) {
+    return repo.getByKeyForMutation(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
   public Optional<Table> getByName(
       String accountId, String catalogId, String namespaceId, String tableName) {
     return repo.get(Keys.tablePointerByName(accountId, catalogId, namespaceId, tableName));
@@ -152,7 +158,7 @@ public class TableRepository {
       String pageToken,
       StringBuilder nextOut) {
     String prefix = Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId);
-    return repo.listByPrefixConsistent(prefix, limit, pageToken, nextOut);
+    return repo.listByPrefixForMutation(prefix, limit, pageToken, nextOut);
   }
 
   public int count(String accountId, String catalogId, String namespaceId) {
@@ -168,7 +174,7 @@ public class TableRepository {
    * the version the write itself produced, and the delete commits over a live relation.
    */
   public int countConsistent(String accountId, String catalogId, String namespaceId) {
-    return repo.countByPrefixConsistent(
+    return repo.countByPrefixForMutation(
         Keys.tablePointerByNamePrefix(accountId, catalogId, namespaceId));
   }
 
@@ -250,9 +256,21 @@ public class TableRepository {
     return repo.metaForSafe(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
+  /** Reads table metadata through the mutation path, bypassing the query pointer cache. */
+  public MutationMeta metaForSafeConsistent(ResourceId tableResourceId) {
+    return repo.metaForSafeConsistent(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
   public MutationMeta pointerMetaForSafe(ResourceId tableResourceId) {
     return repo.pointerMetaForSafe(
+        new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
+  }
+
+  /** The same read, past the cache, for a caller whose verdict a stale pointer would invert. */
+  public MutationMeta pointerMetaForSafeConsistent(ResourceId tableResourceId) {
+    return repo.pointerMetaForSafeConsistent(
         new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 

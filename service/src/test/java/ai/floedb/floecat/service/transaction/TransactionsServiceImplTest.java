@@ -50,8 +50,8 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
+import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
@@ -60,6 +60,7 @@ import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.transaction.impl.TransactionIntentApplierSupport;
 import ai.floedb.floecat.service.transaction.impl.TransactionsServiceImpl;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.transaction.rpc.CommitTransactionRequest;
 import ai.floedb.floecat.transaction.rpc.ConnectorProvisioning;
@@ -512,7 +513,7 @@ class TransactionsServiceImplTest {
   void commitConflictAnnotatesIntentAndTransitionsToConflictState() throws Exception {
     var service = newService();
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
 
     Transaction txn = preparedTxn();
     Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
@@ -527,7 +528,7 @@ class TransactionsServiceImplTest {
         .thenReturn(
             TransactionIntentApplierSupport.ApplyOutcome.conflict(
                 "EXPECTED_VERSION_MISMATCH", "pointer version changed", 3L, 4L, null));
-    when(pointerStore.get("/accounts/acct/custom/key-1")).thenReturn(Optional.empty());
+    when(pointerStore.getConsistent("/accounts/acct/custom/key-1")).thenReturn(Optional.empty());
     when(intentRepo.update(
             argThat(
                 candidate ->
@@ -584,7 +585,7 @@ class TransactionsServiceImplTest {
   void commitApplyingConflictFinalizesAppliedWhenIntentsAlreadyApplied() throws Exception {
     var service = newService();
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
 
     Transaction txn =
         Transaction.newBuilder()
@@ -605,7 +606,7 @@ class TransactionsServiceImplTest {
         .thenReturn(
             TransactionIntentApplierSupport.ApplyOutcome.conflict(
                 "EXPECTED_VERSION_MISMATCH", "pointer version changed", 1L, 2L, null));
-    when(pointerStore.get("/accounts/acct/custom/key-1"))
+    when(pointerStore.getConsistent("/accounts/acct/custom/key-1"))
         .thenReturn(
             Optional.of(
                 PointerReferences.blobPointer(
@@ -670,62 +671,6 @@ class TransactionsServiceImplTest {
   }
 
   @Test
-  void commitAppliedInvalidatesTouchedTableGraphEntry() throws Exception {
-    var service = newService();
-    var metadataGraph = Mockito.mock(UserGraph.class);
-    inject(service, "metadataGraph", metadataGraph);
-
-    String accountId = "acct";
-    String txId = "tx-1";
-    String tableId = "table-1";
-    Transaction txn = preparedTxn();
-    Transaction txnApplying = txn.toBuilder().setState(TransactionState.TS_APPLYING).build();
-    TransactionIntent intent =
-        TransactionIntent.newBuilder()
-            .setAccountId(accountId)
-            .setTxId(txId)
-            .setTargetPointerKey(Keys.tablePointerById(accountId, tableId))
-            .setBlobUri("s3://bucket/blob-1")
-            .setCreatedAt(Timestamps.fromMillis(1))
-            .build();
-
-    Transaction txnApplied = txn.toBuilder().setState(TransactionState.TS_APPLIED).build();
-    when(txRepo.getById(accountId, txId))
-        .thenReturn(
-            Optional.of(txn), Optional.of(txn), Optional.of(txnApplying), Optional.of(txnApplied));
-    when(intentRepo.listByTx(accountId, txId)).thenReturn(List.of(intent));
-    when(intentRepo.getByTarget(accountId, intent.getTargetPointerKey()))
-        .thenReturn(Optional.of(intent));
-    when(applier.applyTransactionAtomically(any(Transaction.class), anyLong(), any(), any()))
-        .thenReturn(TransactionIntentApplierSupport.ApplyOutcome.applied());
-    when(txRepo.metaFor(accountId, txId))
-        .thenReturn(
-            MutationMeta.newBuilder().setPointerVersion(11L).build(),
-            MutationMeta.newBuilder().setPointerVersion(12L).build());
-    when(txRepo.update(
-            argThat(
-                updated -> updated != null && updated.getState() == TransactionState.TS_APPLYING),
-            anyLong()))
-        .thenReturn(true);
-    Transaction committed =
-        invokeCommitPrivate(
-            service,
-            accountId,
-            CommitTransactionRequest.newBuilder().setTxId(txId).build(),
-            Timestamps.fromMillis(10));
-
-    assertEquals(TransactionState.TS_APPLIED, committed.getState());
-    verify(metadataGraph)
-        .invalidate(
-            argThat(
-                id ->
-                    id != null
-                        && accountId.equals(id.getAccountId())
-                        && tableId.equals(id.getId())
-                        && id.getKind() == ResourceKind.RK_TABLE));
-  }
-
-  @Test
   void prepareWithoutExpectedVersionPreconditionCapturesCurrentPointerVersion() throws Exception {
     var service = new TransactionsServiceImpl();
     var txRepo = Mockito.mock(TransactionRepository.class);
@@ -737,7 +682,7 @@ class TransactionsServiceImplTest {
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
     inject(service, "blobStore", blobStore);
     inject(service, "nameResolver", resolver);
     inject(service, "graphView", graphView);
@@ -755,7 +700,7 @@ class TransactionsServiceImplTest {
             .build();
 
     when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
-    when(pointerStore.get(pointerKey))
+    when(pointerStore.getConsistent(pointerKey))
         .thenReturn(Optional.of(Pointer.newBuilder().setKey(pointerKey).setVersion(7L).build()));
     when(graphView.resolve(
             ResourceId.newBuilder()
@@ -810,7 +755,7 @@ class TransactionsServiceImplTest {
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -829,7 +774,7 @@ class TransactionsServiceImplTest {
             .build();
 
     when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
-    when(pointerStore.get(pointerKey)).thenReturn(Optional.empty());
+    when(pointerStore.getConsistent(pointerKey)).thenReturn(Optional.empty());
 
     var request =
         PrepareTransactionRequest.newBuilder()
@@ -861,7 +806,7 @@ class TransactionsServiceImplTest {
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -889,7 +834,7 @@ class TransactionsServiceImplTest {
     when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
     when(intentRepo.listByTx(accountId, txId)).thenReturn(List.of(storedIntent));
     // Live pointer version drift should not matter for already-prepared replay matching.
-    when(pointerStore.get(target))
+    when(pointerStore.getConsistent(target))
         .thenReturn(Optional.of(Pointer.newBuilder().setKey(target).setVersion(999L).build()));
 
     var request =
@@ -920,7 +865,7 @@ class TransactionsServiceImplTest {
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
     inject(service, "blobStore", blobStore);
     inject(service, "graphView", graphView);
 
@@ -945,7 +890,7 @@ class TransactionsServiceImplTest {
             .build();
 
     when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
-    when(pointerStore.get(targetKey))
+    when(pointerStore.getConsistent(targetKey))
         .thenReturn(Optional.of(PointerReferences.blobPointer(targetKey, tableBlobUri, 7L)));
     when(blobStore.get(tableBlobUri)).thenReturn(table.toByteArray());
     when(graphView.resolve(
@@ -1002,7 +947,7 @@ class TransactionsServiceImplTest {
     var service = new TransactionsServiceImpl();
     var pointerStore = Mockito.mock(ai.floedb.floecat.storage.spi.PointerStore.class);
 
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
 
     String accountId = "acct";
     String txId = "tx-1";
@@ -1019,8 +964,8 @@ class TransactionsServiceImplTest {
             .setCreatedAt(Timestamps.fromMillis(1))
             .build();
 
-    when(pointerStore.get(targetKey)).thenReturn(Optional.empty());
-    when(pointerStore.get(nameKey)).thenReturn(Optional.empty());
+    when(pointerStore.getConsistent(targetKey)).thenReturn(Optional.empty());
+    when(pointerStore.getConsistent(nameKey)).thenReturn(Optional.empty());
 
     Method m = TransactionsServiceImpl.class.getDeclaredMethod("intentsAlreadyApplied", List.class);
     m.setAccessible(true);
@@ -1531,6 +1476,11 @@ class TransactionsServiceImplTest {
     f.set(target, value);
   }
 
+  private static void injectPointerStore(TransactionsServiceImpl service, PointerStore backend)
+      throws Exception {
+    inject(service, "pointerStore", AuthoritativePointerStore.of(backend));
+  }
+
   /**
    * A batch of table deletes is charged for what a delete emits, not for what an upsert would.
    *
@@ -1566,7 +1516,7 @@ class TransactionsServiceImplTest {
 
     inject(service, "txRepo", txRepo);
     inject(service, "intentRepo", intentRepo);
-    inject(service, "pointerStore", pointerStore);
+    injectPointerStore(service, pointerStore);
     inject(service, "blobStore", blobStore);
     inject(service, "nameResolver", resolver);
     inject(service, "graphView", graphView);
@@ -1584,7 +1534,7 @@ class TransactionsServiceImplTest {
     when(txRepo.metaFor(accountId, txId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(1L).build());
     when(txRepo.update(any(), anyLong())).thenReturn(true);
-    when(pointerStore.get(anyString()))
+    when(pointerStore.getConsistent(anyString()))
         .thenAnswer(
             call ->
                 Optional.of(

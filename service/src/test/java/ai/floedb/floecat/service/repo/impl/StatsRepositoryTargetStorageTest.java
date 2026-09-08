@@ -2257,9 +2257,10 @@ class StatsRepositoryTargetStorageTest {
     PointerStore pointers =
         new RepoTestPointerStores.DelegatingPointerStore(rawPointers) {
           @Override
-          public List<Pointer> listPointersByPrefix(
+          public List<Pointer> listPointersByPrefixConsistent(
               String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-            List<Pointer> page = super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+            List<Pointer> page =
+                super.listPointersByPrefixConsistent(prefix, limit, pageToken, nextTokenOut);
             if (prefix.equals(Keys.snapshotRootPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()))) {
               observedTokens.add(pageToken);
             }
@@ -2657,6 +2658,12 @@ class StatsRepositoryTargetStorageTest {
           public Optional<Pointer> get(String key) {
             individualReads.incrementAndGet();
             return super.get(key);
+          }
+
+          @Override
+          public Optional<Pointer> getConsistent(String key) {
+            individualReads.incrementAndGet();
+            return super.getConsistent(key);
           }
         };
     InMemoryBlobStore blobStore = new InMemoryBlobStore();

@@ -79,12 +79,6 @@ public final class CacheMetrics extends BaseMetrics {
     registerGauge(Telemetry.Metrics.CACHE_ENABLED, supplier, description, metricTags(extraTags));
   }
 
-  public void trackMaxEntries(
-      Supplier<? extends Number> supplier, String description, Tag... extraTags) {
-    registerGauge(
-        Telemetry.Metrics.CACHE_MAX_ENTRIES, supplier, description, metricTags(extraTags));
-  }
-
   public void trackMaxWeight(
       Supplier<? extends Number> supplier, String description, Tag... extraTags) {
     registerGauge(Telemetry.Metrics.CACHE_MAX_WEIGHT, supplier, description, metricTags(extraTags));

@@ -36,14 +36,9 @@ public class StoreCostProfile implements QuarkusTestProfile {
         "ai.floedb.floecat.service.testsupport.RecordingStoreReadObserver,"
             + "ai.floedb.floecat.service.testsupport.StoreCostMeter");
 
-    // Every short TTL on a read path this measures is pinned past the length of any test here.
-    // A TTL firing between warming a request and measuring it makes the cost record the clock
-    // rather than the read path. Both of these default to two seconds, both sit on the warm
-    // resolution, and pinning only one leaves the same symptom arriving from the other -- which is
-    // what made these numbers look unmeasurable. The pointer cache is due to be replaced; the
-    // pinning stays regardless, because a measurement must not depend on a timer either way.
-    overrides.put("floecat.root.pointer-cache-ttl-seconds", "600");
-    overrides.put("floecat.metadata.graph.meta-cache-ttl-seconds", "600");
+    // The two short TTLs this profile used to pin are gone with the caches they belonged to: the
+    // pointer cache replaces both. Nothing here depends on a timer any more, which is the point --
+    // the stability came from closing the measurement window, not from the pins.
 
     // The topology cache is bounded by ENTRIES, not time, and it is application-scoped: another
     // suite filling it evicts what this one relied on, so the same scan reads one pointer alone and

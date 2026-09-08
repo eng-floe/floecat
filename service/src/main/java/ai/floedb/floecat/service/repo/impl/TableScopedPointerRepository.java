@@ -23,6 +23,7 @@ import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.service.repo.model.TableScopedPointerKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.repo.util.ProtoParser;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.Optional;
@@ -61,13 +62,36 @@ public abstract class TableScopedPointerRepository<T> {
       ProtoParser<T> parser,
       Function<T, byte[]> toBytes,
       ImmutableBlobCache blobCache) {
+    this(pointerStore, pointerStore, blobStore, schema, parser, toBytes, blobCache);
+  }
+
+  protected TableScopedPointerRepository(
+      PointerStore mutationPointerStore,
+      PointerStore pointerReads,
+      BlobStore blobStore,
+      ResourceSchema<T, TableScopedPointerKey> schema,
+      ProtoParser<T> parser,
+      Function<T, byte[]> toBytes,
+      ImmutableBlobCache blobCache) {
     this.repo =
         new GenericResourceRepository<>(
-            pointerStore, blobStore, schema, parser, toBytes, CONTENT_TYPE, blobCache);
+            mutationPointerStore,
+            blobStore,
+            schema,
+            parser,
+            toBytes,
+            CONTENT_TYPE,
+            blobCache,
+            RepositoryReads.direct(pointerReads, blobStore));
   }
 
   public Optional<T> get(ResourceId tableId) {
     return repo.getByKey(key(tableId));
+  }
+
+  /** Loads the pointer through the mutation read path, bypassing the query pointer cache. */
+  public Optional<T> getForMutation(ResourceId tableId) {
+    return repo.getByKeyForMutation(key(tableId));
   }
 
   public boolean createIfAbsent(T value) {
@@ -84,6 +108,11 @@ public abstract class TableScopedPointerRepository<T> {
 
   public MutationMeta metaFor(ResourceId tableId) {
     return repo.metaFor(key(tableId));
+  }
+
+  /** Pointer meta read past any cache, for CAS versions and for probes whose emptiness answers. */
+  public MutationMeta metaForSafeConsistent(ResourceId tableId) {
+    return repo.metaForSafeConsistent(key(tableId));
   }
 
   /**

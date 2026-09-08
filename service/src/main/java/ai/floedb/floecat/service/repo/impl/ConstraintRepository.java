@@ -26,7 +26,9 @@ import ai.floedb.floecat.service.repo.model.SnapshotConstraintsKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.ConstraintNormalizer;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -43,12 +45,15 @@ public class ConstraintRepository {
   private final GenericResourceRepository<SnapshotConstraints, SnapshotConstraintsKey> repo;
 
   public ConstraintRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null);
+    this(pointerStore, pointerStore, blobStore, null);
   }
 
   @Inject
   public ConstraintRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      PointerStore pointerStore,
+      @CachedPointerStore PointerStore pointerReads,
+      BlobStore blobStore,
+      ImmutableBlobCache blobCache) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
@@ -57,7 +62,8 @@ public class ConstraintRepository {
             SnapshotConstraints::parseFrom,
             SnapshotConstraints::toByteArray,
             "application/x-protobuf",
-            blobCache);
+            blobCache,
+            RepositoryReads.direct(pointerReads, blobStore));
   }
 
   /**
@@ -173,6 +179,12 @@ public class ConstraintRepository {
     return repo.getByKey(key(tableId, snapshotId));
   }
 
+  /** Loads constraints through the mutation read path, bypassing the query pointer cache. */
+  public Optional<SnapshotConstraints> getSnapshotConstraintsConsistent(
+      ResourceId tableId, long snapshotId) {
+    return repo.getByKeyForMutation(key(tableId, snapshotId));
+  }
+
   public boolean deleteSnapshotConstraints(ResourceId tableId, long snapshotId) {
     return repo.delete(key(tableId, snapshotId));
   }
@@ -196,6 +208,11 @@ public class ConstraintRepository {
 
   public MutationMeta metaForSafe(ResourceId tableId, long snapshotId) {
     return repo.metaForSafe(key(tableId, snapshotId));
+  }
+
+  /** Reads constraints metadata through the mutation path, bypassing the query pointer cache. */
+  public MutationMeta metaForSafeConsistent(ResourceId tableId, long snapshotId) {
+    return repo.metaForSafeConsistent(key(tableId, snapshotId));
   }
 
   /** Canonical lookup key — sha256 is empty because canonical pointer lookups don't use it. */

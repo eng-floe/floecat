@@ -44,7 +44,6 @@ import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
-import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -110,7 +109,6 @@ public class CatalogOverlayReconciler {
   @Inject TableRootRepository tableRoots;
   @Inject TableRootWriter rootWriter;
   @Inject MarkerStore markerStore;
-  @Inject UserGraph metadataGraph;
   @Inject TopologyGraph topology;
 
   Clock clock = Clock.systemUTC();
@@ -498,7 +496,6 @@ public class CatalogOverlayReconciler {
       var namespaceFence =
           fence.and(orRetry(() -> namespaces.createFence(markerStore, catalogId, parentSegments)));
       if (!namespaces.createWhilePointersMatch(created, namespaceFence)) throw lostFence();
-      metadataGraph.invalidate(created.getResourceId());
       topology.evictNamespaceRefs(catalogId);
       current.put(path, created);
       result.namespacesCreated++;
@@ -996,7 +993,6 @@ public class CatalogOverlayReconciler {
         namespaceId, meta.getPointerVersion(), shapeMarkers)) {
       throw lostFence();
     }
-    metadataGraph.invalidate(namespaceId);
     topology.evictNamespaceRefs(namespace.getCatalogId());
     return true;
   }
@@ -1038,7 +1034,6 @@ public class CatalogOverlayReconciler {
    * namespace that became emptier than the caller checked.
    */
   private void relationChanged(ResourceId relationId, ResourceId namespaceId) {
-    metadataGraph.invalidate(relationId);
     topology.evictRelationRefs(namespaceId);
   }
 

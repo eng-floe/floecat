@@ -124,7 +124,7 @@ public class CatalogRepository {
 
   public List<Catalog> listConsistent(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefixConsistent(
+    return repo.listByPrefixForMutation(
         Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
@@ -157,6 +157,12 @@ public class CatalogRepository {
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
   public MutationMeta pointerMetaForSafe(ResourceId catalogResourceId) {
     return repo.pointerMetaForSafe(
+        new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
+  }
+
+  /** The same read, past the cache, for a caller whose verdict a stale pointer would invert. */
+  public MutationMeta pointerMetaForSafeConsistent(ResourceId catalogResourceId) {
+    return repo.pointerMetaForSafeConsistent(
         new CatalogKey(catalogResourceId.getAccountId(), catalogResourceId.getId()));
   }
 

@@ -40,6 +40,14 @@
 
   <dependencies>
 
+    <!-- Qualifier annotations on the SPI (RawPointerStore); the module stays container-free
+         otherwise, so this is declared rather than inherited through the proto/grpc chain. -->
+    <dependency>
+      <groupId>jakarta.inject</groupId>
+      <artifactId>jakarta.inject-api</artifactId>
+      <version>${version.jakarta.inject}</version>
+    </dependency>
+
     <!-- Protobuf -->
     <dependency>
       <groupId>com.google.protobuf</groupId>

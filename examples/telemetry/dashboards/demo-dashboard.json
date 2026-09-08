@@ -369,7 +369,7 @@
       "targets": [
         {
           "refId": "E",
-          "expr": "max(100 * floecat_core_cache_entries{component=~\"$component\"} / clamp_min(floecat_core_cache_max_entries{component=~\"$component\"}, 1))"
+          "expr": "max(100 * floecat_core_cache_weighted_size_bytes{component=~\"$component\"} / clamp_min(floecat_core_cache_max_weight_bytes{component=~\"$component\"}, 1))"
         }
       ],
       "options": {

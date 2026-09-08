@@ -68,13 +68,34 @@ class TableRootWriterTest {
     statsStore = mock(StatsStore.class);
     when(statsStore.tracksStatsGenerations()).thenReturn(true);
     when(statsStore.activeStatsGeneration(any(), anyLong())).thenReturn(Optional.empty());
+    when(statsStore.activeStatsGenerationConsistent(any(), anyLong()))
+        .thenAnswer(
+            inv -> statsStore.activeStatsGeneration(inv.getArgument(0), inv.getArgument(1)));
     constraintRepo = mock(ConstraintRepository.class);
     when(constraintRepo.metaForSafe(any(), anyLong()))
         .thenReturn(MutationMeta.getDefaultInstance());
+    when(constraintRepo.metaForSafeConsistent(any(), anyLong()))
+        .thenAnswer(inv -> constraintRepo.metaForSafe(inv.getArgument(0), inv.getArgument(1)));
     tableRepo = mock(TableRepository.class);
     when(tableRepo.metaForSafe(any())).thenReturn(MutationMeta.getDefaultInstance());
+    when(tableRepo.metaForSafeConsistent(any()))
+        .thenAnswer(inv -> tableRepo.metaForSafe(inv.getArgument(0)));
     snapshotRepo = mock(SnapshotRepository.class);
     when(snapshotRepo.latestRegisteredSnapshotPointer(any())).thenReturn(Optional.empty());
+    when(snapshotRepo.latestRegisteredSnapshotPointerConsistent(any()))
+        .thenAnswer(inv -> snapshotRepo.latestRegisteredSnapshotPointer(inv.getArgument(0)));
+    when(snapshotRepo.metaForSafeConsistent(any(), anyLong()))
+        .thenAnswer(inv -> snapshotRepo.metaForSafe(inv.getArgument(0), inv.getArgument(1)));
+    when(snapshotRepo.getByIdConsistent(any(), anyLong()))
+        .thenAnswer(inv -> snapshotRepo.getById(inv.getArgument(0), inv.getArgument(1)));
+    when(snapshotRepo.listConsistent(any(), anyInt(), any(), any()))
+        .thenAnswer(
+            inv ->
+                snapshotRepo.list(
+                    inv.getArgument(0),
+                    inv.getArgument(1),
+                    inv.getArgument(2),
+                    inv.getArgument(3)));
     rootResyncQueue = mock(RootResyncQueue.class);
     writer =
         new TableRootWriter(

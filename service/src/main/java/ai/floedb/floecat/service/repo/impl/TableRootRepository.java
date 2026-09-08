@@ -20,16 +20,15 @@ import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestPage;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
-import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
-import ai.floedb.floecat.service.repo.cache.PointerTtlCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -40,7 +39,6 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * The per-table immutable {@link TableRoot} and its snapshot-manifest pages.
@@ -61,41 +59,24 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
   // Nullable (tests): decoded-content cache for the immutable root blobs and manifest pages.
   private final ImmutableBlobCache blobCache;
 
-  // Root-POINTER cache (the one deliberately-stale read, product-approved): tableId key ->
-  // MutationMeta (pointer version + blob uri + etag), expireAfterWrite(ttl). Same-process writes
-  // invalidate (read-your-writes on the writing instance); cross-instance a CURRENT resolution may
-  // be <=TTL behind — snapshot-consistent, never torn (the root blob it names is immutable).
-  //
-  // The cached meta serves CURRENCY (which root is current) and pin-identity capture only. It is
-  // deliberately NOT a liveness witness: the CAS GC min-age fence (floecat.gc.cas.min-age-ms,
-  // default 30s) measures age since the blob was WRITTEN, not since it was last referenced, so an
-  // old root passes the fence the instant it is superseded — a recent observation proves nothing
-  // about the blob still existing. Callers that need liveness therefore go through
-  // metaForSafeLive, which invalidates before reading -- among them the resolving-pin currency
-  // guard in QueryContextStoreImpl, the pin-construction retry in SnapshotHelper, and the commit
-  // funnel below, where a stale CAS expected-version would only lose and burn retries. Anything
-  // depending on that invalidation side effect should grep for the callers rather than trust this
-  // list. TTL 0 disables; tests use the ttl-0 constructors.
-  private final PointerTtlCache<String> pointerCache;
-
   public TableRootRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, blobStore, null, 0L);
+    this(pointerStore, pointerStore, blobStore, null);
   }
 
   public TableRootRepository(
       PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
-    this(pointerStore, blobStore, blobCache, 0L);
+    this(pointerStore, pointerStore, blobStore, blobCache);
   }
 
   @Inject
   public TableRootRepository(
       PointerStore pointerStore,
+      @CachedPointerStore PointerStore pointerReads,
       BlobStore blobStore,
-      ImmutableBlobCache blobCache,
-      @ConfigProperty(name = "floecat.root.pointer-cache-ttl-seconds", defaultValue = "2")
-          long pointerCacheTtlSeconds) {
+      ImmutableBlobCache blobCache) {
     super(
         pointerStore,
+        pointerReads,
         blobStore,
         Schemas.TABLE_ROOT,
         TableRoot::parseFrom,
@@ -104,125 +85,14 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
     this.pointerStore = pointerStore;
     this.blobStore = blobStore;
     this.blobCache = blobCache;
-    this.pointerCache = new PointerTtlCache<>(pointerCacheTtlSeconds);
-  }
-
-  private static String pointerCacheKey(ResourceId tableId) {
-    return tableId.getAccountId() + "\0" + tableId.getId();
-  }
-
-  @Override
-  public MutationMeta metaForSafe(ResourceId tableId) {
-    if (!pointerCache.enabled()) {
-      return super.metaForSafe(tableId);
-    }
-    String key = pointerCacheKey(tableId);
-    MutationMeta hit = pointerCache.getIfPresent(key);
-    if (hit != null) {
-      return hit;
-    }
-    MutationMeta live = super.metaForSafe(tableId);
-    // Never cache absence (this family's absent form is a blank blob uri): a table about to get
-    // its FIRST root must see it on the next read. The version guard lives in PointerTtlCache.
-    if (!live.getBlobUri().isBlank()) {
-      pointerCache.putIfFresher(key, live);
-    }
-    return live;
-  }
-
-  /** Live pointer meta for the COMMIT funnel: bypasses the TTL cache (CAS needs fresh versions). */
-  public MutationMeta metaForSafeLive(ResourceId tableId) {
-    pointerCache.invalidate(pointerCacheKey(tableId));
-    return super.metaForSafe(tableId);
-  }
-
-  @Override
-  public Optional<TableRoot> get(ResourceId tableId) {
-    if (!pointerCache.enabled()) {
-      return super.get(tableId);
-    }
-    // Warm path: cached pointer names the immutable root blob; the blob comes from the decoded
-    // cache — zero remote reads. Falls back to the live pointer read when the meta is absent.
-    MutationMeta meta = metaForSafe(tableId);
-    if (meta.getBlobUri().isBlank()) {
-      // metaForSafe just read the live pointer (absence is never cached): no pointer, no root.
-      return Optional.empty();
-    }
-    Optional<TableRoot> root = getByBlobUri(meta.getBlobUri());
-    if (root.isPresent()) {
-      return root;
-    }
-    // A vanished blob under a cached pointer: evict the dead meta (or every read for the rest of
-    // the TTL pays cache probe + 404 + live read — and other metaForSafe consumers inherit the
-    // poisoned entry), then re-read live rather than reporting a torn state.
-    invalidatePointer(tableId);
-    return super.get(tableId);
-  }
-
-  @Override
-  public boolean createIfAbsent(TableRoot value) {
-    boolean created = super.createIfAbsent(value);
-    refreshPointerAfterWrite(value.getTableId(), created);
-    return created;
-  }
-
-  @Override
-  public boolean update(TableRoot value, long expectedPointerVersion) {
-    boolean updated = super.update(value, expectedPointerVersion);
-    refreshPointerAfterWrite(value.getTableId(), updated);
-    return updated;
-  }
-
-  @Override
-  public boolean deleteWithPrecondition(ResourceId tableId, long expectedPointerVersion) {
-    // Delete has no fresh meta to out-version a straggling reader's merge, so a pre-delete meta
-    // can be reinserted for <=TTL. Acceptable: root deletion happens only on DROP/account
-    // cascades, where readers already race the cascade's other teardown within the same bound.
-    boolean deleted = super.deleteWithPrecondition(tableId, expectedPointerVersion);
-    invalidatePointer(tableId);
-    return deleted;
   }
 
   /**
-   * Invalidate, then (on an applied write) repopulate from a LIVE read. The version-guarded merge
-   * in {@link #metaForSafe} makes this the read-your-writes guarantee: the fresh, higher-version
-   * meta wins over any straggling reader's pre-commit meta regardless of arrival order — a bare
-   * invalidate alone could be overwritten by a stale put that lands after it.
-   */
-  private void refreshPointerAfterWrite(ResourceId tableId, boolean applied) {
-    if (!pointerCache.enabled()) {
-      return;
-    }
-    invalidatePointer(tableId);
-    if (applied) {
-      // UNCONDITIONALLY live, never through metaForSafe: a straggling reader can insert its
-      // pre-commit meta in the invalidate→read window, and metaForSafe would trust that hit and
-      // skip the live read — leaving the stale entry to serve for the full TTL. Reading live and
-      // merging lets the fresh, higher-version meta out-win the straggler in either order.
-      // Residual (documented, TTL-bounded): if THIS fresh entry expires/evicts before an
-      // extremely late straggler merges into the then-empty map, the stale meta can serve for at
-      // most one further TTL — the same bound the cross-instance contract already accepts.
-      MutationMeta live = super.metaForSafe(tableId);
-      if (!live.getBlobUri().isBlank()) {
-        pointerCache.putIfFresher(pointerCacheKey(tableId), live);
-      }
-    }
-  }
-
-  private void invalidatePointer(ResourceId tableId) {
-    pointerCache.invalidate(pointerCacheKey(tableId));
-  }
-
-  /**
-   * Unconditional root-pointer removal for DROP / account-cascade purges. Purges MUST route here
-   * rather than deleting the key straight off the pointer store: the repository owns the pointer
-   * cache, and a bypassed delete leaves the dropped table's root serving from cache on the deleting
-   * instance for a further TTL — breaking the same-process read-your-writes contract. Root blobs
-   * are deliberately left behind for CasBlobGc (a pinned query may still read them).
+   * Unconditional root-pointer removal for DROP / account-cascade purges. Root blobs are
+   * deliberately left behind for CasBlobGc, since a pinned query may still read them.
    */
   public void purgeRoot(ResourceId tableId) {
     pointerStore.delete(Keys.tableRootByTable(tableId.getAccountId(), tableId.getId()));
-    invalidatePointer(tableId);
   }
 
   /** Loads a root directly from its immutable blob URI (a pinned root, not the live pointer). */

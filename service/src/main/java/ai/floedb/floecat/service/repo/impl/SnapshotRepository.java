@@ -30,9 +30,11 @@ import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.SnapshotKey;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
 import com.google.protobuf.Timestamp;
@@ -69,6 +71,7 @@ public class SnapshotRepository {
   @Inject
   public SnapshotRepository(
       PointerStore pointerStore,
+      @CachedPointerStore PointerStore pointerReads,
       BlobStore blobStore,
       TableRepository tableRepo,
       CurrentSnapshotPointerRepository currentPointerRepo,
@@ -77,6 +80,7 @@ public class SnapshotRepository {
       ImmutableBlobCache blobCache) {
     this(
         pointerStore,
+        pointerReads,
         blobStore,
         tableRepo,
         currentPointerRepo,
@@ -94,6 +98,7 @@ public class SnapshotRepository {
       TableRootRepository roots,
       StatsStore statsStore) {
     this(
+        pointerStore,
         pointerStore,
         blobStore,
         tableRepo,
@@ -115,6 +120,7 @@ public class SnapshotRepository {
       CurrentSnapshotPointerRepository currentPointerRepo,
       TableRootRepository roots) {
     this(
+        pointerStore,
         pointerStore,
         blobStore,
         tableRepo,
@@ -151,6 +157,7 @@ public class SnapshotRepository {
   /** The one constructor that assigns state; every other overload delegates here. */
   private SnapshotRepository(
       PointerStore pointerStore,
+      PointerStore pointerReads,
       BlobStore blobStore,
       TableRepository tableRepo,
       CurrentSnapshotPointerRepository currentPointerRepo,
@@ -166,7 +173,8 @@ public class SnapshotRepository {
             Snapshot::parseFrom,
             Snapshot::toByteArray,
             "application/x-protobuf",
-            blobCache);
+            blobCache,
+            RepositoryReads.direct(pointerReads, blobStore));
     this.tableRepo = tableRepo;
     this.currentPointerRepo = currentPointerRepo;
     this.pointerStore = pointerStore;
@@ -227,6 +235,12 @@ public class SnapshotRepository {
 
   public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {
     return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
+  }
+
+  /** Loads a snapshot through the mutation read path, bypassing the query pointer cache. */
+  public Optional<Snapshot> getByIdConsistent(ResourceId tableId, long snapshotId) {
+    return repo.getByKeyForMutation(
+        new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
   /**
@@ -539,11 +553,11 @@ public class SnapshotRepository {
    */
   private RootLookup lookupRoot(ResourceId tableId) {
     for (int attempt = 0; attempt < 2; attempt++) {
-      // The retry exists to observe a FRESH pointer after a supersede+sweep race; through the TTL
-      // pointer cache it would just re-read the same dead URI, so the second attempt goes live
-      // (which also evicts the stale entry for every other consumer).
+      // The retry exists to observe a FRESH pointer after a supersede+sweep race; through the
+      // pointer cache it would just re-read the same dead URI, so the second attempt goes past it
+      // (which also drops the stale entry for every other consumer).
       MutationMeta meta =
-          attempt == 0 ? roots.metaForSafe(tableId) : roots.metaForSafeLive(tableId);
+          attempt == 0 ? roots.metaForSafe(tableId) : roots.metaForSafeConsistent(tableId);
       if (meta == null || meta.getBlobUri().isEmpty()) {
         return new RootLookup(false, null);
       }
@@ -653,6 +667,15 @@ public class SnapshotRepository {
     return currentPointerRepo.get(tableId);
   }
 
+  /** Reads the current-snapshot pointer through the mutation path, bypassing the query cache. */
+  public Optional<CurrentSnapshotPointer> latestRegisteredSnapshotPointerConsistent(
+      ResourceId tableId) {
+    if (tableId == null) {
+      return Optional.empty();
+    }
+    return currentPointerRepo.getForMutation(tableId);
+  }
+
   private CurrentSnapshotPointer buildCurrentPointer(ResourceId tableId, Snapshot snapshot) {
     CurrentSnapshotPointer.Builder builder =
         CurrentSnapshotPointer.newBuilder()
@@ -729,6 +752,13 @@ public class SnapshotRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
+  /** Lists registered snapshots through the mutation read path, bypassing the query cache. */
+  public List<Snapshot> listConsistent(
+      ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
+    String prefix = Keys.snapshotPointerByIdPrefix(tableId.getAccountId(), tableId.getId());
+    return repo.listByPrefixForMutation(prefix, limit, pageToken, nextOut);
+  }
+
   public List<Snapshot> listByTime(
       ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
     String prefix = Keys.snapshotPointerByTimePrefix(tableId.getAccountId(), tableId.getId());
@@ -751,6 +781,12 @@ public class SnapshotRepository {
 
   public MutationMeta metaForSafe(ResourceId tableId, long snapshotId) {
     return repo.metaForSafe(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
+  }
+
+  /** Reads snapshot metadata through the mutation path, bypassing the query pointer cache. */
+  public MutationMeta metaForSafeConsistent(ResourceId tableId, long snapshotId) {
+    return repo.metaForSafeConsistent(
+        new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
   private Optional<Snapshot> latestSnapshotByTime(ResourceId tableId) {

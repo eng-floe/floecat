@@ -214,7 +214,20 @@ public class S3BlobStore implements BlobStore {
     if (uris == null || uris.isEmpty()) {
       return Map.of();
     }
-    return parallelReads(uris.stream().distinct().toList(), uri -> uri, this::get, "S3 batch GET");
+    // A uri with no object is omitted, not raised. Its caller is resolving a page of pointers, and
+    // one of them naming a blob that has just been superseded and swept is an ordinary event that
+    // costs that row a re-resolve -- not grounds for failing the page. Every other fault still
+    // throws, so a genuine store problem is not read as a gap.
+    return parallelReads(
+        uris.stream().distinct().toList(), uri -> uri, this::getIfPresent, "S3 batch GET");
+  }
+
+  private byte[] getIfPresent(String uri) {
+    try {
+      return get(uri);
+    } catch (StorageNotFoundException absent) {
+      return null;
+    }
   }
 
   @Override
@@ -244,7 +257,12 @@ public class S3BlobStore implements BlobStore {
                             try {
                               permits.acquire();
                               acquired = true;
-                              out.put(key.apply(request), reader.apply(request));
+                              byte[] bytes = reader.apply(request);
+                              // A reader may report absence as null; the result map omits it
+                              // rather than carrying a null Map.copyOf would reject.
+                              if (bytes != null) {
+                                out.put(key.apply(request), bytes);
+                              }
                             } catch (InterruptedException error) {
                               Thread.currentThread().interrupt();
                               throw new StorageAbortRetryableException(

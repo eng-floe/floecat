@@ -184,9 +184,21 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           Optional<Pointer> pointer = pointerReads.get(pointerKey);
           if (pointer.isEmpty()) return Optional.empty();
           String blobUri = requireBlobReference(pointer.get(), pointerKey);
-          T value =
-              getByBlobUri(blobUri)
-                  .orElseThrow(() -> new CorruptionException("blob missing: " + blobUri, null));
+          Optional<T> loaded = getByBlobUri(blobUri);
+          if (loaded.isEmpty()) {
+            // The pointer moved under us: answer from where it moved to, with ITS meta.
+            return reloadAfterVanishedBlob(pointerKey, fresh -> getByBlobUri(fresh.getBlobUri()))
+                .map(
+                    r ->
+                        new ResourceWithMeta<>(
+                            r.value(),
+                            readMetaOrDefault(
+                                Optional.of(r.pointer()),
+                                pointerKey,
+                                r.pointer().getBlobUri(),
+                                Timestamps.fromMillis(clock.millis()))));
+          }
+          T value = loaded.get();
           MutationMeta meta =
               readMetaOrDefault(
                   pointer, pointerKey, blobUri, Timestamps.fromMillis(clock.millis()));
@@ -243,7 +255,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   /** Strongly consistent variant used by lifecycle scans whose emptiness is load-bearing. */
-  public List<ResourceWithMeta<T>> listByPrefixWithMetaConsistent(
+  public List<ResourceWithMeta<T>> listByPrefixWithMetaForMutation(
       String prefix, int limit, String token, StringBuilder nextOut) {
     return listByPrefixWithMeta(prefix, limit, token, nextOut, true);
   }
@@ -255,33 +267,13 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           List<Pointer> pointers =
               consistentRead
-                  ? pointerReads.listConsistent(prefix, Math.max(1, limit), token, nextOut)
+                  ? mutationReads.pointers().list(prefix, Math.max(1, limit), token, nextOut)
                   : pointerReads.list(prefix, Math.max(1, limit), token, nextOut);
           List<ResourceWithMeta<T>> values = new ArrayList<>(pointers.size());
           Timestamp now = Timestamps.fromMillis(clock.millis());
           for (Pointer selectedPointer : pointers) {
-            String selectedBlobUri =
-                requireBlobReference(selectedPointer, selectedPointer.getKey());
-            T selectedValue =
-                getByBlobUri(selectedBlobUri)
-                    .orElseThrow(
-                        () -> new CorruptionException("blob missing: " + selectedBlobUri, null));
-            String canonicalKey =
-                schema.canonicalPointerForKey.apply(schema.keyFromValue.apply(selectedValue));
-            Optional<Pointer> canonicalPointer = pointerReads.get(canonicalKey);
-            if (canonicalPointer.isEmpty()) {
-              // The resource was deleted after the secondary-index page was selected.
-              continue;
-            }
-            String canonicalBlobUri = requireBlobReference(canonicalPointer.get(), canonicalKey);
-            if (!canonicalBlobUri.equals(selectedBlobUri)) {
-              // The resource changed after the secondary-index page was selected. Returning the
-              // new canonical body would violate both page membership and body/meta coherence.
-              continue;
-            }
-            MutationMeta meta =
-                readMetaOrDefault(canonicalPointer, canonicalKey, canonicalBlobUri, now);
-            values.add(new ResourceWithMeta<>(selectedValue, meta));
+            coherentFrom(selectedPointer.getKey(), selectedPointer, now, consistentRead)
+                .ifPresent(values::add);
           }
           return List.copyOf(values);
         });
@@ -410,24 +402,66 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   /** Resolves a secondary pointer and returns the body with its exact canonical metadata. */
   public Optional<ResourceWithMeta<T>> getWithMeta(String pointerKey) {
-    Optional<Pointer> secondary = pointerReads.get(pointerKey);
-    if (secondary.isEmpty()) return Optional.empty();
-    String selectedBlobUri = requireBlobReference(secondary.get(), pointerKey);
-    T selected =
-        getByBlobUri(selectedBlobUri)
-            .orElseThrow(() -> new CorruptionException("blob missing: " + selectedBlobUri, null));
-    String canonicalKey = schema.canonicalPointerForKey.apply(schema.keyFromValue.apply(selected));
-    Optional<Pointer> canonical = pointerReads.get(canonicalKey);
-    if (canonical.isEmpty()) return Optional.empty();
+    return pointerReads
+        .get(pointerKey)
+        .flatMap(
+            selected ->
+                coherentFrom(pointerKey, selected, Timestamps.fromMillis(clock.millis()), false));
+  }
+
+  /**
+   * One body from the selected pointer, paired with meta that describes the same blob.
+   *
+   * <p>A by-name lookup and a secondary-index page both need exactly this: resolve the blob,
+   * re-resolve if it vanished, then prove the canonical pointer still names what was loaded before
+   * pairing the two. One copy, because the coherence check has to compare against the uri the read
+   * resolved AT, and a protocol with that much ordering in it is wrong the moment it has two.
+   *
+   * @return empty when the row should be skipped: the pointer is gone, or the resource changed
+   *     under the read and the body no longer belongs with any meta this call could build.
+   */
+  private Optional<ResourceWithMeta<T>> coherentFrom(
+      String pointerKey, Pointer selected, Timestamp now, boolean consistent) {
+    String selectedBlobUri = requireBlobReference(selected, pointerKey);
+    Optional<T> loaded = getByBlobUri(selectedBlobUri);
+    boolean reResolved = false;
+    if (loaded.isEmpty()) {
+      // Skipping here would silently shorten a page, or report a live resource absent, which the
+      // caller cannot detect either way. Resolve where the pointer moved to, and carry THAT uri
+      // forward -- the coherence check below compares against it.
+      var reloaded = reloadAfterVanishedBlob(pointerKey, fresh -> getByBlobUri(fresh.getBlobUri()));
+      if (reloaded.isEmpty()) {
+        return Optional.empty();
+      }
+      selectedBlobUri = reloaded.get().pointer().getBlobUri();
+      loaded = Optional.of(reloaded.get().value());
+      reResolved = true;
+    }
+
+    T value = loaded.get();
+    String canonicalKey = schema.canonicalPointerForKey.apply(schema.keyFromValue.apply(value));
+    // Authoritative when the caller asked for a consistent read, and whenever we had to re-resolve:
+    // having just proved the selected pointer was behind, a cached canonical read could name the
+    // swept uri, mismatch, and drop the row for exactly the staleness the re-resolve absorbs -- and
+    // with nothing expiring it would not age out. A consistent page compared against a cached
+    // canonical would be the same hole one branch over.
+    Optional<Pointer> canonical =
+        consistent || reResolved
+            ? mutationReads.pointers().get(canonicalKey)
+            : pointerReads.get(canonicalKey);
+    if (canonical.isEmpty()) {
+      // Deleted after the pointer was selected.
+      return Optional.empty();
+    }
     String canonicalBlobUri = requireBlobReference(canonical.get(), canonicalKey);
     if (!canonicalBlobUri.equals(selectedBlobUri)) {
+      // Changed after the pointer was selected. Returning the new canonical body would break page
+      // membership and pair a body with meta describing different bytes.
       return Optional.empty();
     }
     return Optional.of(
         new ResourceWithMeta<>(
-            selected,
-            readMetaOrDefault(
-                canonical, canonicalKey, canonicalBlobUri, Timestamps.fromMillis(clock.millis()))));
+            value, readMetaOrDefault(canonical, canonicalKey, canonicalBlobUri, now)));
   }
 
   private CreateCommit createInternal(
@@ -1684,8 +1718,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     Set<String> seenTokens = new HashSet<>();
     while (true) {
       StringBuilder next = new StringBuilder();
-      for (Pointer pointer :
-          mutationPointerStore.listPointersByPrefixConsistent(prefix, 200, token, next)) {
+      for (Pointer pointer : mutationPointerStore.listPointersByPrefix(prefix, 200, token, next)) {
         if (!canonicalPointer.equals(pointer.getKey())
             && PointerReferences.isBlobPointer(pointer)
             && blobUri.equals(pointer.getBlobUri())) {
@@ -1743,11 +1776,24 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   public MutationMeta metaForSafe(K key, Timestamp nowTs) {
+    return metaForSafe(key, nowTs, false);
+  }
+
+  /**
+   * Pointer meta read past any cache, for a caller whose question the cache cannot answer -- a CAS
+   * expected-version, or a liveness check whose emptiness is the verdict.
+   */
+  public MutationMeta metaForSafeConsistent(K key) {
+    return metaForSafe(key, Timestamps.fromMillis(clock.millis()), true);
+  }
+
+  private MutationMeta metaForSafe(K key, Timestamp nowTs, boolean consistent) {
     return observeRepository(
-        "meta_for_safe",
+        consistent ? "meta_for_safe_consistent" : "meta_for_safe",
         () -> {
           String canonical = schema.canonicalPointerForKey.apply(key);
-          var ptrOpt = pointerReads.get(canonical);
+          var ptrOpt =
+              consistent ? mutationReads.pointers().get(canonical) : pointerReads.get(canonical);
           if (schema.casBlobs && ptrOpt.isEmpty()) {
             return MutationMeta.newBuilder()
                 .setPointerKey(canonical)
@@ -1768,13 +1814,22 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * returning meta to RPC clients must keep using {@link #metaForSafe}, whose etag feeds
    * precondition checks.
    */
+  public MutationMeta pointerMetaForSafeConsistent(K key) {
+    return pointerMetaForSafe(key, true);
+  }
+
   public MutationMeta pointerMetaForSafe(K key) {
+    return pointerMetaForSafe(key, false);
+  }
+
+  private MutationMeta pointerMetaForSafe(K key, boolean consistent) {
     return observeRepository(
-        "pointer_meta_for_safe",
+        consistent ? "pointer_meta_for_safe_consistent" : "pointer_meta_for_safe",
         () -> {
           Timestamp nowTs = Timestamps.fromMillis(clock.millis());
           String canonical = schema.canonicalPointerForKey.apply(key);
-          var ptrOpt = pointerReads.get(canonical);
+          var ptrOpt =
+              consistent ? mutationReads.pointers().get(canonical) : pointerReads.get(canonical);
           String blobUri = blobUriFor(key, ptrOpt);
           return MutationMeta.newBuilder()
               .setPointerKey(canonical)

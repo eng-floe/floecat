@@ -271,8 +271,19 @@ class WarmRequestStoreCostIT {
 
   /**
    * KV round trips, not keys: a getBatch of eight is one. See {@code floecat.core.store.requests}.
+   *
+   * <p>Two per table and nothing per request. The cache absorbs ordinary pointer reads, including
+   * the account, catalog, namespace, by-id and target-statistics resolutions. The two that remain
+   * are:
+   *
+   * <ul>
+   *   <li>{@code tables/<id>/root/current}, read consistently by the resolving-pin guard, which
+   *       bypasses the cache by design.
+   *   <li>The active generation's lifecycle marker, read consistently by the published-generation
+   *       guard.
+   * </ul>
    */
-  private static final Cost KV = new Cost("KV round trips", 8, 1, t -> t.reads.pointerRoundTrips());
+  private static final Cost KV = new Cost("KV round trips", 2, 0, t -> t.reads.pointerRoundTrips());
 
   /**
    * What the five per table and the one per request are, measured per fetch with its caller.
@@ -294,12 +305,12 @@ class WarmRequestStoreCostIT {
   /**
    * Both HEADs are pointer-meta reads of the table root: one at pin construction ({@code
    * TableRootRepository.metaForSafe}) and one for the currency check at pin registration ({@code
-   * metaForSafeLive}). No per-request part -- a request that names no table pays none.
+   * metaForSafeConsistent}). No per-request part -- a request that names no table pays none.
    *
-   * <p>Two rather than one because {@code metaForSafeLive} invalidates the pointer cache without
-   * repopulating it, so the next request's {@code metaForSafe} always misses. A change that made
-   * the live read repopulate would drop this to 1n -- a real saving, and one that should arrive as
-   * a coefficient this test makes fall, not as a number nobody noticed moving.
+   * <p>Unmoved by the pointer cache, and that is the point: a HEAD is a BLOB read taken to get an
+   * etag, so caching the pointer changes which store answers the pointer lookup and nothing about
+   * the header fetch. Both sites still take one. Removing either needs the object or blob cache, or
+   * one of the two reads to go; pointer-cache coverage does not affect blob metadata reads.
    */
   private static final Cost S3_HEAD = new Cost("S3 objects HEAD", 2, 0, t -> t.reads.blobHeads());
 

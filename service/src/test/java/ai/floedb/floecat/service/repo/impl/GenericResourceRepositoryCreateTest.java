@@ -429,14 +429,14 @@ class GenericResourceRepositoryCreateTest {
           private final AtomicInteger canonicalReads = new AtomicInteger();
 
           @Override
-          public Optional<ai.floedb.floecat.common.rpc.Pointer> get(String key) {
+          public Optional<ai.floedb.floecat.common.rpc.Pointer> getConsistent(String key) {
             if (Keys.accountPointerById("acct-1").equals(key)
                 && canonicalReads.incrementAndGet() == 2) {
               ptr.delete(Keys.accountPointerById("acct-1"));
               ptr.delete(Keys.accountPointerByName("alpha"));
               return Optional.empty();
             }
-            return super.get(key);
+            return super.getConsistent(key);
           }
         };
     var repo = new AccountRepository(racing, blobs);

@@ -66,7 +66,7 @@ Seven stat panels for at-a-glance triage:
 - **Avg latency (ms)** — average RPC latency across all operations.
 - **Error %** — ratio of RPC errors to total requests.
 - **Active RPC** (`floecat_core_rpc_active`) — in-flight RPC count.
-- **Cache saturation** — cache entries as a percentage of max entries.
+- **Cache saturation** — cached bytes as a percentage of the byte budget.
 - **Heap used** — JVM heap live data vs max capacity.
 - **Dropped tags** (`floecat_core_observability_dropped_tags_total`) — telemetry contract violations. Non-zero means a metric was emitted with disallowed or missing tags.
 

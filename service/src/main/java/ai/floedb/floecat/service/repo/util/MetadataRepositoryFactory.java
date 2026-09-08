@@ -20,12 +20,16 @@ import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.function.Function;
 
-/** Composes metadata repositories with raw mutation stores and admitted read-only stores. */
+/**
+ * Composes metadata repositories with the stores their writes go through and admitted read-only
+ * stores.
+ */
 @ApplicationScoped
 public class MetadataRepositoryFactory {
   private final PointerStore pointers;
@@ -34,19 +38,21 @@ public class MetadataRepositoryFactory {
   private final RepositoryReads reads;
 
   /**
-   * Compose the process stores once: mutation transactions retain the raw stores, while repository
-   * query reads use adapters governed by {@code admittedReads}.
+   * Compose the process stores once: mutation transactions read past the cache by reading
+   * consistently, which is what keeps a CAS expected-version from being answered by an entry the
+   * cache is behind on.
    */
   @Inject
   public MetadataRepositoryFactory(
       PointerStore pointers,
+      @CachedPointerStore PointerStore cachedPointers,
       BlobStore blobs,
       ImmutableBlobCache cache,
       MetadataResourceReader admittedReads) {
     this.pointers = pointers;
     this.blobs = blobs;
     this.cache = cache;
-    this.reads = RepositoryReads.bind(pointers, blobs, admittedReads);
+    this.reads = RepositoryReads.bind(cachedPointers, blobs, admittedReads);
   }
 
   /** Build one admitted metadata repository while leaving its mutation path direct. */

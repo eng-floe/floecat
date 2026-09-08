@@ -284,7 +284,7 @@ public class TableRootWriter {
         tableId,
         "root resync",
         () -> {
-          if (BlobRefs.refFrom(tables.metaForSafe(tableId)) == null) {
+          if (BlobRefs.refFrom(tables.metaForSafeConsistent(tableId)) == null) {
             // Transactional drop: the root goes with the definition. Only an actual deletion (or
             // nothing to delete) counts as converged — giving up under contention must keep the
             // re-drive marker alive.
@@ -300,15 +300,16 @@ public class TableRootWriter {
                 // entry. Each retry re-derives from committed state at retry time, keeping this a
                 // pure function of "now" like every other mutator.
                 converged[0] = true;
-                BlobRef definitionRef = BlobRefs.refFrom(tables.metaForSafe(tableId));
+                BlobRef definitionRef = BlobRefs.refFrom(tables.metaForSafeConsistent(tableId));
                 if (definitionRef == null) {
                   converged[0] = false; // dropped mid-resync: the re-probe below cleans up
                   return null;
                 }
                 SnapshotManifestEntry entry = null;
-                var pointer = snapshots.latestRegisteredSnapshotPointer(tableId);
+                var pointer = snapshots.latestRegisteredSnapshotPointerConsistent(tableId);
                 if (pointer.isPresent()) {
-                  entry = snapshotEntry(tableId, pointer.get().getSnapshotId()).orElse(null);
+                  entry =
+                      snapshotEntryConsistent(tableId, pointer.get().getSnapshotId()).orElse(null);
                   if (entry == null) {
                     // Committed current snapshot has no resolvable blob yet: nothing coherent to
                     // force. NOT converged — the marker stays and the re-drive retries later.
@@ -322,7 +323,7 @@ public class TableRootWriter {
                 // commitSnapshotEntry, so the resync is the only place the root's membership
                 // converges. A store fault listing them throws and aborts the attempt (the marker
                 // stays) rather than reconciling against a partial set.
-                java.util.Set<Long> liveSnapshotIds = registeredSnapshotIds(tableId);
+                java.util.Set<Long> liveSnapshotIds = registeredSnapshotIdsConsistent(tableId);
                 return TableRootMutations.resync(
                         roots,
                         tableId,
@@ -330,7 +331,8 @@ public class TableRootWriter {
                         entry,
                         liveSnapshotIds,
                         id -> {
-                          SnapshotManifestEntry loaded = snapshotEntry(tableId, id).orElse(null);
+                          SnapshotManifestEntry loaded =
+                              snapshotEntryConsistent(tableId, id).orElse(null);
                           if (loaded == null) {
                             // A registered snapshot whose blob is not yet resolvable can't join the
                             // manifest this pass. Membership is incomplete, so keep the re-drive
@@ -347,7 +349,7 @@ public class TableRootWriter {
           // A drop can race the commit: the committer persists synthesized history even on a
           // mutator no-op, so a definition-less root (built from lingering snapshot pointers
           // mid-drop-cleanup) may have just been created. Re-probe and take the drop path.
-          if (BlobRefs.refFrom(tables.metaForSafe(tableId)) == null) {
+          if (BlobRefs.refFrom(tables.metaForSafeConsistent(tableId)) == null) {
             return deleteRoot(tableId);
           }
           return converged[0];
@@ -361,14 +363,29 @@ public class TableRootWriter {
    */
   private java.util.Optional<SnapshotManifestEntry> snapshotEntry(
       ResourceId tableId, long snapshotId) {
-    BlobRef snapshotRef = BlobRefs.refFrom(snapshots.metaForSafe(tableId, snapshotId));
+    return snapshotEntry(tableId, snapshotId, false);
+  }
+
+  private java.util.Optional<SnapshotManifestEntry> snapshotEntryConsistent(
+      ResourceId tableId, long snapshotId) {
+    return snapshotEntry(tableId, snapshotId, true);
+  }
+
+  private java.util.Optional<SnapshotManifestEntry> snapshotEntry(
+      ResourceId tableId, long snapshotId, boolean consistent) {
+    BlobRef snapshotRef =
+        BlobRefs.refFrom(
+            consistent
+                ? snapshots.metaForSafeConsistent(tableId, snapshotId)
+                : snapshots.metaForSafe(tableId, snapshotId));
     if (snapshotRef == null) {
       return java.util.Optional.empty();
     }
     SnapshotManifestEntry.Builder builder =
         SnapshotManifestEntry.newBuilder().setSnapshotId(snapshotId).setSnapshotRef(snapshotRef);
-    snapshots
-        .getById(tableId, snapshotId)
+    (consistent
+            ? snapshots.getByIdConsistent(tableId, snapshotId)
+            : snapshots.getById(tableId, snapshotId))
         .ifPresent(
             s -> {
               if (s.hasUpstreamCreatedAt()) {
@@ -384,12 +401,17 @@ public class TableRootWriter {
     // finalized snapshot would land WITHOUT its stats_generation_ref — invisible under the gate —
     // and a constrained snapshot would drop its constraints_ref.
     if (statsStore != null) {
-      statsStore
-          .activeStatsGeneration(tableId, snapshotId)
+      (consistent
+              ? statsStore.activeStatsGenerationConsistent(tableId, snapshotId)
+              : statsStore.activeStatsGeneration(tableId, snapshotId))
           .ifPresent(uri -> builder.setStatsGenerationRef(BlobRef.newBuilder().setUri(uri)));
     }
     if (constraints != null) {
-      BlobRef constraintsRef = BlobRefs.refFrom(constraints.metaForSafe(tableId, snapshotId));
+      BlobRef constraintsRef =
+          BlobRefs.refFrom(
+              consistent
+                  ? constraints.metaForSafeConsistent(tableId, snapshotId)
+                  : constraints.metaForSafe(tableId, snapshotId));
       if (constraintsRef != null) {
         builder.setConstraintsRef(constraintsRef);
       }
@@ -399,12 +421,23 @@ public class TableRootWriter {
 
   /** Every currently-registered snapshot id (a live by-id pointer), paged in full. */
   private java.util.Set<Long> registeredSnapshotIds(ResourceId tableId) {
+    return registeredSnapshotIds(tableId, false);
+  }
+
+  private java.util.Set<Long> registeredSnapshotIdsConsistent(ResourceId tableId) {
+    return registeredSnapshotIds(tableId, true);
+  }
+
+  private java.util.Set<Long> registeredSnapshotIds(ResourceId tableId, boolean consistent) {
     java.util.Set<Long> ids = new java.util.HashSet<>();
     String token = "";
     StringBuilder next = new StringBuilder();
     do {
       next.setLength(0);
-      java.util.List<Snapshot> page = snapshots.list(tableId, 500, token, next);
+      java.util.List<Snapshot> page =
+          consistent
+              ? snapshots.listConsistent(tableId, 500, token, next)
+              : snapshots.list(tableId, 500, token, next);
       for (Snapshot s : page) {
         ids.add(s.getSnapshotId());
       }
@@ -416,9 +449,9 @@ public class TableRootWriter {
   /** Deletes the table's root pointer; true when gone (or already absent), false on contention. */
   private boolean deleteRoot(ResourceId tableId) {
     for (int attempt = 0; attempt < 2; attempt++) {
-      // Live, never the TTL cache: this is a write-funnel CAS expected-version read — a stale
+      // Live, never the pointer cache: this is a write-funnel CAS expected-version read — a stale
       // cached version would burn the first of the two attempts unconditionally.
-      MutationMeta meta = roots.metaForSafeLive(tableId);
+      MutationMeta meta = roots.metaForSafeConsistent(tableId);
       if (meta == null || meta.getPointerVersion() == 0L) {
         return true;
       }

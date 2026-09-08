@@ -8,6 +8,7 @@ package ai.floedb.floecat.service.repo.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.Catalog;
@@ -177,5 +178,137 @@ class CatalogOverlayRepositoryTest {
 
   private static ResourceId id(String value, ResourceKind kind) {
     return ResourceId.newBuilder().setAccountId("account").setId(value).setKind(kind).build();
+  }
+
+  /**
+   * A {@code get} that is behind a committed write for one key, while {@code getConsistent} is not.
+   *
+   * <p>That is the pointer cache's shape, not the store's: {@code DynamoDbKvStore} reads single
+   * keys with {@code consistentRead(true)}, so at the store the two are the same read. Every family
+   * reaching {@code getWithMeta} is uncached today, so this models the decorator rather than
+   * anything those keys meet in production -- it pins the behaviour for the point at which one of
+   * them becomes cached, which is when the bug below would go live.
+   */
+  private static final class StaleReadFor extends InMemoryPointerStore {
+    private final String key;
+    private ai.floedb.floecat.common.rpc.Pointer frozen;
+
+    StaleReadFor(String key) {
+      this.key = key;
+    }
+
+    void freeze() {
+      frozen = super.get(key).orElse(null);
+    }
+
+    @Override
+    public java.util.Optional<ai.floedb.floecat.common.rpc.Pointer> get(String k) {
+      return key.equals(k) && frozen != null ? java.util.Optional.of(frozen) : super.get(k);
+    }
+
+    // The SPI default delegates getConsistent to get, which would freeze this one too. A
+    // consistent read is authoritative by definition, so it must see the committed value.
+    @Override
+    public java.util.Optional<ai.floedb.floecat.common.rpc.Pointer> getConsistent(String k) {
+      return super.get(k);
+    }
+
+    // A prefix listing is behind in the same way -- which is why listPointersByPrefixConsistent
+    // exists as a separate method -- so a page can name a blob a commit has already superseded.
+    @Override
+    public java.util.List<ai.floedb.floecat.common.rpc.Pointer> listPointersByPrefix(
+        String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
+      var page = super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
+      if (frozen == null) {
+        return page;
+      }
+      return page.stream().map(p -> key.equals(p.getKey()) ? frozen : p).toList();
+    }
+  }
+
+  @Test
+  void aByNameLookupOverAStaleReadReturnsTheNewBodyWithMetaThatMatchesIt() {
+    // The secondary read is behind a commit that moved the blob, and CAS GC swept the old one.
+    // Re-resolving is only half the job: the body/meta coherence check compares against the uri
+    // the read resolved AT, so leaving the vanished uri in place either drops the row, or -- when
+    // the canonical read is behind too -- pairs the new body with meta built from the old pointer,
+    // whose etag is HEADed off a blob that no longer exists.
+    String byName = Keys.catalogOverlayPointerByName("account", "sales");
+    var pointers = new StaleReadFor(byName);
+    var blobs = new InMemoryBlobStore();
+    var overlays = new CatalogOverlayRepository(pointers, blobs);
+    var overlay = overlay("overlay", "integration", "catalog");
+    overlays.create(overlay);
+
+    String staleUri = pointers.get(byName).orElseThrow().getBlobUri();
+    pointers.freeze(); // this key now reads behind
+
+    assertTrue(
+        overlays.update(
+            overlay.toBuilder().setCatalogId(id("catalog-2", ResourceKind.RK_CATALOG)).build(),
+            1L));
+    blobs.delete(staleUri);
+
+    var found = overlays.getByNameWithMeta("account", "sales");
+    assertTrue(found.isPresent(), "a superseded blob must not read as a missing overlay");
+    assertEquals("catalog-2", found.orElseThrow().value().getCatalogId().getId());
+    assertNotEquals(
+        staleUri,
+        found.orElseThrow().meta().getBlobUri(),
+        "meta must describe the blob the body came from, not the one that vanished");
+  }
+
+  @Test
+  void aListPageOverAStaleReadKeepsTheRowRatherThanShorteningThePage() {
+    // The same shape through the list path. Both go through one helper now, but they did not when
+    // this bug was written into each of them separately, and only one of the two was ever covered.
+    String byName = Keys.catalogOverlayPointerByName("account", "sales");
+    var pointers = new StaleReadFor(byName);
+    var blobs = new InMemoryBlobStore();
+    var overlays = new CatalogOverlayRepository(pointers, blobs);
+    var overlay = overlay("overlay", "integration", "catalog");
+    overlays.create(overlay);
+
+    String staleUri = pointers.get(byName).orElseThrow().getBlobUri();
+    pointers.freeze();
+
+    assertTrue(
+        overlays.update(
+            overlay.toBuilder().setCatalogId(id("catalog-2", ResourceKind.RK_CATALOG)).build(),
+            1L));
+    blobs.delete(staleUri);
+
+    var page = overlays.listWithMeta("account", 10, "", new StringBuilder());
+    assertEquals(1, page.size(), "a superseded blob must not silently shorten the page");
+    assertEquals("catalog-2", page.get(0).value().getCatalogId().getId());
+    assertNotEquals(staleUri, page.get(0).meta().getBlobUri());
+  }
+
+  @Test
+  void aDeleteResolvesItsBodyFreshlySoItDropsTheCurrentNamePointer() {
+    // delete() takes its CAS version from a consistent read and its BODY from readForMutation.
+    // If the body is one rename behind, the secondary CasDeletes name the old pointer and the
+    // current one is orphaned: a name nothing can resolve and nothing will ever clean up.
+    var overlay = overlay("overlay", "integration", "catalog");
+    String canonicalById =
+        Keys.catalogOverlayPointerById("account", overlay.getResourceId().getId());
+    var pointers = new StaleReadFor(canonicalById);
+    var blobs = new InMemoryBlobStore();
+    var overlays = new CatalogOverlayRepository(pointers, blobs);
+    overlays.create(overlay);
+
+    pointers.freeze(); // the canonical pointer now reads behind
+
+    // Renamed after the freeze. update() reads consistently, so the rename itself lands.
+    assertTrue(overlays.update(overlay.toBuilder().setDisplayName("renamed").build(), 1L));
+    assertTrue(
+        pointers.get(Keys.catalogOverlayPointerByName("account", "renamed")).isPresent(),
+        "precondition: the rename published the new name pointer");
+
+    assertTrue(overlays.delete(overlay.getResourceId()));
+
+    assertFalse(
+        pointers.get(Keys.catalogOverlayPointerByName("account", "renamed")).isPresent(),
+        "the delete must drop the name the resource actually has, not the one a stale body named");
   }
 }

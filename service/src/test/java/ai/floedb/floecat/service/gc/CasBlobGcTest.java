@@ -1536,7 +1536,8 @@ class CasBlobGcTest {
           @Override
           public java.util.Optional<Pointer> get(String key) {
             var observed = super.get(key);
-            // The only get() of the table's by-id pointer in a pass is the pre-delete owner
+            // The only consistent get of the table's by-id pointer in a pass is the pre-delete
+            // owner
             // re-check (the mark scans by prefix), so GC has already HEAD'd blob A here. Serve
             // the stale pointer (still on B), then land the writer's re-PUT + CAS onto A before
             // GC reaches its delete.
@@ -2505,6 +2506,12 @@ class CasBlobGcTest {
     @Override
     public java.util.Optional<Pointer> get(String key) {
       return delegate.get(key);
+    }
+
+    /** A decorator, so the delegate's consistent read -- this one only hides scans. */
+    @Override
+    public java.util.Optional<Pointer> getConsistent(String key) {
+      return delegate.getConsistent(key);
     }
 
     @Override
