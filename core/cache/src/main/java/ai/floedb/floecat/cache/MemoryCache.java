@@ -31,7 +31,9 @@ import java.util.function.Predicate;
  *
  * <p><b>Atomicity against an in-flight load.</b> A value loaded concurrently with {@link #put},
  * {@link #evict}, or {@link #evictPartition} must not overwrite that mutation. The mutator's result
- * wins when it installs a value; otherwise the key is left absent.
+ * wins when it installs a value; otherwise the key is left absent. A load that has already been
+ * joined may still return its source result to that caller, but it can never repopulate the cache
+ * after its load slot is retired.
  *
  * @param <K> key
  * @param <V> value
@@ -43,19 +45,26 @@ public interface MemoryCache<K, V> {
    * and caches nothing when the loader does: absence is never cached, and this is the only null the
    * contract accepts.
    *
-   * <p>The caller always receives what the loader returned. A write that raced the load drops the
-   * cached entry, not the answer.
+   * <p>If a concurrent {@link #put} wins before the owner completes, the resident value is returned
+   * to the owner and its followers. If an eviction wins, the source result is returned to callers
+   * that already joined the load, but the key remains absent.
    */
   V get(K key, Loader<K, V> loader);
 
   /**
-   * The values for the distinct {@code keys}, loading all misses in one call. Existing values and
-   * loaded values are returned; keys omitted by the loader are absent and are not cached. The
-   * loader is not called when every key is already held or {@code keys} is empty. If another load
-   * fills a miss first, that retained value wins and is returned.
+   * The values for the distinct {@code keys}, loading all misses owned by this call in one call.
+   * Existing values and loaded values are returned; keys omitted by the loader are absent and are
+   * not cached. A miss already being loaded by {@link #get} or another {@code getAll} joins that
+   * load instead of invoking a second source read. The loader is not called when every key is
+   * already held, every miss is already owned by another caller, or {@code keys} is empty. If a
+   * mutation wins while a load is in flight, the mutation's resident value wins; an eviction leaves
+   * the key absent.
    *
    * <p>Hit and miss events are reported per distinct key. Load duration and failure are reported
    * once for the bulk loader invocation.
+   *
+   * <p>Loaders may compose other keys through this cache, but a loader must not synchronously load
+   * the same key it currently owns. That recursive dependency fails fast rather than deadlocking.
    */
   Map<K, V> getAll(Collection<K> keys, BulkLoader<K, V> loader);
 
