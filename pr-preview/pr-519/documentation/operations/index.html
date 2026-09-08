@@ -2026,6 +2026,12 @@ while never sending the field, so holding to that reading refuses every table on
 have answered. Floecat attempts the vend and reports what the server says: a refusal or a missing
 endpoint becomes <code>CIVI_CREDENTIAL_VENDING_UNSUPPORTED</code> on validation, while a rejected token or an
 unreachable server is reported as itself.</p>
+<p>A table's access modes are reported by <code>integration validate</code>, which names the table and the reason
+when it refuses one. They are not stored on the reconciled table: the overlay reconciler builds a
+table's properties from the Integration and Overlay identities and the storage location, and does
+not carry the upstream properties a provider reports. That is true of every provider, not only this
+one, so reading a share's access modes means validating the Integration rather than describing the
+materialized table.</p>
 <ul>
 <li><code>delta.sharing.strict-access-modes=true</code> -- a connection property that restores the protocol
   reading, refusing a table that states no modes without asking. Set it against a server known to
