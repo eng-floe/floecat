@@ -20,5 +20,6 @@ package ai.floedb.floecat.catalog.access;
 public enum CatalogProtocol {
   ICEBERG_REST,
   UNITY_CATALOG,
+  DELTA_SHARING,
   AWS_GLUE
 }

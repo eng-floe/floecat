@@ -66,6 +66,20 @@ class CatalogIntegrationAccessTest {
   }
 
   /**
+   * Delta Sharing runs the same Delta log probe as Unity, which falls back to us-east-1 when the
+   * region is absent. A share whose table lives elsewhere would have its validation read answered
+   * with PermanentRedirect while the read path, which consults the endpoint, succeeds.
+   */
+  @Test
+  void fillsInTheDeploymentRegionForADeltaSharingIntegrationToo() {
+    var integration = bearerIntegration(Map.of(), CatalogIntegrationType.CIT_DELTA_SHARING);
+
+    var resolved = access.resolve(integration);
+
+    assertEquals("eu-west-1", resolved.config().properties().get("s3.region"));
+  }
+
+  /**
    * Unity only. The Iceberg REST provider reads the same map and turns s3.region into
    * client.region, so defaulting it there would pin a region on an integration that deliberately
    * set none and was relying on the AWS SDK's own resolution chain.
@@ -331,6 +345,33 @@ class CatalogIntegrationAccessTest {
         assertThrows(CatalogAccessException.class, () -> access.open(integration));
 
     assertEquals(CatalogAccessException.Code.INTERNAL, error.code());
+  }
+
+  @Test
+  void resolvesADeltaSharingRecipientOntoItsProtocolAndBearerToken() {
+    var authentication =
+        CatalogAuthentication.newBuilder()
+            .setBearer(BearerAuthentication.getDefaultInstance())
+            .setCredentialsConfigured(true)
+            .setCredentialGeneration(1L)
+            .build();
+    CatalogIntegration integration =
+        integration(authentication).toBuilder()
+            .setType(CatalogIntegrationType.CIT_DELTA_SHARING)
+            .build();
+    when(credentials.resolve(integration))
+        .thenReturn(
+            Optional.of(
+                CatalogIntegrationCredentials.newBuilder()
+                    .setBearerToken(SecretValue.newBuilder().setValue("recipient"))
+                    .build()));
+
+    var resolved = access.resolve(integration);
+
+    assertEquals(CatalogProtocol.DELTA_SHARING, resolved.config().protocol());
+    assertEquals(CatalogAuthenticationScheme.OAUTH2, resolved.config().authentication().scheme());
+    assertEquals("recipient", resolved.credentials().properties().get("token"));
+    assertFalse(resolved.config().properties().containsKey("token"));
   }
 
   @Test

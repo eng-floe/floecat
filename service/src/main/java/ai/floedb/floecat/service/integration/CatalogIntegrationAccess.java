@@ -121,6 +121,7 @@ public class CatalogIntegrationAccess {
         switch (integration.getType()) {
           case CIT_ICEBERG_REST -> CatalogProtocol.ICEBERG_REST;
           case CIT_UNITY -> CatalogProtocol.UNITY_CATALOG;
+          case CIT_DELTA_SHARING -> CatalogProtocol.DELTA_SHARING;
           case CIT_UNSPECIFIED, UNRECOGNIZED ->
               throw new CatalogAccessException(
                   CatalogAccessException.Code.INVALID_CONFIGURATION,
@@ -223,13 +224,25 @@ public class CatalogIntegrationAccess {
       List.of("s3.region", "region", "client.region", "aws.region");
 
   /**
-   * The integration's properties with {@code s3.region} resolved, for Unity.
+   * Protocols whose provider probes storage itself and so needs a resolved {@code s3.region}.
    *
-   * <p>Unity only. The Iceberg REST provider reads the same map and turns {@code s3.region} into
-   * {@code client.region}, so defaulting it there would pin a region on an integration that
-   * deliberately set none and was relying on the AWS SDK's own resolution chain -- replacing a
-   * provider-managed default with this deployment's. Unity's storage validator has no such chain:
-   * without a region it assumed {@code us-east-1} and disagreed with the read path.
+   * <p>Both run the same Delta log probe, which falls back to {@code us-east-1} when the region is
+   * absent. A share whose table lives elsewhere then has its validation read answered with
+   * PermanentRedirect while the read path, which consults the endpoint, succeeds -- an Integration
+   * permanently reporting a storage-access failure that does not exist in practice.
+   */
+  private static final java.util.Set<CatalogProtocol> RESOLVES_STORAGE_REGION =
+      java.util.EnumSet.of(CatalogProtocol.UNITY_CATALOG, CatalogProtocol.DELTA_SHARING);
+
+  /**
+   * The integration's properties with {@code s3.region} resolved.
+   *
+   * <p>Only for {@link #RESOLVES_STORAGE_REGION}. The Iceberg REST provider reads the same map and
+   * turns {@code s3.region} into {@code client.region}, so defaulting it there would pin a region
+   * on an integration that deliberately set none and was relying on the AWS SDK's own resolution
+   * chain -- replacing a provider-managed default with this deployment's. The Delta log probe those
+   * two protocols share has no such chain: without a region it assumed {@code us-east-1} and
+   * disagreed with the read path.
    *
    * <p>Resolved across every spelling, not just {@code s3.region}. The provider reads only that key
    * and the validation probe builds its S3 client from it, so a region written another way has to
@@ -248,7 +261,7 @@ public class CatalogIntegrationAccess {
   private Map<String, String> withDefaultRegion(
       CatalogIntegration integration, CatalogProtocol protocol) {
     Map<String, String> properties = integration.getPropertiesMap();
-    if (protocol != CatalogProtocol.UNITY_CATALOG) {
+    if (!RESOLVES_STORAGE_REGION.contains(protocol)) {
       return properties;
     }
     String stated = null;
