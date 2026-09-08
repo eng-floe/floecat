@@ -50,10 +50,17 @@ public final class LoadCoordinator<K, V> {
   private final ReentrantReadWriteLock registration = new ReentrantReadWriteLock(true);
   private final StampedLock[] fences = new StampedLock[FENCE_STRIPES];
   private final ToIntFunction<K> stripeFunction;
+  private final Runnable beforeRegistrationRead;
 
   /** Creates a coordinator; the function selects the mutation-fence stripe for a key. */
   public LoadCoordinator(ToIntFunction<K> stripeFunction) {
+    this(stripeFunction, () -> {});
+  }
+
+  LoadCoordinator(ToIntFunction<K> stripeFunction, Runnable beforeRegistrationRead) {
     this.stripeFunction = Objects.requireNonNull(stripeFunction, "stripeFunction");
+    this.beforeRegistrationRead =
+        Objects.requireNonNull(beforeRegistrationRead, "beforeRegistrationRead");
     for (int stripe = 0; stripe < fences.length; stripe++) {
       fences[stripe] = new StampedLock();
     }
@@ -69,6 +76,7 @@ public final class LoadCoordinator<K, V> {
   public Acquisition<K, V> acquire(K key, Sample sample) {
     Objects.requireNonNull(key, "key");
     Objects.requireNonNull(sample, "sample");
+    beforeRegistrationRead.run();
     registration.readLock().lock();
     try {
       StampedLock fence = fenceFor(key);

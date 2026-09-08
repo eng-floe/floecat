@@ -67,8 +67,8 @@ and index locks remain adapter-specific, but must preserve the same owner/epoch/
 
 The protocol is shared; the resident medium is not:
 
-- **Objects and Hints** use `MemoryCache` and the shared load coordinator. Their keys are immutable
-  identities, so a miss is a safe reload.
+- **Objects and Hints** will use `MemoryCache` and the shared load coordinator in their stacked
+  changes. Their keys are immutable identities, so a miss is a safe reload.
 - **Blobs** use the disk-oriented `BlobCache` interface and the same owner/epoch/publication rule.
   Partition generations, fill/bypass-fill, mapped-file references, and sweeping remain disk
   concerns. A blob key must identify immutable content.

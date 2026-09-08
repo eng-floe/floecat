@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -141,7 +142,16 @@ abstract class MemoryCacheContractTest {
 
   @Test
   void partitionMutationClosesRegistrationBeforeAdmittingAnotherLoad() throws Exception {
-    LoadCoordinator<String, Versioned> coordinator = new LoadCoordinator<>(String::hashCode);
+    var watchAcquire = new AtomicBoolean();
+    var acquireAttempted = new CountDownLatch(1);
+    LoadCoordinator<String, Versioned> coordinator =
+        new LoadCoordinator<>(
+            String::hashCode,
+            () -> {
+              if (watchAcquire.get()) {
+                acquireAttempted.countDown();
+              }
+            });
     LoadCoordinator.Acquisition<String, Versioned> seed =
         coordinator.acquire("seed", coordinator.sample("seed"));
     assertThat(seed.owner()).isTrue();
@@ -160,8 +170,10 @@ abstract class MemoryCacheContractTest {
                     ignored -> {}));
     assertThat(sweeping.await(10, TimeUnit.SECONDS)).isTrue();
 
-    var acquiring =
-        CompletableFuture.supplyAsync(() -> coordinator.acquire("new", coordinator.sample("new")));
+    LoadCoordinator.Sample sample = coordinator.sample("new");
+    watchAcquire.set(true);
+    var acquiring = CompletableFuture.supplyAsync(() -> coordinator.acquire("new", sample));
+    assertThat(acquireAttempted.await(10, TimeUnit.SECONDS)).isTrue();
     assertThat(acquiring).isNotCompleted();
 
     releaseSweep.countDown();
