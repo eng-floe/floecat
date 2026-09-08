@@ -100,7 +100,7 @@ abstract class MemoryCacheContractTest {
   }
 
   @Test
-  void aLoadStartingDuringASweepIsAdmittedAfterTheSweep() throws Exception {
+  void aLoadStartedNearASweepIsRetainedAfterItCompletes() throws Exception {
     MemoryCache<String, Versioned> cache = cache();
     cache.get("held", key -> new Versioned("held", 1));
     var sweeping = new CountDownLatch(1);
@@ -120,14 +120,14 @@ abstract class MemoryCacheContractTest {
     assertThat(sweeping.await(10, TimeUnit.SECONDS)).isTrue();
 
     HeldLoad held = new HeldLoad();
-    var attempting = new CountDownLatch(1);
+    var readerStarted = new CountDownLatch(1);
     var reader =
         CompletableFuture.supplyAsync(
             () -> {
-              attempting.countDown();
+              readerStarted.countDown();
               return cache.get("k", key -> held.load(new Versioned("after-sweep", 1)));
             });
-    assertThat(attempting.await(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(readerStarted.await(10, TimeUnit.SECONDS)).isTrue();
     assertThat(reader).isNotCompleted();
 
     releaseSweep.countDown();
@@ -137,6 +137,36 @@ abstract class MemoryCacheContractTest {
     assertThat(reader.get(10, TimeUnit.SECONDS)).isEqualTo(new Versioned("after-sweep", 1));
 
     assertThat(cache.peek("k")).contains(new Versioned("after-sweep", 1));
+  }
+
+  @Test
+  void partitionMutationClosesRegistrationBeforeAdmittingAnotherLoad() throws Exception {
+    LoadCoordinator<String, Versioned> coordinator = new LoadCoordinator<>(String::hashCode);
+    LoadCoordinator.Acquisition<String, Versioned> seed =
+        coordinator.acquire("seed", coordinator.sample("seed"));
+    assertThat(seed.owner()).isTrue();
+
+    var sweeping = new CountDownLatch(1);
+    var releaseSweep = new CountDownLatch(1);
+    var sweep =
+        CompletableFuture.runAsync(
+            () ->
+                coordinator.mutatePartition(
+                    key -> {
+                      sweeping.countDown();
+                      await(releaseSweep);
+                      return true;
+                    },
+                    ignored -> {}));
+    assertThat(sweeping.await(10, TimeUnit.SECONDS)).isTrue();
+
+    var acquiring =
+        CompletableFuture.supplyAsync(() -> coordinator.acquire("new", coordinator.sample("new")));
+    assertThat(acquiring).isNotCompleted();
+
+    releaseSweep.countDown();
+    sweep.get(10, TimeUnit.SECONDS);
+    assertThat(acquiring.get(10, TimeUnit.SECONDS).owner()).isTrue();
   }
 
   @Test

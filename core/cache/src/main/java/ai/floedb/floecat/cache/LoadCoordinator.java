@@ -16,6 +16,8 @@
 
 package ai.floedb.floecat.cache;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -23,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.StampedLock;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.ToIntFunction;
 
@@ -118,18 +121,27 @@ public final class LoadCoordinator<K, V> {
     }
   }
 
-  /** Retires every matching owner and runs the partition mutation under all fences. */
-  public void mutatePartition(Predicate<K> belongsToPartition, Runnable mutation) {
+  /**
+   * Retires every matching owner and runs the partition mutation under all fences.
+   *
+   * <p>The membership predicate is memoized for the duration of the operation, so a stateful or
+   * expensive predicate sees each key once even though the coordinator and resident adapter both
+   * need to apply it.
+   */
+  public void mutatePartition(
+      Predicate<K> belongsToPartition, Consumer<Predicate<K>> residentMutation) {
     Objects.requireNonNull(belongsToPartition, "belongsToPartition");
-    Objects.requireNonNull(mutation, "mutation");
+    Objects.requireNonNull(residentMutation, "residentMutation");
     registration.writeLock().lock();
     long[] stamps = new long[fences.length];
     try {
       for (int stripe = 0; stripe < fences.length; stripe++) {
         stamps[stripe] = fences[stripe].writeLock();
       }
-      loads.keySet().removeIf(belongsToPartition);
-      mutation.run();
+      Map<K, Boolean> membership = new HashMap<>();
+      Predicate<K> memoized = key -> membership.computeIfAbsent(key, belongsToPartition::test);
+      loads.keySet().removeIf(memoized);
+      residentMutation.accept(memoized);
     } finally {
       for (int stripe = fences.length - 1; stripe >= 0; stripe--) {
         fences[stripe].unlockWrite(stamps[stripe]);

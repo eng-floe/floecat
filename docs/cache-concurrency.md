@@ -55,6 +55,14 @@ source efficiency of one bulk read.
 `peek` is intentionally outside this protocol: it never loads, never joins, and never reports a
 hit or miss. Request paths use `get` or `getAll`, not a loop of peeks.
 
+## Migration boundary
+
+The concurrency foundation is implemented in `core/cache` by `LoadCoordinator` and
+`CaffeineMemoryCache` in this change. The Object and Hint adapters consume it through
+`MemoryCache`; the disk Blob adapter and the authoritative Pointer index migrate their
+owner/publication paths in their stacked changes. Until then, their mmap, generation, readiness,
+and index locks remain adapter-specific, but must preserve the same owner/epoch/publication rules.
+
 ## Layer-specific adaptations
 
 The protocol is shared; the resident medium is not:

@@ -85,7 +85,7 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
             // pressure.
             .evictionListener(
                 (K key, CachedValue<V> value, RemovalCause cause) ->
-                    events.evicted(weightBytes(key, value.value())))
+                    report(() -> events.evicted(weightBytes(key, value.value()))))
             .build();
   }
 
@@ -144,14 +144,14 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
     LoadCoordinator.Sample sample = loads.sample(key);
     CachedValue<V> cached = entries.getIfPresent(key);
     if (cached != null) {
-      events.hit(Duration.ofNanos(System.nanoTime() - startNanos));
+      report(() -> events.hit(Duration.ofNanos(System.nanoTime() - startNanos)));
       return cached.value();
     }
 
     LoadCoordinator.Acquisition<K, V> acquisition = loads.acquire(key, sample);
     if (!acquisition.owner()) {
       V value = loads.await(acquisition.token());
-      events.hit(Duration.ofNanos(System.nanoTime() - startNanos));
+      report(() -> events.hit(Duration.ofNanos(System.nanoTime() - startNanos)));
       return value;
     }
 
@@ -164,7 +164,7 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
         boolean retained =
             loads.publishIfCurrent(token, () -> entries.asMap().putIfAbsent(key, loaded));
         if (!retained) {
-          events.loadDiscarded();
+          report(events::loadDiscarded);
         }
       }
       // A mutation that won while the source read was in flight is the answer for followers and for
@@ -173,14 +173,14 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
       CachedValue<V> current = entries.getIfPresent(key);
       V served = current == null ? value : current.value();
       loads.complete(token, served);
-      events.miss();
-      events.loadTime(Duration.ofNanos(System.nanoTime() - startNanos));
+      report(events::miss);
+      report(() -> events.loadTime(Duration.ofNanos(System.nanoTime() - startNanos)));
       return served;
     } catch (RuntimeException e) {
       loads.fail(token, e);
-      events.miss();
+      report(events::miss);
       if (!(e instanceof UnweighableValueException)) {
-        events.loadFailed(Duration.ofNanos(System.nanoTime() - startNanos), e);
+        report(() -> events.loadFailed(Duration.ofNanos(System.nanoTime() - startNanos), e));
       }
       throw e;
     } catch (Error e) {
@@ -214,10 +214,10 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
         CachedValue<V> value = entries.getIfPresent(key);
         if (value != null) {
           result.put(key, value.value());
-          events.hit(Duration.ofNanos(System.nanoTime() - startNanos));
+          report(() -> events.hit(Duration.ofNanos(System.nanoTime() - startNanos)));
         } else {
           acquisitions.put(key, loads.acquire(key, sample));
-          events.miss();
+          report(events::miss);
         }
       }
     } catch (RuntimeException | Error failure) {
@@ -259,14 +259,14 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
       } catch (RuntimeException e) {
         owned.values().forEach(token -> loads.fail(token, e));
         if (!(e instanceof UnweighableValueException)) {
-          events.loadFailed(Duration.ofNanos(System.nanoTime() - startNanos), e);
+          report(() -> events.loadFailed(Duration.ofNanos(System.nanoTime() - startNanos), e));
         }
         throw e;
       } catch (Error e) {
         owned.values().forEach(token -> loads.fail(token, e));
         throw e;
       }
-      events.loadTime(Duration.ofNanos(System.nanoTime() - startNanos));
+      report(() -> events.loadTime(Duration.ofNanos(System.nanoTime() - startNanos)));
     }
 
     for (Map.Entry<K, LoadCoordinator.Acquisition<K, V>> entry : acquisitions.entrySet()) {
@@ -287,7 +287,7 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
       boolean retained =
           loads.publishIfCurrent(token, () -> entries.asMap().putIfAbsent(key, loaded));
       if (!retained) {
-        events.loadDiscarded();
+        report(events::loadDiscarded);
       }
     }
     CachedValue<V> current = entries.getIfPresent(key);
@@ -324,7 +324,8 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
   public void evictPartition(Predicate<K> belongsToPartition) {
     Objects.requireNonNull(belongsToPartition, "belongsToPartition");
     loads.mutatePartition(
-        belongsToPartition, () -> entries.asMap().keySet().removeIf(belongsToPartition));
+        belongsToPartition,
+        residentMembership -> entries.asMap().keySet().removeIf(residentMembership));
   }
 
   @Override
@@ -349,5 +350,14 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
   @Override
   public long entryCount() {
     return entries.estimatedSize();
+  }
+
+  /** Telemetry is advisory and must never change cache-load correctness or wake followers early. */
+  private static void report(Runnable callback) {
+    try {
+      callback.run();
+    } catch (RuntimeException ignored) {
+      // A broken exporter must not turn a successful source read into a failed cache load.
+    }
   }
 }
