@@ -58,6 +58,18 @@ public final class CacheMetrics extends BaseMetrics {
     observability.counter(Telemetry.Metrics.CACHE_MISSES, 1, metricTags(extraTags));
   }
 
+  /** One entry dropped to stay within budget, and the retained bytes it released. */
+  public void recordEviction(long weightBytes, Tag... extraTags) {
+    observability.counter(Telemetry.Metrics.CACHE_EVICTIONS, 1, metricTags(extraTags));
+    observability.counter(
+        Telemetry.Metrics.CACHE_EVICTED_WEIGHT, weightBytes, metricTags(extraTags));
+  }
+
+  /** One load whose value was not retained, because a write may have raced it. */
+  public void recordLoadDiscarded(Tag... extraTags) {
+    observability.counter(Telemetry.Metrics.CACHE_LOADS_DISCARDED, 1, metricTags(extraTags));
+  }
+
   public void trackSize(Supplier<? extends Number> supplier, String description, Tag... extraTags) {
     registerGauge(Telemetry.Metrics.CACHE_SIZE, supplier, description, metricTags(extraTags));
   }
