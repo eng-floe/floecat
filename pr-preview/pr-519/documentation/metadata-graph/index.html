@@ -2033,13 +2033,14 @@ or views. The graph provides:</p>
 <li>Immutable node models that can be safely reused across requests. Nodes are pure derivations of
   their source blob and are cached content-addressed (keyed by <code>blobUri + "#node"</code>) in the
   process-wide <code>ImmutableBlobCache</code>, so they need no invalidation.</li>
-<li>A short-TTL pointer-meta cache (<code>GraphCacheManager</code>) that bounds how stale a resource-ID →
-  current-blob resolution can be (<code>floecat.metadata.graph.meta-cache-ttl-seconds</code>, default 2).</li>
+<li>Resource-ID → current-blob resolution served by the pointer cache (<code>CachingPointerStore</code>), which
+  is refreshed on write and does not expire, so a commit is visible to the replica that made it as
+  soon as it lands.</li>
 <li>Helper APIs for name resolution (Directory RPC parity) and snapshot pinning (Snapshot RPC parity).</li>
 <li>Extension points (<code>EngineHint</code>) so planners/executors can attach engine-specific payloads without
   mutating the base metadata structures.</li>
 </ul>
-<p>The graph's caches are two of the service-wide caching disciplines described in
+<p>The graph reads through the service-wide caching disciplines described in
 <a href="../caching/"><code>docs/caching.md</code></a>.</p>
 <div class="highlight"><pre><span></span><code>┌────────────┐      ┌────────────────────┐      ┌───────────────────────┐
 │ gRPC RPCs  │ ---&gt; │ MetadataGraph APIs │ ---&gt; │ Repositories / RPCs   │
@@ -2055,10 +2056,10 @@ facade sit inside <code>service/metagraph</code>. The split looks like this:</p>
 <li><code>core/metagraph/model/</code> – Immutable node records (<code>CatalogNode</code>, <code>NamespaceNode</code>, <code>TableNode</code>,
   <code>ViewNode</code>, <code>SystemViewNode</code>) plus shared enums (<code>GraphNodeKind</code>, <code>EngineKey</code>, <code>EngineHint</code>,
   <code>GraphNodeOrigin</code>, etc.).</li>
-<li><code>service/metagraph/cache/</code> – <code>GraphCacheManager</code> wraps the shared <code>PointerTtlCache</code>
-  (<code>service/repo/cache/</code>) for pointer metadata and exposes hit/miss counters and size gauges;
-  <code>CatalogTopologyCache</code> caches namespace/relation ref listings. Derived nodes themselves live in
-  the process-wide <code>ImmutableBlobCache</code> (<code>service/repo/cache/</code>), not here.</li>
+<li><code>service/metagraph/cache/</code> – <code>CatalogTopologyCache</code> holds namespace and relation ref listings.
+  Derived nodes are not cached here: they live content-keyed by blob URI in the process-wide
+  <code>ImmutableBlobCache</code> (<code>service/repo/cache/</code>), and the pointers naming them live in the pointer
+  cache under the store.</li>
 <li><code>service/metagraph/loader/</code> – <code>NodeLoader</code> wraps the catalog/namespace/table/view repositories to
   hydrate immutable nodes from protobuf metadata (<code>metaForSafe</code> + pointer fetches).</li>
 <li><code>service/metagraph/resolver/</code> – <code>NameResolver</code> handles catalog/namespace/table/view lookups, while
@@ -2215,10 +2216,6 @@ exposes the Metadata Graph APIs that higher layers call. Key methods:</p>
 <td><code>SnapshotPin snapshotPinFor(String cid, ResourceId tableId, SnapshotRef override, Optional&lt;Timestamp&gt; asOfDefault)</code></td>
 <td>Normalises snapshot selection (override → as-of → current).</td>
 </tr>
-<tr>
-<td><code>void invalidate(ResourceId id)</code></td>
-<td>Evicts the cached pointer meta for an ID (call after successful mutations). Derived nodes are content-keyed and need no invalidation.</td>
-</tr>
 </tbody>
 </table>
 <h3 id="engine-hint-retrieval">Engine Hint Retrieval<a class="headerlink" href="#engine-hint-retrieval" title="Permanent link">&para;</a></h3>
@@ -2228,12 +2225,10 @@ hint type, and engine availability. Hints are cached per fingerprint and engine 
 planners requesting different engine versions or planner modes never interfere with one another.</p>
 <p>Internally <code>resolve(ResourceId)</code>:</p>
 <ol>
-<li>Probes the pointer-meta cache; a hit names the current blob URI, and the derived node at
-   <code>blobUri + "#node"</code> is returned from the <code>ImmutableBlobCache</code> when present.</li>
-<li>Otherwise re-reads a fresh pointer (<code>metaForSafe</code>) before hydrating. The meta cache is trusted
-   only to short-circuit to an already-cached node: hydrating from a cached (possibly superseded)
-   blob URI could serve stale content as current, so <code>load()</code> only ever receives a freshly read
-   pointer.</li>
+<li>Reads the pointer through <code>nodes.mutationMeta(id)</code>. There is no graph-level meta cache to probe
+   first: the pointer cache now sits under the store, so this read is a memory lookup when the key
+   is resident and a store read when it is not.</li>
+<li>Returns the derived node at <code>blobUri + "#node"</code> from the <code>ImmutableBlobCache</code> when present.</li>
 <li>Rehydrates the protobuf record (<code>Catalog</code>, <code>Namespace</code>, <code>Table</code>, <code>View</code>) into the immutable node
    and stores it content-keyed under <code>blobUri + "#node"</code>.</li>
 <li>Serves the node from cache for as long as the blob stays hot; a DDL writes a new blob, so the
@@ -2260,10 +2255,11 @@ the graph defines the single source of truth for list/prefix resolution.</p>
 <ul>
 <li><strong>Always go through the graph</strong> for read paths instead of hitting repositories directly. This keeps
   cache hit rate predictable and ensures planner/executor code sees immutable snapshots.</li>
-<li><strong>Call <code>invalidate</code></strong> whenever a catalog/namespace/table/view mutation succeeds. It evicts the
-  pointer meta so same-process readers see the new pointer immediately instead of waiting out the
-  meta TTL; cross-instance staleness stays bounded by the TTL. Node entries never need eviction —
-  they are content-keyed by blob URI.</li>
+<li><strong>Nothing to invalidate after a mutation.</strong> The pointer cache sits under the store and the writer
+  publishes its own new value, so a successful mutation is visible to same-process readers without
+  a call. Cross-instance staleness is not time-bounded: another replica keeps its value until it
+  writes that key or reads it consistently. Node entries never need eviction — they are
+  content-keyed by blob URI.</li>
 <li><strong>Treat node instances as read-only</strong>. They are immutable records but they may still be shared
   across requests via the cache, so do not mutate maps or lists after retrieval.</li>
 <li><strong>Attach engine hints sparingly</strong>. Hints should be small (think JSON blobs or compact protobufs)
@@ -2295,12 +2291,8 @@ still resolve as <code>FOUND</code> while individual columns report <code>COLUMN
 </thead>
 <tbody>
 <tr>
-<td><code>graph-meta-cache</code></td>
-<td>Pointer-meta cache: enabled gauge, configured max entries, estimated entries, and per-account hit/miss counters.</td>
-</tr>
-<tr>
 <td><code>graph-cache</code></td>
-<td>Node-load latency timer (<code>GraphCacheManager.recordLoad</code>) and load-failure counter.</td>
+<td>Node-load latency timer and load-failure counter, recorded by <code>UserGraph</code> around each node load.</td>
 </tr>
 <tr>
 <td><code>blob-cache</code></td>
