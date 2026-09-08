@@ -61,6 +61,28 @@ class CaffeineMemoryCacheTest {
   }
 
   @Test
+  void telemetryFailureCannotTurnASuccessfulLoadIntoACacheFailure() {
+    CacheEvents throwingEvents =
+        new CacheEvents() {
+          @Override
+          public void miss() {
+            throw new IllegalStateException("telemetry unavailable");
+          }
+
+          @Override
+          public void loadTime(Duration elapsed) {
+            throw new IllegalStateException("telemetry unavailable");
+          }
+        };
+    MemoryCache<String, Versioned> cache =
+        CacheFixtures.cache(CacheFixtures.AMPLE_BUDGET, throwingEvents);
+
+    assertThat(cache.get("k", ignored -> new Versioned("value", 1L)))
+        .isEqualTo(new Versioned("value", 1L));
+    assertThat(cache.peek("k")).contains(new Versioned("value", 1L));
+  }
+
+  @Test
   void bytesCountEntryMachineryNotJustPayload() {
     // A cache full of tiny values must reach its ceiling on machinery rather than reading as
     // nearly empty, which is what makes a byte budget also an entry budget.
