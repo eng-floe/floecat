@@ -44,6 +44,11 @@ URI-keyed caching would be unsound for them.
 
 ## The shared cache contract (`core/cache`)
 
+The concurrency rules are specified separately in [`cache-concurrency.md`](cache-concurrency.md)
+and are implemented by the adapter-internal `LoadCoordinator` in `core/cache`. The important property is one
+owner/epoch/publication protocol for scalar, batch, mutation, and partition operations; individual
+tiers retain only the locks and lifecycle needed by their resident medium.
+
 The future cache layers share this module's operational and telemetry vocabulary, but not one
 storage-shaped interface or one resource pool. `MemoryCache<K, V>` is the in-memory primitive used
 by object and hint caches and as storage inside the pointer-cache layer. The pointer layer belongs
