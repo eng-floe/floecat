@@ -1139,7 +1139,7 @@ class StatsOrchestratorTest {
         first.toBuilder().setTable(first.getTable().toBuilder().setRowCount(19L)).build();
     when(store.getTargetStatsInGeneration(
             request.tableId(), request.snapshotId(), "gen-pinned", request.target()))
-        .thenReturn(Optional.empty());
+        .thenThrow(new IllegalStateException("frozen manifest unavailable"));
     when(store.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
         .thenReturn(Optional.of(first), Optional.of(replacement));
 
@@ -1164,7 +1164,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void tableFactsAreSharedUntilTheirTargetIsInvalidated() {
+  void liveTableFactsAreNotCachedWithoutAGenerationIdentity() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator orchestrator =
         orchestrator(
@@ -1183,14 +1183,6 @@ class StatsOrchestratorTest {
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(7L);
-    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
-        .get()
-        .extracting(facts -> facts.rowCount().getAsLong())
-        .isEqualTo(7L);
-    verify(store).getTargetStats(request.tableId(), request.snapshotId(), request.target());
-
-    orchestrator.invalidateStatsCache(request.tableId(), request.snapshotId(), request.target());
-
     assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())

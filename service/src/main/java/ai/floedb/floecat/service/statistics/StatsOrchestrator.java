@@ -262,7 +262,9 @@ public class StatsOrchestrator {
   /**
    * Resolve relation-sized table facts through Objects. The miss loader retains the existing
    * pinned-generation-first policy; successful stats mutations evict this table/snapshot key.
-   * Historical pins read through so time travel cannot displace the resident current catalog.
+   * Historical pins read through so time travel cannot displace the resident current catalog. The
+   * {@code retainCurrentFacts} flag controls immutable pinned-generation residency only: the live
+   * ladder has no stable identity and is always read through.
    */
   public Optional<ObjectCache.SnapshotFacts> resolveTableFactsInGeneration(
       StatsCaptureRequest request,
@@ -273,9 +275,8 @@ public class StatsOrchestrator {
     if (pinned.isPresent()) {
       java.util.function.Supplier<Optional<ObjectCache.SnapshotFacts>> loadExact =
           () ->
-              statsStore
-                  .getTargetStatsInGeneration(
-                      request.tableId(), request.snapshotId(), pinned.get(), request.target())
+              plannerResolver
+                  .resolvePinnedFromStore(request, pinned.get())
                   .filter(TargetStatsRecord::hasTable)
                   .map(StatsOrchestrator::snapshotFacts);
       Optional<ObjectCache.SnapshotFacts> exact =
@@ -299,9 +300,10 @@ public class StatsOrchestrator {
                 .stats()
                 .filter(TargetStatsRecord::hasTable)
                 .map(StatsOrchestrator::snapshotFacts);
-    return retainCurrentFacts
-        ? objects.snapshotFacts(request.tableId(), request.snapshotId(), "", loadLive)
-        : loadLive.get();
+    // There is no immutable generation identity on the live ladder. Do not retain its answer
+    // under a blank key: invalidation is process-local, so another replica could otherwise serve
+    // mutable facts indefinitely. Immutable pinned generations remain cacheable above.
+    return loadLive.get();
   }
 
   private static ObjectCache.SnapshotFacts snapshotFacts(TargetStatsRecord record) {
