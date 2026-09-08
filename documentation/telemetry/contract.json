@@ -90,16 +90,6 @@
     "allowedTags": ["account", "cache", "component", "operation"]
   },
   {
-    "name": "floecat.core.cache.max.entries",
-    "type": "GAUGE",
-    "unit": "count",
-    "since": "v1",
-    "origin": "core",
-    "description": "Configured max entries for the cache.",
-    "requiredTags": ["cache", "component", "operation"],
-    "allowedTags": ["account", "cache", "component", "operation"]
-  },
-  {
     "name": "floecat.core.cache.max.weight.bytes",
     "type": "GAUGE",
     "unit": "bytes",
