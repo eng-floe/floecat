@@ -699,6 +699,71 @@ class CatalogIntegrationDiscoveryTest {
   }
 
   /**
+   * A provider that vends for some tables and refuses others by capability.
+   *
+   * <p>A Delta Sharing recipient does exactly this: it vends for a share offering directory access
+   * and answers UNSUPPORTED for one offering url access alone, where the server returns presigned
+   * per-file URLs rather than credentials. Reporting that as a vending failure tells an operator to
+   * fix something, when what the provider said is that it will never do this.
+   */
+  @Test
+  void aVendTheProviderCallsUnsupportedIsReportedAsUnsupportedNotFailed() {
+    NamespacePath sales = NamespacePath.of("main", "sales");
+    when(client.capabilities()).thenReturn(validationCapabilities());
+    when(client.listTables(NamespacePath.root())).thenReturn(List.of());
+    when(client.listNamespaces(NamespacePath.root())).thenReturn(List.of(NamespacePath.of("main")));
+    when(client.listNamespaces(NamespacePath.of("main"))).thenReturn(List.of(sales));
+    when(client.listTables(sales)).thenReturn(List.of(new CatalogObjectName(sales, "a")));
+    when(client.vendStorageCredentials(any()))
+        .thenThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.UNSUPPORTED,
+                "share.schema.a offers url access only, which cannot be vended"));
+
+    var result = discovery.validate(integration);
+
+    assertFalse(result.valid());
+    assertEquals(
+        CatalogIntegrationValidationStatus.CIVS_PASSED,
+        result.checks().get(2).getStatus(),
+        "the share enumerated, so discovery must not be reported as the failure");
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_VENDING_UNSUPPORTED,
+        result.checks().get(3).getIssue());
+    assertEquals(
+        "share.schema.a offers url access only, which cannot be vended",
+        result.checks().get(3).getSummary(),
+        "the provider named the table and the reason, and that is what an operator needs");
+  }
+
+  @Test
+  void aStorageProbeTheProviderCallsUnsupportedIsReportedAsUnsupportedNotFailed() {
+    NamespacePath sales = NamespacePath.of("main", "sales");
+    var vended = new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty());
+    when(client.capabilities()).thenReturn(validationCapabilities());
+    when(client.listTables(NamespacePath.root())).thenReturn(List.of());
+    when(client.listNamespaces(NamespacePath.root())).thenReturn(List.of(NamespacePath.of("main")));
+    when(client.listNamespaces(NamespacePath.of("main"))).thenReturn(List.of(sales));
+    when(client.listTables(sales)).thenReturn(List.of(new CatalogObjectName(sales, "a")));
+    when(client.vendStorageCredentials(any())).thenReturn(Optional.of(vended));
+    doThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.UNSUPPORTED,
+                "share.schema.a reports no location to validate access against"))
+        .when(client)
+        .validateStorageAccess(any(), any());
+
+    var result = discovery.validate(integration);
+
+    assertFalse(result.valid());
+    assertEquals(
+        CatalogIntegrationValidationStatus.CIVS_PASSED, result.checks().get(3).getStatus());
+    assertEquals(
+        CatalogIntegrationValidationIssue.CIVI_STORAGE_ACCESS_UNSUPPORTED,
+        result.checks().get(4).getIssue());
+  }
+
+  /**
    * A storage failure that will answer the same for every table stops the search where it stands,
    * rather than paying for a probe per sampled table to collect it again.
    */
