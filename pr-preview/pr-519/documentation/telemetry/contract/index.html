@@ -1844,6 +1844,24 @@
 <td>account, cache, component, exception, operation, result</td>
 </tr>
 <tr>
+<td>floecat.core.cache.evicted.weight.bytes</td>
+<td>COUNTER</td>
+<td>bytes</td>
+<td>v1</td>
+<td>Retained bytes released by eviction, tagged by cache name. Read with evictions to tell many small entries from few large ones.</td>
+<td>cache, component, operation</td>
+<td>account, cache, component, operation</td>
+</tr>
+<tr>
+<td>floecat.core.cache.evictions</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Entries evicted to stay within the cache's budget, tagged by cache name. For a cache with no expiry this is the signal that its budget is too small.</td>
+<td>cache, component, operation</td>
+<td>account, cache, component, operation</td>
+</tr>
+<tr>
 <td>floecat.core.cache.hits</td>
 <td>COUNTER</td>
 <td></td>
@@ -1860,6 +1878,15 @@
 <td>Cache latency distribution for operations.</td>
 <td>cache, component, operation, result</td>
 <td>account, cache, component, exception, operation, result</td>
+</tr>
+<tr>
+<td>floecat.core.cache.loads.discarded</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Loads whose value was not retained because a write may have raced the key while it was being loaded, tagged by cache name. Raised on both the read-through and the batch path. A sustained rate means the cache is not warming.</td>
+<td>cache, component, operation</td>
+<td>account, cache, component, operation</td>
 </tr>
 <tr>
 <td>floecat.core.cache.max.entries</td>
