@@ -55,7 +55,6 @@ URI-keyed caching would be unsound for them.
 The cache module coordinates overlapping reads and mutations internally. Callers use repositories
 and do not choose locks, load slots, or cache tiers.
 
-
 The future cache layers share this module's operational and telemetry vocabulary, but not one
 storage-shaped interface or one resource pool. `MemoryCache<K, V>` is the in-memory primitive used
 by object and hint caches and as storage inside the pointer-cache layer. The pointer layer belongs
