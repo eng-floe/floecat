@@ -472,6 +472,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#warm-and-cold-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Warm and cold reads
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-cache-disciplines" class="md-nav__link">
     <span class="md-ellipsis">
       The cache disciplines
@@ -1749,6 +1758,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#warm-and-cold-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      Warm and cold reads
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#the-cache-disciplines" class="md-nav__link">
     <span class="md-ellipsis">
       The cache disciplines
@@ -1844,6 +1862,12 @@ vocabulary without being forced through one storage-shaped interface.</p>
   index is deliberately different: after its account load completes, a missing addressing key is
   authoritative absence.</li>
 </ul>
+<h2 id="warm-and-cold-reads">Warm and cold reads<a class="headerlink" href="#warm-and-cold-reads" title="Permanent link">&para;</a></h2>
+<p>A warm read reuses the process-local value. A cold read, a disabled cache, a cache miss, or a
+temporarily degraded cache follows the same repository path and returns the same answer; only
+latency and store cost change. Concurrent requests for the same value share one source load.
+Durable mutations become visible to the cache only after they commit, and an older in-flight read
+cannot replace a newer value after eviction.</p>
 <h2 id="the-cache-disciplines">The cache disciplines<a class="headerlink" href="#the-cache-disciplines" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1903,6 +1927,8 @@ is not safe to alias mapped memory and close the arena at repository return. Com
 belongs to the <code>SketchPayload.data</code> format contract, not this cache envelope; this layer preserves
 those bytes unchanged.</p>
 <h2 id="the-shared-cache-contract-corecache">The shared cache contract (<code>core/cache</code>)<a class="headerlink" href="#the-shared-cache-contract-corecache" title="Permanent link">&para;</a></h2>
+<p>The cache module coordinates overlapping reads and mutations internally. Callers use repositories
+and do not choose locks, load slots, or cache tiers.</p>
 <p>The future cache layers share this module's operational and telemetry vocabulary, but not one
 storage-shaped interface or one resource pool. <code>MemoryCache&lt;K, V&gt;</code> is the in-memory primitive used
 by object and hint caches and as storage inside the pointer-cache layer. The pointer layer belongs
