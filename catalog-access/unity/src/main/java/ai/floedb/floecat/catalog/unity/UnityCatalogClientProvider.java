@@ -14,6 +14,7 @@ import ai.floedb.floecat.catalog.access.CatalogClientProvider;
 import ai.floedb.floecat.catalog.access.CatalogConnectionConfig;
 import ai.floedb.floecat.catalog.access.CatalogProtocol;
 import ai.floedb.floecat.catalog.access.ResolvedCatalogCredentials;
+import ai.floedb.floecat.catalog.delta.DeltaLogStorageProbe;
 import ai.floedb.floecat.client.unity.HttpUnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogAuthentication;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
@@ -23,6 +24,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /** Opens Unity Catalog integrations without creating or reading Connector resources. */
 public final class UnityCatalogClientProvider implements CatalogClientProvider {
@@ -118,7 +120,10 @@ public final class UnityCatalogClientProvider implements CatalogClientProvider {
           clientFactory.create(
               config.endpoint(), connectTimeout, readTimeout, authentication, vendPath);
       return new UnityCatalogAccessClient(
-          unity, authenticationOwner, UnityStorageAccessValidator.s3(), routing(properties));
+          unity,
+          authenticationOwner,
+          DeltaLogStorageProbe.s3("Unity Catalog"),
+          routing(properties));
     } catch (RuntimeException | Error failure) {
       closeQuietly(unity);
       closeQuietly(authenticationOwner);
@@ -128,7 +133,19 @@ public final class UnityCatalogClientProvider implements CatalogClientProvider {
 
   private static UnityCatalogAuthentication bearer(
       String token, Map<String, String> resolvedHeaders) {
-    return () -> headers(token, resolvedHeaders);
+    // Not a lambda, so the token can be named for redaction. This is the operator-supplied one,
+    // which is under no obligation to match the token68 alphabet the generic pattern assumes.
+    return new UnityCatalogAuthentication() {
+      @Override
+      public Map<String, String> headers() {
+        return UnityCatalogClientProvider.headers(token, resolvedHeaders);
+      }
+
+      @Override
+      public Optional<String> redactableSecret() {
+        return Optional.of(token);
+      }
+    };
   }
 
   private static UnityCatalogAuthentication bearer(
@@ -174,11 +191,10 @@ public final class UnityCatalogClientProvider implements CatalogClientProvider {
   /**
    * The S3 routing an operator can set on the integration.
    *
-   * <p>No {@code s3.access-point}: nothing addresses one. {@code UnityStorageAccessValidator}
-   * deliberately probes the bucket named in the object URI, and {@code
-   * SourceCatalogCredentialVendor} strips the key before a credential leaves the service, so an
-   * operator who set it saw no effect and no error. Plumbing a key no consumer honours is how one
-   * starts being honoured inconsistently.
+   * <p>No {@code s3.access-point}: nothing addresses one. {@code DeltaLogStorageProbe} deliberately
+   * probes the bucket named in the object URI, and {@code SourceCatalogCredentialVendor} strips the
+   * key before a credential leaves the service, so an operator who set it saw no effect and no
+   * error. Plumbing a key no consumer honours is how one starts being honoured inconsistently.
    *
    * <p>A vended access point is different and still reported: Unity returning one on the
    * credentials response is a diagnostic for a later 403, which {@code noteIgnoredAccessPoint}

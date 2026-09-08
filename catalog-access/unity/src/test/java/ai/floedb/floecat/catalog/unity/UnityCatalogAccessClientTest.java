@@ -8,6 +8,7 @@
 package ai.floedb.floecat.catalog.unity;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -19,10 +20,12 @@ import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.CatalogObjectName;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.catalog.delta.DeltaLogStorageProbe;
 import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
 import ai.floedb.floecat.client.unity.UnityCatalogTable;
+import java.net.URI;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -34,8 +37,7 @@ class UnityCatalogAccessClientTest {
   private static final CatalogObjectName ORDERS = new CatalogObjectName(SALES, "orders");
 
   private final UnityCatalogClient unity = mock(UnityCatalogClient.class);
-  private final UnityStorageAccessValidator storageValidator =
-      mock(UnityStorageAccessValidator.class);
+  private final DeltaLogStorageProbe storageValidator = mock(DeltaLogStorageProbe.class);
   private final UnityCatalogAccessClient client =
       new UnityCatalogAccessClient(unity, null, storageValidator, Map.of("s3.region", "us-east-1"));
 
@@ -541,6 +543,63 @@ class UnityCatalogAccessClientTest {
       String name, String typeJson, boolean nullable) {
     return new UnityCatalogTable.Column(
         name, null, null, "{\"name\":\"" + name + "\",\"type\":" + typeJson + "}", nullable);
+  }
+
+  /**
+   * An s3a location stays s3a. The authority prefix an operator registers is compared literally by
+   * matchesLocationPrefix, and S3Location.parse accepts an s3a:// prefix, so storing the table
+   * under a folded s3:// would leave the two in different scheme namespaces and never match. Only
+   * the spellings the reader cannot parse are changed.
+   */
+  @Test
+  void loadTableKeepsAnS3aSchemeTheReaderAndTheAuthorityBothAccept() {
+    var table =
+        new UnityCatalogTable(
+            "orders",
+            "table-id",
+            "EXTERNAL",
+            "DELTA",
+            "s3a://warehouse/orders",
+            null,
+            List.of(
+                new UnityCatalogTable.Column(
+                    "order_id", "LONG", "bigint", "{\"type\":\"long\"}", false)),
+            Map.of());
+    when(unity.getTable("main.sales.orders")).thenReturn(Optional.of(table));
+
+    assertThat(client.loadTable(ORDERS).storageLocation()).contains("s3a://warehouse/orders");
+  }
+
+  /**
+   * The shared probe percent-encodes a space before parsing, so it answers for a location this used
+   * to publish unchanged -- and the read path calls {@code URI.create} on what was published.
+   * Before the probe accepted such a location it refused it outright, which was a recorded failure;
+   * accepting it on one side without canonicalising on the other made the table validate clean and
+   * fail every scan.
+   */
+  @Test
+  void loadTablePublishesALocationTheReadPathCanParse() {
+    var table =
+        new UnityCatalogTable(
+            "orders",
+            "table-id",
+            "EXTERNAL",
+            "DELTA",
+            "s3://warehouse/my orders",
+            null,
+            List.of(
+                new UnityCatalogTable.Column(
+                    "order_id", "LONG", "bigint", "{\"type\":\"long\"}", false)),
+            Map.of());
+    when(unity.getTable("main.sales.orders")).thenReturn(Optional.of(table));
+
+    var mapped = client.loadTable(ORDERS);
+
+    assertThat(mapped.storageLocation()).contains("s3://warehouse/my%20orders");
+    assertThatCode(() -> URI.create(mapped.storageLocation().orElseThrow()))
+        .doesNotThrowAnyException();
+    assertThat(URI.create(mapped.storageLocation().orElseThrow()).getPath())
+        .isEqualTo("/my orders");
   }
 
   /**

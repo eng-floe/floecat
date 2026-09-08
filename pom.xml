@@ -116,6 +116,7 @@
 
       <!-- Catalog access -->
       <module>catalog-access/iceberg-rest</module>
+      <module>catalog-access/delta-common</module>
       <module>catalog-access/unity</module>
       
       <!-- Connectors -->

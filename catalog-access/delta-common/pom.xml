@@ -16,7 +16,7 @@
     <relativePath>../..</relativePath>
   </parent>
 
-  <artifactId>floecat-catalog-access-unity</artifactId>
+  <artifactId>floecat-catalog-access-delta-common</artifactId>
 
   <dependencies>
     <dependency>
@@ -25,19 +25,8 @@
       <version>${project.version}</version>
     </dependency>
     <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-http-endpoint-guards</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-unity-catalog-client</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-catalog-access-delta-common</artifactId>
-      <version>${project.version}</version>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>s3</artifactId>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
