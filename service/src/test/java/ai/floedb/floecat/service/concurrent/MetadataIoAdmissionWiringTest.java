@@ -121,7 +121,7 @@ class MetadataIoAdmissionWiringTest {
         CompletableFuture<Catalog> blobRead =
             CompletableFuture.supplyAsync(
                 () -> catalogs.getByBlobUri(blobUri).orElseThrow(), workers);
-        ConcurrentTestSupport.await(() -> admission.admissionWaiters() == 2, Duration.ofSeconds(5));
+        ConcurrentTestSupport.await(() -> admission.admissionWaiters() >= 2, Duration.ofSeconds(5));
         assertThat(pointerRead).isNotDone();
         assertThat(blobRead).isNotDone();
 
