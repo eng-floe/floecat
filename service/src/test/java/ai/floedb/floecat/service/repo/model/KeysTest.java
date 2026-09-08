@@ -64,6 +64,11 @@ class KeysTest {
   }
 
   @Test
+  void decodeSegmentReversesPathEncodingWithoutFormSemantics() {
+    assertEquals("a b+c/%", Keys.decodeSegment("a%20b%2Bc%2F%25"));
+  }
+
+  @Test
   void catalogOverlayDeletionMarkerUsesPathSafeEncoding() {
     assertEquals(
         "/accounts/acct%20id/catalog-overlays/deleting/overlay%2Fid",

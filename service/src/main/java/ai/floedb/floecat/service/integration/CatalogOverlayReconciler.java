@@ -41,7 +41,6 @@ import ai.floedb.floecat.connector.common.resolver.IcebergSchemaMapper;
 import ai.floedb.floecat.connector.spi.LogSafeText;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
-import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
@@ -109,7 +108,6 @@ public class CatalogOverlayReconciler {
   @Inject TableRootRepository tableRoots;
   @Inject TableRootWriter rootWriter;
   @Inject MarkerStore markerStore;
-  @Inject TopologyGraph topology;
 
   Clock clock = Clock.systemUTC();
 
@@ -175,7 +173,6 @@ public class CatalogOverlayReconciler {
               "Table changed during Catalog Overlay retirement");
         }
         purgeTableState(table.getResourceId());
-        relationChanged(table.getResourceId(), namespace.getResourceId());
       }
       for (View view : listViews(namespace)) {
         if (!ownedBy(view.getPropertiesMap(), overlay)) continue;
@@ -184,7 +181,6 @@ public class CatalogOverlayReconciler {
           throw new BaseResourceRepository.AbortRetryableException(
               "View changed during Catalog Overlay retirement");
         }
-        relationChanged(view.getResourceId(), namespace.getResourceId());
       }
       if (!ownedBy(namespace.getPropertiesMap(), overlay)) continue;
       deleteNamespaceIfEmpty(namespace, PointerConditions.none());
@@ -496,7 +492,6 @@ public class CatalogOverlayReconciler {
       var namespaceFence =
           fence.and(orRetry(() -> namespaces.createFence(markerStore, catalogId, parentSegments)));
       if (!namespaces.createWhilePointersMatch(created, namespaceFence)) throw lostFence();
-      topology.evictNamespaceRefs(catalogId);
       current.put(path, created);
       result.namespacesCreated++;
     }
@@ -576,7 +571,6 @@ public class CatalogOverlayReconciler {
         throw lostFence();
       }
       purgeTableState(stale.getResourceId());
-      relationChanged(stale.getResourceId(), stale.getNamespaceId());
       result.tablesDeleted++;
     }
     for (var staleEntry : viewsByName.entrySet()) {
@@ -591,7 +585,6 @@ public class CatalogOverlayReconciler {
       if (!views.deleteWhilePointersMatch(stale.getResourceId(), meta.getPointerVersion(), fence)) {
         throw lostFence();
       }
-      relationChanged(stale.getResourceId(), stale.getNamespaceId());
       result.viewsDeleted++;
     }
   }
@@ -624,7 +617,6 @@ public class CatalogOverlayReconciler {
               ? existingByIdentity.get(source.identity().value())
               : existingByName.get(name);
       Table desired = tableFor(overlay, integration, namespace, source, current);
-      boolean changed = false;
       MutationMeta definitionMeta;
       if (current == null) {
         definitionMeta =
@@ -635,7 +627,6 @@ public class CatalogOverlayReconciler {
                         orRetry(() -> markerStore.relationCreateFence(desired.getNamespaceId()))))
                 .orElseThrow(CatalogOverlayReconciler::lostFence);
         result.tablesCreated++;
-        changed = true;
       } else if (!current.equals(desired)) {
         MutationMeta meta = tables.metaFor(current.getResourceId());
         // An update that moves the table adds a relation to the destination, so it has to pass the
@@ -658,7 +649,6 @@ public class CatalogOverlayReconciler {
                                         .equals(desired.getCatalogId().getId())))))
                 .orElseThrow(CatalogOverlayReconciler::lostFence);
         result.tablesUpdated++;
-        changed = true;
       } else {
         definitionMeta = tables.metaFor(current.getResourceId());
       }
@@ -669,12 +659,6 @@ public class CatalogOverlayReconciler {
           overlayMeta,
           integration,
           integrationMeta);
-      if (changed) {
-        relationChanged(desired.getResourceId(), desired.getNamespaceId());
-        if (current != null && !current.getNamespaceId().equals(desired.getNamespaceId())) {
-          relationChanged(desired.getResourceId(), current.getNamespaceId());
-        }
-      }
     }
   }
 
@@ -704,7 +688,6 @@ public class CatalogOverlayReconciler {
               ? existingByIdentity.get(source.identity().value())
               : existingByName.get(name);
       View desired = viewFor(overlay, integration, namespace, source, current);
-      boolean changed = false;
       if (current == null) {
         if (!views.createWhilePointersMatch(
             desired,
@@ -712,7 +695,6 @@ public class CatalogOverlayReconciler {
           throw lostFence();
         }
         result.viewsCreated++;
-        changed = true;
       } else if (!current.equals(desired)) {
         MutationMeta meta = views.metaFor(current.getResourceId());
         // Moves a view between namespaces on the same terms as a table. See reconcileTables.
@@ -732,13 +714,6 @@ public class CatalogOverlayReconciler {
                                     .equals(desired.getCatalogId().getId())))))
             .isEmpty()) throw lostFence();
         result.viewsUpdated++;
-        changed = true;
-      }
-      if (changed) {
-        relationChanged(desired.getResourceId(), desired.getNamespaceId());
-        if (current != null && !current.getNamespaceId().equals(desired.getNamespaceId())) {
-          relationChanged(desired.getResourceId(), current.getNamespaceId());
-        }
       }
     }
   }
@@ -993,7 +968,6 @@ public class CatalogOverlayReconciler {
         namespaceId, meta.getPointerVersion(), shapeMarkers)) {
       throw lostFence();
     }
-    topology.evictNamespaceRefs(namespace.getCatalogId());
     return true;
   }
 
@@ -1023,18 +997,6 @@ public class CatalogOverlayReconciler {
   private int relationCount(Namespace namespace) {
     return NamespaceRepository.relationCount(
         tables, views, namespace.getCatalogId(), namespace.getResourceId());
-  }
-
-  /**
-   * Invalidates the caches that name a relation, after its write has committed.
-   *
-   * <p>It does not touch the relation marker. A write that adds a relation asserts the marker in
-   * its own batch, so advancing it again here would cost an unrelated concurrent writer its fence
-   * for no gain; and a write that only removes one never needs to, because nothing is orphaned by a
-   * namespace that became emptier than the caller checked.
-   */
-  private void relationChanged(ResourceId relationId, ResourceId namespaceId) {
-    topology.evictRelationRefs(namespaceId);
   }
 
   private void purgeTableState(ResourceId tableId) {

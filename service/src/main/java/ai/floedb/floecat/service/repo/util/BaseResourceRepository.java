@@ -621,8 +621,21 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         });
   }
 
+  /** Returns one pointer-only page without materializing the referenced blobs. */
+  public List<Pointer> listRefsByPrefix(
+      String prefix, int limit, String token, StringBuilder nextOut) {
+    return observeRepository(
+        "list_refs_by_prefix_page",
+        () -> pointerReads.list(prefix, Math.max(1, limit), token, nextOut));
+  }
+
   public Optional<Pointer> refByPointer(String key) {
     return observeRepository("ref_by_pointer", () -> pointerReads.get(key));
+  }
+
+  /** Builds a continuation token through the same read view used by ordinary listings. */
+  public String pageTokenAfterKey(String key) {
+    return observeRepository("page_token_after_key", () -> pointerReads.pageTokenAfterKey(key));
   }
 
   public record KeyedValue<T>(String key, T value) {}

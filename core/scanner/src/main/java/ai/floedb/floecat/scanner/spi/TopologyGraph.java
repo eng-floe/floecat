@@ -24,8 +24,7 @@ import java.util.Set;
 /**
  * Lightweight topology view of a catalog: names, IDs, and kinds -- available entirely from pointer
  * metadata (no blob fetch, no S3). {@link CatalogGraphView} exposes these ref-listing methods to
- * scanners and traversal callers; this interface remains the shared ref shape and cache
- * invalidation hook.
+ * scanners and traversal callers; this interface remains the shared lightweight ref shape.
  *
  * <p>Scanners that only need to enumerate objects should prefer {@link
  * CatalogGraphView#listRelationRefs} / {@link CatalogGraphView#listNamespaceRefs} over full object
@@ -60,23 +59,6 @@ public interface TopologyGraph {
         .filter(r -> names.contains(r.name()))
         .collect(java.util.stream.Collectors.toList());
   }
-
-  /**
-   * Evicts a table or view from the topology cache using the reverse map to locate its namespace.
-   * Call BEFORE the storage delete so the reverse-map lookup still works.
-   */
-  default void evict(ResourceId resourceId) {}
-
-  /**
-   * Evicts the cached relation list for a specific namespace. Call after a table/view create/delete
-   * when the namespace ID is known directly.
-   */
-  default void evictRelationRefs(ResourceId namespaceId) {}
-
-  /**
-   * Evicts the cached namespace list for a specific catalog. Call after a namespace create/delete.
-   */
-  default void evictNamespaceRefs(ResourceId catalogId) {}
 
   record NamespaceRef(ResourceId id, String name, ResourceId catalogId, List<String> pathSegments) {
     public NamespaceRef(ResourceId id, String name) {

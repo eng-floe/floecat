@@ -24,6 +24,20 @@ import java.time.Duration;
  */
 public interface CacheEvents {
 
+  /** Whether a write-through publication retained the proposed value. */
+  enum WriteThroughResult {
+    APPLIED,
+    SKIPPED
+  }
+
+  /**
+   * Returns the same event contract scoped to an account. Implementations that do not publish an
+   * account dimension can keep the default; callers do not need parallel metric APIs.
+   */
+  default CacheEvents forAccount(String accountId) {
+    return this;
+  }
+
   /**
    * Served without going to the source, after {@code served}. A hit is not always immediate: a
    * caller arriving during another's load waits for it, then is served from the map. Without the
@@ -54,6 +68,12 @@ public interface CacheEvents {
    * steady miss count.
    */
   default void loadDiscarded() {}
+
+  /** A value was valid but could not be retained within this cache's budget. */
+  default void admissionRejected() {}
+
+  /** A write-through publication was applied or declined by the cache's safety guards. */
+  default void writeThrough(WriteThroughResult result) {}
 
   /**
    * A load threw; the caller still sees the exception. Its {@link #miss()} is raised too, so a

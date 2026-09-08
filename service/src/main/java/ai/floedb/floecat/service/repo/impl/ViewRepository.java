@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.ViewKey;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
@@ -175,9 +176,32 @@ public class ViewRepository {
     var pointers = repo.listRefsByPrefix(prefix);
     var refs = new ArrayList<RelationRef>(pointers.size());
     for (var p : pointers) {
-      TableRepository.toRelationRef(accountId, ResourceKind.RK_VIEW, p).ifPresent(refs::add);
+      PointerReferences.relationRef(accountId, ResourceKind.RK_VIEW, p).ifPresent(refs::add);
     }
     return refs;
+  }
+
+  /** Returns one pointer-only view page without fetching view blobs. */
+  public List<RelationRef> listRefs(
+      String accountId,
+      String catalogId,
+      String namespaceId,
+      int limit,
+      String pageToken,
+      StringBuilder nextOut) {
+    String prefix = Keys.viewPointerByNamePrefix(accountId, catalogId, namespaceId);
+    return repo.listRefsByPrefix(prefix, limit, pageToken, nextOut).stream()
+        .map(pointer -> PointerReferences.relationRef(accountId, ResourceKind.RK_VIEW, pointer))
+        .flatMap(Optional::stream)
+        .toList();
+  }
+
+  /** Resolves one exact view name from pointer metadata without fetching its blob. */
+  public Optional<RelationRef> getRefByName(
+      String accountId, String catalogId, String namespaceId, String name) {
+    return repo.refByPointer(Keys.viewPointerByName(accountId, catalogId, namespaceId, name))
+        .flatMap(
+            pointer -> PointerReferences.relationRef(accountId, ResourceKind.RK_VIEW, pointer));
   }
 
   /** Reads exact by-name view pointers and returns refs without fetching blobs from S3. */
@@ -192,7 +216,7 @@ public class ViewRepository {
         continue;
       }
       repo.refByPointer(Keys.viewPointerByName(accountId, catalogId, namespaceId, name))
-          .flatMap(p -> TableRepository.toRelationRef(accountId, ResourceKind.RK_VIEW, p))
+          .flatMap(p -> PointerReferences.relationRef(accountId, ResourceKind.RK_VIEW, p))
           .ifPresent(refs::add);
     }
     return refs;

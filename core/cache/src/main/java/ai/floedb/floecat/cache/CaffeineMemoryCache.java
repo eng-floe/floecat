@@ -121,6 +121,28 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
     return 1L + (dividend - 1L) / divisor;
   }
 
+  /**
+   * Changes this cache's share of its family budget.
+   *
+   * <p>A specialized cache may reserve part of one family budget for state that cannot be evicted
+   * without losing correctness. Shrinking this admission-controlled remainder keeps both stores
+   * under one ceiling instead of pretending that two independently bounded caches share a budget.
+   * Zero is valid here: it disables admission after construction while the reserved state owns the
+   * whole budget.
+   */
+  public void maximumBytes(long maxBytes) {
+    if (maxBytes < 0L) {
+      throw new IllegalArgumentException("cache maximum must be >= 0 bytes");
+    }
+    long maximumWeightUnits = maxBytes / weightUnitBytes;
+    entries
+        .policy()
+        .eviction()
+        .orElseThrow(() -> new IllegalStateException("weighted cache has no eviction policy"))
+        .setMaximum(maximumWeightUnits);
+    entries.cleanUp();
+  }
+
   @Override
   public V get(K key, Loader<K, V> loader) {
     // Timed and counted here rather than read off Caffeine's cumulative stats: see CacheEvents.

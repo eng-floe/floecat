@@ -61,24 +61,16 @@ class TableRootThroughTheCacheTest {
       CountingPointerStore pointers, InMemoryBlobStore blobs) {
     // The cache lives under the store, so the caching these tests assert on is the decorator's.
     var cache =
-        new ai.floedb.floecat.cache.CaffeineMemoryCache<
-            String, ai.floedb.floecat.common.rpc.Pointer>(
-            ai.floedb.floecat.cache.CacheFamily.POINTER,
-            1024L * 1024L,
-            key -> 2L * key.length(),
-            ai.floedb.floecat.cache.CacheEvents.none());
+        new ai.floedb.floecat.service.repo.cache.PointerCache(
+            pointers, 1024L * 1024L, ai.floedb.floecat.cache.CacheEvents.none());
     var caching = new ai.floedb.floecat.service.repo.cache.CachingPointerStore(pointers, cache);
     return new TableRootRepository(caching, blobs, blobCache());
   }
 
-  private static ai.floedb.floecat.cache.CaffeineMemoryCache<
-          String, ai.floedb.floecat.common.rpc.Pointer>
-      pointerCache() {
-    return new ai.floedb.floecat.cache.CaffeineMemoryCache<>(
-        ai.floedb.floecat.cache.CacheFamily.POINTER,
-        1024L * 1024L,
-        key -> 2L * key.length(),
-        ai.floedb.floecat.cache.CacheEvents.none());
+  private static ai.floedb.floecat.service.repo.cache.PointerCache pointerCache(
+      CountingPointerStore pointers) {
+    return new ai.floedb.floecat.service.repo.cache.PointerCache(
+        pointers, 1024L * 1024L, ai.floedb.floecat.cache.CacheEvents.none());
   }
 
   /**
@@ -86,8 +78,7 @@ class TableRootThroughTheCacheTest {
    * the state every replica is in for a table it has resolved before but not recently.
    */
   private static TableRootRepository repoSharing(
-      ai.floedb.floecat.cache.CaffeineMemoryCache<String, ai.floedb.floecat.common.rpc.Pointer>
-          shared,
+      ai.floedb.floecat.service.repo.cache.PointerCache shared,
       CountingPointerStore pointers,
       InMemoryBlobStore blobs) {
     return new TableRootRepository(
@@ -243,7 +234,7 @@ class TableRootThroughTheCacheTest {
     // the stale pointer against itself and reach an answer for the wrong reason.
     var pointers = new CountingPointerStore();
     var blobs = new InMemoryBlobStore();
-    var shared = pointerCache();
+    var shared = pointerCache(pointers);
     var warm = repoSharing(shared, pointers, blobs);
     var tableId = table("t-dangling");
     warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
@@ -266,7 +257,7 @@ class TableRootThroughTheCacheTest {
     // into a NOT_FOUND on that replica until something else happened to repair the entry.
     var pointers = new CountingPointerStore();
     var blobs = new InMemoryBlobStore();
-    var shared = pointerCache();
+    var shared = pointerCache(pointers);
     var warm = repoSharing(shared, pointers, blobs);
     var tableId = table("t-moved");
     warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
