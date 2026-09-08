@@ -2026,6 +2026,13 @@ while never sending the field, so holding to that reading refuses every table on
 have answered. Floecat attempts the vend and reports what the server says: a refusal or a missing
 endpoint becomes <code>CIVI_CREDENTIAL_VENDING_UNSUPPORTED</code> on validation, while a rejected token or an
 unreachable server is reported as itself.</p>
+<p>A table this Integration cannot read is refused when the overlay reconciles, and counted in
+<code>objects_skipped</code>, rather than materialized and left to fail at query time. That covers a table
+offering <code>url</code> access alone, a table stating no access modes under
+<code>delta.sharing.strict-access-modes</code>, and a table whose location no surface states. The reason is
+that a table reconciled without a storage location keeps the Integration's own catalog URI as its
+upstream reference, so it exists in the catalog and cannot be opened by anything reading object
+storage. A share offering only <code>url</code> access is therefore unsupported here, not partially supported.</p>
 <p>A table's access modes are reported by <code>integration validate</code>, which names the table and the reason
 when it refuses one. They are not stored on the reconciled table: the overlay reconciler builds a
 table's properties from the Integration and Overlay identities and the storage location, and does

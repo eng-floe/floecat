@@ -1826,7 +1826,8 @@ overlay reconcile partner-tables
 </code></pre></div>
 <p>Delta Sharing accepts bearer authentication only, because the protocol defines no other scheme. A
 table is usable where its provider offers directory access; one offering url access alone returns
-presigned per-file URLs rather than credentials, and the vend refuses it by name. A table stating no
+presigned per-file URLs rather than credentials, and is refused when the overlay reconciles rather
+than materialized as a table nothing can open. A table stating no
 access modes is asked rather than refused -- see
 <a href="../operations/#delta-sharing-access-modes"><code>docs/operations.md</code></a> for why, and for
 <code>delta.sharing.strict-access-modes</code>.</p>
