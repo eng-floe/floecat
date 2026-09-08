@@ -2042,13 +2042,37 @@ materialized table.</p>
 <ul>
 <li><code>delta.sharing.strict-access-modes=true</code> -- a connection property that restores the protocol
   reading, refusing a table that states no modes without asking. Set it against a server known to
-  advertise its modes correctly, where a doomed request per table is waste.</li>
+  advertise its modes correctly, where a doomed request per table is waste. It carries a cost on
+  the vend, and against a large schema the cost is the wrong way round. Where the metaData action
+  states no modes, strict mode consults the table listing before refusing, because the listing is
+  where the protocol defines <code>accessModes</code> and the metaData spelling is the newer one -- refusing
+  without looking there would refuse a conforming table. A credential is vended on every
+  storage-authority resolve with a client that lives for that one resolve, so that fallback pages
+  the whole schema listing once per read. It is bounded by
+  <code>floecat.delta-sharing.max-listing-bytes</code> rather than unbounded, but it is a listing per read.
+  Leave this off for a share whose schemas hold many tables, or set it only against a server that
+  states modes on the metaData action, where the fallback never runs.</li>
 <li><code>delta.sharing.reader-features</code> -- a comma-separated list of Delta reader features this deployment
   can process, empty by default. The capability header tells the server what the client can handle,
   and claiming a feature the read path cannot process turns a refusal the server would have made
   into a failure partway through a scan. Enforcement is the server's: the list is sent on the
   metadata call and is not compared against the features the server reports back, so a server that
   ignores the header is not caught here.</li>
+<li><code>floecat.delta-sharing.max-pages</code> (system property) -- maximum pages fetched by one listing,
+  default 10,000. A repeated page token is refused outright; this bound is what stops a server
+  minting a fresh one forever. Exceeding it is reported as <code>INVALID_RESPONSE</code>.</li>
+<li><code>floecat.delta-sharing.max-response-bytes</code> (system property) -- cap on a single response body,
+  default 32 MiB. A larger body is refused rather than buffered, since the endpoint is named by
+  tenant configuration.</li>
+<li><code>floecat.delta-sharing.max-listing-bytes</code> (system property) -- cap on everything one client
+  lists, across pages and across listings, default 32 MiB. The other two bounds do not compose into
+  a memory bound: ten thousand pages of thirty-two mebibytes is past any heap, and a reconcile pass
+  keeps each schema's tables for the whole of its life, so a per-listing cap would not bound the
+  pass. A table entry runs roughly three hundred bytes of JSON, nearer six hundred with a deep
+  prefix, so the default admits above sixty thousand tables across a whole share where a large real
+  share holds thousands, and the decoded records cost about as much again. Raise it for a genuinely
+  larger share; exceeding it fails the reconcile as <code>INVALID_RESPONSE</code>, which is not retried and
+  ends the pass rather than being recorded as one skipped schema.</li>
 </ul>
 <h3 id="reconciler-deployment-modes">Reconciler deployment modes<a class="headerlink" href="#reconciler-deployment-modes" title="Permanent link">&para;</a></h3>
 <p>The reconciler runs in three shapes from the same artifact:</p>
