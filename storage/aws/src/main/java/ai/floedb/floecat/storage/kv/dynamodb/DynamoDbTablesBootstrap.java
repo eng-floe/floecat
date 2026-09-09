@@ -20,12 +20,17 @@ import ai.floedb.floecat.storage.kv.KvAttributes;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.net.ConnectException;
+import java.net.NoRouteToHostException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
@@ -43,6 +48,9 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
 
   @ConfigProperty(name = "floecat.kv.bootstrap.wait-seconds", defaultValue = "20")
   int waitSeconds;
+
+  @ConfigProperty(name = "floecat.kv.bootstrap.connect-wait-seconds", defaultValue = "90")
+  int connectWaitSeconds;
 
   public void ensureTableExists(String tableName, boolean withTtl) {
     try {
@@ -171,14 +179,40 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
     ddbJoin(client -> client.updateTimeToLive(update));
   }
 
+  // First DynamoDB call the process makes. In local and compose setups the DynamoDB endpoint
+  // is brought up alongside this service and can take 15-20s to bind its port on a cold box,
+  // while the SDK's own connect retries give up in ~7s -- a cold start used to die right here
+  // with "Connection refused". Retry only while the connect itself fails, for up to
+  // connectWaitSeconds; anything else -- a service answer such as not-found, auth or
+  // throttling, or a client-side failure with no connect-level cause such as an unresolvable
+  // credential chain -- surfaces immediately. A misconfigured endpoint still costs the full
+  // wait if it fails at connect level (a typo'd host looks exactly like one not up yet).
   private boolean tableExists(String tableName) {
-    try {
-      ddbJoin(
-          client ->
-              client.describeTable(DescribeTableRequest.builder().tableName(tableName).build()));
-      return true;
-    } catch (Throwable t) {
-      return isResourceNotFound(t) ? false : rethrow(t);
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(connectWaitSeconds);
+    while (true) {
+      try {
+        ddbJoin(
+            client ->
+                client.describeTable(DescribeTableRequest.builder().tableName(tableName).build()));
+        return true;
+      } catch (Throwable t) {
+        if (isResourceNotFound(t)) {
+          return false;
+        }
+        if (!isEndpointUnreachable(t) || System.nanoTime() >= deadline) {
+          return rethrow(t);
+        }
+        log.info(
+            "DynamoDB endpoint not reachable yet ({}); retrying for up to {}s",
+            rootCause(t).getMessage(),
+            connectWaitSeconds);
+        try {
+          Thread.sleep(1000);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          return rethrow(t);
+        }
+      }
     }
   }
 
@@ -221,6 +255,32 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
       cur = cur.getCause();
     }
     return false;
+  }
+
+  // SdkClientException is the SDK's whole client-side family, and most of it is permanent:
+  // credential-chain failures, an unparseable endpoint override, TLS trust failures, call
+  // timeouts. Retrying those would only turn a fast, clearly-attributed startup failure into a
+  // connectWaitSeconds hang, so require a genuine connect-level root cause underneath it.
+  private static boolean isEndpointUnreachable(Throwable t) {
+    boolean sdkClient = false;
+    for (Throwable cur = t; cur != null; cur = cur.getCause()) {
+      if (cur instanceof SdkClientException) sdkClient = true;
+      if (cur instanceof ConnectException
+          || cur instanceof NoRouteToHostException
+          || cur instanceof UnknownHostException
+          || cur instanceof SocketTimeoutException) {
+        return sdkClient;
+      }
+    }
+    return false;
+  }
+
+  private static Throwable rootCause(Throwable t) {
+    Throwable cur = t;
+    while (cur.getCause() != null) {
+      cur = cur.getCause();
+    }
+    return cur;
   }
 
   private static <T> T rethrow(Throwable t) {
