@@ -148,7 +148,7 @@ public class AccountGcAuthority {
   private final String processIncarnation;
   private final long maxGcLeaseNanos;
   private final ToLongFunction<String> referencedRoots;
-  private final Consumer<String> prepareCache;
+  private final Consumer<String> startCacheWarm;
   private final Function<String, String> cacheState;
   private final ConcurrentHashMap<String, AccountState> accounts = new ConcurrentHashMap<>();
   private final AtomicBoolean processDraining = new AtomicBoolean();
@@ -180,13 +180,13 @@ public class AccountGcAuthority {
       String processIncarnation,
       Duration maxGcLease,
       ToLongFunction<String> referencedRoots,
-      Consumer<String> prepareCache,
+      Consumer<String> startCacheWarm,
       Function<String, String> cacheState) {
     this.deploymentMode = Objects.requireNonNull(deploymentMode, "deploymentMode");
     this.processIncarnation = requireText(processIncarnation, "processIncarnation");
     this.maxGcLeaseNanos = requireLeaseNanos(maxGcLease);
     this.referencedRoots = Objects.requireNonNull(referencedRoots, "referencedRoots");
-    this.prepareCache = Objects.requireNonNull(prepareCache, "prepareCache");
+    this.startCacheWarm = Objects.requireNonNull(startCacheWarm, "startCacheWarm");
     this.cacheState = Objects.requireNonNull(cacheState, "cacheState");
   }
 
@@ -282,9 +282,10 @@ public class AccountGcAuthority {
       boolean enteringServing =
           desiredMode == AccountMode.SERVING && state.mode != AccountMode.SERVING;
       if (enteringServing) {
-        // Clear mutable completeness before opening the admission gate. The asynchronous warm may
-        // continue after this method returns; until promotion, misses safely use metadata KV.
-        prepareCache.accept(account);
+        // Install the cache's publication fence before opening admission. The warm itself is
+        // asynchronous and may continue after this method returns; while it runs, reads fall
+        // back to the authoritative store rather than treating a miss as absence.
+        startCacheWarm.accept(account);
       }
       state.assignmentVersion = assignmentVersion;
       state.mode = desiredMode;
@@ -437,14 +438,14 @@ public class AccountGcAuthority {
   static AccountGcAuthority managedForTesting(
       String incarnation,
       ToLongFunction<String> referencedRoots,
-      Consumer<String> prepareCache,
+      Consumer<String> startCacheWarm,
       Function<String, String> cacheState) {
     return new AccountGcAuthority(
         DeploymentMode.MANAGED,
         incarnation,
         Duration.ofMinutes(1),
         referencedRoots,
-        prepareCache,
+        startCacheWarm,
         cacheState);
   }
 

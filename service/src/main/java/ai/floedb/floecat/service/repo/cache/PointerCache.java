@@ -564,11 +564,13 @@ public final class PointerCache {
   }
 
   /**
-   * Drops this process's mutable completeness for an account and rebuilds it in the background.
+   * Drops this process's mutable completeness for an account and starts rebuilding it in the
+   * background.
    *
    * <p>Reads fall back to the authoritative store while the partition is recovering. The warmer
    * holds the partition write lock while scanning and publishing the complete map, so a local
    * pointer publication that races the scan waits and is then applied on top of the loaded map.
+   * This method returns once that publication fence is installed, not when the scan completes.
    */
   public void resetAndWarm(String accountId) {
     String partitionKey = Keys.encodeSegment(requireAccountId(accountId));
