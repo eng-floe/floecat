@@ -277,7 +277,9 @@ class DeltaSchemaResolverTest {
         .hasMessageContaining("array data type");
   }
 
-  /** The kernel accepts an empty field name; no path can address one, so the resolver rejects it. */
+  /**
+   * The kernel accepts an empty field name; no path can address one, so the resolver rejects it.
+   */
   @Test
   void rejectsFieldsTheKernelAcceptsButNoPathCanAddress() {
     assertThatThrownBy(
