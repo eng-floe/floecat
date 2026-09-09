@@ -18,10 +18,13 @@ package ai.floedb.floecat.service.util;
 
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
+import ai.floedb.floecat.service.repo.cache.PointerCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.storage.spi.PointerStoreKeys;
+import ai.floedb.floecat.storage.spi.RawPointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -34,7 +37,9 @@ import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
 @ApplicationScoped
 public class TestDataResetter {
-  @Inject PointerStore ptr;
+  @Inject @RawPointerStore PointerStore ptr;
+  @Inject @CachedPointerStore PointerStore cachedPointers;
+  @Inject PointerCache pointerCache;
   @Inject BlobStore blobs;
   @Inject Instance<DynamoDbClient> dynamoDb;
   @Inject Instance<MemoryReconcileJobIndexBackend> memoryReconcileJobIndexBackend;
@@ -95,11 +100,25 @@ public class TestDataResetter {
         blobs.deletePrefix("/accounts/" + tid + "/");
       }
       blobs.deletePrefix("/accounts/");
+      if (pointerCache != null) {
+        pointerCache.clear();
+      }
 
       if (!ptr.isEmpty()) {
         ptr.dump("AFTER WIPE, NON-EMPTY");
       }
     }
+  }
+
+  /** Warms the indexes that every seeded-account test uses before its first assertion. */
+  public void warmPointerCache(String accountId) {
+    if (cachedPointers == null) {
+      return;
+    }
+    cachedPointers.listPointersByPrefix(
+        Keys.accountPointerByIdPrefix(), 1, "", new StringBuilder());
+    cachedPointers.listPointersByPrefix(
+        Keys.catalogPointerByIdPrefix(accountId), 1, "", new StringBuilder());
   }
 
   List<String> listAccountIds() {
