@@ -26,6 +26,7 @@ import java.util.function.Function;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
@@ -43,6 +44,9 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
 
   @ConfigProperty(name = "floecat.kv.bootstrap.wait-seconds", defaultValue = "20")
   int waitSeconds;
+
+  @ConfigProperty(name = "floecat.kv.bootstrap.connect-wait-seconds", defaultValue = "90")
+  int connectWaitSeconds;
 
   public void ensureTableExists(String tableName, boolean withTtl) {
     try {
@@ -171,14 +175,39 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
     ddbJoin(client -> client.updateTimeToLive(update));
   }
 
+  // First DynamoDB call the process makes. Under `make start` this service comes up ~100ms
+  // after storage-local, which can take 15-20s to bind its port on a cold box, while the
+  // SDK's own connect retries give up in ~7s -- a cold start used to die right here with
+  // "Connection refused". Retry while the endpoint does not answer at all
+  // (SdkClientException) for up to connectWaitSeconds; an actual answer -- not-found, auth,
+  // throttling -- is an AwsServiceException and still surfaces immediately. 90s matches
+  // KvServiceDependency, which is how every other service waits for the same port.
   private boolean tableExists(String tableName) {
-    try {
-      ddbJoin(
-          client ->
-              client.describeTable(DescribeTableRequest.builder().tableName(tableName).build()));
-      return true;
-    } catch (Throwable t) {
-      return isResourceNotFound(t) ? false : rethrow(t);
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(connectWaitSeconds);
+    while (true) {
+      try {
+        ddbJoin(
+            client ->
+                client.describeTable(DescribeTableRequest.builder().tableName(tableName).build()));
+        return true;
+      } catch (Throwable t) {
+        if (isResourceNotFound(t)) {
+          return false;
+        }
+        if (!isEndpointUnreachable(t) || System.nanoTime() >= deadline) {
+          return rethrow(t);
+        }
+        log.info(
+            "DynamoDB endpoint not reachable yet ({}); retrying for up to {}s",
+            rootCause(t).getMessage(),
+            connectWaitSeconds);
+        try {
+          Thread.sleep(1000);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          return rethrow(t);
+        }
+      }
     }
   }
 
@@ -221,6 +250,23 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
       cur = cur.getCause();
     }
     return false;
+  }
+
+  private static boolean isEndpointUnreachable(Throwable t) {
+    Throwable cur = t;
+    while (cur != null) {
+      if (cur instanceof SdkClientException) return true;
+      cur = cur.getCause();
+    }
+    return false;
+  }
+
+  private static Throwable rootCause(Throwable t) {
+    Throwable cur = t;
+    while (cur.getCause() != null) {
+      cur = cur.getCause();
+    }
+    return cur;
   }
 
   private static <T> T rethrow(Throwable t) {
