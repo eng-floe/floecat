@@ -19,7 +19,6 @@ package ai.floedb.floecat.connector.delta.identity;
 import ai.floedb.floecat.schema.identity.ColumnPath;
 import ai.floedb.floecat.schema.identity.ResolvedSchema;
 import ai.floedb.floecat.schema.identity.SchemaNode;
-import io.delta.kernel.internal.types.DataTypeJsonSerDe;
 import io.delta.kernel.types.ArrayType;
 import io.delta.kernel.types.DataType;
 import io.delta.kernel.types.FieldMetadata;
@@ -53,10 +52,7 @@ public final class DeltaSchemaResolver {
   private DeltaSchemaResolver() {}
 
   /**
-   * Resolves one Delta schema version from its JSON, parsing it with Delta Kernel.
-   *
-   * <p>Callers holding a kernel schema already should use {@link #resolve(StructType,
-   * ColumnMappingMode)} instead of re-serializing it.
+   * Resolves one Delta schema version from the kernel schema.
    *
    * <p>The caller must supply the <em>effective</em> mapping mode after checking the Delta
    * protocol, not merely the value of {@code delta.columnMapping.mode}. Mapping metadata is
@@ -64,24 +60,9 @@ public final class DeltaSchemaResolver {
    * never assigns Floecat canonical IDs, so using it cannot change the existing connector or
    * planner contract.
    */
-  public static DeltaResolvedSchema resolve(String schemaJson, ColumnMappingMode effectiveMode) {
-    Objects.requireNonNull(effectiveMode, "effectiveMode");
-    if (schemaJson == null || schemaJson.isBlank()) {
-      return new DeltaResolvedSchema(ResolvedSchema.of(List.of()), effectiveMode);
-    }
-    return resolve(DataTypeJsonSerDe.deserializeStructType(schemaJson), effectiveMode);
-  }
-
-  /**
-   * Resolves one Delta schema version from the kernel schema.
-   *
-   * <p>See {@link #resolve(String, ColumnMappingMode)} for the effective-mode contract.
-   */
   public static DeltaResolvedSchema resolve(StructType schema, ColumnMappingMode effectiveMode) {
     Objects.requireNonNull(effectiveMode, "effectiveMode");
-    if (schema == null) {
-      return new DeltaResolvedSchema(ResolvedSchema.of(List.of()), effectiveMode);
-    }
+    Objects.requireNonNull(schema, "schema");
 
     Walk walk = new Walk(effectiveMode);
     walk.struct(schema, ColumnPath.ROOT, Optional.of(ColumnPath.ROOT));

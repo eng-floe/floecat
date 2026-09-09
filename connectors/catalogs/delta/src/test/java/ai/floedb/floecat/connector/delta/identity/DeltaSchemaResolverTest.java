@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ai.floedb.floecat.schema.identity.ColumnPath;
 import ai.floedb.floecat.schema.identity.ResolvedSchema;
 import ai.floedb.floecat.schema.identity.SchemaNode;
+import io.delta.kernel.internal.types.DataTypeJsonSerDe;
 import io.delta.kernel.types.FieldMetadata;
 import io.delta.kernel.types.LongType;
 import io.delta.kernel.types.StringType;
@@ -44,7 +45,7 @@ class DeltaSchemaResolverTest {
   @Test
   void resolvesEveryUnmappedNestedNodeWithoutInventingSourceIdentity() {
     ResolvedSchema schema =
-        DeltaSchemaResolver.resolve(
+        resolveJson(
                 """
             {
               "type": "struct",
@@ -91,7 +92,7 @@ class DeltaSchemaResolverTest {
   @Test
   void resolvesMappedFieldsAndCollectionNestedIds() {
     DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(
+        resolveJson(
             """
             {
               "type": "struct",
@@ -188,7 +189,7 @@ class DeltaSchemaResolverTest {
   @Test
   void ignoresResidualMappingMetadataWhenMappingIsNotEffective() {
     ResolvedSchema schema =
-        DeltaSchemaResolver.resolve(
+        resolveJson(
                 """
             {"type":"struct","fields":[{
               "name":"id",
@@ -213,7 +214,7 @@ class DeltaSchemaResolverTest {
   void rejectsMappedFieldsWithoutRequiredMetadata() {
     assertThatThrownBy(
             () ->
-                DeltaSchemaResolver.resolve(
+                resolveJson(
                     """
                     {"type":"struct","fields":[{
                       "name":"id","type":"long","nullable":false,"metadata":{}
@@ -229,7 +230,7 @@ class DeltaSchemaResolverTest {
   void rejectsUnusedNestedIds() {
     assertThatThrownBy(
             () ->
-                DeltaSchemaResolver.resolve(
+                resolveJson(
                     """
                     {"type":"struct","fields":[{
                       "name":"items",
@@ -259,7 +260,7 @@ class DeltaSchemaResolverTest {
   void leavesMalformedCollectionTypesToTheKernelParse() {
     assertThatThrownBy(
             () ->
-                DeltaSchemaResolver.resolve(
+                resolveJson(
                     """
                     {"type":"struct","fields":[{
                       "name":"items",
@@ -284,7 +285,7 @@ class DeltaSchemaResolverTest {
   void rejectsFieldsTheKernelAcceptsButNoPathCanAddress() {
     assertThatThrownBy(
             () ->
-                DeltaSchemaResolver.resolve(
+                resolveJson(
                     """
                     {"type":"struct","fields":[{
                       "name":"","type":"long","nullable":true,"metadata":{}
@@ -317,10 +318,17 @@ class DeltaSchemaResolverTest {
   }
 
   @Test
+  void rejectsMissingKernelSchema() {
+    assertThatThrownBy(() -> DeltaSchemaResolver.resolve((StructType) null, ColumnMappingMode.NONE))
+        .isInstanceOf(NullPointerException.class)
+        .hasMessage("schema");
+  }
+
+  @Test
   void rejectsDuplicateNativeIdsAcrossFieldsAndCollectionInteriors() {
     assertThatThrownBy(
             () ->
-                DeltaSchemaResolver.resolve(
+                resolveJson(
                     """
                     {"type":"struct","fields":[{
                       "name":"items",
@@ -343,5 +351,9 @@ class DeltaSchemaResolverTest {
     SchemaNode node = schema.byPath(path).orElseThrow();
     assertThat(node.nativeFieldId()).isEqualTo(OptionalInt.of(nativeId));
     assertThat(node.sourcePhysicalPath().orElseThrow().display()).isEqualTo(physicalPath);
+  }
+
+  private static DeltaResolvedSchema resolveJson(String schemaJson, ColumnMappingMode mode) {
+    return DeltaSchemaResolver.resolve(DataTypeJsonSerDe.deserializeStructType(schemaJson), mode);
   }
 }

@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.delta.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.delta.kernel.internal.types.DataTypeJsonSerDe;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -79,34 +80,29 @@ class DeltaResolvedSchemaTest {
 
   @Test
   void anAmbiguousLogicalKeyNeverFansOutIntoSeveralColumns() {
-    DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(COLLIDING_LOGICAL, ColumnMappingMode.NAME);
+    DeltaResolvedSchema resolved = resolveJson(COLLIDING_LOGICAL, ColumnMappingMode.NAME);
 
     assertThat(resolved.statsKeysFor(Set.of("a.b"))).isEmpty();
   }
 
   @Test
   void anAmbiguousLogicalKeyIsRejectedWithoutColumnMapping() {
-    DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(COLLIDING_LOGICAL, ColumnMappingMode.NONE);
+    DeltaResolvedSchema resolved = resolveJson(COLLIDING_LOGICAL, ColumnMappingMode.NONE);
 
     assertThat(resolved.statsKeysFor(Set.of("a.b"))).isEmpty();
   }
 
   @Test
   void unambiguousSiblingsOfAnAmbiguousKeySurvive() {
-    DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(COLLIDING_LOGICAL, ColumnMappingMode.NAME);
+    DeltaResolvedSchema resolved = resolveJson(COLLIDING_LOGICAL, ColumnMappingMode.NAME);
 
     assertThat(resolved.statsKeysFor(Set.of("a", "a.b"))).containsExactly("p-two");
   }
 
   @Test
   void ambiguityIsJudgedAgainstTheWholeSchemaNotTheRequest() {
-    DeltaResolvedSchema mapped =
-        DeltaSchemaResolver.resolve(COLLIDING_LOGICAL, ColumnMappingMode.NAME);
-    DeltaResolvedSchema unmapped =
-        DeltaSchemaResolver.resolve(COLLIDING_LOGICAL, ColumnMappingMode.NONE);
+    DeltaResolvedSchema mapped = resolveJson(COLLIDING_LOGICAL, ColumnMappingMode.NAME);
+    DeltaResolvedSchema unmapped = resolveJson(COLLIDING_LOGICAL, ColumnMappingMode.NONE);
 
     assertThat(mapped.statsKeysFor(Set.of("a.b"))).isEmpty();
     assertThat(unmapped.statsKeysFor(Set.of("a.b"))).isEmpty();
@@ -114,8 +110,7 @@ class DeltaResolvedSchemaTest {
 
   @Test
   void unknownKeysAreDropped() {
-    DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(MAPPED_NESTED, ColumnMappingMode.NAME);
+    DeltaResolvedSchema resolved = resolveJson(MAPPED_NESTED, ColumnMappingMode.NAME);
 
     assertThat(resolved.statsKeysFor(Set.of("no.such.column"))).isEmpty();
   }
@@ -123,7 +118,7 @@ class DeltaResolvedSchemaTest {
   @Test
   void theResultDoesNotAliasTheRequestedSet() {
     DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(
+        resolveJson(
             """
             {"type":"struct","fields":[
               {"name":"zip","type":"integer","nullable":true,"metadata":{}}
@@ -141,7 +136,7 @@ class DeltaResolvedSchemaTest {
   @Test
   void statsKeysAreLogicalWhenMappingIsOff() {
     DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(
+        resolveJson(
             """
             {"type":"struct","fields":[
               {"name":"zip","type":"integer","nullable":true,"metadata":{}}
@@ -154,16 +149,14 @@ class DeltaResolvedSchemaTest {
 
   @Test
   void statsKeysBecomePhysicalWhenMappingIsOn() {
-    DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(MAPPED_NESTED, ColumnMappingMode.NAME);
+    DeltaResolvedSchema resolved = resolveJson(MAPPED_NESTED, ColumnMappingMode.NAME);
 
     assertThat(resolved.statsKeysFor(Set.of("address.zip"))).containsExactly("col-address.col-zip");
   }
 
   @Test
   void unselectedColumnsAreNotTranslated() {
-    DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(MAPPED_NESTED, ColumnMappingMode.NAME);
+    DeltaResolvedSchema resolved = resolveJson(MAPPED_NESTED, ColumnMappingMode.NAME);
 
     assertThat(resolved.statsKeysFor(Set.of())).isEmpty();
   }
@@ -171,7 +164,7 @@ class DeltaResolvedSchemaTest {
   @Test
   void distinctPhysicalPathsSharingALegacyKeyAreDropped() {
     DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(
+        resolveJson(
             """
             {"type":"struct","fields":[
               {
@@ -209,7 +202,7 @@ class DeltaResolvedSchemaTest {
 
   @Test
   void footerColumnsResolveByFieldIdUnderIdMapping() {
-    DeltaResolvedSchema resolved = DeltaSchemaResolver.resolve(MAPPED_NESTED, ColumnMappingMode.ID);
+    DeltaResolvedSchema resolved = resolveJson(MAPPED_NESTED, ColumnMappingMode.ID);
 
     assertThat(resolved.nodeForFooterColumn(List.of("col-address", "col-zip"), 2))
         .hasValueSatisfying(
@@ -219,12 +212,15 @@ class DeltaResolvedSchemaTest {
 
   @Test
   void footerColumnsResolveByPhysicalNameUnderNameMapping() {
-    DeltaResolvedSchema resolved =
-        DeltaSchemaResolver.resolve(MAPPED_NESTED, ColumnMappingMode.NAME);
+    DeltaResolvedSchema resolved = resolveJson(MAPPED_NESTED, ColumnMappingMode.NAME);
 
     assertThat(resolved.nodeForFooterColumn(List.of("col-address", "col-zip"), null))
         .hasValueSatisfying(
             node -> assertThat(node.path().legacyDottedKey()).isEqualTo("address.zip"));
     assertThat(resolved.nodeForFooterColumn(List.of("address", "zip"), null)).isEmpty();
+  }
+
+  private static DeltaResolvedSchema resolveJson(String schemaJson, ColumnMappingMode mode) {
+    return DeltaSchemaResolver.resolve(DataTypeJsonSerDe.deserializeStructType(schemaJson), mode);
   }
 }
