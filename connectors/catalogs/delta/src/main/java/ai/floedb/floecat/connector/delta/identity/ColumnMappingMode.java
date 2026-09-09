@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.schema.identity.delta;
+package ai.floedb.floecat.connector.delta.identity;
 
 import java.util.Locale;
 import java.util.Map;

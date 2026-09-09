@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.schema.identity.delta;
+package ai.floedb.floecat.connector.delta.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -22,6 +22,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ai.floedb.floecat.schema.identity.ColumnPath;
 import ai.floedb.floecat.schema.identity.ResolvedSchema;
 import ai.floedb.floecat.schema.identity.SchemaNode;
+import io.delta.kernel.types.FieldMetadata;
+import io.delta.kernel.types.LongType;
+import io.delta.kernel.types.StringType;
+import io.delta.kernel.types.StructType;
 import java.util.OptionalInt;
 import org.junit.jupiter.api.Test;
 
@@ -222,7 +226,37 @@ class DeltaSchemaResolverTest {
   }
 
   @Test
-  void rejectsUnusedNestedIdsAndMalformedCollectionTypes() {
+  void rejectsUnusedNestedIds() {
+    assertThatThrownBy(
+            () ->
+                DeltaSchemaResolver.resolve(
+                    """
+                    {"type":"struct","fields":[{
+                      "name":"items",
+                      "type":{"type":"array","elementType":"long","containsNull":false},
+                      "nullable":true,
+                      "metadata":{
+                        "delta.columnMapping.id":1,
+                        "delta.columnMapping.physicalName":"col-items",
+                        "delta.columnMapping.nested.ids":{
+                          "col-items.element":2,
+                          "col-items.value":3
+                        }
+                      }
+                    }]}
+                    """,
+                    ColumnMappingMode.ID))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("unused nested ID")
+        .hasMessageContaining("col-items.value");
+  }
+
+  /**
+   * Delta Kernel owns the parse, so a structurally malformed type is rejected there — before any
+   * mapping metadata is examined. The resolver deliberately does not re-validate schema shape.
+   */
+  @Test
+  void leavesMalformedCollectionTypesToTheKernelParse() {
     assertThatThrownBy(
             () ->
                 DeltaSchemaResolver.resolve(
@@ -240,8 +274,44 @@ class DeltaSchemaResolverTest {
                     """,
                     ColumnMappingMode.ID))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("elementType")
-        .hasMessageContaining("unused nested ID");
+        .hasMessageContaining("array data type");
+  }
+
+  /** The kernel accepts an empty field name; no path can address one, so the resolver rejects it. */
+  @Test
+  void rejectsFieldsTheKernelAcceptsButNoPathCanAddress() {
+    assertThatThrownBy(
+            () ->
+                DeltaSchemaResolver.resolve(
+                    """
+                    {"type":"struct","fields":[{
+                      "name":"","type":"long","nullable":true,"metadata":{}
+                    }]}
+                    """,
+                    ColumnMappingMode.NONE))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("field 1 under <root> has no name");
+  }
+
+  /** Callers holding a kernel schema resolve it directly, without a round trip through JSON. */
+  @Test
+  void resolvesTheKernelSchemaWithoutReparsingJson() {
+    StructType schema =
+        new StructType()
+            .add("id", LongType.LONG, false)
+            .add(
+                "nested",
+                new StructType().add("leaf", StringType.STRING, true),
+                true,
+                FieldMetadata.builder().putLong(DeltaSchemaResolver.COLUMN_ID, 3L).build());
+
+    ResolvedSchema resolved = DeltaSchemaResolver.resolve(schema, ColumnMappingMode.NONE).schema();
+
+    assertThat(resolved.nodes())
+        .extracting(node -> node.path().display())
+        .containsExactly("id", "nested", "nested.leaf");
+    assertThat(resolved.byPath(ColumnPath.ROOT.field("nested")).orElseThrow().leaf()).isFalse();
+    assertThat(resolved.nodes()).allMatch(node -> node.nativeFieldId().isEmpty());
   }
 
   @Test
