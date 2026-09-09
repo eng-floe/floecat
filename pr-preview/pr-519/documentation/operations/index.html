@@ -2028,8 +2028,20 @@ endpoint becomes <code>CIVI_CREDENTIAL_VENDING_UNSUPPORTED</code> on validation,
 unreachable server is reported as itself.</p>
 <p>A table this Integration cannot read is refused when the overlay reconciles, and counted in
 <code>objects_skipped</code>, rather than materialized and left to fail at query time. That covers a table
-offering <code>url</code> access alone, a table stating no access modes under
-<code>delta.sharing.strict-access-modes</code>, and a table whose location no surface states. The reason is
+offering <code>url</code> access alone; a table stating no access modes under
+<code>delta.sharing.strict-access-modes</code>; a table reporting <code>auxiliaryLocations</code> on either surface, since
+the storage contract carries one credential over one scope prefix and vending only the root would
+fail at scan time on the files it does not reach; a table whose location is on a cloud this
+provider cannot vend for, meaning <code>abfss://</code>, <code>gs://</code>, or an <code>s3://</code> whose bucket cannot be read;
+and a table whose location no surface states, where the credential endpoint then refuses with a 404
+or the protocol's own 400.</p>
+<p>Two shapes nearby are not skips. Where the credential endpoint answers 200 without a location, or
+with a location the stated one is not under, the result is a classified failure rather than a
+skipped table -- a response this client cannot read is not a property of one table. And where the
+storage probe finds no Delta log object under the location, validation reports
+<code>CIVI_STORAGE_ACCESS_FAILED</code>: that means the location is not a table root -- a wrong region, a wrong
+prefix, a broadly scoped credential -- which is correctable, unlike a capability the provider does
+not have. The reason for refusing the rest is
 that a table reconciled without a storage location keeps the Integration's own catalog URI as its
 upstream reference, so it exists in the catalog and cannot be opened by anything reading object
 storage. A share offering only <code>url</code> access is therefore unsupported here, not partially supported.</p>
