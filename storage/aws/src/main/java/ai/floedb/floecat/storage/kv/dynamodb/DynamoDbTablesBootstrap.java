@@ -20,6 +20,10 @@ import ai.floedb.floecat.storage.kv.KvAttributes;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import java.net.ConnectException;
+import java.net.NoRouteToHostException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
@@ -175,13 +179,14 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
     ddbJoin(client -> client.updateTimeToLive(update));
   }
 
-  // First DynamoDB call the process makes. Under `make start` this service comes up ~100ms
-  // after storage-local, which can take 15-20s to bind its port on a cold box, while the
-  // SDK's own connect retries give up in ~7s -- a cold start used to die right here with
-  // "Connection refused". Retry while the endpoint does not answer at all
-  // (SdkClientException) for up to connectWaitSeconds; an actual answer -- not-found, auth,
-  // throttling -- is an AwsServiceException and still surfaces immediately. 90s matches
-  // KvServiceDependency, which is how every other service waits for the same port.
+  // First DynamoDB call the process makes. In local and compose setups the DynamoDB endpoint
+  // is brought up alongside this service and can take 15-20s to bind its port on a cold box,
+  // while the SDK's own connect retries give up in ~7s -- a cold start used to die right here
+  // with "Connection refused". Retry only while the connect itself fails, for up to
+  // connectWaitSeconds; anything else -- a service answer such as not-found, auth or
+  // throttling, or a client-side failure with no connect-level cause such as an unresolvable
+  // credential chain -- surfaces immediately. A misconfigured endpoint still costs the full
+  // wait if it fails at connect level (a typo'd host looks exactly like one not up yet).
   private boolean tableExists(String tableName) {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(connectWaitSeconds);
     while (true) {
@@ -252,11 +257,20 @@ public class DynamoDbTablesBootstrap implements KvAttributes {
     return false;
   }
 
+  // SdkClientException is the SDK's whole client-side family, and most of it is permanent:
+  // credential-chain failures, an unparseable endpoint override, TLS trust failures, call
+  // timeouts. Retrying those would only turn a fast, clearly-attributed startup failure into a
+  // connectWaitSeconds hang, so require a genuine connect-level root cause underneath it.
   private static boolean isEndpointUnreachable(Throwable t) {
-    Throwable cur = t;
-    while (cur != null) {
-      if (cur instanceof SdkClientException) return true;
-      cur = cur.getCause();
+    boolean sdkClient = false;
+    for (Throwable cur = t; cur != null; cur = cur.getCause()) {
+      if (cur instanceof SdkClientException) sdkClient = true;
+      if (cur instanceof ConnectException
+          || cur instanceof NoRouteToHostException
+          || cur instanceof UnknownHostException
+          || cur instanceof SocketTimeoutException) {
+        return sdkClient;
+      }
     }
     return false;
   }

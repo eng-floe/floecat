@@ -64,6 +64,21 @@ public class DynamoDbTablesBootstrapTest {
   }
 
   @Test
+  void permanentClientErrorIsNotRetried() {
+    SdkClientException noCredentials =
+        SdkClientException.create(
+            "Unable to load credentials from any of the providers in the chain");
+    AtomicInteger calls = new AtomicInteger();
+    DynamoDbTablesBootstrap bootstrap = bootstrap(10, describeTableStub(calls, noCredentials));
+
+    Throwable thrown =
+        assertThrows(Throwable.class, () -> bootstrap.ensureTableExists("tbl", false));
+
+    assertTrue(containsCause(thrown, SdkClientException.class));
+    assertEquals(1, calls.get());
+  }
+
+  @Test
   void serviceErrorIsNotRetried() {
     AwsServiceException notAuthorized =
         DynamoDbException.builder().message("not authorized").build();
