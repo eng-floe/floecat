@@ -127,20 +127,16 @@ public interface PointerStore {
   }
 
   /**
-   * The pointer as the store has it, never from a cache in front of it.
+   * The owner-authoritative pointer value.
    *
    * <p>The prefix reads have had this distinction since caching was only a prefix concern; a
    * single-key form is needed for the same reason -- a CAS expected-version, a liveness probe and a
    * GC emptiness verdict are all questions a cache cannot answer, because what they ask about is
    * precisely what the cache might be behind on.
    *
-   * <p><b>Not a default.</b> A store that is the source implements it as an ordinary read, and a
-   * decorator has something to bypass -- but which of those an implementation is, only it knows. As
-   * a default delegating to {@link #get} it read as free, and every implementation that never
-   * thought about it inherited "consistent" as a synonym for "whatever get does". That holds only
-   * while every read below is consistent: make one of them cheap and eventually consistent, and
-   * every caller asking this question is silently answered by the wrong read, with no signature
-   * moving and nothing failing.
+   * <p>For the owner-managed planner store this is the same synchronized index path as {@link
+   * #get}; the durable adapter is used only while an account index is loading. The method remains
+   * on the SPI for storage backends and maintenance adapters that need to make the distinction.
    */
   Optional<Pointer> getConsistent(String key);
 

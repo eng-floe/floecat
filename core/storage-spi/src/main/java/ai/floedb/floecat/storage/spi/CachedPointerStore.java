@@ -23,11 +23,11 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * The pointer-store view for query-serving reads, where a resident pointer is an acceptable answer.
+ * Compatibility qualifier for the indexed pointer-store seam.
  *
- * <p>The unqualified {@link PointerStore} is deliberately the authoritative view. A caller has to
- * opt into this qualifier once, at its injection seam, rather than choosing cached versus
- * consistent independently at every read.
+ * <p>The qualified and unqualified stores are the same implementation. The qualifier remains so
+ * existing injection points do not need a flag day migration; callers do not choose consistency per
+ * read.
  */
 @Qualifier
 @Retention(RetentionPolicy.RUNTIME)
