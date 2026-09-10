@@ -550,7 +550,7 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
     }
   }
 
-  private void publish(Path path, byte[] bytes, boolean replace) {
+  private synchronized void publish(Path path, byte[] bytes, boolean replace) {
     if ((long) HEADER_BYTES + bytes.length > maxBytes) {
       events.admissionRejected();
       return;
@@ -611,7 +611,7 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
     }
   }
 
-  private boolean deleteIfIdle(Path path) {
+  private synchronized boolean deleteIfIdle(Path path) {
     AtomicLong refs = mappings.get(path);
     if (refs != null && refs.get() > 0L) {
       return false;
@@ -678,7 +678,7 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
     }
   }
 
-  private boolean retire(Path path) {
+  private synchronized boolean retire(Path path) {
     // Mark first, then inspect the reference count. A concurrent reader either retained before
     // this mark (and therefore protects the file) or observes the mark and never opens it.
     pendingDeletes.add(path);
