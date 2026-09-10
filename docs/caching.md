@@ -31,14 +31,8 @@ identity; they do not replace a value in an existing key.
 |------------|----------------|---------------|--------------------|
 | Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | All planner pointer records for an account, including current roots, names, snapshots, constraints, stats and hint-resource pointers | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter. |
 | Objects | `ObjectCache` | Decoded relation metadata, mapped schemas, constraints, immutable generation-scoped snapshot facts and target-stat records | Entries are keyed by immutable content or generation identity. A live/newest stats read is read-through and is never retained. Account eviction removes every object entry for that account. |
-| Immutable decoded content | `ImmutableBlobCache` (`service/repo/cache/`) | Decoded root blobs, snapshot-manifest pages, catalog/namespace/table/view/snapshot/constraints blobs, stats generation manifests, plus derived forms: manifest-entry indexes (`headUri + "#index"`) and graph nodes (`blobUri + "#node"`) | Content-addressed, so no invalidation. Byte-weighted, with Caffeine's TinyLFU admission rather than plain LRU: `serializedSize × 3` retained-heap estimate, 256 MB default, 15-minute access TTL, single-flight loads, absence never cached. Config `floecat.blob.cache.*`; kill switch `floecat.blob.cache.enabled=false`. Only `casBlobs` schemas route through it — blobs overwritten in place must never be cached by URI. |
+| Blobs | `DiskBlobCache` behind `BlobCacheAccess` | Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe | Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mmap content stays pinned until its scoped read closes. The disk budget and kill switch are `floecat.cache.blob.disk.*`; it is independent of the heap budget. |
 | Per-query state | `QueryContextStore` and per-query memos | `QueryContext` (pins, snapshot set, expansion map) keyed by query ID | Scoped to one query lease; consistency comes from pinning, not freshness. |
-
-The `ImmutableBlobCache` budget is **shared across all tenants**, which buys byte-accurate
-weighing, one budget to operate, and cross-layer sharing — a node and the pages it came from
-compete honestly for the same memory. The cost is that one tenant's wide-schema or long-history
-scans can evict another tenant's hot entries, softened by Caffeine's TinyLFU admission policy,
-which favours frequently reused entries over one-shot scan traffic.
 
 An owned pointer partition can be warmed in the background when ownership is granted. The first
 read also schedules the warm if no ownership notification was received. Reads never wait for this
@@ -62,14 +56,11 @@ provides the `PlanningPointerIndex.Ownership` implementation and connects owners
 index: revoke ownership before routing the account away, then drop the old partition; after the
 new owner is granted, start warming it. The index never assumes ownership from a cache hit.
 
-`floecat.metadata.graph.cache-max-size` gates node caching (`0` = off); node memory is governed by
-`floecat.blob.cache.max-weight-bytes`.
-
 `ObjectCache` stores immutable-generation target statistics by `(accountId, tableId, snapshotId,
 generation, target identity)`. A live/newest result has no stable identity and is therefore read
 through without retention. Target-stat record blobs are deliberately **not** in the
-`ImmutableBlobCache`: they are written to deterministic (not content-addressed) URIs and a
-re-capture may overwrite one in place, so URI-keyed caching would be unsound for them.
+disk blob cache: they are written to deterministic (not content-addressed) URIs and a re-capture may
+overwrite one in place, so URI-only caching would be unsound for them.
 
 ## The shared cache contract (`core/cache`)
 
@@ -113,10 +104,9 @@ claims that together exceed the total. A family whose configuration is *absent* 
 case and takes nothing; what refuses that is the cache built for it, which will not accept a
 budget of zero.
 
-Only implemented in-memory families appear in `CacheFamily`; this avoids publishing configuration
-and metric dimensions for caches that do not exist yet. The existing `ImmutableBlobCache` remains
-under `floecat.blob.cache.max-weight-bytes`. A future disk blob cache can reuse the cache module's
-telemetry vocabulary while exposing its own lifecycle-shaped interface and volume budget.
+Only implemented in-memory families appear in `CacheFamily`; the disk blob cache has its own
+physical-volume budget and lifecycle-shaped interface. It reuses the cache telemetry vocabulary
+where useful but does not pretend that files and heap entries share one budget.
 
 Pointer planning state is not budgeted by the generic memory-cache contract. The index is the
 account's current in-memory representation and must stay complete; if it cannot be loaded, the
@@ -127,8 +117,8 @@ index for planner keys and durable KV for operational keys.
 ## What a cache reports
 
 A cache built on the `core/cache` contract publishes the same series, tagged by cache name, so
-those are comparable and a new one brings its telemetry with it. `ImmutableBlobCache` predates the
-contract and publishes its own subset; `graph-cache` is node-load timing, not a cache.
+those are comparable and a new one brings its telemetry with it. The disk blob cache adds mapping,
+corruption and sweep signals because those are file-lifecycle events rather than heap-cache events.
 
 | question | series |
 |---|---|
@@ -201,5 +191,5 @@ emptiness is load-bearing.
 Cache budgets derive from the container: `floecat.cache.total-bytes` defaults to a share of the
 maximum heap, which the JVM already sizes from the container memory limit, and each memory cache takes a
 share of that. `heap-share` carries its default in
-`service/src/main/resources/application.properties`, alongside `floecat.blob.cache.*`;
+`service/src/main/resources/application.properties`, alongside the disk blob settings;
 `total-bytes` is unset and is derived when the object and hint memory caches are wired.
