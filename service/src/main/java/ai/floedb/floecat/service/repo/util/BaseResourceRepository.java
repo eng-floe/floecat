@@ -22,7 +22,6 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.service.repo.ResourceRepository;
-import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
@@ -216,8 +215,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       ImmutableBlobCache blobCache,
       RepositoryReads reads) {
     this.mutationPointerStore =
-        AuthoritativePointerStore.of(
-            Objects.requireNonNull(mutationPointerStore, "mutationPointerStore"));
+        Objects.requireNonNull(mutationPointerStore, "mutationPointerStore");
     this.mutationBlobStore = Objects.requireNonNull(mutationBlobStore, "blobs");
     this.mutationReads = RepositoryReads.direct(this.mutationPointerStore, mutationBlobStore);
     this.reads = Objects.requireNonNull(reads, "reads");

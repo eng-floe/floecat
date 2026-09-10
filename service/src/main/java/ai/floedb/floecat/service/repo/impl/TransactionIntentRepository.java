@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.repo.impl;
 
-import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TransactionIntentKey;
@@ -47,7 +46,7 @@ public class TransactionIntentRepository {
       PointerStore pointerStore,
       @CachedPointerStore PointerStore pointerReads,
       BlobStore blobStore) {
-    this.pointerStore = AuthoritativePointerStore.of(pointerStore);
+    this.pointerStore = pointerStore;
     this.pointerReads = pointerReads;
     this.repo =
         new GenericResourceRepository<>(

@@ -51,7 +51,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
-import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionRepository;
@@ -1478,7 +1477,7 @@ class TransactionsServiceImplTest {
 
   private static void injectPointerStore(TransactionsServiceImpl service, PointerStore backend)
       throws Exception {
-    inject(service, "pointerStore", AuthoritativePointerStore.of(backend));
+    inject(service, "pointerStore", backend);
   }
 
   /**

@@ -8,7 +8,8 @@ or views. The graph provides:
 - Immutable node models that can be safely reused across requests. Nodes are pure derivations of
   their source blob and are cached content-addressed (keyed by `blobUri + "#node"`) in the
   process-wide `ImmutableBlobCache`, so they need no invalidation.
-- Resource-ID → current-blob resolution served by the pointer cache (`CachingPointerStore`), which
+- Resource-ID → current-blob resolution served by the owner-managed planner index
+  (`PlanningPointerIndex` behind `IndexedPointerStore`), which
   is refreshed on write and does not expire, so a commit is visible to the replica that made it as
   soon as it lands.
 - Helper APIs for name resolution (Directory RPC parity) and snapshot pinning (Snapshot RPC parity).

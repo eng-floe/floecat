@@ -23,7 +23,6 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -35,9 +34,8 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
 import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
 import ai.floedb.floecat.service.context.PropagatedContext;
-import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
-import ai.floedb.floecat.service.repo.cache.CachingPointerStore;
-import ai.floedb.floecat.service.repo.cache.PointerCache;
+import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -328,9 +326,7 @@ class NameResolverTest {
   @Test
   void aRelationResolveMissDoesNotReachKvOnceTheAccountIndexIsComplete() {
     CountingPointerStore raw = new CountingPointerStore();
-    PointerCache pointers =
-        new PointerCache(AuthoritativePointerStore.of(raw), 1024L * 1024L, CacheEvents.none());
-    var cached = new CachingPointerStore(raw, pointers);
+    var cached = new IndexedPointerStore(raw, new PlanningPointerIndex(raw));
     var blobs = new InMemoryBlobStore();
     var catalogs = new CatalogRepository(cached, blobs);
     var namespaces = new NamespaceRepository(cached, blobs);

@@ -59,30 +59,19 @@ class TableRootThroughTheCacheTest {
 
   private static TableRootRepository cachedRepo(
       CountingPointerStore pointers, InMemoryBlobStore blobs) {
-    // The cache lives under the store, so the caching these tests assert on is the decorator's.
-    var cache =
-        new ai.floedb.floecat.service.repo.cache.PointerCache(
-            pointers, 1024L * 1024L, ai.floedb.floecat.cache.CacheEvents.none());
-    var caching = new ai.floedb.floecat.service.repo.cache.CachingPointerStore(pointers, cache);
+    var caching =
+        new ai.floedb.floecat.service.repo.cache.IndexedPointerStore(
+            pointers, new ai.floedb.floecat.service.repo.cache.PlanningPointerIndex(pointers));
     return new TableRootRepository(caching, blobs, blobCache());
   }
 
-  private static ai.floedb.floecat.service.repo.cache.PointerCache pointerCache(
-      CountingPointerStore pointers) {
-    return new ai.floedb.floecat.service.repo.cache.PointerCache(
-        pointers, 1024L * 1024L, ai.floedb.floecat.cache.CacheEvents.none());
-  }
-
-  /**
-   * A repository sharing an already-warm pointer cache but with its own cold decoded-blob cache --
-   * the state every replica is in for a table it has resolved before but not recently.
-   */
+  /** A repository sharing an already-warm planner index with its own decoded-blob cache. */
   private static TableRootRepository repoSharing(
-      ai.floedb.floecat.service.repo.cache.PointerCache shared,
+      ai.floedb.floecat.service.repo.cache.PlanningPointerIndex shared,
       CountingPointerStore pointers,
       InMemoryBlobStore blobs) {
     return new TableRootRepository(
-        new ai.floedb.floecat.service.repo.cache.CachingPointerStore(pointers, shared),
+        new ai.floedb.floecat.service.repo.cache.IndexedPointerStore(pointers, shared),
         blobs,
         blobCache());
   }
@@ -234,7 +223,7 @@ class TableRootThroughTheCacheTest {
     // the stale pointer against itself and reach an answer for the wrong reason.
     var pointers = new CountingPointerStore();
     var blobs = new InMemoryBlobStore();
-    var shared = pointerCache(pointers);
+    var shared = new ai.floedb.floecat.service.repo.cache.PlanningPointerIndex(pointers);
     var warm = repoSharing(shared, pointers, blobs);
     var tableId = table("t-dangling");
     warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
@@ -257,7 +246,7 @@ class TableRootThroughTheCacheTest {
     // into a NOT_FOUND on that replica until something else happened to repair the entry.
     var pointers = new CountingPointerStore();
     var blobs = new InMemoryBlobStore();
-    var shared = pointerCache(pointers);
+    var shared = new ai.floedb.floecat.service.repo.cache.PlanningPointerIndex(pointers);
     var warm = repoSharing(shared, pointers, blobs);
     var tableId = table("t-moved");
     warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
