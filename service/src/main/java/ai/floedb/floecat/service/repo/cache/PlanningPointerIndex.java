@@ -92,15 +92,23 @@ public final class PlanningPointerIndex {
   }
 
   Optional<Pointer> get(String key) {
+    return get(key, false);
+  }
+
+  Optional<Pointer> getConsistent(String key) {
+    return get(key, true);
+  }
+
+  private Optional<Pointer> get(String key, boolean consistentFallback) {
     String partitionKey = partitionFor(key);
-    if (partitionKey == null || !isPlanningKey(key)) return durable.get(key);
+    if (partitionKey == null || !isPlanningKey(key)) return durableGet(key, consistentFallback);
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
-    if (permit.isEmpty()) return durable.get(key);
+    if (permit.isEmpty()) return durableGet(key, consistentFallback);
     try {
       Partition partition = readyPartition(partitionKey);
       if (partition == null) {
         warm(partitionKey);
-        return durable.get(key);
+        return durableGet(key, consistentFallback);
       }
       try {
         return Optional.ofNullable(partition.entries.get(key));
@@ -112,18 +120,31 @@ public final class PlanningPointerIndex {
     }
   }
 
+  private Optional<Pointer> durableGet(String key, boolean consistent) {
+    return consistent ? durable.getConsistent(key) : durable.get(key);
+  }
+
   Map<String, Pointer> getBatch(List<String> keys) {
+    return getBatch(keys, false);
+  }
+
+  Map<String, Pointer> getBatchConsistent(List<String> keys) {
+    return getBatch(keys, true);
+  }
+
+  private Map<String, Pointer> getBatch(List<String> keys, boolean consistentFallback) {
     if (keys == null || keys.isEmpty()) return Map.of();
     // The batch is one logical read. Operational/global keys are not part of an account planner
     // partition, so a batch containing one must use the durable path for every key.
-    if (keys.stream().anyMatch(key -> !isPlanningKey(key))) return durable.getBatch(keys);
+    if (keys.stream().anyMatch(key -> !isPlanningKey(key)))
+      return durableBatch(keys, consistentFallback);
     List<String> partitionsToRead =
         keys.stream().map(this::partitionFor).distinct().sorted().toList();
     // A batch is one logical read. If any planner partition is not ready or not owned, use the
     // durable store for the whole operation instead of mixing an index snapshot with KV results.
     List<Ownership.Permit> permits = acquire(partitionsToRead, Ownership.Access.READ, false);
     if (permits == null) {
-      return durable.getBatch(keys);
+      return durableBatch(keys, consistentFallback);
     }
     try {
       List<Partition> locked = new ArrayList<>();
@@ -132,14 +153,14 @@ public final class PlanningPointerIndex {
         if (partition == null || partition.readiness != Readiness.COMPLETE) {
           warm(partitionKey);
           unlockReadPartitions(locked);
-          return durable.getBatch(keys);
+          return durableBatch(keys, consistentFallback);
         }
         partition.lock.readLock().lock();
         locked.add(partition);
         if (partition.readiness != Readiness.COMPLETE) {
           warm(partitionKey);
           unlockReadPartitions(locked);
-          return durable.getBatch(keys);
+          return durableBatch(keys, consistentFallback);
         }
       }
       try {
@@ -160,22 +181,35 @@ public final class PlanningPointerIndex {
     }
   }
 
+  private Map<String, Pointer> durableBatch(List<String> keys, boolean consistent) {
+    return consistent ? durable.getBatchConsistent(keys) : durable.getBatch(keys);
+  }
+
   List<Pointer> list(String prefix, int limit, String token, StringBuilder nextToken) {
+    return list(prefix, limit, token, nextToken, false);
+  }
+
+  List<Pointer> listConsistent(String prefix, int limit, String token, StringBuilder nextToken) {
+    return list(prefix, limit, token, nextToken, true);
+  }
+
+  private List<Pointer> list(
+      String prefix, int limit, String token, StringBuilder nextToken, boolean consistentFallback) {
     String partitionKey = partitionFor(prefix);
     if (partitionKey == null || !isPlanningPrefix(prefix))
-      return durable.listPointersByPrefix(prefix, limit, token, nextToken);
+      return durableList(prefix, limit, token, nextToken, consistentFallback);
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
-    if (permit.isEmpty()) return durableList(prefix, limit, token, nextToken);
+    if (permit.isEmpty()) return durableList(prefix, limit, token, nextToken, consistentFallback);
     try {
       Partition partition = readyPartition(partitionKey);
       if (partition == null) {
         warm(partitionKey);
-        return durableList(prefix, limit, token, nextToken);
+        return durableList(prefix, limit, token, nextToken, consistentFallback);
       }
       try {
         String after = token == null || token.isBlank() ? null : token;
         if (after != null && !after.startsWith("index:"))
-          return durable.listPointersByPrefix(prefix, limit, token, nextToken);
+          return durableList(prefix, limit, token, nextToken, consistentFallback);
         after = after == null ? null : after.substring("index:".length());
         NavigableMap<String, Pointer> tail =
             after == null
@@ -206,15 +240,24 @@ public final class PlanningPointerIndex {
   }
 
   int count(String prefix) {
+    return count(prefix, false);
+  }
+
+  int countConsistent(String prefix) {
+    return count(prefix, true);
+  }
+
+  private int count(String prefix, boolean consistentFallback) {
     String partitionKey = partitionFor(prefix);
-    if (partitionKey == null || !isPlanningPrefix(prefix)) return durable.countByPrefix(prefix);
+    if (partitionKey == null || !isPlanningPrefix(prefix))
+      return durableCount(prefix, consistentFallback);
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
-    if (permit.isEmpty()) return durable.countByPrefix(prefix);
+    if (permit.isEmpty()) return durableCount(prefix, consistentFallback);
     try {
       Partition partition = readyPartition(partitionKey);
       if (partition == null) {
         warm(partitionKey);
-        return durable.countByPrefix(prefix);
+        return durableCount(prefix, consistentFallback);
       }
       try {
         int count = 0;
@@ -229,6 +272,10 @@ public final class PlanningPointerIndex {
     } finally {
       permit.orElseThrow().close();
     }
+  }
+
+  private int durableCount(String prefix, boolean consistent) {
+    return consistent ? durable.countByPrefixConsistent(prefix) : durable.countByPrefix(prefix);
   }
 
   String pageTokenAfterKey(String key) {
@@ -323,7 +370,7 @@ public final class PlanningPointerIndex {
   }
 
   private List<Pointer> durableList(
-      String prefix, int limit, String token, StringBuilder nextToken) {
+      String prefix, int limit, String token, StringBuilder nextToken, boolean consistent) {
     // An index continuation is local to this process. If ownership or readiness changes between
     // pages, translate it to the durable store's token instead of leaking the index format into
     // the KV adapter.
@@ -332,7 +379,9 @@ public final class PlanningPointerIndex {
       String lastKey = token.substring("index:".length());
       durableToken = lastKey.isBlank() ? null : durable.pageTokenAfterKey(lastKey);
     }
-    return durable.listPointersByPrefix(prefix, limit, durableToken, nextToken);
+    return consistent
+        ? durable.listPointersByPrefixConsistent(prefix, limit, durableToken, nextToken)
+        : durable.listPointersByPrefix(prefix, limit, durableToken, nextToken);
   }
 
   void publish(String key, Pointer value) {
