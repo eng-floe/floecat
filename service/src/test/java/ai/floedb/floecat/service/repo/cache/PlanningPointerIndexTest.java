@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class PlanningPointerIndexTest {
@@ -179,6 +180,30 @@ class PlanningPointerIndexTest {
     durable.pointReads.set(0);
     assertThat(store.get(key)).isPresent();
     assertThat(durable.pointReads).hasValue(0);
+  }
+
+  @Test
+  void ownershipReceivesLogicalAccountIdForEncodedAccountKeys() {
+    CountingStore durable = new CountingStore();
+    String accountId = "account with space";
+    String key = Keys.tablePointerById(accountId, "table");
+    durable.compareAndSet(key, 0L, pointer(key, "s3://table"));
+    AtomicReference<String> requestedAccount = new AtomicReference<>();
+    PlanningPointerIndex index =
+        new PlanningPointerIndex(
+            durable,
+            (account, access) -> {
+              requestedAccount.set(account);
+              return account.equals(accountId)
+                  ? Optional.of(PlanningPointerIndex.Ownership.Permit.NOOP)
+                  : Optional.empty();
+            },
+            Runnable::run);
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+
+    assertThat(store.get(key)).isPresent();
+    assertThat(requestedAccount).hasValue(accountId);
+    assertThat(index.completePartitionCount()).isEqualTo(1);
   }
 
   private static PlanningPointerIndex synchronousIndex(CountingStore durable) {
