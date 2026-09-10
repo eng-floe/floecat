@@ -22,6 +22,7 @@ import ai.floedb.floecat.cache.CaffeineMemoryCache;
 import ai.floedb.floecat.cache.MemoryCache;
 import ai.floedb.floecat.cache.WeightedValue;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
@@ -40,6 +41,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -236,13 +238,13 @@ public final class ObjectCache {
       long snapshotId,
       String generationIdentity,
       Supplier<Optional<SnapshotFacts>> loader) {
+    if (generationIdentity == null || generationIdentity.isBlank()) {
+      // Live statistics are mutable. Read them through without retaining them under a process-wide
+      // key; only a frozen generation has an immutable identity suitable for ObjectCache.
+      return Objects.requireNonNull(loader, "loader").get();
+    }
     return getOptional(
         snapshotFactsKey(tableId, snapshotId, generationIdentity), SnapshotFacts.class, loader);
-  }
-
-  /** Drop the mutable live facts replaced by a successful stats mutation. */
-  public void evictSnapshotFacts(ResourceId tableId, long snapshotId) {
-    entries.evict(snapshotFactsKey(tableId, snapshotId, ""));
   }
 
   /** Publish facts already held by a successful writer under an immutable generation token. */
@@ -257,6 +259,69 @@ public final class ObjectCache {
         Value.of(Objects.requireNonNull(facts, "facts")));
   }
 
+  /** Load one immutable target-stat record under its generation and target identity. */
+  public Optional<TargetStatsRecord> targetStats(
+      ResourceId tableId,
+      long snapshotId,
+      String generationIdentity,
+      String storageId,
+      Supplier<Optional<TargetStatsRecord>> loader) {
+    return getOptional(
+        targetStatsKey(tableId, snapshotId, generationIdentity, storageId),
+        TargetStatsRecord.class,
+        loader);
+  }
+
+  /** Publish a target-stat record after its immutable generation is durably committed. */
+  public void publishTargetStats(
+      ResourceId tableId,
+      long snapshotId,
+      String generationIdentity,
+      String storageId,
+      TargetStatsRecord record) {
+    if (!enabled) {
+      return;
+    }
+    String generation = requireIdentity(generationIdentity, "generation identity");
+    String target = requireIdentity(storageId, "stats target identity");
+    entries.put(
+        targetStatsKey(tableId, snapshotId, generation, target),
+        Value.of(Objects.requireNonNull(record, "record")));
+  }
+
+  /** Evict all target-stat records for one table snapshot after a successful mutation. */
+  public void evictTargetStats(ResourceId tableId, long snapshotId) {
+    entries.evictPartition(
+        key ->
+            key.accountId().equals(account(tableId))
+                && key.kind() == Kind.TARGET_STATS
+                && key.identity().startsWith(tableId.getId() + "\0" + snapshotId + "\0"));
+  }
+
+  /** Evict one target-stat record for one table snapshot after a successful mutation. */
+  public void evictTargetStats(ResourceId tableId, long snapshotId, String storageId) {
+    evictTargetStats(tableId, snapshotId, Set.of(storageId));
+  }
+
+  /** Evict several target-stat records in one resident-key scan. */
+  public void evictTargetStats(ResourceId tableId, long snapshotId, Set<String> storageIds) {
+    Objects.requireNonNull(storageIds, "storageIds");
+    if (storageIds.isEmpty()) {
+      return;
+    }
+    String prefix = tableId.getId() + "\0" + snapshotId + "\0";
+    Set<String> targets =
+        storageIds.stream()
+            .map(id -> requireIdentity(id, "stats target identity"))
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    entries.evictPartition(
+        key ->
+            key.accountId().equals(account(tableId))
+                && key.kind() == Kind.TARGET_STATS
+                && key.identity().startsWith(prefix)
+                && targets.stream().anyMatch(target -> key.identity().endsWith("\0" + target)));
+  }
+
   private static Key snapshotFactsKey(
       ResourceId tableId, long snapshotId, String generationIdentity) {
     if (snapshotId < 0L) {
@@ -267,6 +332,23 @@ public final class ObjectCache {
         account(tableId),
         Kind.SNAPSHOT_FACTS,
         requireIdentity(tableId.getId(), "table id") + '\0' + snapshotId + '\0' + generation);
+  }
+
+  private static Key targetStatsKey(
+      ResourceId tableId, long snapshotId, String generationIdentity, String storageId) {
+    if (snapshotId < 0L) {
+      throw new IllegalArgumentException("snapshotId must be non-negative");
+    }
+    return new Key(
+        account(tableId),
+        Kind.TARGET_STATS,
+        requireIdentity(tableId.getId(), "table id")
+            + '\0'
+            + snapshotId
+            + '\0'
+            + requireIdentity(generationIdentity, "generation identity")
+            + '\0'
+            + requireIdentity(storageId, "stats target identity"));
   }
 
   /** Drop every decoded object belonging to an account. */
@@ -372,7 +454,8 @@ public final class ObjectCache {
     SCHEMA,
     RELATION,
     CONSTRAINTS,
-    SNAPSHOT_FACTS
+    SNAPSHOT_FACTS,
+    TARGET_STATS
   }
 
   private record Key(String accountId, Kind kind, String identity) {

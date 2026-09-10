@@ -186,7 +186,7 @@ class ObjectCacheTest {
     cache.snapshotFacts(
         first,
         1,
-        "",
+        "first-generation",
         () -> {
           firstLoads.incrementAndGet();
           return Optional.of(
@@ -195,7 +195,7 @@ class ObjectCacheTest {
     cache.snapshotFacts(
         second,
         1,
-        "",
+        "second-generation",
         () -> {
           secondLoads.incrementAndGet();
           return Optional.of(
@@ -207,7 +207,7 @@ class ObjectCacheTest {
     cache.snapshotFacts(
         first,
         1,
-        "",
+        "first-generation",
         () -> {
           firstLoads.incrementAndGet();
           return Optional.of(
@@ -216,7 +216,7 @@ class ObjectCacheTest {
     cache.snapshotFacts(
         second,
         1,
-        "",
+        "second-generation",
         () -> {
           secondLoads.incrementAndGet();
           return Optional.of(
@@ -265,7 +265,6 @@ class ObjectCacheTest {
         .isEqualTo(7L);
     assertThat(loads).hasValue(1);
 
-    cache.evictSnapshotFacts(tableId, 1);
     assertThat(
             cache.snapshotFacts(
                 tableId,
@@ -292,8 +291,6 @@ class ObjectCacheTest {
         .isEqualTo(20L);
     assertThat(rowCount(cache.snapshotFacts(tableId, 1, "", () -> facts(loads, 30))))
         .isEqualTo(30L);
-
-    cache.evictSnapshotFacts(tableId, 1);
 
     assertThat(rowCount(cache.snapshotFacts(tableId, 1, "gen-a", () -> facts(loads, 40))))
         .isEqualTo(10L);

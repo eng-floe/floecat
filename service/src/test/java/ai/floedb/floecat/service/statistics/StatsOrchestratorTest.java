@@ -755,7 +755,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void resolvePlannerBatch_firstCallHitsDynamoDB_secondCallHitsCache() {
+  void resolvePlannerBatch_liveFactsAreReadThrough() {
     StatsStore store = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepo = Mockito.mock(TableRepository.class);
@@ -774,11 +774,11 @@ class StatsOrchestratorTest {
     assertThat(result1.get(storageId).stats()).isPresent().contains(rec);
     verify(store, Mockito.times(1)).getTargetStatsBatch(any(), anyLong(), any());
 
-    // Second call (same snapshot): served from cache, store NOT called again.
+    // Live/newest stats have no immutable generation identity, so the second call reads through.
     Map<String, StatsResolutionResult> result2 =
         o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE);
     assertThat(result2.get(storageId).stats()).isPresent().contains(rec);
-    verify(store, Mockito.times(1)).getTargetStatsBatch(any(), anyLong(), any()); // still 1
+    verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
   }
 
   @Test
