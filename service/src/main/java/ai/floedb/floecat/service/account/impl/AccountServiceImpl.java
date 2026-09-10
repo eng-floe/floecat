@@ -697,8 +697,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
           catalogIntegrationCredentialCleanup::cleanIfSuperseded);
       summary.residualAccountBlobsDeleted += blobStore.deletePrefix(accountPrefix);
       // The deletion fence is still installed. Evict only after durable pointers and blobs are
-      // gone: the cache's partition fence discards older in-flight loads, and any load starting
-      // afterwards can no longer resolve account content to repopulate it.
+      // gone, so a later local read cannot repopulate deleted content from a live durable pointer.
       objects.evictAccount(accountKey);
       CLEANUP_LOG.infof(
           "account_delete_cleanup_complete account_id=%s account_pointer_deletes=%d catalog_overlays=%d catalog_integrations=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d reconcile_jobs=%d residual_account_blob_deletes=%d",
