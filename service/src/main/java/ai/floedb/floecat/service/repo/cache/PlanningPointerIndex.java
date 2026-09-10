@@ -29,6 +29,10 @@ import java.util.NavigableMap;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -70,6 +74,7 @@ public final class PlanningPointerIndex {
 
   private final PointerStore durable;
   private final Ownership ownership;
+  private final Executor warmExecutor;
   private final ConcurrentHashMap<String, Partition> partitions = new ConcurrentHashMap<>();
 
   public PlanningPointerIndex(PointerStore durable) {
@@ -77,8 +82,13 @@ public final class PlanningPointerIndex {
   }
 
   public PlanningPointerIndex(PointerStore durable, Ownership ownership) {
+    this(durable, ownership, ForkJoinPool.commonPool());
+  }
+
+  PlanningPointerIndex(PointerStore durable, Ownership ownership, Executor warmExecutor) {
     this.durable = java.util.Objects.requireNonNull(durable, "durable");
     this.ownership = java.util.Objects.requireNonNull(ownership, "ownership");
+    this.warmExecutor = java.util.Objects.requireNonNull(warmExecutor, "warmExecutor");
   }
 
   Optional<Pointer> get(String key) {
@@ -87,9 +97,11 @@ public final class PlanningPointerIndex {
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
     if (permit.isEmpty()) return durable.get(key);
     try {
-      Partition partition = complete(partitionKey);
-      if (partition == null) return durable.get(key);
-      partition.lock.readLock().lock();
+      Partition partition = readyPartition(partitionKey);
+      if (partition == null) {
+        warm(partitionKey);
+        return durable.get(key);
+      }
       try {
         return Optional.ofNullable(partition.entries.get(key));
       } finally {
@@ -114,14 +126,21 @@ public final class PlanningPointerIndex {
       return durable.getBatch(keys);
     }
     try {
-      for (String partitionKey : partitionsToRead) {
-        if (complete(partitionKey) == null) return durable.getBatch(keys);
-      }
       List<Partition> locked = new ArrayList<>();
       for (String partitionKey : partitionsToRead) {
         Partition partition = partitions.get(partitionKey);
+        if (partition == null || partition.readiness != Readiness.COMPLETE) {
+          warm(partitionKey);
+          unlockReadPartitions(locked);
+          return durable.getBatch(keys);
+        }
         partition.lock.readLock().lock();
         locked.add(partition);
+        if (partition.readiness != Readiness.COMPLETE) {
+          warm(partitionKey);
+          unlockReadPartitions(locked);
+          return durable.getBatch(keys);
+        }
       }
       try {
         Map<String, Pointer> result = new LinkedHashMap<>();
@@ -148,9 +167,11 @@ public final class PlanningPointerIndex {
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
     if (permit.isEmpty()) return durableList(prefix, limit, token, nextToken);
     try {
-      Partition partition = complete(partitionKey);
-      if (partition == null) return durableList(prefix, limit, token, nextToken);
-      partition.lock.readLock().lock();
+      Partition partition = readyPartition(partitionKey);
+      if (partition == null) {
+        warm(partitionKey);
+        return durableList(prefix, limit, token, nextToken);
+      }
       try {
         String after = token == null || token.isBlank() ? null : token;
         if (after != null && !after.startsWith("index:"))
@@ -190,9 +211,11 @@ public final class PlanningPointerIndex {
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
     if (permit.isEmpty()) return durable.countByPrefix(prefix);
     try {
-      Partition partition = complete(partitionKey);
-      if (partition == null) return durable.countByPrefix(prefix);
-      partition.lock.readLock().lock();
+      Partition partition = readyPartition(partitionKey);
+      if (partition == null) {
+        warm(partitionKey);
+        return durable.countByPrefix(prefix);
+      }
       try {
         int count = 0;
         for (String key : partition.entries.tailMap(prefix, true).keySet()) {
@@ -281,7 +304,13 @@ public final class PlanningPointerIndex {
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
     if (permit.isEmpty()) return false;
     try {
-      return complete(partitionKey) != null;
+      Partition partition = readyPartition(partitionKey);
+      if (partition == null) {
+        warm(partitionKey);
+        return false;
+      }
+      partition.lock.readLock().unlock();
+      return true;
     } finally {
       permit.orElseThrow().close();
     }
@@ -371,25 +400,65 @@ public final class PlanningPointerIndex {
         .count();
   }
 
-  private Partition complete(String partitionKey) {
+  /** Clears local planner state after a test fixture or administrative wipe changed durable KV. */
+  public void clear() {
+    synchronized (partitions) {
+      partitions.clear();
+    }
+  }
+
+  /**
+   * Starts a background load for an owned account. The ownership implementation may call this when
+   * it grants an account; reads also call it as a fallback so a missed notification cannot leave an
+   * account cold forever.
+   */
+  public void warm(String accountId) {
+    if (accountId == null || accountId.isBlank()) return;
     Partition partition;
     synchronized (partitions) {
-      partition = partitions.computeIfAbsent(partitionKey, ignored -> new Partition());
+      partition = partitions.computeIfAbsent(accountId, ignored -> new Partition());
     }
-    if (partition.readiness == Readiness.COMPLETE) return partition;
+    if (partition.readiness == Readiness.COMPLETE
+        || !partition.warmScheduled.compareAndSet(false, true)) return;
+    try {
+      warmExecutor.execute(() -> warmPartition(accountId, partition));
+    } catch (RejectedExecutionException rejected) {
+      partition.warmScheduled.set(false);
+    }
+  }
+
+  private void warmPartition(String partitionKey, Partition partition) {
+    Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
+    if (permit.isEmpty()) {
+      partition.warmScheduled.set(false);
+      return;
+    }
     partition.lock.writeLock().lock();
     try {
-      if (partition.readiness == Readiness.COMPLETE) return partition;
-      try {
-        loadLocked(partitionKey, partition);
-        return partition;
-      } catch (RuntimeException failure) {
-        // A failed load is not a partial index. Keep the partition LOADING and let this read use
-        // durable KV; a later read can retry the complete load.
-        return null;
-      }
+      if (partition.readiness != Readiness.COMPLETE) loadLocked(partitionKey, partition);
+    } catch (RuntimeException ignored) {
+      // A failed load is not a partial index. Keep it LOADING; a later read or mutation retries.
     } finally {
       partition.lock.writeLock().unlock();
+      permit.orElseThrow().close();
+      if (partition.readiness != Readiness.COMPLETE) partition.warmScheduled.set(false);
+    }
+  }
+
+  private Partition readyPartition(String partitionKey) {
+    Partition partition = partitions.get(partitionKey);
+    if (partition == null || partition.readiness != Readiness.COMPLETE) return null;
+    partition.lock.readLock().lock();
+    if (partition.readiness != Readiness.COMPLETE) {
+      partition.lock.readLock().unlock();
+      return null;
+    }
+    return partition;
+  }
+
+  private static void unlockReadPartitions(List<Partition> partitions) {
+    for (int i = partitions.size() - 1; i >= 0; i--) {
+      partitions.get(i).lock.readLock().unlock();
     }
   }
 
@@ -450,7 +519,10 @@ public final class PlanningPointerIndex {
 
   private boolean isPlanningKey(String key) {
     String partition = partitionFor(key);
-    return key != null && partition != null && !GLOBAL.equals(partition) && !isOperational(key);
+    return key != null
+        && partition != null
+        && !GLOBAL.equals(partition)
+        && Keys.pointerNamespace(key) == Keys.PointerNamespace.PLANNER;
   }
 
   private boolean isPlanningPrefix(String prefix) {
@@ -458,7 +530,7 @@ public final class PlanningPointerIndex {
     return prefix != null
         && partition != null
         && !GLOBAL.equals(partition)
-        && !isOperational(prefix);
+        && Keys.pointerNamespace(prefix) == Keys.PointerNamespace.PLANNER;
   }
 
   private String partitionFor(String key) {
@@ -468,19 +540,6 @@ public final class PlanningPointerIndex {
     String account = slash < 0 ? remainder : remainder.substring(0, slash);
     if (account.isBlank()) return null;
     return Keys.isReservedAccountDirectorySegment(account) ? GLOBAL : account;
-  }
-
-  private static boolean isOperational(String key) {
-    // Default account-scoped keys are planner state. This is an exclusion list for durable work
-    // queues and fences, not a planner-family allowlist: new planning pointers are indexed by
-    // construction.
-    return key.contains(Keys.SEG_TRANSACTIONS)
-        || key.contains(Keys.SEG_IDEMPOTENCY)
-        || key.contains(Keys.SEG_MARKERS)
-        || key.contains(Keys.SEG_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP)
-        || key.endsWith("/deleting")
-        || key.contains("/reconcile/")
-        || key.contains("/gc/");
   }
 
   private static List<String> loadPrefixes(String partition) {
@@ -503,6 +562,7 @@ public final class PlanningPointerIndex {
   private static final class Partition {
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final NavigableMap<String, Pointer> entries = new TreeMap<>();
+    private final AtomicBoolean warmScheduled = new AtomicBoolean();
     private volatile Readiness readiness = Readiness.LOADING;
   }
 }

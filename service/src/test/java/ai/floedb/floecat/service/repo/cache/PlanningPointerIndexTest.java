@@ -14,6 +14,8 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -26,7 +28,7 @@ class PlanningPointerIndexTest {
     CountingStore durable = new CountingStore();
     String present = Keys.tablePointerById("acct", "table");
     durable.compareAndSet(present, 0L, pointer(present, "s3://table"));
-    IndexedPointerStore store = new IndexedPointerStore(durable, new PlanningPointerIndex(durable));
+    IndexedPointerStore store = new IndexedPointerStore(durable, synchronousIndex(durable));
 
     assertThat(store.get(present)).isPresent();
     int readsAfterLoad = durable.pointReads.get();
@@ -37,7 +39,7 @@ class PlanningPointerIndexTest {
   @Test
   void successfulMutationPublishesWhileTheAccountPartitionIsLocked() {
     CountingStore durable = new CountingStore();
-    PlanningPointerIndex index = new PlanningPointerIndex(durable);
+    PlanningPointerIndex index = synchronousIndex(durable);
     IndexedPointerStore store = new IndexedPointerStore(durable, index);
     String key = Keys.tablePointerById("acct", "table");
 
@@ -51,7 +53,7 @@ class PlanningPointerIndexTest {
     CountingStore durable = new CountingStore();
     String key = Keys.transactionPointerById("acct", "tx");
     durable.compareAndSet(key, 0L, pointer(key, "s3://transaction"));
-    IndexedPointerStore store = new IndexedPointerStore(durable, new PlanningPointerIndex(durable));
+    IndexedPointerStore store = new IndexedPointerStore(durable, synchronousIndex(durable));
 
     assertThat(store.get(key)).isPresent();
     assertThat(durable.pointReads).hasValue(1);
@@ -106,7 +108,7 @@ class PlanningPointerIndexTest {
     String second = Keys.tablePointerById("acct", "second");
     durable.compareAndSet(first, 0L, pointer(first, "s3://first"));
     durable.compareAndSet(second, 0L, pointer(second, "s3://second"));
-    PlanningPointerIndex index = new PlanningPointerIndex(durable);
+    PlanningPointerIndex index = synchronousIndex(durable);
     IndexedPointerStore store = new IndexedPointerStore(durable, index);
 
     assertThat(store.get(first)).isPresent();
@@ -120,7 +122,7 @@ class PlanningPointerIndexTest {
     CountingStore durable = new CountingStore();
     String key = Keys.accountPointerById("acct");
     durable.compareAndSet(key, 0L, pointer(key, "s3://account"));
-    PlanningPointerIndex index = new PlanningPointerIndex(durable);
+    PlanningPointerIndex index = synchronousIndex(durable);
     IndexedPointerStore store = new IndexedPointerStore(durable, index);
 
     assertThat(store.get(key)).isPresent();
@@ -135,7 +137,7 @@ class PlanningPointerIndexTest {
     String operationalKey = Keys.transactionPointerById("acct", "tx");
     durable.compareAndSet(planningKey, 0L, pointer(planningKey, "s3://table"));
     durable.compareAndSet(operationalKey, 0L, pointer(operationalKey, "s3://tx"));
-    PlanningPointerIndex index = new PlanningPointerIndex(durable);
+    PlanningPointerIndex index = synchronousIndex(durable);
     IndexedPointerStore store = new IndexedPointerStore(durable, index);
 
     Map<String, Pointer> result = store.getBatch(List.of(planningKey, operationalKey));
@@ -156,6 +158,32 @@ class PlanningPointerIndexTest {
     assertThatThrownBy(() -> store.compareAndSet(key, 0L, pointer(key, "s3://table")))
         .isInstanceOf(StorageAbortRetryableException.class);
     assertThat(durable.writes).hasValue(0);
+  }
+
+  @Test
+  void firstReadUsesDurablePathAndSchedulesBackgroundWarm() {
+    CountingStore durable = new CountingStore();
+    String key = Keys.tablePointerById("acct", "table");
+    durable.compareAndSet(key, 0L, pointer(key, "s3://table"));
+    Deque<Runnable> tasks = new ArrayDeque<>();
+    PlanningPointerIndex index =
+        new PlanningPointerIndex(durable, PlanningPointerIndex.Ownership.ALWAYS_OWNED, tasks::add);
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+
+    assertThat(store.get(key)).isPresent();
+    assertThat(index.completePartitionCount()).isZero();
+    assertThat(tasks).hasSize(1);
+
+    tasks.removeFirst().run();
+    assertThat(index.completePartitionCount()).isEqualTo(1);
+    durable.pointReads.set(0);
+    assertThat(store.get(key)).isPresent();
+    assertThat(durable.pointReads).hasValue(0);
+  }
+
+  private static PlanningPointerIndex synchronousIndex(CountingStore durable) {
+    return new PlanningPointerIndex(
+        durable, PlanningPointerIndex.Ownership.ALWAYS_OWNED, Runnable::run);
   }
 
   private static Pointer pointer(String key, String uri) {

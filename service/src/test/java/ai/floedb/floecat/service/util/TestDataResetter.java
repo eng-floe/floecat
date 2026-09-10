@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.util;
 
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -38,6 +39,7 @@ public class TestDataResetter {
   @Inject BlobStore blobs;
   @Inject Instance<DynamoDbClient> dynamoDb;
   @Inject Instance<MemoryReconcileJobIndexBackend> memoryReconcileJobIndexBackend;
+  @Inject Instance<PlanningPointerIndex> planningPointerIndex;
 
   @ConfigProperty(name = "floecat.kv", defaultValue = "memory")
   String kvMode;
@@ -90,6 +92,9 @@ public class TestDataResetter {
         memoryReconcileJobIndexBackend.get().clearInMemoryState();
       }
       wipeDynamoKvTableIfPresent();
+      if (planningPointerIndex != null && planningPointerIndex.isResolvable()) {
+        planningPointerIndex.get().clear();
+      }
 
       for (var tid : accountIds) {
         blobs.deletePrefix("/accounts/" + tid + "/");
