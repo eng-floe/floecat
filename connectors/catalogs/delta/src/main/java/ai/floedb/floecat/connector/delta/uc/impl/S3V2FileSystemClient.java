@@ -26,6 +26,7 @@ import io.delta.kernel.utils.FileStatus;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.Iterator;
@@ -85,6 +86,65 @@ final class S3V2FileSystemClient implements FileIO {
         "Copying files not implemented for read-only S3V2FileIO");
   }
 
+  /**
+   * An {@code s3://} path for a listed object, in a form the rest of this client can parse.
+   *
+   * <p>Every path here comes back through {@code resolvePath}, which calls {@code URI.create} --
+   * and an S3 object key may hold characters that rejects, a space being the one that occurs. This
+   * was built by concatenating the raw key, so a table under {@code db/my table} listed its Delta
+   * log fine and then threw when the next entry was opened: the caller's own location could be
+   * encoded, but a listing rebuilt every later path from the raw key and lost that.
+   *
+   * <p>Round-trips: {@code getPath} decodes, so the key asked of S3 is the key that was written.
+   * For a key holding nothing {@code URI} objects to, the result is byte-identical to plain
+   * concatenation, so only a path that would otherwise fail to parse is affected at all.
+   */
+  static String s3Uri(String bucket, String key) {
+    // Segment by segment, so no leading slash is ever handed to URI as part of a "//" it would read
+    // as an authority. An S3 key may begin with a slash, and for such a key the path is "//table",
+    // whose first segment URI takes as a host and drops from getRawPath -- silently, so a fallback
+    // never runs and S3 is asked for a key missing its first segment. Splitting keeps the empty
+    // leading segment that slash represents, and no segment can hold a slash to re-parse.
+    StringBuilder path = new StringBuilder();
+    for (String segment : key.split("/", -1)) {
+      try {
+        String encoded = new URI(null, null, "/" + segment, null).getRawPath();
+        path.append('/').append(encoded, 1, encoded.length());
+      } catch (URISyntaxException notAUri) {
+        path.append('/').append(segment);
+      }
+    }
+    return "s3://" + bucket + path;
+  }
+
+  /**
+   * The bucket a location addresses, falling back to the authority when it is not a hostname.
+   *
+   * <p>S3 permitted bucket names {@code java.net.URI} will not parse as a host -- an underscore is
+   * the one that survives in older regions -- and for those {@code getHost} answers null while the
+   * authority carries the name. {@code S3DeltaLogProbe.bucketOf} accepts such a name, so this has
+   * to as well: a table the probe validates and the reader cannot address is one that reconciles
+   * and then fails every scan. The fallback's shape matches that method -- an authority holding
+   * userinfo or a port is not a bucket name.
+   *
+   * <p>Not shared with it because this module does not depend on catalog-access, and a connector
+   * depending on it to parse a URI would be the wrong direction.
+   */
+  static String bucketOf(URI location) {
+    String host = location.getHost();
+    if (host != null && !host.isEmpty()) {
+      return host;
+    }
+    String authority = location.getAuthority();
+    if (authority == null
+        || authority.isEmpty()
+        || authority.indexOf('@') >= 0
+        || authority.indexOf(':') >= 0) {
+      return null;
+    }
+    return authority;
+  }
+
   @Override
   public String resolvePath(String path) {
     if (path.startsWith("s3a://")) {
@@ -99,7 +159,7 @@ final class S3V2FileSystemClient implements FileIO {
   @Override
   public FileStatus getFileStatus(String path) throws IOException {
     var u = URI.create(resolvePath(path));
-    var bucket = u.getHost();
+    var bucket = bucketOf(u);
     var key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
     try {
       var head = s3.call(client -> client.headObject(b -> b.bucket(bucket).key(key)));
@@ -115,7 +175,7 @@ final class S3V2FileSystemClient implements FileIO {
       return false;
     }
     URI u = URI.create(resolvedPath);
-    String bucket = u.getHost();
+    String bucket = bucketOf(u);
     String key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
     try {
       s3.callUnchecked(client -> client.headObject(b -> b.bucket(bucket).key(key)));
@@ -132,7 +192,7 @@ final class S3V2FileSystemClient implements FileIO {
   public CloseableIterator<FileStatus> listFrom(String filePath) throws IOException {
     final String resolved = resolvePath(filePath);
     final URI u = URI.create(resolved);
-    final String bucket = u.getHost();
+    final String bucket = bucketOf(u);
     if (bucket == null || bucket.isEmpty()) {
       throw new IOException("Invalid S3 path for listFrom: " + filePath);
     }
@@ -244,7 +304,7 @@ final class S3V2FileSystemClient implements FileIO {
               continue;
             }
 
-            String fullPath = "s3://" + bucket + "/" + key;
+            String fullPath = s3Uri(bucket, key);
             long size = (o.size() != null) ? o.size() : 0L;
             long mod =
                 (o.lastModified() != null)
@@ -267,7 +327,7 @@ final class S3V2FileSystemClient implements FileIO {
   @Override
   public boolean mkdirs(String path) throws IOException {
     var u = URI.create(resolvePath(path));
-    if (u.getHost() == null) {
+    if (bucketOf(u) == null) {
       throw new IOException("Invalid S3 path for mkdirs: " + path);
     }
     return true;
@@ -291,7 +351,7 @@ final class S3V2FileSystemClient implements FileIO {
       this.resolvedPath = resolvedPath;
 
       var u = URI.create(resolvedPath);
-      this.bucket = u.getHost();
+      this.bucket = bucketOf(u);
       this.key = u.getPath().startsWith("/") ? u.getPath().substring(1) : u.getPath();
 
       try {

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.catalog.unity;
+package ai.floedb.floecat.catalog.delta;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -34,7 +34,10 @@ import org.junit.jupiter.api.Test;
  * smoke failure -- which key prefix the Delta log is looked for under, and what an S3 error means
  * about the credential -- are pure, and asserted here.
  */
-class UnityStorageAccessValidatorTest {
+class DeltaLogStorageProbeTest {
+
+  /** Every refusal names its caller, so the tests assert against one name. */
+  private static final String SUBJECT = "Test Catalog";
 
   /**
    * A table at the bucket root has an empty path, and a leading slash would make the prefix
@@ -52,9 +55,7 @@ class UnityStorageAccessValidatorTest {
             new Case("trailing slash", "/tpch/orders/", "tpch/orders/_delta_log/"),
             new Case("no leading slash", "tpch/orders", "tpch/orders/_delta_log/"),
             new Case("null path", null, "_delta_log/"))) {
-      assertThat(UnityStorageAccessValidator.deltaLogPrefix(c.path()))
-          .as(c.name())
-          .isEqualTo(c.expected());
+      assertThat(S3DeltaLogProbe.deltaLogPrefix(c.path())).as(c.name()).isEqualTo(c.expected());
     }
   }
 
@@ -85,7 +86,7 @@ class UnityStorageAccessValidatorTest {
                 "ExpiredToken",
                 400,
                 CatalogAccessException.Code.CREDENTIAL_EXPIRED))) {
-      assertThat(UnityStorageAccessValidator.storageFailureCode(c.errorCode(), c.status()))
+      assertThat(S3DeltaLogProbe.storageFailureCode(c.errorCode(), c.status()))
           .as(c.name())
           .isEqualTo(c.expected());
     }
@@ -109,7 +110,7 @@ class UnityStorageAccessValidatorTest {
             // Neither belongs in an S3 location, so an authority carrying one is not a bucket name.
             new Case("userinfo", "s3://user@my_bucket/x", null),
             new Case("port", "s3://my_bucket:9000/x", null))) {
-      assertThat(UnityStorageAccessValidator.bucketOf(java.net.URI.create(c.location())))
+      assertThat(S3DeltaLogProbe.bucketOf(java.net.URI.create(c.location())))
           .as(c.name())
           .isEqualTo(c.expected());
     }
@@ -136,25 +137,115 @@ class UnityStorageAccessValidatorTest {
             new Case("abfss", "abfss://c@a.dfs.core.windows.net/o", null),
             new Case("no scheme", "/warehouse/orders", null),
             new Case("blank", "  ", null))) {
-      assertThat(UnityStorageAccessValidator.s3Bucket(c.location()))
-          .as(c.name())
-          .isEqualTo(c.expected());
+      assertThat(S3DeltaLogProbe.s3Bucket(c.location())).as(c.name()).isEqualTo(c.expected());
     }
   }
 
   /**
    * A key holding a character URI rejects reads as "not addressable", not as a thrown parse error.
-   * The parse used to run ahead of the guard meant to report it, so an object key with a space --
-   * legal in S3 -- surfaced as "storage access validation configuration is invalid", describing
-   * neither the location nor anything an operator had configured.
+   * The parse runs inside the guard that reports it, so such a key is refused for what it is --
+   * rather than surfacing as "storage access validation configuration is invalid", which describes
+   * neither the location nor anything an operator set.
    */
   @Test
   void anUnparseableKeyIsRefusedRatherThanThrowingPastTheGuard() {
-    for (String location :
-        List.of("s3://warehouse/db/my table", "s3://warehouse/db/a|b", "s3://warehouse/db/x y/z")) {
-      assertThat(UnityStorageAccessValidator.s3Location(location)).as(location).isNull();
-      assertThat(UnityStorageAccessValidator.s3Bucket(location)).as(location).isNull();
+    for (String location : List.of("s3://warehouse/db/a|b", "s3://warehouse/db/a\"b")) {
+      assertThat(S3DeltaLogProbe.s3Location(location)).as(location).isNull();
+      assertThat(S3DeltaLogProbe.s3Bucket(location)).as(location).isNull();
     }
+  }
+
+  /**
+   * An S3 object key may end in a space, and the probe does not trim -- so trimming in the
+   * canonical form published a different prefix from the one validation had just probed. Both
+   * providers use this value for publication, scope comparison and validation, so such a table
+   * either failed to read or was pointed at the trimmed name when something else lived there.
+   */
+  @Test
+  void theCanonicalFormKeepsASignificantTrailingSpace() {
+    assertThat(DeltaLogStorageProbe.canonicalLocation("s3://warehouse/table "))
+        .isEqualTo("s3://warehouse/table%20");
+    // The same key the probe addresses, which is the agreement that matters.
+    assertThat(S3DeltaLogProbe.s3Location("s3://warehouse/table ").getPath()).isEqualTo("/table ");
+  }
+
+  /**
+   * A location carrying a secret is not one this will serve. bucketOf refuses an authority holding
+   * userinfo, but only on its fallback branch -- getHost() answers "bucket" here, so that check
+   * never ran and a provider stored the whole string as the table's storage_location, putting a
+   * password or a signed query into catalog metadata that every reader of the table can see.
+   */
+  @Test
+  void aLocationCarryingUserinfoQueryFragmentOrPortIsRefused() {
+    for (String location :
+        List.of(
+            "s3://user:password@warehouse/table",
+            "s3://warehouse/table?X-Amz-Signature=deadbeef",
+            "s3://warehouse/table#fragment",
+            "s3://warehouse:9000/table")) {
+      assertThat(S3DeltaLogProbe.s3Location(location)).as(location).isNull();
+      assertThat(DeltaLogStorageProbe.s3Serves(location)).as(location).isFalse();
+    }
+  }
+
+  /**
+   * The canonical form is the spelling the reader accepts. s3Serves folds s3, s3a and s3n in any
+   * case, while the reader matches a literal lowercase s3:// or s3a:// and throws on the rest -- so
+   * publishing the server's spelling let s3n:// and S3:// validate, reconcile, and fail every scan.
+   */
+  @Test
+  void theCanonicalFormNormalisesTheSchemeTheReaderAccepts() {
+    // Only the spellings the reader cannot parse are changed. resolvePath matches a literal
+    // lowercase s3:// or s3a://, so s3n and any uppercase form fold and s3a is left alone --
+    // folding it too would put the stored location in a different scheme namespace from the
+    // s3a:// prefix an operator may register, which matchesLocationPrefix compares literally.
+    assertThat(DeltaLogStorageProbe.canonicalLocation("s3n://warehouse/table"))
+        .isEqualTo("s3://warehouse/table");
+    assertThat(DeltaLogStorageProbe.canonicalLocation("S3://warehouse/table"))
+        .isEqualTo("s3://warehouse/table");
+    assertThat(DeltaLogStorageProbe.canonicalLocation("S3A://warehouse/table"))
+        .isEqualTo("s3a://warehouse/table");
+    assertThat(DeltaLogStorageProbe.canonicalLocation("s3a://warehouse/my table"))
+        .isEqualTo("s3a://warehouse/my%20table");
+    // Everything servable is publishable, in a spelling the reader accepts.
+    for (String location :
+        List.of("s3://w/t", "s3a://w/t", "s3n://w/t", "S3://w/t", "s3://w/my table")) {
+      assertThat(DeltaLogStorageProbe.s3Serves(location)).as(location).isTrue();
+      String canonical = DeltaLogStorageProbe.canonicalLocation(location);
+      assertThat(canonical.startsWith("s3://") || canonical.startsWith("s3a://"))
+          .as(location)
+          .isTrue();
+    }
+  }
+
+  /**
+   * A space is legal in an S3 object key and illegal in {@code java.net.URI}, so it is encoded
+   * before parsing rather than read as a location with no addressable bucket. The key has to
+   * survive the round trip: the probe asks S3 for the object it names, so an encoded space reaching
+   * the request would look for a key nothing wrote.
+   */
+  @Test
+  void aSpaceInAnObjectKeyIsAddressableAndKeepsItsKey() {
+    for (String location : List.of("s3://warehouse/db/my table", "s3://warehouse/db/x y/z")) {
+      assertThat(S3DeltaLogProbe.s3Location(location)).as(location).isNotNull();
+      assertThat(S3DeltaLogProbe.s3Bucket(location)).as(location).isEqualTo("warehouse");
+    }
+    assertThat(S3DeltaLogProbe.s3Location("s3://warehouse/db/my table").getPath())
+        .isEqualTo("/db/my table");
+  }
+
+  /**
+   * An S3 object key may begin with a slash, so {@code s3://bucket//table} names the key {@code
+   * /table}. The read path removes one leading slash and addresses that key; removing every one
+   * probed a different prefix, so validation either rejected a readable table or read whatever
+   * Delta log sat at the stripped prefix and reported success for a location no scan would reach.
+   */
+  @Test
+  void aKeyBeginningWithASlashKeepsIt() {
+    // The URI path, which is what the caller passes: getPath() on s3://warehouse//table is
+    // //table, and on s3://warehouse/table is /table.
+    assertThat(S3DeltaLogProbe.deltaLogPrefix("//table")).isEqualTo("/table/_delta_log/");
+    assertThat(S3DeltaLogProbe.deltaLogPrefix("/table")).isEqualTo("table/_delta_log/");
   }
 
   /** Only S3 is validated, and a location that is not one says so rather than failing obscurely. */
@@ -167,7 +258,7 @@ class UnityStorageAccessValidatorTest {
             Optional.empty());
     for (String location : List.of("gs://warehouse/orders", "abfss://c@a.dfs.core.windows.net/o")) {
       assertThatThrownBy(
-              () -> UnityStorageAccessValidator.s3().validate(location, credentials), location)
+              () -> DeltaLogStorageProbe.s3(SUBJECT).validate(location, credentials), location)
           .isInstanceOfSatisfying(
               CatalogAccessException.class,
               failure ->
@@ -192,7 +283,7 @@ class UnityStorageAccessValidatorTest {
       var credentials =
           new VendedStorageCredentials(c.properties(), "s3://warehouse/orders", Optional.empty());
       assertThatThrownBy(
-              () -> UnityStorageAccessValidator.s3().validate("s3://warehouse/orders", credentials),
+              () -> DeltaLogStorageProbe.s3(SUBJECT).validate("s3://warehouse/orders", credentials),
               c.name())
           .isInstanceOfSatisfying(
               CatalogAccessException.class,
@@ -213,11 +304,11 @@ class UnityStorageAccessValidatorTest {
    */
   @Test
   void aListingBodyIsRefusedOnceItPassesTheCap() throws Exception {
-    byte[] oversized = new byte[(int) UnityStorageAccessValidator.MAX_LISTING_RESPONSE_BYTES + 64];
+    byte[] oversized = new byte[(int) S3DeltaLogProbe.MAX_LISTING_RESPONSE_BYTES + 64];
     try (var bounded =
-        UnityStorageAccessValidator.limited(
+        S3DeltaLogProbe.limited(
             new java.io.ByteArrayInputStream(oversized),
-            UnityStorageAccessValidator.MAX_LISTING_RESPONSE_BYTES)) {
+            S3DeltaLogProbe.MAX_LISTING_RESPONSE_BYTES)) {
       assertThatThrownBy(() -> bounded.readAllBytes())
           .isInstanceOf(java.io.IOException.class)
           .hasMessageContaining("ignored max-keys");
@@ -229,13 +320,12 @@ class UnityStorageAccessValidatorTest {
         "<ListBucketResult><Contents><Key>a</Key></Contents></ListBucketResult>"
             .getBytes(java.nio.charset.StandardCharsets.UTF_8);
     try (var bounded =
-        UnityStorageAccessValidator.limited(
+        S3DeltaLogProbe.limited(
             new java.io.ByteArrayInputStream(ordinary),
-            UnityStorageAccessValidator.MAX_LISTING_RESPONSE_BYTES)) {
+            S3DeltaLogProbe.MAX_LISTING_RESPONSE_BYTES)) {
       assertThat(bounded.readAllBytes()).isEqualTo(ordinary);
     }
-    try (var bounded =
-        UnityStorageAccessValidator.limited(new java.io.ByteArrayInputStream(ordinary), 4L)) {
+    try (var bounded = S3DeltaLogProbe.limited(new java.io.ByteArrayInputStream(ordinary), 4L)) {
       assertThat(bounded.read()).isEqualTo(ordinary[0]);
       assertThatThrownBy(
               () -> {

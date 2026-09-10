@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  */
 
-package ai.floedb.floecat.catalog.unity;
+package ai.floedb.floecat.catalog.delta;
 
 import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.StorageLocations;
@@ -33,35 +33,30 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
-@FunctionalInterface
-interface UnityStorageAccessValidator {
+final class S3DeltaLogProbe {
 
-  /** Implicitly public static final: this interface is package-private, so the constant is too. */
-  String DELTA_LOG_DIR = "_delta_log/";
+  private S3DeltaLogProbe() {}
 
-  void validate(String tableLocation, VendedStorageCredentials credentials);
+  private static final String DELTA_LOG_DIR = "_delta_log/";
 
-  static UnityStorageAccessValidator s3() {
-    return UnityStorageAccessValidator::validateS3;
-  }
-
-  private static void validateS3(String tableLocation, VendedStorageCredentials credentials) {
+  static void validate(String subject, String tableLocation, VendedStorageCredentials credentials) {
     // Parsed once, and inside the guard. Doing it here unguarded put an IllegalArgumentException
     // ahead of the check meant to catch it: an object key holding a character URI rejects -- a
-    // space is the common one -- threw before s3Location could answer, and UnityCatalogErrors
-    // mapped it to "storage access validation configuration is invalid", which describes neither
-    // the location nor anything an operator configured.
+    // space is the common one -- threw before s3Location could answer, and the caller mapped it
+    // to "storage access validation configuration is invalid", which describes neither the
+    // location nor anything an operator configured.
     URI location = s3Location(tableLocation);
     if (location == null) {
       throw new CatalogAccessException(
           CatalogAccessException.Code.UNSUPPORTED,
-          "Unity Catalog storage validation needs an addressable S3 location, and could not read"
-              + " a bucket from this one");
+          subject
+              + " storage validation needs an addressable S3 location, and could not read a"
+              + " bucket from this one");
     }
     String bucketName = bucketOf(location);
     Map<String, String> properties = credentials.properties();
-    String accessKey = required(properties, "s3.access-key-id");
-    String secretKey = required(properties, "s3.secret-access-key");
+    String accessKey = required(subject, properties, "s3.access-key-id");
+    String secretKey = required(subject, properties, "s3.secret-access-key");
     String sessionToken = nonBlank(properties.get("s3.session-token"));
     AwsCredentials awsCredentials =
         sessionToken == null
@@ -83,10 +78,10 @@ interface UnityStorageAccessValidator {
       builder.endpointOverride(URI.create(endpoint));
     }
 
-    // The bucket named in the object URI, never s3.access-point. SourceCatalogCredentialVendor
-    // strips that key before any reader sees it -- noteIgnoredAccessPoint records why -- so probing
-    // the access point would validate an endpoint no scan ever addresses, and a grant scoped to it
-    // alone would report success against reads that all get 403.
+    // The bucket named in the object URI, never s3.access-point. The vend strips that key before
+    // any reader sees it, so probing the access point would validate an endpoint no scan ever
+    // addresses, and a grant scoped to it alone would report success against reads that all get
+    // 403.
     String bucket = bucketName;
     String logPrefix = deltaLogPrefix(location.getPath());
     try (S3Client s3 = builder.build()) {
@@ -95,8 +90,8 @@ interface UnityStorageAccessValidator {
               ListObjectsV2Request.builder().bucket(bucket).prefix(logPrefix).maxKeys(1).build());
       if (listing.contents().isEmpty()) {
         throw new CatalogAccessException(
-            CatalogAccessException.Code.UNSUPPORTED,
-            "Unity Catalog table storage contains no Delta log object to validate");
+            CatalogAccessException.Code.INVALID_CONFIGURATION,
+            subject + " table storage contains no Delta log object to validate");
       }
       try {
         // Streamed and aborted, not buffered. Range is a request hint: an S3-compatible endpoint
@@ -136,29 +131,27 @@ interface UnityStorageAccessValidator {
           failure.awsErrorDetails() == null ? null : failure.awsErrorDetails().errorCode();
       throw new CatalogAccessException(
           storageFailureCode(errorCode, failure.statusCode()),
-          "Unity Catalog storage validation failed",
+          subject + " storage validation failed",
           failure);
     } catch (java.io.IOException failure) {
       // Reading or releasing the probe body: a fact about reaching the store, like the transport
       // failures below it, not about the credential.
       throw new CatalogAccessException(
           CatalogAccessException.Code.UNAVAILABLE,
-          "Unity Catalog storage validation could not read the probe object",
+          subject + " storage validation could not read the probe object",
           failure);
     } catch (RuntimeException failure) {
       throw new CatalogAccessException(
-          CatalogAccessException.Code.UNAVAILABLE,
-          "Unity Catalog storage validation failed",
-          failure);
+          CatalogAccessException.Code.UNAVAILABLE, subject + " storage validation failed", failure);
     }
   }
 
-  private static String required(Map<String, String> properties, String key) {
+  private static String required(String subject, Map<String, String> properties, String key) {
     String value = nonBlank(properties.get(key));
     if (value == null) {
       throw new CatalogAccessException(
           CatalogAccessException.Code.INVALID_CONFIGURATION,
-          "Unity Catalog storage credentials omitted " + key);
+          subject + " storage credentials omitted " + key);
     }
     return value;
   }
@@ -182,7 +175,7 @@ interface UnityStorageAccessValidator {
    * <p>Scoped to the listing on purpose. The ranged read streams a body of unknown size and aborts
    * after one byte, so capping that stream would constrain a path whose bound already holds.
    */
-  final class BoundedListingBody implements ExecutionInterceptor {
+  private static final class BoundedListingBody implements ExecutionInterceptor {
 
     @Override
     public Optional<InputStream> modifyHttpResponseContent(
@@ -299,11 +292,28 @@ interface UnityStorageAccessValidator {
     }
     URI normalized;
     try {
-      normalized = URI.create(StorageLocations.normalizeScheme(tableLocation));
+      // A space is percent-encoded before parsing. It is legal in an S3 object key and illegal in
+      // java.net.URI, so a valid table location answered null here and the caller refused it for
+      // having no addressable bucket -- a diagnosis pointing at the bucket when the key was the
+      // problem. getPath decodes it again, so the key the probe asks for is unchanged. Other
+      // characters URI rejects and S3 permits still answer null; a space is the one that occurs.
+      normalized = URI.create(StorageLocations.normalizeScheme(tableLocation).replace(" ", "%20"));
     } catch (IllegalArgumentException notAUri) {
       return null;
     }
     if (!"s3".equalsIgnoreCase(normalized.getScheme()) || bucketOf(normalized) == null) {
+      return null;
+    }
+    // Nothing that carries a secret. bucketOf refuses an authority holding userinfo, but only on
+    // its fallback branch: getHost() answers "bucket" for s3://user:password@bucket/table, so that
+    // check never ran and the location was servable. A provider then stores it as the reconciled
+    // table's storage_location, which puts a password or a signed query into catalog metadata --
+    // readable by every client that can read the table. None of these belong in an S3 object
+    // location anyway, and the endpoint gates already refuse the same four on a catalog URI.
+    if (normalized.getRawUserInfo() != null
+        || normalized.getRawQuery() != null
+        || normalized.getRawFragment() != null
+        || normalized.getPort() != -1) {
       return null;
     }
     return normalized;
@@ -338,8 +348,20 @@ interface UnityStorageAccessValidator {
     return authority;
   }
 
+  /**
+   * Exactly the URI separator, and no more.
+   *
+   * <p>An S3 object key may begin with a slash, so {@code s3://bucket//table} names the key {@code
+   * /table}. The read path removes one leading slash and addresses that key; this removed every one
+   * and probed {@code table/_delta_log/} instead -- a different prefix, so validation either
+   * rejected a readable table or, where something else sat at the stripped prefix, read that Delta
+   * log and reported success for a location no scan would reach.
+   */
   private static String stripLeadingSlash(String value) {
-    return value == null ? "" : value.replaceFirst("^/+", "");
+    if (value == null) {
+      return "";
+    }
+    return value.startsWith("/") ? value.substring(1) : value;
   }
 
   private static String nonBlank(String value) {

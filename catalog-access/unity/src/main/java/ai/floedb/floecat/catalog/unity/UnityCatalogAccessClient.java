@@ -18,6 +18,7 @@ import ai.floedb.floecat.catalog.access.CatalogViewDefinition;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.catalog.delta.DeltaLogStorageProbe;
 import ai.floedb.floecat.client.unity.TemporaryTableCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.client.unity.UnityCatalogException;
@@ -52,7 +53,7 @@ final class UnityCatalogAccessClient implements CatalogClient {
 
   private final UnityCatalogClient unity;
   private final AutoCloseable authenticationOwner;
-  private final UnityStorageAccessValidator storageValidator;
+  private final DeltaLogStorageProbe storageValidator;
   private final Map<String, String> storageRouting;
   private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -87,7 +88,7 @@ final class UnityCatalogAccessClient implements CatalogClient {
   UnityCatalogAccessClient(
       UnityCatalogClient unity,
       AutoCloseable authenticationOwner,
-      UnityStorageAccessValidator storageValidator,
+      DeltaLogStorageProbe storageValidator,
       Map<String, String> storageRouting) {
     this.unity = Objects.requireNonNull(unity, "unity");
     this.authenticationOwner = authenticationOwner;
@@ -167,7 +168,11 @@ final class UnityCatalogAccessClient implements CatalogClient {
               schemaJson(name, table),
               partitionKeys(table),
               Optional.empty(),
-              optional(table.storageLocation()),
+              // Canonical, not raw. The shared probe percent-encodes a space before parsing,
+              // so it answers for a location this would otherwise publish unchanged -- and the
+              // read path calls URI.create on whatever was published. Publishing the raw form
+              // gives a table that validates clean and fails every scan.
+              optional(table.storageLocation()).map(DeltaLogStorageProbe::canonicalLocation),
               table.properties());
         });
   }
@@ -299,9 +304,12 @@ final class UnityCatalogAccessClient implements CatalogClient {
           // Refused by name rather than returned empty. An empty vend is now a refusal too, but a
           // generic one; naming the reason is the difference between an operator seeing "vended no
           // storage credentials" and seeing that the table has no location to scope against.
-          String scope = nonBlank(response.storageUrl());
+          String scope = DeltaLogStorageProbe.canonicalLocation(nonBlank(response.storageUrl()));
           if (scope == null) {
-            scope = optional(table.storageLocation()).orElse(null);
+            scope =
+                optional(table.storageLocation())
+                    .map(DeltaLogStorageProbe::canonicalLocation)
+                    .orElse(null);
           }
           if (scope == null) {
             throw new CatalogAccessException(
@@ -331,7 +339,8 @@ final class UnityCatalogAccessClient implements CatalogClient {
           }
           VendedStorageCredentials credentials =
               new VendedStorageCredentials(properties, scope, expiresAt);
-          String tableLocation = nonBlank(table.storageLocation());
+          String tableLocation =
+              DeltaLogStorageProbe.canonicalLocation(nonBlank(table.storageLocation()));
           if (tableLocation != null && !credentials.covers(tableLocation)) {
             throw new CatalogAccessException(
                 CatalogAccessException.Code.CREDENTIAL_SCOPE_INVALID,
@@ -353,6 +362,7 @@ final class UnityCatalogAccessClient implements CatalogClient {
           UnityCatalogTable table = vendedTableOrLoad(name);
           String location =
               optional(table.storageLocation())
+                  .map(DeltaLogStorageProbe::canonicalLocation)
                   .orElseThrow(
                       () ->
                           new CatalogAccessException(
