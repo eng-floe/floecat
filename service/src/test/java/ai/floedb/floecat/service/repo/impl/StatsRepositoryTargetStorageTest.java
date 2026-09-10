@@ -2257,10 +2257,9 @@ class StatsRepositoryTargetStorageTest {
     PointerStore pointers =
         new RepoTestPointerStores.DelegatingPointerStore(rawPointers) {
           @Override
-          public List<Pointer> listPointersByPrefixConsistent(
+          public List<Pointer> listPointersByPrefix(
               String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-            List<Pointer> page =
-                super.listPointersByPrefixConsistent(prefix, limit, pageToken, nextTokenOut);
+            List<Pointer> page = super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
             if (prefix.equals(Keys.snapshotRootPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId()))) {
               observedTokens.add(pageToken);
             }
