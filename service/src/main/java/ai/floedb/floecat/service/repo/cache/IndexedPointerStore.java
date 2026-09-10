@@ -51,12 +51,12 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public Optional<Pointer> getConsistent(String key) {
-    return get(key);
+    return index.getConsistent(key);
   }
 
   @Override
   public Map<String, Pointer> getBatchConsistent(List<String> keys) {
-    return getBatch(keys);
+    return index.getBatchConsistent(keys);
   }
 
   @Override
@@ -68,7 +68,7 @@ public class IndexedPointerStore implements PointerStore {
   @Override
   public List<Pointer> listPointersByPrefixConsistent(
       String prefix, int limit, String token, StringBuilder next) {
-    return listPointersByPrefix(prefix, limit, token, next);
+    return index.listConsistent(prefix, limit, token, next);
   }
 
   @Override
@@ -78,7 +78,7 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public int countByPrefixConsistent(String prefix) {
-    return countByPrefix(prefix);
+    return index.countConsistent(prefix);
   }
 
   @Override
