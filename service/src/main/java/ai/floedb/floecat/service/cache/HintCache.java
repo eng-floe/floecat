@@ -49,9 +49,9 @@ import java.util.Optional;
  * Process-wide cache and durable merge point for user-relation engine hints.
  *
  * <p>Callers provide a relation and an engine; this module owns storage keys, immutable-body cache
- * keys, legacy fallback, conversion to the runtime model, optimistic merge retries, and
- * write-through publication. A hint body is keyed by its blob URI as well as the relation's DDL
- * identity, so another replica's write moves the pointer to a new cache key without invalidation.
+ * keys, legacy fallback, conversion to the runtime model, and optimistic merge retries. A hint body
+ * is keyed by its blob URI as well as the relation's DDL identity, so another replica's write moves
+ * the pointer to a new cache key without invalidation.
  */
 public final class HintCache {
 
@@ -100,8 +100,8 @@ public final class HintCache {
    *
    * <p>This is the warm-path guard for the runtime's best-effort persistence callback. The runtime
    * may submit hints that it just reused from the relation node; proving they are already current
-   * through the query-serving pointer and decoded caches avoids entering the authoritative mutation
-   * path merely to discover a no-op. A false answer is only a hint to attempt the fenced merge
+   * through the query-serving pointer and decoded cache avoids entering the authoritative mutation
+   * path merely to discover a no-op. A false answer is only a hint to attempt the durable merge
    * below; mutation correctness never relies on this read.
    */
   public boolean containsAll(
@@ -136,7 +136,7 @@ public final class HintCache {
         .orElse(false);
   }
 
-  /** Merge one decorator result and publish the committed immutable body into this process. */
+  /** Merge one decorator result and commit the immutable body durably. */
   public void persist(
       ResourceId relationId,
       MutationMeta relation,
@@ -166,7 +166,6 @@ public final class HintCache {
               .orElseGet(() -> empty(relationId, relationIdentity, engineKind, engineVersion));
       RelationHintsResource merged = merge(base, relationPayloadType, relationPayload, columnHints);
       if (merged.equals(base) && current.isPresent()) {
-        publish(merged, current.get().meta());
         return;
       }
       if (current.isEmpty()) {
@@ -175,9 +174,6 @@ public final class HintCache {
                   ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta<
                       RelationHintsResource>>
               created = repository.create(merged, relation);
-          if (created.isPresent()) {
-            publish(created.get().value(), created.get().meta());
-          }
           // An empty result means the relation fence changed while we were creating the hint
           // resource. Re-read the relation and merge against the new version instead of silently
           // dropping an advisory hint produced for a live relation.
@@ -193,7 +189,6 @@ public final class HintCache {
       Optional<MutationMeta> committed =
           repository.update(merged, current.get().meta().getPointerVersion(), relation);
       if (committed.isPresent()) {
-        publish(merged, committed.get());
         return;
       }
     }
@@ -260,21 +255,6 @@ public final class HintCache {
             ignored ->
                 new CachedHints(node.cacheIdentity(), legacyHints(node, engineKind, engineVersion)))
         .hints();
-  }
-
-  private void publish(RelationHintsResource resource, MutationMeta meta) {
-    if (!enabled || meta.getBlobUri().isBlank()) {
-      return;
-    }
-    ResourceId relationId = resource.getRelationId();
-    entries.put(
-        new Key(
-            relationId.getAccountId(),
-            relationId.getId(),
-            resource.getEngineKind(),
-            resource.getEngineVersion(),
-            meta.getBlobUri()),
-        decoded(resource));
   }
 
   private static RelationHintsResource merge(
