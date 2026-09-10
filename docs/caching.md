@@ -58,9 +58,9 @@ new owner is granted, start warming it. The index never assumes ownership from a
 
 `ObjectCache` stores immutable-generation target statistics by `(accountId, tableId, snapshotId,
 generation, target identity)`. A live/newest result has no stable identity and is therefore read
-through without retention. Target-stat record blobs are deliberately **not** in the
-disk blob cache: they are written to deterministic (not content-addressed) URIs and a re-capture may
-overwrite one in place, so URI-only caching would be unsound for them.
+through without retention. Exact-body target-stat URIs are immutable once published and may be
+served by the disk blob cache; legacy logical-only URIs use pointer/version identity instead, so a
+re-capture that rewrites one cannot return stale bytes.
 
 ## The shared cache contract (`core/cache`)
 
