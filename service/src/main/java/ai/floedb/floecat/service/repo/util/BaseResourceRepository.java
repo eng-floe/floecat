@@ -202,9 +202,8 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   /**
    * Compose the stores a mutation transaction writes through with the read capabilities selected
-   * for this repository family. A read taken as part of a write protocol goes past the cache -- see
-   * {@link #readForMutation} -- so the body and the version it will CAS against come from the same
-   * consistent view.
+   * for this repository family. Mutation reads use the same PointerStore seam as ordinary reads;
+   * the indexed store selects its complete in-memory partition or its durable fallback internally.
    */
   protected BaseResourceRepository(
       PointerStore mutationPointerStore,
@@ -217,7 +216,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     this.mutationPointerStore =
         Objects.requireNonNull(mutationPointerStore, "mutationPointerStore");
     this.mutationBlobStore = Objects.requireNonNull(mutationBlobStore, "blobs");
-    this.mutationReads = RepositoryReads.consistent(this.mutationPointerStore, mutationBlobStore);
+    this.mutationReads = RepositoryReads.direct(this.mutationPointerStore, mutationBlobStore);
     this.reads = Objects.requireNonNull(reads, "reads");
     this.pointerReads = this.reads.pointers();
     this.blobReads = this.reads.blobs();

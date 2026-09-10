@@ -39,14 +39,6 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
     return bind(pointers, blobs, directPolicy());
   }
 
-  /**
-   * Build read capabilities for mutation prerequisites. Pointer reads use the store's authoritative
-   * operation; ordinary repository reads remain on the indexed path.
-   */
-  public static RepositoryReads consistent(PointerStore pointers, BlobStore blobs) {
-    return bind(pointers, blobs, directPolicy(), true);
-  }
-
   /** Build an execution policy that invokes a metadata operation on the calling thread. */
   public static ReadPolicy directPolicy() {
     return new ReadPolicy() {
@@ -62,11 +54,6 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
    * policy} exactly once; cache placement remains the repository's responsibility.
    */
   public static RepositoryReads bind(PointerStore pointers, BlobStore blobs, ReadPolicy policy) {
-    return bind(pointers, blobs, policy, false);
-  }
-
-  private static RepositoryReads bind(
-      PointerStore pointers, BlobStore blobs, ReadPolicy policy, boolean consistent) {
     Objects.requireNonNull(pointers, "pointers");
     Objects.requireNonNull(blobs, "blobs");
     Objects.requireNonNull(policy, "policy");
@@ -74,27 +61,19 @@ public record RepositoryReads(Pointers pointers, Blobs blobs) {
         new Pointers() {
           @Override
           public Optional<Pointer> get(String key) {
-            return policy.read(() -> consistent ? pointers.getConsistent(key) : pointers.get(key));
+            return policy.read(() -> pointers.get(key));
           }
 
           @Override
           public List<Pointer> list(
               String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
             return policy.read(
-                () ->
-                    consistent
-                        ? pointers.listPointersByPrefixConsistent(
-                            prefix, limit, pageToken, nextTokenOut)
-                        : pointers.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut));
+                () -> pointers.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut));
           }
 
           @Override
           public int count(String prefix) {
-            return policy.read(
-                () ->
-                    consistent
-                        ? pointers.countByPrefixConsistent(prefix)
-                        : pointers.countByPrefix(prefix));
+            return policy.read(() -> pointers.countByPrefix(prefix));
           }
 
           @Override

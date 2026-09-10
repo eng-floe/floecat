@@ -37,11 +37,7 @@ public class MetadataRepositoryFactory {
   private final ImmutableBlobCache cache;
   private final RepositoryReads reads;
 
-  /**
-   * Compose the process stores once: mutation transactions read past the cache by reading
-   * consistently, which is what keeps a CAS expected-version from being answered by an entry the
-   * cache is behind on.
-   */
+  /** Compose the process stores once; the indexed PointerStore owns the read-path decision. */
   @Inject
   public MetadataRepositoryFactory(
       PointerStore pointers,

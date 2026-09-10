@@ -440,15 +440,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
     T value = loaded.get();
     String canonicalKey = schema.canonicalPointerForKey.apply(schema.keyFromValue.apply(value));
-    // Authoritative when the caller asked for a consistent read, and whenever we had to re-resolve:
-    // having just proved the selected pointer was behind, a cached canonical read could name the
-    // swept uri, mismatch, and drop the row for exactly the staleness the re-resolve absorbs -- and
-    // with nothing expiring it would not age out. A consistent page compared against a cached
-    // canonical would be the same hole one branch over.
-    Optional<Pointer> canonical =
-        consistent || reResolved
-            ? mutationReads.pointers().get(canonicalKey)
-            : pointerReads.get(canonicalKey);
+    // The indexed pointer store owns the consistency decision. A complete planner partition is
+    // authoritative; loading or non-owned partitions fall back to durable KV before returning.
+    Optional<Pointer> canonical = pointerReads.get(canonicalKey);
     if (canonical.isEmpty()) {
       // Deleted after the pointer was selected.
       return Optional.empty();
