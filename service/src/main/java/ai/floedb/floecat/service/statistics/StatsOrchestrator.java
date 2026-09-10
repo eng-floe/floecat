@@ -117,7 +117,7 @@ public class StatsOrchestrator {
         observability == null || observability.isUnsatisfied() ? null : observability.get();
     this.plannerResolver =
         new PlannerStatsResolver(
-            statsStore, this::readStore, this::incrementCounter, this::observePlannerHit);
+            statsStore, objects, this::readStore, this::incrementCounter, this::observePlannerHit);
   }
 
   /** Test/embedded constructor that keeps the production Object-cache behavior. */
@@ -158,28 +158,17 @@ public class StatsOrchestrator {
   /** Invalidates every cached target for one table snapshot. */
   public void invalidateStatsCache(ResourceId tableId, long snapshotId) {
     plannerResolver.invalidateStatsCache(tableId, snapshotId);
-    objects.evictSnapshotFacts(tableId, snapshotId);
   }
 
   /** Invalidates one cached target for one table snapshot. */
   public void invalidateStatsCache(ResourceId tableId, long snapshotId, StatsTarget target) {
     plannerResolver.invalidateStatsCache(tableId, snapshotId, target);
-    if (target != null && target.hasTable()) {
-      objects.evictSnapshotFacts(tableId, snapshotId);
-    }
   }
 
   /** Invalidates cached targets represented by successfully persisted records. */
   public void invalidateStatsCache(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
     plannerResolver.invalidateStatsCache(tableId, snapshotId, records);
-    if (records != null
-        && records.stream()
-            .anyMatch(
-                record ->
-                    record.hasTarget() && record.getTarget().hasTable() && record.hasTable())) {
-      objects.evictSnapshotFacts(tableId, snapshotId);
-    }
   }
 
   /**
