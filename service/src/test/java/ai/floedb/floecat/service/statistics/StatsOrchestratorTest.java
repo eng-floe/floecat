@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.statistics;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -1227,7 +1226,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void committedTableFactsAreReadFromTheirGenerationBeforePublication() {
+  void committedTableFactsAreReadThroughByTheirGenerationIdentity() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator orchestrator =
         orchestrator(
@@ -1249,40 +1248,17 @@ class StatsOrchestratorTest {
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(7L);
 
-    orchestrator.publishCommittedTableFacts(request.tableId(), request.snapshotId(), generation);
-
     assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.of(generation), true))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
-        .isEqualTo(19L);
-    verify(store, Mockito.times(2))
+        .isEqualTo(7L);
+    verify(store, Mockito.times(1))
         .getTargetStatsInGeneration(
             request.tableId(), request.snapshotId(), generation, request.target());
   }
 
   @Test
-  void committedTableFactsWarmFailureDoesNotFailTheCompletedWrite() {
-    StatsStore store = Mockito.mock(StatsStore.class);
-    StatsOrchestrator orchestrator =
-        orchestrator(
-            store,
-            Mockito.mock(ReconcileJobStore.class),
-            Mockito.mock(TableRepository.class),
-            Mockito.mock(StatsSyncCapture.class));
-    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
-    when(store.getTargetStatsInGeneration(
-            request.tableId(), request.snapshotId(), "generation-uri", request.target()))
-        .thenThrow(new IllegalStateException("store unavailable"));
-
-    assertThatCode(
-            () ->
-                orchestrator.publishCommittedTableFacts(
-                    request.tableId(), request.snapshotId(), "generation-uri"))
-        .doesNotThrowAnyException();
-  }
-
-  @Test
-  void wholeSnapshotReplacementWithoutTableFactsEvictsTheLiveEntry() {
+  void wholeSnapshotReplacementWithoutTableFactsDoesNotRetainLiveFacts() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator orchestrator =
         orchestrator(

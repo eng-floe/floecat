@@ -395,11 +395,11 @@ final class PlannerStatsResolver {
   }
 
   /**
-   * Serve one resolved planner target: write the record through to the cache keyspace it was served
-   * from ({@code cacheToken} — the pinned generation's token, or "" for the live/newest
-   * generation), count the ladder rung that produced it, and emit the hit. The single definition of
-   * "serve" for every rung of {@link #resolveFromStore}, so caching, telemetry, and result emission
-   * can never drift apart between rungs.
+   * Serve one resolved planner target: admit the immutable record through the native cache loader
+   * for the keyspace it was served from ({@code cacheToken} — the pinned generation's token, or ""
+   * for the live/newest generation), count the ladder rung that produced it, and emit the hit. The
+   * single definition of "serve" for every rung of {@link #resolveFromStore}, so caching,
+   * telemetry, and result emission can never drift apart between rungs.
    */
   private void servePlannerHit(
       java.util.Map<String, StatsResolutionResult> out,
@@ -410,8 +410,10 @@ final class PlannerStatsResolver {
       String cacheToken,
       PlannerLookupOutcome outcome) {
     if (cacheToken != null && !cacheToken.isBlank()) {
-      objects.publishTargetStats(
-          req.tableId(), req.snapshotId(), cacheToken, storageId(req), record);
+      // The durable read is already complete. Let the native cache loader admit that immutable
+      // identity; there is no direct put or version fence in the generic cache path.
+      objects.targetStats(
+          req.tableId(), req.snapshotId(), cacheToken, storageId(req), () -> Optional.of(record));
     }
     hitObserver.accept(StatsSyncOutcome.HIT);
     diagnostics.record(outcome);

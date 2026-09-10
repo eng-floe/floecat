@@ -228,7 +228,7 @@ class ObjectCacheTest {
   }
 
   @Test
-  void snapshotFactsCanBeReplacedAfterAStatsMutation() {
+  void liveSnapshotFactsAreReadThroughAndFrozenFactsAreIdentityKeyed() {
     ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
     ResourceId tableId = tableId("account", "table");
     AtomicInteger loads = new AtomicInteger();
@@ -246,11 +246,6 @@ class ObjectCacheTest {
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(1L);
 
-    cache.publishSnapshotFacts(
-        tableId,
-        1,
-        "generation-1",
-        new ObjectCache.SnapshotFacts(OptionalLong.of(7L), OptionalLong.of(70L)));
     assertThat(
             cache.snapshotFacts(
                 tableId,
@@ -258,8 +253,7 @@ class ObjectCacheTest {
                 "generation-1",
                 () ->
                     Optional.of(
-                        new ObjectCache.SnapshotFacts(
-                            OptionalLong.of(loads.incrementAndGet()), OptionalLong.empty()))))
+                        new ObjectCache.SnapshotFacts(OptionalLong.of(7L), OptionalLong.of(70L)))))
         .get()
         .extracting(facts -> facts.rowCount().getAsLong())
         .isEqualTo(7L);

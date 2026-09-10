@@ -32,7 +32,6 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.PlannerStatsResolver.PlannerLookupDiagnostics;
 import ai.floedb.floecat.service.statistics.PlannerStatsResolver.PlannerLookupOutcome;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
-import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchItemResult;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchRequest;
 import ai.floedb.floecat.stats.spi.StatsCaptureBatchResult;
@@ -169,46 +168,6 @@ public class StatsOrchestrator {
   public void invalidateStatsCache(
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
     plannerResolver.invalidateStatsCache(tableId, snapshotId, records);
-  }
-
-  /**
-   * Warm table facts from the immutable generation that was successfully committed to the root.
-   *
-   * <p>The record is deliberately read back from that generation rather than accepted from the
-   * caller. Another writer may have replaced the active generation before this writer won its root
-   * CAS; pairing the caller's record with the returned generation URI would poison an immutable
-   * cache key.
-   */
-  public void publishCommittedTableFacts(
-      ResourceId tableId, long snapshotId, String generationIdentity) {
-    if (generationIdentity == null || generationIdentity.isBlank()) {
-      return;
-    }
-    String generation = generationIdentity.trim();
-    try {
-      statsStore
-          .getTargetStatsInGeneration(
-              tableId, snapshotId, generation, StatsTargetIdentity.tableTarget())
-          .filter(TargetStatsRecord::hasTable)
-          .ifPresent(
-              record ->
-                  objects.publishSnapshotFacts(
-                      tableId,
-                      snapshotId,
-                      generation,
-                      new ObjectCache.SnapshotFacts(
-                          OptionalLong.of(record.getTable().getRowCount()),
-                          OptionalLong.of(record.getTable().getTotalSizeBytes()))));
-    } catch (RuntimeException cacheFillFailure) {
-      // The durable generation and root publication already succeeded. Cache warming must never
-      // turn that success into a failed RPC; the next query safely reloads the immutable key.
-      LOG.warnf(
-          cacheFillFailure,
-          "failed to warm committed table facts table=%s snapshot=%d generation=%s",
-          tableId.getId(),
-          snapshotId,
-          generation);
-    }
   }
 
   /**

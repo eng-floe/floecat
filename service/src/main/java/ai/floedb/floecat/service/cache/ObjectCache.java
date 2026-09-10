@@ -48,7 +48,7 @@ import java.util.function.Supplier;
  * The process-wide cache of decoded, engine-neutral SQL metadata.
  *
  * <p>Callers supply domain objects and immutable content identities; this module owns key layout,
- * weighing, single-flight loading and account eviction. Names, projections, engine decoration and
+ * weighing, native Caffeine loading and account eviction. Names, projections, engine decoration and
  * absence are deliberately not retained. Content-versioned entries need no mutation invalidation: a
  * writer publishes a new reachable identity and old entries remain useful to existing pins until
  * ordinary capacity eviction.
@@ -247,18 +247,6 @@ public final class ObjectCache {
         snapshotFactsKey(tableId, snapshotId, generationIdentity), SnapshotFacts.class, loader);
   }
 
-  /** Publish facts already held by a successful writer under an immutable generation token. */
-  public void publishSnapshotFacts(
-      ResourceId tableId, long snapshotId, String generationIdentity, SnapshotFacts facts) {
-    if (!enabled) {
-      return;
-    }
-    String generation = requireIdentity(generationIdentity, "generation identity");
-    entries.put(
-        snapshotFactsKey(tableId, snapshotId, generation),
-        Value.of(Objects.requireNonNull(facts, "facts")));
-  }
-
   /** Load one immutable target-stat record under its generation and target identity. */
   public Optional<TargetStatsRecord> targetStats(
       ResourceId tableId,
@@ -270,23 +258,6 @@ public final class ObjectCache {
         targetStatsKey(tableId, snapshotId, generationIdentity, storageId),
         TargetStatsRecord.class,
         loader);
-  }
-
-  /** Publish a target-stat record after its immutable generation is durably committed. */
-  public void publishTargetStats(
-      ResourceId tableId,
-      long snapshotId,
-      String generationIdentity,
-      String storageId,
-      TargetStatsRecord record) {
-    if (!enabled) {
-      return;
-    }
-    String generation = requireIdentity(generationIdentity, "generation identity");
-    String target = requireIdentity(storageId, "stats target identity");
-    entries.put(
-        targetStatsKey(tableId, snapshotId, generation, target),
-        Value.of(Objects.requireNonNull(record, "record")));
   }
 
   /** Evict all target-stat records for one table snapshot after a successful mutation. */

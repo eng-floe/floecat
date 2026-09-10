@@ -301,12 +301,6 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                         Optional<String> committed =
                             rootWriter.commitStatsGeneration(
                                 finalState.tableId(), finalState.snapshotId());
-                        if (tableFactsChanged.get()) {
-                          committed.ifPresent(
-                              generation ->
-                                  statsOrchestrator.publishCommittedTableFacts(
-                                      finalState.tableId(), finalState.snapshotId(), generation));
-                        }
                       }
                     })
                 .replaceWith(
