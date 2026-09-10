@@ -62,6 +62,13 @@ through without retention. Exact-body target-stat URIs are immutable once publis
 served by the disk blob cache; legacy logical-only URIs use pointer/version identity instead, so a
 re-capture that rewrites one cannot return stale bytes.
 
+`DiskBlobCache` has no request-level load map. Each miss reads the durable source directly; `FILL`
+publishes the returned bytes through a staged file and atomic rename, while `BYPASS_FILL` returns
+the bytes without admission. The key is immutable, so a late fill can only recreate an old,
+unreachable identity; it cannot overwrite the bytes named by a newer pointer. Account deletion
+retirements use the disk partition lock to prevent a deleted account from being admitted again in
+that process. That lock protects file lifecycle and mappings; it is not a generic cache fence.
+
 ## The shared cache contract (`core/cache`)
 
 The cache module provides one small read-through primitive. Callers use repositories and do not

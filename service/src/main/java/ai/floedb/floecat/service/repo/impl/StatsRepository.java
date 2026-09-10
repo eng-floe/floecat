@@ -2245,7 +2245,7 @@ public class StatsRepository implements StatsStore {
     String prefix = Keys.snapshotRootPrefix(tableId.getAccountId(), tableId.getId());
     StringBuilder next = new StringBuilder();
     List<Pointer> page =
-        pointerStore.listPointersByPrefix(prefix, 500, continuation.pointerToken, next);
+        pointerStore.listPointersByPrefixConsistent(prefix, 500, continuation.pointerToken, next);
     for (Pointer pointer : page) {
       if (System.currentTimeMillis() >= deadlineMs) {
         return false;

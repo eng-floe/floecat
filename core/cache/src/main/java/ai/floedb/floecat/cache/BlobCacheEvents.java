@@ -25,6 +25,9 @@ public interface BlobCacheEvents extends CacheEvents {
   /** One completed sweep. */
   default void swept(BlobCache.SweepResult result) {}
 
+  /** A valid body could not be admitted because of the disk budget or a live mapping. */
+  default void admissionRejected() {}
+
   static BlobCacheEvents none() {
     return new BlobCacheEvents() {};
   }
