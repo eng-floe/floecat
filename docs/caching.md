@@ -40,6 +40,12 @@ compete honestly for the same memory. The cost is that one tenant's wide-schema 
 scans can evict another tenant's hot entries, softened by Caffeine's TinyLFU admission policy,
 which favours frequently reused entries over one-shot scan traffic.
 
+An owned pointer partition can be warmed in the background when ownership is granted. The first
+read also schedules the warm if no ownership notification was received. Reads never wait for this
+work: while the partition is `LOADING`, they use durable KV. Mutations take the partition write
+lock, so they wait for a load already in progress and then commit to KV before publishing the new
+pointer. A failed warm leaves the partition `LOADING` and the next read continues using KV.
+
 `floecat.metadata.graph.cache-max-size` gates node caching (`0` = off); node memory is governed by
 `floecat.blob.cache.max-weight-bytes`.
 
