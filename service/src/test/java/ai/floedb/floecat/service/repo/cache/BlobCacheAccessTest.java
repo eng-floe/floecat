@@ -96,6 +96,21 @@ class BlobCacheAccessTest {
   }
 
   @Test
+  void mutablePutDoesNotAdmitBytesUnderAnImmutableUri() {
+    var delegate = new CountingBlobStore();
+    String uri = "/accounts/a/mutable";
+    var cached =
+        new CachedImmutableBlobStore(
+            delegate, DiskBlobCacheTestSupport.create(tempDir.resolve("mutable-put")));
+
+    cached.put(uri, new byte[] {1}, "application/octet-stream");
+    cached.put(uri, new byte[] {2}, "application/octet-stream");
+
+    assertThat(cached.get(uri)).containsExactly(2);
+    assertThat(delegate.pointGets).hasValue(1);
+  }
+
+  @Test
   void immutableAdapterDoesNotFillRangesWhenAdmissionIsBypassed() {
     var delegate = new CountingBlobStore();
     delegate.put(

@@ -88,8 +88,10 @@ public final class CachedImmutableBlobStore implements BlobStore {
 
   @Override
   public void put(String uri, byte[] bytes, String contentType) {
+    // BlobStore.put is the mutable/unspecified-identity operation. Do not admit it under a URI
+    // key: a later write may replace the bytes in place. Callers that have a content-addressed
+    // identity must use putImmutable explicitly.
     delegate.put(uri, bytes, contentType);
-    cache.putImmutable(uri, bytes);
   }
 
   @Override
