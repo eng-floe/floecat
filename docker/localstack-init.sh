@@ -25,6 +25,7 @@ awslocal s3api create-bucket --bucket "floecat" --region "${REGION}" >/dev/null 
 awslocal s3api create-bucket --bucket "staged-fixtures" --region "${REGION}" >/dev/null 2>&1 || true
 awslocal s3api create-bucket --bucket "floecat-delta" --region "${REGION}" >/dev/null 2>&1 || true
 awslocal s3api create-bucket --bucket "floecat-delta-vended" --region "${REGION}" >/dev/null 2>&1 || true
+awslocal s3api create-bucket --bucket "floecat-sharing-vended" --region "${REGION}" >/dev/null 2>&1 || true
 
 # OSS Unity Catalog assumes this role when its temporary-table-credentials endpoint is called.
 # Keep the vended bucket out of COMPOSE_SMOKE_LOCALSTACK_BUCKETS: that list creates Floecat storage

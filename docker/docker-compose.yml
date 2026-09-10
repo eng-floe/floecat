@@ -319,6 +319,43 @@ services:
     networks:
       - floecat
 
+  # A Delta Sharing recipient endpoint over a fixture in LocalStack. The reference server
+  # implements directory access, but no published image does -- the server-side change landed in
+  # March 2026 and the last deltaio/delta-sharing-server tag is from April 2024 -- so the vend has
+  # nothing local to be checked against without this.
+  delta-sharing-stub:
+    image: ${FLOECAT_DELTA_SHARING_STUB_IMAGE:-python:3.12-alpine}
+    pull_policy: if_not_present
+    command: ["python3", "/opt/sharing/stub_server.py"]
+    ports:
+      - "${FLOECAT_DELTA_SHARING_HOST_PORT:-8445}:8443"
+    environment:
+      SHARING_SHARE: ${FLOECAT_DELTA_SHARING_SHARE:-floecat_smoke}
+      SHARING_SCHEMA: ${FLOECAT_DELTA_SHARING_SCHEMA:-sharing}
+      SHARING_TABLE: ${FLOECAT_DELTA_SHARING_TABLE:-call_center}
+      SHARING_TABLE_LOCATION: ${FLOECAT_DELTA_SHARING_TABLE_LOCATION:-}
+      SHARING_BEARER_TOKEN: ${FLOECAT_DELTA_SHARING_BEARER_TOKEN:-}
+      # Not :- like its neighbours. An empty value is meaningful here -- it is how the stub is
+      # told to omit accessModes altogether, the way the reference server does -- and :-
+      # substitutes the default for an empty value as well as an unset one, so the variant
+      # that exercises the unstated shape silently ran with url,dir.
+      SHARING_ACCESS_MODES: ${FLOECAT_DELTA_SHARING_ACCESS_MODES-url,dir}
+      SHARING_STATE_LOCATION: ${FLOECAT_DELTA_SHARING_STATE_LOCATION:-true}
+      SHARING_RESPONSE_FORMAT: ${FLOECAT_DELTA_SHARING_RESPONSE_FORMAT:-delta}
+      SHARING_VENDED_ACCESS_KEY_ID: ${FLOECAT_STORAGE_AWS_ACCESS_KEY_ID:-test}
+      SHARING_VENDED_SECRET_ACCESS_KEY: ${FLOECAT_STORAGE_AWS_SECRET_ACCESS_KEY:-test}
+      SHARING_TLS_CERT: /etc/sharing/tls/server.crt
+      SHARING_TLS_KEY: /etc/sharing/tls/server.key
+    volumes:
+      - ./delta-sharing/stub_server.py:/opt/sharing/stub_server.py:ro
+      - ${FLOECAT_DELTA_SHARING_CONFIG_DIR:-./delta-sharing}:/etc/sharing/conf:ro
+      - ${FLOECAT_DELTA_SHARING_TLS_CERT_FILE:-./unity/server.crt}:/etc/sharing/tls/server.crt:ro
+      - ${FLOECAT_DELTA_SHARING_TLS_KEY_FILE:-./unity/server.key}:/etc/sharing/tls/server.key:ro
+    profiles:
+      - delta-sharing
+    networks:
+      - floecat
+
   unity:
     image: ${FLOECAT_UNITY_IMAGE:-unitycatalog/unitycatalog:v0.6.0}
     pull_policy: if_not_present

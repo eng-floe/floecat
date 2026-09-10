@@ -95,6 +95,28 @@ integration objects databricks main.sales --kinds table,view
 overlay reconcile delta-sales
 ```
 
+For a Delta Sharing recipient, the share and schema are the namespace:
+
+```text
+integration create partner delta-sharing https://sharing.example/delta-sharing \
+  --auth-type bearer --cred token=recipient-token \
+  --props s3.region=us-east-1
+overlay create partner-tables partner local-catalog --include acme_share.gold
+integration validate partner
+integration namespaces partner
+integration namespaces partner --parent acme_share
+integration objects partner acme_share.gold
+overlay reconcile partner-tables
+```
+
+Delta Sharing accepts bearer authentication only, because the protocol defines no other scheme. A
+table is usable where its provider offers directory access; one offering url access alone returns
+presigned per-file URLs rather than credentials, and is refused when the overlay reconciles rather
+than materialized as a table nothing can open. A table stating no
+access modes is asked rather than refused -- see
+[`docs/operations.md`](operations.md#delta-sharing-access-modes) for why, and for
+`delta.sharing.strict-access-modes`.
+
 Unity OAuth client credentials use the same `oauth-client-credentials` CLI form as Iceberg REST.
 The configured token URI is optional; when omitted, the Unity provider uses `/oidc/v1/token` on the
 catalog host. Unity Integration discovery currently exposes Delta tables and Unity views. Table
@@ -168,6 +190,15 @@ authority has to be removed there: that fixture is copied to a bucket deliberate
 namespace has two levels, so the URL uses the `%1F` separator the gateway's own `/v1/config`
 advertises.
 
+The Delta Sharing scenario runs beside them, against a recipient endpoint served by
+`docker/delta-sharing/stub_server.py`. It is a stub rather than the reference server because no
+published `deltaio/delta-sharing-server` image implements directory access: that landed upstream in
+March 2026 and the last image tag is from April 2024. It serves the same Delta fixture from a third
+bucket, also absent from `COMPOSE_SMOKE_LOCALSTACK_BUCKETS`, and records every request it answered so
+the scenario can assert the share was actually asked for credentials rather than inferring it from a
+check that passed. It finishes with the same gateway `loadTable` check, and separately asserts that a
+recipient token the share does not accept fails validation.
+
 Authentication types and their properties are:
 
 | `--auth-type` | `--auth` properties | `--cred` properties |
@@ -186,6 +217,12 @@ properties instead of silently dropping them.
 Polaris, `warehouse=<catalog-name>` selects the upstream catalog without putting a query parameter in
 the base URI. Updating properties replaces the complete map; passing `--props` with no values clears
 it.
+
+For Delta Sharing, supported properties are `http.connect.ms`, `http.read.ms`,
+`delta.sharing.strict-access-modes`, `delta.sharing.reader-features`, `s3.region`, `s3.endpoint`,
+`client.region`, and `s3.path-style-access`. The S3 properties route reads of credentials the share
+vends; they do not supply storage credentials. `s3.endpoint` is held to the same rule as Unity's,
+below, for the same reason: a Delta Sharing vend also carries an AWS session token.
 
 For Unity Catalog, supported properties are `http.connect.ms`, `http.read.ms`,
 `unity.temporary-table-vend-path`, `s3.region`, `s3.endpoint`, and `s3.path-style-access`. The S3
