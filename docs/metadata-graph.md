@@ -35,7 +35,7 @@ facade sit inside `service/metagraph`. The split looks like this:
 - `core/metagraph/model/` – Immutable node records (`CatalogNode`, `NamespaceNode`, `TableNode`,
   `ViewNode`, `SystemViewNode`) plus shared enums (`GraphNodeKind`, `EngineKey`, `EngineHint`,
   `GraphNodeOrigin`, etc.).
-- `service/repo/cache/` – the pointer cache owns complete namespace and relation-name indexes;
+- `service/repo/cache/` – the pointer index owns complete namespace and relation-name indexes;
   derived nodes live content-keyed by blob URI in the process-wide `ImmutableBlobCache`.
 - `service/metagraph/loader/` – `NodeLoader` wraps the catalog/namespace/table/view repositories to
   hydrate immutable nodes from protobuf metadata (`metaForSafe` + pointer fetches).
@@ -163,8 +163,7 @@ planners requesting different engine versions or planner modes never interfere w
 Internally `resolve(ResourceId)`:
 
 1. Reads the pointer through `nodes.mutationMeta(id)`. There is no graph-level meta cache to probe
-   first: the pointer cache now sits under the store, so this read is a memory lookup when the key
-   is resident and a store read when it is not.
+   first: the indexed store selects the complete owned partition or its durable fallback.
 2. Returns the derived node at `blobUri + "#node"` from the `ImmutableBlobCache` when present.
 3. Rehydrates the protobuf record (`Catalog`, `Namespace`, `Table`, `View`) into the immutable node
    and stores it content-keyed under `blobUri + "#node"`.
@@ -196,10 +195,10 @@ contents.
 ## Usage Guidelines
 - **Always go through the graph** for read paths instead of hitting repositories directly. This keeps
   cache hit rate predictable and ensures planner/executor code sees immutable snapshots.
-- **Nothing to invalidate after a mutation.** The pointer cache sits under the store and the writer
-  publishes its own new value, so a successful mutation is visible to same-process readers without
-  a call. Cross-instance staleness is not time-bounded: another replica keeps its value until it
-  writes that key or reads it consistently. Node entries never need eviction — they are
+- **Nothing to invalidate after a mutation.** `IndexedPointerStore` serializes the durable
+  mutation with the account partition write lock and publishes the committed pointer before
+  releasing it. Readers of a complete owned partition see that value immediately; a handoff or
+  restart rebuilds the partition, and a non-owner falls back to durable KV. Node entries never need eviction — they are
   content-keyed by blob URI.
 - **Treat node instances as read-only**. They are immutable records but they may still be shared
   across requests via the cache, so do not mutate maps or lists after retrieval.

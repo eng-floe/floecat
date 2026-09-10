@@ -272,8 +272,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           List<ResourceWithMeta<T>> values = new ArrayList<>(pointers.size());
           Timestamp now = Timestamps.fromMillis(clock.millis());
           for (Pointer selectedPointer : pointers) {
-            coherentFrom(selectedPointer.getKey(), selectedPointer, now, consistentRead)
-                .ifPresent(values::add);
+            coherentFrom(selectedPointer.getKey(), selectedPointer, now).ifPresent(values::add);
           }
           return List.copyOf(values);
         });
@@ -405,8 +404,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return pointerReads
         .get(pointerKey)
         .flatMap(
-            selected ->
-                coherentFrom(pointerKey, selected, Timestamps.fromMillis(clock.millis()), false));
+            selected -> coherentFrom(pointerKey, selected, Timestamps.fromMillis(clock.millis())));
   }
 
   /**
@@ -421,10 +419,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    *     under the read and the body no longer belongs with any meta this call could build.
    */
   private Optional<ResourceWithMeta<T>> coherentFrom(
-      String pointerKey, Pointer selected, Timestamp now, boolean consistent) {
+      String pointerKey, Pointer selected, Timestamp now) {
     String selectedBlobUri = requireBlobReference(selected, pointerKey);
     Optional<T> loaded = getByBlobUri(selectedBlobUri);
-    boolean reResolved = false;
     if (loaded.isEmpty()) {
       // Skipping here would silently shorten a page, or report a live resource absent, which the
       // caller cannot detect either way. Resolve where the pointer moved to, and carry THAT uri
@@ -435,7 +432,6 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       }
       selectedBlobUri = reloaded.get().pointer().getBlobUri();
       loaded = Optional.of(reloaded.get().value());
-      reResolved = true;
     }
 
     T value = loaded.get();
@@ -1774,8 +1770,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   /**
-   * Pointer meta read past any cache, for a caller whose question the cache cannot answer -- a CAS
-   * expected-version, or a liveness check whose emptiness is the verdict.
+   * Pointer meta read through the store's ownership and loading policy. The name remains for
+   * lifecycle callers whose emptiness is load-bearing; callers do not select a separate pointer
+   * cache or durable view.
    */
   public MutationMeta metaForSafeConsistent(K key) {
     return metaForSafe(key, Timestamps.fromMillis(clock.millis()), true);

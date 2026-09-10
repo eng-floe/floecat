@@ -130,8 +130,8 @@ computed from a cumulative gauge cannot tell an idle cache from one that is miss
 An account moves from `loading` to `complete` after its durable planner rows have been loaded. A
 load failure leaves it on the durable path; the next read can retry the load.
 
-Nothing expires in the pointer cache. The eviction series count only capacity-driven removals;
-explicit deletes, prefix sweeps, and authoritative-read repairs are not included. A non-zero
+Nothing expires in the pointer index. The eviction series count only capacity-driven removals in
+the memory-cache families; explicit deletes and prefix sweeps are not included. A non-zero
 eviction rate therefore directly signals size pressure. The weight alongside the count
 distinguishes many small evictions from a few large ones.
 
@@ -150,7 +150,6 @@ These reads bypass every cache because their result is a detector, not content:
 | Dangling-pointer verdict | `NodeLoader.reload` | Emptiness is the verdict itself: a resident decode would report a healthy node over a pointer whose blob is gone. |
 | Reusable-candidate load | `SnapshotRepository.loadReusableCandidate` | Emptiness raises a retryable storage abort: the candidate is expected to be there, so a resident decode of a swept blob would let the reuse path proceed on a candidate the store no longer holds. |
 | Commit funnel, pointer and blob | `TableRootCommitter` | The CAS needs an expected version no cached pointer can supply, and the base blob's emptiness is the corruption detector. |
-| Every pointer read in the GC | `PointerGc`, `CasBlobGc`, `ReconcileJobGc`, `TransactionGc` | The GC deletes based on what it reads. A stale canonical pointer makes a live name pointer look orphaned and CAS-deletes it; a stale root pointer puts a superseded blob in the mark set and omits the current one, which is then swept. `ConsistentReadRulesTest` holds the line. |
 
 Pinned **blob** reads are not among them. The blob a pin names is immutable and content-addressed,
 so a resident decode of it *is* the pinned content rather than a stale view — the pinned table,
