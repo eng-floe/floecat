@@ -180,7 +180,20 @@ class CacheBudgetResolverTest {
       properties.load(in);
     }
     var shipped = new HashMap<String, String>();
-    properties.forEach((key, value) -> shipped.put((String) key, (String) value));
+    properties.forEach(
+        (key, value) -> {
+          String expression = (String) value;
+          if (expression.startsWith("${") && expression.endsWith("}")) {
+            String body = expression.substring(2, expression.length() - 1);
+            int separator = body.indexOf(':');
+            if (separator > 0) {
+              String variable = body.substring(0, separator);
+              String fallback = body.substring(separator + 1);
+              expression = System.getenv().getOrDefault(variable, fallback);
+            }
+          }
+          shipped.put((String) key, expression);
+        });
 
     var budgets = new CacheBudgetResolver(config(shipped));
 
