@@ -699,7 +699,7 @@ class TransactionsServiceImplTest {
             .build();
 
     when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
-    when(pointerStore.getConsistent(pointerKey))
+    when(pointerStore.get(pointerKey))
         .thenReturn(Optional.of(Pointer.newBuilder().setKey(pointerKey).setVersion(7L).build()));
     when(graphView.resolve(
             ResourceId.newBuilder()
@@ -889,7 +889,7 @@ class TransactionsServiceImplTest {
             .build();
 
     when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
-    when(pointerStore.getConsistent(targetKey))
+    when(pointerStore.get(targetKey))
         .thenReturn(Optional.of(PointerReferences.blobPointer(targetKey, tableBlobUri, 7L)));
     when(blobStore.get(tableBlobUri)).thenReturn(table.toByteArray());
     when(graphView.resolve(
