@@ -217,7 +217,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     this.mutationPointerStore =
         Objects.requireNonNull(mutationPointerStore, "mutationPointerStore");
     this.mutationBlobStore = Objects.requireNonNull(mutationBlobStore, "blobs");
-    this.mutationReads = RepositoryReads.direct(this.mutationPointerStore, mutationBlobStore);
+    this.mutationReads = RepositoryReads.consistent(this.mutationPointerStore, mutationBlobStore);
     this.reads = Objects.requireNonNull(reads, "reads");
     this.pointerReads = this.reads.pointers();
     this.blobReads = this.reads.blobs();
