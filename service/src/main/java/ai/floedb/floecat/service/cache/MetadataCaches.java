@@ -26,6 +26,7 @@ import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import ai.floedb.floecat.telemetry.helpers.CacheMetrics;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
 
@@ -50,8 +51,14 @@ public class MetadataCaches {
   @Produces
   @Singleton
   public PlanningPointerIndex pointers(
-      @RawPointerStore PointerStore raw, Observability observability) {
-    PlanningPointerIndex index = new PlanningPointerIndex(raw);
+      @RawPointerStore PointerStore raw,
+      Observability observability,
+      Instance<PlanningPointerIndex.Ownership> configuredOwnership) {
+    PlanningPointerIndex.Ownership ownership =
+        configuredOwnership.isUnsatisfied()
+            ? PlanningPointerIndex.Ownership.ALWAYS_OWNED
+            : configuredOwnership.get();
+    PlanningPointerIndex index = new PlanningPointerIndex(raw, ownership);
     CacheMetrics metrics = new CacheMetrics(observability, "service", "metadata-index", "pointer");
     metrics.trackAccounts(
         index::loadingPartitionCount,

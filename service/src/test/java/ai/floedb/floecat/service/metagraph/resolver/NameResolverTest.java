@@ -326,7 +326,8 @@ class NameResolverTest {
   @Test
   void aRelationResolveMissDoesNotReachKvOnceTheAccountIndexIsComplete() {
     CountingPointerStore raw = new CountingPointerStore();
-    var cached = new IndexedPointerStore(raw, new PlanningPointerIndex(raw));
+    PlanningPointerIndex index = new PlanningPointerIndex(raw);
+    var cached = new IndexedPointerStore(raw, index);
     var blobs = new InMemoryBlobStore();
     var catalogs = new CatalogRepository(cached, blobs);
     var namespaces = new NamespaceRepository(cached, blobs);
@@ -348,7 +349,7 @@ class NameResolverTest {
     // Loading any complete addressing key blocks until the whole account index is authoritative.
     assertThat(cached.get(Keys.relationPointerByName("account", "catalog", "namespace", "warmup")))
         .isEmpty();
-    assertThat(pointers.completeAccountCount()).isEqualTo(1L);
+    assertThat(index.completePartitionCount()).isEqualTo(1L);
     raw.resetReads();
 
     NameRef missing =
