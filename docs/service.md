@@ -52,9 +52,9 @@ query lifecycle / scan bundle logic.
 - `catalog/builtin` – Shared builtin catalog data model, validator, and loader helpers.
 - `service/query` – Query lifecycle management (`QueryContext`, `QueryContextStore`,
   `QueryServiceImpl`).
-- `service/metagraph` – MetadataGraph runtime (façade, loader, resolvers, hint manager, topology
-  cache); the immutable node models live in `core/metagraph`, assembled metadata is held by
-  `ObjectCache`, and pointer/disk-blob adapters live in
+- `service/metagraph` – MetadataGraph runtime (façade, loader, resolvers, and per-engine hint
+  persistence); the immutable node models live in `core/metagraph`, assembled metadata and
+  decoded hints are held by `ObjectCache` and `HintCache`, and pointer/disk-blob adapters live in
   `service/repo/cache/` (see
   [`docs/metadata-graph.md`](metadata-graph.md) and [`docs/caching.md`](caching.md)).
 - `service/gc` – Scheduled cleanup for idempotency records, orphan pointers/blobs, stale transaction
