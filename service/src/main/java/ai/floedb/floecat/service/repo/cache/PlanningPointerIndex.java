@@ -465,7 +465,7 @@ public final class PlanningPointerIndex {
   private void loadLocked(String partitionKey, Partition partition) {
     TreeMap<String, Pointer> loaded = new TreeMap<>();
     if (!GLOBAL.equals(partitionKey)) {
-      String root = Keys.accountRootPrefix() + partitionKey;
+      String root = Keys.accountRootPrefix(partitionKey);
       durable.getConsistent(root).ifPresent(pointer -> loaded.put(root, pointer));
     }
     for (String prefix : loadPrefixes(partitionKey)) {
@@ -537,15 +537,16 @@ public final class PlanningPointerIndex {
     if (key == null || !key.startsWith(Keys.accountRootPrefix())) return null;
     String remainder = key.substring(Keys.accountRootPrefix().length());
     int slash = remainder.indexOf('/');
-    String account = slash < 0 ? remainder : remainder.substring(0, slash);
-    if (account.isBlank()) return null;
-    return Keys.isReservedAccountDirectorySegment(account) ? GLOBAL : account;
+    String encodedAccount = slash < 0 ? remainder : remainder.substring(0, slash);
+    if (encodedAccount.isBlank()) return null;
+    if (Keys.isReservedAccountDirectorySegment(encodedAccount)) return GLOBAL;
+    return Keys.decodeSegment(encodedAccount);
   }
 
   private static List<String> loadPrefixes(String partition) {
     if (GLOBAL.equals(partition))
       return List.of(Keys.accountPointerByIdPrefix(), Keys.accountPointerByNamePrefix());
-    return List.of(Keys.accountRootPrefix() + partition + "/");
+    return List.of(Keys.accountRootPrefix(partition));
   }
 
   private static boolean isAccountRoot(String prefix) {
@@ -556,7 +557,8 @@ public final class PlanningPointerIndex {
   }
 
   private static String accountPartition(String prefix) {
-    return prefix.substring(Keys.accountRootPrefix().length(), prefix.length() - 1);
+    String encoded = prefix.substring(Keys.accountRootPrefix().length(), prefix.length() - 1);
+    return Keys.decodeSegment(encoded);
   }
 
   private static final class Partition {
