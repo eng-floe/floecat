@@ -16,12 +16,13 @@
 
 package ai.floedb.floecat.client.unity;
 
+import ai.floedb.floecat.http.guards.HttpEndpointGuards;
+import ai.floedb.floecat.http.guards.HttpResponseSnippets;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.InetAddress;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -39,7 +40,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
-import java.util.regex.Pattern;
 
 /** JDK HTTP implementation of the small Unity Catalog client boundary. */
 public final class HttpUnityCatalogClient implements UnityCatalogClient {
@@ -89,8 +89,6 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
 
   private static final ObjectMapper JSON = new ObjectMapper();
 
-  private static final Pattern BEARER_TOKEN = Pattern.compile("(?i)bearer\\s+[A-Za-z0-9._~+/=-]+");
-
   /**
    * Page limit for one listing. The repeated-token check in {@link #listAll} catches a server that
    * reuses a token, not one that mints a new token per page, and nothing else bounds the loop:
@@ -109,10 +107,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * floecat.security.allow-loopback-token-endpoints}. Read from system properties and the
    * environment at construction; this module does not depend on the connector config layer.
    */
-  static final String ALLOW_LOOPBACK_PROPERTY = "floecat.security.allow-loopback-catalog-endpoints";
-
-  private static final String ALLOW_LOOPBACK_ENV =
-      "FLOECAT_SECURITY_ALLOW_LOOPBACK_CATALOG_ENDPOINTS";
+  static final String ALLOW_LOOPBACK_PROPERTY = HttpEndpointGuards.ALLOW_LOOPBACK_PROPERTY;
 
   /**
    * Cap on a single response body, in bytes. Override with {@code floecat.unity.max-response-bytes}
@@ -123,10 +118,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
   private static final int DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
   /** Opt-in for a base URI naming a private (site-local) address literal. Deny by default. */
-  static final String ALLOW_PRIVATE_PROPERTY = "floecat.security.allow-private-catalog-endpoints";
-
-  private static final String ALLOW_PRIVATE_ENV =
-      "FLOECAT_SECURITY_ALLOW_PRIVATE_CATALOG_ENDPOINTS";
+  static final String ALLOW_PRIVATE_PROPERTY = HttpEndpointGuards.ALLOW_PRIVATE_PROPERTY;
 
   private final String baseUri;
   private final String credentialsPath;
@@ -165,7 +157,9 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     // Arguments evaluate left to right; every check runs before newHttpClient allocates a
     // transport.
     this(
-        stripTrailingSlash(validateBaseUri(baseUri).toString()),
+        stripTrailingSlash(
+            HttpEndpointGuards.requireAllowedEndpoint(baseUri, "Unity Catalog base URI")
+                .toString()),
         requirePositive(requestTimeout, "requestTimeout"),
         Objects.requireNonNull(authentication, "authentication"),
         requireAbsolutePath(credentialsPath),
@@ -194,7 +188,9 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
       String credentialsPath,
       HttpClient httpClient) {
     this(
-        stripTrailingSlash(validateBaseUri(baseUri).toString()),
+        stripTrailingSlash(
+            HttpEndpointGuards.requireAllowedEndpoint(baseUri, "Unity Catalog base URI")
+                .toString()),
         requirePositive(requestTimeout, "requestTimeout"),
         Objects.requireNonNull(authentication, "authentication"),
         requireAbsolutePath(credentialsPath),
@@ -247,7 +243,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
             + "&schema_name="
             + encode(schemaName),
         "tables",
-        HttpUnityCatalogClient::listedTable);
+        this::listedTable);
   }
 
   @Override
@@ -306,7 +302,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * present but unusable value -- {@code {}}, half a tuple, or a non-object -- is {@code
    * INVALID_RESPONSE}. Only a missing field or an explicit JSON null means no AWS credentials.
    */
-  private static TemporaryTableCredentials.AwsCredentials awsCredentials(JsonNode awsNode) {
+  private TemporaryTableCredentials.AwsCredentials awsCredentials(JsonNode awsNode) {
     if (awsNode.isMissingNode() || awsNode.isNull()) {
       return null;
     }
@@ -504,7 +500,9 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     // release it.
     byte[] bytes;
     try {
-      bytes = readWithin(stream, maxResponseBytes, requestTimeout);
+      bytes =
+          HttpResponseSnippets.readWithin(
+              stream, maxResponseBytes, requestTimeout, "Unity Catalog");
     } finally {
       closeQuietly(stream);
     }
@@ -512,45 +510,6 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     // means nothing -- the status already answered. Throwing here would classify a permanent 403
     // whose error page happens to be large as a retryable INVALID_RESPONSE.
     return bytes.length > maxResponseBytes ? null : new String(bytes, StandardCharsets.UTF_8);
-  }
-
-  /**
-   * Reads {@code stream} up to {@code limit + 1} bytes, giving up after {@code deadline}.
-   *
-   * <p>On a virtual thread of its own, not {@code CompletableFuture.supplyAsync}'s common pool. The
-   * read blocks for the whole download, and {@code ForkJoinPool.commonPool()} has parallelism one
-   * on a small container -- so two concurrent calls queued behind each other and the waiting one
-   * failed on this deadline while the server had already answered. Every caller here is itself on a
-   * virtual thread, so there is no pool to starve.
-   *
-   * <p>Closing the stream is what releases a genuinely stalled read; abandoning the future alone
-   * would leave the reader blocked in {@code readNBytes}.
-   */
-  private static byte[] readWithin(InputStream stream, int limit, Duration deadline)
-      throws IOException {
-    var body = new java.util.concurrent.CompletableFuture<byte[]>();
-    Thread.ofVirtual()
-        .start(
-            () -> {
-              try {
-                body.complete(stream.readNBytes(limit + 1));
-              } catch (Throwable failure) {
-                body.completeExceptionally(failure);
-              }
-            });
-    try {
-      return body.get(deadline.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
-    } catch (java.util.concurrent.TimeoutException stalled) {
-      closeQuietly(stream);
-      throw new IOException("Unity Catalog response body stalled after " + deadline, stalled);
-    } catch (InterruptedException interrupted) {
-      Thread.currentThread().interrupt();
-      closeQuietly(stream);
-      throw new IOException("Interrupted reading the Unity Catalog response body", interrupted);
-    } catch (java.util.concurrent.ExecutionException failure) {
-      Throwable cause = failure.getCause();
-      throw cause instanceof IOException io ? io : new IOException(cause);
-    }
   }
 
   private static void closeQuietly(InputStream stream) {
@@ -634,14 +593,14 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     return path + " (redirected to " + effectiveUri + ")";
   }
 
-  private static UnityCatalogTable listedTable(JsonNode node) {
+  private UnityCatalogTable listedTable(JsonNode node) {
     // Null rather than a throw: listAll drops an unmapped entry, so one null or scalar element in
     // the array cannot lose the rest of the page. getTable stays strict, where the caller asked
     // for one specific table and an unreadable answer is a failure.
     return node.isObject() ? table(node, false) : null;
   }
 
-  private static UnityCatalogTable table(JsonNode node, boolean strictColumns) {
+  private UnityCatalogTable table(JsonNode node, boolean strictColumns) {
     if (!node.isObject()) {
       throw invalidResponse("Expected a table object from Unity Catalog", null);
     }
@@ -657,7 +616,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
         tableProperties(node));
   }
 
-  private static List<UnityCatalogTable.Column> parseColumns(JsonNode node, boolean strict) {
+  private List<UnityCatalogTable.Column> parseColumns(JsonNode node, boolean strict) {
     // Jackson iterates an object's values as though it were an array and yields nothing for a
     // scalar, so a detail response must reject either shape. A listing can still identify its
     // other entries without that schema, so only the malformed entry gets an empty column list.
@@ -689,7 +648,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     return columns;
   }
 
-  private static List<UnityCatalogTable.Column> malformedColumns(boolean strict, String message) {
+  private List<UnityCatalogTable.Column> malformedColumns(boolean strict, String message) {
     if (strict) {
       throw invalidResponse(message, null);
     }
@@ -743,7 +702,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * <p>An unlisted 4xx is permanent only when it carries the {@code error_code} envelope. Without
    * one it may be an error page from a proxy rather than the workspace, so it stays {@code OTHER}.
    */
-  private static UnityCatalogException httpFailure(
+  private UnityCatalogException httpFailure(
       int status, String path, String body, boolean includeResponseBody) {
     String responseBody = includeResponseBody ? truncate(body) : "";
     // Capped like the body: error_code comes from that body but is interpolated outside the
@@ -887,7 +846,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
     };
   }
 
-  private static UnityCatalogException invalidResponse(String message, Throwable cause) {
+  private UnityCatalogException invalidResponse(String message, Throwable cause) {
     return new UnityCatalogException(
         UnityCatalogException.Failure.INVALID_RESPONSE, -1, message, cause);
   }
@@ -896,7 +855,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * An {@code INVALID_RESPONSE} that keeps what the catalog actually sent. The status and a snippet
    * of the body identify which proxy is answering when a body never becomes JSON.
    */
-  private static UnityCatalogException invalidResponse(
+  private UnityCatalogException invalidResponse(
       int status, String message, String body, Throwable cause) {
     String snippet = truncate(body);
     return new UnityCatalogException(
@@ -906,26 +865,18 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
         cause);
   }
 
-  private static String truncate(String body) {
+  private String truncate(String body) {
     return truncate(body, MAX_BODY_SNIPPET_CHARS);
   }
 
-  private static String truncate(String value, int maxChars) {
-    return value == null
-        ? ""
-        : redactBearerTokens(value.substring(0, Math.min(value.length(), maxChars)));
-  }
-
-  /**
-   * Removes bearer tokens from text on its way into a failure message.
-   *
-   * <p>The Authorization header goes out on every request, and a debug handler or a misconfigured
-   * gateway will echo request headers in an error body. That body is interpolated into the
-   * exception for every route except vending, so without this the tenant's token reaches operator
-   * logs.
-   */
-  private static String redactBearerTokens(String text) {
-    return BEARER_TOKEN.matcher(text).replaceAll("Bearer <redacted>");
+  private String truncate(String value, int maxChars) {
+    // The token this client sends, by value. The generic pattern matches the token68 alphabet a
+    // bearer token is supposed to use, and this one is operator-supplied and under no obligation to
+    // -- so a token carrying a colon was matched only that far and the remainder survived into a
+    // message that reaches validation output and operator logs. The Delta Sharing client was wired
+    // to the by-value overload when it was added here; this caller of the same control was not.
+    return HttpResponseSnippets.bounded(
+        value, maxChars, authentication.redactableSecret().orElse(null));
   }
 
   private static String text(JsonNode node, String field) {
@@ -953,154 +904,6 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
   }
 
   /**
-   * Whether the authority embeds userinfo that {@link URI#getUserInfo()} does not report. {@code
-   * java.net.URI} populates it only for a server-based authority; a host it rejects as a hostname
-   * -- an underscore, a non-numeric port -- yields a registry-based authority with the credential
-   * still in the raw string. {@code @} delimits userinfo and has no other role there.
-   */
-  private static boolean authorityCarriesUserInfo(URI baseUri) {
-    String authority = baseUri.getRawAuthority();
-    return authority != null && authority.indexOf('@') >= 0;
-  }
-
-  /**
-   * The base URI as it may appear in a rejection message: scheme, authority and path only.
-   *
-   * <p>A query is a common place for a token, and the userinfo guard covers only credentials in the
-   * authority. Every gate here reports the value it rejected, so the display form drops the two
-   * components that carry data rather than address the endpoint.
-   */
-  private static String display(URI baseUri) {
-    if (baseUri == null) {
-      return "null";
-    }
-    StringBuilder shown = new StringBuilder();
-    if (baseUri.getScheme() != null) {
-      shown.append(baseUri.getScheme()).append("://");
-    }
-    // Parsed components only, never the raw authority. URI reports a host it cannot parse as
-    // server-based -- an underscore, a bad port, or a percent-encoded delimiter such as
-    // alice:s3cr3t%40host -- by leaving getHost() and both userinfo accessors null while the raw
-    // authority keeps the credential. Echoing that here would undo the userinfo guard for exactly
-    // the inputs it cannot recognise.
-    if (baseUri.getHost() == null) {
-      shown.append("<unparseable-authority>");
-    } else {
-      shown.append(baseUri.getHost());
-      if (baseUri.getPort() != -1) {
-        shown.append(':').append(baseUri.getPort());
-      }
-    }
-    if (baseUri.getRawPath() != null) {
-      shown.append(baseUri.getRawPath());
-    }
-    return shown.isEmpty() ? "<empty>" : shown.toString();
-  }
-
-  private static URI validateBaseUri(URI baseUri) {
-    Objects.requireNonNull(baseUri, "baseUri");
-    // Before any check whose message interpolates the URI. Credentials belong in
-    // UnityCatalogAuthentication, and the JDK client does not transmit them.
-    if (baseUri.getUserInfo() != null
-        || baseUri.getRawUserInfo() != null
-        || authorityCarriesUserInfo(baseUri)) {
-      throw new IllegalArgumentException(
-          "Unity Catalog base URI must not contain userinfo; supply credentials through "
-              + "UnityCatalogAuthentication instead");
-    }
-    if (!baseUri.isAbsolute()) {
-      throw new IllegalArgumentException(
-          "Unity Catalog base URI must be absolute: " + display(baseUri));
-    }
-    String scheme = baseUri.getScheme();
-    boolean https = "https".equalsIgnoreCase(scheme);
-    boolean loopbackHttp =
-        "http".equalsIgnoreCase(scheme)
-            && allowLoopbackCleartext()
-            && isLoopbackHost(baseUri.getHost());
-    if (!https && !loopbackHttp) {
-      throw new IllegalArgumentException(
-          "Unity Catalog base URI must use HTTPS, except HTTP is allowed for loopback hosts when "
-              + ALLOW_LOOPBACK_PROPERTY
-              + " is set: "
-              + display(baseUri));
-    }
-    if (baseUri.getHost() == null) {
-      throw new IllegalArgumentException(
-          "Unity Catalog base URI must include a host: " + display(baseUri));
-    }
-    if (baseUri.getRawQuery() != null || baseUri.getRawFragment() != null) {
-      throw new IllegalArgumentException(
-          "Unity Catalog base URI must not include a query or fragment: " + display(baseUri));
-    }
-    // -1 is absent. URI and HttpRequest.Builder both accept 65536; InetSocketAddress rejects it at
-    // send time, where it is reported as TRANSPORT.
-    int port = baseUri.getPort();
-    if (port != -1 && (port < 1 || port > 65535)) {
-      throw new IllegalArgumentException(
-          "Unity Catalog base URI port must be between 1 and 65535: " + display(baseUri));
-    }
-    assertAddressClassAllowed(baseUri);
-    return baseUri;
-  }
-
-  /**
-   * Rejects address classes a tenant-supplied connector URI must not name.
-   *
-   * <p>Link-local, wildcard, multicast, broadcast and {@code 0.0.0.0/8} literals are refused
-   * outright; no catalog is reachable at one, and {@code https://169.254.169.254} is otherwise a
-   * well-formed HTTPS URI for a cloud metadata service. Site-local literals require {@link
-   * #ALLOW_PRIVATE_PROPERTY}, since an internal catalog is an ordinary deployment. Loopback is
-   * allowed; cleartext to it is governed by {@link #ALLOW_LOOPBACK_PROPERTY}.
-   *
-   * <p>Literals only: resolving a hostname here would disagree with the resolution {@code
-   * HttpClient} performs at connect time, so a hostname is out of scope.
-   */
-  private static void assertAddressClassAllowed(URI baseUri) {
-    String host = unbracket(baseUri.getHost());
-    // A zone id names a local interface, and ofLiteral cannot parse one. Left to the catch below a
-    // scoped literal reads as a hostname and skips this gate entirely, so fe80::1%eth0 admits a
-    // link-local address. The transport cannot carry one either.
-    if (host.indexOf('%') >= 0) {
-      throw new IllegalArgumentException(
-          "Unity Catalog base URI must not name a zone-scoped address: " + display(baseUri));
-    }
-    InetAddress address;
-    try {
-      address = InetAddress.ofLiteral(host);
-    } catch (IllegalArgumentException notALiteral) {
-      // A host of only digits and dots is not a hostname -- a DNS name cannot be entirely numeric
-      // -- and the resolver the transport uses accepts these modulo 2^32 even though ofLiteral
-      // refuses them: 7147006462 resolves to 169.254.169.254 and 4294967296 to 0.0.0.0. Returning
-      // here would hand the transport a link-local or wildcard target this gate refuses by name.
-      if (isNumericHost(host)) {
-        throw new IllegalArgumentException(
-            "Unity Catalog base URI must not name a numeric host that is not an address literal: "
-                + display(baseUri));
-      }
-      return;
-    }
-    if (address.isLoopbackAddress()) {
-      return;
-    }
-    if (address.isLinkLocalAddress()
-        || address.isAnyLocalAddress()
-        || address.isMulticastAddress()
-        || isBroadcastOrThisNetwork(address)) {
-      throw new IllegalArgumentException(
-          "Unity Catalog base URI must not name a link-local, wildcard or multicast address: "
-              + display(baseUri));
-    }
-    if (isSiteLocal(address) && !allowPrivateAddresses()) {
-      throw new IllegalArgumentException(
-          "Unity Catalog base URI names a private address, which requires "
-              + ALLOW_PRIVATE_PROPERTY
-              + ": "
-              + display(baseUri));
-    }
-  }
-
-  /**
    * The same address-class policy, for another tenant-supplied endpoint in this module's care.
    *
    * <p>Exposed rather than copied: {@code UnityOAuthTokenProvider} POSTs the integration's OAuth
@@ -1109,46 +912,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * implementation of this rule is how the two drift apart.
    */
   public static void assertEndpointAddressAllowed(URI endpoint) {
-    assertAddressClassAllowed(Objects.requireNonNull(endpoint, "endpoint"));
-  }
-
-  /** Whether every character is an ASCII digit or a dot. Deliberately not {@code isDigit}. */
-  private static boolean isNumericHost(String host) {
-    if (host.isEmpty()) {
-      return false;
-    }
-    for (int i = 0; i < host.length(); i++) {
-      char c = host.charAt(i);
-      if ((c < '0' || c > '9') && c != '.') {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  /**
-   * IPv4 limited broadcast and {@code 0.0.0.0/8}. {@code isMulticastAddress} covers 224/4 and
-   * {@code isAnyLocalAddress} only the exact wildcard, so neither address is caught by them.
-   */
-  private static boolean isBroadcastOrThisNetwork(InetAddress address) {
-    byte[] bytes = address.getAddress();
-    if (bytes.length != 4) {
-      return false;
-    }
-    boolean broadcast = true;
-    for (byte octet : bytes) {
-      broadcast &= octet == (byte) 0xFF;
-    }
-    return broadcast || bytes[0] == 0;
-  }
-
-  /** IPv4 RFC 1918 and IPv6 unique-local, which {@code isSiteLocalAddress} misses for fc00::/7. */
-  private static boolean isSiteLocal(InetAddress address) {
-    if (address.isSiteLocalAddress()) {
-      return true;
-    }
-    byte[] bytes = address.getAddress();
-    return bytes.length == 16 && (bytes[0] & 0xFE) == 0xFC;
+    HttpEndpointGuards.assertEndpointAddressAllowed(endpoint);
   }
 
   private static int configuredMaxPages() {
@@ -1181,20 +945,6 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
       throw new IllegalArgumentException(name + " must be a positive integer: " + configured);
     }
     return value;
-  }
-
-  private static boolean allowPrivateAddresses() {
-    return Boolean.parseBoolean(
-        System.getProperty(
-            ALLOW_PRIVATE_PROPERTY, System.getenv().getOrDefault(ALLOW_PRIVATE_ENV, "false")));
-  }
-
-  private static String unbracket(String host) {
-    String value = host == null ? "" : host.trim();
-    if (value.startsWith("[") && value.endsWith("]")) {
-      value = value.substring(1, value.length() - 1);
-    }
-    return value.endsWith(".") ? value.substring(0, value.length() - 1) : value;
   }
 
   private static HttpClient newHttpClient(Duration connectTimeout) {
@@ -1258,42 +1008,6 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
    * catalog request beside it was allowed.
    */
   public static boolean isCleartextLoopbackAllowed(URI endpoint) {
-    Objects.requireNonNull(endpoint, "endpoint");
-    return allowLoopbackCleartext() && isLoopbackHost(endpoint.getHost());
-  }
-
-  private static boolean allowLoopbackCleartext() {
-    return Boolean.parseBoolean(
-        System.getProperty(
-            ALLOW_LOOPBACK_PROPERTY, System.getenv().getOrDefault(ALLOW_LOOPBACK_ENV, "false")));
-  }
-
-  private static boolean isLoopbackHost(String host) {
-    if (host == null) {
-      return false;
-    }
-    String normalized = host.toLowerCase(Locale.ROOT);
-    if (normalized.startsWith("[") && normalized.endsWith("]")) {
-      normalized = normalized.substring(1, normalized.length() - 1);
-    }
-    if (normalized.endsWith(".")) {
-      normalized = normalized.substring(0, normalized.length() - 1);
-    }
-    // Exactly "localhost", not any *.localhost name. RFC 6761 says such names should resolve to
-    // loopback, but nothing here enforces that and this gate does not resolve: a zone the tenant
-    // controls can point catalog.localhost at a public address, and the Authorization header would
-    // then go out in cleartext to it. CredentialResolverSupport, which this mirrors, has no suffix
-    // rule either -- it resolves and requires every answer to be loopback.
-    if (normalized.equals("localhost")) {
-      return true;
-    }
-    // ofLiteral, never getByName: a host this cannot decide is denied, not resolved. A resolver
-    // here disagrees with the one HttpClient uses at connect time. Character-shape pre-filters are
-    // no substitute: "4294967296" and "1." are all digits and dots yet parse as no address.
-    try {
-      return InetAddress.ofLiteral(normalized).isLoopbackAddress();
-    } catch (IllegalArgumentException notAnAddressLiteral) {
-      return false;
-    }
+    return HttpEndpointGuards.isCleartextLoopbackAllowed(endpoint);
   }
 }

@@ -104,6 +104,7 @@
       <module>core/metadata-admission-runtime</module>
       <module>core/stats</module>
       <module>core/catalog</module>
+      <module>core/http-endpoint-guards</module>
       <module>core/catalog-access-spi</module>
       <module>core/scanner</module>
       <module>core/metagraph</module>

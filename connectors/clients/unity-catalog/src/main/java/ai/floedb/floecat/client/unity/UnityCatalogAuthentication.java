@@ -17,9 +17,28 @@
 package ai.floedb.floecat.client.unity;
 
 import java.util.Map;
+import java.util.Optional;
 
 /** Supplies fresh authentication headers for each Unity Catalog request. */
 @FunctionalInterface
 public interface UnityCatalogAuthentication {
   Map<String, String> headers();
+
+  /**
+   * The secret this puts on the wire, where it is a fixed value worth redacting by name.
+   *
+   * <p>The generic bearer pattern matches the RFC token68 alphabet, and a header value permits more
+   * -- so an operator-supplied token carrying a colon is matched only as far as the colon and the
+   * remainder survives into an error message that reaches validation output and operator logs. A
+   * client that knows its own secret can redact it exactly, which is what the shared snippet
+   * helper's by-value overload is for.
+   *
+   * <p>Empty by default, and empty for a rotating token: reading one here would mean asking the
+   * token provider for a value on a failure path, where a refresh is the last thing wanted. A
+   * rotating access token is issued in the token68 shape anyway, so the pattern covers it; the gap
+   * is the operator-supplied one.
+   */
+  default Optional<String> redactableSecret() {
+    return Optional.empty();
+  }
 }

@@ -55,6 +55,48 @@ class HttpUnityCatalogClientTest {
             () -> Map.of("Authorization", "Bearer catalog-token"));
   }
 
+  /**
+   * A token carrying a character outside the token68 alphabet is redacted by value, not by pattern.
+   * The generic pattern matches what a bearer token is supposed to be; this one is
+   * operator-supplied and need not be, so a colon-bearing token was matched only that far and the
+   * remainder survived into a message that reaches validation output and operator logs. The Delta
+   * Sharing client was wired to the by-value overload when it was added; this caller of the same
+   * control was not.
+   */
+  @Test
+  void anEchoedTokenOutsideTheGrammarIsRedactedInFull() throws Exception {
+    String token = "abc:SECRET-TAIL";
+    server.createContext(
+        "/api/2.1/unity-catalog/catalogs",
+        exchange -> {
+          byte[] body =
+              ("upstream echoed: Authorization: Bearer " + token)
+                  .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+          exchange.sendResponseHeaders(500, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    try (HttpUnityCatalogClient tokenClient =
+        new HttpUnityCatalogClient(
+            URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            new UnityCatalogAuthentication() {
+              @Override
+              public Map<String, String> headers() {
+                return Map.of("Authorization", "Bearer " + token);
+              }
+
+              @Override
+              public java.util.Optional<String> redactableSecret() {
+                return java.util.Optional.of(token);
+              }
+            })) {
+      assertThatThrownBy(tokenClient::listCatalogs)
+          .satisfies(e -> assertThat(e.getMessage()).doesNotContain("SECRET-TAIL"));
+    }
+  }
+
   @AfterEach
   void tearDown() {
     if (previousAllowLoopback == null) {
@@ -1116,7 +1158,11 @@ class HttpUnityCatalogClientTest {
             UnityCatalogException.class,
             failure -> {
               assertThat(failure.getMessage()).doesNotContain("catalog-token");
-              assertThat(failure.getMessage()).contains("Bearer <redacted>");
+              // The whole header value goes, scheme included: the pass recognises the header name
+              // rather than the token's shape, so how the value was encoded stops mattering. The
+              // name survives, so the message still says which header was echoed.
+              assertThat(failure.getMessage()).contains("Authorization");
+              assertThat(failure.getMessage()).contains("<redacted>");
               // The rest of the body still reaches the message.
               assertThat(failure.getMessage()).contains("bad request");
             });
@@ -1943,7 +1989,7 @@ class HttpUnityCatalogClientTest {
   @Test
   void anEmptyTwoHundredBodyKeepsItsStatusSoItStaysRetryable() {
     // Headers then a close -- a sidecar restarting, a proxy that dropped the payload. Jackson
-    // parses "" to a missing node instead of throwing, so this used to reach the caller's shape
+    // parses "" to a missing node instead of throwing, so this reaches the caller's shape
     // check and be reported with no status, which a consumer reads as a permanent shape rejection.
     // The same connection truncated one byte later throws from readNBytes and is retryable; these
     // two must not disagree.

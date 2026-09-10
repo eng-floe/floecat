@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.access.CatalogProtocol;
 import ai.floedb.floecat.catalog.access.ResolvedCatalogCredentials;
 import ai.floedb.floecat.client.unity.UnityCatalogAuthentication;
 import ai.floedb.floecat.client.unity.UnityCatalogClient;
+import ai.floedb.floecat.http.guards.HttpEndpointGuards;
 import java.net.URI;
 import java.time.Duration;
 import java.util.Map;
@@ -174,18 +175,17 @@ class UnityCatalogClientProviderTest {
     // HTTPS needs no opt-in.
     provider.open(config(Map.of("s3.endpoint", "https://storage.example")), credentials()).close();
 
-    System.setProperty(UnityCatalogClientProvider.ALLOW_CLEARTEXT_S3_PROPERTY, "true");
+    System.setProperty(HttpEndpointGuards.ALLOW_CLEARTEXT_S3_PROPERTY, "true");
     try {
       provider
           .open(config(Map.of("s3.endpoint", "http://minio.internal:9000")), credentials())
           .close();
     } finally {
-      System.clearProperty(UnityCatalogClientProvider.ALLOW_CLEARTEXT_S3_PROPERTY);
+      System.clearProperty(HttpEndpointGuards.ALLOW_CLEARTEXT_S3_PROPERTY);
     }
   }
 
-  private static final String ALLOW_CLEARTEXT_S3_ENV =
-      UnityCatalogClientProvider.ALLOW_CLEARTEXT_S3_ENV;
+  private static final String ALLOW_CLEARTEXT_S3_ENV = HttpEndpointGuards.ALLOW_CLEARTEXT_S3_ENV;
 
   /** Real credentials, because the authentication check runs ahead of the endpoint check. */
   private static ResolvedCatalogCredentials credentials() {

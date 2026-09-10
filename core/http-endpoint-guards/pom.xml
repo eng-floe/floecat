@@ -23,23 +23,12 @@
     <groupId>ai.floedb.floecat</groupId>
     <artifactId>floecat</artifactId>
     <version>0.1.0-SNAPSHOT</version>
-    <relativePath>../../..</relativePath>
+    <relativePath>../..</relativePath>
   </parent>
 
-  <artifactId>floecat-unity-catalog-client</artifactId>
+  <artifactId>floecat-http-endpoint-guards</artifactId>
 
   <dependencies>
-    <dependency>
-      <groupId>ai.floedb.floecat</groupId>
-      <artifactId>floecat-http-endpoint-guards</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>com.fasterxml.jackson.core</groupId>
-      <artifactId>jackson-databind</artifactId>
-      <version>${version.jackson}</version>
-    </dependency>
-
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
