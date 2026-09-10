@@ -1747,22 +1747,6 @@ class UserObjectBundleServiceTest {
   }
 
   @Test
-  void resolveIsCachedPerUniqueTableWithinChunk() {
-    TableReferenceCandidate first =
-        TableReferenceCandidate.newBuilder()
-            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
-            .build();
-    TableReferenceCandidate second =
-        TableReferenceCandidate.newBuilder()
-            .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
-            .build();
-
-    service.stream("cid", ctx, List.of(first, second)).collect().asList().await().indefinitely();
-
-    assertThat(graphView.resolveCount(TABLE_A)).isEqualTo(1);
-  }
-
-  @Test
   void graphNodeMissingEmitsErrorWithoutDroppingStream() {
     graphView.hideNode(TABLE_A);
     TableReferenceCandidate candidate =

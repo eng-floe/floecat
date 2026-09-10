@@ -31,6 +31,7 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.Optional;
 import org.jboss.logging.Logger;
 
 /**
@@ -191,10 +192,12 @@ public class TableRootWriter {
    * rethrown: acknowledgement still follows visibility, while the marker guarantees eventual
    * convergence if the caller does not retry.
    */
-  public void commitStatsGeneration(ResourceId tableId, long snapshotId) {
+  public Optional<String> commitStatsGeneration(ResourceId tableId, long snapshotId) {
     if (!StatsVisibilityGate.gateOnFinalize(statsStore)) {
-      return;
+      return Optional.empty();
     }
+    java.util.concurrent.atomic.AtomicReference<String> committedGeneration =
+        new java.util.concurrent.atomic.AtomicReference<>();
     try {
       committer.commit(
           tableId,
@@ -208,6 +211,7 @@ public class TableRootWriter {
                     .activeStatsGeneration(tableId, snapshotId)
                     .map(uri -> BlobRef.newBuilder().setUri(uri).build())
                     .orElse(null);
+            committedGeneration.set(generationRef == null ? "" : generationRef.getUri());
             // Read /snapshots/current INSIDE the mutator (like the resync): the finalize advances
             // currency only when this snapshot IS the committed current, so a lost CAS must re-read
             // the authoritative selection per attempt rather than a value captured before the
@@ -221,6 +225,7 @@ public class TableRootWriter {
                     roots, tableId, snapshotId, generationRef, committedCurrentSnapshotId)
                 .apply(current);
           });
+      return Optional.ofNullable(committedGeneration.get()).filter(uri -> !uri.isBlank());
     } catch (RuntimeException publicationFailure) {
       try {
         rootResyncQueue.enqueue(tableId);

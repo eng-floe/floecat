@@ -286,21 +286,19 @@ class WarmRequestStoreCostIT {
   private static final Cost KV = new Cost("KV round trips", 2, 0, t -> t.reads.pointerRoundTrips());
 
   /**
-   * What the five per table and the one per request are, measured per fetch with its caller.
+   * What the three per table and the one per request are, measured per fetch with its caller.
    *
    * <p>Per request: the account blob, read once by the inbound call context. Per table: the pinned
-   * root blob at registration, the root's manifest page, the published stats generation manifest,
-   * the SAME generation manifest again for the frozen token, and the target-stats record. The first
-   * four are live by design -- their emptiness is the retention verdict, so they are the reads
-   * {@code docs/caching.md} lists as deliberately uncached. The fifth is not cacheable by URI at
-   * all: target-stats blobs are written to deterministic URIs a re-capture can overwrite.
+   * root blob at registration, the root's manifest page, and the published stats generation
+   * manifest. All three are live by design -- their emptiness is the retention verdict, so they are
+   * the reads {@code docs/caching.md} lists as deliberately uncached.
    *
-   * <p>The generation manifest appearing twice is a duplicate, not a rounding: the
-   * published-generation guard and the frozen-token read each fetch it. Recorded as it stands --
-   * the coefficient is what the read path costs, not what it ought to cost.
+   * <p>The object cache absorbs the second generation-manifest lookup and deterministic target
+   * stats record lookup on a warm request by retaining the decoded snapshot facts under their
+   * pinned generation identity.
    */
   private static final Cost S3_GET =
-      new Cost("S3 objects GET", 5, 1, t -> t.reads.blobObjectGets());
+      new Cost("S3 objects GET", 3, 1, t -> t.reads.blobObjectGets());
 
   /**
    * Both HEADs are pointer-meta reads of the table root: one at pin construction ({@code

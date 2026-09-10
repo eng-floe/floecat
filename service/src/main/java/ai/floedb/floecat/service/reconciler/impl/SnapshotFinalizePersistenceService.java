@@ -29,6 +29,8 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -44,7 +46,7 @@ public class SnapshotFinalizePersistenceService {
     List<TargetStatsRecord> canonical = canonicalize(records);
     statsStore.replaceAllStatsForSnapshot(tableId, snapshotId, canonical, false);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-    commitGenerationToRoot(tableId, snapshotId);
+    commitAndPublishTableFacts(tableId, snapshotId);
     return canonical.size();
   }
 
@@ -57,7 +59,7 @@ public class SnapshotFinalizePersistenceService {
     statsStore.publishStatsGeneration(
         tableId, snapshotId, generationId, canonicalAggregates, false);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-    commitGenerationToRoot(tableId, snapshotId);
+    commitAndPublishTableFacts(tableId, snapshotId);
     return canonicalAggregates.size();
   }
 
@@ -72,7 +74,7 @@ public class SnapshotFinalizePersistenceService {
             : references.stream().filter(java.util.Objects::nonNull).toList();
     statsStore.publishPrewrittenStatsGeneration(tableId, snapshotId, generationId, stable);
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-    commitGenerationToRoot(tableId, snapshotId);
+    commitAndPublishTableFacts(tableId, snapshotId);
     return stable.size();
   }
 
@@ -92,7 +94,7 @@ public class SnapshotFinalizePersistenceService {
       return false;
     }
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-    commitGenerationToRoot(tableId, snapshotId);
+    commitAndPublishTableFacts(tableId, snapshotId);
     return true;
   }
 
@@ -129,18 +131,30 @@ public class SnapshotFinalizePersistenceService {
   public long persistStats(List<TargetStatsRecord> records) {
     long processed = 0L;
     List<TargetStatsRecord> canonical = canonicalize(records);
-    LinkedHashSet<TableSnapshot> touched = new LinkedHashSet<>();
+    LinkedHashMap<TableSnapshot, List<TargetStatsRecord>> touched = new LinkedHashMap<>();
     for (TargetStatsRecord record : canonical) {
       statsStore.putTargetStats(record);
+      // Invalidate after each durable write: if a later record fails, the successful prefix must
+      // not remain cached under the live view.
       statsOrchestrator.invalidateStatsCache(
           record.getTableId(), record.getSnapshotId(), record.getTarget());
-      touched.add(new TableSnapshot(record.getTableId(), record.getSnapshotId()));
+      touched
+          .computeIfAbsent(
+              new TableSnapshot(record.getTableId(), record.getSnapshotId()),
+              ignored -> new ArrayList<>())
+          .add(record);
       processed++;
     }
     // The first put on a snapshot may have created its active generation; the commit no-ops when
     // the root already carries the generation's ref.
-    for (TableSnapshot pair : touched) {
-      commitGenerationToRoot(pair.tableId(), pair.snapshotId());
+    for (var entry : touched.entrySet()) {
+      TableSnapshot pair = entry.getKey();
+      List<TargetStatsRecord> persisted = List.copyOf(entry.getValue());
+      if (containsTableFacts(persisted)) {
+        commitAndPublishTableFacts(pair.tableId(), pair.snapshotId());
+      } else {
+        commitGenerationToRoot(pair.tableId(), pair.snapshotId());
+      }
     }
     return processed;
   }
@@ -148,10 +162,17 @@ public class SnapshotFinalizePersistenceService {
   private record TableSnapshot(ResourceId tableId, long snapshotId) {}
 
   /** Record the snapshot's (possibly new or removed) active stats generation on the table root. */
-  private void commitGenerationToRoot(ResourceId tableId, long snapshotId) {
-    if (rootWriter != null) {
-      rootWriter.commitStatsGeneration(tableId, snapshotId);
+  private String commitGenerationToRoot(ResourceId tableId, long snapshotId) {
+    if (rootWriter == null) {
+      return "";
     }
+    return rootWriter.commitStatsGeneration(tableId, snapshotId).orElse("");
+  }
+
+  /** Make newly committed table facts warm only after the root publishes their generation. */
+  private void commitAndPublishTableFacts(ResourceId tableId, long snapshotId) {
+    String generation = commitGenerationToRoot(tableId, snapshotId);
+    statsOrchestrator.publishCommittedTableFacts(tableId, snapshotId, generation);
   }
 
   public long persistEmptySnapshotCompletionMarker(
@@ -170,7 +191,7 @@ public class SnapshotFinalizePersistenceService {
       statsStore.replaceAllStatsForSnapshot(
           tableId, snapshotId, List.of(TargetStatsRecords.canonicalize(zeroMarker)), false);
       statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-      commitGenerationToRoot(tableId, snapshotId);
+      commitAndPublishTableFacts(tableId, snapshotId);
       return 1L;
     }
     if (statsStore
@@ -183,19 +204,19 @@ public class SnapshotFinalizePersistenceService {
       // the current pointer MOVES — for an already-current empty snapshot it stays UNCHANGED, so
       // nothing else would attach the stats_generation_ref and the snapshot would be permanently
       // gated-invisible. commitGenerationToRoot is idempotent.
-      commitGenerationToRoot(tableId, snapshotId);
+      commitAndPublishTableFacts(tableId, snapshotId);
       return 0L;
     }
     if (statsStore.putTargetStatsIfAbsent(zeroMarker)) {
       statsOrchestrator.invalidateStatsCache(tableId, snapshotId, zeroMarker.getTarget());
-      commitGenerationToRoot(tableId, snapshotId);
+      commitAndPublishTableFacts(tableId, snapshotId);
       return 1L;
     }
     if (statsStore
         .getTargetStats(tableId, snapshotId, StatsTargetIdentity.tableTarget())
         .isPresent()) {
       // Lost the create race to a concurrent attempt; ensure the generation is on the root anyway.
-      commitGenerationToRoot(tableId, snapshotId);
+      commitAndPublishTableFacts(tableId, snapshotId);
       return 0L;
     }
     throw new IllegalStateException(
@@ -203,6 +224,12 @@ public class SnapshotFinalizePersistenceService {
             + tableId.getId()
             + " snapshot "
             + snapshotId);
+  }
+
+  private static boolean containsTableFacts(List<TargetStatsRecord> records) {
+    return records.stream()
+        .anyMatch(
+            record -> record.hasTarget() && record.getTarget().hasTable() && record.hasTable());
   }
 
   public List<TargetStatsRecord> buildAggregateStats(

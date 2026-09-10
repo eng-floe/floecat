@@ -97,9 +97,11 @@ class CacheBudgetResolverTest {
                 Map.of(
                     "floecat.cache.total-bytes", Long.toString(10 * GB),
                     "floecat.cache.heap-share", "0.5",
-                    "floecat.cache.pointer.max-bytes", Long.toString(GB))));
+                    "floecat.cache.pointer.max-bytes", Long.toString(GB),
+                    "floecat.cache.object.max-bytes", Long.toString(2 * GB))));
 
     assertThat(budgets.bytesFor(CacheFamily.POINTER)).isEqualTo(GB);
+    assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isEqualTo(2 * GB);
   }
 
   @Test
@@ -122,7 +124,7 @@ class CacheBudgetResolverTest {
   void aClaimMayNotExceedTheTotalItIsSplitFrom() {
     // A max-bytes pinned above the total is the operator mistake that OOMs the node, and no share
     // being out of range says anything about it. Multi-family overcommit is pinned on the pure
-    // arithmetic in CacheBudgetTest, since only one family is on the contract today.
+    // arithmetic in CacheBudgetTest.
     assertThatThrownBy(
             () ->
                 new CacheBudgetResolver(
@@ -183,5 +185,6 @@ class CacheBudgetResolverTest {
     var budgets = new CacheBudgetResolver(config(shipped));
 
     assertThat(budgets.bytesFor(CacheFamily.POINTER)).isPositive();
+    assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isPositive();
   }
 }

@@ -374,6 +374,23 @@ final class PlannerStatsResolver {
     return new Resolution(out, List.copyOf(afterFill), diagnostics, pinnedGeneration);
   }
 
+  /** Reads only the pinned generation, treating an unreadable frozen manifest as a miss. */
+  Optional<TargetStatsRecord> resolvePinnedFromStore(
+      StatsCaptureRequest request, String pinnedGeneration) {
+    try {
+      return statsStore.getTargetStatsInGeneration(
+          request.tableId(), request.snapshotId(), pinnedGeneration, request.target());
+    } catch (BaseResourceRepository.AbortRetryableException | StorageAbortRetryableException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      // A frozen manifest may be temporarily unreadable even though the live generation is still
+      // available. Treat that generation as a miss; callers can then use the normal newest ladder.
+      LOG.debugf(
+          e, "pinned-generation read failed for %s; falling through to newest", storageId(request));
+      return Optional.empty();
+    }
+  }
+
   /**
    * Store rungs of the single-target planner lookup: the pinned generation for the pinned snapshot
    * (query-consistent; a pinned read failure falls through rather than failing the lookup), then
@@ -390,23 +407,7 @@ final class PlannerStatsResolver {
     if (pinnedGeneration.isBlank()) {
       primary = storeReader.apply(request);
     } else {
-      try {
-        primary =
-            statsStore.getTargetStatsInGeneration(
-                request.tableId(), request.snapshotId(), pinnedGeneration, request.target());
-      } catch (BaseResourceRepository.AbortRetryableException | StorageAbortRetryableException e) {
-        throw e;
-      } catch (RuntimeException e) {
-        // A pinned-generation read failure (e.g. an unreadable frozen manifest) must not fail the
-        // lookup outright: the newest generation of the same snapshot is an independent read path
-        // with no frozen manifest involved — treat the pin as a miss and let the gap-fill below
-        // serve, matching the batch path's fallback.
-        LOG.debugf(
-            e,
-            "pinned-generation read failed for %s; falling through to newest",
-            storageId(request));
-        primary = Optional.empty();
-      }
+      primary = resolvePinnedFromStore(request, pinnedGeneration);
     }
     if (primary.isPresent()) {
       return primary;

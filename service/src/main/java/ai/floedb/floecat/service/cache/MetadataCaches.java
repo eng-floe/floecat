@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.cache;
 
 import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.cache.CacheFamily;
+import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.CachingPointerStore;
@@ -33,6 +34,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
 import java.time.Duration;
+import java.util.function.LongSupplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /** Where the pointer cache is built, and the pointer store that wraps it. */
@@ -117,6 +119,23 @@ public class MetadataCaches {
     return cache;
   }
 
+  /** Objects: decoded engine-neutral SQL metadata under one admission-controlled byte budget. */
+  @Produces
+  @ApplicationScoped
+  public ObjectCache objects(
+      CacheBudgetResolver budgets,
+      Observability observability,
+      LogicalSchemaMapper schemaMapper,
+      @ConfigProperty(name = "floecat.cache.object.enabled", defaultValue = "true")
+          boolean enabled) {
+    var metrics = metricsFor(CacheFamily.OBJECT, observability);
+    var cache =
+        new ObjectCache(
+            budgets.bytesFor(CacheFamily.OBJECT), events(metrics), schemaMapper, enabled);
+    report(cache.family(), cache::entryCount, cache::bytes, budgets, metrics, cache.enabled());
+    return cache;
+  }
+
   private static CacheMetrics metricsFor(CacheFamily family, Observability observability) {
     return new CacheMetrics(observability, "service", "metadata-cache", family.tag());
   }
@@ -184,15 +203,8 @@ public class MetadataCaches {
    */
   private static void report(
       PointerCache cache, CacheBudgetResolver budgets, CacheMetrics metrics, boolean enabled) {
+    report(cache.family(), cache::entryCount, cache::bytes, budgets, metrics, enabled);
     String tag = cache.family().tag();
-    // Fixed at construction, so both gauges read the same captured value rather than one of them
-    // re-resolving the budget on every scrape.
-    long budget = budgets.bytesFor(cache.family());
-    metrics.trackEnabled(() -> enabled ? 1.0 : 0.0, "Whether the " + tag + " cache is enabled");
-    metrics.trackSize(cache::entryCount, "Entries held by the " + tag + " cache");
-    metrics.trackWeightedSize(
-        () -> (double) cache.bytes(), "Retained bytes held by the " + tag + " cache");
-    metrics.trackMaxWeight(() -> (double) budget, "Byte budget for the " + tag + " cache");
     metrics.trackAccounts(
         cache::loadingAccountCount,
         "Accounts whose complete pointer index is loading",
@@ -207,5 +219,23 @@ public class MetadataCaches {
         Tag.of(TagKey.RESULT, "degraded"));
     // Hits, misses, load latency and evictions are not registered here: they are events, recorded
     // per read by the cache itself through CacheEvents, not gauges sampled from a running total.
+  }
+
+  private static void report(
+      CacheFamily family,
+      LongSupplier entryCount,
+      LongSupplier bytes,
+      CacheBudgetResolver budgets,
+      CacheMetrics metrics,
+      boolean enabled) {
+    String tag = family.tag();
+    // Fixed at construction, so both gauges read the same captured value rather than one of them
+    // re-resolving the budget on every scrape.
+    long budget = budgets.bytesFor(family);
+    metrics.trackEnabled(() -> enabled ? 1.0 : 0.0, "Whether the " + tag + " cache is enabled");
+    metrics.trackSize(() -> entryCount.getAsLong(), "Entries held by the " + tag + " cache");
+    metrics.trackWeightedSize(
+        () -> (double) bytes.getAsLong(), "Retained bytes held by the " + tag + " cache");
+    metrics.trackMaxWeight(() -> (double) budget, "Byte budget for the " + tag + " cache");
   }
 }

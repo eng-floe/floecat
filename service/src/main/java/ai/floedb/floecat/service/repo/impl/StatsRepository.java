@@ -728,7 +728,6 @@ public class StatsRepository implements StatsStore {
       canonicalRecords =
           carrySketchesFromSuperseded(tableId, snapshotId, canonicalRecords, current);
     }
-    markGenerationPublishing(tableId, snapshotId, effectiveGenerationId);
     List<TargetStatsWrite> writes = new ArrayList<>(canonicalRecords.size());
     for (TargetStatsRecord record : canonicalRecords) {
       writes.add(
@@ -737,6 +736,22 @@ public class StatsRepository implements StatsStore {
               blobUri(record, effectiveGenerationId),
               record));
     }
+    String lifecycleState = generationLifecycleState(tableId, snapshotId, effectiveGenerationId);
+    String publicationIntent = targetStatsPublicationIntent(writes);
+    if (GENERATION_PUBLISHED.equals(lifecycleState)) {
+      if (current
+          .map(ActiveSnapshotStats::generationId)
+          .filter(effectiveGenerationId::equals)
+          .isEmpty()) {
+        throw new BaseResourceRepository.AbortRetryableException(
+            "published target stats generation is no longer active: " + effectiveGenerationId);
+      }
+      ensurePublicationIntent(tableId, snapshotId, effectiveGenerationId, publicationIntent, false);
+      targetStatsStorage.verifyPublishedWrites(writes);
+      return;
+    }
+    markGenerationPublishing(tableId, snapshotId, effectiveGenerationId);
+    ensurePublicationIntent(tableId, snapshotId, effectiveGenerationId, publicationIntent, true);
     targetStatsStorage.overwriteBatch(writes);
     publishActiveGeneration(tableId, snapshotId, effectiveGenerationId, current);
   }
@@ -1612,10 +1627,23 @@ public class StatsRepository implements StatsStore {
       String generationId,
       List<PrewrittenStatsWrite> writes,
       boolean createIfAbsent) {
+    ensurePublicationIntent(
+        tableId,
+        snapshotId,
+        generationId,
+        prewrittenStatsPublicationIntent(writes),
+        createIfAbsent);
+  }
+
+  private void ensurePublicationIntent(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String intent,
+      boolean createIfAbsent) {
     String pointerKey =
         Keys.snapshotTargetStatsGenerationPublicationIntentPointer(
             tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
-    String intent = prewrittenStatsPublicationIntent(writes);
     for (int attempt = 0; attempt < 8; attempt++) {
       Pointer current = pointerStore.get(pointerKey).orElse(null);
       if (current != null) {
@@ -1624,11 +1652,11 @@ public class StatsRepository implements StatsStore {
           return;
         }
         throw new IllegalArgumentException(
-            "prewritten target stats publication intent changed for generation " + generationId);
+            "target stats publication intent changed for generation " + generationId);
       }
       if (!createIfAbsent) {
         throw new IllegalArgumentException(
-            "prewritten target stats publication intent is missing for generation " + generationId);
+            "target stats publication intent is missing for generation " + generationId);
       }
       Pointer next = PointerReferences.opaqueMarkerPointer(pointerKey, intent, 1L);
       if (AccountDeletionFence.compareAndSet(
@@ -1637,7 +1665,7 @@ public class StatsRepository implements StatsStore {
       }
     }
     throw new BaseResourceRepository.AbortRetryableException(
-        "prewritten target stats publication intent update conflicted: " + generationId);
+        "target stats publication intent update conflicted: " + generationId);
   }
 
   private static String prewrittenStatsPublicationIntent(List<PrewrittenStatsWrite> writes) {
@@ -1655,6 +1683,28 @@ public class StatsRepository implements StatsStore {
                     .append(write.blobUri())
                     .append(write.blobBytes())
                     .append(';'));
+    return "sha256:" + Hashing.sha256Hex(canonical.toString());
+  }
+
+  private static String targetStatsPublicationIntent(List<TargetStatsWrite> writes) {
+    StringBuilder canonical = new StringBuilder();
+    writes.stream()
+        .sorted(Comparator.comparing(TargetStatsWrite::pointerKey))
+        .forEach(
+            write -> {
+              byte[] value = write.value().toByteArray();
+              canonical
+                  .append(write.pointerKey().length())
+                  .append(':')
+                  .append(write.pointerKey())
+                  .append(write.blobUri().length())
+                  .append(':')
+                  .append(write.blobUri())
+                  .append(value.length)
+                  .append(':')
+                  .append(Hashing.sha256Hex(value))
+                  .append(';');
+            });
     return "sha256:" + Hashing.sha256Hex(canonical.toString());
   }
 
@@ -2983,13 +3033,39 @@ public class StatsRepository implements StatsStore {
       }
     }
 
+    private void verifyPublishedWrites(List<TargetStatsWrite> writes) {
+      for (TargetStatsWrite write : writes) {
+        Pointer existing = mutationPointerStore.get(write.pointerKey()).orElse(null);
+        if (existing == null) {
+          throw new AbortRetryableException(
+              "published target stats reference is missing: " + write.pointerKey());
+        }
+        requireExactReference(
+            "published",
+            write.pointerKey(),
+            write.blobUri(),
+            write.value().getSerializedSize(),
+            existing);
+      }
+    }
+
     private void requireExactReference(PrewrittenStatsWrite write, Pointer existing) {
+      requireExactReference(
+          "prewritten", write.pointerKey(), write.blobUri(), write.blobBytes(), existing);
+    }
+
+    private void requireExactReference(
+        String publicationKind,
+        String pointerKey,
+        String blobUri,
+        long blobBytes,
+        Pointer existing) {
       if (!PointerReferences.isBlobPointer(existing)
-          || !write.blobUri().equals(existing.getBlobUri())
+          || !blobUri.equals(existing.getBlobUri())
           || !existing.hasReferencedObjectSizeBytes()
-          || write.blobBytes() != existing.getReferencedObjectSizeBytes()) {
+          || blobBytes != existing.getReferencedObjectSizeBytes()) {
         throw new IllegalArgumentException(
-            "prewritten target stats reference changed for pointer " + write.pointerKey());
+            publicationKind + " target stats reference changed for pointer " + pointerKey);
       }
     }
 

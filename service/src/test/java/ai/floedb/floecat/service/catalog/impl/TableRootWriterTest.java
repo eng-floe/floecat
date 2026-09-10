@@ -157,7 +157,7 @@ class TableRootWriterTest {
     when(statsStore.activeStatsGeneration(tableId, 7L))
         .thenReturn(Optional.of("s3://t/stats/7/gen-1.pb"));
 
-    writer.commitStatsGeneration(tableId, 7L);
+    assertEquals(Optional.of("s3://t/stats/7/gen-1.pb"), writer.commitStatsGeneration(tableId, 7L));
 
     assertEquals("s3://t/stats/7/gen-1.pb", entry(7).getStatsGenerationRef().getUri());
   }
@@ -166,10 +166,10 @@ class TableRootWriterTest {
   void commitStatsGenerationClearsTheRefWhenTheGenerationIsGone() {
     when(statsStore.activeStatsGeneration(tableId, 7L))
         .thenReturn(Optional.of("s3://t/stats/7/gen-1.pb"));
-    writer.commitStatsGeneration(tableId, 7L);
+    assertEquals(Optional.of("s3://t/stats/7/gen-1.pb"), writer.commitStatsGeneration(tableId, 7L));
 
     when(statsStore.activeStatsGeneration(tableId, 7L)).thenReturn(Optional.empty());
-    writer.commitStatsGeneration(tableId, 7L);
+    assertEquals(Optional.empty(), writer.commitStatsGeneration(tableId, 7L));
 
     assertFalse(entry(7).hasStatsGenerationRef());
   }
@@ -181,7 +181,7 @@ class TableRootWriterTest {
     when(statsStore.tracksStatsGenerations()).thenReturn(false);
     long versionBefore = roots.metaForSafe(tableId).getPointerVersion();
 
-    writer.commitStatsGeneration(tableId, 7L);
+    assertEquals(Optional.empty(), writer.commitStatsGeneration(tableId, 7L));
 
     assertEquals(versionBefore, roots.metaForSafe(tableId).getPointerVersion());
   }
