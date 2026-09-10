@@ -41,8 +41,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -77,7 +75,6 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
   private final int mmapThresholdBytes;
   private final long accessUpdateIntervalMillis;
   private final BlobCacheEvents events;
-  private final ConcurrentMap<LoadKey, CompletableFuture<byte[]>> loads = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, PartitionState> partitions = new ConcurrentHashMap<>();
   private final ConcurrentMap<Path, AtomicLong> mappings = new ConcurrentHashMap<>();
   private final Set<Path> pendingDeletes = ConcurrentHashMap.newKeySet();
@@ -122,22 +119,12 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
     long started = System.nanoTime();
     Path path = entryPath(key);
     PartitionState partition = partition(key.partition());
-    long partitionGeneration;
     boolean partitionRetired;
     Optional<Content> cached;
-    LoadKey loadKey = null;
-    CompletableFuture<byte[]> mine = null;
-    CompletableFuture<byte[]> existing = null;
     partition.lock.readLock().lock();
     try {
-      partitionGeneration = partition.generation;
       partitionRetired = partition.retired;
       cached = partitionRetired ? Optional.empty() : readCached(path);
-      if (!partitionRetired && cached.isEmpty() && fill == Fill.FILL) {
-        loadKey = new LoadKey(key, partitionGeneration);
-        mine = new CompletableFuture<>();
-        existing = loads.putIfAbsent(loadKey, mine);
-      }
     } finally {
       partition.lock.readLock().unlock();
     }
@@ -152,67 +139,26 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
       return loadDirect(loader, started);
     }
 
-    if (existing != null) {
-      try {
-        byte[] bytes = existing.join();
-        events.hit(Duration.ofNanos(System.nanoTime() - started));
-        return Optional.ofNullable(bytes).map(HeapContent::new);
-      } catch (CompletionException e) {
-        throw rethrow(e.getCause());
-      }
-    }
-
+    byte[] bytes;
     try {
-      // The winner may have filled between the first path probe and single-flight ownership.
-      partition.lock.readLock().lock();
-      try {
-        cached = partition.generation == partitionGeneration ? readCached(path) : Optional.empty();
-      } finally {
-        partition.lock.readLock().unlock();
-      }
-      if (cached.isPresent()) {
-        byte[] bytes;
-        try (Content content = cached.orElseThrow()) {
-          bytes = copy(content);
-        }
-        mine.complete(bytes);
-        events.hit(Duration.ofNanos(System.nanoTime() - started));
-        return Optional.of(new HeapContent(bytes));
-      }
-
-      byte[] bytes;
-      try {
-        bytes = loader.load();
-      } catch (RuntimeException e) {
-        events.miss();
-        events.loadFailed(Duration.ofNanos(System.nanoTime() - started), e);
-        mine.completeExceptionally(e);
-        throw e;
-      }
+      bytes = loader.load();
       events.miss();
       events.loadTime(Duration.ofNanos(System.nanoTime() - started));
       if (bytes != null) {
         partition.lock.readLock().lock();
         try {
-          if (partition.generation == partitionGeneration && loads.get(loadKey) == mine) {
+          if (!partition.retired) {
             publish(path, bytes, false);
-          } else {
-            events.loadDiscarded();
           }
         } finally {
           partition.lock.readLock().unlock();
         }
       }
-      mine.complete(bytes);
       return Optional.ofNullable(bytes).map(HeapContent::new);
     } catch (RuntimeException e) {
-      mine.completeExceptionally(e);
+      events.miss();
+      events.loadFailed(Duration.ofNanos(System.nanoTime() - started), e);
       throw e;
-    } catch (Error e) {
-      mine.completeExceptionally(e);
-      throw e;
-    } finally {
-      loads.remove(loadKey, mine);
     }
   }
 
@@ -286,14 +232,11 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
   private Map<Key, Content> getAllFromPartition(List<Key> keys, Fill fill, BatchLoader loader) {
     long started = System.nanoTime();
     PartitionState partition = partition(keys.getFirst().partition());
-    long generation;
     Map<Key, Content> result = new LinkedHashMap<>();
-    List<BatchLoad> loadsToResolve = new ArrayList<>();
-    List<Key> directMisses = new ArrayList<>();
+    List<Key> misses = new ArrayList<>();
     int hits = 0;
     partition.lock.readLock().lock();
     try {
-      generation = partition.generation;
       for (Key key : keys) {
         Optional<Content> cached =
             partition.retired ? Optional.empty() : readCached(entryPath(key));
@@ -302,14 +245,7 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
           hits++;
           continue;
         }
-        if (partition.retired || fill == Fill.BYPASS_FILL) {
-          directMisses.add(key);
-          continue;
-        }
-        LoadKey loadKey = new LoadKey(key, generation);
-        CompletableFuture<byte[]> mine = new CompletableFuture<>();
-        CompletableFuture<byte[]> existing = loads.putIfAbsent(loadKey, mine);
-        loadsToResolve.add(new BatchLoad(key, loadKey, mine, existing));
+        misses.add(key);
       }
     } finally {
       partition.lock.readLock().unlock();
@@ -319,70 +255,24 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
         events.hit(Duration.ofNanos(System.nanoTime() - started));
       }
 
-      if (!directMisses.isEmpty()) {
-        Map<Key, byte[]> fetched = loadBatch(loader, directMisses, started);
-        for (Key key : directMisses) {
-          byte[] bytes = fetched.get(key);
-          if (bytes != null) {
-            result.put(key, new HeapContent(bytes));
-          }
-        }
+      if (misses.isEmpty()) {
         return result;
       }
-
-      List<BatchLoad> owned = loadsToResolve.stream().filter(BatchLoad::owned).toList();
-      if (!owned.isEmpty()) {
-        List<Key> ownedKeys = owned.stream().map(BatchLoad::key).toList();
-        Map<Key, byte[]> fetched;
-        try {
-          fetched = loader.load(ownedKeys);
-          if (fetched == null) {
-            fetched = Map.of();
-          }
-          owned.forEach(ignored -> events.miss());
-          events.loadTime(Duration.ofNanos(System.nanoTime() - started));
-          partition.lock.readLock().lock();
-          try {
-            for (BatchLoad load : owned) {
-              byte[] bytes = fetched.get(load.key());
-              if (bytes != null) {
-                if (partition.generation == generation
-                    && loads.get(load.loadKey()) == load.mine()) {
-                  publish(entryPath(load.key()), bytes, false);
-                } else {
-                  events.loadDiscarded();
-                }
+      Map<Key, byte[]> fetched = loadBatch(loader, misses, started);
+      for (Key key : misses) {
+        byte[] bytes = fetched.get(key);
+        if (bytes != null) {
+          if (fill == Fill.FILL) {
+            partition.lock.readLock().lock();
+            try {
+              if (!partition.retired) {
+                publish(entryPath(key), bytes, false);
               }
-              load.mine().complete(bytes);
+            } finally {
+              partition.lock.readLock().unlock();
             }
-          } finally {
-            partition.lock.readLock().unlock();
           }
-        } catch (RuntimeException failure) {
-          owned.forEach(ignored -> events.miss());
-          events.loadFailed(Duration.ofNanos(System.nanoTime() - started), failure);
-          owned.forEach(load -> load.mine().completeExceptionally(failure));
-          throw failure;
-        } catch (Error failure) {
-          owned.forEach(load -> load.mine().completeExceptionally(failure));
-          throw failure;
-        } finally {
-          owned.forEach(load -> loads.remove(load.loadKey(), load.mine()));
-        }
-      }
-
-      for (BatchLoad load : loadsToResolve) {
-        CompletableFuture<byte[]> future = load.owned() ? load.mine() : load.existing();
-        try {
-          byte[] bytes = future.join();
-          if (!load.owned()) {
-            events.hit(Duration.ofNanos(System.nanoTime() - started));
-          }
-          if (bytes != null) {
-            result.put(load.key(), new HeapContent(bytes));
-          }
-        } catch (CompletionException failure) {
-          throw rethrow(failure.getCause());
+          result.put(key, new HeapContent(bytes));
         }
       }
       return result;
@@ -447,7 +337,6 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
     PartitionState partition = partition(key.partition());
     partition.lock.writeLock().lock();
     try {
-      loads.keySet().removeIf(load -> load.key().equals(key));
       retire(entryPath(key));
     } finally {
       partition.lock.writeLock().unlock();
@@ -466,10 +355,9 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
     PartitionState state = partition(partition);
     state.lock.writeLock().lock();
     try {
-      state.generation++;
       // Account ids are immutable identities. Once their durable account is deleted, keep this
       // local partition non-admitting for the rest of the process so a late writer cannot
-      // repopulate it after the deletion fence and disk eviction completed.
+      // repopulate it after account deletion and disk eviction completed.
       state.retired = true;
       try {
         if (!Files.exists(directory)) {
@@ -868,16 +756,6 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
     return left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
   }
 
-  private static RuntimeException rethrow(Throwable failure) {
-    if (failure instanceof RuntimeException runtime) {
-      return runtime;
-    }
-    if (failure instanceof Error error) {
-      throw error;
-    }
-    return new IllegalStateException(failure);
-  }
-
   private static void deleteEmptyTree(Path directory) throws IOException {
     if (!Files.exists(directory)) {
       return;
@@ -943,21 +821,8 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
 
   private record Scan(long bytes, long entries, List<Entry> oldest) {}
 
-  private record LoadKey(Key key, long partitionGeneration) {}
-
-  private record BatchLoad(
-      Key key,
-      LoadKey loadKey,
-      CompletableFuture<byte[]> mine,
-      CompletableFuture<byte[]> existing) {
-    private boolean owned() {
-      return existing == null;
-    }
-  }
-
   private static final class PartitionState {
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-    private long generation;
     private boolean retired;
   }
 
