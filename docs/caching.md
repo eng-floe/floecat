@@ -18,6 +18,14 @@ callbacks.
   index is deliberately different: after its account load completes, a missing addressing key is
   authoritative absence.
 
+## Warm and cold reads
+
+A warm read reuses the process-local value. A cold read, a disabled cache, a cache miss, or a
+temporarily degraded cache follows the same repository path and returns the same answer; only
+latency and store cost change. Concurrent requests for the same value share one source load.
+Durable mutations become visible to the cache only after they commit, and an older in-flight read
+cannot replace a newer value after eviction.
+
 ## The cache disciplines
 
 | Discipline | Implementation | What it holds | Freshness contract |
@@ -43,6 +51,9 @@ deterministic (not content-addressed) URIs and a re-capture may overwrite one in
 URI-keyed caching would be unsound for them.
 
 ## The shared cache contract (`core/cache`)
+
+The cache module coordinates overlapping reads and mutations internally. Callers use repositories
+and do not choose locks, load slots, or cache tiers.
 
 The future cache layers share this module's operational and telemetry vocabulary, but not one
 storage-shaped interface or one resource pool. `MemoryCache<K, V>` is the in-memory primitive used

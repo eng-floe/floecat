@@ -26,7 +26,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.locks.StampedLock;
 import java.util.function.Predicate;
 import java.util.function.ToLongFunction;
 
@@ -42,10 +41,6 @@ import java.util.function.ToLongFunction;
  */
 public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
 
-  // Striped, so an unrelated key's write is a collision rather than a certainty; one fence for the
-  // cache would refuse every install on a cache taking a publish per commit. Not a tunable: the
-  // count only buys a lower collision rate, and a collision merely costs a reload.
-  private static final int FENCE_STRIPES = 256;
   // Every stored value has a distinct wrapper so a raced load can remove its own installation
   // without removing a writer's publication of the exact same value object.
   private static final long CACHED_VALUE_BYTES = 16L;
@@ -55,7 +50,7 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
   private final ToLongFunction<K> keyWeight;
   private final CacheEvents events;
   private final long weightUnitBytes;
-  private final StampedLock[] fences = new StampedLock[FENCE_STRIPES];
+  private final LoadCoordinator<K, V> loads;
 
   /**
    * @param family which cache this is; its tag is the metric dimension
@@ -74,15 +69,13 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
     this.family = family;
     this.keyWeight = keyWeight;
     this.events = events;
+    this.loads = new LoadCoordinator<>(Object::hashCode);
     // Caffeine accepts a long total but an int per-entry weight. Use larger units when the budget
     // itself cannot be represented in bytes, rounding entries up and the budget down so the real
     // byte ceiling is never exceeded. Leave one int unit unused: if an entry is larger than the
     // whole budget, clamping its weight to Integer.MAX_VALUE must still put it over the ceiling.
     this.weightUnitBytes = divideRoundUp(maxBytes, Integer.MAX_VALUE - 1L);
     long maximumWeightUnits = maxBytes / weightUnitBytes;
-    for (int stripe = 0; stripe < fences.length; stripe++) {
-      fences[stripe] = new StampedLock();
-    }
     this.entries =
         Caffeine.<K, CachedValue<V>>newBuilder()
             .maximumWeight(maximumWeightUnits)
@@ -92,7 +85,7 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
             // pressure.
             .evictionListener(
                 (K key, CachedValue<V> value, RemovalCause cause) ->
-                    events.evicted(weightBytes(key, value.value())))
+                    report(() -> events.evicted(weightBytes(key, value.value()))))
             .build();
   }
 
@@ -145,54 +138,55 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
 
   @Override
   public V get(K key, Loader<K, V> loader) {
-    // Timed and counted here rather than read off Caffeine's cumulative stats: see CacheEvents.
-    LoadedValue<V> loaded = new LoadedValue<>();
+    Objects.requireNonNull(key, "key");
+    Objects.requireNonNull(loader, "loader");
     long startNanos = System.nanoTime();
-    // Sampled before the load because the load runs under a map reservation that some mutations
-    // cannot observe. If one wins the race, the load undoes only its own installation afterwards.
-    StampedLock fence = fenceFor(key);
-    long stamp = fence.tryOptimisticRead();
-    CachedValue<V> cached;
+    LoadCoordinator.Sample sample = loads.sample(key);
+    CachedValue<V> cached = entries.getIfPresent(key);
+    if (cached != null) {
+      report(() -> events.hit(Duration.ofNanos(System.nanoTime() - startNanos)));
+      return cached.value();
+    }
+
+    LoadCoordinator.Acquisition<K, V> acquisition = loads.acquire(key, sample);
+    if (!acquisition.owner()) {
+      V value = loads.await(acquisition.token());
+      report(() -> events.hit(Duration.ofNanos(System.nanoTime() - startNanos)));
+      return value;
+    }
+
+    LoadCoordinator.Token<K, V> token = acquisition.token();
+    V value;
     try {
-      cached =
-          entries.get(
-              key,
-              k -> {
-                loaded.invoked = true;
-                V value = loader.load(k);
-                loaded.entry = value == null ? null : new CachedValue<>(value);
-                return loaded.entry;
-              });
-    } catch (RuntimeException e) {
-      if (loaded.invoked) {
-        events.miss();
+      value = loader.load(key);
+      CachedValue<V> loaded = value == null ? null : new CachedValue<>(value);
+      if (loaded != null) {
+        boolean retained =
+            loads.publishIfCurrent(token, () -> entries.asMap().putIfAbsent(key, loaded));
+        if (!retained) {
+          report(events::loadDiscarded);
+        }
       }
-      // An unweighable value is a defect in the value type, not a failed store read -- the weigher
-      // runs inside this compute, so its refusal comes back out of here. Reporting it as a load
-      // failure would point an operator at a store that is working.
+      // A mutation that won while the source read was in flight is the answer for followers and for
+      // this call when it is resident. An eviction deliberately leaves no answer, so the caller
+      // keeps the value it loaded even though it was not retained.
+      CachedValue<V> current = entries.getIfPresent(key);
+      V served = current == null ? value : current.value();
+      loads.complete(token, served);
+      report(events::miss);
+      report(() -> events.loadTime(Duration.ofNanos(System.nanoTime() - startNanos)));
+      return served;
+    } catch (RuntimeException e) {
+      loads.fail(token, e);
+      report(events::miss);
       if (!(e instanceof UnweighableValueException)) {
-        events.loadFailed(Duration.ofNanos(System.nanoTime() - startNanos), e);
+        report(() -> events.loadFailed(Duration.ofNanos(System.nanoTime() - startNanos), e));
       }
       throw e;
+    } catch (Error e) {
+      loads.fail(token, e);
+      throw e;
     }
-    // Outside the try on purpose: inside it, a metrics implementation that threw would be recorded
-    // and rethrown as a load failure -- a broken exporter reported as a broken store.
-    Duration elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-    if (loaded.invoked) {
-      if (loaded.entry != null) {
-        // A loader that returned null cached nothing, so there is nothing to drop and no refusal
-        // to report -- counting one would inflate the signal that means "this cache stopped
-        // warming" on a path that never fills.
-        dropIfFenceMoved(key, loaded.entry, fence, stamp);
-      }
-      events.miss();
-      events.loadTime(elapsed);
-    } else {
-      // Includes a follower that waited on another caller's load: Caffeine never invokes the
-      // mapping function for it, so it is a hit -- one that took as long as the load.
-      events.hit(elapsed);
-    }
-    return cached == null ? null : cached.value();
   }
 
   @Override
@@ -211,107 +205,102 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
     }
 
     Map<K, V> result = new LinkedHashMap<>();
-    Map<K, ReadStamp> misses = new LinkedHashMap<>();
-    for (K key : distinctKeys) {
-      long startNanos = System.nanoTime();
-      // Sample before probing the cache.  If an eviction moves this fence after the sample,
-      // dropIfFenceMoved will remove a value this bulk load installs, even when the eviction
-      // completes between the probe and this bookkeeping step.  This is the same ordering used by
-      // get(); evictPartition moves every stripe, so it is covered by the same check.
-      StampedLock fence = fenceFor(key);
-      long stamp = fence.tryOptimisticRead();
-      CachedValue<V> value = entries.getIfPresent(key);
-      if (value != null) {
-        result.put(key, value.value());
-        events.hit(Duration.ofNanos(System.nanoTime() - startNanos));
-      } else {
-        misses.put(key, new ReadStamp(fence, stamp));
-        events.miss();
+    Map<K, LoadCoordinator.Acquisition<K, V>> acquisitions = new LinkedHashMap<>();
+    try {
+      for (K key : distinctKeys) {
+        Objects.requireNonNull(key, "cache keys must not be null");
+        long startNanos = System.nanoTime();
+        LoadCoordinator.Sample sample = loads.sample(key);
+        CachedValue<V> value = entries.getIfPresent(key);
+        if (value != null) {
+          result.put(key, value.value());
+          report(() -> events.hit(Duration.ofNanos(System.nanoTime() - startNanos)));
+        } else {
+          acquisitions.put(key, loads.acquire(key, sample));
+          report(events::miss);
+        }
       }
+    } catch (RuntimeException | Error failure) {
+      acquisitions.values().stream()
+          .filter(LoadCoordinator.Acquisition::owner)
+          .map(LoadCoordinator.Acquisition::token)
+          .forEach(token -> loads.fail(token, failure));
+      throw failure;
     }
-    if (misses.isEmpty()) {
+    if (acquisitions.isEmpty()) {
       return Map.copyOf(result);
     }
 
-    long startNanos = System.nanoTime();
-    Map<K, V> loaded;
-    try {
-      loaded = Objects.requireNonNull(loader.load(Set.copyOf(misses.keySet())), "loader result");
-      for (Map.Entry<K, V> entry : loaded.entrySet()) {
-        if (!misses.containsKey(entry.getKey())) {
-          throw new IllegalArgumentException(
-              "loader returned an unrequested key: " + entry.getKey());
-        }
-        Objects.requireNonNull(entry.getValue(), "a bulk loader must omit absent keys");
+    Map<K, LoadCoordinator.Token<K, V>> owned = new LinkedHashMap<>();
+    for (Map.Entry<K, LoadCoordinator.Acquisition<K, V>> entry : acquisitions.entrySet()) {
+      if (entry.getValue().owner()) {
+        owned.put(entry.getKey(), entry.getValue().token());
       }
-    } catch (RuntimeException e) {
-      if (!(e instanceof UnweighableValueException)) {
-        events.loadFailed(Duration.ofNanos(System.nanoTime() - startNanos), e);
-      }
-      throw e;
     }
-    events.loadTime(Duration.ofNanos(System.nanoTime() - startNanos));
 
-    for (Map.Entry<K, ReadStamp> miss : misses.entrySet()) {
-      K key = miss.getKey();
-      V value = loaded.get(key);
-      if (value == null) {
-        continue;
+    Map<K, V> ownedResults = new LinkedHashMap<>();
+    if (!owned.isEmpty()) {
+      long startNanos = System.nanoTime();
+      try {
+        Map<K, V> loaded =
+            Objects.requireNonNull(loader.load(Set.copyOf(owned.keySet())), "loader result");
+        for (Map.Entry<K, V> entry : loaded.entrySet()) {
+          if (!owned.containsKey(entry.getKey())) {
+            throw new IllegalArgumentException(
+                "loader returned an unrequested key: " + entry.getKey());
+          }
+          Objects.requireNonNull(entry.getValue(), "a bulk loader must omit absent keys");
+        }
+        for (Map.Entry<K, LoadCoordinator.Token<K, V>> entry : owned.entrySet()) {
+          K key = entry.getKey();
+          V value = loaded.get(key);
+          ownedResults.put(key, completeLoaded(key, value, entry.getValue()));
+        }
+      } catch (RuntimeException e) {
+        owned.values().forEach(token -> loads.fail(token, e));
+        if (!(e instanceof UnweighableValueException)) {
+          report(() -> events.loadFailed(Duration.ofNanos(System.nanoTime() - startNanos), e));
+        }
+        throw e;
+      } catch (Error e) {
+        owned.values().forEach(token -> loads.fail(token, e));
+        throw e;
       }
-      LoadedValue<V> installed = new LoadedValue<>();
-      CachedValue<V> retained =
-          entries.get(
-              key,
-              ignored -> {
-                installed.invoked = true;
-                installed.entry = new CachedValue<>(value);
-                return installed.entry;
-              });
-      if (installed.invoked) {
-        ReadStamp stamp = miss.getValue();
-        dropIfFenceMoved(key, installed.entry, stamp.fence(), stamp.stamp());
+      report(() -> events.loadTime(Duration.ofNanos(System.nanoTime() - startNanos)));
+    }
+
+    for (Map.Entry<K, LoadCoordinator.Acquisition<K, V>> entry : acquisitions.entrySet()) {
+      V value =
+          entry.getValue().owner()
+              ? ownedResults.get(entry.getKey())
+              : loads.await(entry.getValue().token());
+      if (value != null) {
+        result.put(entry.getKey(), value);
       }
-      // A concurrent cache load may have won before this batch reached the key. Serve that winner
-      // rather than the batch's older answer; a mutation race still serves this batch's answer and
-      // leaves the cache absent or with the mutator's value.
-      result.put(key, retained.value());
     }
     return Map.copyOf(result);
   }
 
+  private V completeLoaded(K key, V value, LoadCoordinator.Token<K, V> token) {
+    CachedValue<V> loaded = value == null ? null : new CachedValue<>(value);
+    if (loaded != null) {
+      boolean retained =
+          loads.publishIfCurrent(token, () -> entries.asMap().putIfAbsent(key, loaded));
+      if (!retained) {
+        report(events::loadDiscarded);
+      }
+    }
+    CachedValue<V> current = entries.getIfPresent(key);
+    V served = current == null ? value : current.value();
+    loads.complete(token, served);
+    return served;
+  }
+
   @Override
   public void put(K key, V value) {
+    Objects.requireNonNull(key, "key");
     Objects.requireNonNull(value, "a cache holds no nulls; to drop a key use evict");
-    StampedLock fence = fenceFor(key);
-    long stamp = fence.writeLock();
-    try {
-      entries.put(key, new CachedValue<>(value));
-    } finally {
-      fence.unlockWrite(stamp);
-    }
-  }
-
-  /**
-   * Drops what a load installed for {@code key} when a write moved its stripe's fence since {@code
-   * fence} was sampled.
-   *
-   * <p>The fence moving means a write MAY have raced this key: the stripe is shared, and a range
-   * eviction moves every fence. Leaving the key absent rather than holding a pre-write value is the
-   * safe resolution either way, and the caller keeps the value it loaded.
-   */
-  private void dropIfFenceMoved(K key, CachedValue<V> loaded, StampedLock fence, long stamp) {
-    if (!fence.validate(stamp)) {
-      // Remove only this load's installation. A writer may already have replaced it with the value
-      // it published, and dropping that value would turn write-through back into invalidation.
-      entries
-          .asMap()
-          .computeIfPresent(key, (ignored, current) -> current == loaded ? null : current);
-      events.loadDiscarded();
-    }
-  }
-
-  private StampedLock fenceFor(K key) {
-    return fences[stripeFor(key)];
+    loads.mutate(key, () -> entries.put(key, new CachedValue<>(value)));
   }
 
   /**
@@ -320,45 +309,23 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
    */
   // Package-private so a test can assert that two keys it relies on still share a stripe.
   int stripeFor(K key) {
-    int spread = key.hashCode() * 0x9E3779B9;
-    return (spread >>> 16) & (FENCE_STRIPES - 1);
+    return loads.stripeFor(key);
   }
-
-  private record ReadStamp(StampedLock fence, long stamp) {}
 
   private record CachedValue<V>(V value) {}
 
-  private static final class LoadedValue<V> {
-    private boolean invoked;
-    private CachedValue<V> entry;
-  }
-
   @Override
   public void evict(K key) {
-    StampedLock fence = fenceFor(key);
-    long stamp = fence.writeLock();
-    try {
-      entries.invalidate(key);
-    } finally {
-      fence.unlockWrite(stamp);
-    }
+    Objects.requireNonNull(key, "key");
+    loads.mutate(key, () -> entries.invalidate(key));
   }
 
   @Override
   public void evictPartition(Predicate<K> belongsToPartition) {
-    // A range has no one stripe. Holding all of them makes every concurrent load's optimistic read
-    // fail, including one that starts after the sweep began but before the key-set walk reaches it.
-    long[] stamps = new long[fences.length];
-    for (int stripe = 0; stripe < fences.length; stripe++) {
-      stamps[stripe] = fences[stripe].writeLock();
-    }
-    try {
-      entries.asMap().keySet().removeIf(belongsToPartition);
-    } finally {
-      for (int stripe = fences.length - 1; stripe >= 0; stripe--) {
-        fences[stripe].unlockWrite(stamps[stripe]);
-      }
-    }
+    Objects.requireNonNull(belongsToPartition, "belongsToPartition");
+    loads.mutatePartition(
+        belongsToPartition,
+        residentMembership -> entries.asMap().keySet().removeIf(residentMembership));
   }
 
   @Override
@@ -383,5 +350,14 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
   @Override
   public long entryCount() {
     return entries.estimatedSize();
+  }
+
+  /** Telemetry is advisory and must never change cache-load correctness or wake followers early. */
+  private static void report(Runnable callback) {
+    try {
+      callback.run();
+    } catch (RuntimeException ignored) {
+      // A broken exporter must not turn a successful source read into a failed cache load.
+    }
   }
 }
