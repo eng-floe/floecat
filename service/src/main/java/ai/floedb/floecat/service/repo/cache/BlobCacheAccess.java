@@ -202,9 +202,12 @@ public final class BlobCacheAccess {
     cache.put(versionedKey(pointer), bytes);
   }
 
-  /** Fence a version before publishing a newly-created pointer that may reuse an old version. */
+  /**
+   * Retained as a source-compatible no-op. Versioned keys include the process namespace, pointer
+   * key, pointer version, and blob URI, so a new publication never needs an exact-key fence.
+   */
   public void prepareVersionedCreate(Pointer pointer) {
-    cache.evict(versionedKey(pointer));
+    Objects.requireNonNull(pointer, "pointer");
   }
 
   public void evictVersioned(Pointer pointer) {

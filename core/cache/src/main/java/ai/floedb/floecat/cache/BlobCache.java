@@ -79,7 +79,7 @@ public interface BlobCache {
    */
   Optional<Content> getRange(Key key, long offset, int length, Fill fill, Loader loader);
 
-  /** Read a batch under the same fill-fencing rules as {@link #get}. */
+  /** Read a batch, loading each missing immutable key from the source. */
   Map<Key, Content> getAll(List<Key> keys, Fill fill, BatchLoader loader);
 
   /** Publish immutable bytes already held by a successful writer. */

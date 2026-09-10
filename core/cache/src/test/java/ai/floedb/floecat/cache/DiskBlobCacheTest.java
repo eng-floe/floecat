@@ -235,7 +235,7 @@ class DiskBlobCacheTest {
   }
 
   @Test
-  void partitionEvictionFencesAnInFlightFill() throws Exception {
+  void partitionEvictionKeepsLateFillOutOfTheRetiredPartition() throws Exception {
     BlobCache.Key key = new BlobCache.Key("account-a", "sha-a");
     byte[] old = "old-account".getBytes(StandardCharsets.UTF_8);
     byte[] current = "current-account".getBytes(StandardCharsets.UTF_8);
@@ -278,50 +278,7 @@ class DiskBlobCacheTest {
   }
 
   @Test
-  void exactEvictionFencesAnInFlightFill() throws Exception {
-    BlobCache.Key key = new BlobCache.Key("account-a", "sha-a");
-    byte[] stale = "stale".getBytes(StandardCharsets.UTF_8);
-    byte[] current = "current".getBytes(StandardCharsets.UTF_8);
-    CountDownLatch loading = new CountDownLatch(1);
-    CountDownLatch finishLoad = new CountDownLatch(1);
-
-    try (var cache = cache()) {
-      CompletableFuture<byte[]> raced =
-          CompletableFuture.supplyAsync(
-              () -> {
-                try {
-                  return read(
-                      cache,
-                      key,
-                      BlobCache.Fill.FILL,
-                      () -> {
-                        loading.countDown();
-                        try {
-                          finishLoad.await();
-                        } catch (InterruptedException e) {
-                          Thread.currentThread().interrupt();
-                          throw new IllegalStateException(e);
-                        }
-                        return stale;
-                      });
-                } catch (Exception e) {
-                  throw new IllegalStateException(e);
-                }
-              });
-      loading.await();
-      cache.evict(key);
-      finishLoad.countDown();
-      assertThat(raced.join()).containsExactly(stale);
-
-      AtomicInteger reloads = new AtomicInteger();
-      assertThat(read(cache, key, BlobCache.Fill.FILL, () -> load(reloads, current)))
-          .containsExactly(current);
-      assertThat(reloads).hasValue(1);
-    }
-  }
-
-  @Test
-  void partitionEvictionFencesAnInFlightBatchFill() throws Exception {
+  void partitionEvictionKeepsLateBatchFillOutOfTheRetiredPartition() throws Exception {
     BlobCache.Key first = new BlobCache.Key("account-a", "first");
     BlobCache.Key second = new BlobCache.Key("account-a", "second");
     CountDownLatch loading = new CountDownLatch(1);
