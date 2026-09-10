@@ -122,6 +122,7 @@
       <!-- Connectors -->
       <module>connectors/catalogs/iceberg</module>
       <module>connectors/clients/unity-catalog</module>
+      <module>connectors/clients/delta-sharing</module>
       <module>connectors/catalogs/delta</module>
 
       <!-- Storage -->
