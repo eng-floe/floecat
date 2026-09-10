@@ -21,10 +21,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.testsupport.DiskBlobCacheTestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import java.nio.file.Path;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * How a table root reads through the pointer cache: a warm read touches no store, every
@@ -32,6 +36,9 @@ import org.junit.jupiter.api.Test;
  * apart from one whose pointer has moved on.
  */
 class TableRootThroughTheCacheTest {
+
+  @TempDir Path tempDir;
+  private int cacheNumber;
 
   private static ResourceId table(String id) {
     return ai.floedb.floecat.service.util.TestSupport.rid("acct", id, ResourceKind.RK_TABLE);
@@ -48,17 +55,15 @@ class TableRootThroughTheCacheTest {
     }
   }
 
-  private static ai.floedb.floecat.service.repo.cache.ImmutableBlobCache blobCache() {
-    return new ai.floedb.floecat.service.repo.cache.ImmutableBlobCache(
-        true, 1024 * 1024, java.time.Duration.ofMinutes(1));
+  private BlobCacheAccess blobCache() {
+    return DiskBlobCacheTestSupport.create(tempDir.resolve("cache-" + cacheNumber++));
   }
 
-  private static TableRootRepository cachedRepo(CountingPointerStore pointers) {
+  private TableRootRepository cachedRepo(CountingPointerStore pointers) {
     return cachedRepo(pointers, new InMemoryBlobStore());
   }
 
-  private static TableRootRepository cachedRepo(
-      CountingPointerStore pointers, InMemoryBlobStore blobs) {
+  private TableRootRepository cachedRepo(CountingPointerStore pointers, InMemoryBlobStore blobs) {
     // The cache lives under the store, so the caching these tests assert on is the decorator's.
     var cache =
         new ai.floedb.floecat.service.repo.cache.PointerCache(
@@ -74,10 +79,10 @@ class TableRootThroughTheCacheTest {
   }
 
   /**
-   * A repository sharing an already-warm pointer cache but with its own cold decoded-blob cache --
-   * the state every replica is in for a table it has resolved before but not recently.
+   * A repository sharing an already-warm pointer cache but with its own cold disk-blob cache -- the
+   * state every replica is in for a table it has resolved before but not recently.
    */
-  private static TableRootRepository repoSharing(
+  private TableRootRepository repoSharing(
       ai.floedb.floecat.service.repo.cache.PointerCache shared,
       CountingPointerStore pointers,
       InMemoryBlobStore blobs) {
@@ -96,7 +101,7 @@ class TableRootThroughTheCacheTest {
 
     assertEquals(1, repo.get(tableId).orElseThrow().getRootSeq());
     int afterFirst = pointers.gets.get();
-    // Second read: pointer served from the cache, root blob from the decoded cache.
+    // Second read: pointer served from memory, root blob from the disk cache.
     assertEquals(1, repo.get(tableId).orElseThrow().getRootSeq());
     assertEquals(afterFirst, pointers.gets.get(), "a warm read must not touch the pointer store");
   }
@@ -147,7 +152,7 @@ class TableRootThroughTheCacheTest {
   }
 
   @Test
-  void manifestEntryIndexServesFindEntryWithoutAPageWalk() {
+  void cachedManifestPagesServeRepeatedFindEntry() {
     var pointers = new CountingPointerStore();
     var blobs = new InMemoryBlobStore();
     var repo = cachedRepo(pointers, blobs);
@@ -165,16 +170,16 @@ class TableRootThroughTheCacheTest {
                         .setVersion("v7"))
                 .build());
 
-    // First lookup builds the index; the second must be a pure map probe (no page decode either
-    // way — the head was write-through-cached — but assert the RESULT is identical to the walk).
-    var viaIndex = SnapshotManifests.findEntry(repo, head, 7).orElseThrow();
-    assertEquals(7, viaIndex.getSnapshotId());
-    assertEquals("s3://t/snap-7.pb", viaIndex.getSnapshotRef().getUri());
+    // The page was published into the disk cache. Repeated lookups decode the cached bytes and
+    // agree with a direct repository walk; no separate derived manifest index is maintained.
+    var cached = SnapshotManifests.findEntry(repo, head, 7).orElseThrow();
+    assertEquals(7, cached.getSnapshotId());
+    assertEquals("s3://t/snap-7.pb", cached.getSnapshotRef().getUri());
     assertTrue(SnapshotManifests.findEntry(repo, head, 999).isEmpty());
 
     // An uncached repo (walk path) agrees with the index path.
     var uncached = new TableRootRepository(pointers, blobs);
-    assertEquals(viaIndex, SnapshotManifests.findEntry(uncached, head, 7).orElseThrow());
+    assertEquals(cached, SnapshotManifests.findEntry(uncached, head, 7).orElseThrow());
   }
 
   @Test
@@ -202,7 +207,7 @@ class TableRootThroughTheCacheTest {
                   .build());
     }
 
-    // A COLD reader (fresh decoded cache, same stores): the hottest lookup shape (CURRENT / a
+    // A COLD reader (fresh disk cache, same stores): the hottest lookup shape (CURRENT / a
     // recent AS_OF) matches in the head page and must cost exactly ONE page read — never a
     // serial full-chain walk to build the index.
     var coldReader = cachedRepo(pointers, blobs);
@@ -212,7 +217,7 @@ class TableRootThroughTheCacheTest {
         SnapshotManifests.findEntry(coldReader, head, newest).orElseThrow().getSnapshotId());
     assertEquals(1, blobs.gets.get(), "a head-page match must not walk older pages");
 
-    // A lookup that has to go deeper builds the index and still resolves.
+    // A lookup that has to go deeper walks cached pages and still resolves.
     assertEquals(1, SnapshotManifests.findEntry(coldReader, head, 1).orElseThrow().getSnapshotId());
   }
 

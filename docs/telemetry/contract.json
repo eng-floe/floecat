@@ -20,6 +20,16 @@
     "allowedTags": ["account", "cache", "component", "operation"]
   },
   {
+    "name": "floecat.core.cache.corruptions",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "core",
+    "description": "Local cache entries rejected because their stored envelope was corrupt.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
     "name": "floecat.core.cache.enabled",
     "type": "GAUGE",
     "unit": "",
@@ -90,6 +100,16 @@
     "allowedTags": ["account", "cache", "component", "exception", "operation", "result"]
   },
   {
+    "name": "floecat.core.cache.live.mappings",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "core",
+    "description": "Mapped cache entries currently protected from reclamation.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
     "name": "floecat.core.cache.loads.discarded",
     "type": "COUNTER",
     "unit": "",
@@ -116,6 +136,16 @@
     "since": "v1",
     "origin": "core",
     "description": "Number of cache lookup misses, tagged by cache name.",
+    "requiredTags": ["cache", "component", "operation"],
+    "allowedTags": ["account", "cache", "component", "operation"]
+  },
+  {
+    "name": "floecat.core.cache.sweep.reclaimed.bytes",
+    "type": "COUNTER",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "core",
+    "description": "Local disk bytes reclaimed by cache budget sweeps.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation"]
   },

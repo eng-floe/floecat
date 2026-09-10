@@ -14,11 +14,18 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.repo.util;
+package ai.floedb.floecat.cache;
 
-import java.nio.ByteBuffer;
+/** Common cache events plus the disk tier's lifecycle signals. */
+public interface BlobCacheEvents extends CacheEvents {
 
-@FunctionalInterface
-public interface ProtoParser<T> {
-  T parse(ByteBuffer bytes) throws Exception;
+  /** A local entry failed its envelope validation and was discarded before source fallback. */
+  default void corrupted(long bytes) {}
+
+  /** One completed sweep. */
+  default void swept(BlobCache.SweepResult result) {}
+
+  static BlobCacheEvents none() {
+    return new BlobCacheEvents() {};
+  }
 }

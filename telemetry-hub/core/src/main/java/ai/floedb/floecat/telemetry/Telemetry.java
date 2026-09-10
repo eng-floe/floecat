@@ -192,6 +192,17 @@ public final class Telemetry {
               "floecat.core.cache.admission.rejected", MetricType.COUNTER, "", "v1", "core");
       public static final MetricId WRITE_THROUGH =
           new MetricId("floecat.core.cache.write.through", MetricType.COUNTER, "", "v1", "core");
+      public static final MetricId CORRUPTIONS =
+          new MetricId("floecat.core.cache.corruptions", MetricType.COUNTER, "", "v1", "core");
+      public static final MetricId SWEEP_RECLAIMED =
+          new MetricId(
+              "floecat.core.cache.sweep.reclaimed.bytes",
+              MetricType.COUNTER,
+              "bytes",
+              "v1",
+              "core");
+      public static final MetricId LIVE_MAPPINGS =
+          new MetricId("floecat.core.cache.live.mappings", MetricType.GAUGE, "count", "v1", "core");
     }
 
     public static final class Gc {
@@ -261,6 +272,9 @@ public final class Telemetry {
     public static final MetricId CACHE_LOADS_DISCARDED = Cache.LOADS_DISCARDED;
     public static final MetricId CACHE_ADMISSION_REJECTED = Cache.ADMISSION_REJECTED;
     public static final MetricId CACHE_WRITE_THROUGH = Cache.WRITE_THROUGH;
+    public static final MetricId CACHE_CORRUPTIONS = Cache.CORRUPTIONS;
+    public static final MetricId CACHE_SWEEP_RECLAIMED = Cache.SWEEP_RECLAIMED;
+    public static final MetricId CACHE_LIVE_MAPPINGS = Cache.LIVE_MAPPINGS;
     public static final MetricId GC_COLLECTIONS = Gc.COLLECTIONS;
     public static final MetricId GC_PAUSE = Gc.PAUSE;
     public static final MetricId GC_ERRORS = Gc.ERRORS;
@@ -462,6 +476,18 @@ public final class Telemetry {
               + " cache's safety guards.");
       add(
           definitions,
+          CACHE_CORRUPTIONS,
+          cacheBase,
+          cacheWithAccount,
+          "Local cache entries rejected because their stored envelope was corrupt.");
+      add(
+          definitions,
+          CACHE_SWEEP_RECLAIMED,
+          cacheBase,
+          cacheWithAccount,
+          "Local disk bytes reclaimed by cache budget sweeps.");
+      add(
+          definitions,
           CACHE_ENABLED,
           cacheBase,
           cacheWithAccount,
@@ -491,6 +517,12 @@ public final class Telemetry {
           cacheBase,
           cacheWithAccount,
           "Total weight (bytes) of cache entries, tagged by cache name.");
+      add(
+          definitions,
+          CACHE_LIVE_MAPPINGS,
+          cacheBase,
+          cacheWithAccount,
+          "Mapped cache entries currently protected from reclamation.");
       add(
           definitions,
           CACHE_LATENCY,

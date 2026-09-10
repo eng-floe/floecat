@@ -45,7 +45,7 @@ public class SnapshotFinalizePersistenceService {
       ResourceId tableId, long snapshotId, List<TargetStatsRecord> records) {
     List<TargetStatsRecord> canonical = canonicalize(records);
     statsStore.replaceAllStatsForSnapshot(tableId, snapshotId, canonical, false);
-    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    statsOrchestrator.evictSnapshotFacts(tableId, snapshotId);
     commitAndPublishTableFacts(tableId, snapshotId);
     return canonical.size();
   }
@@ -58,7 +58,7 @@ public class SnapshotFinalizePersistenceService {
     List<TargetStatsRecord> canonicalAggregates = canonicalize(aggregateRecords);
     statsStore.publishStatsGeneration(
         tableId, snapshotId, generationId, canonicalAggregates, false);
-    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    statsOrchestrator.evictSnapshotFacts(tableId, snapshotId);
     commitAndPublishTableFacts(tableId, snapshotId);
     return canonicalAggregates.size();
   }
@@ -73,7 +73,7 @@ public class SnapshotFinalizePersistenceService {
             ? List.of()
             : references.stream().filter(java.util.Objects::nonNull).toList();
     statsStore.publishPrewrittenStatsGeneration(tableId, snapshotId, generationId, stable);
-    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    statsOrchestrator.evictSnapshotFacts(tableId, snapshotId);
     commitAndPublishTableFacts(tableId, snapshotId);
     return stable.size();
   }
@@ -93,7 +93,7 @@ public class SnapshotFinalizePersistenceService {
         tableId, snapshotId, generationId, stable, predecessor, publicationFence)) {
       return false;
     }
-    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    statsOrchestrator.evictSnapshotFacts(tableId, snapshotId);
     commitAndPublishTableFacts(tableId, snapshotId);
     return true;
   }
@@ -123,7 +123,7 @@ public class SnapshotFinalizePersistenceService {
 
   public boolean deleteAllStatsForSnapshot(ResourceId tableId, long snapshotId) {
     boolean deleted = statsStore.deleteAllStatsForSnapshot(tableId, snapshotId);
-    statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+    statsOrchestrator.evictSnapshotFacts(tableId, snapshotId);
     commitGenerationToRoot(tableId, snapshotId);
     return deleted;
   }
@@ -134,9 +134,7 @@ public class SnapshotFinalizePersistenceService {
     LinkedHashMap<TableSnapshot, List<TargetStatsRecord>> touched = new LinkedHashMap<>();
     for (TargetStatsRecord record : canonical) {
       statsStore.putTargetStats(record);
-      // Invalidate after each durable write: if a later record fails, the successful prefix must
-      // not remain cached under the live view.
-      statsOrchestrator.invalidateStatsCache(
+      statsOrchestrator.evictSnapshotFacts(
           record.getTableId(), record.getSnapshotId(), record.getTarget());
       touched
           .computeIfAbsent(
@@ -190,7 +188,7 @@ public class SnapshotFinalizePersistenceService {
     if (fullRescan) {
       statsStore.replaceAllStatsForSnapshot(
           tableId, snapshotId, List.of(TargetStatsRecords.canonicalize(zeroMarker)), false);
-      statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
+      statsOrchestrator.evictSnapshotFacts(tableId, snapshotId);
       commitAndPublishTableFacts(tableId, snapshotId);
       return 1L;
     }
@@ -208,7 +206,7 @@ public class SnapshotFinalizePersistenceService {
       return 0L;
     }
     if (statsStore.putTargetStatsIfAbsent(zeroMarker)) {
-      statsOrchestrator.invalidateStatsCache(tableId, snapshotId, zeroMarker.getTarget());
+      statsOrchestrator.evictSnapshotFacts(tableId, snapshotId, zeroMarker.getTarget());
       commitAndPublishTableFacts(tableId, snapshotId);
       return 1L;
     }

@@ -7,13 +7,15 @@
 
 package ai.floedb.floecat.service.repo.impl;
 
+import ai.floedb.floecat.cache.BlobCache;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexEntry;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.cache.CachedImmutableBlobStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
@@ -22,6 +24,7 @@ import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.InvalidProtocolBufferException;
+import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Collection;
@@ -44,11 +47,11 @@ final class GenerationArtifactMap {
   private final PointerStore pointerStore;
   private final PointerStore pointerReads;
   private final BlobStore blobStore;
-  private final ImmutableBlobCache blobCache;
+  private final BlobCacheAccess blobCache;
   private final ReusableArtifactIndexStore indexStore;
+  private final ReusableArtifactIndexStore listingIndexStore;
 
-  GenerationArtifactMap(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+  GenerationArtifactMap(PointerStore pointerStore, BlobStore blobStore, BlobCacheAccess blobCache) {
     this(pointerStore, pointerStore, blobStore, blobCache);
   }
 
@@ -56,12 +59,16 @@ final class GenerationArtifactMap {
       PointerStore pointerStore,
       PointerStore pointerReads,
       BlobStore blobStore,
-      ImmutableBlobCache blobCache) {
+      BlobCacheAccess blobCache) {
     this.pointerStore = AuthoritativePointerStore.of(pointerStore);
     this.pointerReads = pointerReads;
     this.blobStore = blobStore;
-    this.blobCache = blobCache;
-    this.indexStore = new ReusableArtifactIndexStore(blobStore);
+    this.blobCache = java.util.Objects.requireNonNull(blobCache, "blobCache");
+    this.indexStore =
+        new ReusableArtifactIndexStore(new CachedImmutableBlobStore(blobStore, blobCache));
+    this.listingIndexStore =
+        new ReusableArtifactIndexStore(
+            new CachedImmutableBlobStore(blobStore, blobCache, BlobCache.Fill.BYPASS_FILL));
   }
 
   void register(
@@ -129,7 +136,7 @@ final class GenerationArtifactMap {
       String generationId,
       Collection<String> statsPaths,
       Collection<String> indexPaths) {
-    return manifest(tableId, snapshotId, generationId)
+    return manifest(tableId, snapshotId, generationId, BlobCache.Fill.FILL)
         .map(value -> indexStore.lookup(value.getReusableArtifactIndex(), statsPaths, indexPaths))
         .orElse(Map.of());
   }
@@ -141,28 +148,44 @@ final class GenerationArtifactMap {
       ReusableArtifactIndexStore.EntryKind kind,
       int limit,
       String pageToken) {
-    return manifest(tableId, snapshotId, generationId)
-        .map(
-            value ->
-                indexStore.page(
-                    value.getReusableArtifactIndex(), kind, Math.max(1, limit), pageToken))
+    return listingManifest(tableId, snapshotId, generationId)
+        .map(value -> page(value, kind, limit, pageToken))
         .orElseGet(() -> new ReusableArtifactIndexStore.EntryPage(List.of(), ""));
   }
 
+  Optional<SnapshotCaptureManifest> listingManifest(
+      ResourceId tableId, long snapshotId, String generationId) {
+    return manifest(tableId, snapshotId, generationId, BlobCache.Fill.BYPASS_FILL);
+  }
+
+  ReusableArtifactIndexStore.EntryPage page(
+      SnapshotCaptureManifest manifest,
+      ReusableArtifactIndexStore.EntryKind kind,
+      int limit,
+      String pageToken) {
+    return listingIndexStore.page(
+        manifest.getReusableArtifactIndex(), kind, Math.max(1, limit), pageToken);
+  }
+
   int countStats(ResourceId tableId, long snapshotId, String generationId) {
-    return manifest(tableId, snapshotId, generationId)
+    return manifest(tableId, snapshotId, generationId, BlobCache.Fill.FILL)
         .map(value -> value.getReusableArtifactIndex().getFileStatsRecordCount())
         .orElse(0);
   }
 
   int countIndexes(ResourceId tableId, long snapshotId, String generationId) {
-    return manifest(tableId, snapshotId, generationId)
+    return manifest(tableId, snapshotId, generationId, BlobCache.Fill.FILL)
         .map(value -> value.getReusableArtifactIndex().getIndexArtifactCount())
         .orElse(0);
   }
 
   Optional<SnapshotCaptureManifest> manifest(
       ResourceId tableId, long snapshotId, String generationId) {
+    return manifest(tableId, snapshotId, generationId, BlobCache.Fill.FILL);
+  }
+
+  private Optional<SnapshotCaptureManifest> manifest(
+      ResourceId tableId, long snapshotId, String generationId, BlobCache.Fill fill) {
     Pointer pointer = pointerReads.get(key(tableId, snapshotId, generationId)).orElse(null);
     if (pointer == null) {
       return Optional.empty();
@@ -184,10 +207,14 @@ final class GenerationArtifactMap {
     }
     long expectedBytes = pointer.getReferencedObjectSizeBytes();
     Optional<SnapshotCaptureManifest> loaded =
-        blobCache != null && blobCache.enabled()
-            ? blobCache.get(
-                pointer.getBlobUri(), uri -> loadManifest(uri, expectedBytes, expectedDigest))
-            : loadManifest(pointer.getBlobUri(), expectedBytes, expectedDigest);
+        parseManifest(
+            pointer.getBlobUri(),
+            blobCache.immutable(
+                pointer.getBlobUri(),
+                fill,
+                () -> loadManifestBytes(pointer.getBlobUri(), expectedBytes, expectedDigest)),
+            expectedBytes,
+            expectedDigest);
     if (loaded.isEmpty()) {
       throw new BaseResourceRepository.CorruptionException(
           "generation artifact map manifest is missing: " + pointer.getBlobUri());
@@ -223,20 +250,41 @@ final class GenerationArtifactMap {
     ReusableArtifactIndexStore.validateReference(manifest.getReusableArtifactIndex());
   }
 
-  private Optional<SnapshotCaptureManifest> loadManifest(
-      String uri, long expectedBytes, byte[] expectedDigest) {
+  private byte[] loadManifestBytes(String uri, long expectedBytes, byte[] expectedDigest) {
     try {
       byte[] bytes = blobStore.get(uri);
       if (bytes == null) {
-        return Optional.empty();
+        return null;
       }
       if (bytes.length != expectedBytes || !MessageDigest.isEqual(expectedDigest, sha256(bytes))) {
         throw new BaseResourceRepository.CorruptionException(
             "generation artifact map manifest metadata mismatch: " + uri);
       }
-      return Optional.of(SnapshotCaptureManifest.parseFrom(bytes));
+      return bytes;
     } catch (StorageNotFoundException e) {
+      return null;
+    }
+  }
+
+  private static Optional<SnapshotCaptureManifest> parseManifest(
+      String uri, Optional<BlobCache.Content> content, long expectedBytes, byte[] expectedDigest) {
+    if (content.isEmpty()) {
       return Optional.empty();
+    }
+    try (BlobCache.Content body = content.orElseThrow()) {
+      ByteBuffer bytes = body.buffer();
+      if (body.size() != expectedBytes
+          || !MessageDigest.isEqual(expectedDigest, sha256(bytes.duplicate()))) {
+        throw new BaseResourceRepository.CorruptionException(
+            "generation artifact map manifest metadata mismatch: " + uri);
+      }
+      return parseManifest(uri, bytes);
+    }
+  }
+
+  private static Optional<SnapshotCaptureManifest> parseManifest(String uri, ByteBuffer bytes) {
+    try {
+      return Optional.of(SnapshotCaptureManifest.parseFrom(bytes));
     } catch (InvalidProtocolBufferException e) {
       throw new BaseResourceRepository.CorruptionException(
           "invalid generation artifact map manifest: " + uri, e);
@@ -264,6 +312,16 @@ final class GenerationArtifactMap {
   private static byte[] sha256(byte[] bytes) {
     try {
       return MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (NoSuchAlgorithmException error) {
+      throw new IllegalStateException("SHA-256 unavailable", error);
+    }
+  }
+
+  private static byte[] sha256(ByteBuffer bytes) {
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      digest.update(bytes);
+      return digest.digest();
     } catch (NoSuchAlgorithmException error) {
       throw new IllegalStateException("SHA-256 unavailable", error);
     }

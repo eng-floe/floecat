@@ -50,13 +50,8 @@ import ai.floedb.floecat.service.testsupport.SecurityTestSupport.FakePrincipalPr
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
-import ai.floedb.floecat.telemetry.Tag;
-import ai.floedb.floecat.telemetry.Telemetry;
-import ai.floedb.floecat.telemetry.Telemetry.TagKey;
-import ai.floedb.floecat.telemetry.TestObservability;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -72,7 +67,6 @@ class UserGraphTest {
   FakeViewRepository viewRepository;
   FakePrincipalProvider principalProvider;
   UserGraph graph;
-  TestObservability observability;
   TableRootRepository tableRootRepository;
   TableRootCommitter rootCommitter;
 
@@ -84,7 +78,6 @@ class UserGraphTest {
     tableRepository = new FakeTableRepository();
     viewRepository = new FakeViewRepository();
 
-    observability = new TestObservability();
     principalProvider = new FakePrincipalProvider("account");
     tableRootRepository =
         new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -100,9 +93,7 @@ class UserGraphTest {
             tableRepository,
             viewRepository,
             tableRootRepository,
-            observability,
             principalProvider,
-            1024L,
             null);
   }
 
@@ -177,7 +168,7 @@ class UserGraphTest {
   }
 
   @Test
-  void tableResolveCachesNodes() {
+  void tableResolveUsesTheRepositoryReadSeam() {
     ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
     ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);
     ResourceId tableId = rid("account", "tbl", ResourceKind.RK_TABLE);
@@ -204,24 +195,20 @@ class UserGraphTest {
     Optional<UserTableNode> second = graph.table(tableId);
 
     assertThat(first).isPresent();
-    assertThat(second).containsSame(first.get());
-    // The node is content-keyed by blob URI, so the second resolve does not re-hydrate. It does
-    // read the pointer again: this fixture has no pointer cache in front of it, where in the
-    // service that read is served from memory. One cache that cannot go stale replaced a second
-    // meta cache here whose only use was skipping this read, and which could never be trusted to
-    // hydrate from.
-    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
+    assertThat(second).isEqualTo(first);
+    // UserGraph owns resolution only. The production repositories cache serialized inputs on
+    // disk, and ObjectCache owns assembled relation responses.
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(2);
     assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(2);
 
     Optional<UserTableNode> third = graph.table(tableId);
     assertThat(third).isPresent();
-    // The node is content-keyed, so an unchanged blob is never re-hydrated.
-    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(3);
     assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(3);
   }
 
   @Test
-  void accountCachesAreIsolated() {
+  void accountReadsRemainIsolated() {
     var accountOne = seedTable("cached-one", "{}");
     var accountTwo = seedTableForAccount("account-b", "catB", "nsB", "cached-two", "{}");
 
@@ -231,9 +218,8 @@ class UserGraphTest {
     graph.table(accountOne.tableId());
     graph.table(accountTwo.tableId());
 
-    // Content keys are full blob URIs, so accounts can never collide; each table hydrates once.
-    assertThat(tableRepository.getByBlobUriCount(accountOne.tableId())).isEqualTo(1);
-    assertThat(tableRepository.getByBlobUriCount(accountTwo.tableId())).isEqualTo(1);
+    assertThat(tableRepository.getByBlobUriCount(accountOne.tableId())).isEqualTo(2);
+    assertThat(tableRepository.getByBlobUriCount(accountTwo.tableId())).isEqualTo(2);
     assertThat(graph.table(accountOne.tableId()).orElseThrow().displayName())
         .isEqualTo("cached-one");
     assertThat(graph.table(accountTwo.tableId()).orElseThrow().displayName())
@@ -241,7 +227,7 @@ class UserGraphTest {
   }
 
   @Test
-  void aMovedPointerIsCorruptionAndAReturnedOneRehydratesNothing() {
+  void aMovedPointerIsCorruptionAndAReturnedOneResolvesAgain() {
     var ids = seedTable("multi-version", "{}");
     ResourceId tableId = ids.tableId();
     String uriA = seedBlobUri("account", "multi-version");
@@ -259,73 +245,21 @@ class UserGraphTest {
         .isInstanceOf(BaseResourceRepository.CorruptionException.class);
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(0);
 
-    // Pointer returns to the original blob: the content-keyed node entry is still valid, so no
-    // rehydration happens — only the fresh pointer read.
+    // Pointer returns to the original blob and resolution succeeds through the repository seam.
     tableRepository.putMeta(tableId, blobMeta(3L, uriA));
     graph.table(tableId);
-    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(1);
+    assertThat(tableRepository.getByBlobUriCount(tableId)).isEqualTo(2);
     // Never a by-id read: the loader only ever builds from the blob a meta names. The counts are
-    // one hydration live read, one failed-resolve read + its coherent-fallback re-read, and one
+    // one hydration read, one failed-resolve read + its coherent-fallback re-read, and one
     // return-to-original read.
     assertThat(tableRepository.getByIdCount(tableId)).isEqualTo(0);
     assertThat(tableRepository.metaForSafeCount(tableId)).isEqualTo(4);
   }
 
   @Test
-  void recordsCacheLoadLatencyWhenEnabled() {
-    var instrumentedGraph =
-        UserGraph.forTest(
-            catalogRepository,
-            namespaceRepository,
-            snapshotRepository,
-            tableRepository,
-            viewRepository,
-            tableRootRepository,
-            observability,
-            principalProvider,
-            42L, // cache size
-            null); // engineHintManager
-
-    var ids = seedTable("enabled-cache", "{}");
-    instrumentedGraph.table(ids.tableId());
-    assertThat(observability.timerValues(Telemetry.Metrics.CACHE_LATENCY)).isNotEmpty();
-    assertThat(observability.timerTagHistory(Telemetry.Metrics.CACHE_LATENCY))
-        .anySatisfy(
-            tags ->
-                assertThat(tags)
-                    .anyMatch(
-                        tag ->
-                            TagKey.CACHE_NAME.equals(tag.key())
-                                && "graph-cache".equals(tag.value())));
-  }
-
-  @Test
-  void recordsCacheLoadLatencyWhenDisabled() {
-    var instrumentedGraph =
-        UserGraph.forTest(
-            catalogRepository,
-            namespaceRepository,
-            snapshotRepository,
-            tableRepository,
-            viewRepository,
-            tableRootRepository,
-            observability,
-            principalProvider,
-            0L, // cache size (disabled)
-            null); // engineHintManager
-
-    var ids = seedTable("disabled-cache", "{}");
-    instrumentedGraph.table(ids.tableId());
-    // How long a load takes is a property of the load, not of whether node caching is on -- and a
-    // cache turned off is exactly when someone is asking what the loads cost.
-    assertThat(observability.timerValues(Telemetry.Metrics.CACHE_LATENCY)).isNotEmpty();
-  }
-
-  @Test
   void resolveHydratesFromAFreshPointerNotAStaleCachedMeta() {
-    // Node cache disabled + meta cache enabled: every resolve reaches the hydration path while the
-    // meta cache stays warm — the exact condition under which a stale cached meta (a per-process
-    // cache with no cross-instance invalidation) could hydrate an old-but-still-readable blob.
+    // Every resolve reaches the hydration path while the pointer cache stays warm — the exact
+    // condition under which a stale pointer could hydrate an old-but-still-readable blob.
     UserGraph g =
         UserGraph.forTest(
             catalogRepository,
@@ -334,9 +268,7 @@ class UserGraphTest {
             tableRepository,
             viewRepository,
             tableRootRepository,
-            observability,
             principalProvider,
-            0L, // node cache disabled
             null);
 
     ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
@@ -359,26 +291,6 @@ class UserGraphTest {
         tableWithSchema(tableId, catalogId, namespaceId, "{\"v\":2}"), blobMeta(2L, "blob/v2"));
 
     assertThat(schemaOf(g, tableId)).contains("\"v\":2");
-  }
-
-  @Test
-  void graphLoadRecordsLatency() {
-    var ids = seedTable("load-metric", "{}");
-    UserTableNode node = graph.table(ids.tableId()).orElseThrow();
-
-    assertThat(node).isNotNull();
-    List<Duration> latencies = observability.timerValues(Telemetry.Metrics.CACHE_LATENCY);
-    assertThat(latencies).isNotEmpty();
-    assertThat(latencies.get(0)).isGreaterThan(Duration.ZERO);
-    assertThat(observability.timerTagHistory(Telemetry.Metrics.CACHE_LATENCY))
-        .anySatisfy(
-            tags ->
-                assertThat(tags.stream().map(Tag::key))
-                    .contains(
-                        Telemetry.TagKey.COMPONENT,
-                        Telemetry.TagKey.OPERATION,
-                        Telemetry.TagKey.CACHE_NAME,
-                        Telemetry.TagKey.RESULT));
   }
 
   @Test

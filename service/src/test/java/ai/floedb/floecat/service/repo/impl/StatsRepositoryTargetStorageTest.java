@@ -35,16 +35,18 @@ import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
 import ai.floedb.floecat.common.rpc.BlobHeader;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.testsupport.DiskBlobCacheTestSupport;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
@@ -59,7 +61,7 @@ import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.StringValue;
 import com.google.protobuf.Timestamp;
-import java.time.Duration;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -69,8 +71,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class StatsRepositoryTargetStorageTest {
+
+  @TempDir Path tempDir;
 
   private static final ResourceId TABLE_ID =
       ResourceId.newBuilder().setAccountId("a").setId("t").setKind(ResourceKind.RK_TABLE).build();
@@ -130,7 +135,7 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
-  void bundledPrewrittenStatsResolveAllTargetsWithOneBlobRead() {
+  void bulkBundleReadsDoNotFillButPointReadsDo() {
     InMemoryPointerStore pointers = new InMemoryPointerStore();
     AtomicInteger bundleGets = new AtomicInteger();
     BlobStore blobs =
@@ -142,10 +147,17 @@ class StatsRepositoryTargetStorageTest {
             }
             return super.get(uri);
           }
+
+          @Override
+          public Map<String, byte[]> getBatch(List<String> uris) {
+            bundleGets.addAndGet(
+                (int) uris.stream().filter(uri -> uri.contains("/reuse-bundles/")).count());
+            return super.getBatch(uris);
+          }
         };
     StatsRepository repository =
         new StatsRepository(
-            pointers, blobs, new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+            pointers, blobs, DiskBlobCacheTestSupport.create(tempDir.resolve("bundles")));
     long snapshotId = 99L;
     String generationId = "full-rescan-bundled";
     String firstPath = "s3://bucket/first.parquet";
@@ -188,19 +200,29 @@ class StatsRepositoryTargetStorageTest {
     repository.publishPreparedStatsGeneration(
         TABLE_ID, snapshotId, generationId, List.of(), predecessor, null);
 
-    assertThat(repository.listTargetStats(TABLE_ID, snapshotId, Optional.empty(), 10, "").records())
+    // Publication authenticates the referenced bundle. Exercise serving with a separate, cold
+    // local tier so those safety reads cannot satisfy the listing assertions below.
+    bundleGets.set(0);
+    StatsRepository reader =
+        new StatsRepository(
+            pointers, blobs, DiskBlobCacheTestSupport.create(tempDir.resolve("bundle-reader")));
+
+    assertThat(reader.listTargetStats(TABLE_ID, snapshotId, Optional.empty(), 10, "").records())
         .containsExactlyInAnyOrder(first, second);
-    assertThat(repository.listTargetStats(TABLE_ID, snapshotId, Optional.empty(), 10, "").records())
-        .containsExactlyInAnyOrder(first, second);
-    assertThat(
-            repository.getTargetStats(
-                TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(firstPath)))
-        .contains(first);
-    assertThat(
-            repository.getTargetStats(
-                TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(secondPath)))
-        .contains(second);
     assertThat(bundleGets).hasValue(1);
+    assertThat(reader.listTargetStats(TABLE_ID, snapshotId, Optional.empty(), 10, "").records())
+        .containsExactlyInAnyOrder(first, second);
+    assertThat(bundleGets).hasValue(2);
+    assertThat(
+            reader.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(firstPath)))
+        .contains(first);
+    assertThat(bundleGets).hasValue(3);
+    assertThat(
+            reader.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.fileTarget(secondPath)))
+        .contains(second);
+    // Each bulk page consumes the bundle without admitting it. The first point read fills the
+    // disk cache and the second point read reuses it.
+    assertThat(bundleGets).hasValue(3);
   }
 
   @Test
@@ -1252,8 +1274,14 @@ class StatsRepositoryTargetStorageTest {
 
   @Test
   void resubmitDifferingOnlyInOperationalTimestampsIsIdempotent() {
-    StatsRepository repository =
-        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    BlobCacheAccess readerCache =
+        DiskBlobCacheTestSupport.create(tempDir.resolve("timestamp-reader"));
+    StatsRepository writer =
+        new StatsRepository(
+            pointers, blobs, DiskBlobCacheTestSupport.create(tempDir.resolve("timestamp-writer")));
+    StatsRepository reader = new StatsRepository(pointers, blobs, readerCache);
     long snapshotId = 9091L;
 
     TargetStatsRecord first =
@@ -1277,15 +1305,242 @@ class StatsRepositoryTargetStorageTest {
                 .build(),
             metadataAt(ts(2_000L), ts(2_000L)));
 
-    repository.putTargetStats(first);
-    // Identical payload, only operational timestamps differ: both records hash to the same content
-    // blob, so the stable target pointer re-binds to that same blob (last write wins on content)
-    // instead of failing with a "pointer bound to different blob" conflict. Regression for the
-    // MC_CONFLICT resubmit bug.
-    repository.putTargetStats(second);
+    writer.putTargetStats(first);
+    assertThat(reader.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(first);
+    String generation =
+        Keys.generationFromManifestBlobUri(
+                writer.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow())
+            .generationId();
+    String pointerKey =
+        Keys.snapshotTargetStatsGenerationPointer(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            generation,
+            StatsTargetIdentity.storageId(first.getTarget()));
+    long firstVersion = pointers.get(pointerKey).orElseThrow().getVersion();
+    // Identical logical content with different operational timestamps remains an idempotent
+    // resubmit. The pointer advances to a new exact-body URI rather than treating the timestamp as
+    // a conflicting statistic.
+    writer.putTargetStats(second);
+
+    assertThat(pointers.get(pointerKey).orElseThrow().getVersion()).isGreaterThan(firstVersion);
+    assertThat(reader.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(second);
+  }
+
+  @Test
+  void interleavedTimestampOnlyWritersCannotPublishBytesFromAnotherBody() throws Exception {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore durableBlobs = new InMemoryBlobStore();
+    long snapshotId = 90915L;
+    StatsRepository seed = new StatsRepository(pointers, durableBlobs);
+    seed.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            snapshotId,
+            7L,
+            ScalarStats.newBuilder().setDisplayName("seed").setRowCount(1L).build(),
+            null));
+    String generation =
+        Keys.generationFromManifestBlobUri(
+                seed.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow())
+            .generationId();
+    String pointerKey =
+        Keys.snapshotTargetStatsGenerationPointer(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            generation,
+            StatsTargetIdentity.storageId(StatsTargetIdentity.tableTarget()));
+
+    TargetStatsRecord first = timestampOnlyRecord(snapshotId, 1_000L);
+    TargetStatsRecord second = timestampOnlyRecord(snapshotId, 2_000L);
+    StatsRepository secondWriter =
+        new StatsRepository(
+            pointers,
+            durableBlobs,
+            DiskBlobCacheTestSupport.create(tempDir.resolve("interleaved-second-writer")));
+    AtomicBoolean interleave = new AtomicBoolean(true);
+    AtomicReference<String> secondUri = new AtomicReference<>();
+    BlobStore firstWriterBlobs =
+        new DelegatingBlobStore(durableBlobs) {
+          @Override
+          public void put(String uri, byte[] bytes, String contentType) {
+            super.put(uri, bytes, contentType);
+            if (interleave.compareAndSet(true, false)) {
+              secondWriter.putTargetStats(second);
+              secondUri.set(pointers.get(pointerKey).orElseThrow().getBlobUri());
+            }
+          }
+        };
+    StatsRepository firstWriter =
+        new StatsRepository(
+            pointers,
+            firstWriterBlobs,
+            DiskBlobCacheTestSupport.create(tempDir.resolve("interleaved-first-writer")));
+
+    firstWriter.putTargetStats(first);
+
+    Pointer published = pointers.get(pointerKey).orElseThrow();
+    assertThat(published.getBlobUri()).isNotEqualTo(secondUri.get());
+    assertThat(TargetStatsRecord.parseFrom(durableBlobs.get(published.getBlobUri())))
+        .isEqualTo(first);
+    StatsRepository coldReader = new StatsRepository(pointers, durableBlobs);
+    assertThat(coldReader.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(first);
+  }
+
+  @Test
+  void completionWriteAdvancesTheVersionAndPublishesTheCommittedBody() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    AtomicInteger sourceGets = new AtomicInteger();
+    BlobStore blobs = countingGets(new InMemoryBlobStore(), sourceGets);
+    BlobCacheAccess cache = DiskBlobCacheTestSupport.create(tempDir.resolve("completion-writes"));
+    StatsRepository repository = new StatsRepository(pointers, blobs, cache);
+    long snapshotId = 90911L;
+    TargetStatsRecord first = timestampOnlyRecord(snapshotId, 1_000L);
+    TargetStatsRecord second = timestampOnlyRecord(snapshotId, 2_000L);
+
+    MutationMeta firstMeta =
+        repository.putTargetStatsWithCompletion(first, ts(1_000L), ignored -> List.of());
+    int readsBeforeFirstGet = sourceGets.get();
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(first);
+    assertThat(sourceGets).hasValue(readsBeforeFirstGet);
+    MutationMeta secondMeta =
+        repository.putTargetStatsWithCompletion(second, ts(2_000L), ignored -> List.of());
+    assertThat(secondMeta.getPointerVersion()).isGreaterThan(firstMeta.getPointerVersion());
+    int readsBeforeSecondGet = sourceGets.get();
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(second);
+    assertThat(sourceGets).hasValue(readsBeforeSecondGet);
+  }
+
+  @Test
+  void batchWritesPublishEveryCommittedBody() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    AtomicInteger sourceGets = new AtomicInteger();
+    BlobStore blobs = countingGets(new InMemoryBlobStore(), sourceGets);
+    BlobCacheAccess cache = DiskBlobCacheTestSupport.create(tempDir.resolve("batch-writes"));
+    StatsRepository repository = new StatsRepository(pointers, blobs, cache);
+    long snapshotId = 90912L;
+    TargetStatsRecord table = timestampOnlyRecord(snapshotId, 1_000L);
+    TargetStatsRecord column =
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            snapshotId,
+            7L,
+            ScalarStats.newBuilder().setDisplayName("c7").setLogicalType("BIGINT").build(),
+            null);
+
+    repository.putTargetStatsBatch(TABLE_ID, snapshotId, List.of(table, column));
+    sourceGets.set(0);
+
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(table);
+    assertThat(
+            repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.columnTarget(7L)))
+        .contains(column);
+    assertThat(sourceGets).hasValue(0);
+  }
+
+  @Test
+  void legacyVersionedBodyCannotSurviveDeleteRecreateAndMigratesOnWrite() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    BlobCacheAccess cache = DiskBlobCacheTestSupport.create(tempDir.resolve("delete-recreate"));
+    StatsRepository repository = new StatsRepository(pointers, blobs, cache);
+    long snapshotId = 90913L;
+    TargetStatsRecord first = timestampOnlyRecord(snapshotId, 1_000L);
+    TargetStatsRecord second = timestampOnlyRecord(snapshotId, 2_000L);
+    TargetStatsRecord third = timestampOnlyRecord(snapshotId, 3_000L);
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(
+            TABLE_ID,
+            snapshotId,
+            7L,
+            ScalarStats.newBuilder().setDisplayName("seed").setRowCount(1L).build(),
+            null));
+    String generation =
+        Keys.generationFromManifestBlobUri(
+                repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow())
+            .generationId();
+    String pointerKey =
+        Keys.snapshotTargetStatsGenerationPointer(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            generation,
+            StatsTargetIdentity.storageId(first.getTarget()));
+    String legacyUri =
+        Keys.snapshotTargetStatsBlobUri(
+            TABLE_ID.getAccountId(),
+            TABLE_ID.getId(),
+            snapshotId,
+            generation,
+            StatsTargetIdentity.storageId(first.getTarget()),
+            Hashing.sha256Hex(TargetStatsRecords.contentHashImage(first).toByteArray()));
+    blobs.put(legacyUri, first.toByteArray(), "application/x-protobuf");
+    assertThat(
+            pointers.compareAndSet(
+                pointerKey,
+                0L,
+                PointerReferences.blobPointer(
+                    pointerKey, legacyUri, 1L, first.getSerializedSize())))
+        .isTrue();
+
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(first);
+    assertThat(
+            repository.deleteTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .isTrue();
+    blobs.put(legacyUri, second.toByteArray(), "application/x-protobuf");
+    assertThat(
+            pointers.compareAndSet(
+                pointerKey,
+                0L,
+                PointerReferences.blobPointer(
+                    pointerKey, legacyUri, 1L, second.getSerializedSize())))
+        .isTrue();
 
     assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
         .contains(second);
+
+    repository.putTargetStats(third);
+
+    assertThat(pointers.get(pointerKey).orElseThrow().getBlobUri()).isNotEqualTo(legacyUri);
+    assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
+        .contains(third);
+  }
+
+  private static BlobStore countingGets(InMemoryBlobStore delegate, AtomicInteger gets) {
+    return new DelegatingBlobStore(delegate) {
+      @Override
+      public byte[] get(String uri) {
+        gets.incrementAndGet();
+        return super.get(uri);
+      }
+
+      @Override
+      public Map<String, byte[]> getBatch(List<String> uris) {
+        gets.addAndGet(uris.size());
+        return super.getBatch(uris);
+      }
+    };
+  }
+
+  private static TargetStatsRecord timestampOnlyRecord(long snapshotId, long millis) {
+    Timestamp timestamp = ts(millis);
+    return TargetStatsRecords.tableRecord(
+        TABLE_ID,
+        snapshotId,
+        TableValueStats.newBuilder()
+            .setRowCount(11L)
+            .setUpstream(UpstreamStamp.newBuilder().setCommitRef("snap").setFetchedAt(timestamp))
+            .build(),
+        metadataAt(timestamp, timestamp));
   }
 
   @Test
@@ -1309,8 +1564,8 @@ class StatsRepositoryTargetStorageTest {
 
     repository.putTargetStats(first);
     // Mirrors the ingest case: per-column scalar upstream fetched_at is wall-clock and differs on
-    // every capture; it must not change the content blob address, so the resubmit re-binds the same
-    // pointer instead of conflicting (last write wins on content).
+    // every capture. It changes the exact body address, but not the logical identity accepted by
+    // the stable target pointer.
     repository.putTargetStats(second);
 
     assertThat(
@@ -1501,7 +1756,7 @@ class StatsRepositoryTargetStorageTest {
                     UpstreamStamp.newBuilder().setCommitRef("snap").setFetchedAt(ts(1_000L)))
                 .build(),
             metadataAt(ts(1_000L), ts(1_000L)));
-    // Same payload, only operational timestamps differ -> same content blob address as `existing`.
+    // Same logical payload, only operational timestamps differ.
     TargetStatsRecord resubmit =
         TargetStatsRecords.tableRecord(
             TABLE_ID,
@@ -1516,8 +1771,7 @@ class StatsRepositoryTargetStorageTest {
     repository.putTargetStats(existing);
 
     // The target is already bound, so ifAbsent must report false AND leave the stored record's
-    // bytes (including its real operational timestamps) untouched -- it must not overwrite the
-    // shared blob before the pointer CAS miss.
+    // bytes (including its real operational timestamps) untouched.
     assertThat(repository.putTargetStatsIfAbsent(resubmit)).isFalse();
     assertThat(repository.getTargetStats(TABLE_ID, snapshotId, StatsTargetIdentity.tableTarget()))
         .contains(existing);

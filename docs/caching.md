@@ -1,19 +1,18 @@
 # Caching
 
 ## Overview
-Floecat's read path is built around one observation: everything a query reads below the mutable
-pointer reads is an immutable blob. Caching therefore splits into a small number of disciplines,
-each with a different correctness contract, rather than one generic cache with invalidation
-callbacks.
+Floecat's read path separates mutable addressing, current decoded metadata, and serialized blob
+residency. Each has a different correctness contract, so they share metrics and budgeting
+vocabulary without being forced through one storage-shaped interface.
 
 ## Principles
-- **Mutable edges resolve to immutable keys.** A read first resolves a mutable pointer (resource ID
-  → current blob URI), then follows content-addressed references. Only the pointer resolution can
-  be stale; the content it names is immutable.
-- **Content-addressed means no invalidation.** The bytes at a CAS blob URI never change, so a
-  decoded entry keyed by URI is right forever. Eviction exists only for memory, never correctness.
-- **Decoded content never proves existence.** A resident decode may outlive the durable blob (GC can
-  sweep a superseded blob while its decode is still cached). Any read whose emptiness is
+- **Cache identity carries freshness.** Immutable bodies use their content URI. A mutable body uses
+  process incarnation, pointer key, pointer version, and URI, so rewriting a deterministic URI
+  cannot make old bytes reachable from the new pointer. Mutable entries deliberately start cold
+  after restart because delete/recreate may reuse pointer version one; immutable entries remain
+  reusable across restarts.
+- **Serialized residency never proves existence.** A resident body may outlive the durable blob (GC
+  can sweep a superseded blob while its cached copy remains). Any read whose emptiness is
   load-bearing — a liveness or integrity probe — must hit the live store. The complete pointer
   index is deliberately different: after its account load completes, a missing addressing key is
   authoritative absence.
@@ -32,24 +31,25 @@ cannot replace a newer value after eviction.
 |------------|----------------|---------------|--------------------|
 | Pointers | `PointerCache` behind `CachingPointerStore` | Eleven complete SQL-addressing families plus an admission-controlled remainder for every other pointer family | No expiry. The first addressing read loads the account's four durable subtrees consistently; once complete, point misses, prefix listings and counts are authoritative and cost no store reads. Complete entries never evict. Writes **publish** rather than invalidate and are version-ordered; deletes remove. A failed load or exhausted budget marks the account degraded and falls back to the store. The unqualified `PointerStore` remains authoritative by default; query-serving repositories opt into `@CachedPointerStore` once at wiring. |
 | Current SQL objects | `ObjectCache` | Engine-neutral assembled relations and mapped schemas, current constraint bundles, and small snapshot facts | Immutable identities need no invalidation. Stats writers publish facts under the generation identity committed to the table root; pinned generations remain isolated. Entries may evict because a miss is a safe reload. Account deletion evicts the account partition. |
-| Immutable decoded content | `ImmutableBlobCache` (`service/repo/cache/`) | Decoded root blobs, snapshot-manifest pages, catalog/namespace/table/view/snapshot/constraints blobs, stats generation manifests, plus derived forms: manifest-entry indexes (`headUri + "#index"`) and graph nodes (`blobUri + "#node"`) | Content-addressed, so no invalidation. Byte-weighted, with Caffeine's TinyLFU admission rather than plain LRU: `serializedSize × 3` retained-heap estimate, 256 MB default, 15-minute access TTL, single-flight loads, absence never cached. Config `floecat.blob.cache.*`; kill switch `floecat.blob.cache.enabled=false`. Only `casBlobs` schemas route through it — blobs overwritten in place must never be cached by URI. |
+| Serialized blobs | `DiskBlobCache` behind `BlobCacheAccess` | CAS metadata, snapshot-manifest pages, stats generation manifests, target-stats records and reusable artifact bundles/index objects | Local NVMe, no resident entry index and no TTL. URI-keyed for immutable bodies, including newly written target-stat records; target records with logical-only URIs remain process-and-pointer-version-keyed while they are readable. Checksummed atomic files, single-flight fills, scoped mmap reads, fenced account-partition eviction, and background budget sweeping. Immutable range reads use a resident whole body when available or admit only the requested range. Bulk listings consume hits but do not fill misses. |
 | Per-query state | `QueryContextStore` and per-query memos | `QueryContext` (pins, snapshot set, expansion map) keyed by query ID | Scoped to one query lease; consistency comes from pinning, not freshness. |
 
-The `ImmutableBlobCache` budget is **shared across all tenants**, which buys byte-accurate
-weighing, one budget to operate, and cross-layer sharing — a node and the pages it came from
-compete honestly for the same memory. The cost is that one tenant's wide-schema or long-history
-scans can evict another tenant's hot entries, softened by Caffeine's TinyLFU admission policy,
-which favours frequently reused entries over one-shot scan traffic.
+The blob-cache budget is **shared across tenants** on the local volume. Entries are physically
+partitioned by account so account deletion can remove the whole partition while its durable
+deletion fence is held. A deleted account-id partition remains non-admitting for the rest of the
+process, so a writer that loses the deletion race cannot recreate local state afterward; account
+ids are immutable and are not reused. One-shot bulk reads do not admit misses, preventing an
+unfiltered stats scan from replacing the hot disk set. Derived graph nodes and decoded planner
+stats are no longer cached separately: assembled query metadata belongs to `ObjectCache`, and
+serialized stats belong to `DiskBlobCache`.
 
-`floecat.metadata.graph.cache-max-size` gates node caching (`0` = off); node memory is governed by
-`floecat.blob.cache.max-weight-bytes`.
-
-`StatsOrchestrator` additionally keeps its own byte-weighted 256 MB cache of decoded
-`TargetStatsRecord`s, keyed by `(accountId, tableId, snapshotId, storageId)`; only positive hits
-are cached and mutation paths invalidate explicitly (10-minute write TTL as a backstop).
-Target-stats record blobs are deliberately **not** in the `ImmutableBlobCache`: they are written to
-deterministic (not content-addressed) URIs and a re-capture may overwrite one in place, so
-URI-keyed caching would be unsound for them.
+Mapped reads avoid an intermediate full-body `byte[]` while hashing and parsing large bundles.
+The returned protobuf still owns decoded fields, including heap-backed `ByteString` sketch data,
+because the repository API outlives the scoped mapping. True zero-copy sketch forwarding requires
+a response-scoped ownership API that keeps `BlobCache.Content` open through gRPC serialization; it
+is not safe to alias mapped memory and close the arena at repository return. Compression likewise
+belongs to the `SketchPayload.data` format contract, not this cache envelope; this layer preserves
+those bytes unchanged.
 
 ## The shared cache contract (`core/cache`)
 
@@ -72,7 +72,8 @@ sizing harness use the same arithmetic.
 | `MemoryCache<K, V>` | Read-through `get`; batch `getAll`, which owns miss detection, loading and safe publication; uncounted `peek`; unconditional `put`; `evict` by key and `evictPartition` by caller-supplied membership; `bytes()`/`entryCount()` for the budget. A load racing a mutation cannot restore its stale value. Partition eviction is an infrequent O(n) scan of resident keys. No expiry: staleness is bounded by publication, not by a clock. Pointer version ordering deliberately is not part of this generic contract. |
 | `CaffeineMemoryCache` | The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Cold loads are single-flight and may compose other keys from the same cache. Refuses a non-positive budget at construction. |
 | `CacheWeights` | Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (`WeightedValue` first, then protobuf, text, `byte[]`, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte. |
-| `CacheFamily` | The independently budgeted in-memory families that actually use this module — `POINTER` and `OBJECT` today. Each is its own cache, never a tag inside a shared one, so a burst in the fastest-moving family cannot evict the slowest. Add `HINT` when that implementation lands; do not add disk blob caching to this enum. The tag is both the metric dimension and the config segment. |
+| `BlobCache` / `DiskBlobCache` | Scoped serialized whole-body and range reads with fill or bypass-fill intent, unconditional publication, key/account eviction, mmap lifetime tracking, and sweeping. A range hit can slice a resident whole body; a miss admits only that exact range, avoiding a full-object fetch for a small block. Files are addressed directly from hashed identities, so restart does not require rebuilding a heap index. Disk failures fail open to the source store; corrupt entries are discarded and refilled. |
+| `CacheFamily` | Stable telemetry identities: `POINTER`, `OBJECT`, and `BLOB` today. Pointer and Object use the shared heap budget; Blob has an independent physical-volume budget. |
 | `CacheBudget` / `CacheBudgetResolver` | One total split across the families. Pure arithmetic in `CacheBudget.split`; `CacheBudgetResolver` (`service/cache/`) reads the configuration and runs it at startup. |
 | `CacheEvents` | The common event baseline: `hit` (with how long it took to serve, so a caller that waited on someone else's load is not an instant hit), `miss`, `loadTime`, `loadFailed`, `loadDiscarded`, `admissionRejected`, `writeThrough` and `evicted`. Write-through reports whether the cache applied the publication or skipped it through a safety guard. Bulk reads report hits and misses per distinct key and one duration per loader invocation. A disk cache can reuse these metrics and add mapping/sweep signals without implementing `MemoryCache`. The module reports events; the container names the metrics. |
 
@@ -87,11 +88,9 @@ claims that together exceed the total. A family whose configuration is *absent* 
 case and takes nothing; what refuses that is the cache built for it, which will not accept a
 budget of zero.
 
-Only implemented in-memory families appear in `CacheFamily`; this avoids publishing configuration
-and metric dimensions for caches that do not exist yet. The existing `ImmutableBlobCache` remains
-temporarily under `floecat.blob.cache.max-weight-bytes` for decoded ingredients not yet moved to the
-disk blob layer. A future disk blob cache can reuse the cache module's telemetry vocabulary while
-exposing its own lifecycle-shaped interface and volume budget.
+Only implemented families appear in `CacheFamily`. `CacheBudgetResolver` assigns heap only to
+families with heap share/max-byte configuration; Blob is constructed from
+`floecat.cache.blob.disk.*` and therefore cannot accidentally consume the in-memory budget.
 
 `floecat.cache.pointer.share` is 0.096, from the reference sizing scenario: a 100,000-table account
 at 100 columns needs 0.32 GB of addressing out of the 3.34 GB the memory caches hold between them
@@ -144,9 +143,8 @@ per-call consistency selection.
 
 ## What a cache reports
 
-A cache built on the `core/cache` contract publishes the same series, tagged by cache name, so
-those are comparable and a new one brings its telemetry with it. `ImmutableBlobCache` predates the
-contract and publishes its own subset; `graph-cache` is node-load timing, not a cache.
+A cache built on the `core/cache` contract publishes the same baseline series, tagged by family,
+so the layers are comparable. Disk adds only lifecycle signals that do not apply to heap caches.
 
 | question | series |
 |---|---|
@@ -161,6 +159,9 @@ contract and publishes its own subset; `graph-cache` is node-load timing, not a 
 | Is the budget rejecting valid entries? | `floecat_core_cache_admission_rejected` |
 | Are write-through publications being applied or safety-guarded? | `floecat_core_cache_write_through{result="applied\|skipped"}` |
 | Are pointer indexes ready? | `floecat_core_cache_accounts`, tagged `result=loading|complete|degraded` |
+| Is local disk content corrupt? | `floecat_core_cache_corruptions` |
+| Is the sweeper reclaiming space? | `floecat_core_cache_sweep_reclaimed_bytes` |
+| Are mapped files preventing reclamation? | `floecat_core_cache_live_mappings` |
 
 Hits and misses are counted as they happen rather than derived from a running total, because a rate
 computed from a cumulative gauge cannot tell an idle cache from one that is missing everything.
@@ -181,6 +182,16 @@ that a cache is there holding nothing.
 `floecat.cache.object.enabled=false` keeps the same object-facing APIs but loads every relation,
 schema, constraint bundle, and snapshot-facts value directly. Callers do not select cached versus
 uncached reads themselves.
+
+`floecat.cache.blob.disk.enabled=false` preserves the same repository API and reads serialized
+bodies directly from object storage. The disk path is not opened when disabled.
+
+A query-serving deployment should enable the disk tier after mounting capacity-managed local
+storage at `floecat.cache.blob.disk.path`. It remains opt-in at the application level because this
+repository does not own the production volume mount, and creating `/mnt/nvme/floecat` alone cannot
+prove that it is backed by NVMe rather than the container root filesystem. The local Compose
+service enables a bounded 1 GiB ephemeral cache under `/tmp`; that exercises the production path
+but is not a performance substitute for NVMe. Reconciler executors remain source-backed.
 
 A budget of zero is *not* the switch — it is refused at startup, because a cache sized zero reports
 a 0% hit rate that reads as a cache which is not helping rather than one that was turned off.
@@ -236,5 +247,7 @@ instead of a share. Pointer-specific knobs are
 `floecat.cache.pointer.load-parallelism` and
 `floecat.cache.pointer.degraded-retry-seconds`; a share outside `(0, 1]` fails at startup.
 `heap-share`, `pointer.share`, and `object.share` carry defaults in
-`service/src/main/resources/application.properties`, alongside `floecat.blob.cache.*`;
-`total-bytes` and the per-family `max-bytes` properties are unset.
+`service/src/main/resources/application.properties`. The independent disk knobs are
+`floecat.cache.blob.disk.enabled`, `.path`, `.max-bytes`, `.mmap-threshold-bytes`,
+`.access-touch-interval-seconds`, and `.sweep-interval`; `total-bytes` and the per-heap-family
+`max-bytes` properties are unset.

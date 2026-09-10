@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.CachedPointerStore;
@@ -41,7 +42,7 @@ public class CurrentSnapshotPointerRepository
         Schemas.CURRENT_SNAPSHOT_POINTER,
         CurrentSnapshotPointer::parseFrom,
         CurrentSnapshotPointer::toByteArray,
-        null);
+        BlobCacheAccess.disabled());
   }
 
   public CurrentSnapshotPointerRepository(PointerStore pointerStore, BlobStore blobStore) {

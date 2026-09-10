@@ -16,7 +16,7 @@
 package ai.floedb.floecat.service.repo.util;
 
 import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.ResourceKey;
 import ai.floedb.floecat.service.repo.model.ResourceSchema;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -34,7 +34,7 @@ import java.util.function.Function;
 public class MetadataRepositoryFactory {
   private final PointerStore pointers;
   private final BlobStore blobs;
-  private final ImmutableBlobCache cache;
+  private final BlobCacheAccess cache;
   private final RepositoryReads reads;
 
   /**
@@ -47,7 +47,7 @@ public class MetadataRepositoryFactory {
       PointerStore pointers,
       @CachedPointerStore PointerStore cachedPointers,
       BlobStore blobs,
-      ImmutableBlobCache cache,
+      BlobCacheAccess cache,
       MetadataResourceReader admittedReads) {
     this.pointers = pointers;
     this.blobs = blobs;

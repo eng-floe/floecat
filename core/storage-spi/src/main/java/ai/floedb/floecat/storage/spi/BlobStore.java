@@ -18,6 +18,7 @@ package ai.floedb.floecat.storage.spi;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
+import java.nio.ByteBuffer;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,9 @@ public interface BlobStore {
       throw new IllegalArgumentException("blob range is invalid");
     }
     byte[] bytes = get(uri);
+    if (bytes == null) {
+      return null;
+    }
     if (offset > bytes.length || (long) length > bytes.length - offset) {
       throw new IllegalArgumentException("blob range exceeds the object");
     }
@@ -108,6 +112,33 @@ public interface BlobStore {
       }
     }
     return out;
+  }
+
+  /**
+   * Read-only batch whose buffers remain valid until it is closed. Implementations backed by mapped
+   * files can override this method to keep those mappings alive for the scope; ordinary stores
+   * inherit the heap-backed behavior.
+   */
+  default ScopedObjects getBatchScoped(List<String> uris) {
+    Map<String, byte[]> loaded = Map.copyOf(getBatch(uris));
+    return new ScopedObjects() {
+      @Override
+      public ByteBuffer get(String uri) {
+        byte[] bytes = loaded.get(uri);
+        return bytes == null ? null : ByteBuffer.wrap(bytes).asReadOnlyBuffer();
+      }
+
+      @Override
+      public void close() {}
+    };
+  }
+
+  interface ScopedObjects extends AutoCloseable {
+    /** Returns an independently positioned read-only buffer, or {@code null} when absent. */
+    ByteBuffer get(String uri);
+
+    @Override
+    void close();
   }
 
   record Range(String uri, long offset, int length) {

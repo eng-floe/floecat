@@ -16,9 +16,9 @@
 
 package ai.floedb.floecat.service.repo.impl;
 
+import ai.floedb.floecat.cache.BlobCache;
 import ai.floedb.floecat.catalog.rpc.IndexArtifactRecord;
 import ai.floedb.floecat.catalog.rpc.IndexTarget;
-import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -31,7 +31,7 @@ import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
@@ -48,6 +48,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -55,7 +56,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Objects;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -103,14 +104,14 @@ public class IndexArtifactRepository {
 
   private final PointerStore pointerStore;
   private final BlobStore blobStore;
-  private final ImmutableBlobCache blobCache;
+  private final BlobCacheAccess blobCache;
   private final TableBlobReachabilityGuard reachabilityGuard;
   private final GenerationArtifactMap generationArtifactMap;
 
   public IndexArtifactRepository(
       PointerStore pointerStore,
       BlobStore blobStore,
-      ImmutableBlobCache blobCache,
+      BlobCacheAccess blobCache,
       TableBlobReachabilityGuard reachabilityGuard) {
     this(pointerStore, pointerStore, blobStore, blobCache, reachabilityGuard);
   }
@@ -120,11 +121,11 @@ public class IndexArtifactRepository {
       PointerStore pointerStore,
       @CachedPointerStore PointerStore pointerReads,
       BlobStore blobStore,
-      ImmutableBlobCache blobCache,
+      BlobCacheAccess blobCache,
       TableBlobReachabilityGuard reachabilityGuard) {
     this.pointerStore = AuthoritativePointerStore.of(pointerStore);
     this.blobStore = blobStore;
-    this.blobCache = Objects.requireNonNull(blobCache, "blobCache");
+    this.blobCache = java.util.Objects.requireNonNull(blobCache, "blobCache");
     this.reachabilityGuard = reachabilityGuard;
     this.generationArtifactMap =
         new GenerationArtifactMap(this.pointerStore, pointerReads, blobStore, blobCache);
@@ -199,6 +200,7 @@ public class IndexArtifactRepository {
             Hashing.sha256Hex(bytes));
     boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
     blobStore.put(blobUri, bytes, "application/x-protobuf");
+    blobCache.putImmutable(blobUri, bytes);
     String pointerKey =
         generationPointer(tableId, value.getSnapshotId(), DIRECT_GENERATION, targetStorageId);
     Pointer current = pointerStore.get(pointerKey).orElse(null);
@@ -269,6 +271,7 @@ public class IndexArtifactRepository {
               targetStorageId,
               blobSha256);
       blobStore.put(blobUri, bytes, "application/x-protobuf");
+      blobCache.putImmutable(blobUri, bytes);
       try {
         registerWrites(
             tableId,
@@ -339,21 +342,24 @@ public class IndexArtifactRepository {
         throw new BaseResourceRepository.CorruptionException(
             "managed reusable index bundle is outside the owning table generation");
       }
-      ReusableArtifactBundlePayload bundle;
+      byte[] bytes;
       try {
-        BlobHeader header =
-            blobStore.head(bundleUri).orElseThrow(() -> new StorageNotFoundException(bundleUri));
-        if (header.getContentLength() != selection.payloadBytes()) {
-          throw new BaseResourceRepository.CorruptionException(
-              "managed reusable index bundle metadata does not match: " + bundleUri);
-        }
-        bundle =
-            loadImmutableReusableArtifactBundle(bundleUri)
-                .orElseThrow(() -> new StorageNotFoundException(bundleUri));
+        bytes = loadImmutableBytesUncached(bundleUri).orElse(null);
       } catch (StorageNotFoundException error) {
         throw new BaseResourceRepository.CorruptionException(
             "managed reusable index bundle is missing: " + bundleUri, error);
-      } catch (IllegalStateException error) {
+      }
+      if (bytes == null
+          || bytes.length != selection.payloadBytes()
+          || !Hashing.sha256Hex(bytes)
+              .equals(HexFormat.of().formatHex(selection.payloadSha256()))) {
+        throw new BaseResourceRepository.CorruptionException(
+            "managed reusable index bundle metadata does not match: " + bundleUri);
+      }
+      ReusableArtifactBundlePayload bundle;
+      try {
+        bundle = ReusableArtifactBundles.parse(bytes);
+      } catch (InvalidProtocolBufferException error) {
         throw new BaseResourceRepository.CorruptionException(
             "managed reusable index bundle is invalid: " + bundleUri, error);
       } catch (IllegalArgumentException error) {
@@ -368,10 +374,6 @@ public class IndexArtifactRepository {
           throw new BaseResourceRepository.CorruptionException(
               "managed reusable index record belongs to another table: " + bundleUri);
         }
-        boolean selected =
-            record.hasTarget()
-                && record.getTarget().hasFile()
-                && requiredPaths.remove(record.getTarget().getFile().getFilePath());
         String sidecarUri = record.getArtifactUri();
         if (!sidecarUri.startsWith("/accounts/") || !sidecarUri.contains(Keys.SEG_INDEX_SIDECARS)) {
           continue;
@@ -381,7 +383,9 @@ public class IndexArtifactRepository {
           throw new BaseResourceRepository.CorruptionException(
               "managed reusable index sidecar is outside the owning table generation");
         }
-        if (selected) {
+        if (record.hasTarget()
+            && record.getTarget().hasFile()
+            && requiredPaths.remove(record.getTarget().getFile().getFilePath())) {
           generations.add(sidecarGeneration);
         }
       }
@@ -671,19 +675,34 @@ public class IndexArtifactRepository {
   }
 
   private Optional<SnapshotCaptureManifest> loadCaptureManifest(String uri) {
-    return blobCache.get(uri, this::loadCaptureManifestUncached);
-  }
-
-  private Optional<SnapshotCaptureManifest> loadCaptureManifestUncached(String uri) {
-    try {
-      byte[] bytes = blobStore.get(uri);
-      return bytes == null
-          ? Optional.empty()
-          : Optional.of(SnapshotCaptureManifest.parseFrom(bytes));
-    } catch (StorageNotFoundException e) {
+    Optional<byte[]> bytes = loadImmutableBytes(uri);
+    if (bytes.isEmpty()) {
       return Optional.empty();
+    }
+    try {
+      return Optional.of(SnapshotCaptureManifest.parseFrom(bytes.orElseThrow()));
     } catch (InvalidProtocolBufferException e) {
       throw new IllegalStateException("invalid snapshot capture manifest at " + uri, e);
+    }
+  }
+
+  private Optional<byte[]> loadImmutableBytes(String uri) {
+    return loadImmutableBytes(uri, BlobCache.Fill.FILL);
+  }
+
+  private Optional<byte[]> loadImmutableBytes(String uri, BlobCache.Fill fill) {
+    try {
+      return blobCache.immutableBytes(uri, fill, () -> blobStore.get(uri));
+    } catch (StorageNotFoundException e) {
+      return Optional.empty();
+    }
+  }
+
+  private Optional<byte[]> loadImmutableBytesUncached(String uri) {
+    try {
+      return Optional.ofNullable(blobStore.get(uri));
+    } catch (StorageNotFoundException e) {
+      return Optional.empty();
     }
   }
 
@@ -803,12 +822,12 @@ public class IndexArtifactRepository {
           "index artifact generation changed while listing snapshot " + snapshotId);
     }
     String backendToken = token == null ? "" : token.backendToken();
-    if (generationArtifactMap.manifest(tableId, snapshotId, generationId.get()).isPresent()) {
+    Optional<SnapshotCaptureManifest> manifest =
+        generationArtifactMap.listingManifest(tableId, snapshotId, generationId.get());
+    if (manifest.isPresent()) {
       ReusableArtifactIndexStore.EntryPage page =
           generationArtifactMap.page(
-              tableId,
-              snapshotId,
-              generationId.get(),
+              manifest.orElseThrow(),
               ReusableArtifactIndexStore.EntryKind.INDEX_ARTIFACT,
               Math.max(1, limit),
               backendToken);
@@ -818,10 +837,10 @@ public class IndexArtifactRepository {
           nextOut.append(encodeIndexListToken(generationId.get(), page.nextPageToken()));
         }
       }
-      return page.entries().stream()
-          .map(
-              entry ->
-                  readRecord(
+      List<Pointer> pagePointers =
+          page.entries().stream()
+              .map(
+                  entry ->
                       PointerReferences.blobPointer(
                           generationPointer(
                               tableId,
@@ -830,10 +849,9 @@ public class IndexArtifactRepository {
                               "file:" + entry.getIndexArtifact().getFilePath()),
                           entry.getArtifact().getPayloadUri(),
                           1L,
-                          entry.getArtifact().getPayloadBytes()),
-                      tableId,
-                      snapshotId))
-          .toList();
+                          entry.getArtifact().getPayloadBytes()))
+              .toList();
+      return readRecordsWithoutFill(pagePointers, tableId, snapshotId);
     }
     StringBuilder backendNext = new StringBuilder();
     List<Pointer> pointers =
@@ -849,7 +867,7 @@ public class IndexArtifactRepository {
         nextOut.append(encodeIndexListToken(generationId.get(), backendNext.toString()));
       }
     }
-    return pointers.stream().map(pointer -> readRecord(pointer, tableId, snapshotId)).toList();
+    return readRecordsWithoutFill(pointers, tableId, snapshotId);
   }
 
   private static String encodeIndexListToken(String generationId, String backendToken) {
@@ -978,7 +996,7 @@ public class IndexArtifactRepository {
         continue;
       }
       try {
-        byte[] bytes = blobStore.get(blobUri);
+        byte[] bytes = loadImmutableBytesUncached(blobUri).orElse(null);
         if (bytes == null) {
           throw new StorageNotFoundException(blobUri);
         }
@@ -1013,16 +1031,9 @@ public class IndexArtifactRepository {
 
   private Optional<ReusableArtifactBundlePayload> loadCachedReusableArtifactBundle(
       String bundleUri) {
-    Optional<ReusableArtifactBundlePayload> bundle = loadReusableArtifactBundle(bundleUri);
-    if (blobCache.enabled()) {
-      bundle.ifPresent(value -> blobCache.put(bundleUri, value));
-    }
-    return bundle;
-  }
-
-  private Optional<ReusableArtifactBundlePayload> loadImmutableReusableArtifactBundle(
-      String bundleUri) {
-    return blobCache.get(bundleUri, this::loadReusableArtifactBundle);
+    // Publication validation is an authoritative mutation prerequisite. A cached copy may outlive
+    // the durable object after GC, so validate against the store being mutated.
+    return loadReusableArtifactBundleUncached(bundleUri);
   }
 
   private static void requirePrewrittenRecordMatches(
@@ -1210,20 +1221,46 @@ public class IndexArtifactRepository {
   }
 
   private IndexArtifactRecord readRecord(Pointer pointer, ResourceId tableId, long snapshotId) {
+    return readRecord(pointer, tableId, snapshotId, BlobCache.Fill.FILL, new LinkedHashMap<>());
+  }
+
+  private List<IndexArtifactRecord> readRecordsWithoutFill(
+      List<Pointer> pointers, ResourceId tableId, long snapshotId) {
+    Map<String, ReusableArtifactBundlePayload> bundles = new LinkedHashMap<>();
+    return pointers.stream()
+        .map(
+            pointer ->
+                readRecord(pointer, tableId, snapshotId, BlobCache.Fill.BYPASS_FILL, bundles))
+        .toList();
+  }
+
+  private IndexArtifactRecord readRecord(
+      Pointer pointer,
+      ResourceId tableId,
+      long snapshotId,
+      BlobCache.Fill fill,
+      Map<String, ReusableArtifactBundlePayload> bundles) {
     try {
       if (!ReusableArtifactBundleUris.isBundleUri(pointer.getBlobUri())) {
         return rebindRecord(
-            IndexArtifactRecord.parseFrom(blobStore.get(pointer.getBlobUri())),
+            IndexArtifactRecord.parseFrom(
+                loadImmutableBytes(pointer.getBlobUri(), fill)
+                    .orElseThrow(
+                        () ->
+                            new StorageNotFoundException(
+                                "missing index artifact at " + pointer.getBlobUri()))),
             tableId,
             snapshotId);
       }
       ReusableArtifactBundlePayload bundle =
-          blobCache
-              .get(pointer.getBlobUri(), this::loadReusableArtifactBundle)
-              .orElseThrow(
-                  () ->
-                      new IllegalStateException(
-                          "missing index artifact bundle at " + pointer.getBlobUri()));
+          bundles.computeIfAbsent(
+              pointer.getBlobUri(),
+              uri ->
+                  loadReusableArtifactBundle(uri, fill)
+                      .orElseThrow(
+                          () ->
+                              new IllegalStateException(
+                                  "missing index artifact bundle at " + uri)));
       for (IndexArtifactRecord record : bundle.getIndexArtifactsList()) {
         String targetStorageId = indexArtifactTargetStorageId(record.getTarget());
         if (pointer.getKey().endsWith("/" + Keys.encodeSegment(targetStorageId))) {
@@ -1248,17 +1285,44 @@ public class IndexArtifactRepository {
   }
 
   private Optional<ReusableArtifactBundlePayload> loadReusableArtifactBundle(String uri) {
+    return loadReusableArtifactBundle(uri, BlobCache.Fill.FILL);
+  }
+
+  private Optional<ReusableArtifactBundlePayload> loadReusableArtifactBundle(
+      String uri, BlobCache.Fill fill) {
+    Optional<BlobCache.Content> content =
+        blobCache.immutable(uri, fill, () -> loadImmutableBytesUncached(uri).orElse(null));
+    if (content.isEmpty()) {
+      return Optional.empty();
+    }
+    try (BlobCache.Content body = content.orElseThrow()) {
+      return parseReusableArtifactBundle(uri, body.buffer());
+    }
+  }
+
+  private Optional<ReusableArtifactBundlePayload> loadReusableArtifactBundleUncached(String uri) {
     try {
-      byte[] bytes = blobStore.get(uri);
-      if (bytes == null) {
-        return Optional.empty();
-      }
+      return parseReusableArtifactBundle(uri, Optional.ofNullable(blobStore.get(uri)));
+    } catch (StorageNotFoundException e) {
+      return Optional.empty();
+    }
+  }
+
+  private static Optional<ReusableArtifactBundlePayload> parseReusableArtifactBundle(
+      String uri, Optional<byte[]> loaded) {
+    if (loaded.isEmpty()) {
+      return Optional.empty();
+    }
+    return parseReusableArtifactBundle(uri, ByteBuffer.wrap(loaded.orElseThrow()));
+  }
+
+  private static Optional<ReusableArtifactBundlePayload> parseReusableArtifactBundle(
+      String uri, ByteBuffer bytes) {
+    try {
       if (!ReusableArtifactBundleUris.matchesPayload(uri, bytes)) {
         throw new IllegalStateException("reusable artifact bundle digest mismatch: " + uri);
       }
       return Optional.of(ReusableArtifactBundles.parse(bytes));
-    } catch (StorageNotFoundException e) {
-      return Optional.empty();
     } catch (InvalidProtocolBufferException e) {
       throw new IllegalStateException("invalid reusable artifact bundle at " + uri, e);
     }

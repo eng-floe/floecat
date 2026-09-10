@@ -21,9 +21,10 @@ final class ReusableArtifactIndexBloomFilter {
   private final int bitCount;
   private final int hashes;
   private final int entryCount;
-  private final byte[] bits;
+  private final ByteBuffer bits;
 
-  private ReusableArtifactIndexBloomFilter(int bitCount, int hashes, int entryCount, byte[] bits) {
+  private ReusableArtifactIndexBloomFilter(
+      int bitCount, int hashes, int entryCount, ByteBuffer bits) {
     this.bitCount = bitCount;
     this.hashes = hashes;
     this.entryCount = entryCount;
@@ -45,14 +46,21 @@ final class ReusableArtifactIndexBloomFilter {
                 MAX_HASHES,
                 (int) Math.round(((double) bitCount / (double) entryCount) * Math.log(2.0d))));
     return new ReusableArtifactIndexBloomFilter(
-        bitCount, hashes, entryCount, new byte[Math.ceilDiv(bitCount, 8)]);
+        bitCount, hashes, entryCount, ByteBuffer.allocate(Math.ceilDiv(bitCount, 8)));
   }
 
   static ReusableArtifactIndexBloomFilter parse(byte[] bytes, long expectedEntries) {
-    if (bytes == null || bytes.length < 9) {
+    if (bytes == null) {
       throw new IllegalArgumentException("reusable artifact Bloom filter is invalid");
     }
-    ByteBuffer input = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN);
+    return parse(ByteBuffer.wrap(bytes), expectedEntries);
+  }
+
+  static ReusableArtifactIndexBloomFilter parse(ByteBuffer bytes, long expectedEntries) {
+    if (bytes == null || bytes.remaining() < 9) {
+      throw new IllegalArgumentException("reusable artifact Bloom filter is invalid");
+    }
+    ByteBuffer input = bytes.duplicate().order(ByteOrder.BIG_ENDIAN);
     int bitCount = input.getInt();
     int hashes = Byte.toUnsignedInt(input.get());
     int entryCount = input.getInt();
@@ -66,9 +74,8 @@ final class ReusableArtifactIndexBloomFilter {
         || Integer.toUnsignedLong(entryCount) != expectedEntries) {
       throw new IllegalArgumentException("reusable artifact Bloom filter shape is invalid");
     }
-    byte[] bits = new byte[bitBytes];
-    input.get(bits);
-    return new ReusableArtifactIndexBloomFilter(bitCount, hashes, entryCount, bits);
+    return new ReusableArtifactIndexBloomFilter(
+        bitCount, hashes, entryCount, input.slice().asReadOnlyBuffer());
   }
 
   static int bitCount(int entryCount) {
@@ -82,12 +89,12 @@ final class ReusableArtifactIndexBloomFilter {
   }
 
   byte[] bytes() {
-    return ByteBuffer.allocate(9 + bits.length)
+    return ByteBuffer.allocate(9 + bits.remaining())
         .order(ByteOrder.BIG_ENDIAN)
         .putInt(bitCount)
         .put((byte) hashes)
         .putInt(entryCount)
-        .put(bits)
+        .put(bits.duplicate())
         .array();
   }
 
@@ -96,7 +103,8 @@ final class ReusableArtifactIndexBloomFilter {
     long second = longAt(digest, 8) | 1L;
     for (int index = 0; index < hashes; index++) {
       int bit = (int) Long.remainderUnsigned(first + index * second, bitCount);
-      bits[bit >>> 3] |= (byte) (1 << (bit & 7));
+      int byteIndex = bit >>> 3;
+      bits.put(byteIndex, (byte) (bits.get(byteIndex) | (1 << (bit & 7))));
     }
   }
 
@@ -105,7 +113,7 @@ final class ReusableArtifactIndexBloomFilter {
     long second = longAt(digest, 8) | 1L;
     for (int index = 0; index < hashes; index++) {
       int bit = (int) Long.remainderUnsigned(first + index * second, bitCount);
-      if ((bits[bit >>> 3] & (1 << (bit & 7))) == 0) {
+      if ((bits.get(bit >>> 3) & (1 << (bit & 7))) == 0) {
         return false;
       }
     }
