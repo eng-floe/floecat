@@ -145,8 +145,8 @@ public class MetadataCaches {
   /**
    * Counts hits and misses and times the loads. Enough, with the gauges below, to answer the
    * questions asked of a cache that is behaving oddly: whether it is on, whether it is being used,
-   * what a miss costs, how full it is, whether loads are failing, and whether it has stopped
-   * retaining what it loads, and whether write-through publications are applied or safety-guarded.
+   * what a miss costs, how full it is, whether loads are failing, and whether it retains what it
+   * loads.
    */
   private static CacheEvents events(CacheMetrics metrics, Tag... tags) {
     return new CacheEvents() {
@@ -174,21 +174,6 @@ public class MetadataCaches {
       @Override
       public void loadFailed(java.time.Duration elapsed, RuntimeException error) {
         metrics.recordLoadFailure(elapsed, error, tags);
-      }
-
-      @Override
-      public void loadDiscarded() {
-        metrics.recordLoadDiscarded(tags);
-      }
-
-      @Override
-      public void admissionRejected() {
-        metrics.recordAdmissionRejected(tags);
-      }
-
-      @Override
-      public void writeThrough(WriteThroughResult result) {
-        metrics.recordWriteThrough(result == WriteThroughResult.APPLIED, tags);
       }
 
       @Override
