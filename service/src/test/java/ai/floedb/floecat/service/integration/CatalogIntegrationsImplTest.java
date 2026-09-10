@@ -557,6 +557,63 @@ class CatalogIntegrationsImplTest {
   }
 
   @Test
+  void deltaSharingAcceptsARecipientBearerToken() {
+    var response =
+        service
+            .createCatalogIntegration(
+                CreateCatalogIntegrationRequest.newBuilder()
+                    .setSpec(
+                        CatalogIntegrationSpec.newBuilder()
+                            .setDisplayName("Partner Share")
+                            .setType(CatalogIntegrationType.CIT_DELTA_SHARING)
+                            .setCatalogUri("https://sharing.example/delta-sharing")
+                            .setAuthentication(
+                                CatalogAuthentication.newBuilder()
+                                    .setBearer(BearerAuthentication.getDefaultInstance())))
+                    .setCredentials(
+                        CatalogIntegrationCredentials.newBuilder()
+                            .setBearerToken(SecretValue.newBuilder().setValue("recipient")))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(CatalogIntegrationType.CIT_DELTA_SHARING, response.getIntegration().getType());
+    verify(service.integrations).createWithMeta(any());
+  }
+
+  @Test
+  void deltaSharingRejectsEveryAuthenticationExceptBearer() {
+    var schemes =
+        List.of(
+            oauthAuthentication(),
+            CatalogAuthentication.newBuilder()
+                .setAwsSigv4(AwsSigV4Authentication.newBuilder().setRegion("us-east-1"))
+                .build());
+    for (var authentication : schemes) {
+      var error =
+          assertThrows(
+              StatusRuntimeException.class,
+              () ->
+                  service
+                      .createCatalogIntegration(
+                          CreateCatalogIntegrationRequest.newBuilder()
+                              .setSpec(
+                                  CatalogIntegrationSpec.newBuilder()
+                                      .setDisplayName("Partner Share")
+                                      .setType(CatalogIntegrationType.CIT_DELTA_SHARING)
+                                      .setCatalogUri("https://sharing.example/delta-sharing")
+                                      .setAuthentication(authentication))
+                              .setCredentials(oauthCredentials())
+                              .build())
+                      .await()
+                      .indefinitely());
+
+      assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    }
+    verify(service.integrations, never()).createWithMeta(any());
+  }
+
+  @Test
   void createRejectsBlankTopLevelAssumeRoleExternalId() {
     var error =
         assertThrows(

@@ -92,11 +92,12 @@ Important behavior:
 
 ### Cleartext S3 endpoints
 
-A Unity Catalog Integration may set `s3.endpoint` to reach an S3-compatible store. Floecat requires
-HTTPS there by default, because a Unity storage vend is only published when it carries an AWS
-session token: that token travels in the `X-Amz-Security-Token` header on every signed request, and
-anyone who observes it can replay it against the table's storage prefix until it expires. The value
-is also republished to reconcile and query workers, so the exposure is not limited to validation.
+A Unity Catalog or Delta Sharing Integration may set `s3.endpoint` to reach an S3-compatible store.
+Floecat requires HTTPS there by default, because a storage vend on either is only published when it
+carries an AWS session token: that token travels in the `X-Amz-Security-Token` header on every signed
+request, and anyone who observes it can replay it against the table's storage prefix until it
+expires. The value is also republished to reconcile and query workers, so the exposure is not limited
+to validation.
 
 - `FLOECAT_SECURITY_ALLOW_CLEARTEXT_S3_ENDPOINTS=true` – permits an `http://` `s3.endpoint`. Set
   this only where the network between Floecat, its workers, and the object store is trusted; MinIO
@@ -115,6 +116,81 @@ As with the catalog URI, these checks apply only to address *literals*: a hostna
 during validation, so an endpoint written as a hostname passes the address guard regardless of what
 it resolves to. That is why the bundled Compose stack, which addresses LocalStack as `localstack`,
 needs only the cleartext setting.
+
+### Delta Sharing access modes
+
+A Delta Sharing table is readable through this integration only where its provider offers directory
+access. A table that offers `url` access alone returns presigned per-file URLs rather than
+credentials, which the storage contract cannot represent, and the vend refuses it by name.
+
+A table that states no access modes at all is asked rather than refused. The protocol reads an absent
+field as `url` only, but the reference server implements the `temporary-table-credentials` endpoint
+while never sending the field, so holding to that reading refuses every table on a server that would
+have answered. Floecat attempts the vend and reports what the server says: a refusal or a missing
+endpoint becomes `CIVI_CREDENTIAL_VENDING_UNSUPPORTED` on validation, while a rejected token or an
+unreachable server is reported as itself.
+
+A table this Integration cannot read is refused when the overlay reconciles, and counted in
+`objects_skipped`, rather than materialized and left to fail at query time. That covers a table
+offering `url` access alone; a table stating no access modes under
+`delta.sharing.strict-access-modes`; a table reporting `auxiliaryLocations` on either surface, since
+the storage contract carries one credential over one scope prefix and vending only the root would
+fail at scan time on the files it does not reach; a table whose location is on a cloud this
+provider cannot vend for, meaning `abfss://`, `gs://`, or an `s3://` whose bucket cannot be read;
+and a table whose location no surface states, where the credential endpoint then refuses with a 404
+or the protocol's own 400.
+
+Two shapes nearby are not skips. Where the credential endpoint answers 200 without a location, or
+with a location the stated one is not under, the result is a classified failure rather than a
+skipped table -- a response this client cannot read is not a property of one table. And where the
+storage probe finds no Delta log object under the location, validation reports
+`CIVI_STORAGE_ACCESS_FAILED`: that means the location is not a table root -- a wrong region, a wrong
+prefix, a broadly scoped credential -- which is correctable, unlike a capability the provider does
+not have. The reason for refusing the rest is
+that a table reconciled without a storage location keeps the Integration's own catalog URI as its
+upstream reference, so it exists in the catalog and cannot be opened by anything reading object
+storage. A share offering only `url` access is therefore unsupported here, not partially supported.
+
+A table's access modes are reported by `integration validate`, which names the table and the reason
+when it refuses one. They are not stored on the reconciled table: the overlay reconciler builds a
+table's properties from the Integration and Overlay identities and the storage location, and does
+not carry the upstream properties a provider reports. That is true of every provider, not only this
+one, so reading a share's access modes means validating the Integration rather than describing the
+materialized table.
+
+- `delta.sharing.strict-access-modes=true` -- a connection property that restores the protocol
+  reading, refusing a table that states no modes without asking. Set it against a server known to
+  advertise its modes correctly, where a doomed request per table is waste. It carries a cost on
+  the vend, and against a large schema the cost is the wrong way round. Where the metaData action
+  states no modes, strict mode consults the table listing before refusing, because the listing is
+  where the protocol defines `accessModes` and the metaData spelling is the newer one -- refusing
+  without looking there would refuse a conforming table. A credential is vended on every
+  storage-authority resolve with a client that lives for that one resolve, so that fallback pages
+  the whole schema listing once per read. It is bounded by
+  `floecat.delta-sharing.max-listing-bytes` rather than unbounded, but it is a listing per read.
+  Leave this off for a share whose schemas hold many tables, or set it only against a server that
+  states modes on the metaData action, where the fallback never runs.
+- `delta.sharing.reader-features` -- a comma-separated list of Delta reader features this deployment
+  can process, empty by default. The capability header tells the server what the client can handle,
+  and claiming a feature the read path cannot process turns a refusal the server would have made
+  into a failure partway through a scan. Enforcement is the server's: the list is sent on the
+  metadata call and is not compared against the features the server reports back, so a server that
+  ignores the header is not caught here.
+- `floecat.delta-sharing.max-pages` (system property) -- maximum pages fetched by one listing,
+  default 10,000. A repeated page token is refused outright; this bound is what stops a server
+  minting a fresh one forever. Exceeding it is reported as `INVALID_RESPONSE`.
+- `floecat.delta-sharing.max-response-bytes` (system property) -- cap on a single response body,
+  default 32 MiB. A larger body is refused rather than buffered, since the endpoint is named by
+  tenant configuration.
+- `floecat.delta-sharing.max-listing-bytes` (system property) -- cap on everything one client
+  lists, across pages and across listings, default 32 MiB. The other two bounds do not compose into
+  a memory bound: ten thousand pages of thirty-two mebibytes is past any heap, and a reconcile pass
+  keeps each schema's tables for the whole of its life, so a per-listing cap would not bound the
+  pass. A table entry runs roughly three hundred bytes of JSON, nearer six hundred with a deep
+  prefix, so the default admits above sixty thousand tables across a whole share where a large real
+  share holds thousands, and the decoded records cost about as much again. Raise it for a genuinely
+  larger share; exceeding it fails the reconcile as `INVALID_RESPONSE`, which is not retried and
+  ends the pass rather than being recorded as one skipped schema.
 
 ### Reconciler deployment modes
 

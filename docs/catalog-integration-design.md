@@ -92,10 +92,19 @@ protocol-specific values such as the Iceberg REST warehouse; secret-bearing prop
 Its immutable resource ID is operational identity; its display name is mutable metadata and must be
 unique among integrations in the account.
 
-The API initially supports Iceberg REST and Unity integration types. Authentication is required and
-represented by typed protobuf messages for OAuth client credentials, bearer tokens, AWS assume role,
-AWS access keys, and AWS SigV4. Unity initially accepts only OAuth client credentials or bearer
-authentication. The base service validates structural compatibility; endpoint and provider support
+The API supports Iceberg REST, Unity, and Delta Sharing integration types. Authentication is
+required and represented by typed protobuf messages for OAuth client credentials, bearer tokens, AWS
+assume role, AWS access keys, and AWS SigV4. Unity initially accepts only OAuth client credentials or
+bearer authentication. Delta Sharing accepts only bearer authentication, the recipient token its
+provider issued, because the sharing protocol defines no other scheme. A Delta Sharing table is
+usable only where its provider offers directory access; a share that offers url access alone returns
+presigned per-file URLs rather than credentials, which the storage contract cannot represent, and the
+vend refuses it by name. A table that states no access modes at all is asked rather than refused: the
+protocol reads an absent field as url only, and the reference server implements the credential
+endpoint while never sending the field, so holding to that reading would refuse every table on a
+server that would have answered. Setting the connection property
+`delta.sharing.strict-access-modes` to `true` restores the protocol reading and refuses without
+asking. The base service validates structural compatibility; endpoint and provider support
 remain the responsibility of the catalog-access adapter and provider.
 
 Integration type is immutable through update. The catalog URI and connection properties are mutable

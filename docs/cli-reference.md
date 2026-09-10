@@ -84,7 +84,7 @@ query fetch-scan <query_id> <table_id>
 integrations
 integration list
 integration get <name|id>
-integration create <name> <iceberg-rest|unity> <uri> --auth-type <type>
+integration create <name> <iceberg-rest|unity|delta-sharing> <uri> --auth-type <type>
   [--auth k=v ...] [--cred k=v ...] [--props k=v ...]
 integration update <name|id> [--display <name>] [--uri <uri>] [--props k=v ...] [--etag <etag>]
 integration update-auth <name|id> --auth-type <type>

@@ -27,6 +27,9 @@ enum CatalogIntegrationType {
   CIT_UNSPECIFIED = 0;
   CIT_ICEBERG_REST = 1;
   CIT_UNITY = 2;
+  // A Delta Sharing recipient. Directory access only: url mode returns presigned per-file URLs
+  // rather than credentials, which the storage contract cannot represent.
+  CIT_DELTA_SHARING = 3;
 }
 
 message OAuthClientCredentialsAuthentication {

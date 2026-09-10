@@ -108,7 +108,7 @@ final class IntegrationCliSupport {
       case "create" -> {
         if (args.size() < 4) {
           out.println(
-              "usage: integration create <name> <iceberg-rest|unity> <uri>"
+              "usage: integration create <name> <iceberg-rest|unity|delta-sharing> <uri>"
                   + " --auth-type <type> [--auth k=v ...] [--cred k=v ...]"
                   + " [--props k=v ...]");
           return;
@@ -647,6 +647,7 @@ final class IntegrationCliSupport {
     return switch (normalized(value)) {
       case "ICEBERG_REST", "ICEBERG-REST", "ICEBERG" -> CatalogIntegrationType.CIT_ICEBERG_REST;
       case "UNITY" -> CatalogIntegrationType.CIT_UNITY;
+      case "DELTA_SHARING", "DELTA-SHARING", "SHARING" -> CatalogIntegrationType.CIT_DELTA_SHARING;
       default -> throw new IllegalArgumentException("Unknown integration type: " + value);
     };
   }

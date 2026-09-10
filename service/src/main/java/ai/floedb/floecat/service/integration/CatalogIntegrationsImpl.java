@@ -900,7 +900,9 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   }
 
   private static void validateType(CatalogIntegrationType type, String corr) {
-    if (type != CatalogIntegrationType.CIT_ICEBERG_REST && type != CatalogIntegrationType.CIT_UNITY)
+    if (type != CatalogIntegrationType.CIT_ICEBERG_REST
+        && type != CatalogIntegrationType.CIT_UNITY
+        && type != CatalogIntegrationType.CIT_DELTA_SHARING)
       throw GrpcErrors.invalidArgument(corr, FIELD, Map.of("field", "type"));
   }
 
@@ -908,6 +910,14 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       CatalogIntegrationType integrationType, CatalogAuthentication authentication, String corr) {
     var configuration = authentication.getConfigurationCase();
     if (configuration == CatalogAuthentication.ConfigurationCase.CONFIGURATION_NOT_SET) return;
+    // A Delta Sharing recipient authenticates with the token its provider issued and nothing else.
+    // The protocol defines no other scheme, so an AWS or OAuth block on one is a configuration
+    // error rather than an unused field.
+    if (integrationType == CatalogIntegrationType.CIT_DELTA_SHARING
+        && configuration != CatalogAuthentication.ConfigurationCase.BEARER) {
+      throw GrpcErrors.invalidArgument(
+          corr, FIELD, Map.of("field", "authentication.configuration"));
+    }
     if (integrationType == CatalogIntegrationType.CIT_UNITY
         && configuration != CatalogAuthentication.ConfigurationCase.OAUTH_CLIENT_CREDENTIALS
         && configuration != CatalogAuthentication.ConfigurationCase.BEARER) {
