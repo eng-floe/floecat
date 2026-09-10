@@ -114,9 +114,9 @@ public interface PointerStore {
   }
 
   /**
-   * Reads multiple pointers from the authoritative store view. Backends with a native consistent
-   * batch operation should override; the default preserves correctness for decorators and test
-   * stores by composing the mandatory single-key consistent read.
+   * Reads multiple pointers from the durable store's strong-read capability. The indexed service
+   * facade uses its complete in-memory partition for this operation; this method is for the raw
+   * backend path used while loading or refreshing that partition.
    */
   default Map<String, Pointer> getBatchConsistent(List<String> keys) {
     Map<String, Pointer> out = new LinkedHashMap<>();
@@ -127,16 +127,8 @@ public interface PointerStore {
   }
 
   /**
-   * The owner-authoritative pointer value.
-   *
-   * <p>The prefix reads have had this distinction since caching was only a prefix concern; a
-   * single-key form is needed for the same reason -- a CAS expected-version, a liveness probe and a
-   * GC emptiness verdict are all questions a cache cannot answer, because what they ask about is
-   * precisely what the cache might be behind on.
-   *
-   * <p>For the owner-managed planner store this is the same synchronized index path as {@link
-   * #get}; the durable adapter is used only while an account index is loading. The method remains
-   * on the SPI for storage backends and maintenance adapters that need to make the distinction.
+   * Strong read from the durable backend. The owner-managed indexed facade routes complete planner
+   * partitions through memory and uses this capability only while loading or refreshing them.
    */
   Optional<Pointer> getConsistent(String key);
 
@@ -151,6 +143,7 @@ public interface PointerStore {
   List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
 
+  /** Strong prefix read from the durable backend, used by the index loader and refresh path. */
   List<Pointer> listPointersByPrefixConsistent(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut);
 
@@ -198,6 +191,7 @@ public interface PointerStore {
 
   int countByPrefix(String prefix);
 
+  /** Strong prefix count from the durable backend, used only by durable fallback paths. */
   int countByPrefixConsistent(String prefix);
 
   boolean isEmpty();
