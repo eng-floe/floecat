@@ -281,14 +281,42 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   /**
+   * Read one mutation prerequisite together with the exact authoritative pointer that selected it.
+   * Callers that will CAS the pointer need both values from one read boundary; sampling metadata in
+   * a second call can pair an old body with a newer version.
+   */
+  protected final Optional<Reloaded<T>> readForMutationWithPointer(String key) {
+    Optional<Pointer> pointer = mutationReads.pointers().get(key);
+    if (pointer.isEmpty()) {
+      return Optional.empty();
+    }
+    Pointer selected = pointer.get();
+    Optional<T> loaded =
+        loadAndParseReferencedBlob(
+            selected.getKey(),
+            requireBlobReference(selected, selected.getKey()),
+            mutationReads.blobs());
+    if (loaded.isPresent()) {
+      return Optional.of(new Reloaded<>(selected, loaded.get()));
+    }
+    return reloadAfterVanishedBlob(
+        key,
+        fresh ->
+            loadAndParseReferencedBlob(
+                fresh.getKey(),
+                requireBlobReference(fresh, fresh.getKey()),
+                mutationReads.blobs()));
+  }
+
+  /**
    * Resolve one ordinary read pointer while a higher-level object cache owns decoded content.
    * Pointer selection, the authoritative retry after a vanished blob, and dangling-pointer
    * detection remain centralized in this repository.
    */
-  protected final Optional<T> readThrough(
-      String key, Function<String, Optional<T>> decodedBodyReader) {
+  protected final <R> Optional<R> readThrough(
+      String key, Function<String, Optional<R>> decodedBodyReader) {
     Objects.requireNonNull(decodedBodyReader, "decodedBodyReader");
-    Function<Pointer, Optional<T>> reader =
+    Function<Pointer, Optional<R>> reader =
         pointer -> decodedBodyReader.apply(requireBlobReference(pointer, pointer.getKey()));
     return readResolved(key, pointerReads, reader, reader);
   }
@@ -319,11 +347,11 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     return readResolved(key, pointers, firstReader, freshReader);
   }
 
-  private Optional<T> readResolved(
+  private <R> Optional<R> readResolved(
       String key,
       RepositoryReads.Pointers pointers,
-      Function<Pointer, Optional<T>> firstReader,
-      Function<Pointer, Optional<T>> freshReader) {
+      Function<Pointer, Optional<R>> firstReader,
+      Function<Pointer, Optional<R>> freshReader) {
     var pointerStoreOpt = pointers.get(key);
     if (pointerStoreOpt.isEmpty()) {
       return Optional.empty();
@@ -331,7 +359,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
     var pointer = pointerStoreOpt.get();
     requireBlobReference(pointer, key);
-    Optional<T> loaded = firstReader.apply(pointer);
+    Optional<R> loaded = firstReader.apply(pointer);
     if (loaded.isPresent()) {
       return loaded;
     }
@@ -865,6 +893,17 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   protected MutationMeta readMetaOrDefault(
       Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
     return meta(blobReads.head(blobUri), pointerOpt, pointerKey, blobUri, nowTs);
+  }
+
+  /** Metadata for a pointer already selected by an internal read, without a redundant blob HEAD. */
+  protected MutationMeta pointerMeta(Pointer pointer, Timestamp nowTs) {
+    return MutationMeta.newBuilder()
+        .setPointerKey(pointer.getKey())
+        .setBlobUri(requireBlobReference(pointer, pointer.getKey()))
+        .setPointerVersion(pointer.getVersion())
+        .setEtag("")
+        .setUpdatedAt(nowTs)
+        .build();
   }
 
   /**
