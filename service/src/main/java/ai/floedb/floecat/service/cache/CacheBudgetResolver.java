@@ -37,8 +37,9 @@ import org.jboss.logging.Logger;
  * floecat.cache.total-bytes} and the derivation is skipped entirely.
  *
  * <p>A cache's figure is a share of that total, or an absolute {@code max-bytes} pinned instead.
- * Shares resolve against that total, not the heap. Nothing about a reference sizing scenario is
- * compiled in; it only says what to set, not what the code assumes.
+ * The object and hint shares use the reference sizing scenario, but the figures are configuration,
+ * not code. Shares resolve against that total, not the heap, and a deployment can replace them with
+ * explicit byte budgets.
  *
  * <p>Every configured heap family resolves the same way, by tag, over {@link CacheFamily#values()}.
  * Families on other media simply leave both heap properties absent and take no part in this split.

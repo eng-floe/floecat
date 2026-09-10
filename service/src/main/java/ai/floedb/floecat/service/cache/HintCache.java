@@ -113,7 +113,7 @@ public final class HintCache {
       byte[] relationPayload,
       List<EngineHintPersistence.ColumnHint> columnHints) {
     Objects.requireNonNull(relationId, "relationId");
-    if (!enabled || relationIdentity == null || relationIdentity.isBlank()) {
+    if (relationIdentity == null || relationIdentity.isBlank()) {
       return false;
     }
     Optional<CachedHints> current =
@@ -177,6 +177,12 @@ public final class HintCache {
               created = repository.create(merged, relation);
           if (created.isPresent()) {
             publish(created.get().value(), created.get().meta());
+          }
+          // An empty result means the relation fence changed while we were creating the hint
+          // resource. Re-read the relation and merge against the new version instead of silently
+          // dropping an advisory hint produced for a live relation.
+          if (created.isEmpty()) {
+            continue;
           }
           return;
         } catch (BaseResourceRepository.NameConflictException
