@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.cache;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -42,127 +43,191 @@ public final class PlanningPointerIndex {
     COMPLETE
   }
 
+  /**
+   * The ownership seam is deliberately smaller than the managed ownership implementation.
+   * Standalone Floecat supplies {@link #ALWAYS_OWNED}; managed deployments supply the local account
+   * authority.
+   */
+  @FunctionalInterface
+  public interface Ownership {
+    Ownership ALWAYS_OWNED = (accountId, access) -> Optional.of(Permit.NOOP);
+
+    enum Access {
+      READ,
+      WRITE
+    }
+
+    @FunctionalInterface
+    interface Permit extends AutoCloseable {
+      Permit NOOP = () -> {};
+
+      @Override
+      void close();
+    }
+
+    Optional<Permit> acquire(String accountId, Access access);
+  }
+
   private final PointerStore durable;
+  private final Ownership ownership;
   private final ConcurrentHashMap<String, Partition> partitions = new ConcurrentHashMap<>();
 
   public PlanningPointerIndex(PointerStore durable) {
+    this(durable, Ownership.ALWAYS_OWNED);
+  }
+
+  public PlanningPointerIndex(PointerStore durable, Ownership ownership) {
     this.durable = java.util.Objects.requireNonNull(durable, "durable");
+    this.ownership = java.util.Objects.requireNonNull(ownership, "ownership");
   }
 
   Optional<Pointer> get(String key) {
     String partitionKey = partitionFor(key);
     if (partitionKey == null || !isPlanningKey(key)) return durable.get(key);
-    Partition partition = complete(partitionKey);
-    if (partition == null) return durable.get(key);
-    partition.lock.readLock().lock();
+    Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
+    if (permit.isEmpty()) return durable.get(key);
     try {
-      return Optional.ofNullable(partition.entries.get(key));
+      Partition partition = complete(partitionKey);
+      if (partition == null) return durable.get(key);
+      partition.lock.readLock().lock();
+      try {
+        return Optional.ofNullable(partition.entries.get(key));
+      } finally {
+        partition.lock.readLock().unlock();
+      }
     } finally {
-      partition.lock.readLock().unlock();
+      permit.orElseThrow().close();
     }
   }
 
   Map<String, Pointer> getBatch(List<String> keys) {
     if (keys == null || keys.isEmpty()) return Map.of();
+    // The batch is one logical read. Operational/global keys are not part of an account planner
+    // partition, so a batch containing one must use the durable path for every key.
+    if (keys.stream().anyMatch(key -> !isPlanningKey(key))) return durable.getBatch(keys);
     List<String> partitionsToRead =
-        keys.stream()
-            .filter(this::isPlanningKey)
-            .map(this::partitionFor)
-            .distinct()
-            .sorted()
-            .toList();
-    for (String partitionKey : partitionsToRead) complete(partitionKey);
-    List<Partition> locked = new ArrayList<>();
-    for (String partitionKey : partitionsToRead) {
-      Partition partition = partitions.get(partitionKey);
-      partition.lock.readLock().lock();
-      locked.add(partition);
+        keys.stream().map(this::partitionFor).distinct().sorted().toList();
+    // A batch is one logical read. If any planner partition is not ready or not owned, use the
+    // durable store for the whole operation instead of mixing an index snapshot with KV results.
+    List<Ownership.Permit> permits = acquire(partitionsToRead, Ownership.Access.READ, false);
+    if (permits == null) {
+      return durable.getBatch(keys);
     }
-    Map<String, Pointer> result = new LinkedHashMap<>();
-    List<String> fallback = new ArrayList<>();
     try {
-      for (String key : new java.util.LinkedHashSet<>(keys)) {
-        if (isPlanningKey(key)) {
+      for (String partitionKey : partitionsToRead) {
+        if (complete(partitionKey) == null) return durable.getBatch(keys);
+      }
+      List<Partition> locked = new ArrayList<>();
+      for (String partitionKey : partitionsToRead) {
+        Partition partition = partitions.get(partitionKey);
+        partition.lock.readLock().lock();
+        locked.add(partition);
+      }
+      try {
+        Map<String, Pointer> result = new LinkedHashMap<>();
+        for (String key : new java.util.LinkedHashSet<>(keys)) {
           Partition partition = partitions.get(partitionFor(key));
           Pointer value = partition.entries.get(key);
           if (value != null) result.put(key, value);
-        } else {
-          fallback.add(key);
+        }
+        return Map.copyOf(result);
+      } finally {
+        for (int i = locked.size() - 1; i >= 0; i--) {
+          locked.get(i).lock.readLock().unlock();
         }
       }
-      result.putAll(durable.getBatch(fallback));
     } finally {
-      for (int i = locked.size() - 1; i >= 0; i--) locked.get(i).lock.readLock().unlock();
+      closeReverse(permits);
     }
-    return Map.copyOf(result);
   }
 
   List<Pointer> list(String prefix, int limit, String token, StringBuilder nextToken) {
     String partitionKey = partitionFor(prefix);
     if (partitionKey == null || !isPlanningPrefix(prefix))
       return durable.listPointersByPrefix(prefix, limit, token, nextToken);
-    Partition partition = complete(partitionKey);
-    if (partition == null) return durable.listPointersByPrefix(prefix, limit, token, nextToken);
-    partition.lock.readLock().lock();
+    Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
+    if (permit.isEmpty()) return durableList(prefix, limit, token, nextToken);
     try {
-      String after = token == null || token.isBlank() ? null : token;
-      if (after != null && !after.startsWith("index:"))
-        return durable.listPointersByPrefix(prefix, limit, token, nextToken);
-      after = after == null ? null : after.substring("index:".length());
-      NavigableMap<String, Pointer> tail =
-          after == null
-              ? partition.entries.tailMap(prefix, true)
-              : partition.entries.tailMap(after, false);
-      List<Pointer> result = new ArrayList<>();
-      boolean more = false;
-      for (Map.Entry<String, Pointer> entry : tail.entrySet()) {
-        if (!entry.getKey().startsWith(prefix)) break;
-        if (result.size() >= Math.max(1, limit)) {
-          more = true;
-          break;
+      Partition partition = complete(partitionKey);
+      if (partition == null) return durableList(prefix, limit, token, nextToken);
+      partition.lock.readLock().lock();
+      try {
+        String after = token == null || token.isBlank() ? null : token;
+        if (after != null && !after.startsWith("index:"))
+          return durable.listPointersByPrefix(prefix, limit, token, nextToken);
+        after = after == null ? null : after.substring("index:".length());
+        NavigableMap<String, Pointer> tail =
+            after == null
+                ? partition.entries.tailMap(prefix, true)
+                : partition.entries.tailMap(after, false);
+        List<Pointer> result = new ArrayList<>();
+        boolean more = false;
+        for (Map.Entry<String, Pointer> entry : tail.entrySet()) {
+          if (!entry.getKey().startsWith(prefix)) break;
+          if (result.size() >= Math.max(1, limit)) {
+            more = true;
+            break;
+          }
+          result.add(entry.getValue());
         }
-        result.add(entry.getValue());
+        if (nextToken != null) {
+          nextToken.setLength(0);
+          if (more && !result.isEmpty())
+            nextToken.append("index:").append(result.get(result.size() - 1).getKey());
+        }
+        return List.copyOf(result);
+      } finally {
+        partition.lock.readLock().unlock();
       }
-      if (nextToken != null) {
-        nextToken.setLength(0);
-        if (more && !result.isEmpty())
-          nextToken.append("index:").append(result.get(result.size() - 1).getKey());
-      }
-      return List.copyOf(result);
     } finally {
-      partition.lock.readLock().unlock();
+      permit.orElseThrow().close();
     }
   }
 
   int count(String prefix) {
     String partitionKey = partitionFor(prefix);
     if (partitionKey == null || !isPlanningPrefix(prefix)) return durable.countByPrefix(prefix);
-    Partition partition = complete(partitionKey);
-    if (partition == null) return durable.countByPrefix(prefix);
-    partition.lock.readLock().lock();
+    Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
+    if (permit.isEmpty()) return durable.countByPrefix(prefix);
     try {
-      int count = 0;
-      for (String key : partition.entries.tailMap(prefix, true).keySet()) {
-        if (!key.startsWith(prefix)) break;
-        count++;
+      Partition partition = complete(partitionKey);
+      if (partition == null) return durable.countByPrefix(prefix);
+      partition.lock.readLock().lock();
+      try {
+        int count = 0;
+        for (String key : partition.entries.tailMap(prefix, true).keySet()) {
+          if (!key.startsWith(prefix)) break;
+          count++;
+        }
+        return count;
+      } finally {
+        partition.lock.readLock().unlock();
       }
-      return count;
     } finally {
-      partition.lock.readLock().unlock();
+      permit.orElseThrow().close();
     }
   }
 
   String pageTokenAfterKey(String key) {
-    return isPlanningKey(key) ? "index:" + key : durable.pageTokenAfterKey(key);
+    String partitionKey = partitionFor(key);
+    if (isPlanningKey(key) && partitionKey != null && indexReady(partitionKey)) {
+      return "index:" + key;
+    }
+    return durable.pageTokenAfterKey(key);
   }
 
   <T> T mutate(Collection<String> keys, Supplier<T> durableMutation, Consumer<T> publish) {
-    if (keys != null && keys.contains(Keys.accountRootPrefix())) {
-      synchronized (partitions) {
-        return mutateLocked(keys, durableMutation, publish);
+    List<Ownership.Permit> permits = acquire(accountPartitions(keys), Ownership.Access.WRITE, true);
+    try {
+      if (keys != null && keys.contains(Keys.accountRootPrefix())) {
+        synchronized (partitions) {
+          return mutateLocked(keys, durableMutation, publish);
+        }
       }
+      return mutateLocked(keys, durableMutation, publish);
+    } finally {
+      closeReverse(permits);
     }
-    return mutateLocked(keys, durableMutation, publish);
   }
 
   private <T> T mutateLocked(
@@ -175,6 +240,70 @@ public final class PlanningPointerIndex {
     } finally {
       for (int i = locked.size() - 1; i >= 0; i--) locked.get(i).lock.writeLock().unlock();
     }
+  }
+
+  private List<String> accountPartitions(Collection<String> keys) {
+    if (keys == null) return List.of();
+    if (keys.contains(Keys.accountRootPrefix())) return List.of(GLOBAL);
+    return keys.stream()
+        .map(this::partitionFor)
+        .filter(partition -> partition != null && !GLOBAL.equals(partition))
+        .distinct()
+        .sorted()
+        .toList();
+  }
+
+  private List<Ownership.Permit> acquire(
+      Collection<String> partitionKeys, Ownership.Access access, boolean required) {
+    List<Ownership.Permit> permits = new ArrayList<>();
+    for (String partitionKey : partitionKeys) {
+      Optional<Ownership.Permit> permit = ownership.acquire(partitionKey, access);
+      if (permit.isEmpty()) {
+        closeReverse(permits);
+        if (required) {
+          throw new StorageAbortRetryableException(
+              "account is not owned by this Floecat instance: " + partitionKey);
+        }
+        return null;
+      }
+      permits.add(permit.orElseThrow());
+    }
+    return permits;
+  }
+
+  private Optional<Ownership.Permit> acquireOne(
+      String partitionKey, Ownership.Access access, boolean required) {
+    List<Ownership.Permit> permits = acquire(List.of(partitionKey), access, required);
+    return permits == null || permits.isEmpty() ? Optional.empty() : Optional.of(permits.get(0));
+  }
+
+  private boolean indexReady(String partitionKey) {
+    Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
+    if (permit.isEmpty()) return false;
+    try {
+      return complete(partitionKey) != null;
+    } finally {
+      permit.orElseThrow().close();
+    }
+  }
+
+  private static void closeReverse(List<Ownership.Permit> permits) {
+    for (int i = permits.size() - 1; i >= 0; i--) {
+      permits.get(i).close();
+    }
+  }
+
+  private List<Pointer> durableList(
+      String prefix, int limit, String token, StringBuilder nextToken) {
+    // An index continuation is local to this process. If ownership or readiness changes between
+    // pages, translate it to the durable store's token instead of leaking the index format into
+    // the KV adapter.
+    String durableToken = token;
+    if (token != null && token.startsWith("index:")) {
+      String lastKey = token.substring("index:".length());
+      durableToken = lastKey.isBlank() ? null : durable.pageTokenAfterKey(lastKey);
+    }
+    return durable.listPointersByPrefix(prefix, limit, durableToken, nextToken);
   }
 
   void publish(String key, Pointer value) {
@@ -320,11 +449,16 @@ public final class PlanningPointerIndex {
   }
 
   private boolean isPlanningKey(String key) {
-    return key != null && partitionFor(key) != null && !isOperational(key);
+    String partition = partitionFor(key);
+    return key != null && partition != null && !GLOBAL.equals(partition) && !isOperational(key);
   }
 
   private boolean isPlanningPrefix(String prefix) {
-    return prefix != null && partitionFor(prefix) != null && !isOperational(prefix);
+    String partition = partitionFor(prefix);
+    return prefix != null
+        && partition != null
+        && !GLOBAL.equals(partition)
+        && !isOperational(prefix);
   }
 
   private String partitionFor(String key) {
