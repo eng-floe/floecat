@@ -23,95 +23,46 @@ import java.util.Set;
 import java.util.function.Predicate;
 
 /**
- * The contract an in-memory cache family implements, so heap-resident families are bounded the same
- * way and, within a pool, report comparable numbers. {@link CacheFamily} names the families.
+ * Read-through memory storage for immutable, content-addressed values.
  *
- * <p>Values must be immutable once cached: they are weighed on entry and may be weighed again on
- * exit. Nothing expires, so an entry a write fails to reach is wrong until something drops it.
+ * <p>Durable state is committed first. The cache only remembers values already identified by an
+ * immutable key; callers never publish a replacement value through this contract. A new durable
+ * identity gets a new key and eviction is memory hygiene, not a versioning protocol.
  *
- * <p><b>Atomicity against an in-flight load.</b> A value loaded concurrently with {@link #put},
- * {@link #evict}, or {@link #evictPartition} must not overwrite that mutation. The mutator's result
- * wins when it installs a value; otherwise the key is left absent. A load that has already been
- * joined may still return its source result to that caller, but it can never repopulate the cache
- * after its load slot is retired.
- *
- * @param <K> key
- * @param <V> value
+ * @param <K> immutable key
+ * @param <V> immutable value
  */
 public interface MemoryCache<K, V> {
 
-  /**
-   * The value for {@code key}, loading it if absent. Single-flight per key. Returns {@code null}
-   * and caches nothing when the loader does: absence is never cached, and this is the only null the
-   * contract accepts.
-   *
-   * <p>If a concurrent {@link #put} wins before the owner completes, the resident value is returned
-   * to the owner and its followers. If an eviction wins, the source result is returned to callers
-   * that already joined the load, but the key remains absent.
-   */
+  /** Returns a value, loading it when absent. Caffeine coordinates matching concurrent loads. */
   V get(K key, Loader<K, V> loader);
 
-  /**
-   * The values for the distinct {@code keys}, loading all misses owned by this call in one call.
-   * Existing values and loaded values are returned; keys omitted by the loader are absent and are
-   * not cached. A miss already being loaded by {@link #get} or another {@code getAll} joins that
-   * load instead of invoking a second source read. The loader is not called when every key is
-   * already held, every miss is already owned by another caller, or {@code keys} is empty. If a
-   * mutation wins while a load is in flight, the mutation's resident value wins; an eviction leaves
-   * the key absent.
-   *
-   * <p>Hit and miss events are reported per distinct key. Load duration and failure are reported
-   * once for the bulk loader invocation.
-   *
-   * <p>Loaders may compose other keys through this cache, but a loader must not synchronously load
-   * the same key it currently owns. That recursive dependency fails fast rather than deadlocking.
-   */
+  /** Returns values for distinct keys; omitted loader results are absent and not cached. */
   Map<K, V> getAll(Collection<K> keys, BulkLoader<K, V> loader);
 
-  /**
-   * The value for {@code key} if held, without loading. Reports no hit or miss. Not otherwise
-   * inert: the read still counts towards the implementation's eviction policy.
-   */
+  /** Returns a resident value without loading or recording a hit. */
   Optional<V> peek(K key);
 
-  /** Insert or replace {@code key}, including when it is cold. */
-  void put(K key, V value);
-
-  /** Drop {@code key}. */
+  /** Drops one key as a memory-hygiene operation. */
   void evict(K key);
 
-  /**
-   * Drop every key belonging to a partition. The caller supplies the membership test because this
-   * generic cache does not own key layout. The in-memory implementation scans its resident keys;
-   * this is intended for infrequent account/relation lifecycle events, not the request path.
-   */
+  /** Drops resident keys belonging to a partition. */
   void evictPartition(Predicate<K> belongsToPartition);
 
-  /**
-   * Retained-heap bytes held for the budget. Comparable between families sharing a memory pool.
-   * Implementations count them with {@link CacheWeights}.
-   *
-   * <p>May force maintenance and so take the implementation's eviction lock: metrics scrape, not
-   * request path.
-   */
+  /** Retained-heap bytes held by this cache family. */
   long bytes();
 
-  /** Which cache this is. The tag is the metric dimension and the budget key. */
+  /** Cache family used as the metric and budget dimension. */
   CacheFamily family();
 
-  /**
-   * Entries held, approximately -- it forces no maintenance, so entries selected for eviction may
-   * still count. Read with {@link #bytes()} to tell a few large values from many small ones.
-   */
+  /** Approximate resident entry count. */
   long entryCount();
 
-  /** Loads a value on a miss. Named, rather than a {@link java.util.function.Function}. */
   @FunctionalInterface
   interface Loader<K, V> {
     V load(K key);
   }
 
-  /** Loads the values present for a set of misses. Omit keys that are absent. */
   @FunctionalInterface
   interface BulkLoader<K, V> {
     Map<K, V> load(Set<K> keys);

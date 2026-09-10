@@ -3,15 +3,6 @@
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 
 package ai.floedb.floecat.cache;
@@ -26,219 +17,81 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
-/**
- * Observable behaviour every {@link MemoryCache} implementation must preserve, especially around an
- * in-flight load. The tests intentionally do not prescribe how an implementation synchronizes.
- */
+/** Behaviour every immutable memory-cache implementation owes. */
 abstract class MemoryCacheContractTest {
 
-  /** The implementation under test, with a budget large enough that nothing evicts. */
   protected abstract MemoryCache<String, Versioned> cache();
 
-  /** A loader that reports when it has read and then holds until released. */
-  private static final class HeldLoad {
-    private final CountDownLatch reading = new CountDownLatch(1);
-    private final CountDownLatch release = new CountDownLatch(1);
-
-    Versioned load(Versioned value) {
-      reading.countDown();
-      await(release);
-      return value;
-    }
-  }
-
   @Test
-  void evictAppliesToAKeyThatIsStillLoading() throws Exception {
+  void nativeCaffeineLoadingMergesConcurrentSameKeyReads() throws Exception {
     MemoryCache<String, Versioned> cache = cache();
-    HeldLoad held = new HeldLoad();
-
-    var reader =
-        CompletableFuture.supplyAsync(() -> cache.get("k", k -> held.load(new Versioned("v1", 1))));
-    assertThat(held.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    // evict retires the load before changing the resident tier. It has to wait for the owner to
-    // leave its publication section, and that blocking IS the property.
-    //
-    // A dedicated thread, not the common pool: the parked loader already holds one of its threads,
-    // and on a two-CPU runner the releaser would not be scheduled until the loader's own timeout
-    // fired. The test would still pass, ten seconds later.
-    Thread releaser =
-        new Thread(
-            () -> {
-              sleep();
-              held.release.countDown();
-            });
-    releaser.start();
-    cache.evict("k");
-    reader.get(10, TimeUnit.SECONDS);
-    join(releaser);
-
-    assertThat(cache.peek("k")).isEmpty();
-  }
-
-  @Test
-  void aSweepBlindToAnInFlightLoadStillLeavesTheKeyAbsent() throws Exception {
-    MemoryCache<String, Versioned> cache = cache();
-    HeldLoad held = new HeldLoad();
-
-    var reader =
-        CompletableFuture.supplyAsync(() -> cache.get("k", k -> held.load(new Versioned("v1", 1))));
-    assertThat(held.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    // The key is not resident yet, but partition eviction retires its load slot as part of the
-    // same operation that removes resident entries.
-    cache.evictPartition(key -> true);
-
-    held.release.countDown();
-    assertThat(reader.get(10, TimeUnit.SECONDS)).isEqualTo(new Versioned("v1", 1));
-
-    // The sweep retired the owner, so the completed source read is returned to its caller but does
-    // not become resident.
-    assertThat(cache.peek("k")).isEmpty();
-  }
-
-  @Test
-  void aLoadStartedNearASweepIsRetainedAfterItCompletes() throws Exception {
-    MemoryCache<String, Versioned> cache = cache();
-    cache.get("held", key -> new Versioned("held", 1));
-    var sweeping = new CountDownLatch(1);
-    var releaseSweep = new CountDownLatch(1);
-
-    var sweep =
-        CompletableFuture.runAsync(
+    CountDownLatch started = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    AtomicInteger loads = new AtomicInteger();
+    var leader =
+        CompletableFuture.supplyAsync(
             () ->
-                cache.evictPartition(
-                    key -> {
-                      if (key.equals("held")) {
-                        sweeping.countDown();
-                        await(releaseSweep);
-                      }
-                      return true;
+                cache.get(
+                    "k",
+                    ignored -> {
+                      loads.incrementAndGet();
+                      started.countDown();
+                      await(release);
+                      return new Versioned("value", 1);
                     }));
-    assertThat(sweeping.await(10, TimeUnit.SECONDS)).isTrue();
+    assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+    var follower =
+        CompletableFuture.supplyAsync(() -> cache.get("k", ignored -> new Versioned("wrong", 2)));
+    Thread.sleep(50L);
+    assertThat(follower).isNotCompleted();
+    release.countDown();
+    assertThat(leader.get(10, TimeUnit.SECONDS)).isEqualTo(new Versioned("value", 1));
+    assertThat(follower.get(10, TimeUnit.SECONDS)).isEqualTo(new Versioned("value", 1));
+    assertThat(loads).hasValue(1);
+  }
 
-    HeldLoad held = new HeldLoad();
-    var readerStarted = new CountDownLatch(1);
-    var reader =
-        CompletableFuture.supplyAsync(
-            () -> {
-              readerStarted.countDown();
-              return cache.get("k", key -> held.load(new Versioned("after-sweep", 1)));
+  @Test
+  void bulkLoadsDistinctMissesAndLeavesAbsenceUncached() {
+    MemoryCache<String, Versioned> cache = cache();
+    AtomicInteger calls = new AtomicInteger();
+    Map<String, Versioned> values =
+        cache.getAll(
+            List.of("a", "b", "missing", "a"),
+            keys -> {
+              calls.incrementAndGet();
+              assertThat(keys).containsExactlyInAnyOrder("a", "b", "missing");
+              return Map.of("a", new Versioned("A", 1), "b", new Versioned("B", 1));
             });
-    assertThat(readerStarted.await(10, TimeUnit.SECONDS)).isTrue();
-    assertThat(reader).isNotCompleted();
-
-    releaseSweep.countDown();
-    sweep.get(10, TimeUnit.SECONDS);
-    assertThat(held.reading.await(10, TimeUnit.SECONDS)).isTrue();
-    held.release.countDown();
-    assertThat(reader.get(10, TimeUnit.SECONDS)).isEqualTo(new Versioned("after-sweep", 1));
-
-    assertThat(cache.peek("k")).contains(new Versioned("after-sweep", 1));
+    assertThat(values).containsOnlyKeys("a", "b");
+    assertThat(cache.peek("missing")).isEmpty();
+    assertThat(calls).hasValue(1);
   }
 
   @Test
-  void partitionMutationClosesRegistrationBeforeAdmittingAnotherLoad() throws Exception {
-    var watchAcquire = new AtomicBoolean();
-    var acquireAttempted = new CountDownLatch(1);
-    LoadCoordinator<String, Versioned> coordinator =
-        new LoadCoordinator<>(
-            String::hashCode,
-            () -> {
-              if (watchAcquire.get()) {
-                acquireAttempted.countDown();
-              }
-            });
-    LoadCoordinator.Acquisition<String, Versioned> seed =
-        coordinator.acquire("seed", coordinator.sample("seed"));
-    assertThat(seed.owner()).isTrue();
-
-    var sweeping = new CountDownLatch(1);
-    var releaseSweep = new CountDownLatch(1);
-    var sweep =
-        CompletableFuture.runAsync(
-            () ->
-                coordinator.mutatePartition(
-                    key -> {
-                      sweeping.countDown();
-                      await(releaseSweep);
-                      return true;
-                    },
-                    ignored -> {}));
-    assertThat(sweeping.await(10, TimeUnit.SECONDS)).isTrue();
-
-    LoadCoordinator.Sample sample = coordinator.sample("new");
-    watchAcquire.set(true);
-    var acquiring = CompletableFuture.supplyAsync(() -> coordinator.acquire("new", sample));
-    assertThat(acquireAttempted.await(10, TimeUnit.SECONDS)).isTrue();
-    assertThat(acquiring).isNotCompleted();
-
-    releaseSweep.countDown();
-    sweep.get(10, TimeUnit.SECONDS);
-    assertThat(acquiring.get(10, TimeUnit.SECONDS).owner()).isTrue();
-  }
-
-  @Test
-  void aCallerAfterEvictionDoesNotJoinTheRetiredLoad() throws Exception {
+  void malformedBulkResultsAreRejected() {
     MemoryCache<String, Versioned> cache = cache();
-    HeldLoad oldLoad = new HeldLoad();
-    var oldReader =
-        CompletableFuture.supplyAsync(
-            () -> cache.get("k", key -> oldLoad.load(new Versioned("old", 1))));
-    assertThat(oldLoad.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    cache.evict("k");
-
-    HeldLoad newLoad = new HeldLoad();
-    var newReader =
-        CompletableFuture.supplyAsync(
-            () -> cache.get("k", key -> newLoad.load(new Versioned("new", 2))));
-    assertThat(newLoad.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    oldLoad.release.countDown();
-    assertThat(oldReader.get(10, TimeUnit.SECONDS)).isEqualTo(new Versioned("old", 1));
-
-    newLoad.release.countDown();
-    assertThat(newReader.get(10, TimeUnit.SECONDS)).isEqualTo(new Versioned("new", 2));
-    assertThat(cache.peek("k")).contains(new Versioned("new", 2));
-  }
-
-  @Test
-  void aPutDuringALoadWinsForTheOwnerAndFollowers() throws Exception {
-    MemoryCache<String, Versioned> cache = cache();
-    HeldLoad held = new HeldLoad();
-    var reader =
-        CompletableFuture.supplyAsync(
-            () -> cache.get("k", key -> held.load(new Versioned("stale", 1))));
-    assertThat(held.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    cache.put("k", new Versioned("published", 2));
-    held.release.countDown();
-
-    assertThat(reader.get(10, TimeUnit.SECONDS)).isEqualTo(new Versioned("published", 2));
-    assertThat(cache.peek("k")).contains(new Versioned("published", 2));
-  }
-
-  @Test
-  void recursiveBulkLoadsFailFastAndRetireEveryOwnedSlot() {
-    MemoryCache<String, Versioned> cache = cache();
-
     assertThatThrownBy(
             () ->
                 cache.getAll(
-                    List.of("a", "b"),
-                    keys -> {
-                      cache.get("a", ignored -> new Versioned("recursive", 1));
-                      return Map.of("a", new Versioned("never", 1), "b", new Versioned("never", 1));
-                    }))
-        .isInstanceOf(IllegalStateException.class)
-        .hasMessageContaining("recursive cache load");
+                    Set.of("requested"), ignored -> Map.of("other", new Versioned("bad", 1))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("unrequested key");
+  }
 
-    assertThat(cache.get("b", ignored -> new Versioned("retry", 2)))
-        .isEqualTo(new Versioned("retry", 2));
+  @Test
+  void evictionAndPartitionEvictionDropResidentValues() {
+    MemoryCache<String, Versioned> cache = cache();
+    cache.get("account/1/a", ignored -> new Versioned("a", 1));
+    cache.get("account/1/b", ignored -> new Versioned("b", 1));
+    cache.get("account/2/a", ignored -> new Versioned("c", 1));
+    cache.evict("account/1/a");
+    cache.evictPartition(key -> key.startsWith("account/1/"));
+    assertThat(cache.peek("account/1/a")).isEmpty();
+    assertThat(cache.peek("account/1/b")).isEmpty();
+    assertThat(cache.peek("account/2/a")).isPresent();
   }
 
   private static void await(CountDownLatch latch) {
@@ -250,252 +103,5 @@ abstract class MemoryCacheContractTest {
       Thread.currentThread().interrupt();
       throw new AssertionError("interrupted while waiting for test coordination", e);
     }
-  }
-
-  private static void join(Thread thread) {
-    try {
-      thread.join(TimeUnit.SECONDS.toMillis(10));
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new AssertionError("interrupted while joining test thread", e);
-    }
-    assertThat(thread.isAlive()).as("test thread completed").isFalse();
-  }
-
-  private static void sleep() {
-    try {
-      Thread.sleep(50);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      throw new AssertionError("interrupted during test coordination", e);
-    }
-  }
-
-  @Test
-  void aBulkLoadDoesNotOverwriteAValueLoadedConcurrently() throws Exception {
-    MemoryCache<String, Versioned> cache = cache();
-    HeldLoad held = new HeldLoad();
-
-    var reader =
-        CompletableFuture.supplyAsync(() -> cache.get("k", k -> held.load(new Versioned("v1", 1))));
-    assertThat(held.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    var attempting = new CountDownLatch(1);
-    var bulkLoads = new java.util.concurrent.atomic.AtomicInteger();
-    var bulk =
-        CompletableFuture.supplyAsync(
-            () -> {
-              attempting.countDown();
-              return cache.getAll(
-                  List.of("k"),
-                  missing -> {
-                    bulkLoads.incrementAndGet();
-                    return Map.of("k", new Versioned("stale", 1));
-                  });
-            });
-    assertThat(attempting.await(10, TimeUnit.SECONDS)).isTrue();
-    held.release.countDown();
-
-    assertThat(bulk.get(10, TimeUnit.SECONDS)).containsEntry("k", new Versioned("v1", 1));
-    reader.get(10, TimeUnit.SECONDS);
-
-    assertThat(bulkLoads).hasValue(0);
-    assertThat(cache.peek("k")).contains(new Versioned("v1", 1));
-  }
-
-  @Test
-  void twoBulkCallersShareEachOwnedKeyLoad() throws Exception {
-    MemoryCache<String, Versioned> cache = cache();
-    HeldLoad held = new HeldLoad();
-    var loads = new java.util.concurrent.atomic.AtomicInteger();
-
-    var leader =
-        CompletableFuture.supplyAsync(
-            () ->
-                cache.getAll(
-                    List.of("k"),
-                    missing -> {
-                      loads.incrementAndGet();
-                      return Map.of("k", held.load(new Versioned("v1", 1)));
-                    }));
-    assertThat(held.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    var follower = new CompletableFuture<Map<String, Versioned>>();
-    Thread followerThread =
-        new Thread(
-            () -> {
-              try {
-                follower.complete(
-                    cache.getAll(List.of("k"), missing -> Map.of("k", new Versioned("never", 9))));
-              } catch (Throwable failure) {
-                follower.completeExceptionally(failure);
-              }
-            });
-    followerThread.start();
-    assertThat(follower).isNotCompleted();
-
-    held.release.countDown();
-    assertThat(leader.get(10, TimeUnit.SECONDS)).containsEntry("k", new Versioned("v1", 1));
-    assertThat(follower.get(10, TimeUnit.SECONDS)).containsEntry("k", new Versioned("v1", 1));
-    join(followerThread);
-    assertThat(loads).hasValue(1);
-  }
-
-  @Test
-  void aSecondCallerDuringALoadIsServedByItRatherThanLoadingAgain() throws Exception {
-    // Single-flight, which the contract calls a correctness property: a hot key on a cold cache
-    // must not send every in-flight request to the store. The second caller is admitted only once
-    // the first has reported it is reading, so it demonstrably arrives during the load.
-    MemoryCache<String, Versioned> cache = cache();
-    HeldLoad held = new HeldLoad();
-    var loads = new java.util.concurrent.atomic.AtomicInteger();
-
-    var leader =
-        CompletableFuture.supplyAsync(
-            () ->
-                cache.get(
-                    "k",
-                    k -> {
-                      loads.incrementAndGet();
-                      return held.load(new Versioned("v1", 1));
-                    }));
-    assertThat(held.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    // A dedicated thread, not the common pool: the parked leader holds one of its workers, and
-    // CountDownLatch.await is not a ManagedBlocker, so on a two-worker pool the follower would sit
-    // queued until the leader finished -- arriving after the load and proving nothing.
-    var attempting = new CountDownLatch(1);
-    var duplicateLoad = new CountDownLatch(1);
-    var served = new CompletableFuture<Versioned>();
-    Thread follower =
-        new Thread(
-            () -> {
-              attempting.countDown();
-              try {
-                served.complete(
-                    cache.get(
-                        "k",
-                        k -> {
-                          loads.incrementAndGet();
-                          duplicateLoad.countDown();
-                          return new Versioned("never", 9);
-                        }));
-              } catch (Throwable failure) {
-                served.completeExceptionally(failure);
-              }
-            });
-    follower.start();
-    assertThat(attempting.await(10, TimeUnit.SECONDS)).isTrue();
-    assertThat(duplicateLoad.await(250, TimeUnit.MILLISECONDS)).isFalse();
-    assertThat(served).isNotCompleted();
-
-    held.release.countDown();
-    leader.get(10, TimeUnit.SECONDS);
-    assertThat(served.get(10, TimeUnit.SECONDS)).isEqualTo(new Versioned("v1", 1));
-    join(follower);
-
-    assertThat(loads).hasValue(1);
-  }
-
-  @Test
-  void putPublishesToAColdKey() {
-    MemoryCache<String, Versioned> cache = cache();
-
-    cache.put("k", new Versioned("published", 1));
-
-    assertThat(cache.get("k", ignored -> new Versioned("never", 2)))
-        .isEqualTo(new Versioned("published", 1));
-  }
-
-  @Test
-  void putWinsAgainstAnInFlightLoad() throws Exception {
-    MemoryCache<String, Versioned> cache = cache();
-    HeldLoad held = new HeldLoad();
-    var reader =
-        CompletableFuture.supplyAsync(
-            () -> cache.get("k", key -> held.load(new Versioned("loaded", 1))));
-    assertThat(held.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    var published = CompletableFuture.runAsync(() -> cache.put("k", new Versioned("published", 2)));
-    held.release.countDown();
-    reader.get(10, TimeUnit.SECONDS);
-    published.get(10, TimeUnit.SECONDS);
-
-    assertThat(cache.peek("k")).contains(new Versioned("published", 2));
-  }
-
-  @Test
-  void putWinsEvenWhenItPublishesTheSameObjectAnInFlightLoadReturns() throws Exception {
-    MemoryCache<String, Versioned> cache = cache();
-    HeldLoad held = new HeldLoad();
-    Versioned shared = new Versioned("shared", 1);
-    var reader = CompletableFuture.supplyAsync(() -> cache.get("k", key -> held.load(shared)));
-    assertThat(held.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    var published = CompletableFuture.runAsync(() -> cache.put("k", shared));
-    held.release.countDown();
-    reader.get(10, TimeUnit.SECONDS);
-    published.get(10, TimeUnit.SECONDS);
-
-    assertThat(cache.peek("k")).contains(shared);
-  }
-
-  @Test
-  void getAllLoadsDistinctMissesInOneCallAndLeavesAbsenceUncached() {
-    MemoryCache<String, Versioned> cache = cache();
-    cache.put("hit", new Versioned("cached", 1));
-
-    Map<String, Versioned> values =
-        cache.getAll(
-            List.of("hit", "loaded", "absent", "loaded"),
-            missing -> {
-              assertThat(missing).containsExactlyInAnyOrder("loaded", "absent");
-              return Map.of("loaded", new Versioned("from-loader", 1));
-            });
-
-    assertThat(values)
-        .containsOnly(
-            Map.entry("hit", new Versioned("cached", 1)),
-            Map.entry("loaded", new Versioned("from-loader", 1)));
-    assertThat(cache.peek("absent")).isEmpty();
-    assertThat(cache.getAll(Set.of(), ignored -> Map.of())).isEmpty();
-  }
-
-  @Test
-  void anEvictionRacingABulkLoadLeavesTheLoadedKeyAbsent() throws Exception {
-    MemoryCache<String, Versioned> cache = cache();
-    HeldLoad held = new HeldLoad();
-
-    var reader =
-        CompletableFuture.supplyAsync(
-            () ->
-                cache.getAll(
-                    List.of("k"), ignored -> Map.of("k", held.load(new Versioned("loaded", 1)))));
-    assertThat(held.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    cache.evict("k");
-    held.release.countDown();
-
-    assertThat(reader.get(10, TimeUnit.SECONDS)).containsEntry("k", new Versioned("loaded", 1));
-    assertThat(cache.peek("k")).isEmpty();
-  }
-
-  @Test
-  void putWinsAgainstAnInFlightBulkLoad() throws Exception {
-    MemoryCache<String, Versioned> cache = cache();
-    HeldLoad held = new HeldLoad();
-
-    var reader =
-        CompletableFuture.supplyAsync(
-            () ->
-                cache.getAll(
-                    List.of("k"), ignored -> Map.of("k", held.load(new Versioned("loaded", 1)))));
-    assertThat(held.reading.await(10, TimeUnit.SECONDS)).isTrue();
-
-    cache.put("k", new Versioned("published", 2));
-    held.release.countDown();
-
-    assertThat(reader.get(10, TimeUnit.SECONDS)).containsEntry("k", new Versioned("published", 2));
-    assertThat(cache.peek("k")).contains(new Versioned("published", 2));
   }
 }

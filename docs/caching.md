@@ -20,17 +20,17 @@ callbacks.
 
 ## Warm and cold reads
 
-A warm read reuses the process-local value. A cold read, a disabled cache, a cache miss, or a
-temporarily degraded cache follows the same repository path and returns the same answer; only
-latency and store cost change. Concurrent requests for the same value share one source load.
-Durable mutations become visible to the cache only after they commit, and an older in-flight read
-cannot replace a newer value after eviction.
+A warm read reuses the process-local value. A cold read, a disabled cache, or a cache miss follows
+the same repository path and returns the same answer; only latency and store cost change. Caffeine
+coordinates concurrent requests for the same immutable key. Durable mutations create a new
+identity; they do not replace a value in an existing key.
 
 ## The cache disciplines
 
 | Discipline | Implementation | What it holds | Freshness contract |
 |------------|----------------|---------------|--------------------|
-| Pointers | `PointerCache` behind `CachingPointerStore` | Eleven complete SQL-addressing families plus an admission-controlled remainder for every other pointer family | No expiry. The first addressing read loads the account's four durable subtrees consistently; once complete, point misses, prefix listings and counts are authoritative and cost no store reads. Complete entries never evict. Writes **publish** rather than invalidate and are version-ordered; deletes remove. A failed load or exhausted budget marks the account degraded and falls back to the store. The unqualified `PointerStore` remains authoritative by default; query-serving repositories opt into `@CachedPointerStore` once at wiring. |
+| Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | All planner pointer records for an account, including current roots, names, snapshots, constraints, stats and hint-resource pointers | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. Every mutation commits to durable KV and publishes the result while holding the partition write lock. Operational pointers remain on the durable adapter. |
+| Objects | `ObjectCache` | Decoded relation metadata, mapped schemas, constraints, immutable generation-scoped snapshot facts and target-stat records | Entries are keyed by immutable content or generation identity. A live/newest stats read is read-through and is never retained. Account eviction removes every object entry for that account. |
 | Immutable decoded content | `ImmutableBlobCache` (`service/repo/cache/`) | Decoded root blobs, snapshot-manifest pages, catalog/namespace/table/view/snapshot/constraints blobs, stats generation manifests, plus derived forms: manifest-entry indexes (`headUri + "#index"`) and graph nodes (`blobUri + "#node"`) | Content-addressed, so no invalidation. Byte-weighted, with Caffeine's TinyLFU admission rather than plain LRU: `serializedSize × 3` retained-heap estimate, 256 MB default, 15-minute access TTL, single-flight loads, absence never cached. Config `floecat.blob.cache.*`; kill switch `floecat.blob.cache.enabled=false`. Only `casBlobs` schemas route through it — blobs overwritten in place must never be cached by URI. |
 | Per-query state | `QueryContextStore` and per-query memos | `QueryContext` (pins, snapshot set, expansion map) keyed by query ID | Scoped to one query lease; consistency comes from pinning, not freshness. |
 
@@ -43,23 +43,22 @@ which favours frequently reused entries over one-shot scan traffic.
 `floecat.metadata.graph.cache-max-size` gates node caching (`0` = off); node memory is governed by
 `floecat.blob.cache.max-weight-bytes`.
 
-`StatsOrchestrator` additionally keeps its own byte-weighted 256 MB cache of decoded
-`TargetStatsRecord`s, keyed by `(accountId, tableId, snapshotId, storageId)`; only positive hits
-are cached and mutation paths invalidate explicitly (10-minute write TTL as a backstop).
-Target-stats record blobs are deliberately **not** in the `ImmutableBlobCache`: they are written to
-deterministic (not content-addressed) URIs and a re-capture may overwrite one in place, so
-URI-keyed caching would be unsound for them.
+`ObjectCache` stores immutable-generation target statistics by `(accountId, tableId, snapshotId,
+generation, target identity)`. A live/newest result has no stable identity and is therefore read
+through without retention. Target-stat record blobs are deliberately **not** in the
+`ImmutableBlobCache`: they are written to deterministic (not content-addressed) URIs and a
+re-capture may overwrite one in place, so URI-keyed caching would be unsound for them.
 
 ## The shared cache contract (`core/cache`)
 
-The cache module coordinates overlapping reads and mutations internally. Callers use repositories
-and do not choose locks, load slots, or cache tiers.
+The cache module provides one small read-through primitive. Callers use repositories and do not
+choose cache tiers or coordinate in-flight requests. Caffeine owns same-key load coordination; the
+application adds no second load map or version fence for immutable entries.
 
 The future cache layers share this module's operational and telemetry vocabulary, but not one
 storage-shaped interface or one resource pool. `MemoryCache<K, V>` is the in-memory primitive used
-by object and hint caches and as storage inside the pointer-cache layer. The pointer layer belongs
-behind `PointerStore` and owns strict version publication, race fencing, complete name indexes and
-account readiness. Blob content gets a separate disk-oriented interface and volume budget, so
+by object and hint caches. The pointer layer belongs behind `PointerStore` and owns ordered
+publication under its partition lock, complete name indexes and account readiness. Blob content gets a separate disk-oriented interface and volume budget, so
 callers never emulate scoped disk reads, mappings or sweeping through memory-cache operations.
 
 The module is container-free — Caffeine and protobuf, no CDI, no Quarkus. A cache is built with
@@ -68,12 +67,12 @@ sizing harness use the same arithmetic.
 
 | Piece | What it is |
 |-------|------------|
-| `MemoryCache<K, V>` | Read-through `get`; batch `getAll`, which owns miss detection, loading and safe publication; uncounted `peek`; unconditional `put`; `evict` by key and `evictPartition` by caller-supplied membership; `bytes()`/`entryCount()` for the budget. A load racing a mutation cannot restore its stale value. Partition eviction is an infrequent O(n) scan of resident keys. No expiry: staleness is bounded by publication, not by a clock. Pointer version ordering deliberately is not part of this generic contract. |
+| `MemoryCache<K, V>` | Read-through `get`; batch `getAll`; uncounted `peek`; `evict` by key and `evictPartition` by caller-supplied membership; `bytes()`/`entryCount()` for the budget. Values are immutable and keyed by durable identity, so there is no generic replacement, publication fence, or in-flight map. Eviction is an infrequent O(n) memory-hygiene scan. Pointer version ordering deliberately is not part of this generic contract. |
 | `CaffeineMemoryCache` | The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction. |
 | `CacheWeights` | Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (`WeightedValue` first, then protobuf, text, `byte[]`, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte. |
-| `CacheFamily` | The independently budgeted in-memory families that actually use this module — `POINTER` today. Each is its own cache, never a tag inside a shared one, so a burst in the fastest-moving family cannot evict the slowest. Add `OBJECT` and `HINT` when those implementations land; do not add disk blob caching to this enum. The tag is both the metric dimension and the config segment. |
+| `CacheFamily` | The independently budgeted in-memory families that use this module. Pointer planning state is not a `MemoryCache` family: it is a complete index with no eviction budget. `OBJECT` is the decoded metadata family; `HINT` is added when its layer lands. Disk blob caching has its own volume budget. |
 | `CacheBudget` / `CacheBudgetResolver` | One total split across the families. Pure arithmetic in `CacheBudget.split`; `CacheBudgetResolver` (`service/cache/`) reads the configuration and runs it at startup. |
-| `CacheEvents` | The common event baseline: `hit` (with how long it took to serve, so a caller that waited on someone else's load is not an instant hit), `miss`, `loadTime`, `loadFailed`, `loadDiscarded`, `admissionRejected`, `writeThrough` and `evicted`. Write-through reports whether the cache applied the publication or skipped it through a safety guard. Bulk reads report hits and misses per distinct key and one duration per loader invocation. A disk cache can reuse these metrics and add mapping/sweep signals without implementing `MemoryCache`. The module reports events; the container names the metrics. |
+| `CacheEvents` | The common event baseline: `hit`, `miss`, `loadTime`, `loadFailed` and `evicted`. Bulk reads report misses for the keys passed to their source loader and one duration per loader invocation. A disk cache can reuse the telemetry vocabulary while exposing its own lifecycle-shaped interface. The module reports events; the container names the metrics. |
 
 Budgets resolve from the container rather than from a compiled-in figure. The JVM already sizes its
 heap from the container memory limit, so `floecat.cache.heap-share` (0.5) of the maximum heap
@@ -91,29 +90,11 @@ and metric dimensions for caches that do not exist yet. The existing `ImmutableB
 under `floecat.blob.cache.max-weight-bytes`. A future disk blob cache can reuse the cache module's
 telemetry vocabulary while exposing its own lifecycle-shaped interface and volume budget.
 
-`floecat.cache.pointer.share` is 0.096, from the reference sizing scenario: a 100,000-table account
-at 100 columns needs 0.32 GB of addressing out of the 3.34 GB the memory caches hold between them
-(Pointers, Objects and Hints). The share resolves against that total, not against the heap — the
-heap is one `heap-share` step above it. That is a starting point, not a law.
-Addressing is width-independent — it costs the same whatever the columns look like — so a
-proportional share over-allocates it on a wide catalog and starves it on a narrow one, where the
-same fixed need is a much larger fraction of a much smaller total. `max-bytes` is what pins it
-against that, and exceeding the budget costs store reads rather than wrong answers.
-
-The pointer cache is the first specialized layer built on the shared in-memory contract; the other
-layers above are unchanged. Its independent durable subtrees load through a bounded metadata
-fan-out; `floecat.cache.pointer.load-parallelism=0` derives the bound from the processors available
-to the JVM, while a positive value pins it. A failed or capacity-rejected index remains store-backed
-until the first read after `floecat.cache.pointer.degraded-retry-seconds`, when one caller retries
-the complete load and concurrent callers continue through the store. Complete-index events,
-including eager-load duration, carry the logical account tag through the same `CacheEvents`
-contract.
-
-Cache selection stops at the repository boundary. Service and graph callers ask repositories for
-objects or lightweight refs; they never inject a cached, authoritative, or raw pointer-store view.
-Repositories use the cached view for query reads, while mutation and GC repositories retain the
-authoritative default. `ConsistentReadRulesTest` enforces both that boundary and the absence of
-per-call consistency selection.
+Pointer planning state is not budgeted by the generic memory-cache contract. The index is the
+account's current in-memory representation and must stay complete; if it cannot be loaded, the
+durable adapter remains the answer until the next load attempt. Callers do not select a cached or
+authoritative view: every service path receives `IndexedPointerStore`, which chooses the in-memory
+index for planner keys and durable KV for operational keys.
 
 ## What a cache reports
 
@@ -130,33 +111,21 @@ contract and publishes its own subset; `graph-cache` is node-load timing, not a 
 | How full is it? | `floecat_core_cache_weighted_size_bytes` against `..._max_weight_bytes` |
 | How many entries? | `floecat_core_cache_entries` |
 | Is the budget too small? | `floecat_core_cache_evictions` and `..._evicted_weight_bytes` |
-| Has it stopped warming? | `floecat_core_cache_loads_discarded` — a load whose value was not retained because a write may have raced it |
-| Is the budget rejecting valid entries? | `floecat_core_cache_admission_rejected` |
-| Are write-through publications being applied or safety-guarded? | `floecat_core_cache_write_through{result="applied\|skipped"}` |
-| Are pointer indexes ready? | `floecat_core_cache_accounts`, tagged `result=loading|complete|degraded` |
+| Are pointer indexes ready? | `floecat_core_cache_accounts`, tagged `result=loading|complete` |
 
 Hits and misses are counted as they happen rather than derived from a running total, because a rate
 computed from a cumulative gauge cannot tell an idle cache from one that is missing everything.
-An account retrying a degraded index moves through `degraded` to `loading` and then `complete` in
-the readiness counts; another failure returns it to `degraded`.
+An account moves from `loading` to `complete` after its durable planner rows have been loaded. A
+load failure leaves it on the durable path; the next read can retry the load.
 
 Nothing expires in the pointer cache. The eviction series count only capacity-driven removals;
 explicit deletes, prefix sweeps, and authoritative-read repairs are not included. A non-zero
 eviction rate therefore directly signals size pressure. The weight alongside the count
 distinguishes many small evictions from a few large ones.
 
-## Turning the pointer cache off
-
-`floecat.cache.pointer.enabled=false` installs the raw pointer store instead of the caching
-decorator, so the read path becomes the pre-cache one. Off means the decorator is not there, not
-that a cache is there holding nothing.
-
-A budget of zero is *not* the switch — it is refused at startup, because a cache sized zero reports
-a 0% hit rate that reads as a cache which is not helping rather than one that was turned off.
-
-There is also no flag that stops publishing while leaving the cache populated, and there should not
-be: publishing is what keeps a pointer current — nothing expires — so a populated cache that is not
-published to serves whatever it last loaded, indefinitely.
+There is no independent pointer-cache switch. Pointer reads always go through `IndexedPointerStore`;
+the durable adapter is used automatically while an account index is loading and for operational
+keys. This keeps the read and mutation path identical in tests and production.
 
 ## Deliberately live reads
 These reads bypass every cache because their result is a detector, not content:
@@ -191,18 +160,14 @@ emptiness is load-bearing.
 
 | Observation | Bound | Governed by |
 |-------------|-------|-------------|
-| Cross-instance DDL visibility (which blob a definition pointer names) | **unbounded by time** | Nothing expires. A publish refreshes the replica that made the write; another replica holding the same key keeps its value until it writes that key or reads it authoritatively. Reads that cannot tolerate this do not take it: the commit funnel, the pin guards and the whole GC receive the unqualified authoritative store view, which repairs the cached entry on the way back. |
-| Table currency (which root is current) | none within the replica that committed; cross-instance as above | `CachingPointerStore` publishing under the store, version-guarded |
-| Catalog/namespace listings | none within the owning replica; degraded accounts read through | Complete pointer indexes maintained by `CachingPointerStore` |
+| Cross-instance DDL visibility (which blob a definition pointer names) | bounded by ownership handoff | One Floecat owner accepts writes for an account. A new owner loads the durable partition before serving it; the old owner must stop accepting writes before handoff. |
+| Table currency (which root is current) | none within the owning replica; cross-instance changes require the owner contract | `IndexedPointerStore` publishes after the durable CAS while holding the account lock |
+| Catalog/namespace listings | none after the account index is complete; loading accounts use durable KV | `PlanningPointerIndex` sorted account partitions |
 | Pinned data read within a query | None by construction | Immutable blobs plus live integrity reads |
 
 Cache budgets derive from the container: `floecat.cache.total-bytes` defaults to a share of the
-maximum heap, which the JVM already sizes from the container memory limit, and each cache takes a
-share of that. The knobs the pointer cache reads are `floecat.cache.total-bytes`,
-`floecat.cache.heap-share`, `floecat.cache.pointer.share` and `floecat.cache.pointer.max-bytes`,
-the last pinning an absolute size instead of a share, plus `floecat.cache.pointer.enabled`,
-`floecat.cache.pointer.load-parallelism` and
-`floecat.cache.pointer.degraded-retry-seconds`; a share outside `(0, 1]` fails at startup.
-`heap-share` and `pointer.share` carry defaults in
+maximum heap, which the JVM already sizes from the container memory limit, and each memory cache takes a
+share of that. `heap-share` carries its default in
 `service/src/main/resources/application.properties`, alongside `floecat.blob.cache.*`;
-`total-bytes` and `pointer.max-bytes` are unset, and each is a share until it is given a value.
+`total-bytes` is unset and is derived when the object and hint memory caches are wired.
+

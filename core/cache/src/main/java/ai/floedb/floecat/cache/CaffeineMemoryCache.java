@@ -29,20 +29,9 @@ import java.util.Set;
 import java.util.function.Predicate;
 import java.util.function.ToLongFunction;
 
-/**
- * The Caffeine {@link MemoryCache} implementation. A family is one independently budgeted instance.
- *
- * <p>Eviction is Caffeine's W-TinyLFU: admission by frequency, so a listing or a statistics sweep
- * does not flush the hot set as it would an LRU. No expiry -- a time bound buys staleness bounds
- * worth nothing once writes are published, and costs a stampede at every window boundary.
- *
- * @param <K> key
- * @param <V> value
- */
+/** Caffeine-backed implementation of the immutable {@link MemoryCache} contract. */
 public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
 
-  // Every stored value has a distinct wrapper so a raced load can remove its own installation
-  // without removing a writer's publication of the exact same value object.
   private static final long CACHED_VALUE_BYTES = 16L;
 
   private final CacheFamily family;
@@ -50,54 +39,41 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
   private final ToLongFunction<K> keyWeight;
   private final CacheEvents events;
   private final long weightUnitBytes;
-  private final LoadCoordinator<K, V> loads;
 
-  /**
-   * @param family which cache this is; its tag is the metric dimension
-   * @param maxBytes the budget, from the container-derived split
-   * @param keyWeight the key's contribution to an entry's weight, in bytes
-   * @param events where behaviour is reported; {@link CacheEvents#none()} to report nothing
-   */
   public CaffeineMemoryCache(
       CacheFamily family, long maxBytes, ToLongFunction<K> keyWeight, CacheEvents events) {
     if (maxBytes <= 0) {
-      // The last door a zero can arrive at, after CacheBudget.split. See CacheBudget#split for why
-      // it is refused rather than treated as a very small cache.
       throw new IllegalArgumentException(
           "cache " + family.tag() + " needs a positive budget, but got " + maxBytes + " bytes");
     }
-    this.family = family;
-    this.keyWeight = keyWeight;
-    this.events = events;
-    this.loads = new LoadCoordinator<>(Object::hashCode);
-    // Caffeine accepts a long total but an int per-entry weight. Use larger units when the budget
-    // itself cannot be represented in bytes, rounding entries up and the budget down so the real
-    // byte ceiling is never exceeded. Leave one int unit unused: if an entry is larger than the
-    // whole budget, clamping its weight to Integer.MAX_VALUE must still put it over the ceiling.
+    this.family = Objects.requireNonNull(family, "family");
+    this.keyWeight = Objects.requireNonNull(keyWeight, "keyWeight");
+    this.events = Objects.requireNonNull(events, "events");
     this.weightUnitBytes = divideRoundUp(maxBytes, Integer.MAX_VALUE - 1L);
     long maximumWeightUnits = maxBytes / weightUnitBytes;
     this.entries =
         Caffeine.<K, CachedValue<V>>newBuilder()
             .maximumWeight(maximumWeightUnits)
             .weigher((K key, CachedValue<V> value) -> weightUnits(key, value.value()))
-            // An eviction listener, not a removal listener: Caffeine routes an explicit invalidate
-            // to the latter, which this cache does not install, so everything here is size
-            // pressure.
             .evictionListener(
                 (K key, CachedValue<V> value, RemovalCause cause) ->
                     report(() -> events.evicted(weightBytes(key, value.value()))))
             .build();
   }
 
-  /**
-   * The entry's weight in the units this cache gives Caffeine's int-valued {@code Weigher}.
-   *
-   * <p>One arithmetic for the weigher and the eviction listener, so they cannot disagree. The
-   * listener recomputes it -- Caffeine passes the key and value, never the stamped weight -- under
-   * the entry monitor and the eviction lock. Sound because {@link MemoryCache} requires immutable
-   * values; cheap because a {@link WeightedValue} reports a field and a protobuf its serialized
-   * size. A container-shaped value pays its walk there, so give it a {@link WeightedValue}.
-   */
+  /** Changes the admission share reserved for this cache family. */
+  public void maximumBytes(long maxBytes) {
+    if (maxBytes < 0L) {
+      throw new IllegalArgumentException("cache maximum must be >= 0 bytes");
+    }
+    entries
+        .policy()
+        .eviction()
+        .orElseThrow(() -> new IllegalStateException("weighted cache has no eviction policy"))
+        .setMaximum(maxBytes / weightUnitBytes);
+    entries.cleanUp();
+  }
+
   private int weightUnits(K key, V value) {
     long units = divideRoundUp(weightBytes(key, value), weightUnitBytes);
     return units > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) units;
@@ -114,83 +90,45 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
     return 1L + (dividend - 1L) / divisor;
   }
 
-  /**
-   * Changes this cache's share of its family budget.
-   *
-   * <p>A specialized cache may reserve part of one family budget for state that cannot be evicted
-   * without losing correctness. Shrinking this admission-controlled remainder keeps both stores
-   * under one ceiling instead of pretending that two independently bounded caches share a budget.
-   * Zero is valid here: it disables admission after construction while the reserved state owns the
-   * whole budget.
-   */
-  public void maximumBytes(long maxBytes) {
-    if (maxBytes < 0L) {
-      throw new IllegalArgumentException("cache maximum must be >= 0 bytes");
-    }
-    long maximumWeightUnits = maxBytes / weightUnitBytes;
-    entries
-        .policy()
-        .eviction()
-        .orElseThrow(() -> new IllegalStateException("weighted cache has no eviction policy"))
-        .setMaximum(maximumWeightUnits);
-    entries.cleanUp();
-  }
-
   @Override
   public V get(K key, Loader<K, V> loader) {
     Objects.requireNonNull(key, "key");
     Objects.requireNonNull(loader, "loader");
     long startNanos = System.nanoTime();
-    LoadCoordinator.Sample sample = loads.sample(key);
-    CachedValue<V> cached = entries.getIfPresent(key);
-    if (cached != null) {
+    CachedValue<V> resident = entries.getIfPresent(key);
+    if (resident != null) {
       report(() -> events.hit(Duration.ofNanos(System.nanoTime() - startNanos)));
-      return cached.value();
+      return resident.value();
     }
-
-    LoadCoordinator.Acquisition<K, V> acquisition = loads.acquire(key, sample);
-    if (!acquisition.owner()) {
-      V value = loads.await(acquisition.token());
+    java.util.concurrent.atomic.AtomicBoolean invoked =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    CachedValue<V> value =
+        entries.get(
+            key,
+            ignored -> {
+              invoked.set(true);
+              try {
+                V result = loader.load(key);
+                report(events::miss);
+                report(() -> events.loadTime(Duration.ofNanos(System.nanoTime() - startNanos)));
+                return result == null ? null : new CachedValue<>(result);
+              } catch (RuntimeException failure) {
+                report(
+                    () ->
+                        events.loadFailed(
+                            Duration.ofNanos(System.nanoTime() - startNanos), failure));
+                throw failure;
+              }
+            });
+    if (!invoked.get()) {
       report(() -> events.hit(Duration.ofNanos(System.nanoTime() - startNanos)));
-      return value;
     }
-
-    LoadCoordinator.Token<K, V> token = acquisition.token();
-    V value;
-    try {
-      value = loader.load(key);
-      CachedValue<V> loaded = value == null ? null : new CachedValue<>(value);
-      if (loaded != null) {
-        boolean retained =
-            loads.publishIfCurrent(token, () -> entries.asMap().putIfAbsent(key, loaded));
-        if (!retained) {
-          report(events::loadDiscarded);
-        }
-      }
-      // A mutation that won while the source read was in flight is the answer for followers and for
-      // this call when it is resident. An eviction deliberately leaves no answer, so the caller
-      // keeps the value it loaded even though it was not retained.
-      CachedValue<V> current = entries.getIfPresent(key);
-      V served = current == null ? value : current.value();
-      loads.complete(token, served);
-      report(events::miss);
-      report(() -> events.loadTime(Duration.ofNanos(System.nanoTime() - startNanos)));
-      return served;
-    } catch (RuntimeException e) {
-      loads.fail(token, e);
-      report(events::miss);
-      if (!(e instanceof UnweighableValueException)) {
-        report(() -> events.loadFailed(Duration.ofNanos(System.nanoTime() - startNanos), e));
-      }
-      throw e;
-    } catch (Error e) {
-      loads.fail(token, e);
-      throw e;
-    }
+    return value == null ? null : value.value();
   }
 
   @Override
   public Optional<V> peek(K key) {
+    Objects.requireNonNull(key, "key");
     return Optional.ofNullable(entries.getIfPresent(key)).map(CachedValue::value);
   }
 
@@ -198,147 +136,65 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
   public Map<K, V> getAll(Collection<K> keys, BulkLoader<K, V> loader) {
     Objects.requireNonNull(keys, "keys");
     Objects.requireNonNull(loader, "loader");
-
-    Set<K> distinctKeys = new LinkedHashSet<>(keys);
-    if (distinctKeys.isEmpty()) {
+    Set<K> distinct = new LinkedHashSet<>(keys);
+    if (distinct.isEmpty()) {
       return Map.of();
     }
-
-    Map<K, V> result = new LinkedHashMap<>();
-    Map<K, LoadCoordinator.Acquisition<K, V>> acquisitions = new LinkedHashMap<>();
-    try {
-      for (K key : distinctKeys) {
-        Objects.requireNonNull(key, "cache keys must not be null");
-        long startNanos = System.nanoTime();
-        LoadCoordinator.Sample sample = loads.sample(key);
-        CachedValue<V> value = entries.getIfPresent(key);
-        if (value != null) {
-          result.put(key, value.value());
-          report(() -> events.hit(Duration.ofNanos(System.nanoTime() - startNanos)));
-        } else {
-          acquisitions.put(key, loads.acquire(key, sample));
-          report(events::miss);
-        }
-      }
-    } catch (RuntimeException | Error failure) {
-      acquisitions.values().stream()
-          .filter(LoadCoordinator.Acquisition::owner)
-          .map(LoadCoordinator.Acquisition::token)
-          .forEach(token -> loads.fail(token, failure));
-      throw failure;
-    }
-    if (acquisitions.isEmpty()) {
-      return Map.copyOf(result);
-    }
-
-    Map<K, LoadCoordinator.Token<K, V>> owned = new LinkedHashMap<>();
-    for (Map.Entry<K, LoadCoordinator.Acquisition<K, V>> entry : acquisitions.entrySet()) {
-      if (entry.getValue().owner()) {
-        owned.put(entry.getKey(), entry.getValue().token());
-      }
-    }
-
-    Map<K, V> ownedResults = new LinkedHashMap<>();
-    if (!owned.isEmpty()) {
+    distinct.forEach(key -> Objects.requireNonNull(key, "cache keys must not be null"));
+    Map<K, CachedValue<V>> resident = entries.getAllPresent(distinct);
+    resident.keySet().forEach(ignored -> report(() -> events.hit(Duration.ZERO)));
+    Set<K> missing = new LinkedHashSet<>(distinct);
+    missing.removeAll(resident.keySet());
+    Map<K, CachedValue<V>> values = new LinkedHashMap<>(resident);
+    if (!missing.isEmpty()) {
       long startNanos = System.nanoTime();
+      Map<K, CachedValue<V>> loaded;
       try {
-        Map<K, V> loaded =
-            Objects.requireNonNull(loader.load(Set.copyOf(owned.keySet())), "loader result");
-        for (Map.Entry<K, V> entry : loaded.entrySet()) {
-          if (!owned.containsKey(entry.getKey())) {
-            throw new IllegalArgumentException(
-                "loader returned an unrequested key: " + entry.getKey());
-          }
-          Objects.requireNonNull(entry.getValue(), "a bulk loader must omit absent keys");
-        }
-        for (Map.Entry<K, LoadCoordinator.Token<K, V>> entry : owned.entrySet()) {
-          K key = entry.getKey();
-          V value = loaded.get(key);
-          ownedResults.put(key, completeLoaded(key, value, entry.getValue()));
-        }
-      } catch (RuntimeException e) {
-        owned.values().forEach(token -> loads.fail(token, e));
-        if (!(e instanceof UnweighableValueException)) {
-          report(() -> events.loadFailed(Duration.ofNanos(System.nanoTime() - startNanos), e));
-        }
-        throw e;
-      } catch (Error e) {
-        owned.values().forEach(token -> loads.fail(token, e));
-        throw e;
+        loaded =
+            entries.getAll(
+                missing,
+                requested -> {
+                  Map<K, V> result =
+                      Objects.requireNonNull(loader.load(Set.copyOf(requested)), "loader result");
+                  for (Map.Entry<K, V> entry : result.entrySet()) {
+                    if (!missing.contains(entry.getKey())) {
+                      throw new IllegalArgumentException(
+                          "loader returned an unrequested key: " + entry.getKey());
+                    }
+                    Objects.requireNonNull(entry.getValue(), "a bulk loader must omit absent keys");
+                  }
+                  report(() -> events.loadTime(Duration.ofNanos(System.nanoTime() - startNanos)));
+                  requested.forEach(ignored -> report(events::miss));
+                  Map<K, CachedValue<V>> wrapped = new LinkedHashMap<>();
+                  result.forEach((key, value) -> wrapped.put(key, new CachedValue<>(value)));
+                  return wrapped;
+                });
+      } catch (RuntimeException failure) {
+        report(() -> events.loadFailed(Duration.ofNanos(System.nanoTime() - startNanos), failure));
+        throw failure;
       }
-      report(() -> events.loadTime(Duration.ofNanos(System.nanoTime() - startNanos)));
+      values.putAll(loaded);
     }
-
-    for (Map.Entry<K, LoadCoordinator.Acquisition<K, V>> entry : acquisitions.entrySet()) {
-      V value =
-          entry.getValue().owner()
-              ? ownedResults.get(entry.getKey())
-              : loads.await(entry.getValue().token());
-      if (value != null) {
-        result.put(entry.getKey(), value);
-      }
-    }
+    Map<K, V> result = new LinkedHashMap<>();
+    values.forEach((key, value) -> result.put(key, value.value()));
     return Map.copyOf(result);
   }
-
-  private V completeLoaded(K key, V value, LoadCoordinator.Token<K, V> token) {
-    CachedValue<V> loaded = value == null ? null : new CachedValue<>(value);
-    if (loaded != null) {
-      boolean retained =
-          loads.publishIfCurrent(token, () -> entries.asMap().putIfAbsent(key, loaded));
-      if (!retained) {
-        report(events::loadDiscarded);
-      }
-    }
-    CachedValue<V> current = entries.getIfPresent(key);
-    V served = current == null ? value : current.value();
-    loads.complete(token, served);
-    return served;
-  }
-
-  @Override
-  public void put(K key, V value) {
-    Objects.requireNonNull(key, "key");
-    Objects.requireNonNull(value, "a cache holds no nulls; to drop a key use evict");
-    loads.mutate(key, () -> entries.put(key, new CachedValue<>(value)));
-  }
-
-  /**
-   * The fence stripe index for {@code key}. Spread first: keys here are structured strings whose
-   * low bits carry little of the difference between them.
-   */
-  // Package-private so a test can assert that two keys it relies on still share a stripe.
-  int stripeFor(K key) {
-    return loads.stripeFor(key);
-  }
-
-  private record CachedValue<V>(V value) {}
 
   @Override
   public void evict(K key) {
     Objects.requireNonNull(key, "key");
-    loads.mutate(key, () -> entries.invalidate(key));
+    entries.invalidate(key);
   }
 
   @Override
   public void evictPartition(Predicate<K> belongsToPartition) {
     Objects.requireNonNull(belongsToPartition, "belongsToPartition");
-    loads.mutatePartition(
-        belongsToPartition,
-        residentMembership -> entries.asMap().keySet().removeIf(residentMembership));
+    entries.asMap().keySet().removeIf(belongsToPartition);
   }
 
   @Override
   public long bytes() {
-    // Caffeine already maintains this because a weigher is set; a second counter beside it would
-    // only be a way for the two to disagree. Its maintenance is asynchronous, so the figure lags
-    // writes and would read under the limit while over it -- hence forcing it. cleanUp takes the
-    // eviction lock outright, unlike the tryLock the write path uses to schedule drains, which is
-    // the blocking MemoryCache#bytes warns about.
     entries.cleanUp();
-    // Both are present because the builder always sets a weigher and a maximum weight. Asserted
-    // rather than defaulted: a zero here would report an empty cache to the budget gauge, which is
-    // the one number this contract exists to publish.
     return entries.policy().eviction().orElseThrow().weightedSize().orElseThrow() * weightUnitBytes;
   }
 
@@ -352,12 +208,13 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
     return entries.estimatedSize();
   }
 
-  /** Telemetry is advisory and must never change cache-load correctness or wake followers early. */
+  private record CachedValue<V>(V value) {}
+
   private static void report(Runnable callback) {
     try {
       callback.run();
     } catch (RuntimeException ignored) {
-      // A broken exporter must not turn a successful source read into a failed cache load.
+      // Telemetry must not change source-read correctness.
     }
   }
 }
