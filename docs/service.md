@@ -339,9 +339,10 @@ its whole chain, so pinned blobs stay readable for the query's lifetime. Deletes
 30 s min-age (`floecat.gc.cas.min-age-ms`, age since the blob was written), and any failed
 root-chain walk poisons the account's delete phase — the referenced set is untrustworthy, so
 nothing is deleted that pass (fail closed). CAS GC is disabled by default because query pin roots
-are process-local. In a multi-replica deployment, enable `FLOECAT_GC_CAS_ENABLED=true` on exactly
-one designated control-plane replica only when all live query contexts are visible to that replica;
-otherwise leave it disabled. A retained account continuation is abandoned after
+are process-local. In managed multi-replica mode, Core assigns each account to one Floecat
+incarnation and the local authority admits CAS GC only for that owner; enable
+`FLOECAT_GC_CAS_ENABLED=true` only with that ownership controller and keep it disabled on
+standalone multi-replica deployments. A retained account continuation is abandoned after
 `floecat.gc.cas.max-consecutive-continuation-ticks` so one large account cannot starve every other
 account; raise that bound if the oldest-sweep-age metric shows a large account repeatedly restarting.
 Snapshot compatibility artifacts under `snapshots/<id>/compat/` are gateway-managed mutable
@@ -358,6 +359,24 @@ when `floecat.seed.enabled=true`.
 
 For connector-backed fixture tables, seeding runs a combined reconcile pass per fixture scope
 using `METADATA_AND_CAPTURE`.
+
+### Pod drain and ownership handoff
+
+Before a managed pod is restarted or removed, the deployment lifecycle hook calls
+`GET /internal/drain?wait=true`. The endpoint closes local account admission, revokes new GC
+admissions, and waits for already-admitted resolutions, mutations, GC permits, and query pin roots
+to retire. HTTP `200` with `drained=true` is normal completion; `202` means the caller must keep
+the pod alive and poll again. The deployment has a bounded cancellation/retry boundary for
+pathological work, and Core waits for the old pod to disappear before releasing its ownership
+fence. A local shutdown observer starts the same drain fence if the kubelet cannot reach the HTTP
+hook. A plain `GET /internal/drain` is a read-only status probe and `POST /internal/drain` is the
+explicit management-controller form. The endpoint never writes the KV store and is restricted to
+the internal management path by the production mesh policy.
+
+Core performs the account-level handoff over the existing ownership RPC: it drains the old owner,
+restarts only queries that have not started spooling, waits for the Floecat ownership status to
+report `drained`, then enables the new owner and its GC permit. Standalone OSS deployments keep
+the same local drain implementation without requiring Core.
 
 This ingests metadata/snapshots and runs capture through the reconcile job tree for stats.
 Query scan bundles remain available immediately; stats availability follows queued capture completion.

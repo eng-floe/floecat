@@ -29,10 +29,13 @@ public final class RolePermissions {
   public static final String DELETE_ACCOUNT_ROLE = "delete-account";
   public static final String SYSTEM_OBJECTS_ROLE = "system-objects";
   public static final String RECONCILE_WORKER_ROLE = "reconcile-worker";
+  public static final String ACCOUNT_OWNERSHIP_CONTROLLER_ROLE = "account-ownership-controller";
   public static final String STORAGE_AUTHORITY_RESOLVE_INTERNAL =
       "storage-authority.resolve-internal";
   public static final String RECONCILE_EXECUTOR_CONTROL_INTERNAL =
       "reconcile-executor-control.internal";
+  public static final String ACCOUNT_OWNERSHIP_CONTROL_INTERNAL =
+      "account-ownership-control.internal";
   public static final String CATALOG_WRITE = "catalog.write";
   public static final String CATALOG_INTEGRATION_READ = "catalog-integration.read";
   public static final String CATALOG_INTEGRATION_WRITE = "catalog-integration.write";
@@ -121,6 +124,8 @@ public final class RolePermissions {
           "system-objects.read",
           STORAGE_AUTHORITY_RESOLVE_INTERNAL,
           RECONCILE_EXECUTOR_CONTROL_INTERNAL);
+  private static final List<String> ACCOUNT_OWNERSHIP_CONTROLLER_PERMS =
+      List.of(ACCOUNT_OWNERSHIP_CONTROL_INTERNAL);
 
   private RolePermissions() {}
 
@@ -157,6 +162,9 @@ public final class RolePermissions {
         case RECONCILE_WORKER_ROLE:
           perms.addAll(RECONCILE_WORKER_PERMS);
           break;
+        case ACCOUNT_OWNERSHIP_CONTROLLER_ROLE:
+          perms.addAll(ACCOUNT_OWNERSHIP_CONTROLLER_PERMS);
+          break;
         default:
           break;
       }
@@ -165,6 +173,7 @@ public final class RolePermissions {
       perms.add("account.write");
       perms.add(STORAGE_AUTHORITY_RESOLVE_INTERNAL);
       perms.add(RECONCILE_EXECUTOR_CONTROL_INTERNAL);
+      perms.add(ACCOUNT_OWNERSHIP_CONTROL_INTERNAL);
     }
     if (perms.isEmpty()) {
       perms.addAll(devMode ? FULL_PERMS : READ_PERMS);

@@ -37,6 +37,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.LongSupplier;
@@ -562,11 +563,86 @@ public final class PointerCache {
     return accountCount(Readiness.DEGRADED);
   }
 
+  /**
+   * Drops this process's mutable completeness for an account and starts rebuilding it in the
+   * background.
+   *
+   * <p>Reads fall back to the authoritative store while the partition is recovering. The warmer
+   * holds the partition write lock while scanning and publishing the complete map, so a local
+   * pointer publication that races the scan waits and is then applied on top of the loaded map.
+   * This method returns once that publication fence is installed, not when the scan completes.
+   */
+  public void resetAndWarm(String accountId) {
+    String partitionKey = Keys.encodeSegment(requireAccountId(accountId));
+    Partition warming = replaceWithWarming(partitionKey, accountId);
+    CountDownLatch warmFenceInstalled = new CountDownLatch(1);
+    Thread.ofVirtual()
+        .name("pointer-cache-warm-" + partitionKey)
+        .start(() -> warm(partitionKey, warming, warmFenceInstalled));
+    try {
+      // Do not open account admission until the warmer owns the publication lock. Otherwise a
+      // durable write could publish into the resident cache in the short start-up gap and then be
+      // absent from the complete map loaded behind it.
+      warmFenceInstalled.await();
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException(
+          "interrupted while installing pointer warm fence", interrupted);
+    }
+  }
+
+  private Partition replaceWithWarming(String partitionKey, String accountId) {
+    while (true) {
+      Partition current = partitions.get(partitionKey);
+      Partition warming = new Partition(events.forAccount(accountId));
+      warming.readiness = Readiness.RECOVERING;
+      if (current == null) {
+        if (partitions.putIfAbsent(partitionKey, warming) == null) {
+          return warming;
+        }
+        continue;
+      }
+      current.lock.writeLock().lock();
+      try {
+        if (!partitions.replace(partitionKey, current, warming)) {
+          continue;
+        }
+        synchronized (budgetLock) {
+          degradeLocked(current);
+        }
+        return warming;
+      } finally {
+        current.lock.writeLock().unlock();
+      }
+    }
+  }
+
+  /** Control-plane visibility into one account's local completeness state. */
+  public String accountReadiness(String accountId) {
+    Partition partition = partitions.get(Keys.encodeSegment(requireAccountId(accountId)));
+    return partition == null ? "UNLOADED" : partition.readiness.name();
+  }
+
   private long accountCount(Readiness readiness) {
     return partitions.entrySet().stream()
         .filter(entry -> !IndexLayout.GLOBAL_PARTITION.equals(entry.getKey()))
         .filter(entry -> entry.getValue().readiness == readiness)
         .count();
+  }
+
+  private void warm(String partitionKey, Partition partition, CountDownLatch warmFenceInstalled) {
+    long loadStart = System.nanoTime();
+    partition.lock.writeLock().lock();
+    warmFenceInstalled.countDown();
+    try {
+      if (partitions.get(partitionKey) != partition
+          || partition.readiness != Readiness.RECOVERING) {
+        return;
+      }
+      populate(partitionKey, partition, loadStart, true);
+    } finally {
+      partition.lock.writeLock().unlock();
+    }
   }
 
   private Partition complete(String partitionKey) {
@@ -614,38 +690,42 @@ public final class PointerCache {
       boolean recovering = partition.readiness == Readiness.RECOVERING;
       partition.events.miss();
       long loadStart = System.nanoTime();
-      try {
-        NavigableMap<String, Pointer> loaded = load(partitionKey);
-        long loadedBytes = weight(loaded);
-        synchronized (budgetLock) {
-          long available = maxBytes - completeBytes.get();
-          if (loadedBytes > available) {
-            degradeLocked(partition);
-            partition.events.admissionRejected();
-            return null;
-          }
-          completeBytes.addAndGet(loadedBytes);
-          completeEntries.addAndGet(loaded.size());
-          resident.maximumBytes(maxBytes - completeBytes.get());
-          partition.entries.putAll(loaded);
-          partition.weightBytes = loadedBytes;
-          partition.readiness = Readiness.COMPLETE;
-        }
-        if (recovering) {
-          // Reads stay available through the ordinary resident cache while a retry runs. Once the
-          // complete map is published, fence and remove those temporary copies so a later
-          // degradation cannot expose one that predates this authoritative load.
-          evictResidentPartition(partitionKey);
-        }
-        partition.events.loadTime(Duration.ofNanos(System.nanoTime() - loadStart));
-        return partition;
-      } catch (RuntimeException failure) {
-        degrade(partition);
-        partition.events.loadFailed(Duration.ofNanos(System.nanoTime() - loadStart), failure);
-        return null;
-      }
+      return populate(partitionKey, partition, loadStart, recovering) ? partition : null;
     } finally {
       partition.lock.writeLock().unlock();
+    }
+  }
+
+  private boolean populate(
+      String partitionKey, Partition partition, long loadStart, boolean evictResidentOnSuccess) {
+    try {
+      NavigableMap<String, Pointer> loaded = load(partitionKey);
+      long loadedBytes = weight(loaded);
+      synchronized (budgetLock) {
+        long available = maxBytes - completeBytes.get();
+        if (loadedBytes > available) {
+          degradeLocked(partition);
+          partition.events.admissionRejected();
+          return false;
+        }
+        completeBytes.addAndGet(loadedBytes);
+        completeEntries.addAndGet(loaded.size());
+        resident.maximumBytes(maxBytes - completeBytes.get());
+        partition.entries.putAll(loaded);
+        partition.weightBytes = loadedBytes;
+        partition.readiness = Readiness.COMPLETE;
+      }
+      if (evictResidentOnSuccess) {
+        // Recovering reads use the resident cache. Remove those copies after publishing the
+        // complete map so a later degradation cannot expose data predating this load.
+        evictResidentPartition(partitionKey);
+      }
+      partition.events.loadTime(Duration.ofNanos(System.nanoTime() - loadStart));
+      return true;
+    } catch (RuntimeException failure) {
+      degrade(partition);
+      partition.events.loadFailed(Duration.ofNanos(System.nanoTime() - loadStart), failure);
+      return false;
     }
   }
 
@@ -786,6 +866,13 @@ public final class PointerCache {
     } catch (IllegalArgumentException malformed) {
       throw new IllegalArgumentException("bad page token", malformed);
     }
+  }
+
+  private static String requireAccountId(String accountId) {
+    if (accountId == null || accountId.isBlank()) {
+      throw new IllegalArgumentException("accountId must be non-blank");
+    }
+    return accountId;
   }
 
   private static boolean isLoadingOrComplete(Partition partition) {

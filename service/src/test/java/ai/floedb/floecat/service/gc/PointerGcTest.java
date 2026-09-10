@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.gc;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -23,6 +24,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.account.AccountGcAuthority;
 import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -32,6 +34,7 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -152,6 +155,46 @@ class PointerGcTest {
 
     assertTrue(pointers.get(canonical).isPresent());
     assertTrue(pointers.get(secondary).isEmpty());
+  }
+
+  @Test
+  void aRevokedOwnershipEpochStopsBeforeTheIrreversibleDelete() {
+    System.setProperty("floecat.gc.pointer.min-age-ms", "0");
+    String ptrKey = Keys.tablePointerById(ACCOUNT_ID, TABLE_ID);
+    putPointer(ptrKey, Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-missing"));
+    AtomicInteger checks = new AtomicInteger();
+    AccountGcAuthority.GcPermit revokedBeforeDelete =
+        new AccountGcAuthority.GcPermit() {
+          @Override
+          public String accountId() {
+            return ACCOUNT_ID;
+          }
+
+          @Override
+          public long assignmentVersion() {
+            return 7L;
+          }
+
+          @Override
+          public String processIncarnation() {
+            return "pod/start";
+          }
+
+          @Override
+          public boolean valid() {
+            return checks.incrementAndGet() < 4;
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    assertThrows(
+        AccountGcAuthority.GcPermitRevokedException.class,
+        () ->
+            gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L, revokedBeforeDelete));
+
+    assertTrue(pointers.get(ptrKey).isPresent());
   }
 
   private void putPointer(String key, String blobUri) {

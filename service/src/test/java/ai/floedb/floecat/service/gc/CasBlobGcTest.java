@@ -26,6 +26,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.account.AccountGcAuthority;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -37,6 +38,7 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -83,6 +85,62 @@ class CasBlobGcTest {
     gc.runForAccount(ACCOUNT_ID);
 
     assertTrue(blobs.head(blobUri).isPresent());
+  }
+
+  @Test
+  void ownershipRevocationStopsImmediatelyBeforeADeleteAndDropsTheContinuation() {
+    AtomicBoolean allowed = new AtomicBoolean(true);
+    String garbage = Keys.accountBlobUri(ACCOUNT_ID, "sha-garbage");
+    InMemoryBlobStore revokingBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public java.util.Optional<ai.floedb.floecat.common.rpc.BlobHeader> head(String key) {
+            var header = super.head(key);
+            if (key.endsWith("/sha-garbage.pb") && header.isPresent()) {
+              allowed.set(false);
+            }
+            return header;
+          }
+        };
+    revokingBlobs.put(garbage, "garbage".getBytes(StandardCharsets.UTF_8), "text/plain");
+    gc.blobStore = revokingBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, revokingBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, revokingBlobs);
+    AccountGcAuthority.GcPermit permit = permit(allowed);
+
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L, permit);
+
+    assertTrue(revokingBlobs.head(garbage).isPresent());
+    assertTrue(gc.continuationAccountId().isEmpty());
+  }
+
+  private static AccountGcAuthority.GcPermit permit(AtomicBoolean allowed) {
+    return new AccountGcAuthority.GcPermit() {
+      @Override
+      public String accountId() {
+        return ACCOUNT_ID;
+      }
+
+      @Override
+      public long assignmentVersion() {
+        return 7L;
+      }
+
+      @Override
+      public String processIncarnation() {
+        return "pod/start";
+      }
+
+      @Override
+      public boolean valid() {
+        return allowed.get();
+      }
+
+      @Override
+      public void close() {}
+    };
   }
 
   @Test

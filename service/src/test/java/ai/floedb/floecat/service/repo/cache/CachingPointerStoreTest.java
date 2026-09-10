@@ -17,9 +17,11 @@
 package ai.floedb.floecat.service.repo.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.account.AccountGcAuthority;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -1005,11 +1007,22 @@ class CachingPointerStoreTest {
     // helping rather than one that was turned off -- and a zero budget, the other way someone
     // might try this, is refused at startup.
     var raw = new InMemoryPointerStore();
+    var wiredCache = cacheFor(raw);
     var caches = new ai.floedb.floecat.service.cache.MetadataCaches();
 
-    assertThat(caches.cachedPointerStore(raw, cache, false)).isSameAs(raw);
-    PointerStore cached = caches.cachedPointerStore(raw, cache, true);
-    assertThat(cached).isInstanceOf(CachingPointerStore.class);
+    AccountGcAuthority authority = mock(AccountGcAuthority.class);
+    String key = Keys.tablePointerById(ACCT, "wired");
+    raw.compareAndSet(key, 0L, pointer(key, "s3://wired", 1L));
+
+    PointerStore uncached = caches.cachedPointerStore(raw, wiredCache, authority, false);
+    assertThat(uncached).isInstanceOf(AccountFencedPointerStore.class);
+    assertThat(uncached.get(key)).isPresent();
+    assertThat(wiredCache.entryCount()).isZero();
+
+    PointerStore cached = caches.cachedPointerStore(raw, wiredCache, authority, true);
+    assertThat(cached).isInstanceOf(AccountFencedPointerStore.class);
+    assertThat(cached.get(key)).isPresent();
+    assertThat(wiredCache.entryCount()).isPositive();
     assertThat(caches.pointerStore(cached)).isInstanceOf(AuthoritativePointerStore.class);
   }
 }

@@ -55,6 +55,30 @@ Flags:
 
 ## Observability & Operations
 
+### Floecat pod drain contract
+
+Before removing a managed Floecat pod, infrastructure must keep the pod routable to the internal
+management port and call:
+
+```text
+POST /internal/drain?wait=false
+```
+
+This closes admission for every locally served account and disables local GC. The scaler must then
+poll:
+
+```text
+GET /internal/drain
+```
+
+Normal completion is HTTP `200` with `"drained":true`. HTTP `202` means that queries, mutations,
+collectors, or in-memory pin roots are still retiring. The deployment hook has a bounded grace
+period; if that boundary expires, the platform's explicit cancellation/retry policy may terminate
+the pod, and Core must wait for the old pod to disappear before releasing its ownership fence. The
+endpoint is lifecycle control only; it never writes KV and must remain on the internal management
+path. Floecat also starts the same drain fence from its local shutdown observer, so a failed
+kubelet HTTP hook cannot skip admission shutdown.
+
 ### Outbound token endpoint allowlist
 
 Floecat validates outbound token endpoint hosts before performing client credentials or token

@@ -61,6 +61,7 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
     Set<String> reconcileQueueAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> gcRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> gcAllowed = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> accountOwnershipRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.MODE);
     Set<String> statsRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
     Set<String> plannerStatsLookupTags = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
     Set<String> statsAllowed =
@@ -329,6 +330,18 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         gcRequired,
         gcAllowed,
         "Age in milliseconds of the least-recently cleanly-swept CAS GC account.");
+    add(
+        defs,
+        ServiceMetrics.Gc.ACCOUNT_OWNERSHIP_STATES,
+        accountOwnershipRequired,
+        accountOwnershipRequired,
+        "Managed accounts held by this process in each local ownership mode.");
+    add(
+        defs,
+        ServiceMetrics.Gc.ACCOUNT_GC_ALLOWED,
+        gcRequired,
+        gcAllowed,
+        "Managed accounts for which this exact process incarnation may collect garbage.");
     add(
         defs,
         ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNTS_LAST_TICK,

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.service.account.AccountGcAuthority;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
@@ -39,12 +40,16 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class PointerGcScheduler {
 
+  private static final Logger LOG = Logger.getLogger(PointerGcScheduler.class);
+
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<PointerGc> pointerGc;
+  @Inject AccountGcAuthority accountAuthority;
   @Inject Observability observability;
   private GcMetrics gcMetrics;
   private final AtomicInteger running = new AtomicInteger(0);
@@ -106,6 +111,10 @@ public class PointerGcScheduler {
 
     long tickStart = System.nanoTime();
     try {
+      // Global account-directory cleanup is CAS-idempotent: concurrent replicas can inspect the
+      // same pointer and only the replica that still owns its version deletes it. Running this
+      // small global pass on every Floecat keeps managed deployments from silently losing their
+      // only cleanup owner; account-scoped GC remains fenced by AccountGcAuthority below.
       var globalResult = gc.runGlobalAccountPointers(deadline);
       gcMetrics.recordCollection(globalResult.scanned(), Tag.of(TagKey.RESULT, "global-scanned"));
       gcMetrics.recordCollection(globalResult.deleted(), Tag.of(TagKey.RESULT, "global-deleted"));
@@ -122,7 +131,30 @@ public class PointerGcScheduler {
           break;
         }
         long accountStart = System.nanoTime();
-        var result = gc.runForAccount(account.getResourceId().getId(), deadline);
+        String accountId = account.getResourceId().getId();
+        PointerGc.Result result;
+        if (accountAuthority == null) {
+          result = gc.runForAccount(accountId, deadline);
+        } else {
+          var acquired = accountAuthority.tryAcquireGc(accountId);
+          if (acquired.isEmpty()) {
+            gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "account-not-owner"));
+            continue;
+          }
+          try (var permit = acquired.orElseThrow()) {
+            result = gc.runForAccount(accountId, deadline, permit);
+          } catch (AccountGcAuthority.GcPermitRevokedException revoked) {
+            gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "account-revoked"));
+            continue;
+          } catch (RuntimeException failure) {
+            LOG.warnf(
+                failure,
+                "pointer gc for account %s failed; skipping to next account this tick",
+                accountId);
+            gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "account-error"));
+            continue;
+          }
+        }
         gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "account-scanned"));
         gcMetrics.recordCollection(result.deleted(), Tag.of(TagKey.RESULT, "account-deleted"));
         gcMetrics.recordCollection(result.missingBlobs(), Tag.of(TagKey.RESULT, "missing-blobs"));

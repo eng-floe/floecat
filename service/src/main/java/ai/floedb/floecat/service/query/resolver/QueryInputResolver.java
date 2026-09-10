@@ -31,6 +31,7 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.account.AccountGcAuthority;
 import ai.floedb.floecat.service.concurrent.Futures;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.repo.util.RepositoryReads;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
@@ -120,24 +122,46 @@ public class QueryInputResolver {
   // QueryContextStore.registerResolvingPinBlobs). Null in unit tests that construct the resolver
   // without a store — registration is simply skipped then.
   private final QueryContextStore queryStore;
+  private final AccountGcAuthority accountAuthority;
 
   @Inject
   public QueryInputResolver(
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
-      RepositoryReads.ReadPolicy pinResolutionReads) {
-    this(metadataGraph, queryStore, pinResolutionReads, configuredMaxParallelInputResolutions());
+      RepositoryReads.ReadPolicy pinResolutionReads,
+      AccountGcAuthority accountAuthority) {
+    this(
+        metadataGraph,
+        queryStore,
+        pinResolutionReads,
+        accountAuthority,
+        configuredMaxParallelInputResolutions());
   }
 
   private QueryInputResolver(
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
       RepositoryReads.ReadPolicy pinResolutionReads,
+      AccountGcAuthority accountAuthority,
       int maxParallelInputResolutions) {
     this.metadataGraph = metadataGraph;
     this.queryStore = queryStore;
     this.pinResolutionReads = pinResolutionReads;
+    this.accountAuthority = accountAuthority;
     this.maxParallelInputResolutions = maxParallelInputResolutions;
+  }
+
+  /** Compatibility constructor for focused tests that inject their metadata read policy. */
+  public QueryInputResolver(
+      CatalogGraphView metadataGraph,
+      QueryContextStore queryStore,
+      RepositoryReads.ReadPolicy pinResolutionReads) {
+    this(
+        metadataGraph,
+        queryStore,
+        pinResolutionReads,
+        null,
+        configuredMaxParallelInputResolutions());
   }
 
   /** Compatibility constructor for direct callers that own their metadata execution policy. */
@@ -146,6 +170,7 @@ public class QueryInputResolver {
         metadataGraph,
         queryStore,
         RepositoryReads.directPolicy(),
+        null,
         configuredMaxParallelInputResolutions());
   }
 
@@ -233,6 +258,7 @@ public class QueryInputResolver {
       SnapshotPinMemo snapshotPinMemo,
       SnapshotPinMemoOwnership snapshotPinMemoOwnership,
       ResolvingPinRoots resolvingPinRoots,
+      ResolutionAdmission ownership,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
 
@@ -250,6 +276,7 @@ public class QueryInputResolver {
           snapshotPinMemo,
           snapshotPinMemoOwnership,
           resolvingPinRoots,
+          ownership,
           taskDiagnostics,
           cancelled);
     }
@@ -382,7 +409,8 @@ public class QueryInputResolver {
     // Bind the request cancellation signal so store reads auto-admitted at the repository layer —
     // including those dispatched on fan-out workers — abort their admission wait when this request
     // cancels.
-    try (var cancellationScope = PropagatedContext.bindCancellation(cancelled)) {
+    try (var ownership = resolutionAdmission(queryId, inputs);
+        var cancellationScope = PropagatedContext.bindCancellation(cancelled)) {
       // Resolve catalog display-name once up-front — used to fill in blank catalog fields in
       // view base-relation NameRefs so they re-resolve exactly as they did at view-creation time.
       Optional<String> defaultCatalog = Optional.empty();
@@ -408,6 +436,7 @@ public class QueryInputResolver {
                   snapshotPinMemo,
                   new SnapshotPinMemoOwnership(snapshotPinMemo.pins),
                   new ResolvingPinRoots(queryStore, queryId),
+                  ownership,
                   diag,
                   cancelled));
 
@@ -452,6 +481,73 @@ public class QueryInputResolver {
         throw e;
       }
     }
+  }
+
+  private ResolutionAdmission resolutionAdmission(String queryId, List<QueryInput> inputs) {
+    if (accountAuthority == null) {
+      return ResolutionAdmission.unrestricted();
+    }
+    String accountId = "";
+    if (queryStore != null && queryId != null && !queryId.isBlank()) {
+      accountId =
+          queryStore.get(queryId).map(context -> context.getPrincipal().getAccountId()).orElse("");
+    }
+    if (accountId.isBlank()) {
+      accountId =
+          inputs.stream()
+              .map(QueryInputResolver::explicitAccountId)
+              .filter(value -> !value.isBlank())
+              .findFirst()
+              .orElse("");
+    }
+    if (accountId.isBlank()) {
+      if (accountAuthority.managed()) {
+        throw new StorageAbortRetryableException(
+            "cannot establish account ownership for input resolution");
+      }
+      return ResolutionAdmission.unrestricted();
+    }
+    return new ResolutionAdmission(accountAuthority, accountId);
+  }
+
+  /** Lazily admits only a resolution that actually needs to construct a new pin. */
+  private static final class ResolutionAdmission implements AutoCloseable {
+    private final AccountGcAuthority authority;
+    private final String accountId;
+    private AccountGcAuthority.Permit permit;
+
+    private ResolutionAdmission(AccountGcAuthority authority, String accountId) {
+      this.authority = authority;
+      this.accountId = accountId;
+    }
+
+    private static ResolutionAdmission unrestricted() {
+      return new ResolutionAdmission(null, "");
+    }
+
+    private synchronized void acquire() {
+      if (authority != null && permit == null) {
+        permit = authority.admitResolution(accountId);
+      }
+    }
+
+    @Override
+    public synchronized void close() {
+      if (permit != null) {
+        permit.close();
+        permit = null;
+      }
+    }
+  }
+
+  private static String explicitAccountId(QueryInput input) {
+    return switch (input.getTargetCase()) {
+      case TABLE_ID -> input.getTableId().getAccountId();
+      case VIEW_ID -> input.getViewId().getAccountId();
+      case NAME ->
+          input.getName().hasResourceId() ? input.getName().getResourceId().getAccountId() : "";
+      case TARGET_NOT_SET -> "";
+    };
   }
 
   // =============================================================================
@@ -636,6 +732,7 @@ public class QueryInputResolver {
             throw new CancellationException("input resolution no longer active");
           }
           try {
+            state.ownership.acquire();
             long snapshotPinStartNs = System.nanoTime();
             pin =
                 pinResolutionReads.read(
@@ -664,6 +761,7 @@ public class QueryInputResolver {
         // retries against the replacement entry without using a retired pin.
         synchronized (inflight) {
           if (state.snapshotPinMemo.pins.get(rid) == inflight) {
+            state.ownership.acquire();
             state.resolvingPinRoots.register(pin);
             state.diagnostics.count("pin.current_snapshot_cache_hits");
             return pin;
@@ -695,6 +793,7 @@ public class QueryInputResolver {
         return pin;
       }
     }
+    state.ownership.acquire();
     long snapshotPinStartNs = System.nanoTime();
     TablePin resolved =
         pinResolutionReads.read(

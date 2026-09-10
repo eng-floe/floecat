@@ -53,6 +53,10 @@ class PointerCacheRecoveryTest {
       blockRecovery.set(true);
     }
 
+    void disableFailures() {
+      failuresRemaining.set(0);
+    }
+
     @Override
     public Optional<Pointer> getConsistent(String key) {
       consistentPointReads.incrementAndGet();
@@ -66,6 +70,8 @@ class PointerCacheRecoveryTest {
       if (failuresRemaining.getAndDecrement() > 0) {
         throw new IllegalStateException("listing temporarily unavailable");
       }
+      List<Pointer> snapshot =
+          super.listPointersByPrefixConsistent(prefix, limit, pageToken, nextTokenOut);
       if (blockRecovery.compareAndSet(true, false)) {
         recoveryStarted.countDown();
         try {
@@ -77,7 +83,7 @@ class PointerCacheRecoveryTest {
           throw new AssertionError("interrupted while holding the recovery load open", interrupted);
         }
       }
-      return super.listPointersByPrefixConsistent(prefix, limit, pageToken, nextTokenOut);
+      return snapshot;
     }
   }
 
@@ -101,7 +107,6 @@ class PointerCacheRecoveryTest {
     PointerCache cache = cacheFor(store, nanoTime);
     CachingPointerStore caching = new CachingPointerStore(store, cache);
     String missing = Keys.relationPointerByName(ACCOUNT, "cat", "ns", "missing");
-
     assertThat(caching.get(missing)).isEmpty();
     int listingsAfterFailure = store.listingReads.get();
     assertThat(cache.degradedAccountCount()).isEqualTo(1L);
@@ -143,6 +148,59 @@ class PointerCacheRecoveryTest {
     store.releaseRecovery.countDown();
     assertThat(recovering.get(10, TimeUnit.SECONDS)).isEmpty();
     assertThat(cache.completeAccountCount()).isEqualTo(1L);
+  }
+
+  @Test
+  void ownershipWarmupFallsBackThenPublishesACompleteAccountIndex() throws Exception {
+    RecoveringStore store = new RecoveringStore();
+    store.disableFailures();
+    PointerCache cache = cacheFor(store, System::nanoTime);
+    CachingPointerStore caching = new CachingPointerStore(store, cache);
+    String missing = Keys.relationPointerByName(ACCOUNT, "cat", "ns", "missing");
+    String published = Keys.relationPointerByName(ACCOUNT, "cat", "ns", "published");
+
+    store.blockRecovery();
+    cache.resetAndWarm(ACCOUNT);
+    assertThat(store.recoveryStarted.await(10, TimeUnit.SECONDS)).isTrue();
+
+    CompletableFuture<Optional<Pointer>> fallback =
+        CompletableFuture.supplyAsync(() -> caching.get(missing));
+    assertThat(fallback.get(1, TimeUnit.SECONDS)).isEmpty();
+    assertThat(cache.accountReadiness(ACCOUNT)).isEqualTo("RECOVERING");
+    CompletableFuture<Boolean> publication =
+        CompletableFuture.supplyAsync(
+            () ->
+                caching.compareAndSet(
+                    published,
+                    0L,
+                    Pointer.newBuilder().setKey(published).setBlobUri("s3://published").build()));
+    awaitDurable(store, published);
+    int sourceReadsWhileWarming = store.consistentPointReads.get();
+    assertThat(publication).isNotDone();
+
+    store.releaseRecovery.countDown();
+    awaitComplete(cache);
+    assertThat(publication.get(10, TimeUnit.SECONDS)).isTrue();
+
+    assertThat(caching.get(missing)).isEmpty();
+    assertThat(caching.get(published)).isPresent();
+    assertThat(store.consistentPointReads).hasValue(sourceReadsWhileWarming);
+  }
+
+  private static void awaitDurable(RecoveringStore store, String key) throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (store.getConsistent(key).isEmpty() && System.nanoTime() < deadline) {
+      Thread.sleep(10);
+    }
+    assertThat(store.getConsistent(key)).isPresent();
+  }
+
+  private static void awaitComplete(PointerCache cache) throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (!"COMPLETE".equals(cache.accountReadiness(ACCOUNT)) && System.nanoTime() < deadline) {
+      Thread.sleep(10);
+    }
+    assertThat(cache.accountReadiness(ACCOUNT)).isEqualTo("COMPLETE");
   }
 
   private static PointerCache cacheFor(RecoveringStore store, LongSupplier nanoTime) {
