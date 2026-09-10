@@ -174,9 +174,9 @@ public final class HintCache {
                   ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta<
                       RelationHintsResource>>
               created = repository.create(merged, relation);
-          // An empty result means the relation fence changed while we were creating the hint
-          // resource. Re-read the relation and merge against the new version instead of silently
-          // dropping an advisory hint produced for a live relation.
+          // An empty result means the relation changed while we were creating the hint resource.
+          // Re-read it and merge against the new version instead of silently dropping an advisory
+          // hint produced for a live relation.
           if (created.isEmpty()) {
             continue;
           }
