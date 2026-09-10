@@ -204,7 +204,8 @@ public final class BlobCacheAccess {
 
   /**
    * Retained as a source-compatible no-op. Versioned keys include the process namespace, pointer
-   * key, pointer version, and blob URI, so a new publication never needs an exact-key fence.
+   * key, pointer version, and blob URI, so a new publication never needs exact-key invalidation for
+   * correctness.
    */
   public void prepareVersionedCreate(Pointer pointer) {
     Objects.requireNonNull(pointer, "pointer");
