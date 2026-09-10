@@ -179,7 +179,7 @@ public class ConstraintRepository {
     return repo.getByKey(key(tableId, snapshotId));
   }
 
-  /** Loads constraints through the mutation read path, bypassing the query pointer cache. */
+  /** Loads constraints through the same indexed store seam used by ordinary reads. */
   public Optional<SnapshotConstraints> getSnapshotConstraintsConsistent(
       ResourceId tableId, long snapshotId) {
     return repo.getByKeyForMutation(key(tableId, snapshotId));
@@ -210,7 +210,7 @@ public class ConstraintRepository {
     return repo.metaForSafe(key(tableId, snapshotId));
   }
 
-  /** Reads constraints metadata through the mutation path, bypassing the query pointer cache. */
+  /** Reads constraints metadata through the same indexed store seam used by ordinary reads. */
   public MutationMeta metaForSafeConsistent(ResourceId tableId, long snapshotId) {
     return repo.metaForSafeConsistent(key(tableId, snapshotId));
   }
