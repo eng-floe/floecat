@@ -248,7 +248,9 @@ public class CatalogIntegrationDiscovery {
           failed(
               CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
               credentialIssue(
-                  failure.failure(), CatalogIntegrationValidationIssue.CIVI_STORAGE_ACCESS_FAILED),
+                  failure.failure(),
+                  CatalogIntegrationValidationIssue.CIVI_STORAGE_ACCESS_FAILED,
+                  CatalogIntegrationValidationIssue.CIVI_STORAGE_ACCESS_UNSUPPORTED),
               safeSummary("Storage access validation failed.", failure.failure())));
       return new ValidationResult(false, checks, capabilities);
     } catch (CredentialVendingFailure failure) {
@@ -261,7 +263,8 @@ public class CatalogIntegrationDiscovery {
               CatalogIntegrationValidationCheckType.CIVCT_CREDENTIAL_VENDING,
               credentialIssue(
                   failure.failure(),
-                  CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_VENDING_FAILED),
+                  CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_VENDING_FAILED,
+                  CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_VENDING_UNSUPPORTED),
               safeSummary("Storage credential vending failed.", failure.failure())));
       addStorageNotRun(checks);
       return new ValidationResult(false, checks, capabilities);
@@ -310,7 +313,9 @@ public class CatalogIntegrationDiscovery {
           failed(
               CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
               credentialIssue(
-                  failure, CatalogIntegrationValidationIssue.CIVI_STORAGE_ACCESS_FAILED),
+                  failure,
+                  CatalogIntegrationValidationIssue.CIVI_STORAGE_ACCESS_FAILED,
+                  CatalogIntegrationValidationIssue.CIVI_STORAGE_ACCESS_UNSUPPORTED),
               safeSummary("Storage access validation failed.", failure)));
       return new ValidationResult(false, checks, capabilities);
     }
@@ -932,12 +937,24 @@ public class CatalogIntegrationDiscovery {
         || failure.code() == CatalogAccessException.Code.PERMISSION_DENIED;
   }
 
+  /**
+   * The issue an upstream refusal is reported as.
+   *
+   * <p>{@code unsupported} is separate from {@code fallback} because a capability can be per table
+   * rather than per integration: a Delta Sharing recipient vends credentials for a share offering
+   * directory access and cannot for one offering url access alone, and answers UNSUPPORTED for the
+   * second. Reporting that as a failure tells an operator to fix something, when what the provider
+   * said is that it will never do this.
+   */
   private static CatalogIntegrationValidationIssue credentialIssue(
-      CatalogAccessException failure, CatalogIntegrationValidationIssue fallback) {
+      CatalogAccessException failure,
+      CatalogIntegrationValidationIssue fallback,
+      CatalogIntegrationValidationIssue unsupported) {
     return switch (failure.code()) {
       case CREDENTIAL_EXPIRED -> CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_EXPIRED;
       case CREDENTIAL_SCOPE_INVALID ->
           CatalogIntegrationValidationIssue.CIVI_CREDENTIAL_SCOPE_INVALID;
+      case UNSUPPORTED -> unsupported;
       default -> fallback;
     };
   }
