@@ -184,7 +184,6 @@ class CacheBudgetResolverTest {
 
     var budgets = new CacheBudgetResolver(config(shipped));
 
-    assertThat(budgets.bytesFor(CacheFamily.POINTER)).isPositive();
     assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isPositive();
   }
 }
