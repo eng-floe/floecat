@@ -145,13 +145,13 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
       events.miss();
       events.loadTime(Duration.ofNanos(System.nanoTime() - started));
       if (bytes != null) {
-        partition.lock.readLock().lock();
+        partition.lock.writeLock().lock();
         try {
           if (!partition.retired) {
             publish(path, bytes, false);
           }
         } finally {
-          partition.lock.readLock().unlock();
+          partition.lock.writeLock().unlock();
         }
       }
       return Optional.ofNullable(bytes).map(HeapContent::new);
@@ -263,13 +263,13 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
         byte[] bytes = fetched.get(key);
         if (bytes != null) {
           if (fill == Fill.FILL) {
-            partition.lock.readLock().lock();
+            partition.lock.writeLock().lock();
             try {
               if (!partition.retired) {
                 publish(entryPath(key), bytes, false);
               }
             } finally {
-              partition.lock.readLock().unlock();
+              partition.lock.writeLock().unlock();
             }
           }
           result.put(key, new HeapContent(bytes));
@@ -317,7 +317,7 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
       throw new NullPointerException("blob-cache put arguments must not be null");
     }
     PartitionState partition = partition(key.partition());
-    partition.lock.readLock().lock();
+    partition.lock.writeLock().lock();
     try {
       if (partition.retired) {
         events.admissionRejected();
@@ -325,7 +325,7 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
       }
       publish(entryPath(key), bytes, true);
     } finally {
-      partition.lock.readLock().unlock();
+      partition.lock.writeLock().unlock();
     }
   }
 
