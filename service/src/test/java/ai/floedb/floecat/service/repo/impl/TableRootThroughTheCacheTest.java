@@ -48,9 +48,8 @@ class TableRootThroughTheCacheTest {
     }
   }
 
-  private static ai.floedb.floecat.service.repo.cache.ImmutableBlobCache blobCache() {
-    return new ai.floedb.floecat.service.repo.cache.ImmutableBlobCache(
-        true, 1024 * 1024, java.time.Duration.ofMinutes(1));
+  private static ai.floedb.floecat.service.repo.cache.BlobCacheAccess blobCache() {
+    return ai.floedb.floecat.service.repo.cache.BlobCacheAccess.disabled();
   }
 
   private static TableRootRepository cachedRepo(CountingPointerStore pointers) {
@@ -240,8 +239,10 @@ class TableRootThroughTheCacheTest {
   }
 
   @Test
-  void ownershipHandoffDropsStalePointerImageBeforeReadingMovedRoot() {
-    // The owner handoff invalidates the old image before the new owner reads the moved pointer.
+  void aWriteThroughPublicationMakesTheNewBlobVisibleBeforeTheOldBlobIsSwept() {
+    // The owning index publishes every successful durable write before the old immutable body is
+    // reclaimed. There is no supported path where another writer mutates durable KV behind a
+    // complete index; all writers use this same indexed store seam.
     var pointers = new CountingPointerStore();
     var blobs = new InMemoryBlobStore();
     var shared = new ai.floedb.floecat.service.repo.cache.PlanningPointerIndex(pointers);
@@ -251,15 +252,19 @@ class TableRootThroughTheCacheTest {
     String staleUri = warm.metaForSafeConsistent(tableId).getBlobUri();
     assertEquals(1, warm.get(tableId).orElseThrow().getRootSeq()); // warms the pointer cache
 
-    // The durable state moves and CAS GC sweeps the old blob while the old owner is still warm.
-    var elsewhere = new TableRootRepository(pointers, blobs, blobCache());
+    // A second repository in the same owner uses the same index and therefore publishes the new
+    // pointer to every reader before GC sweeps the old body.
+    var elsewhere =
+        new TableRootRepository(
+            new ai.floedb.floecat.service.repo.cache.IndexedPointerStore(pointers, shared),
+             blobs,
+             blobCache());
     long version = elsewhere.metaForSafeConsistent(tableId).getPointerVersion();
     assertTrue(
         elsewhere.update(
             TableRoot.newBuilder().setTableId(tableId).setRootSeq(2).build(), version));
     blobs.delete(staleUri);
 
-    shared.ownershipLost("acct");
     var repo = repoSharing(shared, pointers, blobs);
     assertEquals(2, repo.get(tableId).orElseThrow().getRootSeq());
   }
