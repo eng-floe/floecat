@@ -1468,7 +1468,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-          var canonicalPtr = mutationPointerStore.get(canonicalPointer).orElse(null);
+          var canonicalPtr = mutationReads.pointers().get(canonicalPointer).orElse(null);
           if (canonicalPtr == null) {
             return false;
           }
