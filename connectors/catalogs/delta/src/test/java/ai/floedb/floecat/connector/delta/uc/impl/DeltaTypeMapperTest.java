@@ -39,6 +39,7 @@ import io.delta.kernel.types.StructType;
 import io.delta.kernel.types.TimestampNTZType;
 import io.delta.kernel.types.TimestampType;
 import io.delta.kernel.types.VariantType;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -215,6 +216,33 @@ class DeltaTypeMapperTest {
     assertThat(t.fields().get(0).name()).isEqualTo("sku");
     assertThat(t.fields().get(0).nullable()).isFalse();
     assertThat(t.fields().get(1).type().kind()).isEqualTo(LogicalKind.INT);
+  }
+
+  @Test
+  void statsTypeMapIncludesNestedStructFieldsButStopsAtCollections() {
+    StructType schema =
+        new StructType()
+            .add(
+                "profile",
+                new StructType()
+                    .add("age", IntegerType.INTEGER, true)
+                    .add("tags", new ArrayType(StringType.STRING, true), true),
+                true);
+
+    Map<String, LogicalType> types = DeltaTypeMapper.deltaStatsTypeMap(schema);
+
+    assertThat(types.keySet()).containsExactly("profile", "profile.age", "profile.tags");
+    assertThat(types).doesNotContainKey("profile.tags[]");
+  }
+
+  @Test
+  void statsTypeMapOmitsDistinctPathsWithTheSameLegacyKey() {
+    StructType schema =
+        new StructType()
+            .add("a.b", StringType.STRING, true)
+            .add("a", new StructType().add("b", IntegerType.INTEGER, true), true);
+
+    assertThat(DeltaTypeMapper.deltaStatsTypeMap(schema)).containsKey("a").doesNotContainKey("a.b");
   }
 
   @Test

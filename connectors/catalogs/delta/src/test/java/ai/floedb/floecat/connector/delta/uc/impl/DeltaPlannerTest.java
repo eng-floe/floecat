@@ -23,18 +23,15 @@ import ai.floedb.floecat.types.LogicalType;
 import io.delta.kernel.expressions.Column;
 import io.delta.kernel.internal.data.GenericRow;
 import io.delta.kernel.statistics.DataFileStatistics;
-import io.delta.kernel.types.FieldMetadata;
 import io.delta.kernel.types.IntegerType;
 import io.delta.kernel.types.LongType;
 import io.delta.kernel.types.StringType;
-import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class DeltaPlannerTest {
@@ -66,39 +63,9 @@ class DeltaPlannerTest {
   }
 
   @Test
-  void statsNameMapIncludesPhysicalColumnMappingNames() {
-    StructType schema =
-        new StructType()
-            .add(
-                new StructField(
-                    "logical_id",
-                    IntegerType.INTEGER,
-                    true,
-                    FieldMetadata.builder()
-                        .putString(DeltaPlanner.COLUMN_MAPPING_PHYSICAL_NAME_KEY, "col-123")
-                        .build()))
-            .add("plain_name", StringType.STRING, true);
-
-    Map<String, String> mapping = DeltaPlanner.statsNameMap(schema);
-
-    assertThat(mapping)
-        .containsEntry("logical_id", "logical_id")
-        .containsEntry("col-123", "logical_id")
-        .containsEntry("plain_name", "plain_name");
-  }
-
-  @Test
-  void physicalNameReadsDeltaColumnMappingMetadata() {
-    FieldMetadata metadata =
-        FieldMetadata.builder()
-            .putString(DeltaPlanner.COLUMN_MAPPING_PHYSICAL_NAME_KEY, "col-456")
-            .build();
-
-    assertThat(DeltaPlanner.physicalName(metadata)).isEqualTo("col-456");
-  }
-
-  @Test
-  void checkpointStructStatsFromAddRowReadsStatsParsedAndMapsPhysicalNames() {
+  void checkpointStructStatsFromAddRowRecursesAndPreservesMultipartNames() {
+    StructType nestedMinMax = new StructType().add("col-zip", IntegerType.INTEGER, true);
+    StructType nestedNullCount = new StructType().add("col-zip", LongType.LONG, true);
     StructType addSchema =
         new StructType()
             .add("path", StringType.STRING, true)
@@ -109,19 +76,19 @@ class DeltaPlannerTest {
                     .add(
                         "minValues",
                         new StructType()
-                            .add("col-123", IntegerType.INTEGER, true)
+                            .add("col-address", nestedMinMax, true)
                             .add("plain_name", StringType.STRING, true),
                         true)
                     .add(
                         "maxValues",
                         new StructType()
-                            .add("col-123", IntegerType.INTEGER, true)
+                            .add("col-address", nestedMinMax, true)
                             .add("plain_name", StringType.STRING, true),
                         true)
                     .add(
                         "nullCount",
                         new StructType()
-                            .add("col-123", LongType.LONG, true)
+                            .add("col-address", nestedNullCount, true)
                             .add("plain_name", LongType.LONG, true),
                         true),
                 true);
@@ -138,13 +105,22 @@ class DeltaPlannerTest {
             .put("numRecords", 10L)
             .put(
                 "minValues",
-                new RowBuilder(minSchema).put("col-123", 7).put("plain_name", "a").row())
+                new RowBuilder(minSchema)
+                    .put("col-address", new RowBuilder(nestedMinMax).put("col-zip", 7).row())
+                    .put("plain_name", "a")
+                    .row())
             .put(
                 "maxValues",
-                new RowBuilder(maxSchema).put("col-123", 9).put("plain_name", "z").row())
+                new RowBuilder(maxSchema)
+                    .put("col-address", new RowBuilder(nestedMinMax).put("col-zip", 9).row())
+                    .put("plain_name", "z")
+                    .row())
             .put(
                 "nullCount",
-                new RowBuilder(nullCountSchema).put("col-123", 2L).put("plain_name", 1L).row())
+                new RowBuilder(nullCountSchema)
+                    .put("col-address", new RowBuilder(nestedNullCount).put("col-zip", 2L).row())
+                    .put("plain_name", 1L)
+                    .row())
             .row();
 
     GenericRow addRow =
@@ -153,22 +129,22 @@ class DeltaPlannerTest {
             .put(DeltaPlanner.STATS_PARSED_FIELD, statsRow)
             .row();
 
-    Map<String, String> statsNameToLogical =
-        Map.of("col-123", "logical_id", "logical_id", "logical_id", "plain_name", "plain_name");
-    Optional<DataFileStatistics> stats =
-        DeltaPlanner.checkpointStructStatsFromAddRow(
-            addRow, statsNameToLogical, Set.of("logical_id", "plain_name"));
+    Optional<DataFileStatistics> stats = DeltaPlanner.checkpointStructStatsFromAddRow(addRow);
 
     assertThat(stats).isPresent();
     assertThat(stats.get().getNumRecords()).isEqualTo(10L);
     assertThat(stats.get().getMinValues())
-        .containsEntry(new Column("logical_id"), io.delta.kernel.expressions.Literal.ofInt(7))
+        .containsEntry(
+            new Column(new String[] {"col-address", "col-zip"}),
+            io.delta.kernel.expressions.Literal.ofInt(7))
         .containsEntry(new Column("plain_name"), io.delta.kernel.expressions.Literal.ofString("a"));
     assertThat(stats.get().getMaxValues())
-        .containsEntry(new Column("logical_id"), io.delta.kernel.expressions.Literal.ofInt(9))
+        .containsEntry(
+            new Column(new String[] {"col-address", "col-zip"}),
+            io.delta.kernel.expressions.Literal.ofInt(9))
         .containsEntry(new Column("plain_name"), io.delta.kernel.expressions.Literal.ofString("z"));
     assertThat(stats.get().getNullCount())
-        .containsEntry(new Column("logical_id"), 2L)
+        .containsEntry(new Column(new String[] {"col-address", "col-zip"}), 2L)
         .containsEntry(new Column("plain_name"), 1L);
   }
 

@@ -17,6 +17,8 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.connector.common.resolver.DecimalPrecisionConstraints;
+import ai.floedb.floecat.schema.identity.ColumnPath;
+import ai.floedb.floecat.schema.identity.LegacyDottedKeyIndex;
 import ai.floedb.floecat.types.LogicalField;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
@@ -77,6 +79,27 @@ final class DeltaTypeMapper {
       out.put(f.getName(), lt);
     }
     return out;
+  }
+
+  /**
+   * Maps every field Delta can address in file statistics. Delta descends through structs, but does
+   * not collect scalar min/max statistics inside arrays or maps.
+   */
+  static Map<String, LogicalType> deltaStatsTypeMap(StructType schema) {
+    LegacyDottedKeyIndex<LogicalType> index = LegacyDottedKeyIndex.create();
+    collectStatsTypes(schema, ColumnPath.ROOT, index);
+    return index.values();
+  }
+
+  private static void collectStatsTypes(
+      StructType schema, ColumnPath prefix, LegacyDottedKeyIndex<LogicalType> index) {
+    for (StructField field : schema.fields()) {
+      ColumnPath path = prefix.field(field.getName());
+      index.add(path, toLogical(field.getDataType()));
+      if (field.getDataType() instanceof StructType nested) {
+        collectStatsTypes(nested, path, index);
+      }
+    }
   }
 
   /**

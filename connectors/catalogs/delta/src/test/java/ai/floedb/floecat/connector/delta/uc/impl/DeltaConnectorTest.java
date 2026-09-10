@@ -587,7 +587,7 @@ class DeltaConnectorTest {
                     LongType.LONG,
                     true,
                     FieldMetadata.builder()
-                        .putString(DeltaPlanner.COLUMN_MAPPING_PHYSICAL_NAME_KEY, "col-123")
+                        .putString(DeltaColumnMapping.PHYSICAL_NAME_KEY, "col-123")
                         .build()));
     Snapshot latest = snapshot(9L, 9000L, mappedSchema);
     TestDeltaConnector connector =

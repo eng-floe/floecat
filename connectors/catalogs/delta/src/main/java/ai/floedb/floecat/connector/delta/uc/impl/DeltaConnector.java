@@ -301,7 +301,7 @@ abstract class DeltaConnector implements FloecatConnector {
     }
 
     final StructType kernelSchema = snapshot.getSchema();
-    final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
+    final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaStatsTypeMap(kernelSchema);
     final Set<String> includeNames =
         FloecatConnector.resolveIncludedColumns(
             List.copyOf(nameToType.keySet()), includeColumns, columnSelectorPolicy);
@@ -437,7 +437,7 @@ abstract class DeltaConnector implements FloecatConnector {
     List<String> realizedStatsSelectors =
         requestedKinds.contains(StatsTargetKind.COLUMN)
             ? FloecatConnector.resolveIncludedColumns(
-                    List.copyOf(DeltaTypeMapper.deltaTypeMap(snapshot.getSchema()).keySet()),
+                    List.copyOf(DeltaTypeMapper.deltaStatsTypeMap(snapshot.getSchema()).keySet()),
                     includeColumns,
                     columnSelectorPolicy)
                 .stream()
@@ -757,7 +757,7 @@ abstract class DeltaConnector implements FloecatConnector {
     for (StructField field : schema.fields()) {
       String logicalPath =
           logicalPrefix.isEmpty() ? field.getName() : logicalPrefix + "." + field.getName();
-      String physicalName = DeltaPlanner.physicalName(field.getMetadata());
+      String physicalName = DeltaColumnMapping.physicalName(field.getMetadata());
       if (physicalName == null || physicalName.isBlank()) {
         physicalName = field.getName();
       }
@@ -1525,7 +1525,7 @@ abstract class DeltaConnector implements FloecatConnector {
     }
 
     final StructType kernelSchema = snapshot.getSchema();
-    final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaTypeMap(kernelSchema);
+    final Map<String, LogicalType> nameToType = DeltaTypeMapper.deltaStatsTypeMap(kernelSchema);
     final String schemaJson = snapshotSchemaJson(snapshot);
     final Set<String> includeNames =
         FloecatConnector.resolveIncludedColumns(
