@@ -130,7 +130,7 @@ contract and publishes its own subset; `graph-cache` is node-load timing, not a 
 | Is the budget too small? | `floecat_core_cache_evictions` and `..._evicted_weight_bytes` |
 | Are pointer indexes ready? | `floecat_core_cache_accounts`, tagged `result=loading|complete` |
 | How is pointer warming behaving? | `..._misses` and `..._latency`, tagged `reason=warm`; failures appear in `..._errors` with the same tag |
-| Which pointer entries are resident? | `floecat_core_cache_entries`, tagged `result=resident` |
+| Which pointer entries are resident? | `floecat_core_cache_entries`, tagged `cache=pointer` |
 
 Hits and misses are counted as they happen rather than derived from a running total, because a rate
 computed from a cumulative gauge cannot tell an idle cache from one that is missing everything.

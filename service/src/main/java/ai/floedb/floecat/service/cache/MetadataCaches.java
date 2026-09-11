@@ -88,8 +88,7 @@ public class MetadataCaches {
                     duration);
               }
             });
-    metrics.trackSize(
-        index::entryCount, "Planner pointer entries resident", Tag.of(TagKey.RESULT, "resident"));
+    metrics.trackSize(index::entryCount, "Planner pointer entries resident");
     metrics.trackAccounts(
         index::loadingPartitionCount,
         "Planner pointer partitions still loading",
