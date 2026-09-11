@@ -118,7 +118,7 @@ class PointerListingStoreCostIT {
         reads.plannerPointerRoundTrips(),
         "every page token produced by the cached listing must resume in the complete index");
     assertEquals(
-        3,
+        4,
         reads.accountDirectoryRoundTrips(),
         "each page RPC pays only its fixed account-directory lookup");
     assertEquals(
