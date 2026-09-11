@@ -55,6 +55,46 @@ public final class ServiceMetrics {
             "service");
   }
 
+  public static final class PlanningPointer {
+    public static final MetricId PARTITIONS =
+        new MetricId(
+            "floecat.service.planning.pointer.partitions",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId ENTRIES =
+        new MetricId(
+            "floecat.service.planning.pointer.entries",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId WARM_STARTS =
+        new MetricId(
+            "floecat.service.planning.pointer.warm.starts.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId WARM_LATENCY =
+        new MetricId(
+            "floecat.service.planning.pointer.warm.latency",
+            MetricType.TIMER,
+            "ms",
+            CONTRACT,
+            "service");
+    public static final MetricId WARM_ERRORS =
+        new MetricId(
+            "floecat.service.planning.pointer.warm.errors.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+
+    private PlanningPointer() {}
+  }
+
   public static final class Flight {
     public static final MetricId REQUESTS =
         new MetricId(
