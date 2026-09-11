@@ -37,6 +37,9 @@ services:
       FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED: ${FLOECAT_RECONCILER_WORKER_AUTH_REQUIRED:-true}
       FLOECAT_RECONCILER_MAX_PARALLELISM: ${FLOECAT_RECONCILER_MAX_PARALLELISM:-0}
       FLOECAT_RECONCILER_AUTO_ENABLED: ${FLOECAT_RECONCILER_AUTO_ENABLED:-true}
+      FLOECAT_CACHE_BLOB_DISK_ENABLED: ${FLOECAT_CACHE_BLOB_DISK_ENABLED:-true}
+      FLOECAT_CACHE_BLOB_DISK_PATH: ${FLOECAT_CACHE_BLOB_DISK_PATH:-/tmp/floecat-blob-cache}
+      FLOECAT_CACHE_BLOB_DISK_MAX_BYTES: ${FLOECAT_CACHE_BLOB_DISK_MAX_BYTES:-1073741824}
       JAVA_TOOL_OPTIONS: "--add-opens=java.base/java.nio=org.apache.arrow.memory.core,ALL-UNNAMED -Djavax.net.ssl.trustStore=/opt/floecat-certs/runtime-truststore.p12 -Djavax.net.ssl.trustStorePassword=password -Djavax.net.ssl.trustStoreType=PKCS12"
     healthcheck:
       test:

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.impl;
 
+import ai.floedb.floecat.cache.BlobCache;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -25,7 +26,8 @@ import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
@@ -47,6 +49,7 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -118,20 +121,24 @@ public class StatsRepository implements StatsStore {
   private final GenerationArtifactMap generationArtifactMap;
   private final TableBlobReachabilityGuard reachabilityGuard;
 
-  // Nullable (tests): decoded-content cache, used here for the immutable generation-manifest
-  // blobs only. Target-stats RECORD blobs are deliberately not cached: they are written to
-  // deterministic (not content-addressed) URIs and a re-capture may overwrite one in place, so
-  // URI-keyed caching would be unsound for them.
-  private final ImmutableBlobCache blobCache;
+  // Immutable manifests, bundles and exact-body target records use URI identity. Legacy target
+  // records retain pointer-version identity while they remain readable. Lightweight tests receive
+  // the disabled implementation.
+  private final BlobCacheAccess blobCache;
 
   /** Test convenience; production construction injects the process-wide publication guard. */
   public StatsRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, pointerStore, blobStore, null, new TableBlobReachabilityGuard());
+    this(
+        pointerStore,
+        pointerStore,
+        blobStore,
+        BlobCacheAccess.disabled(),
+        new TableBlobReachabilityGuard());
   }
 
   /** Test convenience; production construction injects the process-wide publication guard. */
   public StatsRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      PointerStore pointerStore, BlobStore blobStore, BlobCacheAccess blobCache) {
     this(pointerStore, pointerStore, blobStore, blobCache, new TableBlobReachabilityGuard());
   }
 
@@ -140,12 +147,12 @@ public class StatsRepository implements StatsStore {
       PointerStore pointerStore,
       @CachedPointerStore PointerStore pointerReads,
       BlobStore blobStore,
-      ImmutableBlobCache blobCache,
+      BlobCacheAccess blobCache,
       TableBlobReachabilityGuard reachabilityGuard) {
     this.pointerStore = pointerStore;
     this.pointerReads = pointerReads;
     this.blobStore = blobStore;
-    this.blobCache = blobCache;
+    this.blobCache = java.util.Objects.requireNonNull(blobCache, "blobCache");
     this.reachabilityGuard = reachabilityGuard;
     this.targetStatsStorage =
         new TargetStatsStorage(this.pointerStore, pointerReads, blobStore, blobCache);
@@ -172,24 +179,21 @@ public class StatsRepository implements StatsStore {
    * retention guard and a cached value would blind it.
    */
   private Optional<String> readGenerationId(String uri) {
-    if (blobCache != null && blobCache.enabled()) {
-      return blobCache.get(uri, this::loadGenerationId);
+    Optional<BlobCache.Content> content =
+        blobCache.immutable(uri, BlobCache.Fill.FILL, () -> loadGenerationBytes(uri));
+    if (content.isEmpty()) {
+      return Optional.empty();
     }
-    return loadGenerationId(uri);
+    try (BlobCache.Content body = content.orElseThrow()) {
+      return Optional.of(StringValue.parseFrom(body.buffer()).getValue());
+    } catch (InvalidProtocolBufferException e) {
+      throw new BaseResourceRepository.CorruptionException(
+          "unreadable stats generation manifest: " + uri, e);
+    }
   }
 
   private Optional<String> loadGenerationId(String uri) {
-    byte[] bytes;
-    try {
-      bytes = blobStore.get(uri);
-    } catch (StorageNotFoundException e) {
-      return Optional.empty();
-    } catch (ai.floedb.floecat.storage.errors.StorageAbortRetryableException e) {
-      // Map to the repository retryable family like every sibling loader — a throttled read must
-      // stay retryable to callers, not surface as an unmapped storage exception.
-      throw new BaseResourceRepository.AbortRetryableException(
-          "stats generation manifest read retryable: " + uri);
-    }
+    byte[] bytes = loadGenerationBytes(uri);
     if (bytes == null) {
       return Optional.empty();
     }
@@ -198,6 +202,19 @@ public class StatsRepository implements StatsStore {
     } catch (InvalidProtocolBufferException e) {
       throw new BaseResourceRepository.CorruptionException(
           "unreadable stats generation manifest: " + uri, e);
+    }
+  }
+
+  private byte[] loadGenerationBytes(String uri) {
+    try {
+      return blobStore.get(uri);
+    } catch (StorageNotFoundException e) {
+      return null;
+    } catch (ai.floedb.floecat.storage.errors.StorageAbortRetryableException e) {
+      // Map to the repository retryable family like every sibling loader — a throttled read must
+      // stay retryable to callers, not surface as an unmapped storage exception.
+      throw new BaseResourceRepository.AbortRetryableException(
+          "stats generation manifest read retryable: " + uri);
     }
   }
 
@@ -252,11 +269,18 @@ public class StatsRepository implements StatsStore {
     targetStatsStorage.putBlob(blobUri, canonicalRecord);
 
     Pointer current = pointerStore.get(pointerKey).orElse(null);
-    if (current != null && !blobUri.equals(current.getBlobUri())) {
+    if (current != null && !hasTargetStatsContentIdentity(current.getBlobUri(), canonicalRecord)) {
       throw new BaseResourceRepository.NameConflictException(
           "target stats pointer bound to different blob: " + pointerKey);
     }
-    long pointerVersion = current == null ? 1L : current.getVersion();
+    long expectedVersion = current == null ? 0L : current.getVersion();
+    long pointerVersion = Math.max(1L, expectedVersion + 1L);
+    Pointer next =
+        PointerReferences.blobPointer(
+            pointerKey, blobUri, pointerVersion, canonicalRecord.getSerializedSize());
+    if (current == null) {
+      targetStatsStorage.prepareVersionedCreate(next);
+    }
     MutationMeta meta =
         MutationMeta.newBuilder()
             .setPointerKey(pointerKey)
@@ -265,22 +289,14 @@ public class StatsRepository implements StatsStore {
             .setUpdatedAt(now)
             .build();
     List<PointerStore.CasOp> ops = new ArrayList<>();
-    if (current == null) {
-      ops.add(
-          new PointerStore.CasUpsert(
-              pointerKey,
-              0L,
-              PointerReferences.blobPointer(
-                  pointerKey, blobUri, 1L, canonicalRecord.getSerializedSize())));
-    } else {
-      ops.add(new PointerStore.CasCheck(pointerKey, current.getVersion()));
-    }
+    ops.add(new PointerStore.CasUpsert(pointerKey, expectedVersion, next));
     ops.addAll(completionFactory.apply(meta));
     if (!AccountDeletionFence.compareAndSetBatch(
         pointerStore, canonicalRecord.getTableId().getAccountId(), ops)) {
       throw new BaseResourceRepository.AbortRetryableException(
           "target stats changed while committing idempotency receipt");
     }
+    targetStatsStorage.publishCached(next, canonicalRecord);
     return meta;
   }
 
@@ -330,10 +346,17 @@ public class StatsRepository implements StatsStore {
                 .peek(record -> requireRecordForSnapshot(tableId, snapshotId, record))
                 .toList();
     ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
+    Set<String> replacementKeys =
+        canonicalRecords.stream()
+            .map(record -> pointerKey(record, effectiveGenerationId))
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
     for (StatsTarget target :
         targetsToReplace == null ? List.<StatsTarget>of() : targetsToReplace) {
       if (target != null) {
-        pointerStore.delete(targetPointerKey(tableId, snapshotId, effectiveGenerationId, target));
+        String key = targetPointerKey(tableId, snapshotId, effectiveGenerationId, target);
+        if (!replacementKeys.contains(key)) {
+          targetStatsStorage.delete(key);
+        }
       }
     }
     List<TargetStatsWrite> writes = new ArrayList<>(canonicalRecords.size());
@@ -991,7 +1014,7 @@ public class StatsRepository implements StatsStore {
     return activeGeneration(tableId, snapshotId)
         .map(
             active ->
-                pointerStore.delete(
+                targetStatsStorage.delete(
                     targetPointerKey(tableId, snapshotId, active.generationId(), target)))
         .orElse(false);
   }
@@ -1050,13 +1073,26 @@ public class StatsRepository implements StatsStore {
       Optional<StatsTargetType> targetType,
       int limit,
       String pageToken) {
-    if (generationArtifactMap.manifest(tableId, snapshotId, generationId).isPresent()) {
+    Optional<SnapshotCaptureManifest> manifest =
+        generationArtifactMap.listingManifest(tableId, snapshotId, generationId);
+    if (manifest.isPresent()) {
       if (targetType.isEmpty()) {
         return listStructurallySharedGeneration(
-            tableId, snapshotId, generationId, Math.max(1, limit), pageToken);
+            tableId,
+            snapshotId,
+            generationId,
+            manifest.orElseThrow(),
+            Math.max(1, limit),
+            pageToken);
       }
       if (targetType.orElseThrow() == StatsTargetType.FILE) {
-        return listFileStatsMap(tableId, snapshotId, generationId, Math.max(1, limit), pageToken);
+        return listFileStatsMap(
+            tableId,
+            snapshotId,
+            generationId,
+            manifest.orElseThrow(),
+            Math.max(1, limit),
+            pageToken);
       }
     }
     return listSingleGeneration(tableId, snapshotId, generationId, targetType, limit, pageToken);
@@ -1070,7 +1106,12 @@ public class StatsRepository implements StatsStore {
           StatsTargetType.COMPOSITE);
 
   private StatsStorePage listStructurallySharedGeneration(
-      ResourceId tableId, long snapshotId, String generationId, int limit, String pageToken) {
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      SnapshotCaptureManifest manifest,
+      int limit,
+      String pageToken) {
     GenerationMapCursor cursor = decodeGenerationMapCursor(pageToken, generationId);
     int phase = cursor == null ? 0 : cursor.phase();
     String backendToken = cursor == null ? "" : cursor.backendToken();
@@ -1113,6 +1154,7 @@ public class StatsRepository implements StatsStore {
             tableId,
             snapshotId,
             generationId,
+            manifest,
             limit - records.size(),
             phase == NON_FILE_TARGET_TYPES.size() ? backendToken : "");
     records.addAll(files.records());
@@ -1128,16 +1170,17 @@ public class StatsRepository implements StatsStore {
   }
 
   private StatsStorePage listFileStatsMap(
-      ResourceId tableId, long snapshotId, String generationId, int limit, String pageToken) {
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      SnapshotCaptureManifest manifest,
+      int limit,
+      String pageToken) {
     ReusableArtifactIndexStore.EntryPage page =
         generationArtifactMap.page(
-            tableId,
-            snapshotId,
-            generationId,
-            ReusableArtifactIndexStore.EntryKind.FILE_STATS,
-            limit,
-            pageToken);
+            manifest, ReusableArtifactIndexStore.EntryKind.FILE_STATS, limit, pageToken);
     List<TargetStatsRecord> records = new ArrayList<>(page.entries().size());
+    Map<String, ReusableArtifactBundlePayload> bundles = new LinkedHashMap<>();
     for (var entry : page.entries()) {
       String pointerKey =
           targetPointerKey(
@@ -1147,12 +1190,18 @@ public class StatsRepository implements StatsStore {
               StatsTargetIdentity.fileTarget(entry.getFileStats().getFilePath()));
       records.add(
           rebindRecord(
-              targetStatsStorage
-                  .getReferenced(pointerKey, entry.getArtifact().getPayloadUri())
-                  .orElseThrow(
-                      () ->
-                          new BaseResourceRepository.NotFoundException(
-                              "reusable stats bundle disappeared while listing generation")),
+              targetStatsStorage.targetFromBundle(
+                  pointerKey,
+                  bundles.computeIfAbsent(
+                      entry.getArtifact().getPayloadUri(),
+                      uri ->
+                          targetStatsStorage
+                              .loadBundleWithoutFill(uri)
+                              .orElseThrow(
+                                  () ->
+                                      new BaseResourceRepository.NotFoundException(
+                                          "reusable stats bundle disappeared while listing"
+                                              + " generation")))),
               tableId,
               snapshotId));
     }
@@ -1490,11 +1539,6 @@ public class StatsRepository implements StatsStore {
     markGenerationPublishing(tableId, snapshotId, generationId);
     StringValue manifest = StringValue.of(generationId);
     targetStatsStorage.putManifestBlob(manifestBlobUri, manifest);
-    if (blobCache != null) {
-      // Write-through the DECODED form readGenerationId caches: the first scan/planner read after
-      // this publish pays neither a cold fetch nor a parse (URI is per-generation, immutable).
-      blobCache.put(manifestBlobUri, generationId);
-    }
     Pointer active = pointerStore.get(manifestPointer).orElse(null);
     if (active != null && manifestBlobUri.equals(active.getBlobUri())) {
       return;
@@ -1531,8 +1575,8 @@ public class StatsRepository implements StatsStore {
       throw new BaseResourceRepository.AbortRetryableException(
           "prewritten stats generation manifest is unavailable: " + manifestBlobUri);
     }
-    if (blobCache != null) {
-      blobCache.put(manifestBlobUri, generationId);
+    if (blobCache.enabled()) {
+      blobCache.putImmutable(manifestBlobUri, StringValue.of(generationId).toByteArray());
     }
     Pointer active = pointerStore.get(manifestPointer).orElse(null);
     if (active != null && manifestBlobUri.equals(active.getBlobUri())) {
@@ -2021,13 +2065,58 @@ public class StatsRepository implements StatsStore {
   }
 
   private String blobUri(TargetStatsRecord record, String generationId) {
+    String contentIdentity = targetStatsContentIdentity(record);
+    String bodyIdentity = Hashing.sha256Hex(record.toByteArray());
     return Keys.snapshotTargetStatsBlobUri(
         record.getTableId().getAccountId(),
         record.getTableId().getId(),
         record.getSnapshotId(),
         generationId,
         StatsTargetIdentity.storageId(record.getTarget()),
-        Hashing.sha256Hex(TargetStatsRecords.contentHashImage(record).toByteArray()));
+        contentIdentity + "-" + bodyIdentity);
+  }
+
+  private static String targetStatsContentIdentity(TargetStatsRecord record) {
+    return Hashing.sha256Hex(TargetStatsRecords.contentHashImage(record).toByteArray());
+  }
+
+  /**
+   * Whether {@code blobUri} stores the same logical target-stat value as {@code record}. New URIs
+   * carry both the stable logical identity and the exact serialized-body identity. The first form
+   * also accepts legacy logical-only URIs so an operational-timestamp-only rewrite can migrate an
+   * existing pointer without being mistaken for a conflicting statistic.
+   */
+  private static boolean hasTargetStatsContentIdentity(String blobUri, TargetStatsRecord record) {
+    if (blobUri == null) {
+      return false;
+    }
+    String identity = targetStatsContentIdentity(record);
+    if (blobUri.endsWith("/" + identity + ".pb")) {
+      return true;
+    }
+    String exactIdentity = exactBodyIdentity(blobUri);
+    return !exactIdentity.isEmpty()
+        && blobUri.endsWith("/" + identity + "-" + exactIdentity + ".pb");
+  }
+
+  private static String exactBodyIdentity(String blobUri) {
+    int dash = blobUri.lastIndexOf('-');
+    int suffix = blobUri.endsWith(".pb") ? blobUri.length() - 3 : -1;
+    if (dash < 0 || suffix - dash != 65) {
+      return "";
+    }
+    String digest = blobUri.substring(dash + 1, suffix);
+    for (int i = 0; i < digest.length(); i++) {
+      char value = digest.charAt(i);
+      if ((value < '0' || value > '9') && (value < 'a' || value > 'f')) {
+        return "";
+      }
+    }
+    return digest;
+  }
+
+  private static boolean isExactTargetStatsBlobUri(String blobUri) {
+    return blobUri != null && !exactBodyIdentity(blobUri).isEmpty();
   }
 
   /**
@@ -2833,44 +2922,29 @@ public class StatsRepository implements StatsStore {
   }
 
   private static final class TargetStatsStorage extends BaseResourceRepository<TargetStatsRecord> {
-    private final BlobStore blobStore;
-    private final ImmutableBlobCache blobCache;
-
     private TargetStatsStorage(
         PointerStore mutationPointerStore,
         PointerStore pointerReads,
         BlobStore blobStore,
-        ImmutableBlobCache blobCache) {
+        BlobCacheAccess blobCache) {
       super(
           mutationPointerStore,
           blobStore,
           TargetStatsRecord::parseFrom,
           TargetStatsRecord::toByteArray,
           "application/x-protobuf",
-          null,
+          blobCache,
           ai.floedb.floecat.service.repo.util.RepositoryReads.direct(pointerReads, blobStore));
-      this.blobStore = blobStore;
-      this.blobCache = blobCache;
-    }
-
-    // The three-argument form: it is the one every path reaches, so this bundle handling applies
-    // to get, the mutation read and the batch reload alike.
-    @Override
-    protected Optional<TargetStatsRecord> loadAndParseReferencedBlob(
-        String pointerKey,
-        String blobUri,
-        ai.floedb.floecat.service.repo.util.RepositoryReads.Blobs blobs) {
-      if (!ReusableArtifactBundleUris.isBundleUri(blobUri)) {
-        return super.loadAndParseReferencedBlob(pointerKey, blobUri, blobs);
-      }
-      Optional<ReusableArtifactBundlePayload> bundle =
-          blobCache == null ? loadBundle(blobUri) : blobCache.get(blobUri, this::loadBundle);
-      return bundle.map(value -> targetFromBundle(pointerKey, value));
     }
 
     @Override
-    protected TargetStatsRecord parseReferencedBlob(String pointerKey, String blobUri, byte[] bytes)
-        throws Exception {
+    protected boolean referencedBlobImmutable(String pointerKey, String blobUri) {
+      return ReusableArtifactBundleUris.isBundleUri(blobUri) || isExactTargetStatsBlobUri(blobUri);
+    }
+
+    @Override
+    protected TargetStatsRecord parseReferencedBlob(
+        String pointerKey, String blobUri, ByteBuffer bytes) throws Exception {
       if (!ReusableArtifactBundleUris.isBundleUri(blobUri)) {
         return super.parseReferencedBlob(pointerKey, blobUri, bytes);
       }
@@ -2878,23 +2952,6 @@ public class StatsRepository implements StatsStore {
         throw new CorruptionException("reusable artifact bundle digest mismatch: " + blobUri);
       }
       return targetFromBundle(pointerKey, ReusableArtifactBundles.parse(bytes));
-    }
-
-    private Optional<ReusableArtifactBundlePayload> loadBundle(String blobUri) {
-      try {
-        byte[] bytes = blobStore.get(blobUri);
-        if (bytes == null) {
-          return Optional.empty();
-        }
-        if (!ReusableArtifactBundleUris.matchesPayload(blobUri, bytes)) {
-          throw new CorruptionException("reusable artifact bundle digest mismatch: " + blobUri);
-        }
-        return Optional.of(ReusableArtifactBundles.parse(bytes));
-      } catch (StorageNotFoundException e) {
-        return Optional.empty();
-      } catch (InvalidProtocolBufferException e) {
-        throw new CorruptionException("invalid reusable artifact bundle: " + blobUri, e);
-      }
     }
 
     private TargetStatsRecord targetFromBundle(
@@ -2914,7 +2971,7 @@ public class StatsRepository implements StatsStore {
     }
 
     private Optional<TargetStatsRecord> getReferenced(String pointerKey, String blobUri) {
-      return loadAndParseReferencedBlob(pointerKey, blobUri);
+      return loadAndParseImmutableReferencedBlob(pointerKey, blobUri, BlobCache.Fill.FILL);
     }
 
     private List<KeyedValue<TargetStatsRecord>> listKeyed(
@@ -2922,15 +2979,81 @@ public class StatsRepository implements StatsStore {
       return super.listByPrefixWithKeys(prefix, limit, token, nextOut);
     }
 
+    private Optional<ReusableArtifactBundlePayload> loadBundleWithoutFill(String blobUri) {
+      if (!blobCacheable()) {
+        return parseBundle(blobUri, loadBundleBytes(blobUri));
+      }
+      Optional<BlobCache.Content> content =
+          blobCache.immutable(blobUri, BlobCache.Fill.BYPASS_FILL, () -> loadBundleBytes(blobUri));
+      if (content.isEmpty()) {
+        return Optional.empty();
+      }
+      try (BlobCache.Content body = content.orElseThrow()) {
+        return parseBundle(blobUri, body.buffer());
+      }
+    }
+
+    private byte[] loadBundleBytes(String blobUri) {
+      try {
+        return blobReads.get(blobUri);
+      } catch (StorageNotFoundException missing) {
+        return null;
+      }
+    }
+
+    private static Optional<ReusableArtifactBundlePayload> parseBundle(
+        String blobUri, byte[] bytes) {
+      if (bytes == null) {
+        return Optional.empty();
+      }
+      return parseBundle(blobUri, ByteBuffer.wrap(bytes));
+    }
+
+    private static Optional<ReusableArtifactBundlePayload> parseBundle(
+        String blobUri, ByteBuffer bytes) {
+      try {
+        if (!ReusableArtifactBundleUris.matchesPayload(blobUri, bytes)) {
+          throw new CorruptionException("reusable artifact bundle digest mismatch: " + blobUri);
+        }
+        return Optional.of(ReusableArtifactBundles.parse(bytes));
+      } catch (InvalidProtocolBufferException error) {
+        throw new CorruptionException("invalid reusable artifact bundle: " + blobUri, error);
+      }
+    }
+
     private void create(String pointerKey, String blobUri, TargetStatsRecord value) {
       String accountId = value.getTableId().getAccountId();
       putBlob(blobUri, value);
       try {
-        reserveIndexOrIdempotentFenced(accountId, pointerKey, blobUri, value.getSerializedSize());
+        Pointer published = refreshExactReference(accountId, pointerKey, blobUri, value);
+        publishCached(published, value);
       } catch (AccountDeletionInProgressException deleting) {
         deleteBlobQuietly(blobUri);
         throw deleting;
       }
+    }
+
+    /** Publishes a new exact body when only the stable content identity remains unchanged. */
+    private Pointer refreshExactReference(
+        String accountId, String pointerKey, String blobUri, TargetStatsRecord value) {
+      for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+        Pointer existing = mutationPointerStore.get(pointerKey).orElse(null);
+        if (existing != null && !hasTargetStatsContentIdentity(existing.getBlobUri(), value)) {
+          throw new NameConflictException("pointer bound to different blob: " + pointerKey);
+        }
+        long expectedVersion = existing == null ? 0L : existing.getVersion();
+        Pointer next =
+            PointerReferences.blobPointer(
+                pointerKey, blobUri, Math.max(1L, expectedVersion + 1L), value.getSerializedSize());
+        if (existing == null) {
+          prepareVersionedCreate(next);
+        }
+        if (AccountDeletionFence.compareAndSet(
+            mutationPointerStore, accountId, pointerKey, expectedVersion, next)) {
+          return next;
+        }
+      }
+      throw new AbortRetryableException("create conflict: " + pointerKey);
     }
 
     private void createBatch(List<TargetStatsWrite> writes) {
@@ -2940,7 +3063,7 @@ public class StatsRepository implements StatsStore {
       Map<String, TargetStatsWrite> uniqueWrites = new LinkedHashMap<>();
       for (TargetStatsWrite write : writes) {
         TargetStatsWrite existing = uniqueWrites.putIfAbsent(write.pointerKey(), write);
-        if (existing != null && !existing.blobUri().equals(write.blobUri())) {
+        if (existing != null && !hasTargetStatsContentIdentity(existing.blobUri(), write.value())) {
           throw new NameConflictException("pointer bound to different blob: " + write.pointerKey());
         }
       }
@@ -2949,7 +3072,7 @@ public class StatsRepository implements StatsStore {
       Set<String> blobsCreatedByCall = new LinkedHashSet<>();
       try {
         for (TargetStatsWrite write : pending) {
-          if (blobStore.head(write.blobUri()).isEmpty()) {
+          if (mutationBlobStore.head(write.blobUri()).isEmpty()) {
             blobsCreatedByCall.add(write.blobUri());
           }
           putBlob(write.blobUri(), write.value());
@@ -2959,6 +3082,39 @@ public class StatsRepository implements StatsStore {
         blobsCreatedByCall.forEach(this::deleteBlobQuietly);
         throw deleting;
       }
+    }
+
+    private void prepareVersionedCreate(Pointer pointer) {
+      if (blobCacheable() && !referencedBlobImmutable(pointer.getKey(), pointer.getBlobUri())) {
+        blobCache.prepareVersionedCreate(pointer);
+      }
+    }
+
+    private void publishCached(Pointer pointer, TargetStatsRecord value) {
+      if (!blobCacheable()) {
+        return;
+      }
+      if (referencedBlobImmutable(pointer.getKey(), pointer.getBlobUri())) {
+        blobCache.putImmutable(pointer.getBlobUri(), value.toByteArray());
+      } else {
+        blobCache.putVersioned(pointer, value.toByteArray());
+      }
+    }
+
+    private boolean delete(String pointerKey) {
+      for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+        Pointer current = mutationPointerStore.get(pointerKey).orElse(null);
+        if (current == null) {
+          return false;
+        }
+        if (mutationPointerStore.compareAndDelete(pointerKey, current.getVersion())) {
+          if (blobCacheable() && !referencedBlobImmutable(current.getKey(), current.getBlobUri())) {
+            blobCache.evictVersioned(current);
+          }
+          return true;
+        }
+      }
+      throw new AbortRetryableException("delete conflict: " + pointerKey);
     }
 
     private void overwriteBatch(List<TargetStatsWrite> writes) {
@@ -3112,23 +3268,24 @@ public class StatsRepository implements StatsStore {
 
     private void overwrite(String pointerKey, String blobUri, TargetStatsRecord value) {
       String accountId = value.getTableId().getAccountId();
-      boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
+      boolean blobExistedBefore = mutationBlobStore.head(blobUri).isPresent();
       putBlob(blobUri, value);
       try {
         for (int attempt = 0; attempt < CAS_MAX; attempt++) {
           Pointer existing = mutationPointerStore.get(pointerKey).orElse(null);
           long expectedVersion = existing == null ? 0L : existing.getVersion();
-          if (existing != null && blobUri.equals(existing.getBlobUri())) {
-            return;
-          }
           Pointer next =
               PointerReferences.blobPointer(
                   pointerKey,
                   blobUri,
                   Math.max(1L, expectedVersion + 1L),
                   value.getSerializedSize());
+          if (existing == null) {
+            prepareVersionedCreate(next);
+          }
           if (AccountDeletionFence.compareAndSet(
               mutationPointerStore, accountId, pointerKey, expectedVersion, next)) {
+            publishCached(next, value);
             return;
           }
         }
@@ -3142,24 +3299,25 @@ public class StatsRepository implements StatsStore {
     }
 
     private boolean createIfAbsent(String pointerKey, String blobUri, TargetStatsRecord value) {
-      // The target pointer is bound, so ifAbsent must leave the existing record untouched. Now
-      // that content-hash images can map distinct records to one blobUri (timestamp-only resubmits
-      // share a blob), writing the blob before this check would overwrite the live record's bytes
-      // and still return false on the CAS miss. Check the pointer first and write nothing.
+      // The target pointer is bound, so ifAbsent must leave the existing record untouched. Check
+      // the pointer before writing so a losing request neither publishes nor leaves an unnecessary
+      // exact-body object.
       if (mutationPointerStore.get(pointerKey).isPresent()) {
         return false;
       }
       String accountId = value.getTableId().getAccountId();
-      boolean blobExistedBefore = blobStore.head(blobUri).isPresent();
+      boolean blobExistedBefore = mutationBlobStore.head(blobUri).isPresent();
       putBlob(blobUri, value);
       Pointer reserve =
           PointerReferences.blobPointer(pointerKey, blobUri, 1L, value.getSerializedSize());
+      prepareVersionedCreate(reserve);
       try {
         if (!AccountDeletionFence.compareAndSet(
             mutationPointerStore, accountId, pointerKey, 0L, reserve)) {
           cleanupCreateIfAbsentBlobOnCasMiss(pointerKey, blobUri, blobExistedBefore);
           return false;
         }
+        publishCached(reserve, value);
         return true;
       } catch (AccountDeletionInProgressException deleting) {
         if (!blobExistedBefore) {
@@ -3176,7 +3334,7 @@ public class StatsRepository implements StatsStore {
       Map<String, TargetStatsWrite> uniqueWrites = new LinkedHashMap<>();
       for (TargetStatsWrite write : writes) {
         TargetStatsWrite existing = uniqueWrites.putIfAbsent(write.pointerKey(), write);
-        if (existing != null && !existing.blobUri().equals(write.blobUri())) {
+        if (existing != null && !hasTargetStatsContentIdentity(existing.blobUri(), write.value())) {
           throw new NameConflictException("pointer bound to different blob: " + write.pointerKey());
         }
       }
@@ -3198,7 +3356,7 @@ public class StatsRepository implements StatsStore {
           boolean[] blobExistedBefore = new boolean[absent.size()];
           for (int i = 0; i < absent.size(); i++) {
             TargetStatsWrite write = absent.get(i);
-            blobExistedBefore[i] = blobStore.head(write.blobUri()).isPresent();
+            blobExistedBefore[i] = mutationBlobStore.head(write.blobUri()).isPresent();
             putBlob(write.blobUri(), write.value());
             if (!blobExistedBefore[i]) {
               blobsCreatedByCall.add(write.blobUri());
@@ -3247,7 +3405,11 @@ public class StatsRepository implements StatsStore {
     }
 
     private void putManifestBlob(String blobUri, StringValue manifest) {
-      putBlobStrictBytes(blobUri, manifest.toByteArray());
+      byte[] bytes = manifest.toByteArray();
+      putBlobStrictBytes(blobUri, bytes);
+      if (blobCacheable()) {
+        blobCache.putImmutable(blobUri, bytes);
+      }
     }
 
     private MutationMeta metaForPointer(String pointerKey, String blobUri, Timestamp nowTs) {
@@ -3256,52 +3418,60 @@ public class StatsRepository implements StatsStore {
 
     private void reserveBatchOrClassify(List<TargetStatsWrite> writes) {
       String accountId = targetStatsAccountId(writes);
-      List<TargetStatsWrite> remaining = new ArrayList<>(writes);
-      while (!remaining.isEmpty()) {
-        List<PointerStore.CasOp> ops = new ArrayList<>(remaining.size());
-        for (TargetStatsWrite write : remaining) {
-          ops.add(
-              new PointerStore.CasUpsert(
-                  write.pointerKey(),
-                  0L,
-                  PointerReferences.blobPointer(
-                      write.pointerKey(), write.blobUri(), 1L, write.value().getSerializedSize())));
-        }
-        if (AccountDeletionFence.compareAndSetBatch(mutationPointerStore, accountId, ops)) {
-          return;
-        }
-        List<TargetStatsWrite> nextRemaining = new ArrayList<>();
-        for (TargetStatsWrite write : remaining) {
-          Pointer pointer = mutationPointerStore.get(write.pointerKey()).orElse(null);
-          if (pointer == null) {
-            nextRemaining.add(write);
-            continue;
-          }
-          if (!write.blobUri().equals(pointer.getBlobUri())) {
+      for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+        List<PointerStore.CasOp> ops = new ArrayList<>(writes.size());
+        List<Pointer> nextPointers = new ArrayList<>(writes.size());
+        for (TargetStatsWrite write : writes) {
+          Pointer existing = mutationPointerStore.get(write.pointerKey()).orElse(null);
+          if (existing != null
+              && !hasTargetStatsContentIdentity(existing.getBlobUri(), write.value())) {
             throw new NameConflictException(
                 "pointer bound to different blob: " + write.pointerKey());
           }
+          long expectedVersion = existing == null ? 0L : existing.getVersion();
+          Pointer next =
+              PointerReferences.blobPointer(
+                  write.pointerKey(),
+                  write.blobUri(),
+                  Math.max(1L, expectedVersion + 1L),
+                  write.value().getSerializedSize());
+          if (existing == null) {
+            prepareVersionedCreate(next);
+          }
+          nextPointers.add(next);
+          ops.add(new PointerStore.CasUpsert(write.pointerKey(), expectedVersion, next));
         }
-        if (nextRemaining.size() == remaining.size()) {
-          throw new AbortRetryableException(
-              "create conflict, no pointer present: " + remaining.get(0).pointerKey());
+        if (AccountDeletionFence.compareAndSetBatch(mutationPointerStore, accountId, ops)) {
+          for (int i = 0; i < writes.size(); i++) {
+            publishCached(nextPointers.get(i), writes.get(i).value());
+          }
+          return;
         }
-        remaining = nextRemaining;
       }
+      throw new AbortRetryableException(
+          "create conflict, no stable pointer set: " + writes.getFirst().pointerKey());
     }
 
     private boolean reserveIfAbsentBatch(List<TargetStatsWrite> writes) {
       String accountId = targetStatsAccountId(writes);
       List<PointerStore.CasOp> ops = new ArrayList<>(writes.size());
+      List<Pointer> nextPointers = new ArrayList<>(writes.size());
       for (TargetStatsWrite write : writes) {
-        ops.add(
-            new PointerStore.CasUpsert(
-                write.pointerKey(),
-                0L,
-                PointerReferences.blobPointer(
-                    write.pointerKey(), write.blobUri(), 1L, write.value().getSerializedSize())));
+        Pointer next =
+            PointerReferences.blobPointer(
+                write.pointerKey(), write.blobUri(), 1L, write.value().getSerializedSize());
+        prepareVersionedCreate(next);
+        nextPointers.add(next);
+        ops.add(new PointerStore.CasUpsert(write.pointerKey(), 0L, next));
       }
-      return AccountDeletionFence.compareAndSetBatch(mutationPointerStore, accountId, ops);
+      boolean committed =
+          AccountDeletionFence.compareAndSetBatch(mutationPointerStore, accountId, ops);
+      if (committed) {
+        for (int i = 0; i < writes.size(); i++) {
+          publishCached(nextPointers.get(i), writes.get(i).value());
+        }
+      }
+      return committed;
     }
 
     private static String targetStatsAccountId(List<TargetStatsWrite> writes) {
@@ -3323,7 +3493,7 @@ public class StatsRepository implements StatsStore {
 
     private void deleteBlobQuietly(String blobUri) {
       try {
-        blobStore.delete(blobUri);
+        mutationBlobStore.delete(blobUri);
       } catch (RuntimeException ignored) {
         // Best effort: the durable account fence still prevents publishing the blob.
       }
@@ -3339,7 +3509,7 @@ public class StatsRepository implements StatsStore {
         return;
       }
       try {
-        blobStore.delete(blobUri);
+        mutationBlobStore.delete(blobUri);
       } catch (Throwable ignore) {
         // ignore
       }

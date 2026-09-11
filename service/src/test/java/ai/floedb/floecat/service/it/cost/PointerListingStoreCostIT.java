@@ -59,7 +59,7 @@ class PointerListingStoreCostIT {
     @Override
     public Map<String, String> getConfigOverrides() {
       Map<String, String> overrides = new HashMap<>(super.getConfigOverrides());
-      overrides.put("floecat.blob.cache.enabled", "false");
+      overrides.put("floecat.cache.blob.disk.enabled", "false");
       return overrides;
     }
   }

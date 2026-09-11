@@ -9,6 +9,9 @@ package ai.floedb.floecat.service.repo.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
@@ -17,19 +20,23 @@ import ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata;
 import ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.testsupport.DiskBlobCacheTestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.ByteString;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
 import java.util.HexFormat;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class GenerationArtifactMapTest {
+  @TempDir Path tempDir;
+
   private static final ResourceId TABLE_ID =
       ResourceId.newBuilder().setAccountId("account-1").setId("table-1").build();
 
@@ -80,10 +87,7 @@ class GenerationArtifactMapTest {
     String manifestUri = contentAddressedUri(manifestBytes);
     blobs.put(manifestUri, manifestBytes, "application/x-protobuf");
     GenerationArtifactMap map =
-        new GenerationArtifactMap(
-            new InMemoryPointerStore(),
-            blobs,
-            new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+        new GenerationArtifactMap(new InMemoryPointerStore(), blobs, BlobCacheAccess.disabled());
 
     map.register(TABLE_ID, 42L, "generation-1", manifestUri, manifestBytes.length);
 
@@ -101,6 +105,36 @@ class GenerationArtifactMapTest {
                     "")
                 .entries())
         .hasSize(1);
+  }
+
+  @Test
+  void listingReadsConsumeButDoNotFillTheManifest() {
+    InMemoryBlobStore blobs = spy(new InMemoryBlobStore());
+    SnapshotCaptureManifest manifest =
+        SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(TABLE_ID.getAccountId())
+            .setTableId(TABLE_ID.getId())
+            .setSnapshotId(42L)
+            .setReusableArtifactIndex(ReusableArtifactIndexStore.emptyReference())
+            .build();
+    byte[] bytes = manifest.toByteArray();
+    String uri = contentAddressedUri(bytes);
+    blobs.put(uri, bytes, "application/x-protobuf");
+    GenerationArtifactMap map =
+        new GenerationArtifactMap(
+            new InMemoryPointerStore(),
+            blobs,
+            DiskBlobCacheTestSupport.create(tempDir.resolve("listing")));
+    map.register(TABLE_ID, 42L, "generation-1", uri, bytes.length);
+
+    assertThat(map.listingManifest(TABLE_ID, 42L, "generation-1")).isPresent();
+    assertThat(map.listingManifest(TABLE_ID, 42L, "generation-1")).isPresent();
+    verify(blobs, times(2)).get(uri);
+
+    assertThat(map.manifest(TABLE_ID, 42L, "generation-1")).isPresent();
+    assertThat(map.manifest(TABLE_ID, 42L, "generation-1")).isPresent();
+    verify(blobs, times(3)).get(uri);
   }
 
   @Test
@@ -144,10 +178,7 @@ class GenerationArtifactMapTest {
     String manifestUri = contentAddressedUri(manifestBytes);
     blobs.put(manifestUri, manifestBytes, "application/x-protobuf");
     GenerationArtifactMap map =
-        new GenerationArtifactMap(
-            new InMemoryPointerStore(),
-            blobs,
-            new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+        new GenerationArtifactMap(new InMemoryPointerStore(), blobs, BlobCacheAccess.disabled());
 
     map.register(TABLE_ID, 42L, "generation-1", manifestUri, manifestBytes.length);
 
@@ -171,9 +202,7 @@ class GenerationArtifactMapTest {
   void registeredGenerationDoesNotSilentlyFallBackWhenItsManifestIsMissing() {
     GenerationArtifactMap map =
         new GenerationArtifactMap(
-            new InMemoryPointerStore(),
-            new InMemoryBlobStore(),
-            new ImmutableBlobCache(true, 1024 * 1024, Duration.ofMinutes(5)));
+            new InMemoryPointerStore(), new InMemoryBlobStore(), BlobCacheAccess.disabled());
     String missingUri = "/capture/" + "00".repeat(32) + ".pb";
     map.register(TABLE_ID, 42L, "generation-1", missingUri, 123L);
 
@@ -197,7 +226,11 @@ class GenerationArtifactMapTest {
             .toByteArray();
     String uri = contentAddressedUri(original);
     blobs.put(uri, original, "application/x-protobuf");
-    GenerationArtifactMap map = new GenerationArtifactMap(new InMemoryPointerStore(), blobs, null);
+    GenerationArtifactMap map =
+        new GenerationArtifactMap(
+            new InMemoryPointerStore(),
+            blobs,
+            ai.floedb.floecat.service.repo.cache.BlobCacheAccess.disabled());
     map.register(TABLE_ID, 42L, "generation-1", uri, original.length);
     byte[] replacement = original.clone();
     replacement[replacement.length - 1] ^= 1;

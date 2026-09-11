@@ -10,6 +10,7 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.CatalogIntegrationKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -37,14 +38,15 @@ public class CatalogIntegrationRepository {
   private final PointerStore pointerStore;
 
   public CatalogIntegrationRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, pointerStore, blobStore);
+    this(pointerStore, pointerStore, blobStore, BlobCacheAccess.disabled());
   }
 
   @Inject
   public CatalogIntegrationRepository(
       PointerStore pointerStore,
       @CachedPointerStore PointerStore pointerReads,
-      BlobStore blobStore) {
+      BlobStore blobStore,
+      BlobCacheAccess blobCache) {
     this.pointerStore = pointerStore;
     repo =
         new GenericResourceRepository<>(
@@ -54,7 +56,7 @@ public class CatalogIntegrationRepository {
             CatalogIntegration::parseFrom,
             CatalogIntegration::toByteArray,
             "application/x-protobuf",
-            null,
+            blobCache,
             RepositoryReads.direct(pointerReads, blobStore));
   }
 

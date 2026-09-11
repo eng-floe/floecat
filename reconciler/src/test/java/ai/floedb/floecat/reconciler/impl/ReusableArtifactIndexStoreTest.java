@@ -39,7 +39,6 @@ class ReusableArtifactIndexStoreTest {
 
   @BeforeEach
   void setUp() {
-    ReusableArtifactIndexStore.clearSharedCacheForTests();
     blobs = new CountingBlobStore();
     store = new ReusableArtifactIndexStore(blobs);
   }
@@ -195,7 +194,6 @@ class ReusableArtifactIndexStoreTest {
               index,
               List.of(statsBundle("run-" + run, List.of("s3://bucket/file-" + run + ".parquet"))));
     }
-    ReusableArtifactIndexStore.clearSharedCacheForTests();
     blobs.resetGetCount();
 
     var found =
@@ -236,13 +234,11 @@ class ReusableArtifactIndexStoreTest {
     assertEquals(0L, manifest.getBlocks(0).getOffset());
     assertTrue(manifest.getBlocks(1).getOffset() > 0L);
 
-    ReusableArtifactIndexStore.clearSharedCacheForTests();
     blobs.resetGetCount();
     assertEquals(1, store.lookup(index, List.of(paths.get(200)), List.of()).size());
     assertEquals(1, blobs.rangeCount());
     assertEquals(0, blobs.getCount());
 
-    ReusableArtifactIndexStore.clearSharedCacheForTests();
     blobs.resetGetCount();
     assertEquals(paths.size(), entries(store, index).size());
     assertEquals(0, blobs.getCount());
@@ -287,7 +283,6 @@ class ReusableArtifactIndexStoreTest {
             "/runs/",
             ReusableArtifactIndexStore.emptyReference(),
             List.of(statsBundle("packed", paths)));
-    ReusableArtifactIndexStore.clearSharedCacheForTests();
     blobs.resetGetCount();
 
     store.validateLookupReference(index);
@@ -646,7 +641,6 @@ class ReusableArtifactIndexStoreTest {
             "/runs/",
             base,
             List.of(statsBundle("delta", List.of("s3://bucket/delta.parquet"))));
-    ReusableArtifactIndexStore.clearSharedCacheForTests();
     Set<String> visited = new HashSet<>();
     Map<String, Integer> progress = new HashMap<>();
     List<String> entries = new ArrayList<>();
@@ -721,7 +715,6 @@ class ReusableArtifactIndexStoreTest {
                                     java.security.MessageDigest.getInstance("SHA-256")
                                         .digest(mutated)))))
             .build();
-    ReusableArtifactIndexStore.clearSharedCacheForTests();
     blobs.resetGetCount();
 
     IllegalArgumentException error =

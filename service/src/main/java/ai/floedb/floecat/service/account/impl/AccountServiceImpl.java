@@ -47,6 +47,7 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -87,6 +88,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject Instance<DurableReconcileJobStore> durableReconcileJobStore;
   @Inject CatalogIntegrationCredentialCleanup catalogIntegrationCredentialCleanup;
   @Inject ObjectCache objects;
+  @Inject BlobCacheAccess blobs;
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS =
       Set.of("display_name", "description", "tags");
@@ -699,6 +701,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       // The deletion fence is still installed. Evict only after durable pointers and blobs are
       // gone, so a later local read cannot repopulate deleted content from a live durable pointer.
       objects.evictAccount(accountKey);
+      blobs.evictAccount(accountKey);
       CLEANUP_LOG.infof(
           "account_delete_cleanup_complete account_id=%s account_pointer_deletes=%d catalog_overlays=%d catalog_integrations=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d reconcile_jobs=%d residual_account_blob_deletes=%d",
           summary.accountId,

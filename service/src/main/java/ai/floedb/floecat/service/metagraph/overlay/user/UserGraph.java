@@ -32,7 +32,6 @@ import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
 import ai.floedb.floecat.service.query.PinnedReadContract;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -40,18 +39,14 @@ import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
-import ai.floedb.floecat.telemetry.Observability;
-import ai.floedb.floecat.telemetry.helpers.CacheMetrics;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * ==== MetadataGraph (Façade) ====
@@ -68,8 +63,6 @@ public final class UserGraph {
   // Dependencies (constructed once)
   // ----------------------------------------------------------------------
 
-  private final CacheMetrics loadMetrics;
-  private final ImmutableBlobCache blobCache;
   private final NodeLoader nodes;
   private final NameResolver names;
   private final FullyQualifiedResolver fq;
@@ -89,13 +82,8 @@ public final class UserGraph {
    * @param nsRepo repository for namespace operations
    * @param tableRepo repository for table operations
    * @param viewRepo repository for view operations
-   * @param observability telemetry facade; here it backs the graph cache's hit/miss and
-   *     load-latency metrics
    * @param principal provider for current principal context
-   * @param cacheMaxSize positive enables node caching; 0 turns it off
    * @param engineHints manager for engine-specific hints
-   * @param blobCache process-wide decoded-blob cache holding derived nodes (null disables node
-   *     caching; resolution then always loads)
    * @param pinnedReads unwraps a pinned blob read, failing loudly when the blob is gone
    * @param snapshots pinned-snapshot reads and pin construction, container-wired so it shares one
    *     repair queue with {@code pinnedReads}
@@ -106,18 +94,10 @@ public final class UserGraph {
       NamespaceRepository nsRepo,
       TableRepository tableRepo,
       ViewRepository viewRepo,
-      Observability observability,
       PrincipalProvider principal,
-      @ConfigProperty(name = "floecat.metadata.graph.cache-max-size", defaultValue = "50000")
-          long cacheMaxSize,
       EngineHintManager engineHints,
-      ImmutableBlobCache blobCache,
       PinnedReadContract pinnedReads,
       SnapshotHelper snapshots) {
-    this.loadMetrics = new CacheMetrics(observability, "service", "graph-cache", "graph-cache");
-    // cache-max-size=0 turns node caching off, independently of the process-wide blob cache
-    // (whose own kill switch would also drop blob decodes and indexes).
-    this.blobCache = cacheMaxSize > 0 ? blobCache : null;
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
@@ -142,9 +122,7 @@ public final class UserGraph {
       TableRepository tableRepo,
       ViewRepository viewRepo,
       TableRootRepository tableRootRepo,
-      Observability observability,
       PrincipalProvider principal,
-      long cacheMaxSize,
       EngineHintManager engineHints) {
     RootRepairRequests repairs = RootRepairRequests.disabled();
     PinnedReadContract pins = new PinnedReadContract(repairs);
@@ -153,14 +131,8 @@ public final class UserGraph {
         nsRepo,
         tableRepo,
         viewRepo,
-        observability,
         principal,
-        cacheMaxSize,
         engineHints,
-        // Mirror the pre-fold node-cache knob: a positive max size enables node caching.
-        cacheMaxSize > 0
-            ? new ImmutableBlobCache(true, 64L * 1024 * 1024, Duration.ofMinutes(15))
-            : null,
         pins,
         new SnapshotHelper(snapshotRepo, tableRootRepo, null, pins, repairs));
   }
@@ -242,9 +214,11 @@ public final class UserGraph {
   // ----------------------------------------------------------------------
 
   /**
-   * Resolves a graph node by ID with caching.
+   * Resolves a graph node by ID.
    *
-   * <p>Loads nodes from repositories on cache miss and stores them for future access.
+   * <p>Serialized inputs are cached by the repositories and assembled relation responses are cached
+   * by {@code ObjectCache}; keeping another derived-node cache here would duplicate both ownership
+   * and invalidation rules.
    *
    * @param id the resource ID to resolve
    * @return the resolved graph node, or empty if not found
@@ -262,61 +236,7 @@ public final class UserGraph {
     }
     MutationMeta fresh = freshOpt.get();
 
-    long loadStart = System.nanoTime();
-    GraphNode cached = cachedNode(fresh.getBlobUri());
-    if (cached != null) {
-      // Recorded on both arms, or the hit rate is whichever constant the one arm carries.
-      loadMetrics.recordLoad(Duration.ofNanos(System.nanoTime() - loadStart), true);
-      return Optional.of(cached);
-    }
-
-    try {
-      Optional<GraphNode> loaded = nodes.load(id, fresh);
-      // Key by the identity the node ACTUALLY carries, not the meta we passed in: load()'s
-      // swept-blob fallback may have built the node from a NEWER live meta, and storing that node
-      // under the stale URI would poison the never-invalidated content-keyed cache — the same
-      // mismatch the loader itself was fixed for, one seam up.
-      loaded.ifPresent(node -> putNode(node.cacheIdentity(), node));
-      // A load only runs when the content-keyed lookup above missed, so this is a miss every time.
-      loadMetrics.recordLoad(Duration.ofNanos(System.nanoTime() - loadStart), false);
-      return loaded;
-    } catch (Throwable t) {
-      Duration duration = Duration.ofNanos(System.nanoTime() - loadStart);
-      loadMetrics.recordLoadFailure(duration, t);
-      throw t;
-    }
-  }
-
-  /**
-   * The cached derived node for the blob at {@code blobUri}, or {@code null} when node caching is
-   * off, the URI is blank (a meta that names no blob has no content identity), or the entry is
-   * absent.
-   *
-   * <p>Probe-then-build-then-put, deliberately NOT a loading get: nodes.load() decodes the source
-   * blob through this SAME cache (the repository getByBlobUri seam), and a nested compute inside a
-   * Caffeine compute is prohibited — a same-bin hash collision between the "#node" key and the blob
-   * key would throw "Recursive update" or livelock, nondeterministically. A duplicate concurrent
-   * build is harmless (the node is a pure function of the blob); the blob decode itself stays
-   * single-flight.
-   */
-  private GraphNode cachedNode(String blobUri) {
-    if (blobCache == null || !blobCache.enabled() || blobUri == null || blobUri.isBlank()) {
-      return null;
-    }
-    String key = nodeKey(blobUri);
-    return blobCache.probe(key);
-  }
-
-  private void putNode(String blobUri, GraphNode node) {
-    if (blobCache == null || !blobCache.enabled() || blobUri == null || blobUri.isBlank()) {
-      return;
-    }
-    blobCache.put(nodeKey(blobUri), node);
-  }
-
-  /** Derived-form key: the node built from the blob at {@code blobUri} (cf. "#index" entries). */
-  private static String nodeKey(String blobUri) {
-    return blobUri + "#node";
+    return nodes.load(id, fresh);
   }
 
   /**

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.impl;
 
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.model.TransactionIntentKey;
@@ -38,14 +39,15 @@ public class TransactionIntentRepository {
   private final PointerStore pointerReads;
 
   public TransactionIntentRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, pointerStore, blobStore);
+    this(pointerStore, pointerStore, blobStore, BlobCacheAccess.disabled());
   }
 
   @Inject
   public TransactionIntentRepository(
       PointerStore pointerStore,
       @CachedPointerStore PointerStore pointerReads,
-      BlobStore blobStore) {
+      BlobStore blobStore,
+      BlobCacheAccess blobCache) {
     this.pointerStore = pointerStore;
     this.pointerReads = pointerReads;
     this.repo =
@@ -56,7 +58,7 @@ public class TransactionIntentRepository {
             TransactionIntent::parseFrom,
             TransactionIntent::toByteArray,
             "application/x-protobuf",
-            null,
+            blobCache,
             RepositoryReads.direct(pointerReads, blobStore));
   }
 

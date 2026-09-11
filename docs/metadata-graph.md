@@ -5,9 +5,9 @@ Floecat’s query-facing services share a common metadata cache called the **Met
 between the pointer/blob repositories and any RPC that needs to inspect catalogs, namespaces, tables,
 or views. The graph provides:
 
-- Immutable node models that can be safely reused across requests. Nodes are pure derivations of
-  their source blob and are cached content-addressed (keyed by `blobUri + "#node"`) in the
-  process-wide `ImmutableBlobCache`, so they need no invalidation.
+- Immutable node models that can be safely reused across requests. Nodes are assembled through the
+  repository and `ObjectCache`; serialized inputs are read through `BlobCacheAccess` when the disk
+  cache is enabled. There is no separate graph-level decoded-node cache.
 - Resource-ID → current-blob resolution served by the owner-managed planner index
   (`PlanningPointerIndex` behind `IndexedPointerStore`), which
   is refreshed on write and does not expire, so a commit is visible to the replica that made it as
@@ -35,8 +35,9 @@ facade sit inside `service/metagraph`. The split looks like this:
 - `core/metagraph/model/` – Immutable node records (`CatalogNode`, `NamespaceNode`, `TableNode`,
   `ViewNode`, `SystemViewNode`) plus shared enums (`GraphNodeKind`, `EngineKey`, `EngineHint`,
   `GraphNodeOrigin`, etc.).
-- `service/repo/cache/` – the pointer index owns complete namespace and relation-name indexes;
-  derived nodes live content-keyed by blob URI in the process-wide `ImmutableBlobCache`.
+- `service/repo/cache/` – the planner index owns complete namespace and relation-name indexes;
+  serialized immutable bodies are handled by `BlobCacheAccess`, while assembled metadata is held
+  by `ObjectCache`.
 - `service/metagraph/loader/` – `NodeLoader` wraps the catalog/namespace/table/view repositories to
   hydrate immutable nodes from protobuf metadata (`metaForSafe` + pointer fetches).
 - `service/metagraph/resolver/` – `NameResolver` handles catalog/namespace/table/view lookups and
@@ -164,11 +165,12 @@ Internally `resolve(ResourceId)`:
 
 1. Reads the pointer through `nodes.mutationMeta(id)`. There is no graph-level meta cache to probe
    first: the indexed store selects the complete owned partition or its durable fallback.
-2. Returns the derived node at `blobUri + "#node"` from the `ImmutableBlobCache` when present.
+ 2. Loads the immutable serialized body through the repository's `BlobCacheAccess` seam when disk
+   caching is enabled.
 3. Rehydrates the protobuf record (`Catalog`, `Namespace`, `Table`, `View`) into the immutable node
-   and stores it content-keyed under `blobUri + "#node"`.
-4. Serves the node from cache for as long as the blob stays hot; a DDL writes a new blob, so the
-   fresh pointer simply names a different node entry — no eviction required.
+   and stores the assembled relation/schema products in `ObjectCache`.
+4. A DDL publishes a new pointer and content identity, so the next resolution naturally uses the
+   new object key; no graph-level invalidation is required.
 
 ### Snapshot Pinning Semantics
 - Explicit snapshot ID overrides always win.
@@ -228,7 +230,7 @@ Graph cache metrics are emitted through the shared `CacheMetrics` helper under t
 | Cache name | What is tracked |
 |------------|-----------------|
 | `graph-cache` | Node-load latency timer and load-failure counter, recorded by `UserGraph` around each node load. |
-| `blob-cache` | Node/blob caching itself: the `ImmutableBlobCache` registers enabled, max weight, entries, weighted size, and hit/miss under this name. |
+| `blob-cache` | Disk blob-cache hits, misses, mappings, corruption and sweep activity. |
 
 ## Testing
 `MetadataGraphTest` uses in-memory repository/snapshot/directory fakes to exercise cache behavior and
