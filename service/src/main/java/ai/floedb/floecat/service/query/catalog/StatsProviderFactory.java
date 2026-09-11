@@ -47,8 +47,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -155,10 +153,6 @@ public final class StatsProviderFactory {
     private final boolean allowUnpinnedLatestSnapshotFallback;
     private final Duration syncLatencyBudget;
     private final boolean syncEnabled;
-    private final ConcurrentMap<SnapshotScopedRelationKey, Optional<StatsProvider.TableStatsView>>
-        tableCache = new ConcurrentHashMap<>();
-    private final ConcurrentMap<ResourceId, OptionalLong> latestSnapshotCache =
-        new ConcurrentHashMap<>();
 
     private CachedStatsProvider(
         StatsOrchestrator statsOrchestrator,
@@ -198,11 +192,7 @@ public final class StatsProviderFactory {
       }
       Optional<StatsProvider.TableStatsView> pinnedStats =
           pinResolver.withPinnedSnapshot(
-              tableId,
-              snapshotId ->
-                  tableCache.computeIfAbsent(
-                      SnapshotScopedRelationKey.of(tableId, snapshotId),
-                      key -> safeTableStats(tableId, snapshotId)));
+              tableId, snapshotId -> safeTableStats(tableId, snapshotId));
       if (pinnedStats.isPresent()) {
         return pinnedStats;
       }
@@ -215,10 +205,10 @@ public final class StatsProviderFactory {
       List<ResourceId> ids = tableIds.stream().distinct().toList();
       Map<ResourceId, Optional<StatsProvider.TableStatsView>> out = new LinkedHashMap<>();
       // A per-relation read can block on the sync-capture budget, so resolve the set concurrently
-      // (on cheap virtual threads); these reads are thread-safe, and each call populates the shared
-      // tableCache so the subsequent per-relation tableStats() is a hit. A single table's failure
-      // yields empty, never aborts the batch. The fan-out limits one query; the shared admission
-      // prevents concurrent queries from multiplying backing-store work.
+      // (on cheap virtual threads); these reads are thread-safe, and Objects single-flights a
+      // repeated table across requests. A single table's failure yields empty, never aborts the
+      // batch. The fan-out limits one query; the shared admission prevents concurrent queries from
+      // multiplying backing-store work.
       List<Optional<StatsProvider.TableStatsView>> results =
           statsFanout.mapOrdered(
               ids,
@@ -242,15 +232,12 @@ public final class StatsProviderFactory {
       if (!allowUnpinnedLatestSnapshotFallback || tableId == null || snapshotRepository == null) {
         return Optional.empty();
       }
-      OptionalLong latestSnapshotId =
-          latestSnapshotCache.computeIfAbsent(tableId, id -> resolveLatestSnapshotId(id));
+      OptionalLong latestSnapshotId = resolveLatestSnapshotId(tableId);
       if (latestSnapshotId.isEmpty()) {
         return Optional.empty();
       }
       long snapshotId = latestSnapshotId.getAsLong();
-      return tableCache.computeIfAbsent(
-          SnapshotScopedRelationKey.of(tableId, snapshotId),
-          key -> safeTableStats(tableId, snapshotId));
+      return safeTableStats(tableId, snapshotId);
     }
 
     @Override
@@ -296,13 +283,15 @@ public final class StatsProviderFactory {
                 .correlationId(correlationId)
                 .latencyBudget(syncEnabled ? Optional.of(syncLatencyBudget) : Optional.empty())
                 .build();
-        StatsResolutionResult result =
-            statsOrchestrator.resolveInGeneration(
-                request, pinResolver.pinnedStatsGenerationRef(tableId));
-        return result
-            .stats()
-            .filter(TargetStatsRecord::hasTable)
-            .map(CachedStatsProvider::toTableStatsView);
+        return statsOrchestrator
+            .resolveTableFactsInGeneration(
+                request,
+                pinResolver.pinnedStatsGenerationRef(tableId),
+                allowUnpinnedLatestSnapshotFallback || pinResolver.currentSnapshotIsPinned(tableId))
+            .map(
+                facts ->
+                    new TableStatsViewImpl(
+                        tableId, snapshotId, facts.rowCount(), facts.totalSizeBytes()));
       } catch (RuntimeException e) {
         LOG.debugf(e, "table stats lookup failed for %s snapshot %s", tableId, snapshotId);
         return Optional.empty();
@@ -343,14 +332,6 @@ public final class StatsProviderFactory {
 
     private String connectorTypeFor(ResourceId tableId) {
       return ConnectorTypeResolver.connectorTypeFor(tableRepository, tableId);
-    }
-
-    private static StatsProvider.TableStatsView toTableStatsView(TargetStatsRecord record) {
-      return new TableStatsViewImpl(
-          record.getTableId(),
-          record.getSnapshotId(),
-          OptionalLong.of(record.getTable().getRowCount()),
-          OptionalLong.of(record.getTable().getTotalSizeBytes()));
     }
 
     private static StatsProvider.ColumnStatsView toColumnStatsView(TargetStatsRecord record) {

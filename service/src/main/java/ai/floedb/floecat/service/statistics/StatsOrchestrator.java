@@ -26,6 +26,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.statistics.PlannerStatsResolver.PlannerLookupDiagnostics;
@@ -53,6 +54,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -90,6 +92,7 @@ public class StatsOrchestrator {
   private final boolean syncEnabled;
   private final Observability observability;
   private final PlannerStatsResolver plannerResolver;
+  private final ObjectCache objects;
 
   @Inject
   public StatsOrchestrator(
@@ -98,6 +101,7 @@ public class StatsOrchestrator {
       TableRepository tableRepository,
       ConnectorRepository connectorRepository,
       StatsSyncCapture statsSyncCapture,
+      ObjectCache objects,
       @ConfigProperty(name = "floecat.stats.sync.enabled", defaultValue = "false")
           boolean syncEnabled,
       Instance<Observability> observability) {
@@ -106,12 +110,33 @@ public class StatsOrchestrator {
     this.tableRepository = tableRepository;
     this.connectorRepository = connectorRepository;
     this.statsSyncCapture = statsSyncCapture;
+    this.objects = objects;
     this.syncEnabled = syncEnabled;
     this.observability =
         observability == null || observability.isUnsatisfied() ? null : observability.get();
     this.plannerResolver =
         new PlannerStatsResolver(
-            statsStore, this::readStore, this::incrementCounter, this::observePlannerHit);
+            statsStore, objects, this::readStore, this::incrementCounter, this::observePlannerHit);
+  }
+
+  /** Test/embedded constructor that keeps the production Object-cache behavior. */
+  public StatsOrchestrator(
+      StatsStore statsStore,
+      ReconcileJobStore reconcileJobStore,
+      TableRepository tableRepository,
+      ConnectorRepository connectorRepository,
+      StatsSyncCapture statsSyncCapture,
+      boolean syncEnabled,
+      Instance<Observability> observability) {
+    this(
+        statsStore,
+        reconcileJobStore,
+        tableRepository,
+        connectorRepository,
+        statsSyncCapture,
+        ObjectCache.forTesting(),
+        syncEnabled,
+        observability);
   }
 
   public StatsOrchestrator(
@@ -180,6 +205,59 @@ public class StatsOrchestrator {
       return StatsResolutionResult.hit(stored.get());
     }
     return captureAndResolve(request, startNanos);
+  }
+
+  /**
+   * Resolve relation-sized table facts through Objects. The miss loader retains the existing
+   * pinned-generation-first policy; successful stats mutations evict this table/snapshot key.
+   * Historical pins read through so time travel cannot displace the resident current catalog. The
+   * {@code retainCurrentFacts} flag controls immutable pinned-generation residency only: the live
+   * ladder has no stable identity and is always read through.
+   */
+  public Optional<ObjectCache.SnapshotFacts> resolveTableFactsInGeneration(
+      StatsCaptureRequest request,
+      Optional<String> pinnedGenerationToken,
+      boolean retainCurrentFacts) {
+    Optional<String> pinned =
+        pinnedGenerationToken.filter(token -> !token.isBlank()).map(String::trim);
+    if (pinned.isPresent()) {
+      java.util.function.Supplier<Optional<ObjectCache.SnapshotFacts>> loadExact =
+          () ->
+              plannerResolver
+                  .resolvePinnedFromStore(request, pinned.get())
+                  .filter(TargetStatsRecord::hasTable)
+                  .map(StatsOrchestrator::snapshotFacts);
+      Optional<ObjectCache.SnapshotFacts> exact =
+          retainCurrentFacts
+              ? objects.snapshotFacts(
+                  request.tableId(), request.snapshotId(), pinned.get(), loadExact)
+              : loadExact.get();
+      if (exact.isPresent()) {
+        return exact;
+      }
+      // An incomplete pinned generation intentionally falls through to the newest/live ladder.
+      // That answer is mutable and must never be retained under the immutable pinned key.
+      return resolveInGeneration(request, Optional.empty())
+          .stats()
+          .filter(TargetStatsRecord::hasTable)
+          .map(StatsOrchestrator::snapshotFacts);
+    }
+    java.util.function.Supplier<Optional<ObjectCache.SnapshotFacts>> loadLive =
+        () ->
+            resolveInGeneration(request, Optional.empty())
+                .stats()
+                .filter(TargetStatsRecord::hasTable)
+                .map(StatsOrchestrator::snapshotFacts);
+    // There is no immutable generation identity on the live ladder. Do not retain its answer
+    // under a blank key: invalidation is process-local, so another replica could otherwise serve
+    // mutable facts indefinitely. Immutable pinned generations remain cacheable above.
+    return loadLive.get();
+  }
+
+  private static ObjectCache.SnapshotFacts snapshotFacts(TargetStatsRecord record) {
+    return new ObjectCache.SnapshotFacts(
+        OptionalLong.of(record.getTable().getRowCount()),
+        OptionalLong.of(record.getTable().getTotalSizeBytes()));
   }
 
   /** Bounded sync capture, then async-enqueue fallback, for a store miss. */

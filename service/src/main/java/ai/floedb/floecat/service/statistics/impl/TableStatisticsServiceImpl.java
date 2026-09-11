@@ -66,6 +66,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jboss.logging.Logger;
@@ -266,12 +267,15 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
     var state = new AtomicReference<>(StreamState.initial());
     AtomicInteger upserted = new AtomicInteger();
+    AtomicBoolean tableFactsChanged = new AtomicBoolean();
 
     return mapFailures(
             requests
                 .onItem()
                 .transformToUniAndConcatenate(
-                    req -> runWithRetry(() -> processTargetStats(state, req, upserted)))
+                    req ->
+                        runWithRetry(
+                            () -> processTargetStats(state, req, upserted, tableFactsChanged)))
                 .collect()
                 .last()
                 .onItem()
@@ -294,8 +298,9 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                       if (rootWriter != null
                           && upserted.get() > 0
                           && finalState.tableId() != null) {
-                        rootWriter.commitStatsGeneration(
-                            finalState.tableId(), finalState.snapshotId());
+                        Optional<String> committed =
+                            rootWriter.commitStatsGeneration(
+                                finalState.tableId(), finalState.snapshotId());
                       }
                     })
                 .replaceWith(
@@ -362,7 +367,10 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
   }
 
   private Boolean processTargetStats(
-      AtomicReference<StreamState> stateRef, PutTargetStatsRequest req, AtomicInteger upserted) {
+      AtomicReference<StreamState> stateRef,
+      PutTargetStatsRequest req,
+      AtomicInteger upserted,
+      AtomicBoolean tableFactsChanged) {
     StreamState computed =
         ensureState(stateRef.get(), req.getTableId(), req.getSnapshotId()); // may throw on mismatch
     computed =
@@ -385,6 +393,9 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
         statsStore.putTargetStats(targetRecord);
         statsOrchestrator.invalidateStatsCache(
             targetRecord.getTableId(), targetRecord.getSnapshotId(), targetRecord.getTarget());
+        if (targetRecord.getTarget().hasTable()) {
+          tableFactsChanged.set(true);
+        }
         upserted.incrementAndGet();
         continue;
       }
@@ -418,6 +429,9 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
 
       statsOrchestrator.invalidateStatsCache(
           result.body.getTableId(), result.body.getSnapshotId(), result.body.getTarget());
+      if (result.body.getTarget().hasTable()) {
+        tableFactsChanged.set(true);
+      }
 
       upserted.incrementAndGet();
     }

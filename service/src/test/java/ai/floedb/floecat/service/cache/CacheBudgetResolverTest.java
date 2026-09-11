@@ -51,9 +51,9 @@ class CacheBudgetResolverTest {
                 Map.of(
                     "floecat.cache.total-bytes", Long.toString(10 * GB),
                     "floecat.cache.heap-share", "0.5",
-                    "floecat.cache.pointer.share", "0.096")));
+                    "floecat.cache.object.share", "0.096")));
 
-    assertThat(budgets.bytesFor(CacheFamily.POINTER)).isEqualTo((long) (10 * GB * 0.096d));
+    assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isEqualTo((long) (10 * GB * 0.096d));
   }
 
   @Test
@@ -63,9 +63,9 @@ class CacheBudgetResolverTest {
     var budgets =
         new CacheBudgetResolver(
             config(
-                Map.of("floecat.cache.heap-share", "0.5", "floecat.cache.pointer.share", "0.096")));
+                Map.of("floecat.cache.heap-share", "0.5", "floecat.cache.object.share", "0.096")));
 
-    assertThat(budgets.bytesFor(CacheFamily.POINTER))
+    assertThat(budgets.bytesFor(CacheFamily.OBJECT))
         .isEqualTo((long) ((long) (Runtime.getRuntime().maxMemory() * 0.5d) * 0.096d));
   }
 
@@ -79,12 +79,12 @@ class CacheBudgetResolverTest {
                     Long.toString(10 * GB),
                     "floecat.cache.heap-share",
                     "0.5",
-                    "floecat.cache.pointer.share",
+                    "floecat.cache.object.share",
                     "0.096",
-                    "floecat.cache.pointer.max-bytes",
+                    "floecat.cache.object.max-bytes",
                     Long.toString(64L * 1024 * 1024))));
 
-    assertThat(budgets.bytesFor(CacheFamily.POINTER)).isEqualTo(64L * 1024 * 1024);
+    assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isEqualTo(64L * 1024 * 1024);
   }
 
   @Test
@@ -97,9 +97,9 @@ class CacheBudgetResolverTest {
                 Map.of(
                     "floecat.cache.total-bytes", Long.toString(10 * GB),
                     "floecat.cache.heap-share", "0.5",
-                    "floecat.cache.pointer.max-bytes", Long.toString(GB))));
+                    "floecat.cache.object.max-bytes", Long.toString(2 * GB))));
 
-    assertThat(budgets.bytesFor(CacheFamily.POINTER)).isEqualTo(GB);
+    assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isEqualTo(2 * GB);
   }
 
   @Test
@@ -115,14 +115,14 @@ class CacheBudgetResolverTest {
                     "floecat.cache.heap-share",
                     "0.5")));
 
-    assertThat(budgets.bytesFor(CacheFamily.POINTER)).isZero();
+    assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isZero();
   }
 
   @Test
   void aClaimMayNotExceedTheTotalItIsSplitFrom() {
     // A max-bytes pinned above the total is the operator mistake that OOMs the node, and no share
     // being out of range says anything about it. Multi-family overcommit is pinned on the pure
-    // arithmetic in CacheBudgetTest, since only one family is on the contract today.
+    // arithmetic in CacheBudgetTest.
     assertThatThrownBy(
             () ->
                 new CacheBudgetResolver(
@@ -130,7 +130,7 @@ class CacheBudgetResolverTest {
                         Map.of(
                             "floecat.cache.total-bytes", Long.toString(10 * GB),
                             "floecat.cache.heap-share", "0.5",
-                            "floecat.cache.pointer.max-bytes", Long.toString(20 * GB)))))
+                            "floecat.cache.object.max-bytes", Long.toString(20 * GB)))))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("more than");
   }
@@ -148,10 +148,10 @@ class CacheBudgetResolverTest {
                           Map.of(
                               "floecat.cache.heap-share",
                               "0.5",
-                              "floecat.cache.pointer.share",
+                              "floecat.cache.object.share",
                               bad))))
           .isInstanceOf(IllegalArgumentException.class)
-          .hasMessageContaining("floecat.cache.pointer.share");
+          .hasMessageContaining("floecat.cache.object.share");
       assertThatThrownBy(
               () ->
                   new CacheBudgetResolver(
@@ -159,7 +159,7 @@ class CacheBudgetResolverTest {
                           Map.of(
                               "floecat.cache.heap-share",
                               bad,
-                              "floecat.cache.pointer.share",
+                              "floecat.cache.object.share",
                               "0.096"))))
           .isInstanceOf(IllegalArgumentException.class)
           .hasMessageContaining("floecat.cache.heap-share");
@@ -178,10 +178,23 @@ class CacheBudgetResolverTest {
       properties.load(in);
     }
     var shipped = new HashMap<String, String>();
-    properties.forEach((key, value) -> shipped.put((String) key, (String) value));
+    properties.forEach(
+        (key, value) -> {
+          String expression = (String) value;
+          if (expression.startsWith("${") && expression.endsWith("}")) {
+            String body = expression.substring(2, expression.length() - 1);
+            int separator = body.indexOf(':');
+            if (separator > 0) {
+              String variable = body.substring(0, separator);
+              String fallback = body.substring(separator + 1);
+              expression = System.getenv().getOrDefault(variable, fallback);
+            }
+          }
+          shipped.put((String) key, expression);
+        });
 
     var budgets = new CacheBudgetResolver(config(shipped));
 
-    assertThat(budgets.bytesFor(CacheFamily.POINTER)).isPositive();
+    assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isPositive();
   }
 }

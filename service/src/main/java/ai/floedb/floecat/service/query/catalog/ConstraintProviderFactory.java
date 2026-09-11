@@ -31,8 +31,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -75,14 +73,11 @@ public final class ConstraintProviderFactory {
   }
 
   /**
-   * A fresh provider per call, intended to live for a single query. Its {@link
-   * CachedUserConstraintProvider} memoizes bundles (and their versions) with no invalidation, which
-   * is safe ONLY because a bundle for a given (table, snapshot) is stable across one query — the
-   * caller invokes this once per request. Do not hoist it to a longer-lived scope: constraints
-   * mutate in place under a stable snapshot, so a reused instance would serve stale bundles.
+   * A fresh routed provider per call. Decoded user bundles are shared safely by the Object cache
+   * under their immutable content identities; this provider retains only request routing.
    */
   public ConstraintProvider provider() {
-    ConstraintProvider userProvider = new CachedUserConstraintProvider(repository, snapshots);
+    ConstraintProvider userProvider = new UserConstraintProvider(repository, snapshots);
     return new RoutedConstraintProvider(userProvider, systemProvider, graphView);
   }
 
@@ -139,18 +134,12 @@ public final class ConstraintProviderFactory {
     }
   }
 
-  private static final class CachedUserConstraintProvider implements ConstraintProvider {
+  private static final class UserConstraintProvider implements ConstraintProvider {
 
     private final ConstraintRepository repository;
     private final SnapshotRepository snapshots;
-    private final ConcurrentMap<
-            SnapshotScopedRelationKey, Optional<ConstraintProvider.ConstraintSetView>>
-        constraintsCache = new ConcurrentHashMap<>();
-    private final ConcurrentMap<RelationKey, Optional<ConstraintProvider.ConstraintSetView>>
-        latestConstraintsCache = new ConcurrentHashMap<>();
 
-    private CachedUserConstraintProvider(
-        ConstraintRepository repository, SnapshotRepository snapshots) {
+    private UserConstraintProvider(ConstraintRepository repository, SnapshotRepository snapshots) {
       this.repository = repository;
       this.snapshots = snapshots;
     }
@@ -161,32 +150,25 @@ public final class ConstraintProviderFactory {
         return Optional.empty();
       }
       long sid = snapshotId.getAsLong();
-      return constraintsCache.computeIfAbsent(
-          SnapshotScopedRelationKey.of(relationId, sid),
-          key ->
-              repository
-                  .getSnapshotConstraints(relationId, sid)
-                  .map(sc -> constraintSetView(sc, bundleVersion(relationId, sid))));
+      return repository
+          .getSnapshotConstraints(relationId, sid)
+          .map(sc -> constraintSetView(sc, bundleVersion(relationId, sid)));
     }
 
     @Override
     public Optional<ConstraintSetView> latestConstraints(ResourceId relationId) {
-      return latestConstraintsCache.computeIfAbsent(
-          RelationKey.of(relationId),
-          key ->
-              // Latest = latest QUERY-VISIBLE: the repository's default current-snapshot read is
-              // gate-aware, so metadata scans agree with what queries can read.
-              snapshots
-                  .getCurrentSnapshot(relationId)
-                  .flatMap(
-                      snapshot ->
-                          repository
-                              .getSnapshotConstraints(relationId, snapshot.getSnapshotId())
-                              .map(
-                                  sc ->
-                                      constraintSetView(
-                                          sc,
-                                          bundleVersion(relationId, snapshot.getSnapshotId())))));
+      // Latest = latest QUERY-VISIBLE: the repository's default current-snapshot read is
+      // gate-aware, so metadata scans agree with what queries can read.
+      return snapshots
+          .getCurrentSnapshot(relationId)
+          .flatMap(
+              snapshot ->
+                  repository
+                      .getSnapshotConstraints(relationId, snapshot.getSnapshotId())
+                      .map(
+                          sc ->
+                              constraintSetView(
+                                  sc, bundleVersion(relationId, snapshot.getSnapshotId()))));
     }
 
     /** The constraint bundle's pointer version for (table, snapshot); 0 when none exists. */
@@ -240,12 +222,6 @@ public final class ConstraintProviderFactory {
     @Override
     public Map<String, String> properties() {
       return properties;
-    }
-  }
-
-  private record RelationKey(String accountId, String relationId, int kindValue) {
-    static RelationKey of(ResourceId tableId) {
-      return new RelationKey(tableId.getAccountId(), tableId.getId(), tableId.getKindValue());
     }
   }
 }

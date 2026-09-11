@@ -16,9 +16,6 @@
 
 package ai.floedb.floecat.service.query.catalog;
 
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
@@ -31,19 +28,24 @@ import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationKind;
 import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SqlDefinition;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.ViewDefinition;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 /**
@@ -65,15 +67,17 @@ final class RelationBundleBuilder {
   private final CatalogGraphView graphView;
   private final EngineRelationDecorator engineRelationDecorator;
   private final SystemExecutionResolver systemExecutionResolver;
-  private final LogicalSchemaMapper logicalSchemaMapper = new LogicalSchemaMapper();
+  private final ObjectCache objects;
 
   RelationBundleBuilder(
       CatalogGraphView graphView,
       EngineRelationDecorator engineRelationDecorator,
-      SystemExecutionResolver systemExecutionResolver) {
+      SystemExecutionResolver systemExecutionResolver,
+      ObjectCache objects) {
     this.graphView = graphView;
     this.engineRelationDecorator = engineRelationDecorator;
     this.systemExecutionResolver = systemExecutionResolver;
+    this.objects = objects;
   }
 
   /** A build error for one relation. Never sinks the whole bundle; the driver maps it to ERROR. */
@@ -204,8 +208,7 @@ final class RelationBundleBuilder {
           relation.node().origin());
     }
 
-    // origin is needed below for columnsFor; kind and name are set via baseRelationInfo.
-    Origin origin = mapOrigin(relation.node().origin());
+    ObjectCache.RelationObject template = relationTemplate(correlationId, relation, queryContext);
 
     // Relation payloads carry TOP-LEVEL columns only: ordinals are 1-based within the parent,
     // so any nested row — synthetic placeholder or struct child — shares its ordinal (and
@@ -213,54 +216,27 @@ final class RelationBundleBuilder {
     // via the per-column type tree; the flattened node set remains available for stats and
     // catalog traversal.
     List<SchemaColumn> schemaColumns =
-        relation.node() instanceof ViewNode view
-            ? view.outputColumns()
-            : relation.node() instanceof UserTableNode userTable
-                ? SchemaColumns.topLevelOnly(
-                    logicalSchemaForRelation(
-                            correlationId, relation.relationId(), userTable, queryContext)
-                        .getColumnsList())
-                : Optional.ofNullable(graphView.tableSchema(relation.node().id()))
-                    .orElseGet(List::of);
+        relation.node() instanceof ViewNode
+            ? template.schema().getColumnsList()
+            : SchemaColumns.topLevelOnly(template.schema().getColumnsList());
 
     List<SchemaColumn> pruned =
         UserObjectBundleUtils.pruneSchema(schemaColumns, relation.candidate(), correlationId);
 
-    List<ColumnInfo> columns =
-        UserObjectBundleUtils.columnsFor(schemaColumns, pruned, origin, correlationId);
+    List<ColumnInfo> columns = columnsFromTemplate(template, schemaColumns, pruned);
 
-    RelationInfo.Builder builder = baseRelationInfo(relation);
-
-    /*
-     * Populate the bundled endpoint metadata so workers know how to reach the table. FLOECAT
-     * tables always use our built-in Flight server, and STORAGE tables can either point at their
-     * own Flight endpoint, use an endpoint key resolved from service config, or expose a storage
-     * path fallback. ENGINE tables never set an endpoint.
-     */
-    if (relation.node() instanceof SystemTableNode systemTableNode) {
-      // Resolve through the shared helper — the SAME implementation pinIdentityFor uses to fold
-      // routing into the token — so the served routing and the token that covers it cannot drift.
-      // It is invoked independently at each site (a cheap in-memory config lookup), not memoized
-      // across them; both resolve deterministically from the same node, so they always agree.
-      SystemExecutionResolver.SystemExecution exec =
-          systemExecutionResolver.resolve(systemTableNode);
-      builder.setBackendKind(systemTableNode.backendKind());
-      if (exec.flightEndpoint() != null) {
-        builder.setFlightEndpoint(exec.flightEndpoint());
-      } else if (!exec.storagePath().isBlank()) {
-        builder.setStoragePath(exec.storagePath());
-      }
-    }
+    RelationInfo.Builder builder =
+        template.relation().toBuilder().setName(relation.canonicalName()).clearColumns();
 
     long statsLookupStartNs = System.nanoTime();
     attachTableStats(builder, tableStats);
     timings.addStatsLookupNanos(System.nanoTime() - statsLookupStartNs);
 
     // If this is a view, keep a mutable builder around for decoration.
-    ViewDefinition.Builder viewBuilder = null;
-    if (relation.node() instanceof ViewNode view) {
-      viewBuilder = viewDefinitionBuilder(view);
-    }
+    ViewDefinition.Builder viewBuilder =
+        template.relation().hasViewDefinition()
+            ? template.relation().getViewDefinition().toBuilder()
+            : null;
 
     long relationDecorationBeforeNanos = timings.decorationTotalNanos();
     EngineRelationDecorator.Outcome decoration =
@@ -337,6 +313,113 @@ final class RelationBundleBuilder {
     return builder.build();
   }
 
+  private static List<ColumnInfo> columnsFromTemplate(
+      ObjectCache.RelationObject template,
+      List<SchemaColumn> schemaColumns,
+      List<SchemaColumn> pruned) {
+    List<ColumnInfo> cached =
+        template.relation().getColumnsList().stream().map(ColumnResult::getColumn).toList();
+    if (pruned == schemaColumns) {
+      return cached;
+    }
+    Map<String, ColumnInfo> byName =
+        cached.stream().collect(Collectors.toMap(ColumnInfo::getName, column -> column));
+    return pruned.stream()
+        .map(
+            column ->
+                Objects.requireNonNull(
+                    byName.get(column.getName()),
+                    () -> "cached relation missing column " + column.getName()))
+        .toList();
+  }
+
+  /** Resolve or build the full engine-neutral, DDL-shaped relation object. */
+  private ObjectCache.RelationObject relationTemplate(
+      String correlationId, ResolvedRelation relation, QueryContext queryContext) {
+    if (relation.node() instanceof UserTableNode userTable) {
+      Optional<TablePin> pin = queryContext.findTablePin(relation.relationId(), correlationId);
+      // Resolve the schema before entering ObjectCache's relation loader. Caffeine does not allow
+      // a loader for one key to recursively update another key in the same cache; the schema is a
+      // separate immutable object entry, so composing both cache loads inside the relation loader
+      // would intermittently fail with ConcurrentHashMap's "Recursive update" exception.
+      SchemaDescriptor schema = logicalSchemaForRelation(correlationId, userTable, pin);
+      return objects.tableRelation(
+          userTable,
+          pin,
+          () ->
+              new ObjectCache.RelationObject(
+                  buildTemplate(relation, schema, correlationId), schema));
+    }
+    if (relation.node() instanceof ViewNode view && view.origin() != GraphNodeOrigin.SYSTEM) {
+      SchemaDescriptor schema =
+          SchemaDescriptor.newBuilder().addAllColumns(view.outputColumns()).build();
+      return objects.viewRelation(
+          view,
+          () ->
+              new ObjectCache.RelationObject(
+                  buildTemplate(relation, schema, correlationId), schema));
+    }
+
+    // System registry state and its configurable execution endpoints are process state, not
+    // evictable metadata. Build it directly so a runtime endpoint change is never hidden by this
+    // cache.
+    SchemaDescriptor schema =
+        relation.node() instanceof ViewNode view
+            ? SchemaDescriptor.newBuilder().addAllColumns(view.outputColumns()).build()
+            : SchemaDescriptor.newBuilder()
+                .addAllColumns(
+                    Optional.ofNullable(graphView.tableSchema(relation.node().id()))
+                        .orElseGet(List::of))
+                .build();
+    return new ObjectCache.RelationObject(buildTemplate(relation, schema, correlationId), schema);
+  }
+
+  private RelationInfo buildTemplate(
+      ResolvedRelation relation, SchemaDescriptor schema, String correlationId) {
+    // View output columns are already the user-facing relation columns. Their physical paths may
+    // intentionally differ from their names (for example an aliased expression), so applying the
+    // table-only top-level filter would silently drop them from both the cached template and every
+    // response built from it.
+    List<SchemaColumn> schemaColumns =
+        relation.node() instanceof ViewNode
+            ? schema.getColumnsList()
+            : SchemaColumns.topLevelOnly(schema.getColumnsList());
+    Origin origin = mapOrigin(relation.node().origin());
+    List<ColumnInfo> columns =
+        UserObjectBundleUtils.columnsFor(schemaColumns, schemaColumns, origin, correlationId);
+    RelationInfo.Builder builder = baseRelationTemplate(relation);
+
+    if (relation.node() instanceof SystemTableNode systemTableNode) {
+      // The same resolver feeds RelationPayloadPolicy, so the token and served endpoint cannot
+      // drift. System templates bypass Objects because configuration can move independently of
+      // the registry content identity.
+      SystemExecutionResolver.SystemExecution exec =
+          systemExecutionResolver.resolve(systemTableNode);
+      builder.setBackendKind(systemTableNode.backendKind());
+      if (exec.flightEndpoint() != null) {
+        builder.setFlightEndpoint(exec.flightEndpoint());
+      } else if (!exec.storagePath().isBlank()) {
+        builder.setStoragePath(exec.storagePath());
+      }
+    }
+    if (relation.node() instanceof ViewNode view) {
+      builder.setViewDefinition(viewDefinitionBuilder(view));
+    }
+    builder.addAllColumns(
+        columns.stream()
+            .map(
+                column ->
+                    ColumnResult.newBuilder()
+                        .setColumnId(column.getId())
+                        .setColumnName(column.getName())
+                        .setOrdinal(column.getOrdinal())
+                        .setStatus(ColumnStatus.COLUMN_STATUS_OK)
+                        .setColumn(column)
+                        .build())
+            .toList());
+    return builder.build();
+  }
+
   /**
    * True when the payload built for this candidate carries the relation's complete column set (no
    * projection). Mirrors {@link UserObjectBundleUtils#pruneSchema} exactly: a candidate that wants
@@ -354,9 +437,12 @@ final class RelationBundleBuilder {
    * the two can never disagree on a relation's identity.
    */
   private RelationInfo.Builder baseRelationInfo(ResolvedRelation relation) {
+    return baseRelationTemplate(relation).setName(relation.canonicalName());
+  }
+
+  private RelationInfo.Builder baseRelationTemplate(ResolvedRelation relation) {
     return RelationInfo.newBuilder()
         .setRelationId(relation.relationId())
-        .setName(relation.canonicalName())
         .setKind(mapKind(relation.node().kind(), relation.node().origin()))
         .setOrigin(mapOrigin(relation.node().origin()));
   }
@@ -384,29 +470,16 @@ final class RelationBundleBuilder {
     return count;
   }
 
-  private ai.floedb.floecat.query.rpc.SchemaDescriptor logicalSchemaForRelation(
-      String correlationId,
-      ResourceId relationId,
-      UserTableNode userTable,
-      QueryContext queryContext) {
-    Optional<TablePin> pin = queryContext.findTablePin(relationId, correlationId);
+  private SchemaDescriptor logicalSchemaForRelation(
+      String correlationId, UserTableNode userTable, Optional<TablePin> pin) {
     if (pin.isEmpty()) {
       // Not yet pinned (e.g. a relation resolved outside the pinned set): fall back to the table's
       // default schema.
-      return logicalSchemaMapper.map(userTable);
+      return objects.mappedSchema(userTable, userTable.schemaJson());
     }
-    // Consume the pinned snapshot identity. The stream's producer-thread pre-pass validated this
-    // pin before the relation entered worker fan-out.
-    SnapshotRef snapshotRef =
-        SnapshotRef.newBuilder().setSnapshotId(pin.get().getSnapshotId()).build();
-    CatalogGraphView.SchemaResolution resolved =
-        graphView.schemaFor(
-            correlationId,
-            relationId,
-            snapshotRef,
-            pin.get().getTableBlobUri(),
-            pin.get().getSnapshotBlobUri());
-    return logicalSchemaMapper.map(resolved.table(), resolved.schemaJson());
+    // The stream's producer-thread pre-pass validated this pin before the relation entered worker
+    // fan-out. Objects owns the cache-first resolution so every caller gets the same behavior.
+    return objects.pinnedSchema(correlationId, pin.get(), graphView);
   }
 
   private ViewDefinition.Builder viewDefinitionBuilder(ViewNode view) {

@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.statistics;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -30,14 +31,10 @@ import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.telemetry.MetricId;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.Weigher;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -69,88 +66,8 @@ final class PlannerStatsResolver {
 
   private static final Logger LOG = Logger.getLogger(PlannerStatsResolver.class);
 
-  /**
-   * Fully-qualified cache key for a single column-stats record.
-   *
-   * <p>All four fields are required to guarantee no cross-contamination:
-   *
-   * <ul>
-   *   <li>{@code accountId} — isolates tenants.
-   *   <li>{@code tableId} — isolates tables within an account.
-   *   <li>{@code snapshotId} — isolates snapshots; new stats captures produce new snapshot IDs, so
-   *       stale entries from old snapshots are never served for new-snapshot queries.
-   *   <li>{@code storageId} — the {@link ai.floedb.floecat.stats.identity.StatsTargetIdentity}
-   *       storage key that uniquely identifies the target (column, table-level, file, etc.) within
-   *       a snapshot.
-   * </ul>
-   */
-  private record StatsCacheKey(
-      String accountId, String tableId, long snapshotId, String generationToken, String storageId) {
-    private StatsCacheKey {
-      generationToken = generationToken == null ? "" : generationToken;
-    }
-  }
-
-  /**
-   * Maximum total byte weight of the stats cache.
-   *
-   * <p>256 MB accommodates roughly:
-   *
-   * <ul>
-   *   <li>~200,000 scalar-only records at ~1 KB each (typical planner path today), or
-   *   <li>~2,500 sketch-bearing records at ~100 KB each (theta k=4096 + tuple v2).
-   * </ul>
-   *
-   * <p>Using weight rather than entry count prevents OOM when sketch-carrying {@link
-   * TargetStatsRecord}s are common — a record with k=4096 theta + tuple sketches is ~100× larger
-   * than a scalar record, so a count-only cap of 500,000 could allow ~50 GB of in-memory sketch
-   * data if every entry held full sketch payloads.
-   */
-  private static final long STATS_CACHE_MAX_WEIGHT_BYTES = 256L * 1024 * 1024; // 256 MB
-
-  /**
-   * Weigher: approximate JVM heap cost per cache entry.
-   *
-   * <p>Uses {@link com.google.protobuf.AbstractMessage#getSerializedSize()} as a proxy for the
-   * proto object's heap footprint. Proto objects typically occupy 1–2× their wire size in heap
-   * (field objects, repeated-field lists, etc.), so the true heap usage may be larger; the weight
-   * budget accounts for this by being set conservatively. A small fixed overhead (64 B) is added
-   * per entry for cache bookkeeping and the key object.
-   *
-   * <p>Caffeine requires the weight to fit in an {@code int}. Records larger than {@link
-   * Integer#MAX_VALUE} bytes are treated as maximum weight, effectively evicting them immediately —
-   * an acceptable safety valve for pathologically large records.
-   */
-  private static int cacheWeight(StatsCacheKey key, TargetStatsRecord record) {
-    long size = record.getSerializedSize() + 64L; // +64 for key object + cache overhead
-    return (int) Math.min(size, Integer.MAX_VALUE);
-  }
-
-  /**
-   * Application-scoped, snapshot-safe stats cache, bounded by byte weight.
-   *
-   * <p>Lifetime: the JVM process (survives all queries and connections).
-   *
-   * <p>Invalidation: snapshot IDs isolate normal new-snapshot captures, but full-rescan/finalize
-   * paths can replace stats for the same snapshot ID. Successful mutation paths must explicitly
-   * invalidate affected entries through this resolver; TTL is only a backstop for memory and missed
-   * invalidation bugs.
-   *
-   * <p>Only positive hits (present records) are cached. Absent results are not cached because they
-   * may be under active synchronous capture and could appear within seconds.
-   *
-   * <p>Bounded by {@link #STATS_CACHE_MAX_WEIGHT_BYTES} rather than entry count: a single
-   * sketch-bearing record can be ~100 KB while a scalar record is ~1 KB; a count-only cap would
-   * allow unbounded memory growth as sketch payloads become common.
-   */
-  private final Cache<StatsCacheKey, TargetStatsRecord> statsCache =
-      Caffeine.newBuilder()
-          .maximumWeight(STATS_CACHE_MAX_WEIGHT_BYTES)
-          .weigher((Weigher<StatsCacheKey, TargetStatsRecord>) PlannerStatsResolver::cacheWeight)
-          .expireAfterWrite(10, TimeUnit.MINUTES) // Backstop; mutation paths invalidate eagerly.
-          .build();
-
   private final StatsStore statsStore;
+  private final ObjectCache objects;
   private final Function<StatsCaptureRequest, Optional<TargetStatsRecord>> storeReader;
   private final MetricCounter counter;
   private final Consumer<StatsSyncOutcome> hitObserver;
@@ -175,10 +92,12 @@ final class PlannerStatsResolver {
    */
   PlannerStatsResolver(
       StatsStore statsStore,
+      ObjectCache objects,
       Function<StatsCaptureRequest, Optional<TargetStatsRecord>> storeReader,
       MetricCounter counter,
       Consumer<StatsSyncOutcome> hitObserver) {
     this.statsStore = statsStore;
+    this.objects = objects;
     this.storeReader = storeReader;
     this.counter = counter;
     this.hitObserver = hitObserver;
@@ -247,7 +166,7 @@ final class PlannerStatsResolver {
     java.util.Map<String, TargetStatsRecord> cachedPartial = new java.util.LinkedHashMap<>();
     for (StatsCaptureRequest req : requests) {
       String key = storageId(req);
-      TargetStatsRecord cached = statsCache.getIfPresent(cacheKeyFor(req, primaryToken));
+      TargetStatsRecord cached = cachedTarget(req, primaryToken);
       if (cached != null && completenessFor.apply(key).test(cached)) {
         hitObserver.accept(StatsSyncOutcome.HIT);
         diagnostics.record(PlannerLookupOutcome.CACHE_HIT);
@@ -374,12 +293,29 @@ final class PlannerStatsResolver {
     return new Resolution(out, List.copyOf(afterFill), diagnostics, pinnedGeneration);
   }
 
+  /** Reads only the pinned generation, treating an unreadable frozen manifest as a miss. */
+  Optional<TargetStatsRecord> resolvePinnedFromStore(
+      StatsCaptureRequest request, String pinnedGeneration) {
+    try {
+      return statsStore.getTargetStatsInGeneration(
+          request.tableId(), request.snapshotId(), pinnedGeneration, request.target());
+    } catch (BaseResourceRepository.AbortRetryableException | StorageAbortRetryableException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      // A frozen manifest may be temporarily unreadable even though the live generation is still
+      // available. Treat that generation as a miss; callers can then use the normal newest ladder.
+      LOG.debugf(
+          e, "pinned-generation read failed for %s; falling through to newest", storageId(request));
+      return Optional.empty();
+    }
+  }
+
   /**
    * Store rungs of the single-target planner lookup: the pinned generation for the pinned snapshot
    * (query-consistent; a pinned read failure falls through rather than failing the lookup), then
    * the newest (live active) generation only to fill a target the pinned generation lacks. Empty
-   * means no store rung could serve; the caller decides whether to capture. Does not touch the
-   * planner cache, matching the historical single-target path.
+   * means no store rung could serve; the caller decides whether to capture. Only the immutable
+   * pinned rung is cached; the live/newest rung is always read through.
    */
   Optional<TargetStatsRecord> resolveSingleFromStore(
       StatsCaptureRequest request, Optional<String> pinnedGenerationToken) {
@@ -387,27 +323,15 @@ final class PlannerStatsResolver {
 
     // Primary: the pinned generation (query-consistent), or live/newest when the pin froze none.
     Optional<TargetStatsRecord> primary;
-    if (pinnedGeneration.isBlank()) {
-      primary = storeReader.apply(request);
-    } else {
-      try {
-        primary =
-            statsStore.getTargetStatsInGeneration(
-                request.tableId(), request.snapshotId(), pinnedGeneration, request.target());
-      } catch (BaseResourceRepository.AbortRetryableException | StorageAbortRetryableException e) {
-        throw e;
-      } catch (RuntimeException e) {
-        // A pinned-generation read failure (e.g. an unreadable frozen manifest) must not fail the
-        // lookup outright: the newest generation of the same snapshot is an independent read path
-        // with no frozen manifest involved — treat the pin as a miss and let the gap-fill below
-        // serve, matching the batch path's fallback.
-        LOG.debugf(
-            e,
-            "pinned-generation read failed for %s; falling through to newest",
-            storageId(request));
-        primary = Optional.empty();
-      }
-    }
+    primary =
+        pinnedGeneration.isBlank()
+            ? storeReader.apply(request)
+            : objects.targetStats(
+                request.tableId(),
+                request.snapshotId(),
+                pinnedGeneration,
+                storageId(request),
+                () -> resolvePinnedFromStore(request, pinnedGeneration));
     if (primary.isPresent()) {
       return primary;
     }
@@ -425,7 +349,7 @@ final class PlannerStatsResolver {
     if (tableId == null) {
       return;
     }
-    statsCache.asMap().keySet().removeIf(key -> matchesSnapshot(key, tableId, snapshotId));
+    objects.evictTargetStats(tableId, snapshotId);
   }
 
   /** Invalidates one cached target for one table snapshot. */
@@ -434,11 +358,7 @@ final class PlannerStatsResolver {
       return;
     }
     String storageId = StatsTargetIdentity.storageId(target);
-    statsCache
-        .asMap()
-        .keySet()
-        .removeIf(
-            key -> matchesSnapshot(key, tableId, snapshotId) && key.storageId().equals(storageId));
+    objects.evictTargetStats(tableId, snapshotId, storageId);
   }
 
   /** Invalidates cached targets represented by successfully persisted records. */
@@ -457,40 +377,29 @@ final class PlannerStatsResolver {
     }
     // One O(cacheSize) pass matching any of the records' targets, not one full scan per record —
     // a wide-table recompute (hundreds of columns) would otherwise scan the cache once per column.
-    statsCache
-        .asMap()
-        .keySet()
-        .removeIf(
-            key ->
-                matchesSnapshot(key, tableId, snapshotId) && storageIds.contains(key.storageId()));
+    objects.evictTargetStats(tableId, snapshotId, storageIds);
+  }
+
+  private TargetStatsRecord cachedTarget(StatsCaptureRequest request, String generationToken) {
+    if (generationToken == null || generationToken.isBlank()) {
+      return null;
+    }
+    return objects
+        .targetStats(
+            request.tableId(),
+            request.snapshotId(),
+            generationToken,
+            storageId(request),
+            Optional::empty)
+        .orElse(null);
   }
 
   /**
-   * The (account, table, snapshot) scope shared by every invalidation variant; keep the key-shape
-   * match here so a cache-key change cannot silently under-invalidate one variant.
-   */
-  private static boolean matchesSnapshot(StatsCacheKey key, ResourceId tableId, long snapshotId) {
-    return key.accountId().equals(tableId.getAccountId())
-        && key.tableId().equals(tableId.getId())
-        && key.snapshotId() == snapshotId;
-  }
-
-  /** Cache key for one request under a specific served-generation token ("" = live/newest). */
-  private StatsCacheKey cacheKeyFor(StatsCaptureRequest req, String generationToken) {
-    return new StatsCacheKey(
-        req.tableId().getAccountId(),
-        req.tableId().getId(),
-        req.snapshotId(),
-        generationToken,
-        storageId(req));
-  }
-
-  /**
-   * Serve one resolved planner target: write the record through to the cache keyspace it was served
-   * from ({@code cacheToken} — the pinned generation's token, or "" for the live/newest
-   * generation), count the ladder rung that produced it, and emit the hit. The single definition of
-   * "serve" for every rung of {@link #resolveFromStore}, so caching, telemetry, and result emission
-   * can never drift apart between rungs.
+   * Serve one resolved planner target: admit the immutable record through the native cache loader
+   * for the keyspace it was served from ({@code cacheToken} — the pinned generation's token, or ""
+   * for the live/newest generation), count the ladder rung that produced it, and emit the hit. The
+   * single definition of "serve" for every rung of {@link #resolveFromStore}, so caching,
+   * telemetry, and result emission can never drift apart between rungs.
    */
   private void servePlannerHit(
       java.util.Map<String, StatsResolutionResult> out,
@@ -500,7 +409,12 @@ final class PlannerStatsResolver {
       TargetStatsRecord record,
       String cacheToken,
       PlannerLookupOutcome outcome) {
-    statsCache.put(cacheKeyFor(req, cacheToken), record);
+    if (cacheToken != null && !cacheToken.isBlank()) {
+      // The durable read is already complete. Let the native cache loader admit that immutable
+      // identity; there is no direct put or version fence in the generic cache path.
+      objects.targetStats(
+          req.tableId(), req.snapshotId(), cacheToken, storageId(req), () -> Optional.of(record));
+    }
     hitObserver.accept(StatsSyncOutcome.HIT);
     diagnostics.record(outcome);
     out.put(key, StatsResolutionResult.hit(record));
