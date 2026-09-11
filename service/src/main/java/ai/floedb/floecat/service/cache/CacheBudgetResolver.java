@@ -37,9 +37,8 @@ import org.jboss.logging.Logger;
  * floecat.cache.total-bytes} and the derivation is skipped entirely.
  *
  * <p>A cache's figure is a share of that total, or an absolute {@code max-bytes} pinned instead.
- * The object share comes from the reference sizing scenario -- a 100,000-table account at 100
- * columns. Shares resolve against that total, not the heap. Nothing about the scenario is compiled
- * in; it says what to set, not what the code assumes.
+ * Shares resolve against that total, not the heap. Nothing about a reference sizing scenario is
+ * compiled in; it only says what to set, not what the code assumes.
  *
  * <p>Every family resolves the same way, by tag, over {@link CacheFamily#values()}: adding a family
  * adds its two properties and nothing else, with no per-family injection point to forget.
