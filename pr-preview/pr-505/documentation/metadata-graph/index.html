@@ -955,9 +955,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cache-metrics" class="md-nav__link">
+  <a href="#metrics" class="md-nav__link">
     <span class="md-ellipsis">
-      Cache metrics
+      Metrics
     </span>
   </a>
   
@@ -1974,9 +1974,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cache-metrics" class="md-nav__link">
+  <a href="#metrics" class="md-nav__link">
     <span class="md-ellipsis">
-      Cache metrics
+      Metrics
     </span>
   </a>
   
@@ -2030,10 +2030,11 @@
 between the pointer/blob repositories and any RPC that needs to inspect catalogs, namespaces, tables,
 or views. The graph provides:</p>
 <ul>
-<li>Immutable node models derived through repositories. Repository bytes are resident in the disk
-  blob cache, while complete engine-neutral relation responses and mapped schemas are reused by
-  <code>ObjectCache</code>; the graph maintains no overlapping node cache.</li>
-<li>Resource-ID → current-blob resolution served by the pointer cache (<code>CachingPointerStore</code>), which
+<li>Immutable node models that can be safely reused across requests. Nodes are assembled through the
+  repository and <code>ObjectCache</code>; serialized inputs are read through <code>BlobCacheAccess</code> when the disk
+  cache is enabled. There is no separate graph-level decoded-node cache.</li>
+<li>Resource-ID → current-blob resolution served by the owner-managed planner index
+  (<code>PlanningPointerIndex</code> behind <code>IndexedPointerStore</code>), which
   is refreshed on write and does not expire, so a commit is visible to the replica that made it as
   soon as it lands.</li>
 <li>Helper APIs for name resolution (Directory RPC parity) and snapshot pinning (Snapshot RPC parity).</li>
@@ -2056,8 +2057,9 @@ facade sit inside <code>service/metagraph</code>. The split looks like this:</p>
 <li><code>core/metagraph/model/</code> – Immutable node records (<code>CatalogNode</code>, <code>NamespaceNode</code>, <code>TableNode</code>,
   <code>ViewNode</code>, <code>SystemViewNode</code>) plus shared enums (<code>GraphNodeKind</code>, <code>EngineKey</code>, <code>EngineHint</code>,
   <code>GraphNodeOrigin</code>, etc.).</li>
-<li><code>service/repo/cache/</code> – the pointer cache owns complete namespace and relation-name indexes;
-  <code>BlobCacheAccess</code> owns immutable versus pointer-version disk identities.</li>
+<li><code>service/repo/cache/</code> – the planner index owns complete namespace and relation-name indexes;
+  serialized immutable bodies are handled by <code>BlobCacheAccess</code>, while assembled metadata is held
+  by <code>ObjectCache</code>.</li>
 <li><code>service/metagraph/loader/</code> – <code>NodeLoader</code> wraps the catalog/namespace/table/view repositories to
   hydrate immutable nodes from protobuf metadata (<code>metaForSafe</code> + pointer fetches).</li>
 <li><code>service/metagraph/resolver/</code> – <code>NameResolver</code> handles catalog/namespace/table/view lookups and
@@ -2226,12 +2228,13 @@ pointers and blobs.</p>
 <p>Internally <code>resolve(ResourceId)</code>:</p>
 <ol>
 <li>Reads the pointer through <code>nodes.mutationMeta(id)</code>. There is no graph-level meta cache to probe
-   first: the pointer cache now sits under the store, so this read is a memory lookup when the key
-   is resident and a store read when it is not.</li>
-<li>Reads the named serialized body through its repository; a warm body comes from local disk.</li>
-<li>Rehydrates the protobuf record (<code>Catalog</code>, <code>Namespace</code>, <code>Table</code>, <code>View</code>) into an immutable node.</li>
-<li>Query relation assembly above the graph reuses <code>ObjectCache</code>, keyed by DDL identity, so repeated
-   planner requests normally do not reach this hydration path.</li>
+   first: the indexed store selects the complete owned partition or its durable fallback.</li>
+<li>Loads the immutable serialized body through the repository's <code>BlobCacheAccess</code> seam when disk
+   caching is enabled.</li>
+<li>Rehydrates the protobuf record (<code>Catalog</code>, <code>Namespace</code>, <code>Table</code>, <code>View</code>) into the immutable node
+   and stores the assembled relation/schema products in <code>ObjectCache</code>.</li>
+<li>A DDL publishes a new pointer and content identity, so the next resolution naturally uses the
+   new object key; no graph-level invalidation is required.</li>
 </ol>
 <h3 id="snapshot-pinning-semantics">Snapshot Pinning Semantics<a class="headerlink" href="#snapshot-pinning-semantics" title="Permanent link">&para;</a></h3>
 <ul>
@@ -2258,11 +2261,12 @@ contents.</p>
 <ul>
 <li><strong>Always go through the graph</strong> for read paths instead of hitting repositories directly. This keeps
   cache hit rate predictable and ensures planner/executor code sees immutable snapshots.</li>
-<li><strong>Nothing to invalidate after a mutation.</strong> The pointer cache sits under the store and the writer
-  publishes its own new value, so a successful mutation is visible to same-process readers without
-  a call. Cross-instance staleness is not time-bounded: another replica keeps its value until it
-  writes that key or reads it consistently. Node entries never need eviction — they are
-  content-keyed by blob URI.</li>
+<li><strong>Nothing to invalidate after a mutation.</strong> <code>IndexedPointerStore</code> commits the durable mutation
+  first, then publishes the result while holding the account read gate and the affected key's
+  lock. Different planner keys can proceed in parallel; prefix and account-wide operations take
+  the account write gate. Readers of a complete owned partition see the publication immediately;
+  a handoff or restart rebuilds the partition, and a non-owner falls back to durable KV. Node
+  entries never need eviction — they are content-keyed by blob URI.</li>
 <li><strong>Treat node instances as read-only</strong>. They are immutable records but they may still be shared
   across requests via the cache, so do not mutate maps or lists after retrieval.</li>
 <li><strong>Attach engine hints sparingly</strong>. Hints should be small (think JSON blobs or compact protobufs)
@@ -2282,9 +2286,9 @@ relations are materialized in the engine-specific overlays for <code>_system</co
 response to avoid exposing synthetic tables twice.
 Column decorations are surfaced per column via <code>RelationInfo.columns[*]</code> (<code>ColumnResult</code>), so a relation can
 still resolve as <code>FOUND</code> while individual columns report <code>COLUMN_STATUS_FAILED</code> with structured failure reasons.</p>
-<h2 id="cache-metrics">Cache metrics<a class="headerlink" href="#cache-metrics" title="Permanent link">&para;</a></h2>
-<p>The metadata graph does not own a cache. Repository-backed object and blob caches report through
-the shared <code>floecat.core.cache.*</code> metric family:</p>
+<h2 id="metrics">Metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h2>
+<p>Graph cache metrics are emitted through the shared <code>CacheMetrics</code> helper under the
+<code>floecat.core.cache.*</code> metric family, distinguished by cache-name tag:</p>
 <table>
 <thead>
 <tr>
@@ -2294,18 +2298,18 @@ the shared <code>floecat.core.cache.*</code> metric family:</p>
 </thead>
 <tbody>
 <tr>
-<td><code>object</code></td>
-<td>Assembled relation, mapped-schema, constraint, and snapshot-facts residency.</td>
+<td><code>graph-cache</code></td>
+<td>Node-load latency timer and load-failure counter, recorded by <code>UserGraph</code> around each node load.</td>
 </tr>
 <tr>
-<td><code>blob</code></td>
-<td>Serialized disk hits/misses, physical bytes, entries, corruption, sweep reclamation, and live mappings.</td>
+<td><code>blob-cache</code></td>
+<td>Disk blob-cache hits, misses, mappings, corruption and sweep activity.</td>
 </tr>
 </tbody>
 </table>
 <h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
-<p><code>MetadataGraphTest</code> uses in-memory repository/snapshot/directory fakes to exercise graph behavior
-and helper semantics without Mockito or bytecode agents. Any new helper should be covered there. Higher
+<p><code>MetadataGraphTest</code> uses in-memory repository/snapshot/directory fakes to exercise cache behavior and
+helper semantics without Mockito or bytecode agents. Any new helper should be covered there. Higher
 level components (e.g., <code>QueryInputResolverTest</code>) rely on lightweight graph fakes to validate their
 own logic while still mirroring real graph responses.</p>
 <h2 id="future-work">Future Work<a class="headerlink" href="#future-work" title="Permanent link">&para;</a></h2>
