@@ -121,6 +121,25 @@ public class TestDataResetter {
     planningPointerIndex.get().warm(accountId);
   }
 
+  /**
+   * Warms the fixture account and waits only in tests for the background image to become usable.
+   */
+  public void warmPointerIndexAndWait(String accountId) {
+    warmPointerIndex(accountId);
+    if (planningPointerIndex == null || !planningPointerIndex.isResolvable()) {
+      return;
+    }
+    long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+    while (planningPointerIndex.get().completePartitionCount() == 0
+        && System.nanoTime() < deadline) {
+      java.util.concurrent.locks.LockSupport.parkNanos(
+          java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(5));
+    }
+    if (planningPointerIndex.get().completePartitionCount() == 0) {
+      throw new AssertionError("planner pointer index did not become complete for " + accountId);
+    }
+  }
+
   List<String> listAccountIds() {
     var ids = new ArrayList<String>();
     String token = "";

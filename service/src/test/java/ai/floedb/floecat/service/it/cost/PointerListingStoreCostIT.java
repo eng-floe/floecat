@@ -33,6 +33,7 @@ import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.StoreCostProfile;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.testsupport.RecordingStoreReadObserver;
 import ai.floedb.floecat.service.testsupport.StoreCostMeter;
 import ai.floedb.floecat.service.util.TestDataResetter;
@@ -79,6 +80,7 @@ class PointerListingStoreCostIT {
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @Inject TestDataResetter resetter;
+  @Inject AccountRepository accounts;
   @Inject SeedRunner seeder;
   @Inject RecordingStoreReadObserver reads;
   @Inject StoreCostMeter meter;
@@ -88,6 +90,8 @@ class PointerListingStoreCostIT {
     meter.resetBetweenTests();
     resetter.wipeAll();
     seeder.seedData();
+    resetter.warmPointerIndexAndWait(
+        accounts.getByName(TestSupport.DEFAULT_SEED_ACCOUNT).orElseThrow().getResourceId().getId());
   }
 
   @Test

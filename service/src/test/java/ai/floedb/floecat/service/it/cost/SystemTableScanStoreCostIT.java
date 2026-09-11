@@ -27,6 +27,7 @@ import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.StoreCostProfile;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.testsupport.RecordingStoreReadObserver;
 import ai.floedb.floecat.service.testsupport.StoreCostMeter;
 import ai.floedb.floecat.service.util.TestDataResetter;
@@ -91,6 +92,7 @@ class SystemTableScanStoreCostIT {
   QuerySystemScanServiceGrpc.QuerySystemScanServiceBlockingStub systemScan;
 
   @Inject TestDataResetter resetter;
+  @Inject AccountRepository accounts;
   @Inject SeedRunner seeder;
   @Inject RecordingStoreReadObserver reads;
 
@@ -104,6 +106,8 @@ class SystemTableScanStoreCostIT {
     meter.resetBetweenTests();
     resetter.wipeAll();
     seeder.seedData();
+    resetter.warmPointerIndexAndWait(
+        accounts.getByName(TestSupport.DEFAULT_SEED_ACCOUNT).orElseThrow().getResourceId().getId());
   }
 
   /** Every catalog, namespace and table this suite creates carries this prefix. */
