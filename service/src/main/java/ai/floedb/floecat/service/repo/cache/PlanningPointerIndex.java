@@ -671,10 +671,6 @@ public final class PlanningPointerIndex {
 
   private void loadLocked(String partitionKey, Partition partition) {
     TreeMap<String, Pointer> loaded = new TreeMap<>();
-    if (!GLOBAL.equals(partitionKey)) {
-      String root = Keys.accountRootPrefix(partitionKey);
-      durable.getConsistent(root).ifPresent(pointer -> loaded.put(root, pointer));
-    }
     for (String prefix : loadPrefixes(partitionKey)) {
       String token = "";
       do {

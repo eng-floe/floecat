@@ -148,11 +148,6 @@ public final class Keys {
 
   // ===== Account =====
 
-  public static String accountRootPointer(String accountId) {
-    String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid);
-  }
-
   public static String accountPointerById(String accountId) {
     String tid = req("account_id", accountId);
     return "/accounts/by-id/" + encode(tid);
