@@ -500,8 +500,18 @@ public final class PlanningPointerIndex {
   }
 
   private void forget(String accountId) {
+    Partition removed;
     synchronized (partitions) {
-      partitions.remove(accountId);
+      removed = partitions.remove(accountId);
+    }
+    if (removed != null) {
+      removed.lock.writeLock().lock();
+      try {
+        removed.entries.clear();
+        removed.readiness = Readiness.LOADING;
+      } finally {
+        removed.lock.writeLock().unlock();
+      }
     }
   }
 
@@ -513,7 +523,11 @@ public final class PlanningPointerIndex {
     }
     partition.lock.writeLock().lock();
     try {
-      if (partition.readiness != Readiness.COMPLETE) loadLocked(partitionKey, partition);
+      // Ownership can be revoked after the task captured the partition but before it acquired the
+      // write lock. Do not resurrect an image that the handoff already removed.
+      if (partitions.get(partitionKey) == partition && partition.readiness != Readiness.COMPLETE) {
+        loadLocked(partitionKey, partition);
+      }
     } catch (RuntimeException ignored) {
       // A failed load is not a partial index. Keep it LOADING; a later read or mutation retries.
     } finally {
