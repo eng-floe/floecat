@@ -97,10 +97,8 @@ class CacheBudgetResolverTest {
                 Map.of(
                     "floecat.cache.total-bytes", Long.toString(10 * GB),
                     "floecat.cache.heap-share", "0.5",
-                    "floecat.cache.object.max-bytes", Long.toString(GB),
                     "floecat.cache.object.max-bytes", Long.toString(2 * GB))));
 
-    assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isEqualTo(GB);
     assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isEqualTo(2 * GB);
   }
 
