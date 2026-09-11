@@ -29,7 +29,7 @@
   <properties>
     <telemetry.docgen.skip>false</telemetry.docgen.skip>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <version.quarkus>3.31.4</version.quarkus>
+    <version.quarkus>3.32.1</version.quarkus>
     <maven.compiler.source>25</maven.compiler.source>
     <maven.compiler.target>25</maven.compiler.target>
     <proto.compiler.release>25</proto.compiler.release>
