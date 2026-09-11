@@ -170,4 +170,3 @@ maximum heap, which the JVM already sizes from the container memory limit, and e
 share of that. `heap-share` carries its default in
 `service/src/main/resources/application.properties`, alongside `floecat.blob.cache.*`;
 `total-bytes` is unset and is derived when the object and hint memory caches are wired.
-
