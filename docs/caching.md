@@ -46,6 +46,11 @@ work: while the partition is `LOADING`, they use durable KV. Mutations take the 
 lock, so they wait for a load already in progress and then commit to KV before publishing the new
 pointer. A failed warm leaves the partition `LOADING` and the next read continues using KV.
 
+Standalone Floecat uses `ALWAYS_OWNED`, because there is no competing owner. A managed deployment
+provides the `PlanningPointerIndex.Ownership` implementation and connects ownership handoff to the
+index: revoke ownership before routing the account away, then drop the old partition; after the
+new owner is granted, start warming it. The index never assumes ownership from a cache hit.
+
 `floecat.metadata.graph.cache-max-size` gates node caching (`0` = off); node memory is governed by
 `floecat.blob.cache.max-weight-bytes`.
 
