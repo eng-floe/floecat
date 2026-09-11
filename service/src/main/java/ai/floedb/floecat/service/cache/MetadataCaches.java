@@ -30,10 +30,13 @@ import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
 import java.time.Duration;
+import org.jboss.logging.Logger;
 
 /** Builds the single pointer-store seam used by planning, mutation, and maintenance code. */
 @ApplicationScoped
 public class MetadataCaches {
+  private static final Logger LOG = Logger.getLogger(MetadataCaches.class);
+
   @Produces
   @Singleton
   @CachedPointerStore
@@ -66,18 +69,23 @@ public class MetadataCaches {
             ownership,
             new PlanningPointerIndex.WarmObserver() {
               @Override
-              public void started() {
+              public void started(String accountId) {
                 metrics.recordMiss(Tag.of(TagKey.REASON, "warm"));
               }
 
               @Override
-              public void completed(Duration duration) {
+              public void completed(String accountId, Duration duration) {
                 metrics.recordLoad(duration, false, Tag.of(TagKey.REASON, "warm"));
               }
 
               @Override
-              public void failed(Duration duration, Throwable failure) {
+              public void failed(String accountId, Duration duration, Throwable failure) {
                 metrics.recordLoadFailure(duration, failure, Tag.of(TagKey.REASON, "warm"));
+                LOG.warnf(
+                    failure,
+                    "planner_pointer_warm_failed account_id=%s duration=%s",
+                    accountId,
+                    duration);
               }
             });
     metrics.trackSize(

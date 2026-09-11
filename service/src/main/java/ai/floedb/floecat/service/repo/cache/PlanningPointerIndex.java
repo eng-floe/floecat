@@ -77,11 +77,11 @@ public final class PlanningPointerIndex {
   public interface WarmObserver {
     WarmObserver NONE = new WarmObserver() {};
 
-    default void started() {}
+    default void started(String accountId) {}
 
-    default void completed(Duration duration) {}
+    default void completed(String accountId, Duration duration) {}
 
-    default void failed(Duration duration, Throwable failure) {}
+    default void failed(String accountId, Duration duration, Throwable failure) {}
   }
 
   private final PointerStore durable;
@@ -555,7 +555,7 @@ public final class PlanningPointerIndex {
       return;
     }
     long startNanos = System.nanoTime();
-    warmObserver.started();
+    warmObserver.started(partitionKey);
     boolean loaded = false;
     Throwable failure = null;
     partition.lock.writeLock().lock();
@@ -575,8 +575,8 @@ public final class PlanningPointerIndex {
       if (partition.readiness != Readiness.COMPLETE) partition.warmScheduled.set(false);
     }
     Duration duration = Duration.ofNanos(System.nanoTime() - startNanos);
-    if (loaded) warmObserver.completed(duration);
-    else if (failure != null) warmObserver.failed(duration, failure);
+    if (loaded) warmObserver.completed(partitionKey, duration);
+    else if (failure != null) warmObserver.failed(partitionKey, duration, failure);
   }
 
   private Partition readyPartition(String partitionKey) {

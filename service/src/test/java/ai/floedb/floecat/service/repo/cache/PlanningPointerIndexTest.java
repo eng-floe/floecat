@@ -198,17 +198,17 @@ class PlanningPointerIndexTest {
             Runnable::run,
             new PlanningPointerIndex.WarmObserver() {
               @Override
-              public void started() {
+              public void started(String accountId) {
                 starts.incrementAndGet();
               }
 
               @Override
-              public void completed(Duration duration) {
+              public void completed(String accountId, Duration duration) {
                 completed.set(duration);
               }
 
               @Override
-              public void failed(Duration duration, Throwable error) {
+              public void failed(String accountId, Duration duration, Throwable error) {
                 failure.set(error);
               }
             });
