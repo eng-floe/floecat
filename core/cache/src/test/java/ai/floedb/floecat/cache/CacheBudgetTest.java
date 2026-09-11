@@ -31,42 +31,41 @@ class CacheBudgetTest {
   void aMissingFamilyClaimHoldsNothing() {
     CacheBudget budget = new CacheBudget(Map.of());
 
-    assertThat(budget.bytesFor(CacheFamily.POINTER)).isZero();
+    assertThat(budget.bytesFor(CacheFamily.OBJECT)).isZero();
   }
 
   @Test
   void aShareResolvesAgainstTheTotal() {
     CacheBudget budget =
-        CacheBudget.split(100L * GB, Map.of(CacheFamily.POINTER, new Claim.Share(0.1)));
+        CacheBudget.split(100L * GB, Map.of(CacheFamily.OBJECT, new Claim.Share(0.1)));
 
-    assertThat(budget.bytesFor(CacheFamily.POINTER)).isEqualTo(10L * GB);
+    assertThat(budget.bytesFor(CacheFamily.OBJECT)).isEqualTo(10L * GB);
   }
 
   @Test
   void anAbsoluteFigureIgnoresTheTotalSize() {
     CacheBudget budget =
-        CacheBudget.split(100L * GB, Map.of(CacheFamily.POINTER, new Claim.Bytes(4L * GB)));
+        CacheBudget.split(100L * GB, Map.of(CacheFamily.OBJECT, new Claim.Bytes(4L * GB)));
 
-    assertThat(budget.bytesByFamily()).containsOnlyKeys(CacheFamily.POINTER);
-    assertThat(budget.bytesFor(CacheFamily.POINTER)).isEqualTo(4L * GB);
+    assertThat(budget.bytesByFamily()).containsOnlyKeys(CacheFamily.OBJECT);
+    assertThat(budget.bytesFor(CacheFamily.OBJECT)).isEqualTo(4L * GB);
   }
 
   @Test
   void everyRouteToAZeroBudgetIsRefused() {
     // Three different arrivals at the same zero; each is refused rather than accepted quietly.
     assertThatThrownBy(
-            () -> CacheBudget.split(0L, Map.of(CacheFamily.POINTER, new Claim.Share(0.1))))
+            () -> CacheBudget.split(0L, Map.of(CacheFamily.OBJECT, new Claim.Share(0.1))))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("total must be positive");
 
-    assertThatThrownBy(
-            () -> CacheBudget.split(GB, Map.of(CacheFamily.POINTER, new Claim.Bytes(0L))))
+    assertThatThrownBy(() -> CacheBudget.split(GB, Map.of(CacheFamily.OBJECT, new Claim.Bytes(0L))))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("resolves to 0");
 
     // A share small enough to round away against a small total: valid share, valid total, no cache.
     assertThatThrownBy(
-            () -> CacheBudget.split(100L, Map.of(CacheFamily.POINTER, new Claim.Share(0.001))))
+            () -> CacheBudget.split(100L, Map.of(CacheFamily.OBJECT, new Claim.Share(0.001))))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("resolves to 0");
   }
@@ -74,10 +73,10 @@ class CacheBudgetTest {
   @Test
   void aZeroIsRefusedByTheTypeAndNotOnlyBySplit() {
     // split's guarantee is only worth what the type enforces, and the constructor is public.
-    assertThatThrownBy(() -> new CacheBudget(Map.of(CacheFamily.POINTER, 0L)))
+    assertThatThrownBy(() -> new CacheBudget(Map.of(CacheFamily.OBJECT, 0L)))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("must be positive");
-    assertThatThrownBy(() -> new CacheBudget(Map.of(CacheFamily.POINTER, -1L)))
+    assertThatThrownBy(() -> new CacheBudget(Map.of(CacheFamily.OBJECT, -1L)))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
@@ -94,7 +93,7 @@ class CacheBudgetTest {
   void aPinnedFigureMayNotExceedTheTotal() {
     assertThatThrownBy(
             () ->
-                CacheBudget.split(GB, Map.of(CacheFamily.POINTER, new Claim.Bytes(Long.MAX_VALUE))))
+                CacheBudget.split(GB, Map.of(CacheFamily.OBJECT, new Claim.Bytes(Long.MAX_VALUE))))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("more than");
   }
