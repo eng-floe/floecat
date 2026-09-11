@@ -132,6 +132,16 @@ public final class CaffeineMemoryCache<K, V> implements MemoryCache<K, V> {
     return Optional.ofNullable(entries.getIfPresent(key)).map(CachedValue::value);
   }
 
+  /**
+   * Publishes a value for the legacy mutable pointer view. Immutable cache clients use {@link
+   * #get(Object, Loader)} and never call this method.
+   */
+  public void put(K key, V value) {
+    Objects.requireNonNull(key, "key");
+    Objects.requireNonNull(value, "value");
+    entries.put(key, new CachedValue<>(value));
+  }
+
   @Override
   public Map<K, V> getAll(Collection<K> keys, BulkLoader<K, V> loader) {
     Objects.requireNonNull(keys, "keys");

@@ -58,6 +58,21 @@ public interface CacheEvents {
    */
   default void loadFailed(Duration elapsed, RuntimeException error) {}
 
+  /** Records a load whose result was not admitted to the cache. */
+  default void loadDiscarded() {}
+
+  /** Records a value rejected by the cache admission budget. */
+  default void admissionRejected() {}
+
+  /** Result of publishing a durable pointer mutation into the local pointer view. */
+  enum WriteThroughResult {
+    APPLIED,
+    SKIPPED
+  }
+
+  /** Records whether a durable mutation was reflected in the local pointer view. */
+  default void writeThrough(WriteThroughResult result) {}
+
   /**
    * An entry dropped to stay within budget, releasing {@code weightBytes}. Nothing expires, so this
    * is the signal a budget is too small; the weight tells many small evictions from a few large.
