@@ -2110,8 +2110,9 @@ query lifecycle / scan bundle logic.</p>
 <li><code>service/query</code> – Query lifecycle management (<code>QueryContext</code>, <code>QueryContextStore</code>,
   <code>QueryServiceImpl</code>).</li>
 <li><code>service/metagraph</code> – MetadataGraph runtime (façade, loader, resolvers, hint manager, topology
-  views); immutable node models live in <code>core/metagraph</code>, assembled relation metadata lives in
-  <code>ObjectCache</code>, and pointer plus disk-blob cache adapters live in <code>service/repo/cache/</code> (see
+  cache); the immutable node models live in <code>core/metagraph</code>, assembled metadata is held by
+  <code>ObjectCache</code>, and pointer/disk-blob adapters live in
+  <code>service/repo/cache/</code> (see
   <a href="../metadata-graph/"><code>docs/metadata-graph.md</code></a> and <a href="../caching/"><code>docs/caching.md</code></a>).</li>
 <li><code>service/gc</code> – Scheduled cleanup for idempotency records, orphan pointers/blobs, stale transaction
   artifacts, and durable reconcile jobs.</li>
