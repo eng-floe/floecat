@@ -74,6 +74,12 @@ sizing harness use the same arithmetic.
 | `CacheBudget` / `CacheBudgetResolver` | One total split across the families. Pure arithmetic in `CacheBudget.split`; `CacheBudgetResolver` (`service/cache/`) reads the configuration and runs it at startup. |
 | `CacheEvents` | The common event baseline: `hit`, `miss`, `loadTime`, `loadFailed` and `evicted`. Bulk reads report misses for the keys passed to their source loader and one duration per loader invocation. A disk cache can reuse the telemetry vocabulary while exposing its own lifecycle-shaped interface. The module reports events; the container names the metrics. |
 
+A memory-cache loader may read durable storage and assemble its value, but it must not call
+`get` or `getAll` recursively on the same cache. Caffeine coordinates one mapping function per key
+and its underlying map rejects recursive updates. Resolve another cached dependency first, then
+enter the loader for the value that depends on it. This is a loader rule, not an application-level
+in-flight mechanism.
+
 Budgets resolve from the container rather than from a compiled-in figure. The JVM already sizes its
 heap from the container memory limit, so `floecat.cache.heap-share` (0.5) of the maximum heap
 follows the container without reading cgroups; `floecat.cache.total-bytes` pins the total instead
