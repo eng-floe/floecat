@@ -47,6 +47,7 @@ import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.StoreCostProfile;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.testsupport.RecordingStoreReadObserver;
 import ai.floedb.floecat.service.testsupport.StoreCostMeter;
 import ai.floedb.floecat.service.util.TestDataResetter;
@@ -120,6 +121,7 @@ class WarmRequestStoreCostIT {
   Channel channel;
 
   @Inject TestDataResetter resetter;
+  @Inject AccountRepository accounts;
   @Inject SeedRunner seeder;
   @Inject RecordingStoreReadObserver reads;
 
@@ -133,6 +135,8 @@ class WarmRequestStoreCostIT {
     meter.resetBetweenTests();
     resetter.wipeAll();
     seeder.seedData();
+    resetter.warmPointerIndexAndWait(
+        accounts.getByName(TestSupport.DEFAULT_SEED_ACCOUNT).orElseThrow().getResourceId().getId());
   }
 
   /**
@@ -272,18 +276,11 @@ class WarmRequestStoreCostIT {
   /**
    * KV round trips, not keys: a getBatch of eight is one. See {@code floecat.core.store.requests}.
    *
-   * <p>Two per table and nothing per request. The cache absorbs ordinary pointer reads, including
-   * the account, catalog, namespace, by-id and target-statistics resolutions. The two that remain
-   * are:
-   *
-   * <ul>
-   *   <li>{@code tables/<id>/root/current}, read consistently by the resolving-pin guard, which
-   *       bypasses the cache by design.
-   *   <li>The active generation's lifecycle marker, read consistently by the published-generation
-   *       guard.
-   * </ul>
+   * <p>One fixed account-root read and nothing per table. The planner pointer index absorbs all
+   * table-scoped pointer reads on the warm path; the remaining read is the request-level account
+   * metadata lookup.
    */
-  private static final Cost KV = new Cost("KV round trips", 2, 0, t -> t.reads.pointerRoundTrips());
+  private static final Cost KV = new Cost("KV round trips", 0, 1, t -> t.reads.pointerRoundTrips());
 
   /**
    * What the five per table and the one per request are, measured per fetch with its caller.
