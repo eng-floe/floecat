@@ -338,14 +338,17 @@ final class RelationBundleBuilder {
       String correlationId, ResolvedRelation relation, QueryContext queryContext) {
     if (relation.node() instanceof UserTableNode userTable) {
       Optional<TablePin> pin = queryContext.findTablePin(relation.relationId(), correlationId);
+      // Resolve the schema before entering ObjectCache's relation loader. Caffeine does not allow
+      // a loader for one key to recursively update another key in the same cache; the schema is a
+      // separate immutable object entry, so composing both cache loads inside the relation loader
+      // would intermittently fail with ConcurrentHashMap's "Recursive update" exception.
+      SchemaDescriptor schema = logicalSchemaForRelation(correlationId, userTable, pin);
       return objects.tableRelation(
           userTable,
           pin,
-          () -> {
-            SchemaDescriptor schema = logicalSchemaForRelation(correlationId, userTable, pin);
-            return new ObjectCache.RelationObject(
-                buildTemplate(relation, schema, correlationId), schema);
-          });
+          () ->
+              new ObjectCache.RelationObject(
+                  buildTemplate(relation, schema, correlationId), schema));
     }
     if (relation.node() instanceof ViewNode view && view.origin() != GraphNodeOrigin.SYSTEM) {
       SchemaDescriptor schema =
