@@ -397,6 +397,8 @@ public final class FileGroupTargetStatsRollup {
     private Long nanCount;
     private String min;
     private String max;
+    private boolean minComplete = true;
+    private boolean maxComplete = true;
     private final ColumnNdv ndv = new ColumnNdv();
     private org.apache.datasketches.hll.Union hllUnion;
     private Integer hllLgK;
@@ -433,6 +435,8 @@ public final class FileGroupTargetStatsRollup {
       if (decodedLogicalType == null && !logicalType.isBlank()) {
         decodedLogicalType = LogicalTypeProtoAdapter.decodeLogicalType(logicalType);
       }
+      minComplete &= scalar.hasMin() && !scalar.getMin().isBlank();
+      maxComplete &= scalar.hasMax() && !scalar.getMax().isBlank();
       min = pickEncoded(decodedLogicalType, min, scalar.hasMin() ? scalar.getMin() : null, true);
       max = pickEncoded(decodedLogicalType, max, scalar.hasMax() ? scalar.getMax() : null, false);
       mergeNdv(scalar);
@@ -471,10 +475,10 @@ public final class FileGroupTargetStatsRollup {
       if (nanCount != null) {
         builder.setNanCount(nanCount);
       }
-      if (min != null) {
+      if (minComplete && min != null) {
         builder.setMin(min);
       }
-      if (max != null) {
+      if (maxComplete && max != null) {
         builder.setMax(max);
       }
       Ndv aggregatedNdv = aggregateNdv();

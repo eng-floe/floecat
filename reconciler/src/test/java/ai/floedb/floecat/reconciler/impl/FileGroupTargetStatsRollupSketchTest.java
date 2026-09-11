@@ -53,6 +53,64 @@ class FileGroupTargetStatsRollupSketchTest {
           .build();
 
   @Test
+  void fileRecordRollup_keepsMissingBoundsUnknown() {
+    ScalarStats complete =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
+            .setLogicalType("STRING")
+            .setRowCount(10)
+            .setMin("a")
+            .setMax("m")
+            .build();
+    ScalarStats missingUpper =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
+            .setLogicalType("STRING")
+            .setRowCount(10)
+            .setMin("n")
+            .build();
+
+    ScalarStats merged =
+        onlyScalar(
+            FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+                TABLE,
+                1L,
+                Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+                List.of(fileRecord(1L, complete), fileRecord(1L, missingUpper))));
+
+    assertTrue(merged.hasMin());
+    assertEquals("a", merged.getMin());
+    assertFalse(merged.hasMax(), "an unknown contributor maximum must remain unknown");
+
+    ScalarStats reversed =
+        onlyScalar(
+            FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+                TABLE,
+                1L,
+                Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+                List.of(fileRecord(1L, missingUpper), fileRecord(1L, complete))));
+    assertFalse(reversed.hasMax(), "bound completeness must not depend on contributor order");
+
+    ScalarStats missingLower =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
+            .setLogicalType("STRING")
+            .setRowCount(10)
+            .setMax("z")
+            .build();
+    ScalarStats lowerUnknown =
+        onlyScalar(
+            FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+                TABLE,
+                1L,
+                Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+                List.of(fileRecord(1L, complete), fileRecord(1L, missingLower))));
+    assertFalse(lowerUnknown.hasMin(), "an unknown contributor minimum must remain unknown");
+    assertTrue(lowerUnknown.hasMax());
+    assertEquals("z", lowerUnknown.getMax());
+  }
+
+  @Test
   void fileRecordRollup_mergesScalarAndThetaOnly() {
     ScalarStats s1 =
         scalarWithSketches(
