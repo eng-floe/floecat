@@ -195,11 +195,12 @@ contents.
 ## Usage Guidelines
 - **Always go through the graph** for read paths instead of hitting repositories directly. This keeps
   cache hit rate predictable and ensures planner/executor code sees immutable snapshots.
-- **Nothing to invalidate after a mutation.** `IndexedPointerStore` serializes the durable
-  mutation with the account partition write lock and publishes the committed pointer before
-  releasing it. Readers of a complete owned partition see that value immediately; a handoff or
-  restart rebuilds the partition, and a non-owner falls back to durable KV. Node entries never need eviction — they are
-  content-keyed by blob URI.
+- **Nothing to invalidate after a mutation.** `IndexedPointerStore` commits the durable mutation
+  first, then publishes the result while holding the account read gate and the affected key's
+  lock. Different planner keys can proceed in parallel; prefix and account-wide operations take
+  the account write gate. Readers of a complete owned partition see the publication immediately;
+  a handoff or restart rebuilds the partition, and a non-owner falls back to durable KV. Node
+  entries never need eviction — they are content-keyed by blob URI.
 - **Treat node instances as read-only**. They are immutable records but they may still be shared
   across requests via the cache, so do not mutate maps or lists after retrieval.
 - **Attach engine hints sparingly**. Hints should be small (think JSON blobs or compact protobufs)

@@ -29,7 +29,7 @@ identity; they do not replace a value in an existing key.
 
 | Discipline | Implementation | What it holds | Freshness contract |
 |------------|----------------|---------------|--------------------|
-| Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | All planner pointer records for an account, including current roots, names, snapshots, constraints, stats and hint-resource pointers | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. Every mutation commits to durable KV and publishes the result while holding the partition write lock. Operational pointers remain on the durable adapter. |
+| Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | All planner pointer records for an account, including current roots, names, snapshots, constraints, stats and hint-resource pointers | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter. |
 | Objects | `ObjectCache` | Decoded relation metadata, mapped schemas, constraints, immutable generation-scoped snapshot facts and target-stat records | Entries are keyed by immutable content or generation identity. A live/newest stats read is read-through and is never retained. Account eviction removes every object entry for that account. |
 | Immutable decoded content | `ImmutableBlobCache` (`service/repo/cache/`) | Decoded root blobs, snapshot-manifest pages, catalog/namespace/table/view/snapshot/constraints blobs, stats generation manifests, plus derived forms: manifest-entry indexes (`headUri + "#index"`) and graph nodes (`blobUri + "#node"`) | Content-addressed, so no invalidation. Byte-weighted, with Caffeine's TinyLFU admission rather than plain LRU: `serializedSize × 3` retained-heap estimate, 256 MB default, 15-minute access TTL, single-flight loads, absence never cached. Config `floecat.blob.cache.*`; kill switch `floecat.blob.cache.enabled=false`. Only `casBlobs` schemas route through it — blobs overwritten in place must never be cached by URI. |
 | Per-query state | `QueryContextStore` and per-query memos | `QueryContext` (pins, snapshot set, expansion map) keyed by query ID | Scoped to one query lease; consistency comes from pinning, not freshness. |
@@ -43,8 +43,19 @@ which favours frequently reused entries over one-shot scan traffic.
 An owned pointer partition can be warmed in the background when ownership is granted. The first
 read also schedules the warm if no ownership notification was received. Reads never wait for this
 work: while the partition is `LOADING`, they use durable KV. Mutations take the partition write
-lock, so they wait for a load already in progress and then commit to KV before publishing the new
-pointer. A failed warm leaves the partition `LOADING` and the next read continues using KV.
+lock for a prefix or account-wide operation, so they wait for a load already in progress; point
+mutations use the read side plus a per-key lock, so unrelated tables in the same account can mutate
+in parallel. Every mutation commits to KV before publishing the new pointer. A failed warm leaves
+the partition `LOADING` and the next read continues using KV.
+
+The pointer index has one account gate and one lock per planner key. Point reads use the gate's
+read side and do not wait for another table's mutation. A point mutation takes its key locks in
+sorted order, performs the durable operation, then publishes or removes the entry before releasing
+them. Sorting is only needed for multi-key mutations; it prevents two batches from acquiring the
+same key set in opposite orders. Listing, counting, batch reads, warming, reload, and account
+deletion take the account write side because they need one stable ordered view. There is no
+application-level in-flight request map or version fence in this path: the partition gate and
+key-lock ownership define the ordering.
 
 Standalone Floecat uses `ALWAYS_OWNED`, because there is no competing owner. A managed deployment
 provides the `PlanningPointerIndex.Ownership` implementation and connects ownership handoff to the
