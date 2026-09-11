@@ -29,6 +29,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
+import java.time.Duration;
 
 /** Builds the single pointer-store seam used by planning, mutation, and maintenance code. */
 @ApplicationScoped
@@ -58,8 +59,29 @@ public class MetadataCaches {
         configuredOwnership.isUnsatisfied()
             ? PlanningPointerIndex.Ownership.ALWAYS_OWNED
             : configuredOwnership.get();
-    PlanningPointerIndex index = new PlanningPointerIndex(raw, ownership);
     CacheMetrics metrics = new CacheMetrics(observability, "service", "metadata-index", "pointer");
+    PlanningPointerIndex index =
+        new PlanningPointerIndex(
+            raw,
+            ownership,
+            new PlanningPointerIndex.WarmObserver() {
+              @Override
+              public void started() {
+                metrics.recordMiss(Tag.of(TagKey.REASON, "warm"));
+              }
+
+              @Override
+              public void completed(Duration duration) {
+                metrics.recordLoad(duration, false, Tag.of(TagKey.REASON, "warm"));
+              }
+
+              @Override
+              public void failed(Duration duration, Throwable failure) {
+                metrics.recordLoadFailure(duration, failure, Tag.of(TagKey.REASON, "warm"));
+              }
+            });
+    metrics.trackSize(
+        index::entryCount, "Planner pointer entries resident", Tag.of(TagKey.RESULT, "resident"));
     metrics.trackAccounts(
         index::loadingPartitionCount,
         "Planner pointer partitions still loading",
