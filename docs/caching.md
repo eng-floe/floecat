@@ -129,11 +129,17 @@ contract and publishes its own subset; `graph-cache` is node-load timing, not a 
 | How many entries? | `floecat_core_cache_entries` |
 | Is the budget too small? | `floecat_core_cache_evictions` and `..._evicted_weight_bytes` |
 | Are pointer indexes ready? | `floecat_core_cache_accounts`, tagged `result=loading|complete` |
+| How is pointer warming behaving? | `..._misses` and `..._latency`, tagged `reason=warm`; failures appear in `..._errors` with the same tag |
+| Which pointer entries are resident? | `floecat_core_cache_entries`, tagged `result=resident` |
 
 Hits and misses are counted as they happen rather than derived from a running total, because a rate
 computed from a cumulative gauge cannot tell an idle cache from one that is missing everything.
 An account moves from `loading` to `complete` after its durable planner rows have been loaded. A
 load failure leaves it on the durable path; the next read can retry the load.
+
+Warm-up metrics are intentionally aggregate: account IDs are not metric labels. A failed warm-up
+also emits a structured log containing the account ID, elapsed time, and exception, so an operator
+can identify the affected account without creating one time series per account.
 
 Nothing expires in the pointer index. The eviction series count only capacity-driven removals in
 the memory-cache families; explicit deletes and prefix sweeps are not included. A non-zero
