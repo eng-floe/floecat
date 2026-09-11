@@ -18,13 +18,13 @@ package ai.floedb.floecat.service.cache;
 
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
+import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.storage.spi.RawPointerStore;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
-import ai.floedb.floecat.telemetry.helpers.CacheMetrics;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
@@ -62,7 +62,8 @@ public class MetadataCaches {
         configuredOwnership.isUnsatisfied()
             ? PlanningPointerIndex.Ownership.ALWAYS_OWNED
             : configuredOwnership.get();
-    CacheMetrics metrics = new CacheMetrics(observability, "service", "metadata-index", "pointer");
+    Tag[] baseTags =
+        new Tag[] {Tag.of(TagKey.COMPONENT, "service"), Tag.of(TagKey.OPERATION, "metadata-index")};
     PlanningPointerIndex index =
         new PlanningPointerIndex(
             raw,
@@ -70,17 +71,26 @@ public class MetadataCaches {
             new PlanningPointerIndex.WarmObserver() {
               @Override
               public void started(String accountId) {
-                metrics.recordMiss(Tag.of(TagKey.REASON, "warm"));
+                observability.counter(ServiceMetrics.PlanningPointer.WARM_STARTS, 1, baseTags);
               }
 
               @Override
               public void completed(String accountId, Duration duration) {
-                metrics.recordLoad(duration, false, Tag.of(TagKey.REASON, "warm"));
+                observability.timer(
+                    ServiceMetrics.PlanningPointer.WARM_LATENCY,
+                    duration,
+                    append(baseTags, Tag.of(TagKey.RESULT, "success")));
               }
 
               @Override
               public void failed(String accountId, Duration duration, Throwable failure) {
-                metrics.recordLoadFailure(duration, failure, Tag.of(TagKey.REASON, "warm"));
+                Tag[] tags =
+                    append(
+                        baseTags,
+                        Tag.of(TagKey.RESULT, "error"),
+                        Tag.of(TagKey.EXCEPTION, failure.getClass().getSimpleName()));
+                observability.timer(ServiceMetrics.PlanningPointer.WARM_LATENCY, duration, tags);
+                observability.counter(ServiceMetrics.PlanningPointer.WARM_ERRORS, 1, tags);
                 LOG.warnf(
                     failure,
                     "planner_pointer_warm_failed account_id=%s duration=%s",
@@ -88,15 +98,27 @@ public class MetadataCaches {
                     duration);
               }
             });
-    metrics.trackSize(index::entryCount, "Planner pointer entries resident");
-    metrics.trackAccounts(
+    observability.gauge(
+        ServiceMetrics.PlanningPointer.ENTRIES,
+        index::entryCount,
+        "Planner pointer entries resident",
+        baseTags);
+    observability.gauge(
+        ServiceMetrics.PlanningPointer.PARTITIONS,
         index::loadingPartitionCount,
         "Planner pointer partitions still loading",
-        Tag.of(TagKey.RESULT, "loading"));
-    metrics.trackAccounts(
+        append(baseTags, Tag.of(TagKey.RESULT, "loading")));
+    observability.gauge(
+        ServiceMetrics.PlanningPointer.PARTITIONS,
         index::completePartitionCount,
         "Planner pointer partitions complete",
-        Tag.of(TagKey.RESULT, "complete"));
+        append(baseTags, Tag.of(TagKey.RESULT, "complete")));
     return index;
+  }
+
+  private static Tag[] append(Tag[] base, Tag... extra) {
+    Tag[] result = java.util.Arrays.copyOf(base, base.length + extra.length);
+    System.arraycopy(extra, 0, result, base.length, extra.length);
+    return result;
   }
 }
