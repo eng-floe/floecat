@@ -30,6 +30,7 @@ abstract class MemoryCacheContractTest {
     MemoryCache<String, Versioned> cache = cache();
     CountDownLatch started = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
+    CountDownLatch followerEntered = new CountDownLatch(1);
     AtomicInteger loads = new AtomicInteger();
     var leader =
         CompletableFuture.supplyAsync(
@@ -44,8 +45,16 @@ abstract class MemoryCacheContractTest {
                     }));
     assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
     var follower =
-        CompletableFuture.supplyAsync(() -> cache.get("k", ignored -> new Versioned("wrong", 2)));
-    Thread.sleep(50L);
+        CompletableFuture.supplyAsync(
+            () -> {
+              followerEntered.countDown();
+              var result = cache.get("k", ignored -> new Versioned("wrong", 2));
+              return result;
+            });
+    // The leader keeps the native Caffeine load open. The follower must therefore still be
+    // waiting here; no timing assumption is needed to establish that it joined the same load.
+    assertThat(started.getCount()).isZero();
+    assertThat(followerEntered.await(10, TimeUnit.SECONDS)).isTrue();
     assertThat(follower).isNotCompleted();
     release.countDown();
     assertThat(leader.get(10, TimeUnit.SECONDS)).isEqualTo(new Versioned("value", 1));
