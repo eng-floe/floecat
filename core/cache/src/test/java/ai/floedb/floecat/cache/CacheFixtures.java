@@ -31,20 +31,6 @@ final class CacheFixtures {
   /** Small enough that a few hundred entries overrun it, which is what the eviction tests need. */
   static final long TIGHT_BUDGET = 4_000L;
 
-  /**
-   * Two keys that share a fence stripe, so a write to the first moves the fence a load of the
-   * second is watching. That lets a single-threaded test land a write "during" a load without
-   * depending on eviction, which is not deterministic.
-   *
-   * <p>Coupled to {@code CaffeineMemoryCache.stripeFor} and {@code FENCE_STRIPES}: change either
-   * and these stop colliding. {@code theSharedStripeFixtureStillCollides} is what says so, rather
-   * than leaving the tests that rely on it to fail as though the fence were broken.
-   */
-  static final String STRIPE_SHARER_A = "acct/1/table/a";
-
-  /** The other half of {@link #STRIPE_SHARER_A}. */
-  static final String STRIPE_SHARER_B = "acct/1/table/38";
-
   /** A cached value that carries a version and knows its own size, like a real one. */
   record Versioned(String value, long version) implements WeightedValue {
     @Override
@@ -85,7 +71,6 @@ final class CacheFixtures {
     int misses;
     int failures;
     int evictions;
-    int loadsDiscarded;
     long evictedBytes;
     final List<Duration> loadTimes = new ArrayList<>();
 
@@ -113,11 +98,6 @@ final class CacheFixtures {
     }
 
     @Override
-    public void loadDiscarded() {
-      loadsDiscarded++;
-    }
-
-    @Override
     public void evicted(long weightBytes) {
       evictions++;
       evictedBytes += weightBytes;
@@ -128,7 +108,6 @@ final class CacheFixtures {
       misses = 0;
       failures = 0;
       evictions = 0;
-      loadsDiscarded = 0;
       evictedBytes = 0L;
       loadTimes.clear();
       hitTimes.clear();

@@ -24,12 +24,6 @@ import java.time.Duration;
  */
 public interface CacheEvents {
 
-  /** Whether a write-through publication retained the proposed value. */
-  enum WriteThroughResult {
-    APPLIED,
-    SKIPPED
-  }
-
   /**
    * Returns the same event contract scoped to an account. Implementations that do not publish an
    * account dimension can keep the default; callers do not need parallel metric APIs.
@@ -59,27 +53,25 @@ public interface CacheEvents {
   default void loadTime(Duration elapsed) {}
 
   /**
-   * A load's value was not retained, because a write may have raced the key while it was being
-   * loaded. Raised by both {@link MemoryCache#get} and {@link MemoryCache#getAll}.
-   *
-   * <p>The fence moving means a write may have raced the key, not that the key itself was written:
-   * fences are shared, and a range eviction moves all of them. Its own series because it is the
-   * failure that looks like health -- a cache discarding every load never warms, while reporting a
-   * steady miss count.
-   */
-  default void loadDiscarded() {}
-
-  /** A value was valid but could not be retained within this cache's budget. */
-  default void admissionRejected() {}
-
-  /** A write-through publication was applied or declined by the cache's safety guards. */
-  default void writeThrough(WriteThroughResult result) {}
-
-  /**
    * A load threw; the caller still sees the exception. Its {@link #miss()} is raised too, so a
    * store failing every read does not report as a cache nobody uses.
    */
   default void loadFailed(Duration elapsed, RuntimeException error) {}
+
+  /** Records a load whose result was not admitted to the cache. */
+  default void loadDiscarded() {}
+
+  /** Records a value rejected by the cache admission budget. */
+  default void admissionRejected() {}
+
+  /** Result of publishing a durable pointer mutation into the local pointer view. */
+  enum WriteThroughResult {
+    APPLIED,
+    SKIPPED
+  }
+
+  /** Records whether a durable mutation was reflected in the local pointer view. */
+  default void writeThrough(WriteThroughResult result) {}
 
   /**
    * An entry dropped to stay within budget, releasing {@code weightBytes}. Nothing expires, so this

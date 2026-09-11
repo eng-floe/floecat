@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.cache;
 
 import ai.floedb.floecat.cache.CacheEvents;
+import ai.floedb.floecat.cache.CacheEvents.WriteThroughResult;
 import ai.floedb.floecat.cache.CacheFamily;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
