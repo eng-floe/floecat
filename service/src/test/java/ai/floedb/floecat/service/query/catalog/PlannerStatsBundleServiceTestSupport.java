@@ -203,6 +203,13 @@ abstract class PlannerStatsBundleServiceTestSupport {
     return queryContextWithPins(queryId, List.of(pin(TABLE, snapshotId)));
   }
 
+  protected static QueryContext queryContextWithIdentityFingerprint(
+      String queryId, long snapshotId, String fingerprint) {
+    TablePin pin =
+        pin(TABLE, snapshotId).toBuilder().setColumnIdentityFingerprint(fingerprint).build();
+    return queryContextWithPins(queryId, List.of(pin));
+  }
+
   protected static QueryContext queryContextWithStatsGenerationRef(
       String queryId, long snapshotId, String statsGenerationRefUri) {
     TablePin pin =

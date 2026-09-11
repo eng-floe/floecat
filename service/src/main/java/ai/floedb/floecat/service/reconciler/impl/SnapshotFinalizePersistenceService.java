@@ -156,16 +156,25 @@ public class SnapshotFinalizePersistenceService {
 
   public long persistEmptySnapshotCompletionMarker(
       ResourceId tableId, long snapshotId, boolean fullRescan) {
+    return persistEmptySnapshotCompletionMarker(tableId, snapshotId, fullRescan, "");
+  }
+
+  public long persistEmptySnapshotCompletionMarker(
+      ResourceId tableId, long snapshotId, boolean fullRescan, String columnIdentityFingerprint) {
     TargetStatsRecord zeroMarker =
         TargetStatsRecords.tableRecord(
-            tableId,
-            snapshotId,
-            TableValueStats.newBuilder()
-                .setRowCount(0L)
-                .setDataFileCount(0L)
-                .setTotalSizeBytes(0L)
-                .build(),
-            null);
+                tableId,
+                snapshotId,
+                TableValueStats.newBuilder()
+                    .setRowCount(0L)
+                    .setDataFileCount(0L)
+                    .setTotalSizeBytes(0L)
+                    .build(),
+                null)
+            .toBuilder()
+            .setColumnIdentityFingerprint(
+                columnIdentityFingerprint == null ? "" : columnIdentityFingerprint)
+            .build();
     if (fullRescan) {
       statsStore.replaceAllStatsForSnapshot(
           tableId, snapshotId, List.of(TargetStatsRecords.canonicalize(zeroMarker)), false);

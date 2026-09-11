@@ -27,6 +27,7 @@ import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
@@ -44,6 +45,7 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 /**
  * The finalize persistence step is where stats generations activate; each activation (or removal)
@@ -154,6 +156,16 @@ class SnapshotFinalizePersistenceServiceTest {
 
     assertEquals(0L, result, "marker already present → no new marker created");
     assertEquals("s3://t/stats/5/empty-gen.pb", entry().getStatsGenerationRef().getUri());
+  }
+
+  @Test
+  void emptySnapshotMarkerCarriesColumnIdentityFingerprint() {
+    when(persistence.statsStore.putTargetStatsIfAbsent(any())).thenReturn(true);
+    persistence.persistEmptySnapshotCompletionMarker(tableId, 5L, false, "sha256:identity");
+
+    ArgumentCaptor<TargetStatsRecord> marker = ArgumentCaptor.forClass(TargetStatsRecord.class);
+    verify(persistence.statsStore).putTargetStatsIfAbsent(marker.capture());
+    assertEquals("sha256:identity", marker.getValue().getColumnIdentityFingerprint());
   }
 
   @Test

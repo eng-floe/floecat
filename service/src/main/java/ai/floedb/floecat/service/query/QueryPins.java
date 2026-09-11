@@ -142,11 +142,11 @@ public final class QueryPins {
    *       physical identity as the stored pin.
    * </ul>
    *
-   * <p>Identity is the immutable DATA the pin names: (snapshot id, snapshot blob version) — not the
-   * snapshot id alone, and deliberately NOT the table blob version. Snapshot ids are always
-   * resolved to a concrete value at pin time, so they are compared directly (0 is a real snapshot
-   * id). The snapshot blob version is compared only when both sides carry one: an empty version is
-   * an etag a pin never captured and cannot prove a conflict.
+   * <p>Identity is the immutable DATA the pin names: (snapshot id, snapshot blob version, column
+   * identity fingerprint) — not the snapshot id alone, and deliberately NOT the table blob version.
+   * Snapshot ids are always resolved to a concrete value at pin time, so they are compared directly
+   * (0 is a real snapshot id). The snapshot blob version is compared only when both sides carry
+   * one: an empty version is an etag a pin never captured and cannot prove a conflict.
    *
    * <p>The table blob version is intentionally excluded. It tracks the MUTABLE current table
    * pointer (an explicit/AS_OF pin captures whatever the current table blob is at pin time — see
@@ -163,8 +163,8 @@ public final class QueryPins {
       return true;
     }
     return existing.getSnapshotId() == incoming.getSnapshotId()
-        && sameCapturedVersion(
-            existing.getSnapshotBlobVersion(), incoming.getSnapshotBlobVersion());
+        && sameCapturedVersion(existing.getSnapshotBlobVersion(), incoming.getSnapshotBlobVersion())
+        && existing.getColumnIdentityFingerprint().equals(incoming.getColumnIdentityFingerprint());
   }
 
   /** Blob versions match unless one side never captured its etag (empty), which proves nothing. */
@@ -236,12 +236,12 @@ public final class QueryPins {
   /**
    * Build the opaque, planner-facing identity for a resolved pin. The fingerprint is a stable hash
    * of the pin's immutable DATA identity — relation kind, table id, snapshot id, snapshot blob
-   * version (see {@link #fingerprint}). It deliberately excludes {@code pin_kind}, the {@code
-   * table_blob_version}, and the {@code constraints_ref_version}: CURRENT, AS_OF, and
-   * explicit-snapshot requests that resolve to the same physical data are the same pin, so they
-   * must share one cache identity rather than fragmenting it, and the table blob and constraints
-   * versions are per-touch provenance that would fragment the key across a benign ALTER or
-   * constraints write. All three are still carried as separate fields on the identity for
+   * version and column identity fingerprint (see {@link #fingerprint}). It deliberately excludes
+   * {@code pin_kind}, the {@code table_blob_version}, and the {@code constraints_ref_version}:
+   * CURRENT, AS_OF, and explicit-snapshot requests that resolve to the same physical data are the
+   * same pin, so they must share one cache identity rather than fragmenting it, and the table blob
+   * and constraints versions are per-touch provenance that would fragment the key across a benign
+   * ALTER or constraints write. All three are still carried as separate fields on the identity for
    * provenance. Carries no blob URIs.
    */
   public static RelationPinIdentity identity(TablePin tablePin) {
@@ -252,6 +252,7 @@ public final class QueryPins {
             .setSnapshotId(tablePin.getSnapshotId())
             .setSnapshotBlobVersion(tablePin.getSnapshotBlobVersion())
             .setConstraintsRefVersion(tablePin.getConstraintsRefVersion())
+            .setColumnIdentityFingerprint(tablePin.getColumnIdentityFingerprint())
             .setPinFingerprint(fingerprint(tablePin));
     if (tablePin.hasOriginalAsOf()) {
       b.setOriginalAsOf(tablePin.getOriginalAsOf());
@@ -282,7 +283,8 @@ public final class QueryPins {
             id.getAccountId(),
             id.getId(),
             Long.toString(tablePin.getSnapshotId()),
-            tablePin.getSnapshotBlobVersion());
+            tablePin.getSnapshotBlobVersion(),
+            tablePin.getColumnIdentityFingerprint());
     return Hashing.sha256Hex(canonical.getBytes(StandardCharsets.UTF_8));
   }
 

@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -46,9 +47,11 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.impl.InMemoryReconcileJobStore;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
+import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
 import ai.floedb.floecat.stats.spi.StatsStore;
@@ -271,6 +274,7 @@ class SnapshotFinalizeReconcileExecutorTest {
     finalizeInputService.childStateService = childStateService;
     executor.finalizeInputService = finalizeInputService;
     executor.finalizeExecutionService = mock(LeasedSnapshotFinalizeExecutionService.class);
+    executor.snapshotRepo = mock(ai.floedb.floecat.service.repo.impl.SnapshotRepository.class);
     executor.blobStore = new InMemoryBlobStore();
     return executor;
   }
@@ -622,6 +626,10 @@ class SnapshotFinalizeReconcileExecutorTest {
     var store = new InMemoryReconcileJobStore();
     var statsStore = new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     var executor = executor(store, statsStore, snapshotPlanBlobStore());
+    ResourceId tableId = tableId(ACCOUNT_ID, TABLE_ID);
+    executor.graphView = mock(CatalogGraphView.class);
+    when(executor.graphView.resolve(tableId))
+        .thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
 
     String parentJobId =
         store.enqueueSnapshotPlan(
@@ -658,13 +666,8 @@ class SnapshotFinalizeReconcileExecutorTest {
                     ReconcileFileGroupTask.empty(),
                     parentJobId)));
 
-    ResourceId tableId =
-        ResourceId.newBuilder()
-            .setAccountId(ACCOUNT_ID)
-            .setKind(ResourceKind.RK_TABLE)
-            .setId(TABLE_ID)
-            .build();
     assertTrue(result.ok());
+    verify(executor.snapshotRepo, never()).getById(tableId, SNAPSHOT_ID);
     assertEquals(
         0L,
         statsStore

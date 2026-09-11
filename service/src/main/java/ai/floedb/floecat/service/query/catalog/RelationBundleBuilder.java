@@ -406,7 +406,8 @@ final class RelationBundleBuilder {
             snapshotRef,
             pin.get().getTableBlobUri(),
             pin.get().getSnapshotBlobUri());
-    return logicalSchemaMapper.map(resolved.table(), resolved.schemaJson());
+    return logicalSchemaMapper.map(
+        resolved.table(), resolved.schemaJson(), resolved.columnIdentityMap());
   }
 
   private ViewDefinition.Builder viewDefinitionBuilder(ViewNode view) {

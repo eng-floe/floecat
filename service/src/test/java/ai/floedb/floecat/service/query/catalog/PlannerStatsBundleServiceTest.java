@@ -66,6 +66,89 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
   private static final String TUPLE_SKETCH_TYPE = "floedb-tuple-v2";
 
   @Test
+  void rejectsStatsCapturedForDifferentColumnIdentityMapping() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service = createService(repository, store, 10, 10, 10);
+    QueryContext ctx =
+        queryContextWithIdentityFingerprint("identity-mismatch", 100L, "sha256:current");
+    store.seed(ctx);
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 100L, 1L, sampleStats(TABLE, 100L, 1L), null)
+            .toBuilder()
+            .setColumnIdentityFingerprint("sha256:stale")
+            .build());
+
+    List<TargetStatsResult> results =
+        flatten(
+            service
+                .streamTargets("corr", ctx, requestFor(ctx.getQueryId(), TABLE, List.of(1L)))
+                .collect()
+                .asList()
+                .await()
+                .indefinitely());
+
+    assertEquals(1, results.size());
+    assertEquals(StatsResultStatus.STATS_RESULT_NOT_FOUND, results.getFirst().getStatus());
+  }
+
+  @Test
+  void rejectsIdentityTaggedStatsWhenPinnedIdentityFingerprintIsEmpty() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service = createService(repository, store, 10, 10, 10);
+    QueryContext ctx = queryContextWithIdentityFingerprint("identity-empty", 100L, "");
+    store.seed(ctx);
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 100L, 1L, sampleStats(TABLE, 100L, 1L), null)
+            .toBuilder()
+            .setColumnIdentityFingerprint("sha256:unexpected")
+            .build());
+
+    List<TargetStatsResult> results =
+        flatten(
+            service
+                .streamTargets("corr", ctx, requestFor(ctx.getQueryId(), TABLE, List.of(1L)))
+                .collect()
+                .asList()
+                .await()
+                .indefinitely());
+
+    assertEquals(1, results.size());
+    assertEquals(StatsResultStatus.STATS_RESULT_NOT_FOUND, results.getFirst().getStatus());
+  }
+
+  @Test
+  void returnsStatsCapturedForPinnedColumnIdentityMapping() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    PlannerStatsBundleService service = createService(repository, store, 10, 10, 10);
+    QueryContext ctx =
+        queryContextWithIdentityFingerprint("identity-match", 100L, "sha256:current");
+    store.seed(ctx);
+    repository.putTargetStats(
+        TargetStatsRecords.columnRecord(TABLE, 100L, 1L, sampleStats(TABLE, 100L, 1L), null)
+            .toBuilder()
+            .setColumnIdentityFingerprint("sha256:current")
+            .build());
+
+    List<TargetStatsResult> results =
+        flatten(
+            service
+                .streamTargets("corr", ctx, requestFor(ctx.getQueryId(), TABLE, List.of(1L)))
+                .collect()
+                .asList()
+                .await()
+                .indefinitely());
+
+    assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.getFirst().getStatus());
+    assertEquals("sha256:current", results.getFirst().getColumnIdentityFingerprint());
+  }
+
+  @Test
   void emitsHeaderThenEnd() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();

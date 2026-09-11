@@ -18,82 +18,25 @@ package ai.floedb.floecat.connector.delta.uc.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintEnforcement;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
+import ai.floedb.floecat.schema.identity.ColumnPath;
+import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.ResolvedSchema;
+import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
+import ai.floedb.floecat.schema.identity.SchemaNode;
 import io.delta.kernel.types.LongType;
 import io.delta.kernel.types.StringType;
 import io.delta.kernel.types.StructType;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalInt;
 import org.junit.jupiter.api.Test;
 
 class DeltaConstraintMappingTest {
-  private static final String SIMPLE_SCHEMA_JSON =
-      """
-      {
-        "type": "struct",
-        "fields": [
-          {"name": "id", "type": "long", "nullable": false, "metadata": {}},
-          {"name": "name", "type": "string", "nullable": true, "metadata": {}},
-          {
-            "name": "address",
-            "type": {
-              "type": "struct",
-              "fields": [
-                {"name": "zip", "type": "string", "nullable": false, "metadata": {}},
-                {"name": "line2", "type": "string", "nullable": true, "metadata": {}}
-              ]
-            },
-            "nullable": false,
-            "metadata": {}
-          }
-        ]
-      }
-      """;
-
-  private static final String NULLABLE_PARENT_SCHEMA_JSON =
-      """
-      {
-        "type": "struct",
-        "fields": [
-          {"name": "id", "type": "long", "nullable": false, "metadata": {}},
-          {
-            "name": "address",
-            "type": {
-              "type": "struct",
-              "fields": [
-                {"name": "zip", "type": "string", "nullable": false, "metadata": {}},
-                {"name": "line2", "type": "string", "nullable": true, "metadata": {}}
-              ]
-            },
-            "nullable": true,
-            "metadata": {}
-          }
-        ]
-      }
-      """;
-
-  private static final String AMOUNT_SCHEMA_JSON =
-      """
-      {
-        "type": "struct",
-        "fields": [
-          {"name": "amount", "type": "long", "nullable": false, "metadata": {}}
-        ]
-      }
-      """;
-
-  private static final String ID_SCHEMA_JSON =
-      """
-      {
-        "type": "struct",
-        "fields": [
-          {"name": "id", "type": "long", "nullable": false, "metadata": {}}
-        ]
-      }
-      """;
-
   @Test
   void mapDeltaConstraintsEmitsNotNullForNonNullableLeafColumns() {
     StructType schema =
@@ -108,7 +51,8 @@ class DeltaConstraintMappingTest {
                 false);
 
     List<ConstraintDefinition> constraints =
-        DeltaConnector.mapDeltaConstraints(schema, SIMPLE_SCHEMA_JSON);
+        DeltaConnector.mapDeltaConstraints(
+            schema, Map.of(), identityMap("id", "name", "address", "address.zip", "address.line2"));
 
     assertThat(constraints).allMatch(c -> c.getType() == ConstraintType.CT_NOT_NULL);
     assertThat(constraints).allMatch(c -> c.getEnforcement() == ConstraintEnforcement.CE_ENFORCED);
@@ -116,18 +60,7 @@ class DeltaConstraintMappingTest {
     assertThat(constraints)
         .extracting(c -> c.getColumns(0).getColumnName())
         .containsExactlyInAnyOrder("id", "address.zip");
-    // Top-level non-nullable columns (e.g. "id") get a stable CID_PATH_ORDINAL column ID;
-    // nested columns inside a struct (e.g. "address.zip") get column_id=0 because Delta does
-    // not produce per-field statistics for nested struct leaves, so there is no stats entry to
-    // correlate with.
-    ConstraintDefinition idConstraint =
-        constraints.stream()
-            .filter(c -> c.getColumns(0).getColumnName().equals("id"))
-            .findFirst()
-            .orElseThrow();
-    assertThat(idConstraint.getColumns(0).getColumnId())
-        .as("top-level non-nullable column should have a stable CID_PATH_ORDINAL column_id")
-        .isNotZero();
+    assertThat(constraints).allMatch(c -> c.getColumns(0).getColumnId() > 0L);
   }
 
   @Test
@@ -145,7 +78,8 @@ class DeltaConstraintMappingTest {
                 true); // address is nullable
 
     List<ConstraintDefinition> constraints =
-        DeltaConnector.mapDeltaConstraints(schema, NULLABLE_PARENT_SCHEMA_JSON);
+        DeltaConnector.mapDeltaConstraints(
+            schema, Map.of(), identityMap("id", "address", "address.zip", "address.line2"));
 
     assertThat(constraints).allMatch(c -> c.getType() == ConstraintType.CT_NOT_NULL);
     assertThat(constraints).hasSize(1);
@@ -167,7 +101,7 @@ class DeltaConstraintMappingTest {
                 "delta.constraints.positive_amount", "amount > 0",
                 "delta.constraints.valid_amount", "amount < 1000",
                 "delta.appendOnly", "true"),
-            AMOUNT_SCHEMA_JSON);
+            identityMap("amount"));
 
     List<ConstraintDefinition> checks =
         constraints.stream().filter(c -> c.getType() == ConstraintType.CT_CHECK).toList();
@@ -192,7 +126,7 @@ class DeltaConstraintMappingTest {
             Map.of(
                 "delta.constraints. ", "id > 0",
                 "delta.constraints.ck_id", "id > 0"),
-            ID_SCHEMA_JSON);
+            identityMap("id"));
 
     List<ConstraintDefinition> checks =
         constraints.stream().filter(c -> c.getType() == ConstraintType.CT_CHECK).toList();
@@ -211,11 +145,30 @@ class DeltaConstraintMappingTest {
             Map.of(
                 "delta.constraints.ck_blank", "   ",
                 "delta.constraints.ck_id", "id > 0"),
-            ID_SCHEMA_JSON);
+            identityMap("id"));
 
     List<ConstraintDefinition> checks =
         constraints.stream().filter(c -> c.getType() == ConstraintType.CT_CHECK).toList();
     assertThat(checks).hasSize(1);
     assertThat(checks.get(0).getName()).isEqualTo("ck_id");
+  }
+
+  /** Builds a valid structured-path identity map for the test schema paths. */
+  private static ColumnIdentityMap identityMap(String... dottedPaths) {
+    List<SchemaNode> nodes =
+        java.util.Arrays.stream(dottedPaths)
+            .map(
+                dotted -> {
+                  ColumnPath path = ColumnPath.ROOT;
+                  for (String name : dotted.split("\\.")) {
+                    path = path.field(name);
+                  }
+                  return new SchemaNode(path, 1, true, OptionalInt.empty(), Optional.empty());
+                })
+            .toList();
+    return DeltaCanonicalIdentity.toProto(
+        SchemaIdentityReconciler.reconcile(
+                ResolvedSchema.of(nodes), 0L, IdentityMode.STRUCTURED_PATH, Optional.empty())
+            .state());
   }
 }
