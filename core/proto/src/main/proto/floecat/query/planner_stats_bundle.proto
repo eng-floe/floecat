@@ -399,6 +399,9 @@ message TargetStatsResult {
    */
   optional int64 pinned_snapshot_id = 12;
 
+  // Identity map against which this result's column IDs were captured.
+  string column_identity_fingerprint = 13;
+
   /**
    * Echoes back the requested StatsTarget for correlation.
    * Matches the target field from the TargetStatsNeed that generated this result.

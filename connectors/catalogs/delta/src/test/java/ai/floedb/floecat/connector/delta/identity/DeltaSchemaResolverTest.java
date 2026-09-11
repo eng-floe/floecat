@@ -18,6 +18,7 @@ package ai.floedb.floecat.connector.delta.identity;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 import ai.floedb.floecat.schema.identity.ColumnPath;
 import ai.floedb.floecat.schema.identity.ResolvedSchema;
@@ -224,6 +225,29 @@ class DeltaSchemaResolverTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining(DeltaSchemaResolver.COLUMN_ID)
         .hasMessageContaining(DeltaSchemaResolver.PHYSICAL_NAME);
+  }
+
+  @Test
+  void acceptsMappedCollectionsWhoseInteriorsCarryNoNestedIds() {
+    // PROTOCOL.md gives array elements and map keys/values nowhere to record an id -- only
+    // StructField carries metadata -- and delta.columnMapping.nested.ids is a Delta-Spark
+    // extension, not protocol. A conformant third-party writer may omit it, so resolution must
+    // accept the schema and leave the interior without a native id for the caller to handle.
+    var resolved =
+        resolveJson(
+            """
+            {"type":"struct","fields":[
+              {"name":"tags","nullable":true,
+               "type":{"type":"array","elementType":"string","containsNull":true},
+               "metadata":{"delta.columnMapping.id":1,
+                           "delta.columnMapping.physicalName":"c1"}}
+            ]}
+            """,
+            ColumnMappingMode.NAME);
+
+    assertThat(resolved.schema().nodes())
+        .extracting(node -> node.path().display(), node -> node.nativeFieldId().isPresent())
+        .containsExactly(tuple("tags", true), tuple("tags[]", false));
   }
 
   @Test
