@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.spi.capture;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -44,7 +45,8 @@ public record CaptureEngineRequest(
     Optional<String> authorizationToken,
     Optional<String> executionJobId,
     Optional<String> executionLeaseEpoch,
-    BooleanSupplier shouldStop) {
+    BooleanSupplier shouldStop,
+    ColumnIdentityMap columnIdentityMap) {
   public CaptureEngineRequest {
     sourceNamespace = sourceNamespace == null ? "" : sourceNamespace.trim();
     sourceTable = sourceTable == null ? "" : sourceTable.trim();
@@ -84,6 +86,8 @@ public record CaptureEngineRequest(
             ? Optional.empty()
             : executionLeaseEpoch.map(String::trim).filter(leaseEpoch -> !leaseEpoch.isBlank());
     shouldStop = shouldStop == null ? () -> false : shouldStop;
+    columnIdentityMap =
+        columnIdentityMap == null ? ColumnIdentityMap.getDefaultInstance() : columnIdentityMap;
   }
 
   private static Set<String> normalizeSelectors(Set<String> selectors) {

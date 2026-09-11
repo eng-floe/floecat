@@ -18,6 +18,7 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -37,7 +38,17 @@ class FloecatConnectorCompatibilityTest {
 
     FloecatConnector.SnapshotBundle bundle =
         new FloecatConnector.SnapshotBundle(
-            10L, 0L, 0L, "", null, 0L, null, java.util.Map.of(), 0, null);
+            10L,
+            0L,
+            0L,
+            "",
+            null,
+            0L,
+            null,
+            java.util.Map.of(),
+            0,
+            null,
+            ColumnIdentityMap.getDefaultInstance());
     Optional<?> fromBundle = connector.snapshotConstraints("ns", "tbl", tableId, bundle);
     assertTrue(fromBundle.isEmpty());
   }
@@ -100,7 +111,8 @@ class FloecatConnectorCompatibilityTest {
         Set<String> indexColumns,
         Set<StatsTargetKind> includeTargetKinds,
         boolean captureIndexes,
-        ColumnSelectorPolicy columnSelectorPolicy) {
+        ColumnSelectorPolicy columnSelectorPolicy,
+        ColumnIdentityMap columnIdentityMap) {
       return FileGroupCaptureResult.empty();
     }
 

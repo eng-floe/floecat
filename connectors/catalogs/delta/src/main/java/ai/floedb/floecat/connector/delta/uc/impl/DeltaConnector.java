@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.delta.uc.impl;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintEnforcement;
@@ -183,9 +184,21 @@ abstract class DeltaConnector implements FloecatConnector {
     if (versions.isEmpty()) {
       return List.of();
     }
+    Set<Long> selectedVersions = new LinkedHashSet<>(versions);
     List<SnapshotBundle> bundles = new ArrayList<>(versions.size());
+    ColumnIdentityMap previousIdentityMap =
+        options == null
+            ? ColumnIdentityMap.getDefaultInstance()
+            : options.previousColumnIdentityMap();
+    boolean resetIdentityGeneration =
+        fullRescan && !previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance());
+    boolean sequentialIdentity =
+        previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance())
+            || previousIdentityMap.getMode()
+                == ai.floedb.floecat.catalog.rpc.ColumnIdentityMode
+                    .COLUMN_IDENTITY_MODE_STRUCTURED_PATH;
     long earliestAvailableVersion = 0L;
-    for (long version : versions) {
+    for (long version : identityVersionsToWalk(versions, previousIdentityMap, fullRescan)) {
       if (version < earliestAvailableVersion) {
         continue;
       }
@@ -198,11 +211,76 @@ abstract class DeltaConnector implements FloecatConnector {
       }
       Snapshot snapshot = snapshotResult.snapshot();
       if (snapshot == null) {
+        resetIdentityGeneration |= sequentialIdentity;
         continue;
       }
-      bundles.add(buildSnapshotBundle(storageLocation, version, snapshot));
+      long previousIdentityVersion =
+          previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance())
+              ? -1L
+              : previousIdentityMap.getSourceVersion();
+      if (version < previousIdentityVersion && !resetIdentityGeneration) {
+        LOG.warnf(
+            "Cannot backfill Delta snapshot version %d below persisted identity version %d for %s",
+            Long.valueOf(version), Long.valueOf(previousIdentityVersion), storageLocation);
+        continue;
+      }
+      if (!resetIdentityGeneration && version == previousIdentityVersion) {
+        DeltaCanonicalIdentity.validateSnapshot(snapshot, previousIdentityMap);
+        if (selectedVersions.contains(version)) {
+          bundles.add(buildSnapshotBundle(storageLocation, version, snapshot, previousIdentityMap));
+        }
+        continue;
+      }
+      DeltaCanonicalIdentity.Reconciled identity =
+          resetIdentityGeneration
+              ? DeltaCanonicalIdentity.reset(snapshot, version, previousIdentityMap)
+              : DeltaCanonicalIdentity.reconcile(snapshot, version, previousIdentityMap);
+      previousIdentityMap = identity.identityMap();
+      resetIdentityGeneration = false;
+      sequentialIdentity =
+          identity.identity().state().mode()
+              == ai.floedb.floecat.schema.identity.IdentityMode.STRUCTURED_PATH;
+      if (selectedVersions.contains(version)) {
+        bundles.add(
+            buildSnapshotBundle(storageLocation, version, snapshot, identity.identityMap()));
+      }
     }
     return List.copyOf(bundles);
+  }
+
+  static List<Long> identityVersionsToWalk(
+      List<Long> selectedVersions, ColumnIdentityMap previousIdentityMap, boolean fullRescan) {
+    if (selectedVersions == null || selectedVersions.isEmpty()) {
+      return List.of();
+    }
+    long firstSelected = selectedVersions.stream().mapToLong(Long::longValue).min().orElseThrow();
+    long lastSelected = selectedVersions.stream().mapToLong(Long::longValue).max().orElseThrow();
+    boolean hasPrevious =
+        previousIdentityMap != null
+            && !previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance());
+    boolean structured =
+        !hasPrevious
+            || previousIdentityMap.getMode()
+                == ai.floedb.floecat.catalog.rpc.ColumnIdentityMode
+                    .COLUMN_IDENTITY_MODE_STRUCTURED_PATH;
+    if (!structured) {
+      return List.copyOf(selectedVersions);
+    }
+    long firstVersion =
+        hasPrevious && !fullRescan
+            ? Math.max(0L, previousIdentityMap.getSourceVersion() + 1L)
+            : firstSelected;
+    if (firstVersion > lastSelected) {
+      return List.copyOf(selectedVersions);
+    }
+    List<Long> versions = new ArrayList<>();
+    for (long version = firstVersion; version <= lastSelected; version++) {
+      versions.add(version);
+      if (version == Long.MAX_VALUE) {
+        break;
+      }
+    }
+    return List.copyOf(versions);
   }
 
   @Override
@@ -280,7 +358,8 @@ abstract class DeltaConnector implements FloecatConnector {
       long snapshotId,
       Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds,
-      ColumnSelectorPolicy columnSelectorPolicy) {
+      ColumnSelectorPolicy columnSelectorPolicy,
+      ColumnIdentityMap columnIdentityMap) {
     if (snapshotId < 0) {
       return Optional.empty();
     }
@@ -408,7 +487,8 @@ abstract class DeltaConnector implements FloecatConnector {
       Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy) {
+      ColumnSelectorPolicy columnSelectorPolicy,
+      ColumnIdentityMap columnIdentityMap) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return FileGroupCaptureResult.empty();
     }
@@ -473,7 +553,8 @@ abstract class DeltaConnector implements FloecatConnector {
       ColumnSelectorPolicy columnSelectorPolicy,
       Set<String> plannedFilePaths,
       List<ParquetPageIndexEntry> entries,
-      List<ParquetRowGroup> rowGroups) {
+      List<ParquetRowGroup> rowGroups,
+      ColumnIdentityMap columnIdentityMap) {
     Snapshot snapshot =
         loadTable(storageLocation(namespaceFq, tableName))
             .getSnapshotAsOfVersion(engine, snapshotId);
@@ -1475,7 +1556,10 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   private SnapshotBundle buildSnapshotBundle(
-      String storageLocation, long version, Snapshot snapshot) {
+      String storageLocation,
+      long version,
+      Snapshot snapshot,
+      ColumnIdentityMap columnIdentityMap) {
     final long createdMs = snapshot.getTimestamp(engine);
     final long parent = version > 0L ? version - 1L : -1L;
 
@@ -1483,7 +1567,17 @@ abstract class DeltaConnector implements FloecatConnector {
     final String schemaJson = snapshotSchemaJson(snapshot);
     final PartitionSpecInfo partitionSpec = toPartitionSpecInfo(snapshot);
     return new SnapshotBundle(
-        version, parent, createdMs, schemaJson, partitionSpec, 0L, null, Map.of(), 0, null);
+        version,
+        parent,
+        createdMs,
+        schemaJson,
+        partitionSpec,
+        0L,
+        null,
+        Map.of(),
+        0,
+        null,
+        columnIdentityMap);
   }
 
   private List<TargetStatsRecord> buildTargetStats(
