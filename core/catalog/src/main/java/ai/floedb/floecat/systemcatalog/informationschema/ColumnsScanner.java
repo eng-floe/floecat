@@ -23,7 +23,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
-import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
@@ -38,7 +37,6 @@ import ai.floedb.floecat.systemcatalog.util.SchemaColumns;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -236,42 +234,49 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
     String schemaName = namespace.schemaName();
 
+    return numberedColumns(
+        ctx,
+        table,
+        (col, position) ->
+            new SystemObjectRow(
+                new Object[] {
+                  catalogName,
+                  schemaName,
+                  table.displayName(),
+                  col.getName(),
+                  typeStringOrNull(col),
+                  position
+                }))
+        .stream();
+  }
+
+  /**
+   * A table's user-facing columns paired with their ordinal_position.
+   *
+   * <p>ordinal_position is a POSITION, not an identity: the SQL standard defines it as the column's
+   * 1-based place in the table, so it must not carry a format-native field id. Field ids do not
+   * survive the trip -- Iceberg's have gaps after a drop and need not ascend in declaration order,
+   * and an unmapped Delta table has no field ids at all (every column reports 0). Both rendered a
+   * column list that disagreed with the table's real shape.
+   *
+   * <p>Both the row and the Arrow path number columns here rather than each keeping its own
+   * counter. They answer the same query, so a reader that saw them disagree would have no way to
+   * tell which was right; sharing the walk makes agreement structural instead of a thing tests have
+   * to keep rediscovering.
+   */
+  private static <T> List<T> numberedColumns(
+      SystemObjectScanContext ctx,
+      TableNode table,
+      java.util.function.BiFunction<SchemaColumn, Integer, T> toRow) {
     // Synthetic element/key/value placeholder rows are stats plumbing, not user columns.
     List<SchemaColumn> columns =
         SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(table.id()));
-
-    if (table instanceof UserTableNode) {
-      return columns.stream()
-          .sorted(Comparator.comparingInt(SchemaColumn::getFieldId))
-          .map(
-              col ->
-                  new SystemObjectRow(
-                      new Object[] {
-                        catalogName,
-                        schemaName,
-                        table.displayName(),
-                        col.getName(),
-                        typeStringOrNull(col),
-                        col.getFieldId()
-                      }));
-    }
-
-    // System tables (no field ids) – preserve declared order
-    List<SystemObjectRow> rows = new ArrayList<>(columns.size());
-    int ordinal = 1;
+    List<T> out = new ArrayList<>(columns.size());
+    int position = 1;
     for (SchemaColumn col : columns) {
-      rows.add(
-          new SystemObjectRow(
-              new Object[] {
-                catalogName,
-                schemaName,
-                table.displayName(),
-                col.getName(),
-                typeStringOrNull(col),
-                ordinal++
-              }));
+      out.add(toRow.apply(col, position++));
     }
-    return rows.stream();
+    return out;
   }
 
   private Stream<SystemObjectRow> scanView(
@@ -336,36 +341,17 @@ public final class ColumnsScanner implements SystemObjectScanner {
     String schemaName = namespace.schemaName();
 
     if (node instanceof TableNode table) {
-      // Synthetic element/key/value placeholder rows are stats plumbing, not user columns.
-      List<SchemaColumn> columns =
-          SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(table.id()));
-      if (table instanceof UserTableNode) {
-        return columns.stream()
-            .sorted(Comparator.comparingInt(SchemaColumn::getFieldId))
-            .map(
-                col ->
-                    ColumnEntry.of(
-                        catalogName,
-                        schemaName,
-                        table.displayName(),
-                        col.getName(),
-                        typeStringOrNull(col),
-                        col.getFieldId()))
-            .toList();
-      }
-      List<ColumnEntry> entries = new ArrayList<>(columns.size());
-      int ordinal = 1;
-      for (SchemaColumn col : columns) {
-        entries.add(
-            ColumnEntry.of(
-                catalogName,
-                schemaName,
-                table.displayName(),
-                col.getName(),
-                typeStringOrNull(col),
-                ordinal++));
-      }
-      return entries;
+      return numberedColumns(
+          ctx,
+          table,
+          (col, position) ->
+              ColumnEntry.of(
+                  catalogName,
+                  schemaName,
+                  table.displayName(),
+                  col.getName(),
+                  typeStringOrNull(col),
+                  position));
     }
 
     if (node instanceof ViewNode view) {
