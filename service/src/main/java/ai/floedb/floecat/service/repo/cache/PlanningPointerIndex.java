@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -72,9 +73,21 @@ public final class PlanningPointerIndex {
     Optional<Permit> acquire(String accountId, Access access);
   }
 
+  /** Receives low-cardinality observations for background partition warming. */
+  public interface WarmObserver {
+    WarmObserver NONE = new WarmObserver() {};
+
+    default void started() {}
+
+    default void completed(Duration duration) {}
+
+    default void failed(Duration duration, Throwable failure) {}
+  }
+
   private final PointerStore durable;
   private final Ownership ownership;
   private final Executor warmExecutor;
+  private final WarmObserver warmObserver;
   private final ConcurrentHashMap<String, Partition> partitions = new ConcurrentHashMap<>();
 
   public PlanningPointerIndex(PointerStore durable) {
@@ -85,10 +98,21 @@ public final class PlanningPointerIndex {
     this(durable, ownership, ForkJoinPool.commonPool());
   }
 
+  public PlanningPointerIndex(
+      PointerStore durable, Ownership ownership, WarmObserver warmObserver) {
+    this(durable, ownership, ForkJoinPool.commonPool(), warmObserver);
+  }
+
   PlanningPointerIndex(PointerStore durable, Ownership ownership, Executor warmExecutor) {
+    this(durable, ownership, warmExecutor, WarmObserver.NONE);
+  }
+
+  PlanningPointerIndex(
+      PointerStore durable, Ownership ownership, Executor warmExecutor, WarmObserver warmObserver) {
     this.durable = java.util.Objects.requireNonNull(durable, "durable");
     this.ownership = java.util.Objects.requireNonNull(ownership, "ownership");
     this.warmExecutor = java.util.Objects.requireNonNull(warmExecutor, "warmExecutor");
+    this.warmObserver = java.util.Objects.requireNonNull(warmObserver, "warmObserver");
   }
 
   Optional<Pointer> get(String key) {
@@ -437,8 +461,17 @@ public final class PlanningPointerIndex {
     return partition == null ? Readiness.LOADING : partition.readiness;
   }
 
-  long entryCount() {
-    return partitions.values().stream().mapToLong(partition -> partition.entries.size()).sum();
+  public long entryCount() {
+    long entries = 0;
+    for (Partition partition : partitions.values()) {
+      partition.lock.readLock().lock();
+      try {
+        entries += partition.entries.size();
+      } finally {
+        partition.lock.readLock().unlock();
+      }
+    }
+    return entries;
   }
 
   public long completePartitionCount() {
@@ -521,20 +554,29 @@ public final class PlanningPointerIndex {
       partition.warmScheduled.set(false);
       return;
     }
+    long startNanos = System.nanoTime();
+    warmObserver.started();
+    boolean loaded = false;
+    Throwable failure = null;
     partition.lock.writeLock().lock();
     try {
       // Ownership can be revoked after the task captured the partition but before it acquired the
       // write lock. Do not resurrect an image that the handoff already removed.
       if (partitions.get(partitionKey) == partition && partition.readiness != Readiness.COMPLETE) {
         loadLocked(partitionKey, partition);
+        loaded = true;
       }
-    } catch (RuntimeException ignored) {
+    } catch (RuntimeException loadFailure) {
       // A failed load is not a partial index. Keep it LOADING; a later read or mutation retries.
+      failure = loadFailure;
     } finally {
       partition.lock.writeLock().unlock();
       permit.orElseThrow().close();
       if (partition.readiness != Readiness.COMPLETE) partition.warmScheduled.set(false);
     }
+    Duration duration = Duration.ofNanos(System.nanoTime() - startNanos);
+    if (loaded) warmObserver.completed(duration);
+    else if (failure != null) warmObserver.failed(duration, failure);
   }
 
   private Partition readyPartition(String partitionKey) {

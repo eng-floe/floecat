@@ -14,6 +14,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
@@ -180,6 +181,44 @@ class PlanningPointerIndexTest {
     durable.pointReads.set(0);
     assertThat(store.get(key)).isPresent();
     assertThat(durable.pointReads).hasValue(0);
+  }
+
+  @Test
+  void backgroundWarmReportsItsOutcome() {
+    CountingStore durable = new CountingStore();
+    String key = Keys.tablePointerById("acct", "table");
+    durable.compareAndSet(key, 0L, pointer(key, "s3://table"));
+    AtomicInteger starts = new AtomicInteger();
+    AtomicReference<Duration> completed = new AtomicReference<>();
+    AtomicReference<Throwable> failure = new AtomicReference<>();
+    PlanningPointerIndex index =
+        new PlanningPointerIndex(
+            durable,
+            PlanningPointerIndex.Ownership.ALWAYS_OWNED,
+            Runnable::run,
+            new PlanningPointerIndex.WarmObserver() {
+              @Override
+              public void started() {
+                starts.incrementAndGet();
+              }
+
+              @Override
+              public void completed(Duration duration) {
+                completed.set(duration);
+              }
+
+              @Override
+              public void failed(Duration duration, Throwable error) {
+                failure.set(error);
+              }
+            });
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+
+    assertThat(store.get(key)).isPresent();
+    assertThat(starts).hasValue(1);
+    assertThat(completed).isNotNull();
+    assertThat(failure.get()).isNull();
+    assertThat(index.entryCount()).isEqualTo(1);
   }
 
   @Test
