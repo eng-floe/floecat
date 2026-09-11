@@ -206,6 +206,30 @@ class PlanningPointerIndexTest {
     assertThat(index.completePartitionCount()).isEqualTo(1);
   }
 
+  @Test
+  void ownershipReacquisitionDropsThePreviousCompleteImageBeforeWarming() {
+    CountingStore durable = new CountingStore();
+    String key = Keys.tablePointerById("acct", "table");
+    durable.compareAndSet(key, 0L, pointer(key, "s3://first"));
+    Deque<Runnable> tasks = new ArrayDeque<>();
+    PlanningPointerIndex index =
+        new PlanningPointerIndex(durable, PlanningPointerIndex.Ownership.ALWAYS_OWNED, tasks::add);
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+
+    assertThat(store.get(key)).isPresent();
+    tasks.removeFirst().run();
+    assertThat(index.completePartitionCount()).isEqualTo(1);
+    durable.compareAndSet(key, 1L, pointer(key, "s3://second"));
+
+    index.ownershipLost("acct");
+    assertThat(index.completePartitionCount()).isZero();
+    index.ownershipGained("acct");
+    assertThat(tasks).hasSize(1);
+    tasks.removeFirst().run();
+
+    assertThat(store.get(key).map(Pointer::getBlobUri)).contains("s3://second");
+  }
+
   private static PlanningPointerIndex synchronousIndex(CountingStore durable) {
     return new PlanningPointerIndex(
         durable, PlanningPointerIndex.Ownership.ALWAYS_OWNED, Runnable::run);

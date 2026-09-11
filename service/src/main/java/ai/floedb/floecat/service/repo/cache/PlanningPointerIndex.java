@@ -329,6 +329,10 @@ public final class PlanningPointerIndex {
     for (String partitionKey : partitionKeys) {
       Optional<Ownership.Permit> permit = ownership.acquire(partitionKey, access);
       if (permit.isEmpty()) {
+        // A failed ownership check means that any complete image was built under an older
+        // ownership lease. Drop it before falling back to durable storage; if this process later
+        // regains the account, the next read must load a fresh image rather than reusing it.
+        forget(partitionKey);
         closeReverse(permits);
         if (required) {
           throw new StorageAbortRetryableException(
@@ -473,6 +477,31 @@ public final class PlanningPointerIndex {
       warmExecutor.execute(() -> warmPartition(accountId, partition));
     } catch (RejectedExecutionException rejected) {
       partition.warmScheduled.set(false);
+    }
+  }
+
+  /**
+   * Drops the local image when ownership is revoked. The ownership controller must call this even
+   * when no request arrives during the handoff; otherwise a later re-acquisition could mistake an
+   * image from the previous lease for the current durable state.
+   */
+  public void ownershipLost(String accountId) {
+    if (accountId == null || accountId.isBlank() || GLOBAL.equals(accountId)) {
+      return;
+    }
+    forget(accountId);
+  }
+
+  /**
+   * Starts warming after an ownership lease is granted. Reads remain non-blocking while loading.
+   */
+  public void ownershipGained(String accountId) {
+    warm(accountId);
+  }
+
+  private void forget(String accountId) {
+    synchronized (partitions) {
+      partitions.remove(accountId);
     }
   }
 
