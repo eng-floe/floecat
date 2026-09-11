@@ -645,6 +645,19 @@ class CachingPointerStoreTest {
   }
 
   @Test
+  void clearDropsTheCompleteIndexAfterAnOutOfBandFixtureReset() {
+    String key = Keys.tablePointerByName(ACCT, "cat", "ns", "orders");
+    store.compareAndSet(key, 0L, pointer(key, "s3://old", 0L));
+    assertThat(caching.get(key)).isPresent();
+    assertThat(cache.completeAccountCount()).isEqualTo(1L);
+
+    cache.clear();
+
+    assertThat(cache.entryCount()).isZero();
+    assertThat(cache.completeAccountCount()).isZero();
+  }
+
+  @Test
   void aDeleteCannotRemoveANewerRecreationFromTheCompleteIndex() throws Exception {
     BlockingDelete store = new BlockingDelete();
     PointerCache cache = cacheFor(store);
