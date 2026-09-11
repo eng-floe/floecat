@@ -188,9 +188,13 @@ class SystemTableScanStoreCostIT {
     // number that starts scaling with tableCount is exactly what should fail here.
     assertEquals(
         0,
-        reads.pointerRoundTrips(),
-        "a system-table scan must not reach the pointer store at all: the catalog and namespace"
-            + " resolutions it needs are served by the pointer cache");
+        reads.plannerPointerRoundTrips(),
+        "a system-table scan must not reach the planner pointer store: the catalog and namespace"
+            + " resolutions it needs are served by the complete pointer index");
+    assertEquals(
+        1,
+        reads.accountDirectoryRoundTrips(),
+        "the scan pays only its fixed account-directory lookup");
     assertEquals(
         1,
         reads.blobObjectGets(),
