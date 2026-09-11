@@ -20,6 +20,7 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Namespace;
+import ai.floedb.floecat.catalog.rpc.RelationHintsResource;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.Table;
@@ -53,6 +54,33 @@ public final class Schemas {
                 return new AccountKey(v.getResourceId().getId(), sha);
               })
           .withCasBlobs();
+
+  public static final ResourceSchema<RelationHintsResource, RelationHintsKey> RELATION_HINTS =
+      ResourceSchema.<RelationHintsResource, RelationHintsKey>of(
+              "relation-hints",
+              key ->
+                  Keys.relationHintsPointer(
+                      key.accountId(), key.relationId(), key.engineKind(), key.engineVersion()),
+              key ->
+                  Keys.relationHintsBlobUri(
+                      key.accountId(),
+                      key.relationId(),
+                      key.engineKind(),
+                      key.engineVersion(),
+                      key.sha256()),
+              value -> Map.of(),
+              value -> {
+                var sha = Hashing.sha256Hex(value.toByteArray());
+                return new RelationHintsKey(
+                    value.getRelationId().getAccountId(),
+                    value.getRelationId().getId(),
+                    value.getRelationId().getKind(),
+                    value.getEngineKind(),
+                    value.getEngineVersion(),
+                    sha);
+              })
+          .withCasBlobs()
+          .withSystemGuard(RelationHintsKey::resourceId);
 
   public static final ResourceSchema<Catalog, CatalogKey> CATALOG =
       ResourceSchema.<Catalog, CatalogKey>of(

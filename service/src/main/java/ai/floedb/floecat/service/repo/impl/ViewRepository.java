@@ -234,6 +234,11 @@ public class ViewRepository {
     return repo.metaForSafe(new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
   }
 
+  public MutationMeta metaForSafeConsistent(ResourceId viewResourceId) {
+    return repo.metaForSafeConsistent(
+        new ViewKey(viewResourceId.getAccountId(), viewResourceId.getId()));
+  }
+
   /** Pointer-only meta (no blob HEAD, blank etag) for metadata-graph consumers. */
   public MutationMeta pointerMetaForSafe(ResourceId viewResourceId) {
     return repo.pointerMetaForSafe(

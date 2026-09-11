@@ -97,9 +97,11 @@ class CacheBudgetResolverTest {
                 Map.of(
                     "floecat.cache.total-bytes", Long.toString(10 * GB),
                     "floecat.cache.heap-share", "0.5",
-                    "floecat.cache.object.max-bytes", Long.toString(2 * GB))));
+                    "floecat.cache.object.max-bytes", Long.toString(2 * GB),
+                    "floecat.cache.hint.max-bytes", Long.toString(3 * GB))));
 
     assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isEqualTo(2 * GB);
+    assertThat(budgets.bytesFor(CacheFamily.HINT)).isEqualTo(3 * GB);
   }
 
   @Test
@@ -196,5 +198,7 @@ class CacheBudgetResolverTest {
     var budgets = new CacheBudgetResolver(config(shipped));
 
     assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isPositive();
+    assertThat(budgets.bytesFor(CacheFamily.OBJECT)).isPositive();
+    assertThat(budgets.bytesFor(CacheFamily.HINT)).isPositive();
   }
 }

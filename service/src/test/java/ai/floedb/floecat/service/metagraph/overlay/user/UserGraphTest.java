@@ -93,8 +93,7 @@ class UserGraphTest {
             tableRepository,
             viewRepository,
             tableRootRepository,
-            principalProvider,
-            null);
+            principalProvider);
   }
 
   @Test
@@ -268,8 +267,7 @@ class UserGraphTest {
             tableRepository,
             viewRepository,
             tableRootRepository,
-            principalProvider,
-            null);
+            principalProvider);
 
     ResourceId catalogId = rid("account", "cat", ResourceKind.RK_CATALOG);
     ResourceId namespaceId = rid("account", "ns", ResourceKind.RK_NAMESPACE);

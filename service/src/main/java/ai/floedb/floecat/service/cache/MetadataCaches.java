@@ -25,6 +25,7 @@ import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
+import ai.floedb.floecat.service.repo.impl.RelationHintsRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -139,6 +140,21 @@ public class MetadataCaches {
     var cache =
         new ObjectCache(
             budgets.bytesFor(CacheFamily.OBJECT), events(metrics), schemaMapper, enabled);
+    report(cache.family(), cache::entryCount, cache::bytes, budgets, metrics, cache.enabled());
+    return cache;
+  }
+
+  /** Hints: decoded engine-specific relation metadata under its own heap budget. */
+  @Produces
+  @ApplicationScoped
+  public HintCache hints(
+      RelationHintsRepository repository,
+      CacheBudgetResolver budgets,
+      Observability observability,
+      @ConfigProperty(name = "floecat.cache.hint.enabled", defaultValue = "true") boolean enabled) {
+    var metrics = metricsFor(CacheFamily.HINT, observability);
+    var cache =
+        new HintCache(repository, budgets.bytesFor(CacheFamily.HINT), events(metrics), enabled);
     report(cache.family(), cache::entryCount, cache::bytes, budgets, metrics, cache.enabled());
     return cache;
   }
