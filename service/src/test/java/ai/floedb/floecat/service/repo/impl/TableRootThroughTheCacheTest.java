@@ -240,10 +240,8 @@ class TableRootThroughTheCacheTest {
   }
 
   @Test
-  void aPointerThatMovedResolvesWhereItMovedToRatherThanReadingAsAbsent() {
-    // A cached pointer naming a superseded blob is the ordinary state of every replica that did
-    // not make the write, and nothing expires. Reporting absence here would turn a healthy table
-    // into a NOT_FOUND on that replica until something else happened to repair the entry.
+  void ownershipHandoffDropsStalePointerImageBeforeReadingMovedRoot() {
+    // The owner handoff invalidates the old image before the new owner reads the moved pointer.
     var pointers = new CountingPointerStore();
     var blobs = new InMemoryBlobStore();
     var shared = new ai.floedb.floecat.service.repo.cache.PlanningPointerIndex(pointers);
@@ -253,8 +251,7 @@ class TableRootThroughTheCacheTest {
     String staleUri = warm.metaForSafeConsistent(tableId).getBlobUri();
     assertEquals(1, warm.get(tableId).orElseThrow().getRootSeq()); // warms the pointer cache
 
-    // Another replica commits seq 2 and CAS GC sweeps the old blob. Nothing tells this cache: the
-    // write goes straight to the underlying store, so the cached pointer still names staleUri.
+    // The durable state moves and CAS GC sweeps the old blob while the old owner is still warm.
     var elsewhere = new TableRootRepository(pointers, blobs, blobCache());
     long version = elsewhere.metaForSafeConsistent(tableId).getPointerVersion();
     assertTrue(
@@ -262,6 +259,7 @@ class TableRootThroughTheCacheTest {
             TableRoot.newBuilder().setTableId(tableId).setRootSeq(2).build(), version));
     blobs.delete(staleUri);
 
+    shared.ownershipLost("acct");
     var repo = repoSharing(shared, pointers, blobs);
     assertEquals(2, repo.get(tableId).orElseThrow().getRootSeq());
   }

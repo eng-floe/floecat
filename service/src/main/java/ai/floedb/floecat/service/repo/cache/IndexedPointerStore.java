@@ -88,7 +88,7 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
-    return index.mutate(
+    return index.mutateKeys(
         List.of(key),
         () -> durable.compareAndSet(key, expectedVersion, next),
         won -> {
@@ -99,7 +99,7 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public boolean delete(String key) {
-    return index.mutate(
+    return index.mutateKeys(
         List.of(key),
         () -> durable.delete(key),
         deleted -> {
@@ -110,7 +110,7 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public boolean compareAndDelete(String key, long expectedVersion) {
-    return index.mutate(
+    return index.mutateKeys(
         List.of(key),
         () -> durable.compareAndDelete(key, expectedVersion),
         deleted -> {
@@ -123,7 +123,7 @@ public class IndexedPointerStore implements PointerStore {
   public boolean compareAndSetBatch(List<CasOp> ops) {
     if (ops == null || ops.isEmpty()) return durable.compareAndSetBatch(ops);
     List<String> keys = ops.stream().map(CasOp::key).distinct().toList();
-    return index.mutate(
+    return index.mutateKeys(
         keys,
         () -> durable.compareAndSetBatch(ops),
         won -> {
@@ -147,16 +147,14 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public int deleteByPrefix(String prefix) {
-    return index.mutate(
-        List.of(prefix),
-        () -> durable.deleteByPrefix(prefix),
-        ignored -> index.removePrefix(prefix, null));
+    return index.mutatePrefix(
+        prefix, () -> durable.deleteByPrefix(prefix), ignored -> index.removePrefix(prefix, null));
   }
 
   @Override
   public int deleteByPrefixExcluding(String prefix, String excludedKey) {
-    return index.mutate(
-        List.of(prefix),
+    return index.mutatePrefix(
+        prefix,
         () -> durable.deleteByPrefixExcluding(prefix, excludedKey),
         ignored -> index.removePrefix(prefix, excludedKey));
   }

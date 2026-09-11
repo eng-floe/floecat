@@ -20,6 +20,10 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
@@ -288,7 +292,79 @@ class PlanningPointerIndexTest {
     assertThat(store.get(key)).isEmpty();
   }
 
-  private static PlanningPointerIndex synchronousIndex(CountingStore durable) {
+  @Test
+  void differentPlannerKeysCanMutateInParallel() throws Exception {
+    BlockingStore durable = new BlockingStore();
+    String first = Keys.tablePointerById("acct", "first");
+    String second = Keys.tablePointerById("acct", "second");
+    durable.compareAndSet(first, 0L, pointer(first, "s3://first"));
+    durable.compareAndSet(second, 0L, pointer(second, "s3://second"));
+    PlanningPointerIndex index = synchronousIndex(durable);
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+    assertThat(store.get(first)).isPresent();
+
+    durable.blockNextMutation();
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      var firstMutation =
+          executor.submit(() -> store.compareAndSet(first, 1L, pointer(first, "s3://first-new")));
+      assertThat(durable.blockedMutationStarted.await(1, TimeUnit.SECONDS)).isTrue();
+      assertThat(store.get(second).map(Pointer::getBlobUri)).contains("s3://second");
+
+      var secondMutation =
+          executor.submit(
+              () -> store.compareAndSet(second, 1L, pointer(second, "s3://second-new")));
+      assertThat(durable.otherMutationEntered.await(1, TimeUnit.SECONDS)).isTrue();
+      assertThat(secondMutation.get(1, TimeUnit.SECONDS)).isTrue();
+
+      durable.releaseBlockedMutation.countDown();
+      assertThat(firstMutation.get(1, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      durable.releaseBlockedMutation.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void samePlannerKeyMutationsAreSerialized() throws Exception {
+    BlockingStore durable = new BlockingStore();
+    String key = Keys.tablePointerById("acct", "table");
+    durable.compareAndSet(key, 0L, pointer(key, "s3://initial"));
+    PlanningPointerIndex index = synchronousIndex(durable);
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+    assertThat(store.get(key)).isPresent();
+
+    durable.blockNextMutation();
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      var firstMutation =
+          executor.submit(() -> store.compareAndSet(key, 1L, pointer(key, "s3://first-new")));
+      assertThat(durable.blockedMutationStarted.await(1, TimeUnit.SECONDS)).isTrue();
+
+      CountDownLatch secondTaskStarted = new CountDownLatch(1);
+      var secondMutation =
+          executor.submit(
+              () -> {
+                secondTaskStarted.countDown();
+                return store.compareAndSet(key, 1L, pointer(key, "s3://second-new"));
+              });
+      assertThat(secondTaskStarted.await(1, TimeUnit.SECONDS)).isTrue();
+      // The task has started while the first durable call is held. A broken key lock would let it
+      // reach the durable boundary and signal here; the bounded wait is only to give that started
+      // task a scheduling point before the first call is released.
+      assertThat(durable.otherMutationEntered.await(1, TimeUnit.SECONDS)).isFalse();
+
+      durable.releaseBlockedMutation.countDown();
+      assertThat(firstMutation.get(1, TimeUnit.SECONDS)).isTrue();
+      assertThat(secondMutation.get(1, TimeUnit.SECONDS)).isFalse();
+      assertThat(store.get(key).map(Pointer::getBlobUri)).contains("s3://first-new");
+    } finally {
+      durable.releaseBlockedMutation.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  private static PlanningPointerIndex synchronousIndex(InMemoryPointerStore durable) {
     return new PlanningPointerIndex(
         durable, PlanningPointerIndex.Ownership.ALWAYS_OWNED, Runnable::run);
   }
@@ -324,6 +400,46 @@ class PlanningPointerIndexTest {
     public synchronized boolean compareAndSet(String key, long expectedVersion, Pointer next) {
       writes.incrementAndGet();
       return super.compareAndSet(key, expectedVersion, next);
+    }
+  }
+
+  private static final class BlockingStore extends InMemoryPointerStore {
+    private final AtomicInteger calls = new AtomicInteger();
+    private final AtomicInteger blockedCalls = new AtomicInteger();
+    private volatile boolean blockNext;
+    private volatile CountDownLatch blockedMutationStarted = new CountDownLatch(1);
+    private volatile CountDownLatch releaseBlockedMutation = new CountDownLatch(1);
+    private volatile CountDownLatch otherMutationEntered = new CountDownLatch(1);
+
+    void blockNextMutation() {
+      calls.set(0);
+      blockedCalls.set(0);
+      blockedMutationStarted = new CountDownLatch(1);
+      releaseBlockedMutation = new CountDownLatch(1);
+      otherMutationEntered = new CountDownLatch(1);
+      blockNext = true;
+    }
+
+    @Override
+    public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
+      int call = calls.incrementAndGet();
+      if (blockNext && call == 1) {
+        blockNext = false;
+        blockedMutationStarted.countDown();
+        await(releaseBlockedMutation);
+      } else if (blockedCalls.incrementAndGet() > 0) {
+        otherMutationEntered.countDown();
+      }
+      return super.compareAndSet(key, expectedVersion, next);
+    }
+
+    private static void await(CountDownLatch latch) {
+      try {
+        latch.await();
+      } catch (InterruptedException interrupted) {
+        Thread.currentThread().interrupt();
+        throw new AssertionError(interrupted);
+      }
     }
   }
 }

@@ -30,10 +30,13 @@ import java.util.NavigableMap;
 import java.util.Optional;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentNavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -176,14 +179,15 @@ public final class PlanningPointerIndex {
         Partition partition = partitions.get(partitionKey);
         if (partition == null || partition.readiness != Readiness.COMPLETE) {
           warm(partitionKey);
-          unlockReadPartitions(locked);
+          unlockWritePartitions(locked);
           return durableBatch(keys, consistentFallback);
         }
-        partition.lock.readLock().lock();
+        partition.lock.writeLock().lock();
         locked.add(partition);
-        if (partition.readiness != Readiness.COMPLETE) {
+        if (partition.readiness != Readiness.COMPLETE
+            || partitions.get(partitionKey) != partition) {
           warm(partitionKey);
-          unlockReadPartitions(locked);
+          unlockWritePartitions(locked);
           return durableBatch(keys, consistentFallback);
         }
       }
@@ -196,9 +200,7 @@ public final class PlanningPointerIndex {
         }
         return Map.copyOf(result);
       } finally {
-        for (int i = locked.size() - 1; i >= 0; i--) {
-          locked.get(i).lock.readLock().unlock();
-        }
+        unlockWritePartitions(locked);
       }
     } finally {
       closeReverse(permits);
@@ -222,18 +224,18 @@ public final class PlanningPointerIndex {
     String partitionKey = partitionFor(prefix);
     if (partitionKey == null || !isPlanningPrefix(prefix))
       return durableList(prefix, limit, token, nextToken, consistentFallback);
+    if (token != null && !token.isBlank() && !token.startsWith("index:"))
+      return durableList(prefix, limit, token, nextToken, consistentFallback);
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
     if (permit.isEmpty()) return durableList(prefix, limit, token, nextToken, consistentFallback);
     try {
-      Partition partition = readyPartition(partitionKey);
+      Partition partition = readyPartitionForListing(partitionKey);
       if (partition == null) {
         warm(partitionKey);
         return durableList(prefix, limit, token, nextToken, consistentFallback);
       }
       try {
         String after = token == null || token.isBlank() ? null : token;
-        if (after != null && !after.startsWith("index:"))
-          return durableList(prefix, limit, token, nextToken, consistentFallback);
         after = after == null ? null : after.substring("index:".length());
         NavigableMap<String, Pointer> tail =
             after == null
@@ -256,7 +258,7 @@ public final class PlanningPointerIndex {
         }
         return List.copyOf(result);
       } finally {
-        partition.lock.readLock().unlock();
+        partition.lock.writeLock().unlock();
       }
     } finally {
       permit.orElseThrow().close();
@@ -278,7 +280,7 @@ public final class PlanningPointerIndex {
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
     if (permit.isEmpty()) return durableCount(prefix, consistentFallback);
     try {
-      Partition partition = readyPartition(partitionKey);
+      Partition partition = readyPartitionForListing(partitionKey);
       if (partition == null) {
         warm(partitionKey);
         return durableCount(prefix, consistentFallback);
@@ -291,7 +293,7 @@ public final class PlanningPointerIndex {
         }
         return count;
       } finally {
-        partition.lock.readLock().unlock();
+        partition.lock.writeLock().unlock();
       }
     } finally {
       permit.orElseThrow().close();
@@ -310,29 +312,66 @@ public final class PlanningPointerIndex {
     return durable.pageTokenAfterKey(key);
   }
 
-  <T> T mutate(Collection<String> keys, Supplier<T> durableMutation, Consumer<T> publish) {
+  <T> T mutateKeys(Collection<String> keys, Supplier<T> durableMutation, Consumer<T> publish) {
     List<Ownership.Permit> permits = acquire(accountPartitions(keys), Ownership.Access.WRITE, true);
     try {
       if (keys != null && keys.contains(Keys.accountRootPrefix())) {
         synchronized (partitions) {
-          return mutateLocked(keys, durableMutation, publish);
+          return mutateAllLocked(durableMutation, publish);
         }
       }
-      return mutateLocked(keys, durableMutation, publish);
+      return mutateKeysLocked(keys, durableMutation, publish);
     } finally {
       closeReverse(permits);
     }
   }
 
-  private <T> T mutateLocked(
+  <T> T mutatePrefix(String prefix, Supplier<T> durableMutation, Consumer<T> publish) {
+    List<Ownership.Permit> permits =
+        acquire(accountPartitions(List.of(prefix)), Ownership.Access.WRITE, true);
+    try {
+      if (Keys.accountRootPrefix().equals(prefix)) {
+        synchronized (partitions) {
+          return mutateAllLocked(durableMutation, publish);
+        }
+      }
+      String partitionKey = isPlanningPrefix(prefix) ? partitionFor(prefix) : null;
+      List<Partition> locked =
+          partitionKey == null ? List.of() : lockPartitionsForListing(List.of(partitionKey));
+      try {
+        T result = durableMutation.get();
+        publish.accept(result);
+        return result;
+      } finally {
+        unlockWritePartitions(locked);
+      }
+    } finally {
+      closeReverse(permits);
+    }
+  }
+
+  private <T> T mutateKeysLocked(
       Collection<String> keys, Supplier<T> durableMutation, Consumer<T> publish) {
-    List<Partition> locked = lockPartitions(keys);
+    List<Partition> partitionsLocked = lockPartitionsForMutation(keys);
+    List<HeldKeyLock> keyLocks = lockKeys(keys, partitionsLocked);
     try {
       T result = durableMutation.get();
       publish.accept(result);
       return result;
     } finally {
-      for (int i = locked.size() - 1; i >= 0; i--) locked.get(i).lock.writeLock().unlock();
+      unlockKeys(keyLocks);
+      unlockReadPartitions(partitionsLocked);
+    }
+  }
+
+  private <T> T mutateAllLocked(Supplier<T> durableMutation, Consumer<T> publish) {
+    List<Partition> locked = lockAllPartitionsForListing();
+    try {
+      T result = durableMutation.get();
+      publish.accept(result);
+      return result;
+    } finally {
+      unlockWritePartitions(locked);
     }
   }
 
@@ -541,6 +580,7 @@ public final class PlanningPointerIndex {
       removed.lock.writeLock().lock();
       try {
         removed.entries.clear();
+        removed.keyLocks.clear();
         removed.readiness = Readiness.LOADING;
       } finally {
         removed.lock.writeLock().unlock();
@@ -583,7 +623,7 @@ public final class PlanningPointerIndex {
     Partition partition = partitions.get(partitionKey);
     if (partition == null || partition.readiness != Readiness.COMPLETE) return null;
     partition.lock.readLock().lock();
-    if (partition.readiness != Readiness.COMPLETE) {
+    if (partition.readiness != Readiness.COMPLETE || partitions.get(partitionKey) != partition) {
       partition.lock.readLock().unlock();
       return null;
     }
@@ -594,6 +634,39 @@ public final class PlanningPointerIndex {
     for (int i = partitions.size() - 1; i >= 0; i--) {
       partitions.get(i).lock.readLock().unlock();
     }
+  }
+
+  private static void unlockWritePartitions(List<Partition> partitions) {
+    for (int i = partitions.size() - 1; i >= 0; i--) {
+      partitions.get(i).lock.writeLock().unlock();
+    }
+  }
+
+  private static void unlockKeys(List<HeldKeyLock> locks) {
+    for (int i = locks.size() - 1; i >= 0; i--) {
+      HeldKeyLock held = locks.get(i);
+      held.keyLock().lock.unlock();
+      held.partition()
+          .keyLocks
+          .computeIfPresent(
+              held.key(),
+              (ignored, current) -> {
+                if (current != held.keyLock()) return current;
+                current.references--;
+                return current.references == 0 ? null : current;
+              });
+    }
+  }
+
+  private Partition readyPartitionForListing(String partitionKey) {
+    Partition partition = partitions.get(partitionKey);
+    if (partition == null || partition.readiness != Readiness.COMPLETE) return null;
+    partition.lock.writeLock().lock();
+    if (partition.readiness != Readiness.COMPLETE || partitions.get(partitionKey) != partition) {
+      partition.lock.writeLock().unlock();
+      return null;
+    }
+    return partition;
   }
 
   private void loadLocked(String partitionKey, Partition partition) {
@@ -622,32 +695,106 @@ public final class PlanningPointerIndex {
     partition.readiness = Readiness.COMPLETE;
   }
 
-  private List<Partition> lockPartitions(Collection<String> keys) {
+  private List<Partition> lockPartitionsForMutation(Collection<String> keys) {
+    java.util.Set<String> names = new java.util.TreeSet<>(accountPartitions(keys));
+    Map<String, Partition> partitionsByName = new LinkedHashMap<>();
+    // Resolve the whole partition set before taking any partition lock. Account-wide mutations
+    // hold the registry monitor while they acquire write locks; never reacquire that monitor while
+    // already holding one of these read locks.
     synchronized (partitions) {
-      java.util.Set<String> names = new java.util.TreeSet<>();
-      if (keys != null) {
-        for (String key : keys) {
-          if (Keys.accountRootPrefix().equals(key)) {
-            names.addAll(partitions.keySet());
-          } else if (isPlanningKey(key)) {
-            names.add(partitionFor(key));
-          }
-        }
-      }
-      List<Partition> locked = new ArrayList<>();
       for (String name : names) {
-        Partition partition = partitions.computeIfAbsent(name, ignored -> new Partition());
-        partition.lock.writeLock().lock();
-        locked.add(partition);
-        if (partition.readiness != Readiness.COMPLETE) {
-          try {
-            loadLocked(name, partition);
-          } catch (RuntimeException ignored) {
-            // The durable mutation remains valid. A later read retries the complete load.
-          }
+        partitionsByName.put(name, partitions.computeIfAbsent(name, ignored -> new Partition()));
+      }
+    }
+    List<Partition> locked = new ArrayList<>();
+    for (String name : names) {
+      Partition partition = partitionsByName.get(name);
+      while (true) {
+        if (partition.readiness != Readiness.COMPLETE || partitions.get(name) != partition) {
+          ensureLoaded(name, partition);
+        }
+        partition.lock.readLock().lock();
+        if (partitions.get(name) == partition) break;
+        partition.lock.readLock().unlock();
+        synchronized (partitions) {
+          partition = partitions.computeIfAbsent(name, ignored -> new Partition());
+          partitionsByName.put(name, partition);
         }
       }
-      return locked;
+      locked.add(partition);
+    }
+    return locked;
+  }
+
+  private List<HeldKeyLock> lockKeys(Collection<String> keys, List<Partition> lockedPartitions) {
+    if (keys == null || keys.isEmpty()) return List.of();
+    java.util.Set<String> keyNames = new java.util.TreeSet<>();
+    for (String key : keys) {
+      if (isPlanningKey(key)) keyNames.add(key);
+    }
+    List<HeldKeyLock> locked = new ArrayList<>();
+    for (String key : keyNames) {
+      Partition partition = partitions.get(partitionFor(key));
+      if (partition == null || !lockedPartitions.contains(partition)) continue;
+      KeyLock keyLock =
+          partition.keyLocks.compute(
+              key,
+              (ignored, current) -> {
+                if (current == null) current = new KeyLock();
+                current.references++;
+                return current;
+              });
+      keyLock.lock.lock();
+      locked.add(new HeldKeyLock(partition, key, keyLock));
+    }
+    return locked;
+  }
+
+  private List<Partition> lockPartitionsForListing(Collection<String> names) {
+    java.util.Set<String> partitionNames = new java.util.TreeSet<>();
+    if (names != null) {
+      for (String name : names) {
+        if (name != null) partitionNames.add(name);
+      }
+    }
+    List<Partition> locked = new ArrayList<>();
+    for (String name : partitionNames) {
+      Partition partition = partition(name);
+      partition.lock.writeLock().lock();
+      locked.add(partition);
+      ensureLoadedWhileLocked(name, partition);
+    }
+    return locked;
+  }
+
+  private List<Partition> lockAllPartitionsForListing() {
+    synchronized (partitions) {
+      return lockPartitionsForListing(new java.util.TreeSet<>(partitions.keySet()));
+    }
+  }
+
+  private Partition partition(String name) {
+    synchronized (partitions) {
+      return partitions.computeIfAbsent(name, ignored -> new Partition());
+    }
+  }
+
+  private void ensureLoaded(String name, Partition partition) {
+    partition.lock.writeLock().lock();
+    try {
+      ensureLoadedWhileLocked(name, partition);
+    } finally {
+      partition.lock.writeLock().unlock();
+    }
+  }
+
+  private void ensureLoadedWhileLocked(String name, Partition partition) {
+    if (partition.readiness != Readiness.COMPLETE && partitions.get(name) == partition) {
+      try {
+        loadLocked(name, partition);
+      } catch (RuntimeException ignored) {
+        // The durable mutation remains valid. A later read retries the complete load.
+      }
     }
   }
 
@@ -697,8 +844,16 @@ public final class PlanningPointerIndex {
 
   private static final class Partition {
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-    private final NavigableMap<String, Pointer> entries = new TreeMap<>();
+    private final ConcurrentNavigableMap<String, Pointer> entries = new ConcurrentSkipListMap<>();
+    private final ConcurrentHashMap<String, KeyLock> keyLocks = new ConcurrentHashMap<>();
     private final AtomicBoolean warmScheduled = new AtomicBoolean();
     private volatile Readiness readiness = Readiness.LOADING;
   }
+
+  private static final class KeyLock {
+    private final ReentrantLock lock = new ReentrantLock();
+    private int references;
+  }
+
+  private record HeldKeyLock(Partition partition, String key, KeyLock keyLock) {}
 }
