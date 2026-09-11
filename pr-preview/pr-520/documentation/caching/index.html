@@ -508,15 +508,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#turning-the-pointer-cache-off" class="md-nav__link">
-    <span class="md-ellipsis">
-      Turning the pointer cache off
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#deliberately-live-reads" class="md-nav__link">
     <span class="md-ellipsis">
       Deliberately live reads
@@ -1794,15 +1785,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#turning-the-pointer-cache-off" class="md-nav__link">
-    <span class="md-ellipsis">
-      Turning the pointer cache off
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#deliberately-live-reads" class="md-nav__link">
     <span class="md-ellipsis">
       Deliberately live reads
@@ -1864,11 +1846,10 @@ callbacks.</p>
   authoritative absence.</li>
 </ul>
 <h2 id="warm-and-cold-reads">Warm and cold reads<a class="headerlink" href="#warm-and-cold-reads" title="Permanent link">&para;</a></h2>
-<p>A warm read reuses the process-local value. A cold read, a disabled cache, a cache miss, or a
-temporarily degraded cache follows the same repository path and returns the same answer; only
-latency and store cost change. Concurrent requests for the same value share one source load.
-Durable mutations become visible to the cache only after they commit, and an older in-flight read
-cannot replace a newer value after eviction.</p>
+<p>A warm read reuses the process-local value. A cold read, a disabled cache, or a cache miss follows
+the same repository path and returns the same answer; only latency and store cost change. Caffeine
+coordinates concurrent requests for the same immutable key. Durable mutations create a new
+identity; they do not replace a value in an existing key.</p>
 <h2 id="the-cache-disciplines">The cache disciplines<a class="headerlink" href="#the-cache-disciplines" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1882,9 +1863,15 @@ cannot replace a newer value after eviction.</p>
 <tbody>
 <tr>
 <td>Pointers</td>
-<td><code>PointerCache</code> behind <code>CachingPointerStore</code></td>
-<td>Eleven complete SQL-addressing families plus an admission-controlled remainder for every other pointer family</td>
-<td>No expiry. The first addressing read loads the account's four durable subtrees consistently; once complete, point misses, prefix listings and counts are authoritative and cost no store reads. Complete entries never evict. Writes <strong>publish</strong> rather than invalidate and are version-ordered; deletes remove. A failed load or exhausted budget marks the account degraded and falls back to the store. The unqualified <code>PointerStore</code> remains authoritative by default; query-serving repositories opt into <code>@CachedPointerStore</code> once at wiring.</td>
+<td><code>PlanningPointerIndex</code> behind <code>IndexedPointerStore</code></td>
+<td>All planner pointer records for an account, including current roots, names, snapshots, constraints, stats and hint-resource pointers</td>
+<td>Not a cache. A partition is either <code>LOADING</code> or <code>COMPLETE</code>. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. Every mutation commits to durable KV and publishes the result while holding the partition write lock. Operational pointers remain on the durable adapter.</td>
+</tr>
+<tr>
+<td>Objects</td>
+<td><code>ObjectCache</code></td>
+<td>Decoded relation metadata, mapped schemas, constraints, immutable generation-scoped snapshot facts and target-stat records</td>
+<td>Entries are keyed by immutable content or generation identity. A live/newest stats read is read-through and is never retained. Account eviction removes every object entry for that account.</td>
 </tr>
 <tr>
 <td>Immutable decoded content</td>
@@ -1907,20 +1894,19 @@ scans can evict another tenant's hot entries, softened by Caffeine's TinyLFU adm
 which favours frequently reused entries over one-shot scan traffic.</p>
 <p><code>floecat.metadata.graph.cache-max-size</code> gates node caching (<code>0</code> = off); node memory is governed by
 <code>floecat.blob.cache.max-weight-bytes</code>.</p>
-<p><code>StatsOrchestrator</code> additionally keeps its own byte-weighted 256 MB cache of decoded
-<code>TargetStatsRecord</code>s, keyed by <code>(accountId, tableId, snapshotId, storageId)</code>; only positive hits
-are cached and mutation paths invalidate explicitly (10-minute write TTL as a backstop).
-Target-stats record blobs are deliberately <strong>not</strong> in the <code>ImmutableBlobCache</code>: they are written to
-deterministic (not content-addressed) URIs and a re-capture may overwrite one in place, so
-URI-keyed caching would be unsound for them.</p>
+<p><code>ObjectCache</code> stores immutable-generation target statistics by <code>(accountId, tableId, snapshotId,
+generation, target identity)</code>. A live/newest result has no stable identity and is therefore read
+through without retention. Target-stat record blobs are deliberately <strong>not</strong> in the
+<code>ImmutableBlobCache</code>: they are written to deterministic (not content-addressed) URIs and a
+re-capture may overwrite one in place, so URI-keyed caching would be unsound for them.</p>
 <h2 id="the-shared-cache-contract-corecache">The shared cache contract (<code>core/cache</code>)<a class="headerlink" href="#the-shared-cache-contract-corecache" title="Permanent link">&para;</a></h2>
-<p>The cache module coordinates overlapping reads and mutations internally. Callers use repositories
-and do not choose locks, load slots, or cache tiers.</p>
+<p>The cache module provides one small read-through primitive. Callers use repositories and do not
+choose cache tiers or coordinate in-flight requests. Caffeine owns same-key load coordination; the
+application adds no second load map or version fence for immutable entries.</p>
 <p>The future cache layers share this module's operational and telemetry vocabulary, but not one
 storage-shaped interface or one resource pool. <code>MemoryCache&lt;K, V&gt;</code> is the in-memory primitive used
-by object and hint caches and as storage inside the pointer-cache layer. The pointer layer belongs
-behind <code>PointerStore</code> and owns strict version publication, race fencing, complete name indexes and
-account readiness. Blob content gets a separate disk-oriented interface and volume budget, so
+by object and hint caches. The pointer layer belongs behind <code>PointerStore</code> and owns ordered
+publication under its partition lock, complete name indexes and account readiness. Blob content gets a separate disk-oriented interface and volume budget, so
 callers never emulate scoped disk reads, mappings or sweeping through memory-cache operations.</p>
 <p>The module is container-free — Caffeine and protobuf, no CDI, no Quarkus. A cache is built with
 <code>new</code> and wired by whoever owns the container, which is what lets the service, its tests and any
@@ -1935,7 +1921,7 @@ sizing harness use the same arithmetic.</p>
 <tbody>
 <tr>
 <td><code>MemoryCache&lt;K, V&gt;</code></td>
-<td>Read-through <code>get</code>; batch <code>getAll</code>, which owns miss detection, loading and safe publication; uncounted <code>peek</code>; unconditional <code>put</code>; <code>evict</code> by key and <code>evictPartition</code> by caller-supplied membership; <code>bytes()</code>/<code>entryCount()</code> for the budget. A load racing a mutation cannot restore its stale value. Partition eviction is an infrequent O(n) scan of resident keys. No expiry: staleness is bounded by publication, not by a clock. Pointer version ordering deliberately is not part of this generic contract.</td>
+<td>Read-through <code>get</code>; batch <code>getAll</code>; uncounted <code>peek</code>; <code>evict</code> by key and <code>evictPartition</code> by caller-supplied membership; <code>bytes()</code>/<code>entryCount()</code> for the budget. Values are immutable and keyed by durable identity, so there is no generic replacement, publication fence, or in-flight map. Eviction is an infrequent O(n) memory-hygiene scan. Pointer version ordering deliberately is not part of this generic contract.</td>
 </tr>
 <tr>
 <td><code>CaffeineMemoryCache</code></td>
@@ -1947,7 +1933,7 @@ sizing harness use the same arithmetic.</p>
 </tr>
 <tr>
 <td><code>CacheFamily</code></td>
-<td>The independently budgeted in-memory families that actually use this module — <code>POINTER</code> today. Each is its own cache, never a tag inside a shared one, so a burst in the fastest-moving family cannot evict the slowest. Add <code>OBJECT</code> and <code>HINT</code> when those implementations land; do not add disk blob caching to this enum. The tag is both the metric dimension and the config segment.</td>
+<td>The independently budgeted in-memory families that use this module. Pointer planning state is not a <code>MemoryCache</code> family: it is a complete index with no eviction budget. <code>OBJECT</code> is the decoded metadata family; <code>HINT</code> is added when its layer lands. Disk blob caching has its own volume budget.</td>
 </tr>
 <tr>
 <td><code>CacheBudget</code> / <code>CacheBudgetResolver</code></td>
@@ -1955,7 +1941,7 @@ sizing harness use the same arithmetic.</p>
 </tr>
 <tr>
 <td><code>CacheEvents</code></td>
-<td>The common event baseline: <code>hit</code> (with how long it took to serve, so a caller that waited on someone else's load is not an instant hit), <code>miss</code>, <code>loadTime</code>, <code>loadFailed</code>, <code>loadDiscarded</code>, <code>admissionRejected</code>, <code>writeThrough</code> and <code>evicted</code>. Write-through reports whether the cache applied the publication or skipped it through a safety guard. Bulk reads report hits and misses per distinct key and one duration per loader invocation. A disk cache can reuse these metrics and add mapping/sweep signals without implementing <code>MemoryCache</code>. The module reports events; the container names the metrics.</td>
+<td>The common event baseline: <code>hit</code>, <code>miss</code>, <code>loadTime</code>, <code>loadFailed</code> and <code>evicted</code>. Bulk reads report misses for the keys passed to their source loader and one duration per loader invocation. A disk cache can reuse the telemetry vocabulary while exposing its own lifecycle-shaped interface. The module reports events; the container names the metrics.</td>
 </tr>
 </tbody>
 </table>
@@ -1973,27 +1959,11 @@ budget of zero.</p>
 and metric dimensions for caches that do not exist yet. The existing <code>ImmutableBlobCache</code> remains
 under <code>floecat.blob.cache.max-weight-bytes</code>. A future disk blob cache can reuse the cache module's
 telemetry vocabulary while exposing its own lifecycle-shaped interface and volume budget.</p>
-<p><code>floecat.cache.pointer.share</code> is 0.096, from the reference sizing scenario: a 100,000-table account
-at 100 columns needs 0.32 GB of addressing out of the 3.34 GB the memory caches hold between them
-(Pointers, Objects and Hints). The share resolves against that total, not against the heap — the
-heap is one <code>heap-share</code> step above it. That is a starting point, not a law.
-Addressing is width-independent — it costs the same whatever the columns look like — so a
-proportional share over-allocates it on a wide catalog and starves it on a narrow one, where the
-same fixed need is a much larger fraction of a much smaller total. <code>max-bytes</code> is what pins it
-against that, and exceeding the budget costs store reads rather than wrong answers.</p>
-<p>The pointer cache is the first specialized layer built on the shared in-memory contract; the other
-layers above are unchanged. Its independent durable subtrees load through a bounded metadata
-fan-out; <code>floecat.cache.pointer.load-parallelism=0</code> derives the bound from the processors available
-to the JVM, while a positive value pins it. A failed or capacity-rejected index remains store-backed
-until the first read after <code>floecat.cache.pointer.degraded-retry-seconds</code>, when one caller retries
-the complete load and concurrent callers continue through the store. Complete-index events,
-including eager-load duration, carry the logical account tag through the same <code>CacheEvents</code>
-contract.</p>
-<p>Cache selection stops at the repository boundary. Service and graph callers ask repositories for
-objects or lightweight refs; they never inject a cached, authoritative, or raw pointer-store view.
-Repositories use the cached view for query reads, while mutation and GC repositories retain the
-authoritative default. <code>ConsistentReadRulesTest</code> enforces both that boundary and the absence of
-per-call consistency selection.</p>
+<p>Pointer planning state is not budgeted by the generic memory-cache contract. The index is the
+account's current in-memory representation and must stay complete; if it cannot be loaded, the
+durable adapter remains the answer until the next load attempt. Callers do not select a cached or
+authoritative view: every service path receives <code>IndexedPointerStore</code>, which chooses the in-memory
+index for planner keys and durable KV for operational keys.</p>
 <h2 id="what-a-cache-reports">What a cache reports<a class="headerlink" href="#what-a-cache-reports" title="Permanent link">&para;</a></h2>
 <p>A cache built on the <code>core/cache</code> contract publishes the same series, tagged by cache name, so
 those are comparable and a new one brings its telemetry with it. <code>ImmutableBlobCache</code> predates the
@@ -2035,40 +2005,22 @@ contract and publishes its own subset; <code>graph-cache</code> is node-load tim
 <td><code>floecat_core_cache_evictions</code> and <code>..._evicted_weight_bytes</code></td>
 </tr>
 <tr>
-<td>Has it stopped warming?</td>
-<td><code>floecat_core_cache_loads_discarded</code> — a load whose value was not retained because a write may have raced it</td>
-</tr>
-<tr>
-<td>Is the budget rejecting valid entries?</td>
-<td><code>floecat_core_cache_admission_rejected</code></td>
-</tr>
-<tr>
-<td>Are write-through publications being applied or safety-guarded?</td>
-<td><code>floecat_core_cache_write_through{result="applied\|skipped"}</code></td>
-</tr>
-<tr>
 <td>Are pointer indexes ready?</td>
-<td><code>floecat_core_cache_accounts</code>, tagged <code>result=loading|complete|degraded</code></td>
+<td><code>floecat_core_cache_accounts</code>, tagged <code>result=loading|complete</code></td>
 </tr>
 </tbody>
 </table>
 <p>Hits and misses are counted as they happen rather than derived from a running total, because a rate
 computed from a cumulative gauge cannot tell an idle cache from one that is missing everything.
-An account retrying a degraded index moves through <code>degraded</code> to <code>loading</code> and then <code>complete</code> in
-the readiness counts; another failure returns it to <code>degraded</code>.</p>
+An account moves from <code>loading</code> to <code>complete</code> after its durable planner rows have been loaded. A
+load failure leaves it on the durable path; the next read can retry the load.</p>
 <p>Nothing expires in the pointer cache. The eviction series count only capacity-driven removals;
 explicit deletes, prefix sweeps, and authoritative-read repairs are not included. A non-zero
 eviction rate therefore directly signals size pressure. The weight alongside the count
 distinguishes many small evictions from a few large ones.</p>
-<h2 id="turning-the-pointer-cache-off">Turning the pointer cache off<a class="headerlink" href="#turning-the-pointer-cache-off" title="Permanent link">&para;</a></h2>
-<p><code>floecat.cache.pointer.enabled=false</code> installs the raw pointer store instead of the caching
-decorator, so the read path becomes the pre-cache one. Off means the decorator is not there, not
-that a cache is there holding nothing.</p>
-<p>A budget of zero is <em>not</em> the switch — it is refused at startup, because a cache sized zero reports
-a 0% hit rate that reads as a cache which is not helping rather than one that was turned off.</p>
-<p>There is also no flag that stops publishing while leaving the cache populated, and there should not
-be: publishing is what keeps a pointer current — nothing expires — so a populated cache that is not
-published to serves whatever it last loaded, indefinitely.</p>
+<p>There is no independent pointer-cache switch. Pointer reads always go through <code>IndexedPointerStore</code>;
+the durable adapter is used automatically while an account index is loading and for operational
+keys. This keeps the read and mutation path identical in tests and production.</p>
 <h2 id="deliberately-live-reads">Deliberately live reads<a class="headerlink" href="#deliberately-live-reads" title="Permanent link">&para;</a></h2>
 <p>These reads bypass every cache because their result is a detector, not content:</p>
 <table>
@@ -2142,18 +2094,18 @@ emptiness is load-bearing.</p>
 <tbody>
 <tr>
 <td>Cross-instance DDL visibility (which blob a definition pointer names)</td>
-<td><strong>unbounded by time</strong></td>
-<td>Nothing expires. A publish refreshes the replica that made the write; another replica holding the same key keeps its value until it writes that key or reads it authoritatively. Reads that cannot tolerate this do not take it: the commit funnel, the pin guards and the whole GC receive the unqualified authoritative store view, which repairs the cached entry on the way back.</td>
+<td>bounded by ownership handoff</td>
+<td>One Floecat owner accepts writes for an account. A new owner loads the durable partition before serving it; the old owner must stop accepting writes before handoff.</td>
 </tr>
 <tr>
 <td>Table currency (which root is current)</td>
-<td>none within the replica that committed; cross-instance as above</td>
-<td><code>CachingPointerStore</code> publishing under the store, version-guarded</td>
+<td>none within the owning replica; cross-instance changes require the owner contract</td>
+<td><code>IndexedPointerStore</code> publishes after the durable CAS while holding the account lock</td>
 </tr>
 <tr>
 <td>Catalog/namespace listings</td>
-<td>none within the owning replica; degraded accounts read through</td>
-<td>Complete pointer indexes maintained by <code>CachingPointerStore</code></td>
+<td>none after the account index is complete; loading accounts use durable KV</td>
+<td><code>PlanningPointerIndex</code> sorted account partitions</td>
 </tr>
 <tr>
 <td>Pinned data read within a query</td>
@@ -2163,15 +2115,10 @@ emptiness is load-bearing.</p>
 </tbody>
 </table>
 <p>Cache budgets derive from the container: <code>floecat.cache.total-bytes</code> defaults to a share of the
-maximum heap, which the JVM already sizes from the container memory limit, and each cache takes a
-share of that. The knobs the pointer cache reads are <code>floecat.cache.total-bytes</code>,
-<code>floecat.cache.heap-share</code>, <code>floecat.cache.pointer.share</code> and <code>floecat.cache.pointer.max-bytes</code>,
-the last pinning an absolute size instead of a share, plus <code>floecat.cache.pointer.enabled</code>,
-<code>floecat.cache.pointer.load-parallelism</code> and
-<code>floecat.cache.pointer.degraded-retry-seconds</code>; a share outside <code>(0, 1]</code> fails at startup.
-<code>heap-share</code> and <code>pointer.share</code> carry defaults in
+maximum heap, which the JVM already sizes from the container memory limit, and each memory cache takes a
+share of that. <code>heap-share</code> carries its default in
 <code>service/src/main/resources/application.properties</code>, alongside <code>floecat.blob.cache.*</code>;
-<code>total-bytes</code> and <code>pointer.max-bytes</code> are unset, and each is a share until it is given a value.</p>
+<code>total-bytes</code> is unset and is derived when the object and hint memory caches are wired.</p>
 
 
 
