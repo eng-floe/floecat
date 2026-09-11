@@ -230,6 +230,25 @@ class PlanningPointerIndexTest {
     assertThat(store.get(key).map(Pointer::getBlobUri)).contains("s3://second");
   }
 
+  @Test
+  void clearDropsTheCompleteImageAfterAnOutOfBandFixtureReset() {
+    CountingStore durable = new CountingStore();
+    String key = Keys.tablePointerById("acct", "table");
+    durable.compareAndSet(key, 0L, pointer(key, "s3://table"));
+    PlanningPointerIndex index = synchronousIndex(durable);
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+
+    assertThat(store.get(key)).isPresent();
+    assertThat(index.completePartitionCount()).isEqualTo(1);
+
+    durable.delete(key);
+    index.clear();
+
+    assertThat(index.entryCount()).isZero();
+    assertThat(index.completePartitionCount()).isZero();
+    assertThat(store.get(key)).isEmpty();
+  }
+
   private static PlanningPointerIndex synchronousIndex(CountingStore durable) {
     return new PlanningPointerIndex(
         durable, PlanningPointerIndex.Ownership.ALWAYS_OWNED, Runnable::run);

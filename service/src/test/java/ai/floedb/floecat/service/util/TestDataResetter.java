@@ -110,6 +110,17 @@ public class TestDataResetter {
     }
   }
 
+  /** Starts the non-blocking planner-index warm for the account used by integration fixtures. */
+  public void warmPointerIndex(String accountId) {
+    if (accountId == null
+        || accountId.isBlank()
+        || planningPointerIndex == null
+        || !planningPointerIndex.isResolvable()) {
+      return;
+    }
+    planningPointerIndex.get().warm(accountId);
+  }
+
   List<String> listAccountIds() {
     var ids = new ArrayList<String>();
     String token = "";
