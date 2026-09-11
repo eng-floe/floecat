@@ -413,6 +413,9 @@ public class UserObjectBundleService {
 
     // Maintains the order inputs were resolved so the emitted chunk mirrors the request order.
     private final List<PendingItem> pending = new ArrayList<>(MAX_RESOLUTIONS_PER_CHUNK);
+    // Name/node resolution is request-scoped graph state, not immutable object metadata. Keep the
+    // small per-request memo so concurrent selection cannot race the graph view or repeat a lookup.
+    private final RelationResolutionMemo resolutionMemo;
     private final ArrayDeque<EagerBaseCursor> eagerBaseQueue = new ArrayDeque<>();
     private final Set<String> eagerBaseSeen = new HashSet<>();
     // Requested inputs selected for a chunk that filled before they could be emitted (a view ahead
@@ -460,6 +463,8 @@ public class UserObjectBundleService {
               Objects.requireNonNull(ctx.getQueryDefaultCatalogId(), "query default catalog id"),
               requestEngine,
               statsProvider);
+      this.resolutionMemo =
+          new RelationResolutionMemo(graphView, correlationId, requestEngine, timings);
       this.decorationSelection = engineRelationDecorator.select(requestEngine);
       this.buildFanout = buildFanout(decorationSelection);
       this.pinCommitter =
@@ -594,32 +599,15 @@ public class UserObjectBundleService {
     }
 
     private Optional<ResourceId> resolveName(NameRef ref) {
-      long startNs = System.nanoTime();
-      try {
-        return graphView.resolveName(correlationId, ref, resolutionContext.engineContext());
-      } finally {
-        timings.addNameResolveNanos(System.nanoTime() - startNs);
-      }
+      return resolutionMemo.resolveName(ref);
     }
 
     private Optional<GraphNode> resolveNode(ResourceId id) {
-      long startNs = System.nanoTime();
-      try {
-        return graphView.resolve(id, resolutionContext.engineContext());
-      } finally {
-        timings.addNodeResolveNanos(System.nanoTime() - startNs);
-      }
+      return resolutionMemo.resolveNode(id);
     }
 
     private NameRef canonicalName(RelationNode relation) {
-      NameRef nameOnly = NameRef.newBuilder().setName(relation.displayName()).build();
-      Optional<NameRef> canonical =
-          switch (relation.kind()) {
-            case TABLE -> graphView.tableName(relation.id(), resolutionContext.engineContext());
-            case VIEW -> graphView.viewName(relation.id(), resolutionContext.engineContext());
-            default -> Optional.empty();
-          };
-      return canonical.orElse(nameOnly);
+      return resolutionMemo.canonicalName(relation);
     }
 
     /**
