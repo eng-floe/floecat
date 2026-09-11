@@ -257,8 +257,8 @@ class TableRootThroughTheCacheTest {
     var elsewhere =
         new TableRootRepository(
             new ai.floedb.floecat.service.repo.cache.IndexedPointerStore(pointers, shared),
-             blobs,
-             blobCache());
+            blobs,
+            blobCache());
     long version = elsewhere.metaForSafeConsistent(tableId).getPointerVersion();
     assertTrue(
         elsewhere.update(
