@@ -115,8 +115,12 @@ class PointerListingStoreCostIT {
     System.out.println(meter.report("warm ListNamespaces pagination"));
     assertEquals(
         0,
-        reads.pointerRoundTrips(),
+        reads.plannerPointerRoundTrips(),
         "every page token produced by the cached listing must resume in the complete index");
+    assertEquals(
+        3,
+        reads.accountDirectoryRoundTrips(),
+        "each page RPC pays only its fixed account-directory lookup");
     assertEquals(
         0,
         reads.pointerPrefixWalks(),
@@ -141,7 +145,12 @@ class PointerListingStoreCostIT {
     meter.measure(() -> assertEquals(List.of("alpha", "bravo", "charlie"), listTables(prefix)));
 
     System.out.println(meter.report("paged Directory ResolveFQTables"));
-    assertEquals(0, reads.pointerRoundTrips(), "a warm Directory listing must remain in memory");
+    assertEquals(
+        0, reads.plannerPointerRoundTrips(), "a warm Directory listing must remain in memory");
+    assertEquals(
+        3,
+        reads.accountDirectoryRoundTrips(),
+        "each page RPC pays only its fixed account-directory lookup");
     assertEquals(
         3,
         reads.blobObjectGets(),
@@ -186,7 +195,12 @@ class PointerListingStoreCostIT {
                     .getViewsCount()));
 
     System.out.println(meter.report("Directory ResolveFQViews list"));
-    assertEquals(0, reads.pointerRoundTrips(), "a warm Directory resolve must remain in memory");
+    assertEquals(
+        0, reads.plannerPointerRoundTrips(), "a warm Directory resolve must remain in memory");
+    assertEquals(
+        1,
+        reads.accountDirectoryRoundTrips(),
+        "the RPC pays only its fixed account-directory lookup");
     assertEquals(
         1,
         reads.blobObjectGets(),
