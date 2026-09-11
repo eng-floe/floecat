@@ -23,6 +23,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.storage.spi.PointerStoreKeys;
+import ai.floedb.floecat.storage.spi.RawPointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -35,7 +36,9 @@ import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
 @ApplicationScoped
 public class TestDataResetter {
-  @Inject PointerStore ptr;
+  // Fixture cleanup must bypass the indexed view: it is deliberately deleting the durable state
+  // in bulk and clears the in-memory planner image once afterward.
+  @Inject @RawPointerStore PointerStore ptr;
   @Inject BlobStore blobs;
   @Inject Instance<DynamoDbClient> dynamoDb;
   @Inject Instance<MemoryReconcileJobIndexBackend> memoryReconcileJobIndexBackend;
