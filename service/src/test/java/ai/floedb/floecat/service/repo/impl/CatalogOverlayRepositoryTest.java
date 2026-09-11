@@ -15,9 +15,12 @@ import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
+import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -236,7 +239,7 @@ class CatalogOverlayRepositoryTest {
     String byName = Keys.catalogOverlayPointerByName("account", "sales");
     var pointers = new StaleReadFor(byName);
     var blobs = new InMemoryBlobStore();
-    var overlays = new CatalogOverlayRepository(pointers, blobs);
+    var overlays = new CatalogOverlayRepository(indexed(pointers), blobs);
     var overlay = overlay("overlay", "integration", "catalog");
     overlays.create(overlay);
 
@@ -265,7 +268,7 @@ class CatalogOverlayRepositoryTest {
     String byName = Keys.catalogOverlayPointerByName("account", "sales");
     var pointers = new StaleReadFor(byName);
     var blobs = new InMemoryBlobStore();
-    var overlays = new CatalogOverlayRepository(pointers, blobs);
+    var overlays = new CatalogOverlayRepository(indexed(pointers), blobs);
     var overlay = overlay("overlay", "integration", "catalog");
     overlays.create(overlay);
 
@@ -294,7 +297,7 @@ class CatalogOverlayRepositoryTest {
         Keys.catalogOverlayPointerById("account", overlay.getResourceId().getId());
     var pointers = new StaleReadFor(canonicalById);
     var blobs = new InMemoryBlobStore();
-    var overlays = new CatalogOverlayRepository(pointers, blobs);
+    var overlays = new CatalogOverlayRepository(indexed(pointers), blobs);
     overlays.create(overlay);
 
     pointers.freeze(); // the canonical pointer now reads behind
@@ -310,5 +313,9 @@ class CatalogOverlayRepositoryTest {
     assertFalse(
         pointers.get(Keys.catalogOverlayPointerByName("account", "renamed")).isPresent(),
         "the delete must drop the name the resource actually has, not the one a stale body named");
+  }
+
+  private static PointerStore indexed(PointerStore durable) {
+    return new IndexedPointerStore(durable, new PlanningPointerIndex(durable));
   }
 }

@@ -148,11 +148,6 @@ public final class Keys {
 
   // ===== Account =====
 
-  public static String accountRootPointer(String accountId) {
-    String tid = req("account_id", accountId);
-    return "/accounts/" + encode(tid);
-  }
-
   public static String accountPointerById(String accountId) {
     String tid = req("account_id", accountId);
     return "/accounts/by-id/" + encode(tid);
@@ -164,6 +159,40 @@ public final class Keys {
 
   public static String accountRootPrefix() {
     return "/accounts/";
+  }
+
+  /** The durable pointer namespace used by the planner store seam. */
+  public enum PointerNamespace {
+    PLANNER,
+    OPERATIONAL,
+    ACCOUNT_DIRECTORY,
+    UNKNOWN
+  }
+
+  /**
+   * Classifies account pointers once, at the key boundary. New account-scoped planner keys are
+   * included by default; only explicitly operational work queues and fences stay on the durable
+   * adapter.
+   */
+  public static PointerNamespace pointerNamespace(String key) {
+    if (key == null || !key.startsWith(accountRootPrefix())) {
+      return PointerNamespace.UNKNOWN;
+    }
+    String remainder = key.substring(accountRootPrefix().length());
+    int slash = remainder.indexOf('/');
+    String account = slash < 0 ? remainder : remainder.substring(0, slash);
+    if (account.isBlank()) return PointerNamespace.UNKNOWN;
+    if (isReservedAccountDirectorySegment(account)) return PointerNamespace.ACCOUNT_DIRECTORY;
+    if (key.contains(SEG_TRANSACTIONS)
+        || key.contains(SEG_IDEMPOTENCY)
+        || key.contains(SEG_MARKERS)
+        || key.contains(SEG_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP)
+        || key.endsWith("/deleting")
+        || key.contains("/reconcile/")
+        || key.contains("/gc/")) {
+      return PointerNamespace.OPERATIONAL;
+    }
+    return PointerNamespace.PLANNER;
   }
 
   public static boolean isReservedAccountDirectorySegment(String segment) {

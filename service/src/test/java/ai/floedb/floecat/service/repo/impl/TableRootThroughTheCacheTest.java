@@ -59,30 +59,19 @@ class TableRootThroughTheCacheTest {
 
   private static TableRootRepository cachedRepo(
       CountingPointerStore pointers, InMemoryBlobStore blobs) {
-    // The cache lives under the store, so the caching these tests assert on is the decorator's.
-    var cache =
-        new ai.floedb.floecat.service.repo.cache.PointerCache(
-            pointers, 1024L * 1024L, ai.floedb.floecat.cache.CacheEvents.none());
-    var caching = new ai.floedb.floecat.service.repo.cache.CachingPointerStore(pointers, cache);
+    var caching =
+        new ai.floedb.floecat.service.repo.cache.IndexedPointerStore(
+            pointers, new ai.floedb.floecat.service.repo.cache.PlanningPointerIndex(pointers));
     return new TableRootRepository(caching, blobs, blobCache());
   }
 
-  private static ai.floedb.floecat.service.repo.cache.PointerCache pointerCache(
-      CountingPointerStore pointers) {
-    return new ai.floedb.floecat.service.repo.cache.PointerCache(
-        pointers, 1024L * 1024L, ai.floedb.floecat.cache.CacheEvents.none());
-  }
-
-  /**
-   * A repository sharing an already-warm pointer cache but with its own cold decoded-blob cache --
-   * the state every replica is in for a table it has resolved before but not recently.
-   */
+  /** A repository sharing an already-warm planner index with its own decoded-blob cache. */
   private static TableRootRepository repoSharing(
-      ai.floedb.floecat.service.repo.cache.PointerCache shared,
+      ai.floedb.floecat.service.repo.cache.PlanningPointerIndex shared,
       CountingPointerStore pointers,
       InMemoryBlobStore blobs) {
     return new TableRootRepository(
-        new ai.floedb.floecat.service.repo.cache.CachingPointerStore(pointers, shared),
+        new ai.floedb.floecat.service.repo.cache.IndexedPointerStore(pointers, shared),
         blobs,
         blobCache());
   }
@@ -234,7 +223,7 @@ class TableRootThroughTheCacheTest {
     // the stale pointer against itself and reach an answer for the wrong reason.
     var pointers = new CountingPointerStore();
     var blobs = new InMemoryBlobStore();
-    var shared = pointerCache(pointers);
+    var shared = new ai.floedb.floecat.service.repo.cache.PlanningPointerIndex(pointers);
     var warm = repoSharing(shared, pointers, blobs);
     var tableId = table("t-dangling");
     warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
@@ -251,21 +240,18 @@ class TableRootThroughTheCacheTest {
   }
 
   @Test
-  void aPointerThatMovedResolvesWhereItMovedToRatherThanReadingAsAbsent() {
-    // A cached pointer naming a superseded blob is the ordinary state of every replica that did
-    // not make the write, and nothing expires. Reporting absence here would turn a healthy table
-    // into a NOT_FOUND on that replica until something else happened to repair the entry.
+  void ownershipHandoffDropsStalePointerImageBeforeReadingMovedRoot() {
+    // The owner handoff invalidates the old image before the new owner reads the moved pointer.
     var pointers = new CountingPointerStore();
     var blobs = new InMemoryBlobStore();
-    var shared = pointerCache(pointers);
+    var shared = new ai.floedb.floecat.service.repo.cache.PlanningPointerIndex(pointers);
     var warm = repoSharing(shared, pointers, blobs);
     var tableId = table("t-moved");
     warm.createIfAbsent(TableRoot.newBuilder().setTableId(tableId).setRootSeq(1).build());
     String staleUri = warm.metaForSafeConsistent(tableId).getBlobUri();
     assertEquals(1, warm.get(tableId).orElseThrow().getRootSeq()); // warms the pointer cache
 
-    // Another replica commits seq 2 and CAS GC sweeps the old blob. Nothing tells this cache: the
-    // write goes straight to the underlying store, so the cached pointer still names staleUri.
+    // The durable state moves and CAS GC sweeps the old blob while the old owner is still warm.
     var elsewhere = new TableRootRepository(pointers, blobs, blobCache());
     long version = elsewhere.metaForSafeConsistent(tableId).getPointerVersion();
     assertTrue(
@@ -273,6 +259,7 @@ class TableRootThroughTheCacheTest {
             TableRoot.newBuilder().setTableId(tableId).setRootSeq(2).build(), version));
     blobs.delete(staleUri);
 
+    shared.ownershipLost("acct");
     var repo = repoSharing(shared, pointers, blobs);
     assertEquals(2, repo.get(tableId).orElseThrow().getRootSeq());
   }

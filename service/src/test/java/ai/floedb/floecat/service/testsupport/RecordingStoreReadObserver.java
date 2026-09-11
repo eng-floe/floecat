@@ -46,6 +46,7 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
   private final AtomicInteger pointerScans = new AtomicInteger();
   private final AtomicInteger pointerCounts = new AtomicInteger();
   private final AtomicInteger pointerIsEmpty = new AtomicInteger();
+  private final AtomicInteger accountDirectoryRoundTrips = new AtomicInteger();
   private final AtomicInteger blobGets = new AtomicInteger();
   private final AtomicInteger blobBatches = new AtomicInteger();
   private final AtomicInteger blobBatchObjects = new AtomicInteger();
@@ -69,6 +70,9 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
   }
 
   private void recordPointer(ReadCall call) {
+    if (isAccountDirectoryCall(call)) {
+      accountDirectoryRoundTrips.incrementAndGet();
+    }
     switch (call.operation()) {
       case GET -> {
         pointerGets.incrementAndGet();
@@ -135,6 +139,16 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
         + pointerIsEmpty.get();
   }
 
+  /** Pointer calls that belong to the owned account planner index, excluding account lookup. */
+  public int plannerPointerRoundTrips() {
+    return pointerRoundTrips() - accountDirectoryRoundTrips.get();
+  }
+
+  /** Fixed account-directory lookup calls made by request context setup or page RPCs. */
+  public int accountDirectoryRoundTrips() {
+    return accountDirectoryRoundTrips.get();
+  }
+
   public int pointerKeysRead() {
     return pointerGets.get() + pointerBatchKeys.get();
   }
@@ -170,6 +184,7 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
     pointerScans.set(0);
     pointerCounts.set(0);
     pointerIsEmpty.set(0);
+    accountDirectoryRoundTrips.set(0);
     blobGets.set(0);
     blobBatches.set(0);
     blobBatchObjects.set(0);
@@ -185,6 +200,10 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
   private void appendPointerTo(StringBuilder out) {
     out.append("KV       roundTrips=")
         .append(pointerRoundTrips())
+        .append("  planner=")
+        .append(plannerPointerRoundTrips())
+        .append("  accountDirectory=")
+        .append(accountDirectoryRoundTrips())
         .append("  keys=")
         .append(pointerKeysRead())
         .append("         gets=")
@@ -205,6 +224,20 @@ public final class RecordingStoreReadObserver implements StoreReadObserver {
       }
     }
     pointerThreads.appendTo(out, "  [kv] ");
+  }
+
+  private static boolean isAccountDirectoryCall(ReadCall call) {
+    if (call.operation() == StoreReadObserver.Operation.IS_EMPTY) return false;
+    return !call.targets().isEmpty()
+        && call.targets().stream().allMatch(RecordingStoreReadObserver::isAccountDirectoryKey);
+  }
+
+  private static boolean isAccountDirectoryKey(String key) {
+    return key != null
+        && (key.startsWith("/accounts/by-id/")
+            || key.startsWith("/accounts/by-name/")
+            || "/accounts/by-id".equals(key)
+            || "/accounts/by-name".equals(key));
   }
 
   private void appendBlobTo(StringBuilder out) {

@@ -33,6 +33,7 @@ import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.StoreCostProfile;
+import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.testsupport.RecordingStoreReadObserver;
 import ai.floedb.floecat.service.testsupport.StoreCostMeter;
 import ai.floedb.floecat.service.util.TestDataResetter;
@@ -79,6 +80,7 @@ class PointerListingStoreCostIT {
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @Inject TestDataResetter resetter;
+  @Inject AccountRepository accounts;
   @Inject SeedRunner seeder;
   @Inject RecordingStoreReadObserver reads;
   @Inject StoreCostMeter meter;
@@ -88,6 +90,8 @@ class PointerListingStoreCostIT {
     meter.resetBetweenTests();
     resetter.wipeAll();
     seeder.seedData();
+    resetter.warmPointerIndexAndWait(
+        accounts.getByName(TestSupport.DEFAULT_SEED_ACCOUNT).orElseThrow().getResourceId().getId());
   }
 
   @Test
@@ -111,8 +115,12 @@ class PointerListingStoreCostIT {
     System.out.println(meter.report("warm ListNamespaces pagination"));
     assertEquals(
         0,
-        reads.pointerRoundTrips(),
+        reads.plannerPointerRoundTrips(),
         "every page token produced by the cached listing must resume in the complete index");
+    assertEquals(
+        4,
+        reads.accountDirectoryRoundTrips(),
+        "each page RPC pays only its fixed account-directory lookup");
     assertEquals(
         0,
         reads.pointerPrefixWalks(),
@@ -137,7 +145,12 @@ class PointerListingStoreCostIT {
     meter.measure(() -> assertEquals(List.of("alpha", "bravo", "charlie"), listTables(prefix)));
 
     System.out.println(meter.report("paged Directory ResolveFQTables"));
-    assertEquals(0, reads.pointerRoundTrips(), "a warm Directory listing must remain in memory");
+    assertEquals(
+        0, reads.plannerPointerRoundTrips(), "a warm Directory listing must remain in memory");
+    assertEquals(
+        3,
+        reads.accountDirectoryRoundTrips(),
+        "each page RPC pays only its fixed account-directory lookup");
     assertEquals(
         3,
         reads.blobObjectGets(),
@@ -182,7 +195,12 @@ class PointerListingStoreCostIT {
                     .getViewsCount()));
 
     System.out.println(meter.report("Directory ResolveFQViews list"));
-    assertEquals(0, reads.pointerRoundTrips(), "a warm Directory resolve must remain in memory");
+    assertEquals(
+        0, reads.plannerPointerRoundTrips(), "a warm Directory resolve must remain in memory");
+    assertEquals(
+        1,
+        reads.accountDirectoryRoundTrips(),
+        "the RPC pays only its fixed account-directory lookup");
     assertEquals(
         1,
         reads.blobObjectGets(),

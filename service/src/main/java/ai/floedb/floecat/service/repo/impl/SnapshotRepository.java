@@ -237,7 +237,7 @@ public class SnapshotRepository {
     return repo.getByKey(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
-  /** Loads a snapshot through the mutation read path, bypassing the query pointer cache. */
+  /** Loads a snapshot through the same indexed store seam used by ordinary reads. */
   public Optional<Snapshot> getByIdConsistent(ResourceId tableId, long snapshotId) {
     return repo.getByKeyForMutation(
         new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
@@ -553,9 +553,9 @@ public class SnapshotRepository {
    */
   private RootLookup lookupRoot(ResourceId tableId) {
     for (int attempt = 0; attempt < 2; attempt++) {
-      // The retry exists to observe a FRESH pointer after a supersede+sweep race; through the
-      // pointer cache it would just re-read the same dead URI, so the second attempt goes past it
-      // (which also drops the stale entry for every other consumer).
+      // The retry observes a fresh pointer after a supersede-and-sweep race. The indexed store
+      // uses the complete owned partition when safe and the durable fallback during handoff or
+      // loading; the second read therefore does not create a separate caller-visible path.
       MutationMeta meta =
           attempt == 0 ? roots.metaForSafe(tableId) : roots.metaForSafeConsistent(tableId);
       if (meta == null || meta.getBlobUri().isEmpty()) {
@@ -667,7 +667,7 @@ public class SnapshotRepository {
     return currentPointerRepo.get(tableId);
   }
 
-  /** Reads the current-snapshot pointer through the mutation path, bypassing the query cache. */
+  /** Reads the current-snapshot pointer through the same indexed store seam. */
   public Optional<CurrentSnapshotPointer> latestRegisteredSnapshotPointerConsistent(
       ResourceId tableId) {
     if (tableId == null) {
@@ -752,7 +752,7 @@ public class SnapshotRepository {
     return repo.listByPrefix(prefix, limit, pageToken, nextOut);
   }
 
-  /** Lists registered snapshots through the mutation read path, bypassing the query cache. */
+  /** Lists registered snapshots through the same indexed store seam. */
   public List<Snapshot> listConsistent(
       ResourceId tableId, int limit, String pageToken, StringBuilder nextOut) {
     String prefix = Keys.snapshotPointerByIdPrefix(tableId.getAccountId(), tableId.getId());
@@ -783,7 +783,7 @@ public class SnapshotRepository {
     return repo.metaForSafe(new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));
   }
 
-  /** Reads snapshot metadata through the mutation path, bypassing the query pointer cache. */
+  /** Reads snapshot metadata through the same indexed store seam used by ordinary reads. */
   public MutationMeta metaForSafeConsistent(ResourceId tableId, long snapshotId) {
     return repo.metaForSafeConsistent(
         new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId));

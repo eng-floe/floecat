@@ -1,0 +1,855 @@
+/*
+ * Copyright 2026 Yellowbrick Data, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package ai.floedb.floecat.service.repo.cache;
+
+import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
+import ai.floedb.floecat.storage.spi.PointerStore;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentNavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+
+/** The authoritative in-memory index for planner-visible pointer state. */
+public final class PlanningPointerIndex {
+  private static final int PAGE_SIZE = 1_000;
+  private static final String GLOBAL = "<account-directory>";
+
+  enum Readiness {
+    LOADING,
+    COMPLETE
+  }
+
+  /**
+   * The ownership seam is deliberately smaller than the managed ownership implementation.
+   * Standalone Floecat supplies {@link #ALWAYS_OWNED}; managed deployments supply the local account
+   * authority.
+   */
+  @FunctionalInterface
+  public interface Ownership {
+    Ownership ALWAYS_OWNED = (accountId, access) -> Optional.of(Permit.NOOP);
+
+    enum Access {
+      READ,
+      WRITE
+    }
+
+    @FunctionalInterface
+    interface Permit extends AutoCloseable {
+      Permit NOOP = () -> {};
+
+      @Override
+      void close();
+    }
+
+    Optional<Permit> acquire(String accountId, Access access);
+  }
+
+  /** Receives low-cardinality observations for background partition warming. */
+  public interface WarmObserver {
+    WarmObserver NONE = new WarmObserver() {};
+
+    default void started(String accountId) {}
+
+    default void completed(String accountId, Duration duration) {}
+
+    default void failed(String accountId, Duration duration, Throwable failure) {}
+  }
+
+  private final PointerStore durable;
+  private final Ownership ownership;
+  private final Executor warmExecutor;
+  private final WarmObserver warmObserver;
+  private final ConcurrentHashMap<String, Partition> partitions = new ConcurrentHashMap<>();
+
+  public PlanningPointerIndex(PointerStore durable) {
+    this(durable, Ownership.ALWAYS_OWNED);
+  }
+
+  public PlanningPointerIndex(PointerStore durable, Ownership ownership) {
+    this(durable, ownership, ForkJoinPool.commonPool());
+  }
+
+  public PlanningPointerIndex(
+      PointerStore durable, Ownership ownership, WarmObserver warmObserver) {
+    this(durable, ownership, ForkJoinPool.commonPool(), warmObserver);
+  }
+
+  PlanningPointerIndex(PointerStore durable, Ownership ownership, Executor warmExecutor) {
+    this(durable, ownership, warmExecutor, WarmObserver.NONE);
+  }
+
+  PlanningPointerIndex(
+      PointerStore durable, Ownership ownership, Executor warmExecutor, WarmObserver warmObserver) {
+    this.durable = java.util.Objects.requireNonNull(durable, "durable");
+    this.ownership = java.util.Objects.requireNonNull(ownership, "ownership");
+    this.warmExecutor = java.util.Objects.requireNonNull(warmExecutor, "warmExecutor");
+    this.warmObserver = java.util.Objects.requireNonNull(warmObserver, "warmObserver");
+  }
+
+  Optional<Pointer> get(String key) {
+    return get(key, false);
+  }
+
+  Optional<Pointer> getConsistent(String key) {
+    return get(key, true);
+  }
+
+  private Optional<Pointer> get(String key, boolean consistentFallback) {
+    String partitionKey = partitionFor(key);
+    if (partitionKey == null || !isPlanningKey(key)) return durableGet(key, consistentFallback);
+    Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
+    if (permit.isEmpty()) return durableGet(key, consistentFallback);
+    try {
+      Partition partition = readyPartition(partitionKey);
+      if (partition == null) {
+        warm(partitionKey);
+        return durableGet(key, consistentFallback);
+      }
+      try {
+        return Optional.ofNullable(partition.entries.get(key));
+      } finally {
+        partition.lock.readLock().unlock();
+      }
+    } finally {
+      permit.orElseThrow().close();
+    }
+  }
+
+  private Optional<Pointer> durableGet(String key, boolean consistent) {
+    return consistent ? durable.getConsistent(key) : durable.get(key);
+  }
+
+  Map<String, Pointer> getBatch(List<String> keys) {
+    return getBatch(keys, false);
+  }
+
+  Map<String, Pointer> getBatchConsistent(List<String> keys) {
+    return getBatch(keys, true);
+  }
+
+  private Map<String, Pointer> getBatch(List<String> keys, boolean consistentFallback) {
+    if (keys == null || keys.isEmpty()) return Map.of();
+    // The batch is one logical read. Operational/global keys are not part of an account planner
+    // partition, so a batch containing one must use the durable path for every key.
+    if (keys.stream().anyMatch(key -> !isPlanningKey(key)))
+      return durableBatch(keys, consistentFallback);
+    List<String> partitionsToRead =
+        keys.stream().map(this::partitionFor).distinct().sorted().toList();
+    // A batch is one logical read. If any planner partition is not ready or not owned, use the
+    // durable store for the whole operation instead of mixing an index snapshot with KV results.
+    List<Ownership.Permit> permits = acquire(partitionsToRead, Ownership.Access.READ, false);
+    if (permits == null) {
+      return durableBatch(keys, consistentFallback);
+    }
+    try {
+      List<Partition> locked = new ArrayList<>();
+      for (String partitionKey : partitionsToRead) {
+        Partition partition = partitions.get(partitionKey);
+        if (partition == null || partition.readiness != Readiness.COMPLETE) {
+          warm(partitionKey);
+          unlockWritePartitions(locked);
+          return durableBatch(keys, consistentFallback);
+        }
+        partition.lock.writeLock().lock();
+        locked.add(partition);
+        if (partition.readiness != Readiness.COMPLETE
+            || partitions.get(partitionKey) != partition) {
+          warm(partitionKey);
+          unlockWritePartitions(locked);
+          return durableBatch(keys, consistentFallback);
+        }
+      }
+      try {
+        Map<String, Pointer> result = new LinkedHashMap<>();
+        for (String key : new java.util.LinkedHashSet<>(keys)) {
+          Partition partition = partitions.get(partitionFor(key));
+          Pointer value = partition.entries.get(key);
+          if (value != null) result.put(key, value);
+        }
+        return Map.copyOf(result);
+      } finally {
+        unlockWritePartitions(locked);
+      }
+    } finally {
+      closeReverse(permits);
+    }
+  }
+
+  private Map<String, Pointer> durableBatch(List<String> keys, boolean consistent) {
+    return consistent ? durable.getBatchConsistent(keys) : durable.getBatch(keys);
+  }
+
+  List<Pointer> list(String prefix, int limit, String token, StringBuilder nextToken) {
+    return list(prefix, limit, token, nextToken, false);
+  }
+
+  List<Pointer> listConsistent(String prefix, int limit, String token, StringBuilder nextToken) {
+    return list(prefix, limit, token, nextToken, true);
+  }
+
+  private List<Pointer> list(
+      String prefix, int limit, String token, StringBuilder nextToken, boolean consistentFallback) {
+    String partitionKey = partitionFor(prefix);
+    if (partitionKey == null || !isPlanningPrefix(prefix))
+      return durableList(prefix, limit, token, nextToken, consistentFallback);
+    if (token != null && !token.isBlank() && !token.startsWith("index:"))
+      return durableList(prefix, limit, token, nextToken, consistentFallback);
+    Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
+    if (permit.isEmpty()) return durableList(prefix, limit, token, nextToken, consistentFallback);
+    try {
+      Partition partition = readyPartitionForListing(partitionKey);
+      if (partition == null) {
+        warm(partitionKey);
+        return durableList(prefix, limit, token, nextToken, consistentFallback);
+      }
+      try {
+        String after = token == null || token.isBlank() ? null : token;
+        after = after == null ? null : after.substring("index:".length());
+        NavigableMap<String, Pointer> tail =
+            after == null
+                ? partition.entries.tailMap(prefix, true)
+                : partition.entries.tailMap(after, false);
+        List<Pointer> result = new ArrayList<>();
+        boolean more = false;
+        for (Map.Entry<String, Pointer> entry : tail.entrySet()) {
+          if (!entry.getKey().startsWith(prefix)) break;
+          if (result.size() >= Math.max(1, limit)) {
+            more = true;
+            break;
+          }
+          result.add(entry.getValue());
+        }
+        if (nextToken != null) {
+          nextToken.setLength(0);
+          if (more && !result.isEmpty())
+            nextToken.append("index:").append(result.get(result.size() - 1).getKey());
+        }
+        return List.copyOf(result);
+      } finally {
+        partition.lock.writeLock().unlock();
+      }
+    } finally {
+      permit.orElseThrow().close();
+    }
+  }
+
+  int count(String prefix) {
+    return count(prefix, false);
+  }
+
+  int countConsistent(String prefix) {
+    return count(prefix, true);
+  }
+
+  private int count(String prefix, boolean consistentFallback) {
+    String partitionKey = partitionFor(prefix);
+    if (partitionKey == null || !isPlanningPrefix(prefix))
+      return durableCount(prefix, consistentFallback);
+    Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
+    if (permit.isEmpty()) return durableCount(prefix, consistentFallback);
+    try {
+      Partition partition = readyPartitionForListing(partitionKey);
+      if (partition == null) {
+        warm(partitionKey);
+        return durableCount(prefix, consistentFallback);
+      }
+      try {
+        int count = 0;
+        for (String key : partition.entries.tailMap(prefix, true).keySet()) {
+          if (!key.startsWith(prefix)) break;
+          count++;
+        }
+        return count;
+      } finally {
+        partition.lock.writeLock().unlock();
+      }
+    } finally {
+      permit.orElseThrow().close();
+    }
+  }
+
+  private int durableCount(String prefix, boolean consistent) {
+    return consistent ? durable.countByPrefixConsistent(prefix) : durable.countByPrefix(prefix);
+  }
+
+  String pageTokenAfterKey(String key) {
+    String partitionKey = partitionFor(key);
+    if (isPlanningKey(key) && partitionKey != null && indexReady(partitionKey)) {
+      return "index:" + key;
+    }
+    return durable.pageTokenAfterKey(key);
+  }
+
+  <T> T mutateKeys(Collection<String> keys, Supplier<T> durableMutation, Consumer<T> publish) {
+    List<Ownership.Permit> permits = acquire(accountPartitions(keys), Ownership.Access.WRITE, true);
+    try {
+      if (keys != null && keys.contains(Keys.accountRootPrefix())) {
+        synchronized (partitions) {
+          return mutateAllLocked(durableMutation, publish);
+        }
+      }
+      return mutateKeysLocked(keys, durableMutation, publish);
+    } finally {
+      closeReverse(permits);
+    }
+  }
+
+  <T> T mutatePrefix(String prefix, Supplier<T> durableMutation, Consumer<T> publish) {
+    List<Ownership.Permit> permits =
+        acquire(accountPartitions(List.of(prefix)), Ownership.Access.WRITE, true);
+    try {
+      if (Keys.accountRootPrefix().equals(prefix)) {
+        synchronized (partitions) {
+          return mutateAllLocked(durableMutation, publish);
+        }
+      }
+      String partitionKey = isPlanningPrefix(prefix) ? partitionFor(prefix) : null;
+      List<Partition> locked =
+          partitionKey == null ? List.of() : lockPartitionsForListing(List.of(partitionKey));
+      try {
+        T result = durableMutation.get();
+        publish.accept(result);
+        return result;
+      } finally {
+        unlockWritePartitions(locked);
+      }
+    } finally {
+      closeReverse(permits);
+    }
+  }
+
+  private <T> T mutateKeysLocked(
+      Collection<String> keys, Supplier<T> durableMutation, Consumer<T> publish) {
+    List<Partition> partitionsLocked = lockPartitionsForMutation(keys);
+    List<HeldKeyLock> keyLocks = lockKeys(keys, partitionsLocked);
+    try {
+      T result = durableMutation.get();
+      publish.accept(result);
+      return result;
+    } finally {
+      unlockKeys(keyLocks);
+      unlockReadPartitions(partitionsLocked);
+    }
+  }
+
+  private <T> T mutateAllLocked(Supplier<T> durableMutation, Consumer<T> publish) {
+    List<Partition> locked = lockAllPartitionsForListing();
+    try {
+      T result = durableMutation.get();
+      publish.accept(result);
+      return result;
+    } finally {
+      unlockWritePartitions(locked);
+    }
+  }
+
+  private List<String> accountPartitions(Collection<String> keys) {
+    if (keys == null) return List.of();
+    if (keys.contains(Keys.accountRootPrefix())) return List.of(GLOBAL);
+    return keys.stream()
+        .map(this::partitionFor)
+        .filter(partition -> partition != null && !GLOBAL.equals(partition))
+        .distinct()
+        .sorted()
+        .toList();
+  }
+
+  private List<Ownership.Permit> acquire(
+      Collection<String> partitionKeys, Ownership.Access access, boolean required) {
+    List<Ownership.Permit> permits = new ArrayList<>();
+    for (String partitionKey : partitionKeys) {
+      Optional<Ownership.Permit> permit = ownership.acquire(partitionKey, access);
+      if (permit.isEmpty()) {
+        // A failed ownership check means that any complete image was built under an older
+        // ownership lease. Drop it before falling back to durable storage; if this process later
+        // regains the account, the next read must load a fresh image rather than reusing it.
+        forget(partitionKey);
+        closeReverse(permits);
+        if (required) {
+          throw new StorageAbortRetryableException(
+              "account is not owned by this Floecat instance: " + partitionKey);
+        }
+        return null;
+      }
+      permits.add(permit.orElseThrow());
+    }
+    return permits;
+  }
+
+  private Optional<Ownership.Permit> acquireOne(
+      String partitionKey, Ownership.Access access, boolean required) {
+    List<Ownership.Permit> permits = acquire(List.of(partitionKey), access, required);
+    return permits == null || permits.isEmpty() ? Optional.empty() : Optional.of(permits.get(0));
+  }
+
+  private boolean indexReady(String partitionKey) {
+    Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
+    if (permit.isEmpty()) return false;
+    try {
+      Partition partition = readyPartition(partitionKey);
+      if (partition == null) {
+        warm(partitionKey);
+        return false;
+      }
+      partition.lock.readLock().unlock();
+      return true;
+    } finally {
+      permit.orElseThrow().close();
+    }
+  }
+
+  private static void closeReverse(List<Ownership.Permit> permits) {
+    for (int i = permits.size() - 1; i >= 0; i--) {
+      permits.get(i).close();
+    }
+  }
+
+  private List<Pointer> durableList(
+      String prefix, int limit, String token, StringBuilder nextToken, boolean consistent) {
+    // An index continuation is local to this process. If ownership or readiness changes between
+    // pages, translate it to the durable store's token instead of leaking the index format into
+    // the KV adapter.
+    String durableToken = token;
+    if (token != null && token.startsWith("index:")) {
+      String lastKey = token.substring("index:".length());
+      durableToken = lastKey.isBlank() ? null : durable.pageTokenAfterKey(lastKey);
+    }
+    return consistent
+        ? durable.listPointersByPrefixConsistent(prefix, limit, durableToken, nextToken)
+        : durable.listPointersByPrefix(prefix, limit, durableToken, nextToken);
+  }
+
+  void publish(String key, Pointer value) {
+    if (!isPlanningKey(key)) return;
+    Partition partition = partitions.get(partitionFor(key));
+    if (partition != null && partition.readiness == Readiness.COMPLETE)
+      partition.entries.put(key, value);
+  }
+
+  void remove(String key) {
+    if (!isPlanningKey(key)) return;
+    Partition partition = partitions.get(partitionFor(key));
+    if (partition != null && partition.readiness == Readiness.COMPLETE)
+      partition.entries.remove(key);
+  }
+
+  void refresh(String key, Optional<Pointer> value) {
+    if (value.isPresent()) publish(key, value.orElseThrow());
+    else remove(key);
+  }
+
+  void removePrefix(String prefix, String excludedKey) {
+    if (Keys.accountRootPrefix().equals(prefix)) {
+      for (Partition partition : partitions.values()) {
+        if (partition.readiness == Readiness.COMPLETE) {
+          partition
+              .entries
+              .keySet()
+              .removeIf(
+                  key -> key.startsWith(prefix) && !java.util.Objects.equals(key, excludedKey));
+        }
+      }
+      partitions.clear();
+      return;
+    }
+    String partitionKey = partitionFor(prefix);
+    Partition partition = partitionKey == null ? null : partitions.get(partitionKey);
+    if (partition != null && partition.readiness == Readiness.COMPLETE) {
+      partition
+          .entries
+          .keySet()
+          .removeIf(key -> key.startsWith(prefix) && !java.util.Objects.equals(key, excludedKey));
+    }
+    if (isAccountRoot(prefix)) partitions.remove(accountPartition(prefix));
+  }
+
+  Readiness readiness(String accountId) {
+    Partition partition = partitions.get(accountId);
+    return partition == null ? Readiness.LOADING : partition.readiness;
+  }
+
+  public long entryCount() {
+    long entries = 0;
+    for (Partition partition : partitions.values()) {
+      partition.lock.readLock().lock();
+      try {
+        entries += partition.entries.size();
+      } finally {
+        partition.lock.readLock().unlock();
+      }
+    }
+    return entries;
+  }
+
+  public long completePartitionCount() {
+    return partitions.values().stream()
+        .filter(partition -> partition.readiness == Readiness.COMPLETE)
+        .count();
+  }
+
+  public long loadingPartitionCount() {
+    return partitions.values().stream()
+        .filter(partition -> partition.readiness == Readiness.LOADING)
+        .count();
+  }
+
+  /** Clears local planner state after a test fixture or administrative wipe changed durable KV. */
+  public void clear() {
+    synchronized (partitions) {
+      partitions.clear();
+    }
+  }
+
+  /**
+   * Starts a background load for an owned account. The ownership implementation may call this when
+   * it grants an account; reads also call it as a fallback so a missed notification cannot leave an
+   * account cold forever.
+   */
+  public void warm(String accountId) {
+    if (accountId == null || accountId.isBlank()) return;
+    Partition partition;
+    synchronized (partitions) {
+      partition = partitions.computeIfAbsent(accountId, ignored -> new Partition());
+    }
+    if (partition.readiness == Readiness.COMPLETE
+        || !partition.warmScheduled.compareAndSet(false, true)) return;
+    try {
+      warmExecutor.execute(() -> warmPartition(accountId, partition));
+    } catch (RejectedExecutionException rejected) {
+      partition.warmScheduled.set(false);
+    }
+  }
+
+  /**
+   * Drops the local image when ownership is revoked. The ownership controller must call this even
+   * when no request arrives during the handoff; otherwise a later re-acquisition could mistake an
+   * image from the previous lease for the current durable state.
+   */
+  public void ownershipLost(String accountId) {
+    if (accountId == null || accountId.isBlank() || GLOBAL.equals(accountId)) {
+      return;
+    }
+    forget(accountId);
+  }
+
+  /**
+   * Starts warming after an ownership lease is granted. Reads remain non-blocking while loading.
+   */
+  public void ownershipGained(String accountId) {
+    warm(accountId);
+  }
+
+  private void forget(String accountId) {
+    Partition removed;
+    synchronized (partitions) {
+      removed = partitions.remove(accountId);
+    }
+    if (removed != null) {
+      removed.lock.writeLock().lock();
+      try {
+        removed.entries.clear();
+        removed.keyLocks.clear();
+        removed.readiness = Readiness.LOADING;
+      } finally {
+        removed.lock.writeLock().unlock();
+      }
+    }
+  }
+
+  private void warmPartition(String partitionKey, Partition partition) {
+    Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
+    if (permit.isEmpty()) {
+      partition.warmScheduled.set(false);
+      return;
+    }
+    long startNanos = System.nanoTime();
+    warmObserver.started(partitionKey);
+    boolean loaded = false;
+    Throwable failure = null;
+    partition.lock.writeLock().lock();
+    try {
+      // Ownership can be revoked after the task captured the partition but before it acquired the
+      // write lock. Do not resurrect an image that the handoff already removed.
+      if (partitions.get(partitionKey) == partition && partition.readiness != Readiness.COMPLETE) {
+        loadLocked(partitionKey, partition);
+        loaded = true;
+      }
+    } catch (RuntimeException loadFailure) {
+      // A failed load is not a partial index. Keep it LOADING; a later read or mutation retries.
+      failure = loadFailure;
+    } finally {
+      partition.lock.writeLock().unlock();
+      permit.orElseThrow().close();
+      if (partition.readiness != Readiness.COMPLETE) partition.warmScheduled.set(false);
+    }
+    Duration duration = Duration.ofNanos(System.nanoTime() - startNanos);
+    if (loaded) warmObserver.completed(partitionKey, duration);
+    else if (failure != null) warmObserver.failed(partitionKey, duration, failure);
+  }
+
+  private Partition readyPartition(String partitionKey) {
+    Partition partition = partitions.get(partitionKey);
+    if (partition == null || partition.readiness != Readiness.COMPLETE) return null;
+    partition.lock.readLock().lock();
+    if (partition.readiness != Readiness.COMPLETE || partitions.get(partitionKey) != partition) {
+      partition.lock.readLock().unlock();
+      return null;
+    }
+    return partition;
+  }
+
+  private static void unlockReadPartitions(List<Partition> partitions) {
+    for (int i = partitions.size() - 1; i >= 0; i--) {
+      partitions.get(i).lock.readLock().unlock();
+    }
+  }
+
+  private static void unlockWritePartitions(List<Partition> partitions) {
+    for (int i = partitions.size() - 1; i >= 0; i--) {
+      partitions.get(i).lock.writeLock().unlock();
+    }
+  }
+
+  private static void unlockKeys(List<HeldKeyLock> locks) {
+    for (int i = locks.size() - 1; i >= 0; i--) {
+      HeldKeyLock held = locks.get(i);
+      held.keyLock().lock.unlock();
+      held.partition()
+          .keyLocks
+          .computeIfPresent(
+              held.key(),
+              (ignored, current) -> {
+                if (current != held.keyLock()) return current;
+                current.references--;
+                return current.references == 0 ? null : current;
+              });
+    }
+  }
+
+  private Partition readyPartitionForListing(String partitionKey) {
+    Partition partition = partitions.get(partitionKey);
+    if (partition == null || partition.readiness != Readiness.COMPLETE) return null;
+    partition.lock.writeLock().lock();
+    if (partition.readiness != Readiness.COMPLETE || partitions.get(partitionKey) != partition) {
+      partition.lock.writeLock().unlock();
+      return null;
+    }
+    return partition;
+  }
+
+  private void loadLocked(String partitionKey, Partition partition) {
+    TreeMap<String, Pointer> loaded = new TreeMap<>();
+    for (String prefix : loadPrefixes(partitionKey)) {
+      String token = "";
+      do {
+        StringBuilder next = new StringBuilder();
+        for (Pointer pointer :
+            durable.listPointersByPrefixConsistent(prefix, PAGE_SIZE, token, next)) {
+          if (partitionKey.equals(partitionFor(pointer.getKey()))
+              && isPlanningKey(pointer.getKey())) loaded.put(pointer.getKey(), pointer);
+        }
+        String newToken = next.toString();
+        if (!newToken.isBlank() && newToken.equals(token))
+          throw new IllegalStateException("stagnant pointer index token");
+        token = newToken;
+      } while (!token.isBlank());
+    }
+    partition.entries.clear();
+    partition.entries.putAll(loaded);
+    partition.readiness = Readiness.COMPLETE;
+  }
+
+  private List<Partition> lockPartitionsForMutation(Collection<String> keys) {
+    java.util.Set<String> names = new java.util.TreeSet<>(accountPartitions(keys));
+    Map<String, Partition> partitionsByName = new LinkedHashMap<>();
+    // Resolve the whole partition set before taking any partition lock. Account-wide mutations
+    // hold the registry monitor while they acquire write locks; never reacquire that monitor while
+    // already holding one of these read locks.
+    synchronized (partitions) {
+      for (String name : names) {
+        partitionsByName.put(name, partitions.computeIfAbsent(name, ignored -> new Partition()));
+      }
+    }
+    List<Partition> locked = new ArrayList<>();
+    for (String name : names) {
+      Partition partition = partitionsByName.get(name);
+      while (true) {
+        if (partition.readiness != Readiness.COMPLETE || partitions.get(name) != partition) {
+          ensureLoaded(name, partition);
+        }
+        partition.lock.readLock().lock();
+        if (partitions.get(name) == partition) break;
+        partition.lock.readLock().unlock();
+        synchronized (partitions) {
+          partition = partitions.computeIfAbsent(name, ignored -> new Partition());
+          partitionsByName.put(name, partition);
+        }
+      }
+      locked.add(partition);
+    }
+    return locked;
+  }
+
+  private List<HeldKeyLock> lockKeys(Collection<String> keys, List<Partition> lockedPartitions) {
+    if (keys == null || keys.isEmpty()) return List.of();
+    java.util.Set<String> keyNames = new java.util.TreeSet<>();
+    for (String key : keys) {
+      if (isPlanningKey(key)) keyNames.add(key);
+    }
+    List<HeldKeyLock> locked = new ArrayList<>();
+    for (String key : keyNames) {
+      Partition partition = partitions.get(partitionFor(key));
+      if (partition == null || !lockedPartitions.contains(partition)) continue;
+      KeyLock keyLock =
+          partition.keyLocks.compute(
+              key,
+              (ignored, current) -> {
+                if (current == null) current = new KeyLock();
+                current.references++;
+                return current;
+              });
+      keyLock.lock.lock();
+      locked.add(new HeldKeyLock(partition, key, keyLock));
+    }
+    return locked;
+  }
+
+  private List<Partition> lockPartitionsForListing(Collection<String> names) {
+    java.util.Set<String> partitionNames = new java.util.TreeSet<>();
+    if (names != null) {
+      for (String name : names) {
+        if (name != null) partitionNames.add(name);
+      }
+    }
+    List<Partition> locked = new ArrayList<>();
+    for (String name : partitionNames) {
+      Partition partition = partition(name);
+      partition.lock.writeLock().lock();
+      locked.add(partition);
+      ensureLoadedWhileLocked(name, partition);
+    }
+    return locked;
+  }
+
+  private List<Partition> lockAllPartitionsForListing() {
+    synchronized (partitions) {
+      return lockPartitionsForListing(new java.util.TreeSet<>(partitions.keySet()));
+    }
+  }
+
+  private Partition partition(String name) {
+    synchronized (partitions) {
+      return partitions.computeIfAbsent(name, ignored -> new Partition());
+    }
+  }
+
+  private void ensureLoaded(String name, Partition partition) {
+    partition.lock.writeLock().lock();
+    try {
+      ensureLoadedWhileLocked(name, partition);
+    } finally {
+      partition.lock.writeLock().unlock();
+    }
+  }
+
+  private void ensureLoadedWhileLocked(String name, Partition partition) {
+    if (partition.readiness != Readiness.COMPLETE && partitions.get(name) == partition) {
+      try {
+        loadLocked(name, partition);
+      } catch (RuntimeException ignored) {
+        // The durable mutation remains valid. A later read retries the complete load.
+      }
+    }
+  }
+
+  private boolean isPlanningKey(String key) {
+    String partition = partitionFor(key);
+    return key != null
+        && partition != null
+        && !GLOBAL.equals(partition)
+        && Keys.pointerNamespace(key) == Keys.PointerNamespace.PLANNER;
+  }
+
+  private boolean isPlanningPrefix(String prefix) {
+    String partition = partitionFor(prefix);
+    return prefix != null
+        && partition != null
+        && !GLOBAL.equals(partition)
+        && Keys.pointerNamespace(prefix) == Keys.PointerNamespace.PLANNER;
+  }
+
+  private String partitionFor(String key) {
+    if (key == null || !key.startsWith(Keys.accountRootPrefix())) return null;
+    String remainder = key.substring(Keys.accountRootPrefix().length());
+    int slash = remainder.indexOf('/');
+    String encodedAccount = slash < 0 ? remainder : remainder.substring(0, slash);
+    if (encodedAccount.isBlank()) return null;
+    if (Keys.isReservedAccountDirectorySegment(encodedAccount)) return GLOBAL;
+    return Keys.decodeSegment(encodedAccount);
+  }
+
+  private static List<String> loadPrefixes(String partition) {
+    if (GLOBAL.equals(partition))
+      return List.of(Keys.accountPointerByIdPrefix(), Keys.accountPointerByNamePrefix());
+    return List.of(Keys.accountRootPrefix(partition));
+  }
+
+  private static boolean isAccountRoot(String prefix) {
+    return prefix != null
+        && prefix.endsWith("/")
+        && prefix.substring(0, prefix.length() - 1).lastIndexOf('/')
+            == Keys.accountRootPrefix().length() - 1;
+  }
+
+  private static String accountPartition(String prefix) {
+    String encoded = prefix.substring(Keys.accountRootPrefix().length(), prefix.length() - 1);
+    return Keys.decodeSegment(encoded);
+  }
+
+  private static final class Partition {
+    private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+    private final ConcurrentNavigableMap<String, Pointer> entries = new ConcurrentSkipListMap<>();
+    private final ConcurrentHashMap<String, KeyLock> keyLocks = new ConcurrentHashMap<>();
+    private final AtomicBoolean warmScheduled = new AtomicBoolean();
+    private volatile Readiness readiness = Readiness.LOADING;
+  }
+
+  private static final class KeyLock {
+    private final ReentrantLock lock = new ReentrantLock();
+    private int references;
+  }
+
+  private record HeldKeyLock(Partition partition, String key, KeyLock keyLock) {}
+}

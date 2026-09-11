@@ -272,8 +272,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
           List<ResourceWithMeta<T>> values = new ArrayList<>(pointers.size());
           Timestamp now = Timestamps.fromMillis(clock.millis());
           for (Pointer selectedPointer : pointers) {
-            coherentFrom(selectedPointer.getKey(), selectedPointer, now, consistentRead)
-                .ifPresent(values::add);
+            coherentFrom(selectedPointer.getKey(), selectedPointer, now).ifPresent(values::add);
           }
           return List.copyOf(values);
         });
@@ -405,8 +404,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
     return pointerReads
         .get(pointerKey)
         .flatMap(
-            selected ->
-                coherentFrom(pointerKey, selected, Timestamps.fromMillis(clock.millis()), false));
+            selected -> coherentFrom(pointerKey, selected, Timestamps.fromMillis(clock.millis())));
   }
 
   /**
@@ -421,10 +419,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    *     under the read and the body no longer belongs with any meta this call could build.
    */
   private Optional<ResourceWithMeta<T>> coherentFrom(
-      String pointerKey, Pointer selected, Timestamp now, boolean consistent) {
+      String pointerKey, Pointer selected, Timestamp now) {
     String selectedBlobUri = requireBlobReference(selected, pointerKey);
     Optional<T> loaded = getByBlobUri(selectedBlobUri);
-    boolean reResolved = false;
     if (loaded.isEmpty()) {
       // Skipping here would silently shorten a page, or report a live resource absent, which the
       // caller cannot detect either way. Resolve where the pointer moved to, and carry THAT uri
@@ -435,20 +432,13 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
       }
       selectedBlobUri = reloaded.get().pointer().getBlobUri();
       loaded = Optional.of(reloaded.get().value());
-      reResolved = true;
     }
 
     T value = loaded.get();
     String canonicalKey = schema.canonicalPointerForKey.apply(schema.keyFromValue.apply(value));
-    // Authoritative when the caller asked for a consistent read, and whenever we had to re-resolve:
-    // having just proved the selected pointer was behind, a cached canonical read could name the
-    // swept uri, mismatch, and drop the row for exactly the staleness the re-resolve absorbs -- and
-    // with nothing expiring it would not age out. A consistent page compared against a cached
-    // canonical would be the same hole one branch over.
-    Optional<Pointer> canonical =
-        consistent || reResolved
-            ? mutationReads.pointers().get(canonicalKey)
-            : pointerReads.get(canonicalKey);
+    // The indexed pointer store owns the consistency decision. A complete planner partition is
+    // authoritative; loading or non-owned partitions fall back to durable KV before returning.
+    Optional<Pointer> canonical = pointerReads.get(canonicalKey);
     if (canonical.isEmpty()) {
       // Deleted after the pointer was selected.
       return Optional.empty();
@@ -1468,7 +1458,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
         () -> {
           guardSystemObject(key);
           String canonicalPointer = schema.canonicalPointerForKey.apply(key);
-          var canonicalPtr = mutationPointerStore.get(canonicalPointer).orElse(null);
+          var canonicalPtr = mutationReads.pointers().get(canonicalPointer).orElse(null);
           if (canonicalPtr == null) {
             return false;
           }
@@ -1780,8 +1770,9 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   /**
-   * Pointer meta read past any cache, for a caller whose question the cache cannot answer -- a CAS
-   * expected-version, or a liveness check whose emptiness is the verdict.
+   * Pointer meta read through the store's ownership and loading policy. The name remains for
+   * lifecycle callers whose emptiness is load-bearing; callers do not select a separate pointer
+   * cache or durable view.
    */
   public MutationMeta metaForSafeConsistent(K key) {
     return metaForSafe(key, Timestamps.fromMillis(clock.millis()), true);

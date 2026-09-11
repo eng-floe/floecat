@@ -25,6 +25,8 @@ import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.ConflictingBatchPointerStore;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.DuplicateKeyRejectingPointerStore;
 import ai.floedb.floecat.service.repo.impl.RepoTestPointerStores.FailingBatchPointerStore;
@@ -42,8 +44,6 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -419,27 +419,23 @@ class GenericResourceRepositoryCreateTest {
   }
 
   @Test
-  void delete_whenCanonicalDisappearsDuringRead_returnsFalse() {
+  void delete_whenCanonicalDisappearsBeforeCommit_returnsFalse() {
     var baseRepo = new AccountRepository(ptr, blobs);
     var account = account("acct-1", "alpha", "");
     baseRepo.create(account);
 
     var racing =
         new RepoTestPointerStores.DelegatingPointerStore(ptr) {
-          private final AtomicInteger canonicalReads = new AtomicInteger();
-
           @Override
-          public Optional<ai.floedb.floecat.common.rpc.Pointer> getConsistent(String key) {
-            if (Keys.accountPointerById("acct-1").equals(key)
-                && canonicalReads.incrementAndGet() == 2) {
-              ptr.delete(Keys.accountPointerById("acct-1"));
-              ptr.delete(Keys.accountPointerByName("alpha"));
-              return Optional.empty();
-            }
-            return super.getConsistent(key);
+          public boolean compareAndSetBatch(List<PointerStore.CasOp> ops) {
+            ptr.delete(Keys.accountPointerById("acct-1"));
+            ptr.delete(Keys.accountPointerByName("alpha"));
+            return super.compareAndSetBatch(ops);
           }
         };
-    var repo = new AccountRepository(racing, blobs);
+    var repo =
+        new AccountRepository(
+            new IndexedPointerStore(racing, new PlanningPointerIndex(racing)), blobs);
 
     assertThat(repo.delete(account.getResourceId())).isFalse();
   }
