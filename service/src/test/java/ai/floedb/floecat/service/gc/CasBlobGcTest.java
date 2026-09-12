@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.gc;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
@@ -25,7 +26,9 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -36,7 +39,9 @@ import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -83,6 +88,59 @@ class CasBlobGcTest {
     gc.runForAccount(ACCOUNT_ID);
 
     assertTrue(blobs.head(blobUri).isPresent());
+  }
+
+  /** Ownership ends while the sweep inspects garbage: no delete, no retained mark, no result. */
+  @Test
+  void revocationBeforeADeleteIsNotSwallowedAndDropsTheContinuation() {
+    AtomicBoolean owned = new AtomicBoolean(true);
+    String garbage = Keys.accountBlobUri(ACCOUNT_ID, "sha-garbage");
+    InMemoryBlobStore revokingBlobs =
+        new InMemoryBlobStore() {
+          @Override
+          public Optional<BlobHeader> head(String uri) {
+            Optional<BlobHeader> header = super.head(uri);
+            if (uri.endsWith("/sha-garbage.pb") && header.isPresent()) {
+              owned.set(false);
+            }
+            return header;
+          }
+        };
+    revokingBlobs.put(garbage, "garbage".getBytes(StandardCharsets.UTF_8), "text/plain");
+    gc.blobStore = revokingBlobs;
+    gc.tableRootRepo =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, revokingBlobs);
+    gc.statsRepository =
+        new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, revokingBlobs);
+
+    assertThrows(
+        AccountAssignment.GcPermitRevokedException.class,
+        () -> gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L, permit(owned)));
+
+    assertTrue(revokingBlobs.head(garbage).isPresent());
+    assertTrue(gc.continuationAccountId().isEmpty());
+  }
+
+  private static AccountAssignment.GcPermit permit(AtomicBoolean owned) {
+    return new AccountAssignment.GcPermit() {
+      @Override
+      public String accountId() {
+        return ACCOUNT_ID;
+      }
+
+      @Override
+      public long generation() {
+        return 7L;
+      }
+
+      @Override
+      public boolean valid() {
+        return owned.get();
+      }
+
+      @Override
+      public void close() {}
+    };
   }
 
   @Test
