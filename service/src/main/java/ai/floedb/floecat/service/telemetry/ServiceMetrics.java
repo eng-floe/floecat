@@ -349,6 +349,47 @@ public final class ServiceMetrics {
             "service");
   }
 
+  /** Account assignment: per-state account counts, fence self-checks, bumps and rejections. */
+  public static final class Assignment {
+    private Assignment() {}
+
+    public static final MetricId ACCOUNTS =
+        new MetricId(
+            "floecat.service.account_assignment.accounts",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId GC_ALLOWED_ACCOUNTS =
+        new MetricId(
+            "floecat.service.account_assignment.gc_allowed_accounts",
+            MetricType.GAUGE,
+            "count",
+            CONTRACT,
+            "service");
+    public static final MetricId SELF_CHECKS =
+        new MetricId(
+            "floecat.service.account_assignment.self_checks.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId FENCE_BUMPS =
+        new MetricId(
+            "floecat.service.account_assignment.fence_bumps.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+    public static final MetricId FENCE_REJECTIONS =
+        new MetricId(
+            "floecat.service.account_assignment.fence_rejections.total",
+            MetricType.COUNTER,
+            "",
+            CONTRACT,
+            "service");
+  }
+
   /** CAS blob-GC backlog health: the signals that answer "is GC falling behind?". */
   public static final class Gc {
     private Gc() {}

@@ -470,6 +470,56 @@
     "allowedTags": ["component", "mode", "operation", "policy", "reason", "result", "scope", "trigger"]
   },
   {
+    "name": "floecat.service.account_assignment.accounts",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Accounts tracked by this process per assignment state (unassigned, serving, draining).",
+    "requiredTags": ["component", "mode", "operation"],
+    "allowedTags": ["component", "mode", "operation"]
+  },
+  {
+    "name": "floecat.service.account_assignment.fence_bumps.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Fence take outcomes when an account enters SERVING (ok, conflict, error).",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "result"]
+  },
+  {
+    "name": "floecat.service.account_assignment.fence_rejections.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Account-scoped writes that failed their fence condition (revoked, conflict, error).",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "result"]
+  },
+  {
+    "name": "floecat.service.account_assignment.gc_allowed_accounts",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Accounts this process may currently collect garbage for.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.account_assignment.self_checks.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Fence self-check outcomes (ok, mismatch, error), per sweep and per GC permit.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "operation", "result"]
+  },
+  {
     "name": "floecat.service.flight.cancelled.total",
     "type": "COUNTER",
     "unit": "",

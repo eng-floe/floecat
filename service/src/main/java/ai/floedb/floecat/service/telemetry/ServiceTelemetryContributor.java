@@ -346,6 +346,39 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         reconcileQueueRequired,
         reconcileQueueAllowed,
         "Current number of durable reconcile lease scan permits available.");
+    Set<String> assignmentRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> assignmentByMode = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.MODE);
+    Set<String> assignmentByResult = Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+    add(
+        defs,
+        ServiceMetrics.Assignment.ACCOUNTS,
+        assignmentByMode,
+        assignmentByMode,
+        "Accounts tracked by this process per assignment state (unassigned, serving, draining).");
+    add(
+        defs,
+        ServiceMetrics.Assignment.GC_ALLOWED_ACCOUNTS,
+        assignmentRequired,
+        assignmentRequired,
+        "Accounts this process may currently collect garbage for.");
+    add(
+        defs,
+        ServiceMetrics.Assignment.SELF_CHECKS,
+        assignmentByResult,
+        assignmentByResult,
+        "Fence self-check outcomes (ok, mismatch, error), per sweep and per GC permit.");
+    add(
+        defs,
+        ServiceMetrics.Assignment.FENCE_BUMPS,
+        assignmentByResult,
+        assignmentByResult,
+        "Fence take outcomes when an account enters SERVING (ok, conflict, error).");
+    add(
+        defs,
+        ServiceMetrics.Assignment.FENCE_REJECTIONS,
+        assignmentByResult,
+        assignmentByResult,
+        "Account-scoped writes that failed their fence condition (revoked, conflict, error).");
     add(
         defs,
         ServiceMetrics.Gc.CAS_POISONED_ACCOUNTS,
