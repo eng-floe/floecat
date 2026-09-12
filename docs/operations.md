@@ -309,6 +309,27 @@ To scale executors horizontally, add more executor-plane instances. They greedil
   ship spans to a collector. See [`telemetry-demo.md`][telemetry-demo-doc]
   for the full Prometheus + Tempo + Loki + Grafana demo stack.
 
+### Account assignment and drain
+
+A Floecat process runs in one of three modes (`FLOECAT_ACCOUNT_OWNERSHIP_MODE`):
+
+- `standalone` (default): serves every account and runs GC for all of them. Single-process and
+  OSS deployments need nothing else.
+- `managed`: serves only the accounts Core assigns to it. Requires `FLOECAT_MEMBER_ID`, the
+  process's stable identity across restarts (the deployment sets it to the pod name). Core decides
+  placement and pushes assignments; a restarted process recovers its own accounts from the store
+  before Core says anything, so reads and writes continue while Core is unavailable.
+- `none`: serves reads only; for processes deliberately outside the assignment.
+
+The drain endpoint is registered only in `managed` mode. Pods in that mode should drain before
+termination with a `preStop` hook on
+`GET /internal/drain?wait=true&timeoutMs=<ms>`; the response is `200` when in-flight mutations and
+resolutions are gone and `202` at the timeout. `GET /internal/drain` shows the current status.
+The kubelet reaches it on the pod address; through the mesh an authorization policy restricts it
+to the control and account identities. Related
+metrics: `floecat.service.account_assignment.accounts` (per state), `gc_allowed_accounts`,
+`self_checks.total`, `fence_bumps.total` and `fence_rejections.total` (by result).
+
 ### Telemetry hub configuration
 The service uses the telemetry hub core + Micrometer backend. The following flags are available in
 `service/src/main/resources/application.properties` (the `telemetry-otlp` profile toggles OTLP tracing/log exports):
