@@ -31,6 +31,7 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.concurrent.Futures;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -46,6 +47,7 @@ import io.grpc.Context;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -62,6 +64,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
@@ -121,22 +124,42 @@ public class QueryInputResolver {
   // without a store — registration is simply skipped then.
   private final QueryContextStore queryStore;
 
+  // Admits one pin resolution per account pinned; a pin on a non-owned account is refused with
+  // not_assigned. Unrestricted for the constructors that take no assignment.
+  private final Function<String, AccountAssignment.Permit> admitResolution;
+
   @Inject
   public QueryInputResolver(
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
+      RepositoryReads.ReadPolicy pinResolutionReads,
+      AccountAssignment assignment) {
+    this(
+        metadataGraph,
+        queryStore,
+        pinResolutionReads,
+        assignment,
+        configuredMaxParallelInputResolutions());
+  }
+
+  /** Compatibility constructor for focused tests that inject their metadata read policy. */
+  public QueryInputResolver(
+      CatalogGraphView metadataGraph,
+      QueryContextStore queryStore,
       RepositoryReads.ReadPolicy pinResolutionReads) {
-    this(metadataGraph, queryStore, pinResolutionReads, configuredMaxParallelInputResolutions());
+    this(metadataGraph, queryStore, pinResolutionReads, null);
   }
 
   private QueryInputResolver(
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
       RepositoryReads.ReadPolicy pinResolutionReads,
+      AccountAssignment assignment,
       int maxParallelInputResolutions) {
     this.metadataGraph = metadataGraph;
     this.queryStore = queryStore;
     this.pinResolutionReads = pinResolutionReads;
+    this.admitResolution = assignment == null ? accountId -> () -> {} : assignment::admitResolution;
     this.maxParallelInputResolutions = maxParallelInputResolutions;
   }
 
@@ -146,6 +169,7 @@ public class QueryInputResolver {
         metadataGraph,
         queryStore,
         RepositoryReads.directPolicy(),
+        null,
         configuredMaxParallelInputResolutions());
   }
 
@@ -233,6 +257,7 @@ public class QueryInputResolver {
       SnapshotPinMemo snapshotPinMemo,
       SnapshotPinMemoOwnership snapshotPinMemoOwnership,
       ResolvingPinRoots resolvingPinRoots,
+      ResolutionAdmission admission,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
 
@@ -250,8 +275,49 @@ public class QueryInputResolver {
           snapshotPinMemo,
           snapshotPinMemoOwnership,
           resolvingPinRoots,
+          admission,
           taskDiagnostics,
           cancelled);
+    }
+  }
+
+  /**
+   * The resolution permits of one resolve call: one per account whose table is pinned, taken before
+   * the pin is constructed and released together when the call ends. Fan-out siblings that outlive
+   * the call cannot admit against a closed instance, so no permit is left behind.
+   */
+  private static final class ResolutionAdmission implements AutoCloseable {
+    private final Function<String, AccountAssignment.Permit> admit;
+    private final Map<String, AccountAssignment.Permit> permits = new HashMap<>();
+    private boolean closed;
+
+    private ResolutionAdmission(Function<String, AccountAssignment.Permit> admit) {
+      this.admit = admit;
+    }
+
+    void admit(String accountId) {
+      synchronized (this) {
+        if (closed) {
+          throw new CancellationException("input resolution no longer active");
+        }
+        if (!permits.containsKey(accountId)) {
+          permits.put(accountId, admit.apply(accountId));
+        }
+      }
+    }
+
+    @Override
+    public void close() {
+      List<AccountAssignment.Permit> released;
+      synchronized (this) {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        released = new ArrayList<>(permits.values());
+        permits.clear();
+      }
+      released.forEach(AccountAssignment.Permit::close);
     }
   }
 
@@ -382,7 +448,8 @@ public class QueryInputResolver {
     // Bind the request cancellation signal so store reads auto-admitted at the repository layer —
     // including those dispatched on fan-out workers — abort their admission wait when this request
     // cancels.
-    try (var cancellationScope = PropagatedContext.bindCancellation(cancelled)) {
+    try (var admission = new ResolutionAdmission(admitResolution);
+        var cancellationScope = PropagatedContext.bindCancellation(cancelled)) {
       // Resolve catalog display-name once up-front — used to fill in blank catalog fields in
       // view base-relation NameRefs so they re-resolve exactly as they did at view-creation time.
       Optional<String> defaultCatalog = Optional.empty();
@@ -408,6 +475,7 @@ public class QueryInputResolver {
                   snapshotPinMemo,
                   new SnapshotPinMemoOwnership(snapshotPinMemo.pins),
                   new ResolvingPinRoots(queryStore, queryId),
+                  admission,
                   diag,
                   cancelled));
 
@@ -619,6 +687,7 @@ public class QueryInputResolver {
    */
   private TablePin pinForTable(
       ResolutionWork state, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {
+    state.admission.admit(rid.getAccountId());
     Optional<Timestamp> effectiveAsOfDefault =
         isExplicitCurrentSnapshot(override) ? Optional.empty() : asOfDefault;
     if (usesCurrentSnapshotFallback(override, effectiveAsOfDefault)) {

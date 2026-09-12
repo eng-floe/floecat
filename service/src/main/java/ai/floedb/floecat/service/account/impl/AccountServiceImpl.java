@@ -35,6 +35,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.AccountIds;
@@ -91,6 +92,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject ObjectCache objects;
   @Inject HintCache hints;
   @Inject BlobCacheAccess blobs;
+  @Inject AccountAssignment assignment;
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS =
       Set.of("display_name", "description", "tags");
@@ -350,45 +352,60 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                     throw GrpcErrors.invalidArgument(corr, UPDATE_MASK_REQUIRED, Map.of());
                   }
 
-                  var spec = request.getSpec();
-                  var mask = normalizeMask(request.getUpdateMask());
+                  try (var mutation = assignment.admitMutation(accountId.getId())) {
+                    var spec = request.getSpec();
+                    var mask = normalizeMask(request.getUpdateMask());
 
-                  var meta = accountRepo.metaFor(accountId);
-                  MutationOps.BaseServiceChecks.enforcePreconditions(
-                      corr, meta, request.getPrecondition());
-
-                  var current =
-                      accountRepo
-                          .getById(accountId)
-                          .orElseThrow(
-                              () ->
-                                  GrpcErrors.notFound(
-                                      corr, ACCOUNT, Map.of("id", accountId.getId())));
-
-                  var desired = applyAccountSpecPatch(current, spec, mask, corr);
-
-                  if (desired.equals(current)) {
-                    var metaNoop = accountRepo.metaFor(accountId);
-                    boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
-                    if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
-                      throw GrpcErrors.preconditionFailed(
-                          corr,
-                          VERSION_MISMATCH,
-                          Map.of(
-                              "expected", Long.toString(meta.getPointerVersion()),
-                              "actual", Long.toString(metaNoop.getPointerVersion())));
-                    }
+                    var meta = accountRepo.metaFor(accountId);
                     MutationOps.BaseServiceChecks.enforcePreconditions(
-                        corr, metaNoop, request.getPrecondition());
-                    return UpdateAccountResponse.newBuilder()
-                        .setAccount(current)
-                        .setMeta(metaNoop)
-                        .build();
-                  }
+                        corr, meta, request.getPrecondition());
 
-                  try {
-                    boolean ok = accountRepo.update(desired, meta.getPointerVersion());
-                    if (!ok) {
+                    var current =
+                        accountRepo
+                            .getById(accountId)
+                            .orElseThrow(
+                                () ->
+                                    GrpcErrors.notFound(
+                                        corr, ACCOUNT, Map.of("id", accountId.getId())));
+
+                    var desired = applyAccountSpecPatch(current, spec, mask, corr);
+
+                    if (desired.equals(current)) {
+                      var metaNoop = accountRepo.metaFor(accountId);
+                      boolean callerCares = hasMeaningfulPrecondition(request.getPrecondition());
+                      if (callerCares && metaNoop.getPointerVersion() != meta.getPointerVersion()) {
+                        throw GrpcErrors.preconditionFailed(
+                            corr,
+                            VERSION_MISMATCH,
+                            Map.of(
+                                "expected", Long.toString(meta.getPointerVersion()),
+                                "actual", Long.toString(metaNoop.getPointerVersion())));
+                      }
+                      MutationOps.BaseServiceChecks.enforcePreconditions(
+                          corr, metaNoop, request.getPrecondition());
+                      return UpdateAccountResponse.newBuilder()
+                          .setAccount(current)
+                          .setMeta(metaNoop)
+                          .build();
+                    }
+
+                    try {
+                      boolean ok = accountRepo.update(desired, meta.getPointerVersion());
+                      if (!ok) {
+                        var nowMeta = accountRepo.metaForSafe(accountId);
+                        throw GrpcErrors.preconditionFailed(
+                            corr,
+                            VERSION_MISMATCH,
+                            Map.of(
+                                "expected", Long.toString(meta.getPointerVersion()),
+                                "actual", Long.toString(nowMeta.getPointerVersion())));
+                      }
+                    } catch (BaseResourceRepository.NameConflictException nce) {
+                      throw GrpcErrors.alreadyExists(
+                          corr,
+                          ACCOUNT_ALREADY_EXISTS,
+                          Map.of("display_name", desired.getDisplayName()));
+                    } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                       var nowMeta = accountRepo.metaForSafe(accountId);
                       throw GrpcErrors.preconditionFailed(
                           corr,
@@ -397,27 +414,14 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                               "expected", Long.toString(meta.getPointerVersion()),
                               "actual", Long.toString(nowMeta.getPointerVersion())));
                     }
-                  } catch (BaseResourceRepository.NameConflictException nce) {
-                    throw GrpcErrors.alreadyExists(
-                        corr,
-                        ACCOUNT_ALREADY_EXISTS,
-                        Map.of("display_name", desired.getDisplayName()));
-                  } catch (BaseResourceRepository.PreconditionFailedException pfe) {
-                    var nowMeta = accountRepo.metaForSafe(accountId);
-                    throw GrpcErrors.preconditionFailed(
-                        corr,
-                        VERSION_MISMATCH,
-                        Map.of(
-                            "expected", Long.toString(meta.getPointerVersion()),
-                            "actual", Long.toString(nowMeta.getPointerVersion())));
-                  }
 
-                  var outMeta = accountRepo.metaForSafe(accountId);
-                  var latest = accountRepo.getById(accountId).orElse(desired);
-                  return UpdateAccountResponse.newBuilder()
-                      .setAccount(latest)
-                      .setMeta(outMeta)
-                      .build();
+                    var outMeta = accountRepo.metaForSafe(accountId);
+                    var latest = accountRepo.getById(accountId).orElse(desired);
+                    return UpdateAccountResponse.newBuilder()
+                        .setAccount(latest)
+                        .setMeta(outMeta)
+                        .build();
+                  }
                 }),
             correlationId())
         .onFailure()
@@ -459,44 +463,51 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                       return DeleteAccountResponse.newBuilder().setMeta(safe).build();
                     }
                     // A prior delete may have committed before descendant cleanup failed.
-                    cleanupAccountResources(accountId);
+                    try (var mutation = assignment.admitMutation(accountId.getId())) {
+                      cleanupAccountResources(accountId);
+                    }
                     return DeleteAccountResponse.newBuilder().setMeta(safe).build();
                   }
 
                   MutationOps.BaseServiceChecks.enforcePreconditions(
                       corr, meta, request.getPrecondition());
-                  MutationMeta fencedMeta = ensureAccountDeletionFence(accountId.getId(), meta);
-                  if (!accountRepo.deleteWithPrecondition(
-                      accountId, fencedMeta.getPointerVersion())) {
-                    var current = accountRepo.metaForSafe(accountId);
-                    if (current.getPointerVersion() == 0L) {
+                  // One permit for the whole deletion: the purge must count as in-flight work, or
+                  // a drain could report this process idle halfway through it.
+                  try (var mutation = assignment.admitMutation(accountId.getId())) {
+                    MutationMeta fencedMeta = ensureAccountDeletionFence(accountId.getId(), meta);
+                    if (!accountRepo.deleteWithPrecondition(
+                        accountId, fencedMeta.getPointerVersion())) {
+                      var current = accountRepo.metaForSafe(accountId);
+                      if (current.getPointerVersion() == 0L) {
+                        throw new BaseResourceRepository.AbortRetryableException(
+                            "account deletion raced another delete");
+                      }
+                      if (current.getPointerVersion() == fencedMeta.getPointerVersion()) {
+                        // DynamoDB may report TransactionConflict before the competing deletion
+                        // commits. Keep the shared fence while this version can still be deleted
+                        // by an in-flight attempt; clearing it would reopen descendant creates.
+                        throw new BaseResourceRepository.AbortRetryableException(
+                            "account deletion transaction conflicted");
+                      }
+                      // The account moved before the fence became effective. Preserve continuous
+                      // exclusion while rebinding the fence to the new version; deleting and
+                      // recreating the marker would introduce an ABA window for concurrent
+                      // deleters.
+                      try {
+                        MutationOps.BaseServiceChecks.enforcePreconditions(
+                            corr, current, request.getPrecondition());
+                      } catch (RuntimeException failedPrecondition) {
+                        // This invocation cannot continue. Release only the stale fence it saw.
+                        clearAccountDeletionFence(accountId.getId(), fencedMeta);
+                        throw failedPrecondition;
+                      }
+                      advanceAccountDeletionFence(accountId.getId(), fencedMeta, current);
                       throw new BaseResourceRepository.AbortRetryableException(
-                          "account deletion raced another delete");
+                          "account changed while deletion fence was installed");
                     }
-                    if (current.getPointerVersion() == fencedMeta.getPointerVersion()) {
-                      // DynamoDB may report TransactionConflict before the competing deletion
-                      // commits. Keep the shared fence while this version can still be deleted by
-                      // an in-flight attempt; clearing it would reopen descendant creates.
-                      throw new BaseResourceRepository.AbortRetryableException(
-                          "account deletion transaction conflicted");
-                    }
-                    // The account moved before the fence became effective. Preserve continuous
-                    // exclusion while rebinding the fence to the new version; deleting and
-                    // recreating the marker would introduce an ABA window for concurrent deleters.
-                    try {
-                      MutationOps.BaseServiceChecks.enforcePreconditions(
-                          corr, current, request.getPrecondition());
-                    } catch (RuntimeException failedPrecondition) {
-                      // This invocation cannot continue. Release only the stale fence it observed.
-                      clearAccountDeletionFence(accountId.getId(), fencedMeta);
-                      throw failedPrecondition;
-                    }
-                    advanceAccountDeletionFence(accountId.getId(), fencedMeta, current);
-                    throw new BaseResourceRepository.AbortRetryableException(
-                        "account changed while deletion fence was installed");
+                    cleanupAccountResources(accountId);
+                    return DeleteAccountResponse.newBuilder().setMeta(fencedMeta).build();
                   }
-                  cleanupAccountResources(accountId);
-                  return DeleteAccountResponse.newBuilder().setMeta(fencedMeta).build();
                 }),
             correlationId())
         .onFailure()
@@ -511,6 +522,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
         existing -> decodeDeletionMeta(repairAccountDeletionFence(accountId, existing).marker()));
   }
 
+  /** Installs the deletion fence; the separate ownership fence is untouched. */
   private MutationMeta ensureAccountDeletionFence(String accountId, MutationMeta meta) {
     String key = Keys.accountDeletionMarker(accountId);
     String payload = Base64.getEncoder().encodeToString(meta.toByteArray());
@@ -616,6 +628,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
     }
   }
 
+  /** Releases a fence this invocation installed but cannot use. */
   private void clearAccountDeletionFence(String accountId, MutationMeta expectedMeta) {
     String key = Keys.accountDeletionMarker(accountId);
     Pointer marker = pointerStore.get(key).orElse(null);
