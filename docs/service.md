@@ -324,6 +324,41 @@ currently reports `DeleteRef.all_deletes=true`; finer-grain delete references wi
 applicability logic is defined. The lease data (snapshots, expansion map, obligations) is returned to
 the caller inside the `QueryDescriptor`.
 
+### Account Assignment
+`AccountAssignment` decides which accounts this process serves. In the default `standalone` mode
+every account is served and GC-allowed and nothing below applies. In `managed` mode Core pushes each
+process its complete assignment through the internal `AccountAssignmentControl` service
+(`ApplyAssignment`, `GetAssignmentStatus`; permission `account-assignment-control.internal`):
+an epoch, a mode (`DRAINING` or `SERVING`), the owned account ids and the subset that may run GC.
+Floecat never calls Core or another Floecat. An apply is rejected when `target_incarnation` is not
+this process, when the epoch is older than the applied one, or when an equal epoch changes the
+account set or moves `SERVING -> DRAINING`.
+
+For an owned account the process admits pins and mutations under a permit and reads from the
+planning pointer index. For a non-owned account reads fall through to the durable store and
+`BeginQuery`, pin resolution and mutations fail with `FAILED_PRECONDITION` whose message carries
+`floecat.not_assigned`; `RenewQuery` and `EndQuery` for contexts the process already holds keep
+working. Entering `SERVING` takes the account's fence pointer `assignment-fence/<account>` by CAS
+to an `owned` marker and writes the member index `assignments/<member>`, both in the background;
+from then on every account-scoped write carries `CasCheck(fence, remembered_version)`
+(`AssignmentFence`, wired once beneath `IndexedPointerStore`), so a previous owner's next write
+fails its condition. The fence is separate from the account-deletion fence, which keeps its own
+shards and its existing deletion-in-progress error. A fence self-check (one consistent read of the
+fence pointer per owned account) runs on every GC permit and every
+`floecat.account-ownership.self-check-interval`; a mismatch drops the account, and a sweep that
+cannot reach the store fences pins and writes on every owned account until one succeeds. At
+startup the process restores the accounts whose fence still names its member id, `SERVING` but
+never GC-allowed. `none` mode serves reads only.
+
+Pointer GC needs no fence of its own: every delete it makes is a pointer CAS through the fenced
+store. CAS blob GC deletes objects the store cannot condition, so it revalidates its permit before
+each delete.
+
+`GET /internal/drain` reports the process status; `GET|POST /internal/drain?wait=true[&timeoutMs=N]`
+moves the process to draining and returns `200` once active mutations and resolutions are zero,
+`202` at the timeout. Pod-local callers need no credentials; others need the control permission.
+The shutdown observer applies the same drain when the hook never arrived.
+
 ### Builtin Catalog Service
 `SystemObjectsLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the
 configured location, caches them by engine kind, and exposes them through
@@ -401,6 +436,10 @@ Notable `application.properties` keys:
 | `floecat.query.metadata-io.max-concurrency` | Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use `64`; present malformed, blank, or out-of-range values fail startup. |
 | `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for GetUserObjects. Defaults to `8`. |
 | `floecat.catalog.bundle.max_parallel_stats_warms` | Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to `16`; clamped to `>= 1`. |
+| `floecat.account-ownership.mode` | `standalone` (default), `managed`, or `none`; see Account Assignment. |
+| `floecat.account-ownership.member-id` | Stable process identity across restarts; required in `managed` (`FLOECAT_MEMBER_ID`). |
+| `floecat.account-ownership.self-check-interval` | Background fence self-check period in `managed` (`PT10S`). |
+| `floecat.account-ownership.drain-timeout-ms` | Default wait of `/internal/drain?wait=true` and of the shutdown drain (`110000`). |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |
