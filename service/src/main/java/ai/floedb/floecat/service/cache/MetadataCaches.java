@@ -22,7 +22,10 @@ import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.cache.CacheFamily;
 import ai.floedb.floecat.cache.DiskBlobCache;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
+import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AssignmentFence;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.impl.RelationHintsRepository;
@@ -49,12 +52,23 @@ import org.jboss.logging.Logger;
 public class MetadataCaches {
   private static final Logger LOG = Logger.getLogger(MetadataCaches.class);
 
+  /** Supplies the private durable view used only while establishing account ownership fences. */
+  @Produces
+  @Singleton
+  public DurablePointerReads durablePointerReads(@RawPointerStore PointerStore raw) {
+    return new DurablePointerReads(raw);
+  }
+
+  /**
+   * The store fence sits beneath the index so every account-scoped write, however it reaches the
+   * durable store, carries the owner's shard condition. In standalone mode the fence is inert.
+   */
   @Produces
   @Singleton
   @CachedPointerStore
   public PointerStore cachedPointerStore(
-      @RawPointerStore PointerStore raw, PlanningPointerIndex index) {
-    return new IndexedPointerStore(raw, index);
+      @RawPointerStore PointerStore raw, PlanningPointerIndex index, AccountAssignment assignment) {
+    return new IndexedPointerStore(new AssignmentFence(raw, assignment), index);
   }
 
   /** Callers do not select a cached or durable view; the indexed store makes that decision. */

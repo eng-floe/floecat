@@ -45,6 +45,7 @@ class ConsistentReadRulesTest {
       String relative = SERVICE_SOURCES.relativize(file).toString();
       String source = Files.readString(file).replaceAll("\\s+", "");
       if (!relative.equals("repo/cache/PlanningPointerIndex.java")
+          && !relative.equals("repo/cache/DurablePointerReads.java")
           && !source.contains("implementsPointerStore")
           && CONSISTENCY_METHODS.stream().anyMatch(source::contains)) {
         offenders.add(SERVICE_SOURCES.relativize(file).toString());
