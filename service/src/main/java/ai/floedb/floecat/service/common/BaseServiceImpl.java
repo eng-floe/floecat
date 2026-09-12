@@ -29,6 +29,7 @@ import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -239,7 +240,8 @@ public abstract class BaseServiceImpl {
         .onFailure(
             t ->
                 t instanceof BaseResourceRepository.AbortRetryableException
-                    || t instanceof StorageAbortRetryableException)
+                    || (t instanceof StorageAbortRetryableException
+                        && !(t instanceof PlanningPointerIndex.Ownership.NotOwnedException)))
         .retry()
         .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
         .withJitter(JITTER)
@@ -264,6 +266,13 @@ public abstract class BaseServiceImpl {
       // #guardSystemObject). Reaching here means a write path bypassed the surface write policy;
       // surface it as the same PERMISSION_DENIED the policy would have produced.
       return GrpcErrors.permissionDenied(corrId, SYSTEM_OBJECT_IMMUTABLE, null, t);
+    }
+    if (t instanceof PlanningPointerIndex.Ownership.NotOwnedException notAssigned) {
+      return GrpcErrors.preconditionFailed(
+          corrId,
+          ACCOUNT_NOT_ASSIGNED,
+          Map.of("account_id", String.valueOf(notAssigned.accountId())),
+          notAssigned);
     }
     if (t instanceof BaseResourceRepository.AccountDeletionInProgressException deleting) {
       return GrpcErrors.preconditionFailed(
