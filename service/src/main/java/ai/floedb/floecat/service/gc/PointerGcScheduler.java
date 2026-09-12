@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
@@ -45,6 +46,7 @@ public class PointerGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<PointerGc> pointerGc;
+  @Inject AccountAssignment assignment;
   @Inject Observability observability;
   private GcMetrics gcMetrics;
   private final AtomicInteger running = new AtomicInteger(0);
@@ -106,6 +108,8 @@ public class PointerGcScheduler {
 
     long tickStart = System.nanoTime();
     try {
+      // Account-directory pointers belong to no account, so this pass runs on every process; the
+      // per-account passes below are gated by the GC permit.
       var globalResult = gc.runGlobalAccountPointers(deadline);
       gcMetrics.recordCollection(globalResult.scanned(), Tag.of(TagKey.RESULT, "global-scanned"));
       gcMetrics.recordCollection(globalResult.deleted(), Tag.of(TagKey.RESULT, "global-deleted"));
@@ -122,7 +126,16 @@ public class PointerGcScheduler {
           break;
         }
         long accountStart = System.nanoTime();
-        var result = gc.runForAccount(account.getResourceId().getId(), deadline);
+        String accountId = account.getResourceId().getId();
+        var acquired = assignment.tryAcquireGc(accountId);
+        if (acquired.isEmpty()) {
+          gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "account-not-owned"));
+          continue;
+        }
+        PointerGc.Result result;
+        try (var permit = acquired.get()) {
+          result = gc.runForAccount(accountId, deadline);
+        }
         gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "account-scanned"));
         gcMetrics.recordCollection(result.deleted(), Tag.of(TagKey.RESULT, "account-deleted"));
         gcMetrics.recordCollection(result.missingBlobs(), Tag.of(TagKey.RESULT, "missing-blobs"));

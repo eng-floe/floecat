@@ -96,6 +96,10 @@ public class PointerGc {
     return new Result(scanned, deleted, missingBlobs, staleSecondaries);
   }
 
+  /**
+   * Account-scoped sweep. Every delete here is a pointer CAS through the fenced store, so a process
+   * that lost the account cannot commit one; the scheduler's GC permit is the admission gate.
+   */
   public Result runForAccount(String accountId, long deadlineMs) {
     int pageSize =
         ConfigProvider.getConfig()
@@ -112,8 +116,6 @@ public class PointerGc {
     int deleted = 0;
     int missingBlobs = 0;
     int staleSecondaries = 0;
-
-    String acct = encode(accountId);
 
     List<String> tableIds = new ArrayList<>();
 
@@ -546,9 +548,5 @@ public class PointerGc {
     } catch (NumberFormatException e) {
       return 0L;
     }
-  }
-
-  private static String encode(String value) {
-    return Keys.encodeSegment(value);
   }
 }
