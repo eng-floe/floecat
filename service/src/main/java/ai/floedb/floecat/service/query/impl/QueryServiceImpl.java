@@ -35,6 +35,7 @@ import ai.floedb.floecat.query.rpc.QueryService;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.RenewQueryRequest;
 import ai.floedb.floecat.query.rpc.RenewQueryResponse;
+import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -93,6 +94,8 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
   @Inject QueryContextStore queryStore;
 
   @Inject QueryInputMetadataAssembler metadataAssembler;
+
+  @Inject AccountAssignment assignment;
 
   @Inject
   @ConfigProperty(name = "floecat.query.default-ttl-ms", defaultValue = "60000")
@@ -153,25 +156,33 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           ? request.getAsOfDefault().toByteArray()
                           : new byte[0];
 
-                  var metadata =
-                      metadataAssembler.assemble(
-                          queryId, correlationId, request.getInputsList(), asOfDefault, catalogId);
-
-                  byte[] expansionBytes = metadata.expansionMap().toByteArray();
-                  byte[] relationPinBytes = metadata.relationPinSet().toByteArray();
-                  byte[] obligationsBytes = metadata.obligationsBytes();
-
-                  var ctx =
-                      QueryContext.newActive(
-                          queryId,
-                          pc,
-                          expansionBytes,
-                          relationPinBytes,
-                          obligationsBytes,
-                          asOfDefaultBytes,
-                          ttlMs,
-                          1L,
-                          catalogId);
+                  // A query is admitted only on the account's owner; the permit covers resolution
+                  // and the context insert so a handoff cannot drain past a half-created query.
+                  // RenewQuery and EndQuery for contexts this pod holds stay unaffected.
+                  QueryInputMetadataAssembler.QueryInputMetadata metadata;
+                  boolean inserted;
+                  QueryContext ctx;
+                  try (var admission = assignment.admitResolution(pc.getAccountId())) {
+                    metadata =
+                        metadataAssembler.assemble(
+                            queryId,
+                            correlationId,
+                            request.getInputsList(),
+                            asOfDefault,
+                            catalogId);
+                    ctx =
+                        QueryContext.newActive(
+                            queryId,
+                            pc,
+                            metadata.expansionMap().toByteArray(),
+                            metadata.relationPinSet().toByteArray(),
+                            metadata.obligationsBytes(),
+                            asOfDefaultBytes,
+                            ttlMs,
+                            1L,
+                            catalogId);
+                    inserted = queryStore.putIfAbsent(ctx);
+                  }
 
                   // The resolved pin blobs are already transient GC roots (the resolver registered
                   // them at construction, protected through resolution and until this commit), so
@@ -181,7 +192,6 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                   // ONLY when it actually inserts. A silently-ignored no-op insert would serve a
                   // context whose pins were never rooted — so surface it either way.
                   boolean clientProvidedId = request.hasQueryId();
-                  boolean inserted = queryStore.putIfAbsent(ctx);
                   if (!inserted) {
                     // A context already owns this query id (an incumbent). Do NOT try to release
                     // this rejected context's resolving-pin roots: they were registered under the
