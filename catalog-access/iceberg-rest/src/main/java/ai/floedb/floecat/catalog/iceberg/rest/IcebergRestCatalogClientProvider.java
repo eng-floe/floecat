@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.iceberg.rest.auth.CatalogSigV4AuthManager;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.RefreshingAwsCredentialsRegistry;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.RegistryBackedAwsCredentialsProvider;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -44,7 +45,9 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
   private static final String ACCESS_DELEGATION_HEADER = "X-Iceberg-Access-Delegation";
   private static final String ACCESS_DELEGATION_HEADER_PROPERTY =
       "header." + ACCESS_DELEGATION_HEADER;
+  private static final String ACCESS_DELEGATION_MODE_PROPERTY = "access-delegation-mode";
   private static final String VENDED_CREDENTIALS = "vended-credentials";
+  private static final String NO_ACCESS_DELEGATION = "none";
   private static final String REST_CONNECTION_TIMEOUT_MS = "rest.client.connection-timeout-ms";
   private static final String REST_SOCKET_TIMEOUT_MS = "rest.client.socket-timeout-ms";
   private static final String DEFAULT_REST_CONNECTION_TIMEOUT_MS = "10000";
@@ -127,6 +130,9 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
     rejectResolvedOnlyProperties(config.properties());
     rejectResolvedOnlyProperties(config.authentication().properties());
     Map<String, String> properties = new HashMap<>(config.properties());
+    String accessDelegationMode =
+        properties.getOrDefault(ACCESS_DELEGATION_MODE_PROPERTY, VENDED_CREDENTIALS);
+    properties.remove(ACCESS_DELEGATION_MODE_PROPERTY);
 
     properties.putAll(config.authentication().properties());
     properties.put(CatalogProperties.URI, config.endpoint().toString());
@@ -142,7 +148,14 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
               }
               properties.put("header." + name, value);
             });
-    properties.put(ACCESS_DELEGATION_HEADER_PROPERTY, VENDED_CREDENTIALS);
+    switch (accessDelegationMode.trim().toLowerCase(Locale.ROOT)) {
+      case VENDED_CREDENTIALS ->
+          properties.put(ACCESS_DELEGATION_HEADER_PROPERTY, VENDED_CREDENTIALS);
+      case NO_ACCESS_DELEGATION -> properties.remove(ACCESS_DELEGATION_HEADER_PROPERTY);
+      default ->
+          throw new IllegalArgumentException(
+              "Unsupported access-delegation-mode: " + accessDelegationMode);
+    }
 
     switch (config.authentication().scheme()) {
       case NONE -> {

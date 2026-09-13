@@ -215,8 +215,10 @@ properties instead of silently dropping them.
 
 `--props` supplies non-secret provider connection properties. For Iceberg REST catalogs such as
 Polaris, `warehouse=<catalog-name>` selects the upstream catalog without putting a query parameter in
-the base URI. Updating properties replaces the complete map; passing `--props` with no values clears
-it.
+the base URI. Iceberg REST integrations request `vended-credentials` by default. Set
+`access-delegation-mode=none` to omit `X-Iceberg-Access-Delegation` when Floecat already has the
+storage configuration needed by the downstream reader. Updating properties replaces the complete
+map; passing `--props` with no values clears it.
 
 For Delta Sharing, supported properties are `http.connect.ms`, `http.read.ms`,
 `delta.sharing.strict-access-modes`, `delta.sharing.reader-features`, `s3.region`, `s3.endpoint`,
