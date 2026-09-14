@@ -237,6 +237,33 @@ class AssignmentFenceTest {
   }
 
   @Test
+  void anAccountHandedBackAfterLosingItsFenceTakesTheFenceAgain() {
+    serve();
+    long held = rememberedVersion();
+    var permit = assignment.admitMutation(A);
+
+    // Another process takes it; this one notices while a write is still draining.
+    raw.compareAndSet(
+        fenceKey,
+        held,
+        PointerReferences.opaqueMarkerPointer(fenceKey, "owned/2/floecat-1", held + 1L));
+    assignment.selfCheck();
+
+    // Core hands the account back. Draining because the fence was lost is not the same as
+    // draining because Core moved it: this process must not resume on a version it no longer owns.
+    assignment.apply(3L, AssignmentPhase.SERVING, List.of(A), List.of(), INCARNATION);
+    assertThat(assignment.status(A).mode()).isNotEqualTo(AccountMode.SERVING);
+
+    permit.close();
+
+    assertThat(assignment.status(A).mode()).isEqualTo(AccountMode.SERVING);
+    assertThat(rememberedVersion())
+        .as("it must have taken the fence again, not reused the spent one")
+        .isGreaterThan(held + 1L);
+    assertThat(fence.compareAndSet(key, 0L, pointer("s3://after-handback"))).isTrue();
+  }
+
+  @Test
   void prefixDeleteRequiresTheRememberedFenceVersion() {
     serve();
     String prefix = Keys.snapshotRootPrefix(A, "table");

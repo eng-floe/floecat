@@ -560,10 +560,12 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
               state.pending = false;
             }
             case DRAINING -> {
-              if (phase == AssignmentPhase.SERVING) {
-                // Still fenced by this process; nothing to re-take from the store.
+              if (phase == AssignmentPhase.SERVING && !state.fenceLost) {
+                // Draining only because Core moved it; the fence is still this process's.
                 state.resumeServing(gcIds.contains(accountId));
               } else {
+                // The store handed the fence to someone else, so it has to be taken again once
+                // the work that is still draining finishes.
                 state.pending = true;
               }
             }
@@ -1054,17 +1056,37 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
           state.mode = AccountMode.DRAINING;
         }
         state.leaving = true;
+        state.fenceLost = true;
         state.gcAllowed = false;
         state.pending = false;
         state.generation++;
       }
     }
+    background.execute(() -> hooks.ownershipLost(accountId));
     finishDrainIfIdle(accountId, state);
   }
 
   private void unassignLocked(String accountId, AccountState state, List<Runnable> afterLock) {
+    // An apply that could not be honoured yet — the account was still draining a fence it had
+    // lost — survives the clear, so the take happens now instead of waiting for Core to repeat
+    // itself. A revoke on its own never sets this, so losing the fence is not a reason to race
+    // the process that took it.
+    boolean wanted = state.pending;
+    // A revoke has already dropped the local image; firing again would be a second forget.
+    boolean forgotten = state.fenceLost;
     state.clearOwnership();
-    afterLock.add(() -> hooks.ownershipLost(accountId));
+    if (!forgotten) {
+      afterLock.add(() -> hooks.ownershipLost(accountId));
+    }
+    if (!wanted
+        || processDraining
+        || phase != AssignmentPhase.SERVING
+        || !assignedAccounts.contains(accountId)) {
+      return;
+    }
+    state.pending = true;
+    long currentEpoch = epoch;
+    afterLock.add(() -> background.execute(() -> fenceAndServe(accountId, currentEpoch)));
   }
 
   private void finishDrainIfIdle(String accountId, AccountState state) {
@@ -1162,6 +1184,9 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
     private long activeGc;
     private long fenceVersion;
 
+    /** The store says another process holds this account: the remembered version is spent. */
+    private boolean fenceLost;
+
     /** Resume a fence that is still valid; this is not a new ownership generation. */
     private void resumeServing(boolean gcAllowed) {
       mode = AccountMode.SERVING;
@@ -1175,6 +1200,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
       mode = AccountMode.SERVING;
       leaving = false;
       pending = false;
+      fenceLost = false;
       this.gcAllowed = gcAllowed;
       this.fenceVersion = fenceVersion;
       generation++;
@@ -1186,6 +1212,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
       gcAllowed = false;
       pending = false;
       leaving = false;
+      fenceLost = false;
       fenceVersion = 0L;
       generation++;
     }
