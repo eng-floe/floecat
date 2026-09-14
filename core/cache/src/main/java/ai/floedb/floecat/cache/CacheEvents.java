@@ -58,9 +58,6 @@ public interface CacheEvents {
    */
   default void loadFailed(Duration elapsed, RuntimeException error) {}
 
-  /** Records a load whose result was not admitted to the cache. */
-  default void loadDiscarded() {}
-
   /** Records a value rejected by the cache admission budget. */
   default void admissionRejected() {}
 

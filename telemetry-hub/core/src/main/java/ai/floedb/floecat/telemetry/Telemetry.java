@@ -185,8 +185,6 @@ public final class Telemetry {
       public static final MetricId EVICTED_WEIGHT =
           new MetricId(
               "floecat.core.cache.evicted.weight.bytes", MetricType.COUNTER, "bytes", "v1", "core");
-      public static final MetricId LOADS_DISCARDED =
-          new MetricId("floecat.core.cache.loads.discarded", MetricType.COUNTER, "", "v1", "core");
       public static final MetricId ADMISSION_REJECTED =
           new MetricId(
               "floecat.core.cache.admission.rejected", MetricType.COUNTER, "", "v1", "core");
@@ -258,7 +256,6 @@ public final class Telemetry {
     public static final MetricId CACHE_ERRORS = Cache.ERRORS;
     public static final MetricId CACHE_EVICTIONS = Cache.EVICTIONS;
     public static final MetricId CACHE_EVICTED_WEIGHT = Cache.EVICTED_WEIGHT;
-    public static final MetricId CACHE_LOADS_DISCARDED = Cache.LOADS_DISCARDED;
     public static final MetricId CACHE_ADMISSION_REJECTED = Cache.ADMISSION_REJECTED;
     public static final MetricId CACHE_WRITE_THROUGH = Cache.WRITE_THROUGH;
     public static final MetricId GC_COLLECTIONS = Gc.COLLECTIONS;
@@ -439,14 +436,6 @@ public final class Telemetry {
           cacheWithAccount,
           "Retained bytes released by eviction, tagged by cache name. Read with evictions to tell"
               + " many small entries from few large ones.");
-      add(
-          definitions,
-          CACHE_LOADS_DISCARDED,
-          cacheBase,
-          cacheWithAccount,
-          "Loads whose value was not retained because a write may have raced the key while it was"
-              + " being loaded, tagged by cache name. Raised on both the read-through and the batch"
-              + " path. A sustained rate means the cache is not warming.");
       add(
           definitions,
           CACHE_ADMISSION_REJECTED,

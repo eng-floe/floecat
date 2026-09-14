@@ -65,11 +65,6 @@ public final class CacheMetrics extends BaseMetrics {
         Telemetry.Metrics.CACHE_EVICTED_WEIGHT, weightBytes, metricTags(extraTags));
   }
 
-  /** One load whose value was not retained, because a write may have raced it. */
-  public void recordLoadDiscarded(Tag... extraTags) {
-    observability.counter(Telemetry.Metrics.CACHE_LOADS_DISCARDED, 1, metricTags(extraTags));
-  }
-
   /** One valid value not retained because it did not fit the cache budget. */
   public void recordAdmissionRejected(Tag... extraTags) {
     observability.counter(Telemetry.Metrics.CACHE_ADMISSION_REJECTED, 1, metricTags(extraTags));

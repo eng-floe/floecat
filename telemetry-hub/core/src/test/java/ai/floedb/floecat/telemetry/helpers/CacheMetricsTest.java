@@ -116,20 +116,6 @@ class CacheMetricsTest {
   }
 
   @Test
-  void recordsALoadDiscardedBecauseAWriteMayHaveRacedIt() {
-    // The one cache failure that looks like health: the caller is served correctly either way, so
-    // without its own series a cache that has stopped warming reports a steady miss count and
-    // nothing else.
-    TestObservability observability = new TestObservability();
-    CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "users");
-
-    metrics.recordLoadDiscarded();
-    metrics.recordLoadDiscarded();
-
-    assertThat(observability.counterValue(Telemetry.Metrics.CACHE_LOADS_DISCARDED)).isEqualTo(2d);
-  }
-
-  @Test
   void recordsAnAdmissionRejectedByTheBudget() {
     TestObservability observability = new TestObservability();
     CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "users");
