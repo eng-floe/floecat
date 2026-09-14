@@ -275,7 +275,7 @@ public class QueryInputResolverTest {
         AccountAssignment.managedForTesting(
             "m", "m/inc", new InMemoryPointerStore(), new TestObservability());
     assignment.apply(
-        1L, AccountAssignment.AssignmentMode.SERVING, List.of("acct-x"), List.of(), "m/inc");
+        1L, AccountAssignment.AssignmentPhase.SERVING, List.of("acct-x"), List.of(), "m/inc");
     var blockingGraph = new NonInterruptiblePinGraph("SLOW");
     var store = org.mockito.Mockito.mock(QueryContextStore.class);
     var fenced =
@@ -319,7 +319,7 @@ public class QueryInputResolverTest {
     assertEquals(0L, assignment.status("acct-x").activeResolutions());
     var drained =
         assignment.apply(
-            2L, AccountAssignment.AssignmentMode.DRAINING, List.of(), List.of(), "m/inc");
+            2L, AccountAssignment.AssignmentPhase.DRAINING, List.of(), List.of(), "m/inc");
     assertEquals(
         AccountAssignment.AccountMode.UNASSIGNED, drained.account("acct-x").orElseThrow().mode());
   }

@@ -19,7 +19,7 @@ package ai.floedb.floecat.service.account;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ai.floedb.floecat.service.account.AccountAssignment.AssignmentMode;
+import ai.floedb.floecat.service.account.AccountAssignment.AssignmentPhase;
 import ai.floedb.floecat.service.account.AccountAssignment.Mode;
 import ai.floedb.floecat.service.account.FloecatDrainEndpoint.Request;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
@@ -90,7 +90,7 @@ class FloecatDrainEndpointTest {
   @Test
   void drainRefusesNewWorkAndReturnsOnceInFlightWorkFinishes() {
     AccountAssignment assignment = managed();
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A), List.of(A), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
     FloecatDrainEndpoint endpoint = endpoint(assignment);
     var resolution = assignment.admitResolution(A);
 
@@ -117,7 +117,7 @@ class FloecatDrainEndpointTest {
   @Test
   void shutdownObserverDrainsWhenTheHookNeverArrived() {
     AccountAssignment assignment = managed();
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A), List.of(A), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
     FloecatDrainEndpoint endpoint = endpoint(assignment);
 
     endpoint.onShutdown(new ShutdownEvent());

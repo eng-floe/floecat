@@ -96,7 +96,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
     DRAINING
   }
 
-  public enum AssignmentMode {
+  public enum AssignmentPhase {
     DRAINING,
     SERVING
   }
@@ -118,7 +118,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
       String memberId,
       String incarnation,
       long epoch,
-      AssignmentMode mode,
+      AssignmentPhase phase,
       boolean recoveredFromStore,
       boolean processDraining,
       List<AccountStatus> accounts) {
@@ -222,7 +222,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
   private final ConcurrentHashMap<String, AccountState> accounts = new ConcurrentHashMap<>();
   private boolean applied;
   private long epoch;
-  private AssignmentMode assignmentMode = AssignmentMode.SERVING;
+  private AssignmentPhase phase = AssignmentPhase.SERVING;
   private Set<String> assignedAccounts = Set.of();
   private Set<String> gcAllowedAccounts = Set.of();
   private boolean recoveredFromStore;
@@ -490,12 +490,12 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
    */
   public Status apply(
       long epoch,
-      AssignmentMode assignmentMode,
+      AssignmentPhase phase,
       Collection<String> accountIds,
       Collection<String> gcAllowedAccountIds,
       String targetIncarnation) {
     requireManaged();
-    Objects.requireNonNull(assignmentMode, "assignmentMode");
+    Objects.requireNonNull(phase, "phase");
     if (!incarnation.equals(targetIncarnation)) {
       throw new IllegalArgumentException(
           "target_incarnation " + targetIncarnation + " does not match " + incarnation);
@@ -521,14 +521,13 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
           throw new IllegalArgumentException(
               "epoch " + epoch + " was already applied with a different account set");
         }
-        if (assignmentMode == AssignmentMode.DRAINING
-            && this.assignmentMode == AssignmentMode.SERVING) {
+        if (phase == AssignmentPhase.DRAINING && this.phase == AssignmentPhase.SERVING) {
           throw new IllegalArgumentException("epoch " + epoch + " cannot move SERVING -> DRAINING");
         }
       }
       this.applied = true;
       this.epoch = epoch;
-      this.assignmentMode = assignmentMode;
+      this.phase = phase;
       this.assignedAccounts = Set.copyOf(ids);
       this.gcAllowedAccounts = Set.copyOf(gcIds);
       this.recoveredFromStore = false;
@@ -575,7 +574,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
               state.pending = false;
             }
             case DRAINING -> {
-              if (assignmentMode == AssignmentMode.SERVING) {
+              if (phase == AssignmentPhase.SERVING) {
                 // Still fenced by this process; nothing to re-take from the store.
                 state.resumeServing(gcIds.contains(accountId));
               } else {
@@ -585,7 +584,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
             case UNASSIGNED -> {
               state.pending = true;
               state.leftAtEpoch = -1L;
-              if (assignmentMode == AssignmentMode.SERVING) {
+              if (phase == AssignmentPhase.SERVING) {
                 joining.add(accountId);
               }
             }
@@ -594,7 +593,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
       }
     }
     afterLock.forEach(Runnable::run);
-    if (assignmentMode == AssignmentMode.SERVING) {
+    if (phase == AssignmentPhase.SERVING) {
       List<String> indexIds = List.copyOf(ids);
       background.execute(
           () -> {
@@ -612,7 +611,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
   public Status status() {
     List<String> accountIds;
     long currentEpoch;
-    AssignmentMode currentMode;
+    AssignmentPhase currentPhase;
     boolean currentRecovered;
     boolean currentDraining;
     synchronized (lock) {
@@ -621,7 +620,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
       // global lock after a state lock.
       accountIds = new ArrayList<>(new TreeSet<>(accounts.keySet()));
       currentEpoch = epoch;
-      currentMode = assignmentMode;
+      currentPhase = phase;
       currentRecovered = recoveredFromStore;
       currentDraining = processDraining;
     }
@@ -636,7 +635,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
         memberId,
         incarnation,
         currentEpoch,
-        currentMode,
+        currentPhase,
         currentRecovered,
         currentDraining,
         List.copyOf(statuses));
@@ -710,7 +709,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
     }
     synchronized (lock) {
       if (this.epoch != epoch
-          || assignmentMode != AssignmentMode.SERVING
+          || phase != AssignmentPhase.SERVING
           || !assignedAccounts.contains(accountId)) {
         return;
       }
@@ -745,7 +744,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
     synchronized (lock) {
       synchronized (state) {
         if (this.epoch == epoch
-            && assignmentMode == AssignmentMode.SERVING
+            && phase == AssignmentPhase.SERVING
             && assignedAccounts.contains(accountId)
             && state.pending
             && state.mode == AccountMode.UNASSIGNED) {
@@ -763,7 +762,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
   private boolean isCurrentServing(long expectedEpoch, List<String> expectedAccounts) {
     synchronized (lock) {
       return !processDraining
-          && assignmentMode == AssignmentMode.SERVING
+          && phase == AssignmentPhase.SERVING
           && epoch == expectedEpoch
           && assignedAccounts.equals(Set.copyOf(expectedAccounts));
     }
@@ -897,7 +896,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
       synchronized (lock) {
         if (!applied) {
           this.epoch = index.epoch();
-          this.assignmentMode = AssignmentMode.SERVING;
+          this.phase = AssignmentPhase.SERVING;
           this.assignedAccounts = Set.copyOf(recovered);
           this.gcAllowedAccounts = Set.of();
           this.recoveredFromStore = true;
@@ -971,7 +970,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
     long currentEpoch;
     List<String> pending = new ArrayList<>();
     synchronized (lock) {
-      if (assignmentMode != AssignmentMode.SERVING || processDraining) {
+      if (phase != AssignmentPhase.SERVING || processDraining) {
         return;
       }
       currentEpoch = epoch;

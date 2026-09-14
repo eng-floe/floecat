@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.account.AccountAssignment.AccountMode;
-import ai.floedb.floecat.service.account.AccountAssignment.AssignmentMode;
+import ai.floedb.floecat.service.account.AccountAssignment.AssignmentPhase;
 import ai.floedb.floecat.service.account.AccountAssignment.Mode;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -70,7 +70,7 @@ class AssignmentFenceTest {
   }
 
   private void serve() {
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A), List.of(A), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
     raw.batches.clear();
     raw.singleCas.clear();
   }
@@ -157,7 +157,7 @@ class AssignmentFenceTest {
   @Test
   void aBatchSpanningTwoOwnedAccountsCarriesBothChecks() {
     String other = "acct-b";
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A, other), List.of(A), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A, other), List.of(A), INCARNATION);
     raw.batches.clear();
 
     boolean committed =

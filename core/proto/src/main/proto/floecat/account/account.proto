@@ -99,12 +99,13 @@ message DeleteAccountResponse {
 // Core pushes each managed Floecat process its complete assignment. Floecat never calls Core or
 // another Floecat; both RPCs below are answered by Floecat when Core calls them.
 
-// Per-pod assignment mode. In DRAINING a process stops admitting accounts that leave its set and
-// does not yet admit accounts that join it. In SERVING it admits its full set.
-enum AssignmentMode {
-  AM_UNSPECIFIED = 0;
-  AM_DRAINING = 1;
-  AM_SERVING = 2;
+// Phase of one assignment epoch, pushed unchanged to every process. In DRAINING a process stops
+// admitting accounts that leave its set and does not yet admit accounts that join it. In SERVING
+// it admits its full set. The phase describes the epoch, not one process's own state.
+enum AssignmentPhase {
+  AP_UNSPECIFIED = 0;
+  AP_DRAINING = 1;
+  AP_SERVING = 2;
 }
 
 // Per-account status on one process.
@@ -119,7 +120,7 @@ message ApplyAssignmentRequest {
   // Core-owned monotonic epoch. A lower epoch is rejected; an equal epoch is accepted only when
   // it repeats the current state or moves DRAINING -> SERVING.
   int64 epoch = 1;
-  AssignmentMode mode = 2;
+  AssignmentPhase phase = 2;
   // Complete set of accounts this process owns under the epoch. Never a delta.
   repeated string account_ids = 3;
   // Subset of account_ids for which garbage collection may run.
@@ -147,7 +148,7 @@ message AssignmentStatus {
   string member_id = 1;
   string incarnation = 2;
   int64 epoch = 3;
-  AssignmentMode mode = 4;
+  AssignmentPhase phase = 4;
   // True when the current assignment was restored from the member index at startup rather than
   // received from Core.
   bool recovered_from_store = 5;

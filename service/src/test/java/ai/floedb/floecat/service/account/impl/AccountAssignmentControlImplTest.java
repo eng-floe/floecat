@@ -23,7 +23,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.account.rpc.AccountServingMode;
 import ai.floedb.floecat.account.rpc.ApplyAssignmentRequest;
-import ai.floedb.floecat.account.rpc.AssignmentMode;
+import ai.floedb.floecat.account.rpc.AssignmentPhase;
 import ai.floedb.floecat.account.rpc.GetAssignmentStatusRequest;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.service.account.AccountAssignment;
@@ -61,10 +61,10 @@ class AccountAssignmentControlImplTest {
     return AccountAssignment.managedForTesting("floecat-0", INCARNATION, raw, observability);
   }
 
-  private static ApplyAssignmentRequest.Builder apply(long epoch, AssignmentMode mode) {
+  private static ApplyAssignmentRequest.Builder apply(long epoch, AssignmentPhase phase) {
     return ApplyAssignmentRequest.newBuilder()
         .setEpoch(epoch)
-        .setMode(mode)
+        .setPhase(phase)
         .setTargetIncarnation(INCARNATION);
   }
 
@@ -75,7 +75,7 @@ class AccountAssignmentControlImplTest {
     var response =
         service
             .applyAssignment(
-                apply(4L, AssignmentMode.AM_SERVING)
+                apply(4L, AssignmentPhase.AP_SERVING)
                     .addAccountIds("acct-1")
                     .addAccountIds("acct-2")
                     .addGcAllowedAccountIds("acct-1")
@@ -87,7 +87,7 @@ class AccountAssignmentControlImplTest {
     assertThat(status.getMemberId()).isEqualTo("floecat-0");
     assertThat(status.getIncarnation()).isEqualTo(INCARNATION);
     assertThat(status.getEpoch()).isEqualTo(4L);
-    assertThat(status.getMode()).isEqualTo(AssignmentMode.AM_SERVING);
+    assertThat(status.getPhase()).isEqualTo(AssignmentPhase.AP_SERVING);
     assertThat(status.getRecoveredFromStore()).isFalse();
     assertThat(status.getAccountsList()).hasSize(2);
     var first = status.getAccounts(0);
@@ -110,7 +110,7 @@ class AccountAssignmentControlImplTest {
     var assignment = managed();
     var service = service(assignment, CONTROLLER);
     service
-        .applyAssignment(apply(4L, AssignmentMode.AM_SERVING).addAccountIds("a").build())
+        .applyAssignment(apply(4L, AssignmentPhase.AP_SERVING).addAccountIds("a").build())
         .await()
         .indefinitely();
 
@@ -118,17 +118,17 @@ class AccountAssignmentControlImplTest {
         Status.Code.FAILED_PRECONDITION,
         () ->
             service.applyAssignment(
-                apply(3L, AssignmentMode.AM_SERVING).addAccountIds("a").build()));
+                apply(3L, AssignmentPhase.AP_SERVING).addAccountIds("a").build()));
     assertCode(
         Status.Code.FAILED_PRECONDITION,
         () ->
             service.applyAssignment(
-                apply(4L, AssignmentMode.AM_DRAINING).addAccountIds("a").build()));
+                apply(4L, AssignmentPhase.AP_DRAINING).addAccountIds("a").build()));
     assertCode(
         Status.Code.FAILED_PRECONDITION,
         () ->
             service.applyAssignment(
-                apply(5L, AssignmentMode.AM_SERVING)
+                apply(5L, AssignmentPhase.AP_SERVING)
                     .addAccountIds("a")
                     .setTargetIncarnation("floecat-0/other")
                     .build()));
@@ -136,7 +136,7 @@ class AccountAssignmentControlImplTest {
         Status.Code.INVALID_ARGUMENT,
         () ->
             service.applyAssignment(
-                apply(5L, AssignmentMode.AM_UNSPECIFIED).addAccountIds("a").build()));
+                apply(5L, AssignmentPhase.AP_UNSPECIFIED).addAccountIds("a").build()));
     assertThat(assignment.status().epoch()).isEqualTo(4L);
     assertThat(assignment.status("a").mode()).isEqualTo(AccountAssignment.AccountMode.SERVING);
   }
@@ -149,7 +149,7 @@ class AccountAssignmentControlImplTest {
         Status.Code.FAILED_PRECONDITION,
         () ->
             service.applyAssignment(
-                apply(1L, AssignmentMode.AM_SERVING).addAccountIds("a").build()));
+                apply(1L, AssignmentPhase.AP_SERVING).addAccountIds("a").build()));
     assertCode(
         Status.Code.FAILED_PRECONDITION,
         () -> service.getAssignmentStatus(GetAssignmentStatusRequest.getDefaultInstance()));
@@ -164,7 +164,7 @@ class AccountAssignmentControlImplTest {
         Status.Code.PERMISSION_DENIED,
         () ->
             service.applyAssignment(
-                apply(1L, AssignmentMode.AM_SERVING).addAccountIds("a").build()));
+                apply(1L, AssignmentPhase.AP_SERVING).addAccountIds("a").build()));
     assertCode(
         Status.Code.PERMISSION_DENIED,
         () -> service.getAssignmentStatus(GetAssignmentStatusRequest.getDefaultInstance()));

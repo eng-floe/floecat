@@ -50,7 +50,7 @@ class PointerGcSchedulerTest {
     // acct-a and acct-b may be collected, acct-c is owned but gated, acct-d is not owned at all.
     assignment.apply(
         1L,
-        AccountAssignment.AssignmentMode.SERVING,
+        AccountAssignment.AssignmentPhase.SERVING,
         List.of("acct-a", "acct-b", "acct-c"),
         List.of("acct-a", "acct-b"),
         INCARNATION);
