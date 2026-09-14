@@ -94,6 +94,10 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     if (k.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
       return new KvStore.Key(CREDENTIAL_CLEANUP_PK, k);
     }
+    KvStore.Key assignment = assignmentKey(k);
+    if (assignment != null) {
+      return assignment;
+    }
 
     if (!k.startsWith("accounts/")) {
       throw new IllegalArgumentException("unexpected key: " + pointerKey);
@@ -132,6 +136,10 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     if (p.equals("catalog-integration-credential-cleanup")
         || p.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
       return new KvStore.Key(CREDENTIAL_CLEANUP_PK, p);
+    }
+    KvStore.Key assignment = assignmentKey(p);
+    if (assignment != null) {
+      return assignment;
     }
 
     if (!p.startsWith("accounts/")) {
@@ -438,6 +446,41 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     } else {
       return key.toString();
     }
+  }
+
+  /**
+   * The two account-assignment records, each in its own partition: one fence per account and one
+   * index per member. Null when the key is neither, so the caller falls through to the account
+   * namespace. They sit outside {@code accounts/} on purpose — deleting an account's prefix must
+   * not take its fence with it.
+   */
+  private static KvStore.Key assignmentKey(String key) {
+    String fence = stripLeadingSlash(PointerStoreKeys.ASSIGNMENT_FENCE_PREFIX);
+    if (key.startsWith(fence)) {
+      return singletonKey(
+          key,
+          fence,
+          PointerStoreKeys.ASSIGNMENT_FENCE_PARTITION_PREFIX,
+          PointerStoreKeys.ASSIGNMENT_FENCE_SORT_KEY);
+    }
+    String member = stripLeadingSlash(PointerStoreKeys.MEMBER_ASSIGNMENT_PREFIX);
+    if (key.startsWith(member)) {
+      return singletonKey(
+          key,
+          member,
+          PointerStoreKeys.MEMBER_ASSIGNMENT_PARTITION_PREFIX,
+          PointerStoreKeys.MEMBER_ASSIGNMENT_SORT_KEY);
+    }
+    return null;
+  }
+
+  private static KvStore.Key singletonKey(
+      String key, String prefix, String partitionPrefix, String sortKey) {
+    String id = key.substring(prefix.length());
+    if (id.isEmpty() || id.indexOf('/') >= 0) {
+      throw new IllegalArgumentException("bad assignment key: " + key);
+    }
+    return new KvStore.Key(partitionPrefix + id, sortKey);
   }
 
   private static KvStore.Key accountDeletionFenceKey(String key, String fencePrefix) {
