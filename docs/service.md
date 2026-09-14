@@ -325,14 +325,20 @@ applicability logic is defined. The lease data (snapshots, expansion map, obliga
 the caller inside the `QueryDescriptor`.
 
 ### Account Assignment
-`AccountAssignment` decides which accounts this process serves. In the default `standalone` mode
+`AccountScope` is the question — may this process mutate, resolve pins for, or collect this
+account? — asked by every caller that needs to know, rather than reading assignment state directly.
+It answers permission only: the store fence below is Floecat's own, so an implementation decides
+who serves what without maintaining the mechanism that enforces it. `AccountAssignment` is the
+only implementation and decides which accounts this process serves. In the default `standalone` mode
 every account is served and GC-allowed and nothing below applies. In `managed` mode Core pushes each
 process its complete assignment through the internal `AccountAssignmentControl` service
 (`ApplyAssignment`, `GetAssignmentStatus`; permission `account-assignment-control.internal`):
 an epoch, the epoch's phase (`DRAINING` or `SERVING`), the owned account ids and the subset that
 may run GC. The phase describes the epoch and is pushed unchanged to every process; whether this
 process serves an account is per account.
-Floecat never calls Core or another Floecat. An apply is rejected when `target_incarnation` is not
+Floecat never calls Core or another Floecat, and never learns where it is deployed: the account
+set arrives over the RPC and is never derived from a cluster, a replica count or a placement hash
+(`DeploymentIndependenceArchTest`). An apply is rejected when `target_incarnation` is not
 this process, when the epoch is older than the applied one, or when an equal epoch changes the
 account set or moves `SERVING -> DRAINING`.
 
@@ -341,7 +347,11 @@ planning pointer index. For a non-owned account reads fall through to the durabl
 `BeginQuery`, pin resolution and mutations fail with `FAILED_PRECONDITION` whose message carries
 `floecat.not_assigned`; `RenewQuery` and `EndQuery` for contexts the process already holds keep
 working. Entering `SERVING` takes the account's fence pointer `assignment-fence/<account>` by CAS
-to an `owned` marker and writes the member index `assignments/<member>`, both in the background;
+to an `owned` marker and writes the member index `assignments/<member>`, both in the background on
+one thread, since taking a fence is a read then a CAS and two takers would each believe a different
+version. Both records sit outside `accounts/` and get one store partition each, so deleting an
+account's prefix cannot take its fence with it; the fence is removed explicitly when the account is
+deleted.
 from then on every account-scoped write carries `CasCheck(fence, remembered_version)`
 (`AssignmentFence`, wired once beneath `IndexedPointerStore`), so a previous owner's next write
 fails its condition. The fence is separate from the account-deletion fence, which keeps its own
