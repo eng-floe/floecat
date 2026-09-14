@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.account.AccountAssignment.AccountMode;
-import ai.floedb.floecat.service.account.AccountAssignment.AssignmentMode;
+import ai.floedb.floecat.service.account.AccountAssignment.AssignmentPhase;
 import ai.floedb.floecat.service.account.AccountAssignment.Mode;
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
@@ -70,10 +70,10 @@ class AccountAssignmentTest {
 
   @Test
   void servingFencesJoiningAccountsAndOpensAdmission() {
-    var status = assignment.apply(1L, AssignmentMode.SERVING, List.of(A), List.of(A), INCARNATION);
+    var status = assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
 
     assertThat(status.epoch()).isEqualTo(1L);
-    assertThat(status.mode()).isEqualTo(AssignmentMode.SERVING);
+    assertThat(status.phase()).isEqualTo(AssignmentPhase.SERVING);
     assertThat(status.account(A).orElseThrow().mode()).isEqualTo(AccountMode.SERVING);
     assertThat(status.account(A).orElseThrow().gcAllowed()).isTrue();
     assertThat(fencePayload(A)).contains(assignment.ownedPayload(1L));
@@ -93,7 +93,7 @@ class AccountAssignmentTest {
         0L,
         PointerReferences.opaqueMarkerPointer(memberIndex, "2;" + Keys.encodeSegment(B), 1L));
 
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A), List.of(A), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
 
     assertThat(AccountAssignment.MemberIndex.parse(memberIndexPayload()).orElseThrow())
         .isEqualTo(new AccountAssignment.MemberIndex(2L, List.of(B)));
@@ -101,10 +101,11 @@ class AccountAssignmentTest {
 
   @Test
   void drainingFencesLeavingAccountsUntilInFlightMutationsFinish() {
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A, B), List.of(A, B), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A, B), List.of(A, B), INCARNATION);
     var mutation = assignment.acquire(A, Access.WRITE).orElseThrow();
 
-    var status = assignment.apply(2L, AssignmentMode.DRAINING, List.of(B), List.of(B), INCARNATION);
+    var status =
+        assignment.apply(2L, AssignmentPhase.DRAINING, List.of(B), List.of(B), INCARNATION);
 
     var leaving = status.account(A).orElseThrow();
     assertThat(leaving.mode()).isEqualTo(AccountMode.DRAINING);
@@ -128,50 +129,53 @@ class AccountAssignmentTest {
 
   @Test
   void drainingDoesNotAdmitJoiningAccountsBeforeServing() {
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(), List.of(), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(), List.of(), INCARNATION);
 
     var draining =
-        assignment.apply(2L, AssignmentMode.DRAINING, List.of(A), List.of(A), INCARNATION);
+        assignment.apply(2L, AssignmentPhase.DRAINING, List.of(A), List.of(A), INCARNATION);
     assertThat(draining.account(A).orElseThrow().mode()).isEqualTo(AccountMode.UNASSIGNED);
     assertThat(fencePayload(A)).isEmpty();
     assertThat(assignment.acquire(A, Access.WRITE)).isEmpty();
 
-    var serving = assignment.apply(2L, AssignmentMode.SERVING, List.of(A), List.of(A), INCARNATION);
+    var serving =
+        assignment.apply(2L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
     assertThat(serving.account(A).orElseThrow().mode()).isEqualTo(AccountMode.SERVING);
     assertThat(fencePayload(A)).contains(assignment.ownedPayload(2L));
   }
 
   @Test
   void rejectsLowerEpochEqualEpochServingToDrainingAndWrongIncarnation() {
-    assignment.apply(3L, AssignmentMode.SERVING, List.of(A), List.of(), INCARNATION);
+    assignment.apply(3L, AssignmentPhase.SERVING, List.of(A), List.of(), INCARNATION);
 
     assertThatThrownBy(
-            () -> assignment.apply(2L, AssignmentMode.SERVING, List.of(A), List.of(), INCARNATION))
+            () -> assignment.apply(2L, AssignmentPhase.SERVING, List.of(A), List.of(), INCARNATION))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("older");
     assertThatThrownBy(
-            () -> assignment.apply(3L, AssignmentMode.DRAINING, List.of(A), List.of(), INCARNATION))
+            () ->
+                assignment.apply(3L, AssignmentPhase.DRAINING, List.of(A), List.of(), INCARNATION))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("SERVING -> DRAINING");
     assertThatThrownBy(
             () ->
-                assignment.apply(3L, AssignmentMode.SERVING, List.of(A, B), List.of(), INCARNATION))
+                assignment.apply(
+                    3L, AssignmentPhase.SERVING, List.of(A, B), List.of(), INCARNATION))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("different account set");
     assertThatThrownBy(
-            () -> assignment.apply(4L, AssignmentMode.SERVING, List.of(A), List.of(), "other/inc"))
+            () -> assignment.apply(4L, AssignmentPhase.SERVING, List.of(A), List.of(), "other/inc"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("target_incarnation");
     assertThat(assignment.status().epoch()).isEqualTo(3L);
 
     // Same state is idempotent; the GC subset may change without an epoch advance.
-    assignment.apply(3L, AssignmentMode.SERVING, List.of(A), List.of(A), INCARNATION);
+    assignment.apply(3L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
     assertThat(assignment.status(A).gcAllowed()).isTrue();
 
     // DRAINING -> SERVING at the same epoch is the handoff's second step.
-    assignment.apply(4L, AssignmentMode.DRAINING, List.of(A, B), List.of(), INCARNATION);
+    assignment.apply(4L, AssignmentPhase.DRAINING, List.of(A, B), List.of(), INCARNATION);
     assertThat(assignment.status(B).mode()).isEqualTo(AccountMode.UNASSIGNED);
-    assignment.apply(4L, AssignmentMode.SERVING, List.of(A, B), List.of(), INCARNATION);
+    assignment.apply(4L, AssignmentPhase.SERVING, List.of(A, B), List.of(), INCARNATION);
     assertThat(assignment.status(B).mode()).isEqualTo(AccountMode.SERVING);
   }
 
@@ -204,7 +208,7 @@ class AccountAssignmentTest {
     String key = Keys.tablePointerById(A, "table");
     long previousOwnerVersion = raw.get(fence).orElseThrow().getVersion();
 
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A), List.of(), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(), INCARNATION);
 
     assertThat(raw.get(fence).orElseThrow().getVersion()).isEqualTo(previousOwnerVersion + 1L);
     boolean staleWriter =
@@ -228,7 +232,7 @@ class AccountAssignmentTest {
     String marker = Keys.accountDeletionMarker(A);
     raw.compareAndSet(marker, 0L, PointerReferences.opaqueMarkerPointer(marker, "meta", 1L));
 
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A), List.of(A), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
 
     assertThat(assignment.status(A).mode()).isEqualTo(AccountMode.SERVING);
     assertThat(fencePayload(A)).contains(assignment.ownedPayload(1L));
@@ -240,7 +244,7 @@ class AccountAssignmentTest {
 
   @Test
   void gcPermitIsDeniedOutsideTheGcAllowedSetAndGrantedInside() {
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A, B), List.of(A), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A, B), List.of(A), INCARNATION);
 
     assertThat(assignment.tryAcquireGc(B)).isEmpty();
     var permit = assignment.tryAcquireGc(A).orElseThrow();
@@ -248,7 +252,7 @@ class AccountAssignmentTest {
     assertThat(assignment.status(A).activeGc()).isEqualTo(1L);
 
     // Core withdraws GC for A at the same epoch: the held permit is revoked, not just future ones.
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A, B), List.of(), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A, B), List.of(), INCARNATION);
     assertThat(permit.valid()).isFalse();
     assertThatThrownBy(permit::requireValid)
         .isInstanceOf(AccountAssignment.GcPermitRevokedException.class);
@@ -259,7 +263,7 @@ class AccountAssignmentTest {
 
   @Test
   void aTakenFenceDeniesTheNextPermitAndDropsTheAccount() {
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A), List.of(A), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
     takeFence(A, "owned/2/floecat-1");
 
     assertThat(assignment.tryAcquireGc(A)).isEmpty();
@@ -272,7 +276,7 @@ class AccountAssignmentTest {
 
   @Test
   void sweepDropsAnAccountWhoseFenceChanged() {
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A, B), List.of(A, B), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A, B), List.of(A, B), INCARNATION);
     takeFence(B, "owned/2/floecat-1");
 
     assignment.selfCheck();
@@ -285,7 +289,7 @@ class AccountAssignmentTest {
 
   @Test
   void sweepThatCannotReachTheStoreFencesEveryOwnedAccountUntilOneSucceeds() {
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A, B), List.of(A, B), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A, B), List.of(A, B), INCARNATION);
     raw.failConsistentReads = true;
 
     assignment.selfCheck();
@@ -310,7 +314,7 @@ class AccountAssignmentTest {
   @Test
   void sweepRetriesAJoinWhoseFenceFailedEarlier() {
     raw.failWrites = true;
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A), List.of(A), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
     assertThat(assignment.status(A).mode()).isEqualTo(AccountMode.UNASSIGNED);
 
     raw.failWrites = false;
@@ -326,7 +330,7 @@ class AccountAssignmentTest {
 
   @Test
   void recoveryRestoresAccountsWhoseFenceNamesThisMemberAndExcludesReownedOnes() {
-    assignment.apply(5L, AssignmentMode.SERVING, List.of(A, B), List.of(A, B), INCARNATION);
+    assignment.apply(5L, AssignmentPhase.SERVING, List.of(A, B), List.of(A, B), INCARNATION);
     takeFence(B, "owned/6/" + Keys.encodeSegment("floecat-1"));
     RecordingHooks restartedHooks = new RecordingHooks();
     AccountAssignment restarted =
@@ -361,7 +365,7 @@ class AccountAssignmentTest {
 
     // Core's next push at a later epoch reopens GC and clears the recovered flag.
     var pushed =
-        restarted.apply(6L, AssignmentMode.SERVING, List.of(A), List.of(A), "floecat-0/restart");
+        restarted.apply(6L, AssignmentPhase.SERVING, List.of(A), List.of(A), "floecat-0/restart");
     assertThat(pushed.recoveredFromStore()).isFalse();
     assertThat(restarted.tryAcquireGc(A)).isPresent();
   }
@@ -381,7 +385,7 @@ class AccountAssignmentTest {
 
   @Test
   void processDrainStopsAdmissionAndReportsDrainedWhenWorkFinishes() {
-    assignment.apply(1L, AssignmentMode.SERVING, List.of(A), List.of(A), INCARNATION);
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
     var resolution = assignment.admitResolution(A);
 
     var status = assignment.beginProcessDrain();
@@ -394,7 +398,7 @@ class AccountAssignmentTest {
     assertThat(assignment.acquire(A, Access.WRITE)).isEmpty();
     assertThat(assignment.tryAcquireGc(A)).isEmpty();
     assertThatThrownBy(
-            () -> assignment.apply(2L, AssignmentMode.SERVING, List.of(A), List.of(), INCARNATION))
+            () -> assignment.apply(2L, AssignmentPhase.SERVING, List.of(A), List.of(), INCARNATION))
         .isInstanceOf(IllegalStateException.class);
     assertThat(raw.get(Keys.memberAssignmentIndex(MEMBER)).map(Pointer::getVersion))
         .as("drain touches no KV")
@@ -421,7 +425,7 @@ class AccountAssignmentTest {
     standalone.selfCheck();
     standalone.recoverFromStore();
     assertThatThrownBy(
-            () -> standalone.apply(1L, AssignmentMode.SERVING, List.of(A), List.of(), "local"))
+            () -> standalone.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(), "local"))
         .isInstanceOf(IllegalStateException.class);
     assertThat(raw.isEmpty()).isTrue();
     assertThat(hooks.gained).isEmpty();

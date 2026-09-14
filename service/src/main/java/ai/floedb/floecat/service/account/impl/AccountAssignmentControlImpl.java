@@ -21,7 +21,7 @@ import ai.floedb.floecat.account.rpc.AccountOwnershipStatus;
 import ai.floedb.floecat.account.rpc.AccountServingMode;
 import ai.floedb.floecat.account.rpc.ApplyAssignmentRequest;
 import ai.floedb.floecat.account.rpc.ApplyAssignmentResponse;
-import ai.floedb.floecat.account.rpc.AssignmentMode;
+import ai.floedb.floecat.account.rpc.AssignmentPhase;
 import ai.floedb.floecat.account.rpc.AssignmentStatus;
 import ai.floedb.floecat.account.rpc.GetAssignmentStatusRequest;
 import ai.floedb.floecat.account.rpc.GetAssignmentStatusResponse;
@@ -51,9 +51,9 @@ public class AccountAssignmentControlImpl extends BaseServiceImpl
         () -> {
           requireControl();
           requireManaged();
-          if (request == null || request.getMode() == AssignmentMode.AM_UNSPECIFIED) {
+          if (request == null || request.getPhase() == AssignmentPhase.AP_UNSPECIFIED) {
             throw Status.INVALID_ARGUMENT
-                .withDescription("assignment mode is required")
+                .withDescription("assignment phase is required")
                 .asRuntimeException();
           }
           AccountAssignment.Status status;
@@ -61,7 +61,7 @@ public class AccountAssignmentControlImpl extends BaseServiceImpl
             status =
                 assignment.apply(
                     request.getEpoch(),
-                    fromProto(request.getMode()),
+                    fromProto(request.getPhase()),
                     request.getAccountIdsList(),
                     request.getGcAllowedAccountIdsList(),
                     request.getTargetIncarnation());
@@ -100,21 +100,21 @@ public class AccountAssignmentControlImpl extends BaseServiceImpl
     }
   }
 
-  private static AccountAssignment.AssignmentMode fromProto(AssignmentMode mode) {
-    return switch (mode) {
-      case AM_DRAINING -> AccountAssignment.AssignmentMode.DRAINING;
-      case AM_SERVING -> AccountAssignment.AssignmentMode.SERVING;
-      case AM_UNSPECIFIED, UNRECOGNIZED ->
+  private static AccountAssignment.AssignmentPhase fromProto(AssignmentPhase phase) {
+    return switch (phase) {
+      case AP_DRAINING -> AccountAssignment.AssignmentPhase.DRAINING;
+      case AP_SERVING -> AccountAssignment.AssignmentPhase.SERVING;
+      case AP_UNSPECIFIED, UNRECOGNIZED ->
           throw Status.INVALID_ARGUMENT
-              .withDescription("assignment mode is required")
+              .withDescription("assignment phase is required")
               .asRuntimeException();
     };
   }
 
-  static AssignmentMode toProto(AccountAssignment.AssignmentMode mode) {
-    return switch (mode) {
-      case DRAINING -> AssignmentMode.AM_DRAINING;
-      case SERVING -> AssignmentMode.AM_SERVING;
+  static AssignmentPhase toProto(AccountAssignment.AssignmentPhase phase) {
+    return switch (phase) {
+      case DRAINING -> AssignmentPhase.AP_DRAINING;
+      case SERVING -> AssignmentPhase.AP_SERVING;
     };
   }
 
@@ -132,7 +132,7 @@ public class AccountAssignmentControlImpl extends BaseServiceImpl
             .setMemberId(status.memberId())
             .setIncarnation(status.incarnation())
             .setEpoch(status.epoch())
-            .setMode(toProto(status.mode()))
+            .setPhase(toProto(status.phase()))
             .setRecoveredFromStore(status.recoveredFromStore());
     for (AccountAssignment.AccountStatus account : status.accounts()) {
       builder.addAccounts(

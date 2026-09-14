@@ -136,7 +136,7 @@ class CasBlobGcSchedulerTest {
     // acct-a is GC-allowed, acct-b is owned but gated by Core, acct-c is not owned here.
     assignment.apply(
         1L,
-        AccountAssignment.AssignmentMode.SERVING,
+        AccountAssignment.AssignmentPhase.SERVING,
         List.of("acct-a", "acct-b"),
         List.of("acct-a"),
         "m/inc");
@@ -172,7 +172,7 @@ class CasBlobGcSchedulerTest {
             "m", "m/inc", new InMemoryPointerStore(), observability);
     assignment.apply(
         1L,
-        AccountAssignment.AssignmentMode.SERVING,
+        AccountAssignment.AssignmentPhase.SERVING,
         List.of("acct-a", "acct-b"),
         List.of("acct-a", "acct-b"),
         "m/inc");

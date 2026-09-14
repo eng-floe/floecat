@@ -329,7 +329,9 @@ the caller inside the `QueryDescriptor`.
 every account is served and GC-allowed and nothing below applies. In `managed` mode Core pushes each
 process its complete assignment through the internal `AccountAssignmentControl` service
 (`ApplyAssignment`, `GetAssignmentStatus`; permission `account-assignment-control.internal`):
-an epoch, a mode (`DRAINING` or `SERVING`), the owned account ids and the subset that may run GC.
+an epoch, the epoch's phase (`DRAINING` or `SERVING`), the owned account ids and the subset that
+may run GC. The phase describes the epoch and is pushed unchanged to every process; whether this
+process serves an account is per account.
 Floecat never calls Core or another Floecat. An apply is rejected when `target_incarnation` is not
 this process, when the epoch is older than the applied one, or when an equal epoch changes the
 account set or moves `SERVING -> DRAINING`.

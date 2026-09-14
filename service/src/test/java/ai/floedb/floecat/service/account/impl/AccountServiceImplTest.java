@@ -496,7 +496,7 @@ class AccountServiceImplTest {
     AccountAssignment managed =
         AccountAssignment.managedForTesting("m", "m/inc", pointers, new TestObservability());
     managed.apply(
-        1L, AccountAssignment.AssignmentMode.SERVING, List.of("acct"), List.of("acct"), "m/inc");
+        1L, AccountAssignment.AssignmentPhase.SERVING, List.of("acct"), List.of("acct"), "m/inc");
     PointerStore fenced = new AssignmentFence(pointers, managed);
     service.assignment = managed;
     service.pointerStore = fenced;

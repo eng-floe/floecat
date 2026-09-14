@@ -43,7 +43,7 @@ class FloecatDrainEndpointIT {
     String accountId = "drain-http-account";
     assignment.apply(
         1L,
-        AccountAssignment.AssignmentMode.SERVING,
+        AccountAssignment.AssignmentPhase.SERVING,
         List.of(accountId),
         List.of(),
         assignment.incarnation());

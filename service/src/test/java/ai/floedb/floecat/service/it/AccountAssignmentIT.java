@@ -26,7 +26,7 @@ import ai.floedb.floecat.account.rpc.AccountAssignmentControlGrpc;
 import ai.floedb.floecat.account.rpc.AccountOwnershipStatus;
 import ai.floedb.floecat.account.rpc.AccountServingMode;
 import ai.floedb.floecat.account.rpc.ApplyAssignmentRequest;
-import ai.floedb.floecat.account.rpc.AssignmentMode;
+import ai.floedb.floecat.account.rpc.AssignmentPhase;
 import ai.floedb.floecat.account.rpc.AssignmentStatus;
 import ai.floedb.floecat.account.rpc.GetAssignmentStatusRequest;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
@@ -105,7 +105,7 @@ class AccountAssignmentIT {
     AssignmentStatus current = status();
     incarnation = current.getIncarnation();
     epoch = current.getEpoch() + 1;
-    control.applyAssignment(apply(epoch, AssignmentMode.AM_SERVING, List.of(), List.of()));
+    control.applyAssignment(apply(epoch, AssignmentPhase.AP_SERVING, List.of(), List.of()));
     resetter.wipeAll();
     accountId = AccountIds.randomAccountId();
     ResourceId rid =
@@ -144,7 +144,7 @@ class AccountAssignmentIT {
     // Core pushes SERVING; the fence commits in the background.
     epoch++;
     control.applyAssignment(
-        apply(epoch, AssignmentMode.AM_SERVING, List.of(accountId), List.of(accountId)));
+        apply(epoch, AssignmentPhase.AP_SERVING, List.of(accountId), List.of(accountId)));
     AccountOwnershipStatus serving =
         awaitAccount(status -> status.getMode() == AccountServingMode.ASM_SERVING);
     assertTrue(serving.getGcAllowed());
@@ -183,12 +183,12 @@ class AccountAssignmentIT {
         Status.Code.FAILED_PRECONDITION,
         () ->
             control.applyAssignment(
-                apply(stale, AssignmentMode.AM_SERVING, List.of(accountId), List.of())));
+                apply(stale, AssignmentPhase.AP_SERVING, List.of(accountId), List.of())));
     assertEquals(epoch, status().getEpoch());
 
     // The account leaves this process: DRAINING with nothing in flight goes straight to UNASSIGNED.
     epoch++;
-    control.applyAssignment(apply(epoch, AssignmentMode.AM_DRAINING, List.of(), List.of()));
+    control.applyAssignment(apply(epoch, AssignmentPhase.AP_DRAINING, List.of(), List.of()));
     awaitAccount(status -> status.getMode() != AccountServingMode.ASM_SERVING);
     assertTrue(
         account(status())
@@ -227,10 +227,10 @@ class AccountAssignmentIT {
   }
 
   private ApplyAssignmentRequest apply(
-      long epoch, AssignmentMode mode, List<String> accountIds, List<String> gcAllowed) {
+      long epoch, AssignmentPhase phase, List<String> accountIds, List<String> gcAllowed) {
     return ApplyAssignmentRequest.newBuilder()
         .setEpoch(epoch)
-        .setMode(mode)
+        .setPhase(phase)
         .addAllAccountIds(accountIds)
         .addAllGcAllowedAccountIds(gcAllowed)
         .setTargetIncarnation(incarnation)
