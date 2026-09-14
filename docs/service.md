@@ -347,8 +347,10 @@ from then on every account-scoped write carries `CasCheck(fence, remembered_vers
 fails its condition. The fence is separate from the account-deletion fence, which keeps its own
 shards and its existing deletion-in-progress error. A fence self-check (one consistent read of the
 fence pointer per owned account) runs on every GC permit and every
-`floecat.account-ownership.self-check-interval`; a mismatch drops the account, and a sweep that
-cannot reach the store fences pins and writes on every owned account until one succeeds. At
+`floecat.account-ownership.self-check-interval`; a mismatch drains the account — it stops admitting
+work and drops its index at once, but keeps the fence version so writes already admitted fail their
+condition rather than committing unconditioned — and a sweep that cannot reach the store fences pins
+and writes on every owned account until one succeeds. At
 startup the process restores the accounts whose fence still names its member id, `SERVING` but
 never GC-allowed. `none` mode serves reads only.
 

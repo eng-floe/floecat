@@ -325,8 +325,8 @@ The drain endpoint is registered only in `managed` mode. Pods in that mode shoul
 termination with a `preStop` hook on
 `GET /internal/drain?wait=true&timeoutMs=<ms>`; the response is `200` when in-flight mutations and
 resolutions are gone and `202` at the timeout. `GET /internal/drain` shows the current status.
-The kubelet reaches it on the pod address; through the mesh an authorization policy restricts it
-to the control and account identities. Related
+Starting a drain is irreversible for the life of the process, so it is refused unless the caller is
+pod-local; reading the status is unrestricted. Related
 metrics: `floecat.service.account_assignment.accounts` (per state), `gc_allowed_accounts`,
 `self_checks.total`, `fence_bumps.total` and `fence_rejections.total` (by result).
 
