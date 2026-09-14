@@ -95,7 +95,7 @@ public class AccountAssignmentControlImpl extends BaseServiceImpl
     if (!assignment.managed()) {
       throw Status.FAILED_PRECONDITION
           .withDescription(
-              "account assignment control requires floecat.account-ownership.mode=managed")
+              "account assignment control requires floecat.account-assignment.mode=managed")
           .asRuntimeException();
     }
   }

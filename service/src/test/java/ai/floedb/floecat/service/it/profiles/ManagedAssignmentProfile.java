@@ -24,8 +24,8 @@ public class ManagedAssignmentProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
     return Map.of(
-        "floecat.account-ownership.mode", "managed",
-        "floecat.account-ownership.member-id", "floecat-it-0",
-        "floecat.account-ownership.self-check-interval", "PT1S");
+        "floecat.account-assignment.mode", "managed",
+        "floecat.account-assignment.member-id", "floecat-it-0",
+        "floecat.account-assignment.self-check-interval", "PT1S");
   }
 }

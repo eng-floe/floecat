@@ -328,7 +328,7 @@ the caller inside the `QueryDescriptor`.
 `AccountAssignment` decides which accounts this process serves. In the default `standalone` mode
 every account is served and GC-allowed and nothing below applies. In `managed` mode Core pushes each
 process its complete assignment through the internal `AccountAssignmentControl` service
-(`ApplyAssignment`, `GetAssignmentStatus`; permission `account-ownership-control.internal`):
+(`ApplyAssignment`, `GetAssignmentStatus`; permission `account-assignment-control.internal`):
 an epoch, the epoch's phase (`DRAINING` or `SERVING`), the owned account ids and the subset that
 may run GC. The phase describes the epoch and is pushed unchanged to every process; whether this
 process serves an account is per account.
@@ -347,7 +347,7 @@ from then on every account-scoped write carries `CasCheck(fence, remembered_vers
 fails its condition. The fence is separate from the account-deletion fence, which keeps its own
 shards and its existing deletion-in-progress error. A fence self-check (one consistent read of the
 fence pointer per owned account) runs on every GC permit and every
-`floecat.account-ownership.self-check-interval`; a mismatch drains the account — it stops admitting
+`floecat.account-assignment.self-check-interval`; a mismatch drains the account — it stops admitting
 work and drops its index at once, but keeps the fence version so writes already admitted fail their
 condition rather than committing unconditioned — and a sweep that cannot reach the store fences pins
 and writes on every owned account until one succeeds. At
@@ -442,10 +442,10 @@ Notable `application.properties` keys:
 | `floecat.query.metadata-io.max-concurrency` | Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use `64`; present malformed, blank, or out-of-range values fail startup. |
 | `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for GetUserObjects. Defaults to `8`. |
 | `floecat.catalog.bundle.max_parallel_stats_warms` | Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to `16`; clamped to `>= 1`. |
-| `floecat.account-ownership.mode` | `standalone` (default), `managed`, or `none`; see Account Assignment. |
-| `floecat.account-ownership.member-id` | Stable process identity across restarts; required in `managed` (`FLOECAT_MEMBER_ID`). |
-| `floecat.account-ownership.self-check-interval` | Background fence self-check period in `managed` (`PT10S`). |
-| `floecat.account-ownership.drain-timeout-ms` | Default wait of `/internal/drain?wait=true` and of the shutdown drain (`110000`). |
+| `floecat.account-assignment.mode` | `standalone` (default), `managed`, or `none`; see Account Assignment. |
+| `floecat.account-assignment.member-id` | Stable process identity across restarts; required in `managed` (`FLOECAT_MEMBER_ID`). |
+| `floecat.account-assignment.self-check-interval` | Background fence self-check period in `managed` (`PT10S`). |
+| `floecat.account-assignment.drain-timeout-ms` | Default wait of `/internal/drain?wait=true` and of the shutdown drain (`110000`). |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |

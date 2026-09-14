@@ -24,8 +24,8 @@ public class FloecatDrainEndpointTestProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {
     return Map.of(
-        "floecat.account-ownership.mode", "managed",
-        "floecat.account-ownership.member-id", "floecat-drain-it",
-        "floecat.account-ownership.drain-timeout-ms", "1000");
+        "floecat.account-assignment.mode", "managed",
+        "floecat.account-assignment.member-id", "floecat-drain-it",
+        "floecat.account-assignment.drain-timeout-ms", "1000");
   }
 }
