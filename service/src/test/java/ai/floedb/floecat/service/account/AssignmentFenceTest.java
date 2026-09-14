@@ -208,6 +208,35 @@ class AssignmentFenceTest {
   }
 
   @Test
+  void aRevokedAccountKeepsFencingWritesThatWereAlreadyAdmitted() {
+    serve();
+    long held = rememberedVersion();
+    var permit = assignment.admitMutation(A);
+
+    // Another process takes the fence; this one notices and gives the account up.
+    raw.compareAndSet(
+        fenceKey,
+        held,
+        PointerReferences.opaqueMarkerPointer(fenceKey, "owned/2/floecat-1", held + 1L));
+    assignment.selfCheck();
+
+    assertThat(assignment.fenceVersion(A))
+        .as("the admitted write must still carry a check, not lose it")
+        .hasValue(held);
+    assertThat(fence.compareAndSet(key, 0L, pointer("s3://after-revocation")))
+        .as("and that check must fail against the moved fence")
+        .isFalse();
+    assertThat(raw.get(key)).isEmpty();
+
+    assertThat(assignment.status().drained())
+        .as("Core must not see this pod as idle while the write is in flight")
+        .isFalse();
+
+    permit.close();
+    assertThat(assignment.status(A).mode()).isEqualTo(AccountMode.UNASSIGNED);
+  }
+
+  @Test
   void prefixDeleteRequiresTheRememberedFenceVersion() {
     serve();
     String prefix = Keys.snapshotRootPrefix(A, "table");
