@@ -30,7 +30,6 @@ import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -208,7 +207,6 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
   private final Mode mode;
   private final String memberId;
   private final String incarnation;
-  private final Duration selfCheckInterval;
   private final DurablePointerReads durable;
   private final PartitionHooks hooks;
   private final Executor background;
@@ -245,9 +243,6 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
             .map(String::trim)
             .orElse(""),
         null,
-        config
-            .getOptionalValue("floecat.account-ownership.self-check-interval", Duration.class)
-            .orElse(Duration.ofSeconds(10)),
         durable,
         indexHooks(index),
         null,
@@ -258,7 +253,6 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
       Mode mode,
       String memberId,
       String incarnation,
-      Duration selfCheckInterval,
       DurablePointerReads durable,
       PartitionHooks hooks,
       Executor background,
@@ -273,7 +267,6 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
         incarnation != null
             ? incarnation
             : (this.memberId.isBlank() ? "local" : this.memberId) + "/" + UUID.randomUUID();
-    this.selfCheckInterval = Objects.requireNonNull(selfCheckInterval, "selfCheckInterval");
     this.durable = Objects.requireNonNull(durable, "durable");
     this.hooks = Objects.requireNonNull(hooks, "hooks");
     if (background == null) {
@@ -300,7 +293,6 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
         Mode.STANDALONE,
         "",
         "local/standalone",
-        Duration.ofSeconds(10),
         new DurablePointerReads(raw),
         PartitionHooks.NONE,
         Runnable::run,
@@ -314,7 +306,6 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
         Mode.MANAGED,
         memberId,
         incarnation,
-        Duration.ofSeconds(10),
         new DurablePointerReads(raw),
         PartitionHooks.NONE,
         Runnable::run,
@@ -333,7 +324,6 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
         mode,
         memberId,
         incarnation,
-        Duration.ofSeconds(10),
         new DurablePointerReads(raw),
         hooks,
         background,
@@ -380,10 +370,6 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
 
   public String incarnation() {
     return incarnation;
-  }
-
-  public Duration selfCheckInterval() {
-    return selfCheckInterval;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -439,8 +425,8 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
   }
 
   /**
-   * Grants a GC permit when the account is served, GC-allowed, and one consistent read of a fence
-   * fence still shows the remembered version.
+   * Grants a GC permit when the account is served, GC-allowed, and one consistent read of the fence
+   * still shows the remembered version.
    */
   public Optional<GcPermit> tryAcquireGc(String accountId) {
     if (mode == Mode.STANDALONE) {

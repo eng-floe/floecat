@@ -44,7 +44,7 @@ public final class DurablePointerReads {
     return store.getBatchConsistent(keys);
   }
 
-  /** Commits the member-index update through the durable CAS operation. */
+  /** Commits an assignment record — the fence take, or the member index — unfenced by design. */
   public boolean compareAndSet(String key, long expectedVersion, Pointer next) {
     return store.compareAndSet(key, expectedVersion, next);
   }
