@@ -690,6 +690,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
   // Store fence
   // ---------------------------------------------------------------------------------------------
 
+  /** Takes an account's fence and starts serving it. Runs only on {@link #background}. */
   private void fenceAndServe(String accountId, long epoch) {
     AccountState state = accounts.get(accountId);
     if (state == null) {
@@ -974,8 +975,11 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
         }
       }
     }
+    // Every take runs on the single background thread. Taking a fence is a read followed by a
+    // CAS, so two threads doing it for one account both succeed, and only the first remembers
+    // the version it wrote — leaving the process fenced out of an account it owns.
     for (String accountId : pending) {
-      fenceAndServe(accountId, currentEpoch);
+      background.execute(() -> fenceAndServe(accountId, currentEpoch));
     }
   }
 
