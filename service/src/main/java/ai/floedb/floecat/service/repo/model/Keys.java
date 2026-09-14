@@ -69,7 +69,7 @@ public final class Keys {
 
   /** Families that live directly under the account and are never planner state. */
   private static final Set<String> OPERATIONAL_FAMILIES =
-      Set.of("transactions", "idempotency", "reconcile", "gc");
+      Set.of("transactions", "idempotency", "reconcile", "gc", "root-resyncs");
 
   public static final String SEG_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP =
       "/catalog-integration-credential-cleanup/";

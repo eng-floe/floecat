@@ -362,6 +362,10 @@ class KeysTest {
     assertEquals(
         Keys.PointerNamespace.OPERATIONAL,
         Keys.pointerNamespace(Keys.namespaceRelationsMarker("a", "n")));
+    // A work queue, not planner state: TransactionGc must see markers another writer enqueued.
+    assertEquals(
+        Keys.PointerNamespace.OPERATIONAL,
+        Keys.pointerNamespace(Keys.rootResyncPendingPointer("a", "t")));
     // "deleting" names a child collection here, not the account marker.
     assertEquals(
         Keys.PointerNamespace.PLANNER,
