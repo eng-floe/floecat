@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.repo.cache;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -128,17 +129,45 @@ public class IndexedPointerStore implements PointerStore {
         () -> durable.compareAndSetBatch(ops),
         won -> {
           if (!won) {
-            for (String key : keys) index.refresh(key, durable.getConsistent(key));
+            // Same ordering rule as the winning path: refresh is publish-if-present and
+            // remove-if-absent, so resyncing in key order could remove a name before
+            // republishing the other one.
+            Map<String, Optional<Pointer>> fresh = new LinkedHashMap<>();
+            for (String key : keys) fresh.put(key, durable.getConsistent(key));
+            fresh.forEach(
+                (key, pointer) -> {
+                  if (pointer.isPresent()) index.refresh(key, pointer);
+                });
+            fresh.forEach(
+                (key, pointer) -> {
+                  if (pointer.isEmpty()) index.refresh(key, pointer);
+                });
             return;
           }
+          // Every insertion before any removal, whatever order the batch arrived in. Listing
+          // paths hold the partition write lock and never see a partial batch, but a caller
+          // doing two point lookups can land between them, and absence in the index is
+          // authoritative. A rename may show both names to such a caller; it must never show
+          // neither. Both switches stay exhaustive so a new CasOp cannot be silently dropped.
           for (CasOp op : ops) {
             switch (op) {
               case CasUpsert upsert ->
                   publish(upsert.key(), upsert.next(), upsert.expectedVersion() + 1L);
               case UnconditionalUpsert upsert ->
                   publish(upsert.key(), upsert.next(), upsert.next().getVersion());
+              case CasDelete ignored -> {}
+              case CasCheckAbsent ignored -> {}
+              case CasCheck ignored -> {}
+            }
+          }
+          // Splitting the passes cannot reorder two ops against each other: only planner-key
+          // batches reach the index, and the assemblers that build those reject duplicate keys.
+          for (CasOp op : ops) {
+            switch (op) {
               case CasDelete delete -> index.remove(delete.key());
               case CasCheckAbsent absent -> index.remove(absent.key());
+              case CasUpsert ignored -> {}
+              case UnconditionalUpsert ignored -> {}
               case CasCheck ignored -> {}
             }
           }
