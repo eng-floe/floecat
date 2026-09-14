@@ -367,15 +367,14 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
 
   /** Admits one account mutation; refused unless this process serves the account. */
   @Override
-  public AccountScope.Permit admitMutation(String accountId) {
+  public Permit admitMutation(String accountId) {
     return acquire(accountId, Access.WRITE)
-        .map(permit -> (AccountScope.Permit) permit::close)
         .orElseThrow(() -> new PlanningPointerIndex.Ownership.NotOwnedException(accountId));
   }
 
   /** Admits one pin resolution; released when the pin is rooted or the resolution is abandoned. */
   @Override
-  public AccountScope.Permit admitResolution(String accountId) {
+  public Permit admitResolution(String accountId) {
     if (mode == Mode.STANDALONE) {
       return () -> {};
     }
@@ -1194,7 +1193,7 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
     }
   }
 
-  private final class CountedPermit implements AccountScope.Permit {
+  private final class CountedPermit implements Permit {
     private final String accountId;
     private final AccountState state;
     private final Activity activity;

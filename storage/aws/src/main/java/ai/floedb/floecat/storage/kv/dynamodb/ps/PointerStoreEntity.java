@@ -443,6 +443,14 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
           key.partitionKey()
               .substring(PointerStoreKeys.ACCOUNT_DELETION_FENCE_PARTITION_PREFIX.length());
       return PointerStoreKeys.ACCOUNT_DELETION_FENCE_PREFIX + fenceSegment;
+    } else if (key.partitionKey().startsWith(PointerStoreKeys.ASSIGNMENT_FENCE_PARTITION_PREFIX)) {
+      return PointerStoreKeys.ASSIGNMENT_FENCE_PREFIX
+          + key.partitionKey()
+              .substring(PointerStoreKeys.ASSIGNMENT_FENCE_PARTITION_PREFIX.length());
+    } else if (key.partitionKey().startsWith(PointerStoreKeys.MEMBER_ASSIGNMENT_PARTITION_PREFIX)) {
+      return PointerStoreKeys.MEMBER_ASSIGNMENT_PREFIX
+          + key.partitionKey()
+              .substring(PointerStoreKeys.MEMBER_ASSIGNMENT_PARTITION_PREFIX.length());
     } else {
       return key.toString();
     }
@@ -498,6 +506,11 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
 
   private static String stripLeadingSlash(String value) {
     return value.startsWith("/") ? value.substring(1) : value;
+  }
+
+  /** Visible for tests: the logical key a physical one maps back to. */
+  static String _testKeyOf(KvStore.Key key) {
+    return new PointerStoreEntity(null).keyOf(key);
   }
 
   static KvStore.Key _testKey(String key) {

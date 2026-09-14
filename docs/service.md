@@ -350,9 +350,8 @@ working. Entering `SERVING` takes the account's fence pointer `assignment-fence/
 to an `owned` marker and writes the member index `assignments/<member>`, both in the background on
 one thread, since taking a fence is a read then a CAS and two takers would each believe a different
 version. Both records sit outside `accounts/` and get one store partition each, so deleting an
-account's prefix cannot take its fence with it; the fence is removed explicitly when the account is
-deleted.
-from then on every account-scoped write carries `CasCheck(fence, remembered_version)`
+account's prefix cannot take its fence with it.
+From then on every account-scoped write carries `CasCheck(fence, remembered_version)`
 (`AssignmentFence`, wired once beneath `IndexedPointerStore`), so a previous owner's next write
 fails its condition. The fence is separate from the account-deletion fence, which keeps its own
 shards and its existing deletion-in-progress error. A fence self-check (one consistent read of the

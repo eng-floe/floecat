@@ -718,9 +718,6 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
       objects.evictAccount(accountKey);
       hints.evictAccount(accountKey);
       blobs.evictAccount(accountKey);
-      // Last, and outside the account prefix the sweep above covers. Dropping it revokes this
-      // process's own assignment, so nothing account-scoped may follow.
-      pointerStore.delete(Keys.accountAssignmentFence(accountKey));
       CLEANUP_LOG.infof(
           "account_delete_cleanup_complete account_id=%s account_pointer_deletes=%d catalog_overlays=%d catalog_integrations=%d storage_authorities=%d connectors=%d credential_deletes=%d catalogs=%d namespaces=%d tables=%d views=%d reconcile_jobs=%d residual_account_blob_deletes=%d",
           summary.accountId,

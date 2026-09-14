@@ -16,38 +16,34 @@
 
 package ai.floedb.floecat.service.account;
 
-import com.tngtech.archunit.core.domain.JavaClasses;
-import com.tngtech.archunit.core.importer.ClassFileImporter;
-import com.tngtech.archunit.lang.ArchRule;
-import com.tngtech.archunit.lang.syntax.ArchRuleDefinition;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
 import org.junit.jupiter.api.Test;
 
 /**
  * Floecat ships standalone, so it may not learn where it is deployed. Which accounts it serves
- * arrives over the assignment RPC; it is never derived from the cluster, a replica count or a
- * placement hash. Anything that needs those belongs in the Floe-specific runtime extension.
+ * arrives over the assignment RPC and is never derived from the cluster, a replica count or a
+ * placement hash; anything that needs those belongs in the Floe runtime extension.
+ *
+ * <p>Asserted on the classpath rather than through ArchUnit, whose bytecode reader silently imports
+ * nothing on this JDK — see {@code GrpcErrorsContractArchTest}, which has the same problem.
  */
 class DeploymentIndependenceArchTest {
-  private static final JavaClasses CLASSES =
-      new ClassFileImporter().importPackages("ai.floedb.floecat");
 
   @Test
-  void floecatNeverTalksToKubernetes() {
-    ArchRule rule =
-        ArchRuleDefinition.noClasses()
-            .should()
-            .dependOnClassesThat()
-            .resideInAnyPackage("io.fabric8..", "io.kubernetes..");
-    rule.allowEmptyShould(true).check(CLASSES);
-  }
-
-  @Test
-  void floecatNeverPlacesAccountsItself() {
-    ArchRule rule =
-        ArchRuleDefinition.noClasses()
-            .should()
-            .dependOnClassesThat()
-            .haveSimpleNameEndingWith("JumpConsistentHash");
-    rule.allowEmptyShould(true).check(CLASSES);
+  void noKubernetesClientOnTheClasspath() {
+    for (String kubernetes :
+        new String[] {
+          "io.fabric8.kubernetes.client.KubernetesClient", "io.kubernetes.client.openapi.ApiClient"
+        }) {
+      assertThrows(
+          ClassNotFoundException.class,
+          () -> Class.forName(kubernetes),
+          () ->
+              kubernetes
+                  + " is on Floecat's classpath. Which accounts this process serves comes from"
+                  + " Core, not from the cluster; put anything that needs Kubernetes in"
+                  + " floecat-runtime.");
+    }
   }
 }
