@@ -299,4 +299,72 @@ class KeysTest {
     // Malformed (blank) segments degrade to "no owner", never throw.
     assertEquals(null, Keys.ownerPointerKeyForBlob("/accounts/%20/tables/t/table/sha.pb"));
   }
+
+  @Test
+  void namesThatReadLikeAnOperationalFamilyStayPlanner() {
+    for (String name : List.of("transactions", "idempotency", "markers", "reconcile", "gc")) {
+      // A nested namespace path joins display names into the middle of the key.
+      assertEquals(
+          Keys.PointerNamespace.PLANNER,
+          Keys.pointerNamespace(Keys.namespacePointerByPath("a", "c", List.of(name, "sales"))),
+          "namespace parent named " + name);
+      // The listing prefix is what ListNamespaces pages over, so it must classify the same way.
+      assertEquals(
+          Keys.PointerNamespace.PLANNER,
+          Keys.pointerNamespace(Keys.namespacePointerByPathPrefix("a", "c", List.of(name))),
+          "listing prefix under " + name);
+      assertEquals(
+          Keys.PointerNamespace.PLANNER,
+          Keys.pointerNamespace(Keys.catalogPointerByName("a", name)),
+          "catalog named " + name);
+    }
+  }
+
+  @Test
+  void resourcesNamedDeletingAreNotTheAccountMarker() {
+    // Only /accounts/<id>/deleting is the marker; the suffix used to catch every by-name family.
+    assertEquals(
+        Keys.PointerNamespace.PLANNER,
+        Keys.pointerNamespace(Keys.catalogPointerByName("a", "deleting")));
+    assertEquals(
+        Keys.PointerNamespace.PLANNER,
+        Keys.pointerNamespace(Keys.connectorPointerByName("a", "deleting")));
+    assertEquals(
+        Keys.PointerNamespace.PLANNER,
+        Keys.pointerNamespace(Keys.storageAuthorityPointerByName("a", "deleting")));
+    assertEquals(
+        Keys.PointerNamespace.PLANNER,
+        Keys.pointerNamespace(Keys.namespacePointerByPath("a", "c", List.of("sales", "deleting"))));
+    assertEquals(
+        Keys.PointerNamespace.OPERATIONAL, Keys.pointerNamespace(Keys.accountDeletionMarker("a")));
+  }
+
+  @Test
+  void operationalFamiliesStayOperational() {
+    assertEquals(
+        Keys.PointerNamespace.OPERATIONAL,
+        Keys.pointerNamespace(Keys.transactionPointerById("a", "t")));
+    assertEquals(
+        Keys.PointerNamespace.OPERATIONAL,
+        Keys.pointerNamespace(Keys.casGcGenerationCursorPointer("a")));
+    assertEquals(
+        Keys.PointerNamespace.OPERATIONAL,
+        Keys.pointerNamespace(Keys.idempotencyKey("a", "op", "k")));
+    assertEquals(
+        Keys.PointerNamespace.OPERATIONAL,
+        Keys.pointerNamespace(Keys.reconcileJobPointerById("a", "j")));
+    assertEquals(
+        Keys.PointerNamespace.OPERATIONAL,
+        Keys.pointerNamespace(Keys.catalogChildrenMarker("a", "c")));
+    assertEquals(
+        Keys.PointerNamespace.OPERATIONAL,
+        Keys.pointerNamespace(Keys.namespaceChildrenMarker("a", "n")));
+    assertEquals(
+        Keys.PointerNamespace.OPERATIONAL,
+        Keys.pointerNamespace(Keys.namespaceRelationsMarker("a", "n")));
+    // "deleting" names a child collection here, not the account marker.
+    assertEquals(
+        Keys.PointerNamespace.PLANNER,
+        Keys.pointerNamespace(Keys.catalogIntegrationDeletionMarker("a", "i")));
+  }
 }
