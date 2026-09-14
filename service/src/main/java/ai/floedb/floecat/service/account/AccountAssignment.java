@@ -1030,26 +1030,36 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
     }
   }
 
+  /**
+   * Gives up an account the store says this process no longer owns. Drains rather than clearing:
+   * the remembered fence version has to outlive in-flight writes so they fail their {@code
+   * CasCheck} against the moved fence. Clearing it here would drop the check instead, letting a
+   * write commit unfenced while the new owner serves, and would hide the in-flight work from {@link
+   * #status()} so Core could open {@code SERVING} elsewhere while it runs.
+   */
   private void revoke(String accountId, String reason) {
     AccountState state = accounts.get(accountId);
     if (state == null) {
       return;
     }
-    boolean revoked = false;
     synchronized (lock) {
       synchronized (state) {
-        if (state.mode != AccountMode.UNASSIGNED) {
+        if (state.mode == AccountMode.UNASSIGNED) {
+          return;
+        }
+        if (state.mode == AccountMode.SERVING) {
           LOG.warnf(
               "account_assignment_revoked account_id=%s member=%s reason=%s",
               accountId, memberId, reason);
-          state.clearOwnership();
-          revoked = true;
+          state.mode = AccountMode.DRAINING;
         }
+        state.leaving = true;
+        state.gcAllowed = false;
+        state.pending = false;
+        state.generation++;
       }
     }
-    if (revoked) {
-      hooks.ownershipLost(accountId);
-    }
+    finishDrainIfIdle(accountId, state);
   }
 
   private void unassignLocked(String accountId, AccountState state, List<Runnable> afterLock) {
