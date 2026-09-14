@@ -311,7 +311,7 @@ To scale executors horizontally, add more executor-plane instances. They greedil
 
 ### Account assignment and drain
 
-A Floecat process runs in one of three modes (`FLOECAT_ACCOUNT_OWNERSHIP_MODE`):
+A Floecat process runs in one of three modes (`FLOECAT_ACCOUNT_ASSIGNMENT_MODE`):
 
 - `standalone` (default): serves every account and runs GC for all of them. Single-process and
   OSS deployments need nothing else.
