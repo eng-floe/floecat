@@ -22,11 +22,14 @@ import java.lang.foreign.MemorySegment;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -45,6 +48,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
@@ -66,6 +70,7 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
   private static final int HEADER_BYTES =
       Integer.BYTES + Integer.BYTES + Long.BYTES + CHECKSUM_BYTES;
   private static final int SWEEP_CANDIDATES = 4096;
+  private static final int ENTRY_LOCK_STRIPES = 64;
   private static final String ENTRY_SUFFIX = ".blob";
   private static final String STAGING_MARKER = ".staging-";
   private static final long ABANDONED_STAGING_MILLIS = Duration.ofMinutes(10).toMillis();
@@ -82,6 +87,10 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
   private final AtomicLong knownEntries = new AtomicLong();
   private final AtomicLong liveMappings = new AtomicLong();
   private final AtomicBoolean closed = new AtomicBoolean();
+  // One lock per entry, striped so the table stays bounded. Everything these guard is per-path
+  // check-then-act: the shared accounting is already atomic and staging names are unique. Always
+  // taken under the partition lock when one is held, never the other way round.
+  private final ReentrantLock[] entryLocks = newEntryLocks();
 
   public DiskBlobCache(
       Path root,
@@ -363,9 +372,27 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
         if (!Files.exists(directory)) {
           return;
         }
-        try (var paths = Files.walk(directory)) {
-          paths.filter(Files::isRegularFile).forEach(this::retire);
-        }
+        Files.walkFileTree(
+            directory,
+            new SimpleFileVisitor<Path>() {
+              @Override
+              public FileVisitResult visitFile(Path path, BasicFileAttributes attrs) {
+                if (!attrs.isRegularFile()) {
+                  return FileVisitResult.CONTINUE;
+                }
+                if (isStaging(path)) {
+                  deleteAbandonedStaging(path);
+                } else {
+                  retire(path);
+                }
+                return FileVisitResult.CONTINUE;
+              }
+
+              @Override
+              public FileVisitResult visitFileFailed(Path path, IOException failure) {
+                return FileVisitResult.CONTINUE;
+              }
+            });
         deleteEmptyTree(directory);
       } catch (IOException ignored) {
         // Best effort: account deletion remains authoritative in the durable stores.
@@ -376,7 +403,7 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
   }
 
   @Override
-  public synchronized SweepResult sweep() {
+  public SweepResult sweep() {
     if (closed.get()) {
       return new SweepResult(knownBytes.get(), 0L, 0L);
     }
@@ -385,6 +412,11 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
     Scan scan;
     do {
       scan = scanOldest();
+      if (!scan.complete()) {
+        // The totals are the last good ones, not what is on disk. Evicting against them could
+        // free nothing while over budget, or evict while under it.
+        break;
+      }
       long over = Math.max(0L, scan.bytes() - maxBytes);
       if (over == 0L) {
         break;
@@ -406,9 +438,14 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
       }
     } while (scan.oldest().size() == SWEEP_CANDIDATES);
 
+    // Re-baseline from the scan. Fills no longer wait for the sweep, so a blob published during
+    // this walk can be missed here; these counters drive sweep scheduling and gauges, not
+    // admission, and the next sweep re-reads the truth from disk.
     Scan finalScan = scanOldest();
-    knownBytes.set(finalScan.bytes());
-    knownEntries.set(finalScan.entries());
+    if (finalScan.complete()) {
+      knownBytes.set(finalScan.bytes());
+      knownEntries.set(finalScan.entries());
+    }
     SweepResult result =
         new SweepResult(finalScan.bytes() + reclaimedBytes, reclaimedBytes, reclaimedEntries);
     events.swept(result);
@@ -418,53 +455,83 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
   private Scan scanOldest() {
     PriorityQueue<Entry> oldest =
         new PriorityQueue<>(Comparator.comparingLong(Entry::modifiedMillis).reversed());
-    long bytes = 0L;
-    long entries = 0L;
+    long[] totals = new long[2];
+    boolean[] incomplete = new boolean[1];
     try {
-      if (!Files.exists(root)) {
-        return new Scan(0L, 0L, List.of());
-      }
-      try (var paths = Files.walk(root)) {
-        var iterator = paths.filter(Files::isRegularFile).iterator();
-        while (iterator.hasNext()) {
-          Path path = iterator.next();
-          String name = path.getFileName().toString();
-          if (name.contains(STAGING_MARKER)) {
-            try {
-              if (System.currentTimeMillis() - Files.getLastModifiedTime(path).toMillis()
-                  >= ABANDONED_STAGING_MILLIS) {
-                deleteIfIdle(path);
+      // Walk with a visitor rather than a stream: fills and evictions run during the scan now, so
+      // an entry can vanish between being listed and being read. A stream walk turns that into an
+      // UncheckedIOException out of the iterator, which no per-entry catch can see.
+      Files.walkFileTree(
+          root,
+          new SimpleFileVisitor<Path>() {
+            @Override
+            public FileVisitResult visitFile(Path path, BasicFileAttributes attrs) {
+              if (!attrs.isRegularFile()) {
+                return FileVisitResult.CONTINUE;
               }
-            } catch (IOException ignored) {
-              // The next sweep retries an entry racing a fill or removal.
+              String name = path.getFileName().toString();
+              if (isStaging(path)) {
+                if (System.currentTimeMillis() - attrs.lastModifiedTime().toMillis()
+                    >= ABANDONED_STAGING_MILLIS) {
+                  deleteAbandonedStaging(path);
+                }
+                return FileVisitResult.CONTINUE;
+              }
+              if (!name.endsWith(ENTRY_SUFFIX)) {
+                return FileVisitResult.CONTINUE;
+              }
+              long size = attrs.size();
+              long modified = attrs.lastModifiedTime().toMillis();
+              totals[0] = saturatingAdd(totals[0], size);
+              totals[1]++;
+              Entry candidate = new Entry(path, size, modified);
+              if (oldest.size() < SWEEP_CANDIDATES) {
+                oldest.add(candidate);
+              } else if (modified < oldest.element().modifiedMillis()) {
+                oldest.remove();
+                oldest.add(candidate);
+              }
+              return FileVisitResult.CONTINUE;
             }
-            continue;
-          }
-          if (!name.endsWith(ENTRY_SUFFIX)) {
-            continue;
-          }
-          try {
-            long size = Files.size(path);
-            long modified = Files.getLastModifiedTime(path).toMillis();
-            bytes = saturatingAdd(bytes, size);
-            entries++;
-            Entry candidate = new Entry(path, size, modified);
-            if (oldest.size() < SWEEP_CANDIDATES) {
-              oldest.add(candidate);
-            } else if (modified < oldest.element().modifiedMillis()) {
-              oldest.remove();
-              oldest.add(candidate);
+
+            @Override
+            public FileVisitResult visitFileFailed(Path path, IOException failure) {
+              // An entry unlinked between being listed and being read is the race this walk is
+              // here to tolerate. Anything else -- a directory we cannot open, a bad sector, a
+              // stale handle -- hides part of the cache, and a total that omits it must not pass
+              // for the whole.
+              if (!(failure instanceof NoSuchFileException)) {
+                incomplete[0] = true;
+              }
+              return FileVisitResult.CONTINUE;
             }
-          } catch (IOException ignored) {
-            // A concurrent eviction or local I/O fault is retried by the next sweep.
-          }
-        }
-      }
-    } catch (IOException ignored) {
-      // Metrics retain the last complete scan; the cache remains fail-open.
-      return new Scan(knownBytes.get(), knownEntries.get(), List.of());
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path dir, IOException failure) {
+              // SimpleFileVisitor rethrows here, which would discard the whole walk. This fires
+              // when reading a directory failed part-way, so its remaining entries and every
+              // sibling subtree below it went unvisited.
+              if (failure != null) {
+                incomplete[0] = true;
+              }
+              return FileVisitResult.CONTINUE;
+            }
+          });
+    } catch (NoSuchFileException absent) {
+      // No cache directory yet: genuinely empty, not unreadable.
+      return new Scan(0L, 0L, List.of(), true);
+    } catch (IOException failure) {
+      return incompleteScan();
     }
-    return new Scan(bytes, entries, List.copyOf(oldest));
+    if (incomplete[0]) {
+      return incompleteScan();
+    }
+    return new Scan(totals[0], totals[1], List.copyOf(oldest), true);
+  }
+
+  /** Keeps the last good totals: a partial view must not evict against, or re-baseline, them. */
+  private Scan incompleteScan() {
+    return new Scan(knownBytes.get(), knownEntries.get(), List.of(), false);
   }
 
   private Optional<Content> readCached(Path path) {
@@ -550,7 +617,53 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
     }
   }
 
-  private synchronized void publish(Path path, byte[] bytes, boolean replace) {
+  private static ReentrantLock[] newEntryLocks() {
+    ReentrantLock[] locks = new ReentrantLock[ENTRY_LOCK_STRIPES];
+    for (int i = 0; i < locks.length; i++) locks[i] = new ReentrantLock();
+    return locks;
+  }
+
+  /**
+   * Deletes an abandoned staging file under its entry's lock, not its own: the two names hash to
+   * different stripes, and only the entry lock excludes the publisher that is still writing it.
+   */
+  private void deleteAbandonedStaging(Path staging) {
+    String name = staging.getFileName().toString();
+    Path owner = staging.resolveSibling(name.substring(0, name.indexOf(STAGING_MARKER)));
+    ReentrantLock lock = entryLock(owner);
+    lock.lock();
+    try {
+      // Not deleteIfIdleLocked: a staging file is never counted -- publish credits knownBytes
+      // only after the move, and the scan skips these names -- so charging its bytes as an
+      // eviction would report a reclaim that never happened.
+      Files.deleteIfExists(staging);
+      pendingDeletes.remove(staging);
+    } catch (IOException ignored) {
+      // The next sweep retries it.
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  private static boolean isStaging(Path path) {
+    return path.getFileName().toString().contains(STAGING_MARKER);
+  }
+
+  private ReentrantLock entryLock(Path path) {
+    return entryLocks[(path.hashCode() & 0x7FFFFFFF) % ENTRY_LOCK_STRIPES];
+  }
+
+  private void publish(Path path, byte[] bytes, boolean replace) {
+    ReentrantLock lock = entryLock(path);
+    lock.lock();
+    try {
+      publishLocked(path, bytes, replace);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  private void publishLocked(Path path, byte[] bytes, boolean replace) {
     if ((long) HEADER_BYTES + bytes.length > maxBytes) {
       events.admissionRejected();
       return;
@@ -611,7 +724,17 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
     }
   }
 
-  private synchronized boolean deleteIfIdle(Path path) {
+  private boolean deleteIfIdle(Path path) {
+    ReentrantLock lock = entryLock(path);
+    lock.lock();
+    try {
+      return deleteIfIdleLocked(path);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  private boolean deleteIfIdleLocked(Path path) {
     AtomicLong refs = mappings.get(path);
     if (refs != null && refs.get() > 0L) {
       return false;
@@ -678,11 +801,19 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
     }
   }
 
-  private synchronized boolean retire(Path path) {
-    // Mark first, then inspect the reference count. A concurrent reader either retained before
-    // this mark (and therefore protects the file) or observes the mark and never opens it.
-    pendingDeletes.add(path);
-    return deleteIfIdle(path);
+  private boolean retire(Path path) {
+    ReentrantLock lock = entryLock(path);
+    lock.lock();
+    try {
+      // Mark first, then inspect the reference count. A concurrent reader either retained before
+      // this mark (and therefore protects the file) or observes the mark and never opens it.
+      // Holding the entry lock across both keeps a concurrent fill of this path from landing
+      // between the mark and the delete.
+      pendingDeletes.add(path);
+      return deleteIfIdleLocked(path);
+    } finally {
+      lock.unlock();
+    }
   }
 
   private PartitionState partition(String partition) {
@@ -819,7 +950,8 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
 
   private record Entry(Path path, long bytes, long modifiedMillis) {}
 
-  private record Scan(long bytes, long entries, List<Entry> oldest) {}
+  /** {@code complete} is false when the walk failed and the totals are the last known ones. */
+  private record Scan(long bytes, long entries, List<Entry> oldest, boolean complete) {}
 
   private static final class PartitionState {
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();

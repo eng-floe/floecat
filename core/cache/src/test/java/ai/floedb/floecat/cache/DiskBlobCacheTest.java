@@ -22,13 +22,23 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -347,6 +357,143 @@ class DiskBlobCacheTest {
       assertThat(read(cache, key, BlobCache.Fill.FILL, () -> load(reloads, current)))
           .containsExactly(current);
       assertThat(reloads).hasValue(3);
+    }
+  }
+
+  @Test
+  void aFillLandsWhileASweepIsStillRunning() throws Exception {
+    // The sweep used to hold the monitor that every publish needs. Hold a sweep open after it has
+    // actually retired entries, and prove a fill still completes.
+    CountDownLatch sweepReached = new CountDownLatch(1);
+    CountDownLatch releaseSweep = new CountDownLatch(1);
+    BlobCacheEvents blocking =
+        new BlobCacheEvents() {
+          @Override
+          public void swept(BlobCache.SweepResult result) {
+            sweepReached.countDown();
+            try {
+              releaseSweep.await();
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+          }
+        };
+
+    ExecutorService pool = Executors.newFixedThreadPool(2);
+    try (var cache = new DiskBlobCache(root, 8 * 1024, 4 * 1024, Duration.ZERO, blocking)) {
+      // Over budget, so the sweep retires entries instead of breaking out of its first scan.
+      byte[] payload = new byte[1024];
+      for (int i = 0; i < 24; i++) {
+        cache.put(new BlobCache.Key("account-a", "sha-" + i), payload);
+      }
+
+      Future<?> sweeping = pool.submit(cache::sweep);
+      assertThat(sweepReached.await(10, TimeUnit.SECONDS)).isTrue();
+
+      byte[] filled = "filled-during-sweep".getBytes(StandardCharsets.UTF_8);
+      Future<byte[]> fill =
+          pool.submit(
+              () ->
+                  read(
+                      cache,
+                      new BlobCache.Key("account-b", "sha-during-sweep"),
+                      BlobCache.Fill.FILL,
+                      () -> filled));
+
+      assertThat(fill.get(10, TimeUnit.SECONDS)).containsExactly(filled);
+      releaseSweep.countDown();
+      sweeping.get(10, TimeUnit.SECONDS);
+    } finally {
+      releaseSweep.countDown();
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
+  void anUnreadableShardDoesNotRebaselineTheCacheSize() throws Exception {
+    // A partial walk must not pass for the whole cache: re-baselining from it would under-count,
+    // and since the sweep is the only budget enforcement, the disk would then fill unchecked.
+    try (var cache =
+        new DiskBlobCache(root, 8 * 1024, 4 * 1024, Duration.ZERO, BlobCacheEvents.none())) {
+      byte[] payload = new byte[1024];
+      for (int i = 0; i < 24; i++) {
+        cache.put(new BlobCache.Key("account-a", "sha-" + i), payload);
+      }
+      cache.sweep();
+      long baseline = cache.bytes();
+      assertThat(baseline).isPositive();
+
+      Path shard;
+      try (var tree = Files.walk(root)) {
+        shard =
+            tree.filter(Files::isDirectory)
+                .filter(path -> !path.equals(root) && !path.equals(root.resolve("account-a")))
+                .findFirst()
+                .orElseThrow();
+      }
+      Files.setPosixFilePermissions(shard, Set.of());
+      // Running as root, or on a filesystem ignoring the mode, cannot produce the fault.
+      Assumptions.assumeTrue(!Files.isReadable(shard), "shard is still readable");
+
+      try {
+        assertThat(cache.sweep().entriesReclaimed()).isZero();
+        assertThat(cache.bytes()).isEqualTo(baseline);
+      } finally {
+        Files.setPosixFilePermissions(shard, PosixFilePermissions.fromString("rwx------"));
+      }
+    }
+  }
+
+  @Test
+  void sweepsSurviveFillsAndEvictionsRunningUnderneathThem() throws Exception {
+    // Fills are no longer excluded while a sweep walks the cache root, so entries appear and
+    // vanish under the walk. Anything that turns that into a thrown exception breaks the sweeper.
+    try (var cache =
+        new DiskBlobCache(root, 64 * 1024, 8 * 1024, Duration.ZERO, BlobCacheEvents.none())) {
+      int workers = 8;
+      ExecutorService pool = Executors.newFixedThreadPool(workers);
+      try {
+        AtomicBoolean stop = new AtomicBoolean();
+        List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+        byte[] payload = new byte[1024];
+        List<Future<?>> running = new ArrayList<>();
+        for (int w = 0; w < workers; w++) {
+          final int id = w;
+          running.add(
+              pool.submit(
+                  () -> {
+                    int i = 0;
+                    while (!stop.get()) {
+                      BlobCache.Key key =
+                          new BlobCache.Key("account-" + (i % 3), "sha-" + ((i++ * 7 + id) % 40));
+                      try {
+                        if (id % 3 == 0) {
+                          cache.sweep();
+                        } else if (id % 3 == 1) {
+                          cache.put(key, payload);
+                        } else {
+                          read(cache, key, BlobCache.Fill.FILL, () -> payload);
+                        }
+                      } catch (Exception e) {
+                        failures.add(e);
+                        return;
+                      }
+                    }
+                  }));
+        }
+        Thread.sleep(1500);
+        stop.set(true);
+        pool.shutdown();
+        assertThat(pool.awaitTermination(30, TimeUnit.SECONDS))
+            .as("workers wedged, so the locks deadlocked")
+            .isTrue();
+        for (Future<?> f : running) {
+          f.get(10, TimeUnit.SECONDS);
+        }
+        assertThat(failures).isEmpty();
+      } finally {
+        pool.shutdownNow();
+      }
     }
   }
 
