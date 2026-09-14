@@ -255,7 +255,7 @@ class AccountAssignmentTest {
     assignment.apply(1L, AssignmentPhase.SERVING, List.of(A, B), List.of(), INCARNATION);
     assertThat(permit.valid()).isFalse();
     assertThatThrownBy(permit::requireValid)
-        .isInstanceOf(AccountAssignment.GcPermitRevokedException.class);
+        .isInstanceOf(AccountScope.GcPermitRevokedException.class);
     permit.close();
     assertThat(assignment.status(A).activeGc()).isZero();
     assertThat(assignment.tryAcquireGc(A)).isEmpty();

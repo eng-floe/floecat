@@ -31,6 +31,7 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
@@ -313,13 +314,13 @@ class CasBlobGcSchedulerTest {
 
     @Override
     public synchronized Result runForAccount(
-        String accountId, long deadlineMs, AccountAssignment.GcPermit permit) {
+        String accountId, long deadlineMs, AccountScope.GcPermit permit) {
       accountIds.add(accountId);
       if (accountId.equals(failAccountId)) {
         throw new RuntimeException("simulated storage fault");
       }
       if (accountId.equals(revokeAccountId)) {
-        throw new AccountAssignment.GcPermitRevokedException(accountId);
+        throw new AccountScope.GcPermitRevokedException(accountId);
       }
       if (accountId.equals(poisonAccountId)) {
         return new Result(99, 999L, 1, 2, 0, 0, 0, 0, 0, true, false, false);
@@ -335,7 +336,7 @@ class CasBlobGcSchedulerTest {
 
     @Override
     public synchronized Result runForAccount(
-        String accountId, long deadlineMs, AccountAssignment.GcPermit permit) {
+        String accountId, long deadlineMs, AccountScope.GcPermit permit) {
       accountIds.add(accountId);
       if ("acct-a".equals(accountId)) {
         accountARuns++;
@@ -358,7 +359,7 @@ class CasBlobGcSchedulerTest {
 
     @Override
     public synchronized Result runForAccount(
-        String accountId, long deadlineMs, AccountAssignment.GcPermit permit) {
+        String accountId, long deadlineMs, AccountScope.GcPermit permit) {
       accountIds.add(accountId);
       continuingAccount = accountId;
       return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, true);

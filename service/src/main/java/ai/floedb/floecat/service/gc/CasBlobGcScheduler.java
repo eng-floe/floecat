@@ -19,7 +19,7 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
@@ -56,7 +56,7 @@ public class CasBlobGcScheduler {
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<CasBlobGc> casBlobGc;
   @Inject Provider<StorageUsageMetrics> storageUsageMetrics;
-  @Inject AccountAssignment assignment;
+  @Inject AccountScope assignment;
   @Inject Observability observability;
 
   private GcMetrics gcMetrics;
@@ -222,7 +222,7 @@ public class CasBlobGcScheduler {
         }
         try (var permit = acquired.get()) {
           result = gc.runForAccount(accountId, deadline, permit);
-        } catch (AccountAssignment.GcPermitRevokedException revoked) {
+        } catch (AccountScope.GcPermitRevokedException revoked) {
           // The collector already dropped its mark epoch; only the scheduler's bookkeeping remains.
           gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "account-revoked"));
           forgetRetainedAccount();

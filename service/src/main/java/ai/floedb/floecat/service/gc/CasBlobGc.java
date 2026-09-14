@@ -25,6 +25,7 @@ import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -116,7 +117,7 @@ public class CasBlobGc {
   private static final String SCAN_COMPLETE = "\u0000";
   private PassContinuation continuation;
   private long activeDeadlineMs = Long.MAX_VALUE;
-  private AccountAssignment.GcPermit activePermit;
+  private AccountScope.GcPermit activePermit;
 
   private static final class DeferredPageState {
     private final String prefix;
@@ -390,16 +391,16 @@ public class CasBlobGc {
   }
 
   public synchronized Result runForAccount(String accountId, long deadlineMs) {
-    return runForAccount(accountId, deadlineMs, AccountAssignment.GcPermit.unfenced(accountId));
+    return runForAccount(accountId, deadlineMs, AccountAssignment.unfencedGcPermit(accountId));
   }
 
   /**
    * Account sweep under a GC permit, revalidated at every deadline check and before every blob
    * delete. Revocation drops the retained mark epoch and propagates as {@link
-   * AccountAssignment.GcPermitRevokedException}; it is never folded into a result.
+   * AccountScope.GcPermitRevokedException}; it is never folded into a result.
    */
   public synchronized Result runForAccount(
-      String accountId, long deadlineMs, AccountAssignment.GcPermit permit) {
+      String accountId, long deadlineMs, AccountScope.GcPermit permit) {
     if (!accountId.equals(permit.accountId())) {
       throw new IllegalArgumentException("GC permit does not match account");
     }
@@ -425,7 +426,7 @@ public class CasBlobGc {
           return result;
         } catch (DeadlineReached ignored) {
           return incompleteResult(continuation);
-        } catch (AccountAssignment.GcPermitRevokedException revoked) {
+        } catch (AccountScope.GcPermitRevokedException revoked) {
           clearContinuation();
           throw revoked;
         } catch (StatsRepository.GenerationGcCapacityExceededException e) {
@@ -1750,7 +1751,7 @@ public class CasBlobGc {
       return true;
     } catch (DeadlineReached
         | ReferenceIndex.CapacityExceededException
-        | AccountAssignment.GcPermitRevokedException e) {
+        | AccountScope.GcPermitRevokedException e) {
       throw e;
     } catch (RuntimeException e) {
       LOG.warnf(e, "cas gc chain walk failed for root %s; sweep will be skipped", rootBlobUri);
@@ -1951,7 +1952,7 @@ public class CasBlobGc {
       return true;
     } catch (DeadlineReached
         | ReferenceIndex.CapacityExceededException
-        | AccountAssignment.GcPermitRevokedException error) {
+        | AccountScope.GcPermitRevokedException error) {
       throw error;
     } catch (Exception error) {
       LOG.warnf(

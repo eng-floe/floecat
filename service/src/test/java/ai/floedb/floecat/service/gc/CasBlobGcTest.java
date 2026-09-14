@@ -28,7 +28,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.BlobHeader;
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -114,15 +114,15 @@ class CasBlobGcTest {
         new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, revokingBlobs);
 
     assertThrows(
-        AccountAssignment.GcPermitRevokedException.class,
+        AccountScope.GcPermitRevokedException.class,
         () -> gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L, permit(owned)));
 
     assertTrue(revokingBlobs.head(garbage).isPresent());
     assertTrue(gc.continuationAccountId().isEmpty());
   }
 
-  private static AccountAssignment.GcPermit permit(AtomicBoolean owned) {
-    return new AccountAssignment.GcPermit() {
+  private static AccountScope.GcPermit permit(AtomicBoolean owned) {
+    return new AccountScope.GcPermit() {
       @Override
       public String accountId() {
         return ACCOUNT_ID;

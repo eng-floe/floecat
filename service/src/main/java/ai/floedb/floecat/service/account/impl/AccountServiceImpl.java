@@ -35,7 +35,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.AccountIds;
@@ -92,7 +92,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject ObjectCache objects;
   @Inject HintCache hints;
   @Inject BlobCacheAccess blobs;
-  @Inject AccountAssignment assignment;
+  @Inject AccountScope assignment;
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS =
       Set.of("display_name", "description", "tags");
