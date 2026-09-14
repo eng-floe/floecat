@@ -26,7 +26,6 @@ import ai.floedb.floecat.catalog.rpc.EngineHintPayload;
 import ai.floedb.floecat.catalog.rpc.RelationHintsResource;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.metagraph.hint.EngineHintMetadata;
 import ai.floedb.floecat.metagraph.hint.EngineHintPersistence;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
@@ -87,11 +86,14 @@ public final class HintCache {
             engineKind,
             engineVersion,
             blobUri -> readBody(node.id(), engineKind, engineVersion, blobUri));
+    // No hints is a safe miss: the runtime re-derives them from the relation and persists them
+    // through EngineHintPersistence, so a relation whose hints predate this resource repopulates
+    // on its first decoration rather than serving anything stale.
     Hints hints =
         stored
             .filter(cached -> node.cacheIdentity().equals(cached.relationIdentity()))
             .map(CachedHints::hints)
-            .orElseGet(() -> readLegacy(node, engineKind, engineVersion));
+            .orElse(Hints.EMPTY);
     return withHints(node, hints);
   }
 
@@ -238,25 +240,6 @@ public final class HintCache {
             key, ignored -> repository.getByBlobUri(blobUri).map(HintCache::decoded).orElse(null)));
   }
 
-  private Hints readLegacy(RelationNode node, String engineKind, String engineVersion) {
-    if (!enabled) {
-      return legacyHints(node, engineKind, engineVersion);
-    }
-    Key key =
-        new Key(
-            node.id().getAccountId(),
-            node.id().getId(),
-            engineKind,
-            engineVersion,
-            node.cacheIdentity());
-    return entries
-        .get(
-            key,
-            ignored ->
-                new CachedHints(node.cacheIdentity(), legacyHints(node, engineKind, engineVersion)))
-        .hints();
-  }
-
   private static RelationHintsResource merge(
       RelationHintsResource base,
       String relationPayloadType,
@@ -337,41 +320,6 @@ public final class HintCache {
     return new EngineHint(payloadType, bytes, bytes.length, payload.getMetadataMap());
   }
 
-  private static Hints legacyHints(RelationNode node, String engineKind, String engineVersion) {
-    Map<String, String> properties =
-        node instanceof UserTableNode table
-            ? table.properties()
-            : node instanceof ViewNode view ? view.properties() : Map.of();
-    Map<EngineHintKey, EngineHint> relation = new LinkedHashMap<>();
-    EngineHintMetadata.hintsFromProperties(properties)
-        .forEach(
-            (key, value) -> {
-              if (matches(key, engineKind, engineVersion)) {
-                relation.put(key, value);
-              }
-            });
-    Map<Long, Map<EngineHintKey, EngineHint>> columns = new LinkedHashMap<>();
-    EngineHintMetadata.columnHints(properties)
-        .forEach(
-            (columnId, values) -> {
-              Map<EngineHintKey, EngineHint> selected = new LinkedHashMap<>();
-              values.forEach(
-                  (key, value) -> {
-                    if (matches(key, engineKind, engineVersion)) {
-                      selected.put(key, value);
-                    }
-                  });
-              if (!selected.isEmpty()) {
-                columns.put(columnId, Map.copyOf(selected));
-              }
-            });
-    return new Hints(Map.copyOf(relation), Map.copyOf(columns));
-  }
-
-  private static boolean matches(EngineHintKey key, String engineKind, String engineVersion) {
-    return key.engineKind().equals(engineKind) && key.engineVersion().equals(engineVersion);
-  }
-
   private static boolean containsAll(
       Hints current,
       String relationPayloadType,
@@ -448,6 +396,8 @@ public final class HintCache {
 
   private record Hints(
       Map<EngineHintKey, EngineHint> relation, Map<Long, Map<EngineHintKey, EngineHint>> columns) {
+    private static final Hints EMPTY = new Hints(Map.of(), Map.of());
+
     private long estimatedWeightBytes() {
       long bytes = 96L;
       for (Map.Entry<EngineHintKey, EngineHint> entry : relation.entrySet()) {

@@ -186,7 +186,9 @@ class HintCacheTest {
   }
 
   @Test
-  void fallsBackToPropertiesWrittenByOlderReleases() {
+  void propertiesWrittenByOlderReleasesAreNotServed() {
+    // Hints now live in the per-engine resource. A relation carrying only the old properties is a
+    // clean miss, so the runtime re-derives and persists them rather than reading a second format.
     Map<String, String> properties =
         Map.of(
             EngineHintMetadata.tableHintKey("floe.relation+proto"),
@@ -201,8 +203,8 @@ class HintCacheTest {
         (UserTableNode)
             cache.attach(table("blob://table/v1", properties), EngineContext.of("floedb", "1"));
 
-    assertThat(attached.engineHints()).hasSize(1);
-    assertThat(attached.columnHints()).containsKey(9L);
+    assertThat(attached.engineHints()).isEmpty();
+    assertThat(attached.columnHints()).isEmpty();
   }
 
   @Test
@@ -221,24 +223,6 @@ class HintCacheTest {
     coldCache.attach(table, EngineContext.of("floedb", "1"));
 
     assertThat(blobs.gets).hasValue(1);
-  }
-
-  @Test
-  void absentHintsReuseTheDecodedLegacyAnswer() {
-    var pointers = new InMemoryPointerStore();
-    var repository = new RelationHintsRepository(pointers, new InMemoryBlobStore());
-    var cache = HintCache.forTesting(repository);
-    Map<String, String> properties =
-        Map.of(
-            EngineHintMetadata.tableHintKey("type"),
-            EngineHintMetadata.encodeValue("floedb", "1", bytes(1)));
-    UserTableNode table = table("blob://table/v1", properties);
-
-    UserTableNode first = (UserTableNode) cache.attach(table, EngineContext.of("floedb", "1"));
-    UserTableNode second = (UserTableNode) cache.attach(table, EngineContext.of("floedb", "1"));
-
-    assertThat(first.engineHints()).isSameAs(second.engineHints());
-    assertThat(cache.entryCount()).isOne();
   }
 
   @Test
