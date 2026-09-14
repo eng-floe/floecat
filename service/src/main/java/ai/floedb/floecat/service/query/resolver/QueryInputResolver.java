@@ -31,7 +31,7 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.concurrent.Futures;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -126,14 +126,14 @@ public class QueryInputResolver {
 
   // Admits one pin resolution per account pinned; a pin on a non-owned account is refused with
   // not_assigned. Unrestricted for the constructors that take no assignment.
-  private final Function<String, AccountAssignment.Permit> admitResolution;
+  private final Function<String, AccountScope.Permit> admitResolution;
 
   @Inject
   public QueryInputResolver(
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
       RepositoryReads.ReadPolicy pinResolutionReads,
-      AccountAssignment assignment) {
+      AccountScope assignment) {
     this(
         metadataGraph,
         queryStore,
@@ -154,7 +154,7 @@ public class QueryInputResolver {
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
       RepositoryReads.ReadPolicy pinResolutionReads,
-      AccountAssignment assignment,
+      AccountScope assignment,
       int maxParallelInputResolutions) {
     this.metadataGraph = metadataGraph;
     this.queryStore = queryStore;
@@ -287,11 +287,11 @@ public class QueryInputResolver {
    * the call cannot admit against a closed instance, so no permit is left behind.
    */
   private static final class ResolutionAdmission implements AutoCloseable {
-    private final Function<String, AccountAssignment.Permit> admit;
-    private final Map<String, AccountAssignment.Permit> permits = new HashMap<>();
+    private final Function<String, AccountScope.Permit> admit;
+    private final Map<String, AccountScope.Permit> permits = new HashMap<>();
     private boolean closed;
 
-    private ResolutionAdmission(Function<String, AccountAssignment.Permit> admit) {
+    private ResolutionAdmission(Function<String, AccountScope.Permit> admit) {
       this.admit = admit;
     }
 
@@ -308,7 +308,7 @@ public class QueryInputResolver {
 
     @Override
     public void close() {
-      List<AccountAssignment.Permit> released;
+      List<AccountScope.Permit> released;
       synchronized (this) {
         if (closed) {
           return;
@@ -317,7 +317,7 @@ public class QueryInputResolver {
         released = new ArrayList<>(permits.values());
         permits.clear();
       }
-      released.forEach(AccountAssignment.Permit::close);
+      released.forEach(AccountScope.Permit::close);
     }
   }
 

@@ -35,7 +35,7 @@ import ai.floedb.floecat.query.rpc.QueryService;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.RenewQueryRequest;
 import ai.floedb.floecat.query.rpc.RenewQueryResponse;
-import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -95,7 +95,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
   @Inject QueryInputMetadataAssembler metadataAssembler;
 
-  @Inject AccountAssignment assignment;
+  @Inject AccountScope assignment;
 
   @Inject
   @ConfigProperty(name = "floecat.query.default-ttl-ms", defaultValue = "60000")

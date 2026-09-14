@@ -63,7 +63,7 @@ import org.jboss.logging.Logger;
  * <p>{@code standalone} behaves exactly like {@link PlanningPointerIndex.Ownership#ALWAYS_OWNED}.
  */
 @ApplicationScoped
-public class AccountAssignment implements PlanningPointerIndex.Ownership {
+public class AccountAssignment implements AccountScope, PlanningPointerIndex.Ownership {
 
   private static final Logger LOG = Logger.getLogger(AccountAssignment.class);
   private static final int CONSISTENT_READ_BATCH = 100;
@@ -142,43 +142,9 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
     }
   }
 
-  public interface Permit extends AutoCloseable {
-    @Override
-    void close();
-  }
-
-  public interface GcPermit extends Permit {
-    /** Valid until closed; the permit of a run outside any assignment (standalone, tests). */
-    static GcPermit unfenced(String accountId) {
-      return new StandaloneGcPermit(accountId);
-    }
-
-    String accountId();
-
-    /** Changes whenever this process's ownership of the account starts or ends. */
-    long generation();
-
-    boolean valid();
-
-    default void requireValid() {
-      if (!valid()) {
-        throw new GcPermitRevokedException(accountId());
-      }
-    }
-  }
-
-  /** Control-flow signal: ownership of the account ended while a collector held its permit. */
-  public static final class GcPermitRevokedException extends RuntimeException {
-    private final String accountId;
-
-    public GcPermitRevokedException(String accountId) {
-      super("GC permit revoked for account " + accountId);
-      this.accountId = accountId;
-    }
-
-    public String accountId() {
-      return accountId;
-    }
+  /** Valid until closed; the permit of a run outside any assignment (standalone, tests). */
+  public static GcPermit unfencedGcPermit(String accountId) {
+    return new StandaloneGcPermit(accountId);
   }
 
   /** The two index calls the module makes, plus the readiness word it reports. */
@@ -400,14 +366,16 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
   }
 
   /** Admits one account mutation; refused unless this process serves the account. */
-  public Permit admitMutation(String accountId) {
+  @Override
+  public AccountScope.Permit admitMutation(String accountId) {
     return acquire(accountId, Access.WRITE)
-        .map(permit -> (Permit) permit::close)
+        .map(permit -> (AccountScope.Permit) permit::close)
         .orElseThrow(() -> new PlanningPointerIndex.Ownership.NotOwnedException(accountId));
   }
 
   /** Admits one pin resolution; released when the pin is rooted or the resolution is abandoned. */
-  public Permit admitResolution(String accountId) {
+  @Override
+  public AccountScope.Permit admitResolution(String accountId) {
     if (mode == Mode.STANDALONE) {
       return () -> {};
     }
@@ -1226,7 +1194,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
     }
   }
 
-  private final class CountedPermit implements Permit {
+  private final class CountedPermit implements AccountScope.Permit {
     private final String accountId;
     private final AccountState state;
     private final Activity activity;

@@ -17,7 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
-import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
@@ -46,7 +46,7 @@ public class PointerGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<PointerGc> pointerGc;
-  @Inject AccountAssignment assignment;
+  @Inject AccountScope assignment;
   @Inject Observability observability;
   private GcMetrics gcMetrics;
   private final AtomicInteger running = new AtomicInteger(0);
