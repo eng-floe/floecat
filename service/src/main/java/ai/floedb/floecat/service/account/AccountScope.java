@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.account;
 
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.Permit;
 import java.util.Optional;
 
 /**
@@ -30,12 +31,10 @@ import java.util.Optional;
  *
  * <p>Permission only. How a write is then held to the account — the store fence and the version it
  * carries — is Floecat's own business and stays off this interface, so an implementation decides
- * who serves what without also having to maintain the mechanism that enforces it.
+ * who serves what without also having to maintain the mechanism that enforces it. The permit is the
+ * index's, so a caller holding one holds the same thing whichever seam handed it over.
  */
 public interface AccountScope {
-
-  /** True when assignments arrive from a controller, rather than every account being served. */
-  boolean managed();
 
   /** Admits one account mutation; refused unless this process serves the account. */
   Permit admitMutation(String accountId);
@@ -45,12 +44,6 @@ public interface AccountScope {
 
   /** A collection permit, empty unless the account is served and collection is allowed for it. */
   Optional<GcPermit> tryAcquireGc(String accountId);
-
-  /** Released when the admitted work finishes; the account is not given up until it is. */
-  interface Permit extends AutoCloseable {
-    @Override
-    void close();
-  }
 
   /** A permit that can be taken away mid-pass, so a long collection has to keep re-checking it. */
   interface GcPermit extends Permit {

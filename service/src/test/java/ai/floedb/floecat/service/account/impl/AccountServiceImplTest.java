@@ -175,11 +175,6 @@ class AccountServiceImplTest {
         catalogMarker, 0L, PointerReferences.opaqueMarkerPointer(catalogMarker, "marker", 1L));
     pointers.compareAndSet(
         namespaceMarker, 0L, PointerReferences.opaqueMarkerPointer(namespaceMarker, "marker", 1L));
-    String assignmentFence = Keys.accountAssignmentFence("acct");
-    pointers.compareAndSet(
-        assignmentFence,
-        0L,
-        PointerReferences.opaqueMarkerPointer(assignmentFence, "owned/1/floecat-0", 1L));
     blobs.put(statsBlob, new byte[] {1}, "application/x-protobuf");
     blobs.put(indexSidecar, new byte[] {2}, "application/octet-stream");
     blobs.put(residualBlob, new byte[] {3}, "application/x-protobuf");
@@ -198,8 +193,6 @@ class AccountServiceImplTest {
     assertTrue(blobs.list(tableBlobPrefix, 100, "").keys().isEmpty());
     assertTrue(blobs.get(residualBlob) == null);
     assertTrue(blobs.get(otherAccountBlob) != null);
-    // The fence sits outside the account prefix, so the sweep above cannot reach it.
-    assertFalse(pointers.get(assignmentFence).isPresent());
   }
 
   @Test

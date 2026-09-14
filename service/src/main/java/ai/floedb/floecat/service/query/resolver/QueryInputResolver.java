@@ -39,6 +39,7 @@ import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
@@ -126,7 +127,7 @@ public class QueryInputResolver {
 
   // Admits one pin resolution per account pinned; a pin on a non-owned account is refused with
   // not_assigned. Unrestricted for the constructors that take no assignment.
-  private final Function<String, AccountScope.Permit> admitResolution;
+  private final Function<String, PlanningPointerIndex.Ownership.Permit> admitResolution;
 
   @Inject
   public QueryInputResolver(
@@ -287,11 +288,11 @@ public class QueryInputResolver {
    * the call cannot admit against a closed instance, so no permit is left behind.
    */
   private static final class ResolutionAdmission implements AutoCloseable {
-    private final Function<String, AccountScope.Permit> admit;
-    private final Map<String, AccountScope.Permit> permits = new HashMap<>();
+    private final Function<String, PlanningPointerIndex.Ownership.Permit> admit;
+    private final Map<String, PlanningPointerIndex.Ownership.Permit> permits = new HashMap<>();
     private boolean closed;
 
-    private ResolutionAdmission(Function<String, AccountScope.Permit> admit) {
+    private ResolutionAdmission(Function<String, PlanningPointerIndex.Ownership.Permit> admit) {
       this.admit = admit;
     }
 
@@ -308,7 +309,7 @@ public class QueryInputResolver {
 
     @Override
     public void close() {
-      List<AccountScope.Permit> released;
+      List<PlanningPointerIndex.Ownership.Permit> released;
       synchronized (this) {
         if (closed) {
           return;
@@ -317,7 +318,7 @@ public class QueryInputResolver {
         released = new ArrayList<>(permits.values());
         permits.clear();
       }
-      released.forEach(AccountScope.Permit::close);
+      released.forEach(PlanningPointerIndex.Ownership.Permit::close);
     }
   }
 

@@ -48,6 +48,13 @@ class PointerStoreEntityKeyTest {
   }
 
   @Test
+  void assignmentRecordsRoundTripThroughTheReverseMapping() {
+    for (String key : new String[] {"/assignment-fence/acct-a", "/assignments/floecat-0"}) {
+      assertEquals(key, PointerStoreEntity._testKeyOf(PointerStoreEntity._testKey(key)));
+    }
+  }
+
+  @Test
   void credentialCleanupPrefixUsesDedicatedPartition() {
     var key = PointerStoreEntity.prefixKey("/catalog-integration-credential-cleanup/");
 
