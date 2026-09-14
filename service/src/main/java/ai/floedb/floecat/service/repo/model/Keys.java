@@ -172,7 +172,7 @@ public final class Keys {
    * SERVING} assignment. Outside the account namespace; a recovery hint, not the fence.
    */
   public static String memberAssignmentIndex(String memberId) {
-    return "/assignments/" + encode(req("member_id", memberId));
+    return PointerStoreKeys.MEMBER_ASSIGNMENT_PREFIX + encode(req("member_id", memberId));
   }
 
   /**
@@ -181,7 +181,7 @@ public final class Keys {
    * planner index never touch it.
    */
   public static String accountAssignmentFence(String accountId) {
-    return "/assignment-fence/" + encode(req("account_id", accountId));
+    return PointerStoreKeys.ASSIGNMENT_FENCE_PREFIX + encode(req("account_id", accountId));
   }
 
   /** The durable pointer namespace used by the planner store seam. */
