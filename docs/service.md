@@ -358,8 +358,10 @@ each delete.
 
 `GET /internal/drain` reports the process status; `GET|POST /internal/drain?wait=true[&timeoutMs=N]`
 moves the process to draining and returns `200` once active mutations and resolutions are zero,
-`202` at the timeout. Pod-local callers need no credentials; others need the control permission.
-The shutdown observer applies the same drain when the hook never arrived.
+`202` at the timeout. Draining is irreversible for the life of the process, so the mutating form is
+refused with `403` unless the caller is pod-local: the `preStop` hook reaches it on loopback and
+nothing drains a pod remotely. Reporting status stays open. The shutdown observer applies the same
+drain when the hook never arrived.
 
 ### Builtin Catalog Service
 `SystemObjectsLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the

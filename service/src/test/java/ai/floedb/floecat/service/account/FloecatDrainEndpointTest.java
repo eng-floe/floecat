@@ -55,7 +55,7 @@ class FloecatDrainEndpointTest {
   }
 
   private static Request request(String method, boolean wait, String timeoutMs) {
-    return new Request(method, wait, timeoutMs);
+    return new Request(method, wait, timeoutMs, true);
   }
 
   @Test
@@ -125,5 +125,21 @@ class FloecatDrainEndpointTest {
     assertThat(assignment.status().processDraining()).isTrue();
     assertThatThrownBy(() -> assignment.admitResolution(A))
         .isInstanceOf(PlanningPointerIndex.Ownership.NotOwnedException.class);
+  }
+
+  @Test
+  void aRemoteCallerCannotDrainTheProcess() {
+    AccountAssignment assignment = managed();
+    FloecatDrainEndpoint endpoint = endpoint(assignment);
+
+    assertThat(endpoint.handle(new Request("GET", true, null, false)).status()).isEqualTo(403);
+    assertThat(endpoint.handle(new Request("POST", false, null, false)).status()).isEqualTo(403);
+    assertThat(assignment.status().processDraining())
+        .as("a refused call must not have started the irreversible drain")
+        .isFalse();
+
+    assertThat(endpoint.handle(new Request("GET", false, null, false)).status())
+        .as("reporting status stays open")
+        .isEqualTo(200);
   }
 }
