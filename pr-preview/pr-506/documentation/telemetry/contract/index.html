@@ -2297,6 +2297,51 @@
 </thead>
 <tbody>
 <tr>
+<td>floecat.service.account_assignment.accounts</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Accounts tracked by this process per assignment state (unassigned, serving, draining).</td>
+<td>component, mode, operation</td>
+<td>component, mode, operation</td>
+</tr>
+<tr>
+<td>floecat.service.account_assignment.fence_bumps.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Fence take outcomes when an account enters SERVING (ok, conflict, error).</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.account_assignment.fence_rejections.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Account-scoped writes that failed their fence condition (revoked, conflict, error).</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.account_assignment.gc_allowed_accounts</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Accounts this process may currently collect garbage for.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.account_assignment.self_checks.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Fence self-check outcomes (ok, mismatch, error), per sweep and per GC permit.</td>
+<td>component, operation, result</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
 <td>floecat.service.flight.cancelled.total</td>
 <td>COUNTER</td>
 <td></td>
@@ -2455,6 +2500,51 @@
 <td>count</td>
 <td>v1</td>
 <td>Metadata-I/O admission permits held by in-flight store calls.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.planning.pointer.entries</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Number of planner pointer entries resident in the authoritative in-memory index.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.planning.pointer.partitions</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Number of planner pointer partitions by readiness state.</td>
+<td>component, operation</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.planning.pointer.warm.errors.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Planner pointer index warm-up failures.</td>
+<td>component, operation</td>
+<td>component, exception, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.planning.pointer.warm.latency</td>
+<td>TIMER</td>
+<td>ms</td>
+<td>v1</td>
+<td>Planner pointer index warm-up latency.</td>
+<td>component, operation, result</td>
+<td>component, exception, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.planning.pointer.warm.starts.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Planner pointer index warm-up attempts.</td>
 <td>component, operation</td>
 <td>component, operation</td>
 </tr>

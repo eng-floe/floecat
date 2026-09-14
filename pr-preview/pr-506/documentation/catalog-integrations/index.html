@@ -1813,6 +1813,24 @@ integration namespaces databricks --parent main
 integration objects databricks main.sales --kinds table,view
 overlay reconcile delta-sales
 </code></pre></div>
+<p>For a Delta Sharing recipient, the share and schema are the namespace:</p>
+<div class="highlight"><pre><span></span><code>integration create partner delta-sharing https://sharing.example/delta-sharing \
+  --auth-type bearer --cred token=recipient-token \
+  --props s3.region=us-east-1
+overlay create partner-tables partner local-catalog --include acme_share.gold
+integration validate partner
+integration namespaces partner
+integration namespaces partner --parent acme_share
+integration objects partner acme_share.gold
+overlay reconcile partner-tables
+</code></pre></div>
+<p>Delta Sharing accepts bearer authentication only, because the protocol defines no other scheme. A
+table is usable where its provider offers directory access; one offering url access alone returns
+presigned per-file URLs rather than credentials, and is refused when the overlay reconciles rather
+than materialized as a table nothing can open. A table stating no
+access modes is asked rather than refused -- see
+<a href="../operations/#delta-sharing-access-modes"><code>docs/operations.md</code></a> for why, and for
+<code>delta.sharing.strict-access-modes</code>.</p>
 <p>Unity OAuth client credentials use the same <code>oauth-client-credentials</code> CLI form as Iceberg REST.
 The configured token URI is optional; when omitted, the Unity provider uses <code>/oidc/v1/token</code> on the
 catalog host. Unity Integration discovery currently exposes Delta tables and Unity views. Table
@@ -1871,6 +1889,14 @@ authority has to be removed there: that fixture is copied to a bucket deliberate
 <code>COMPOSE_SMOKE_LOCALSTACK_BUCKETS</code>, which the scenario asserts rather than assumes. Its upstream
 namespace has two levels, so the URL uses the <code>%1F</code> separator the gateway's own <code>/v1/config</code>
 advertises.</p>
+<p>The Delta Sharing scenario runs beside them, against a recipient endpoint served by
+<code>docker/delta-sharing/stub_server.py</code>. It is a stub rather than the reference server because no
+published <code>deltaio/delta-sharing-server</code> image implements directory access: that landed upstream in
+March 2026 and the last image tag is from April 2024. It serves the same Delta fixture from a third
+bucket, also absent from <code>COMPOSE_SMOKE_LOCALSTACK_BUCKETS</code>, and records every request it answered so
+the scenario can assert the share was actually asked for credentials rather than inferring it from a
+check that passed. It finishes with the same gateway <code>loadTable</code> check, and separately asserts that a
+recipient token the share does not accept fails validation.</p>
 <p>Authentication types and their properties are:</p>
 <table>
 <thead>
@@ -1915,6 +1941,11 @@ properties instead of silently dropping them.</p>
 Polaris, <code>warehouse=&lt;catalog-name&gt;</code> selects the upstream catalog without putting a query parameter in
 the base URI. Updating properties replaces the complete map; passing <code>--props</code> with no values clears
 it.</p>
+<p>For Delta Sharing, supported properties are <code>http.connect.ms</code>, <code>http.read.ms</code>,
+<code>delta.sharing.strict-access-modes</code>, <code>delta.sharing.reader-features</code>, <code>s3.region</code>, <code>s3.endpoint</code>,
+<code>client.region</code>, and <code>s3.path-style-access</code>. The S3 properties route reads of credentials the share
+vends; they do not supply storage credentials. <code>s3.endpoint</code> is held to the same rule as Unity's,
+below, for the same reason: a Delta Sharing vend also carries an AWS session token.</p>
 <p>For Unity Catalog, supported properties are <code>http.connect.ms</code>, <code>http.read.ms</code>,
 <code>unity.temporary-table-vend-path</code>, <code>s3.region</code>, <code>s3.endpoint</code>, and <code>s3.path-style-access</code>. The S3
 properties route validation of credentials vended by Unity; they do not supply storage credentials.

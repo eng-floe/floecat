@@ -537,6 +537,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#account-assignment" class="md-nav__link">
+    <span class="md-ellipsis">
+      Account Assignment
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#builtin-catalog-service" class="md-nav__link">
     <span class="md-ellipsis">
       Builtin Catalog Service
@@ -549,15 +558,6 @@
   <a href="#gc-and-bootstrap" class="md-nav__link">
     <span class="md-ellipsis">
       GC and Bootstrap
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#pod-drain-and-ownership-handoff" class="md-nav__link">
-    <span class="md-ellipsis">
-      Pod drain and ownership handoff
     </span>
   </a>
   
@@ -1963,6 +1963,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#account-assignment" class="md-nav__link">
+    <span class="md-ellipsis">
+      Account Assignment
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#builtin-catalog-service" class="md-nav__link">
     <span class="md-ellipsis">
       Builtin Catalog Service
@@ -1975,15 +1984,6 @@
   <a href="#gc-and-bootstrap" class="md-nav__link">
     <span class="md-ellipsis">
       GC and Bootstrap
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#pod-drain-and-ownership-handoff" class="md-nav__link">
-    <span class="md-ellipsis">
-      Pod drain and ownership handoff
     </span>
   </a>
   
@@ -2127,9 +2127,10 @@ query lifecycle / scan bundle logic.</p>
 <li><code>catalog/builtin</code> – Shared builtin catalog data model, validator, and loader helpers.</li>
 <li><code>service/query</code> – Query lifecycle management (<code>QueryContext</code>, <code>QueryContextStore</code>,
   <code>QueryServiceImpl</code>).</li>
-<li><code>service/metagraph</code> – MetadataGraph runtime (façade, loader, resolvers, hint manager, topology
-  views); immutable node models live in <code>core/metagraph</code>, assembled relation metadata lives in
-  <code>ObjectCache</code>, and pointer plus disk-blob cache adapters live in <code>service/repo/cache/</code> (see
+<li><code>service/metagraph</code> – MetadataGraph runtime (façade, loader, resolvers, and per-engine hint
+  persistence); the immutable node models live in <code>core/metagraph</code>, assembled metadata and
+  decoded hints are held by <code>ObjectCache</code> and <code>HintCache</code>, and pointer/disk-blob adapters live in
+  <code>service/repo/cache/</code> (see
   <a href="../metadata-graph/"><code>docs/metadata-graph.md</code></a> and <a href="../caching/"><code>docs/caching.md</code></a>).</li>
 <li><code>service/gc</code> – Scheduled cleanup for idempotency records, orphan pointers/blobs, stale transaction
   artifacts, and durable reconcile jobs.</li>
@@ -2447,6 +2448,43 @@ so <code>CloseScan</code> is best-effort but still recommended to tidy server re
 currently reports <code>DeleteRef.all_deletes=true</code>; finer-grain delete references will come later once the
 applicability logic is defined. The lease data (snapshots, expansion map, obligations) is returned to
 the caller inside the <code>QueryDescriptor</code>.</p>
+<h3 id="account-assignment">Account Assignment<a class="headerlink" href="#account-assignment" title="Permanent link">&para;</a></h3>
+<p><code>AccountAssignment</code> decides which accounts this process serves. In the default <code>standalone</code> mode
+every account is served and GC-allowed and nothing below applies. In <code>managed</code> mode Core pushes each
+process its complete assignment through the internal <code>AccountAssignmentControl</code> service
+(<code>ApplyAssignment</code>, <code>GetAssignmentStatus</code>; permission <code>account-assignment-control.internal</code>):
+an epoch, the epoch's phase (<code>DRAINING</code> or <code>SERVING</code>), the owned account ids and the subset that
+may run GC. The phase describes the epoch and is pushed unchanged to every process; whether this
+process serves an account is per account.
+Floecat never calls Core or another Floecat. An apply is rejected when <code>target_incarnation</code> is not
+this process, when the epoch is older than the applied one, or when an equal epoch changes the
+account set or moves <code>SERVING -&gt; DRAINING</code>.</p>
+<p>For an owned account the process admits pins and mutations under a permit and reads from the
+planning pointer index. For a non-owned account reads fall through to the durable store and
+<code>BeginQuery</code>, pin resolution and mutations fail with <code>FAILED_PRECONDITION</code> whose message carries
+<code>floecat.not_assigned</code>; <code>RenewQuery</code> and <code>EndQuery</code> for contexts the process already holds keep
+working. Entering <code>SERVING</code> takes the account's fence pointer <code>assignment-fence/&lt;account&gt;</code> by CAS
+to an <code>owned</code> marker and writes the member index <code>assignments/&lt;member&gt;</code>, both in the background;
+from then on every account-scoped write carries <code>CasCheck(fence, remembered_version)</code>
+(<code>AssignmentFence</code>, wired once beneath <code>IndexedPointerStore</code>), so a previous owner's next write
+fails its condition. The fence is separate from the account-deletion fence, which keeps its own
+shards and its existing deletion-in-progress error. A fence self-check (one consistent read of the
+fence pointer per owned account) runs on every GC permit and every
+<code>floecat.account-assignment.self-check-interval</code>; a mismatch drains the account — it stops admitting
+work and drops its index at once, but keeps the fence version so writes already admitted fail their
+condition rather than committing unconditioned — and a sweep that cannot reach the store fences pins
+and writes on every owned account until one succeeds. At
+startup the process restores the accounts whose fence still names its member id, <code>SERVING</code> but
+never GC-allowed. <code>none</code> mode serves reads only.</p>
+<p>Pointer GC needs no fence of its own: every delete it makes is a pointer CAS through the fenced
+store. CAS blob GC deletes objects the store cannot condition, so it revalidates its permit before
+each delete.</p>
+<p><code>GET /internal/drain</code> reports the process status; <code>GET|POST /internal/drain?wait=true[&amp;timeoutMs=N]</code>
+moves the process to draining and returns <code>200</code> once active mutations and resolutions are zero,
+<code>202</code> at the timeout. Draining is irreversible for the life of the process, so the mutating form is
+refused with <code>403</code> unless the caller is pod-local: the <code>preStop</code> hook reaches it on loopback and
+nothing drains a pod remotely. Reporting status stays open. The shutdown observer applies the same
+drain when the hook never arrived.</p>
 <h3 id="builtin-catalog-service">Builtin Catalog Service<a class="headerlink" href="#builtin-catalog-service" title="Permanent link">&para;</a></h3>
 <p><code>SystemObjectsLoader</code> reads immutable builtin catalogs (<code>&lt;engine_kind&gt;.pb[pbtxt]</code>) from the
 configured location, caches them by engine kind, and exposes them through
@@ -2462,10 +2500,9 @@ its whole chain, so pinned blobs stay readable for the query's lifetime. Deletes
 30 s min-age (<code>floecat.gc.cas.min-age-ms</code>, age since the blob was written), and any failed
 root-chain walk poisons the account's delete phase — the referenced set is untrustworthy, so
 nothing is deleted that pass (fail closed). CAS GC is disabled by default because query pin roots
-are process-local. In managed multi-replica mode, Core assigns each account to one Floecat
-incarnation and the local authority admits CAS GC only for that owner; enable
-<code>FLOECAT_GC_CAS_ENABLED=true</code> only with that ownership controller and keep it disabled on
-standalone multi-replica deployments. A retained account continuation is abandoned after
+are process-local. In a multi-replica deployment, enable <code>FLOECAT_GC_CAS_ENABLED=true</code> on exactly
+one designated control-plane replica only when all live query contexts are visible to that replica;
+otherwise leave it disabled. A retained account continuation is abandoned after
 <code>floecat.gc.cas.max-consecutive-continuation-ticks</code> so one large account cannot starve every other
 account; raise that bound if the oldest-sweep-age metric shows a large account repeatedly restarting.
 Snapshot compatibility artifacts under <code>snapshots/&lt;id&gt;/compat/</code> are gateway-managed mutable
@@ -2481,21 +2518,6 @@ retention-oriented GC, not a queue repair or index rebuild loop. <code>SeedRunne
 when <code>floecat.seed.enabled=true</code>.</p>
 <p>For connector-backed fixture tables, seeding runs a combined reconcile pass per fixture scope
 using <code>METADATA_AND_CAPTURE</code>.</p>
-<h3 id="pod-drain-and-ownership-handoff">Pod drain and ownership handoff<a class="headerlink" href="#pod-drain-and-ownership-handoff" title="Permanent link">&para;</a></h3>
-<p>Before a managed pod is restarted or removed, the deployment lifecycle hook calls
-<code>GET /internal/drain?wait=true</code>. The endpoint closes local account admission, revokes new GC
-admissions, and waits for already-admitted resolutions, mutations, GC permits, and query pin roots
-to retire. HTTP <code>200</code> with <code>drained=true</code> is normal completion; <code>202</code> means the caller must keep
-the pod alive and poll again. The deployment has a bounded cancellation/retry boundary for
-pathological work, and Core waits for the old pod to disappear before releasing its ownership
-fence. A local shutdown observer starts the same drain fence if the kubelet cannot reach the HTTP
-hook. A plain <code>GET /internal/drain</code> is a read-only status probe and <code>POST /internal/drain</code> is the
-explicit management-controller form. The endpoint never writes the KV store and is restricted to
-the internal management path by the production mesh policy.</p>
-<p>Core performs the account-level handoff over the existing ownership RPC: it drains the old owner,
-restarts only queries that have not started spooling, waits for the Floecat ownership status to
-report <code>drained</code>, then enables the new owner and its GC permit. Standalone OSS deployments keep
-the same local drain implementation without requiring Core.</p>
 <p>This ingests metadata/snapshots and runs capture through the reconcile job tree for stats.
 Query scan bundles remain available immediately; stats availability follows queued capture completion.
 Follow-up payloads use reconcile scoped stats requests
@@ -2564,6 +2586,22 @@ rows upserted after all batches have been consumed.</p>
 <tr>
 <td><code>floecat.catalog.bundle.max_parallel_stats_warms</code></td>
 <td>Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to <code>16</code>; clamped to <code>&gt;= 1</code>.</td>
+</tr>
+<tr>
+<td><code>floecat.account-assignment.mode</code></td>
+<td><code>standalone</code> (default), <code>managed</code>, or <code>none</code>; see Account Assignment.</td>
+</tr>
+<tr>
+<td><code>floecat.account-assignment.member-id</code></td>
+<td>Stable process identity across restarts; required in <code>managed</code> (<code>FLOECAT_MEMBER_ID</code>).</td>
+</tr>
+<tr>
+<td><code>floecat.account-assignment.self-check-interval</code></td>
+<td>Background fence self-check period in <code>managed</code> (<code>PT10S</code>).</td>
+</tr>
+<tr>
+<td><code>floecat.account-assignment.drain-timeout-ms</code></td>
+<td>Default wait of <code>/internal/drain?wait=true</code> and of the shutdown drain (<code>110000</code>).</td>
 </tr>
 <tr>
 <td><code>floecat.gc.idempotency.*</code></td>
