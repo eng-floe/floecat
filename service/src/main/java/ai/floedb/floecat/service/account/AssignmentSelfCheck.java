@@ -24,7 +24,7 @@ import jakarta.inject.Singleton;
 
 /**
  * Background fence self-check for managed mode: batched consistent reads of the fence pointer of
- * each owned account every {@code floecat.account-ownership.self-check-interval}.
+ * each owned account every {@code floecat.account-assignment.self-check-interval}.
  */
 @ApplicationScoped
 public class AssignmentSelfCheck {
@@ -32,7 +32,7 @@ public class AssignmentSelfCheck {
   @Inject AccountAssignment assignment;
 
   @Scheduled(
-      every = "{floecat.account-ownership.self-check-interval}",
+      every = "{floecat.account-assignment.self-check-interval}",
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = NotManaged.class)
   void sweep() {

@@ -83,7 +83,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
         case "none" -> NONE;
         default ->
             throw new IllegalArgumentException(
-                "floecat.account-ownership.mode must be standalone, managed or none: "
+                "floecat.account-assignment.mode must be standalone, managed or none: "
                     + configured);
       };
     }
@@ -236,10 +236,10 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
     this(
         Mode.parse(
             config
-                .getOptionalValue("floecat.account-ownership.mode", String.class)
+                .getOptionalValue("floecat.account-assignment.mode", String.class)
                 .orElse("standalone")),
         config
-            .getOptionalValue("floecat.account-ownership.member-id", String.class)
+            .getOptionalValue("floecat.account-assignment.member-id", String.class)
             .map(String::trim)
             .orElse(""),
         null,
@@ -261,7 +261,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
     this.memberId = memberId == null ? "" : memberId;
     if (mode == Mode.MANAGED && this.memberId.isBlank()) {
       throw new IllegalArgumentException(
-          "floecat.account-ownership.member-id is required in managed mode");
+          "floecat.account-assignment.member-id is required in managed mode");
     }
     this.incarnation =
         incarnation != null
@@ -1104,7 +1104,7 @@ public class AccountAssignment implements PlanningPointerIndex.Ownership {
   private void requireManaged() {
     if (mode != Mode.MANAGED) {
       throw new IllegalStateException(
-          "account assignment control requires floecat.account-ownership.mode=managed");
+          "account assignment control requires floecat.account-assignment.mode=managed");
     }
   }
 
