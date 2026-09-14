@@ -86,6 +86,11 @@ This lists all metrics currently available in the repository:
 | floecat.service.metadata_io.admission.waiters | GAUGE | count | v1 | Threads waiting for metadata-I/O admission. | component, operation | component, operation |
 | floecat.service.metadata_io.permits.capacity | GAUGE | count | v1 | Configured process-wide metadata-I/O concurrency ceiling. | component, operation | component, operation |
 | floecat.service.metadata_io.permits.in_use | GAUGE | count | v1 | Metadata-I/O admission permits held by in-flight store calls. | component, operation | component, operation |
+| floecat.service.planning.pointer.entries | GAUGE | count | v1 | Number of planner pointer entries resident in the authoritative in-memory index. | component, operation | component, operation |
+| floecat.service.planning.pointer.partitions | GAUGE | count | v1 | Number of planner pointer partitions by readiness state. | component, operation | component, operation, result |
+| floecat.service.planning.pointer.warm.errors.total | COUNTER |  | v1 | Planner pointer index warm-up failures. | component, operation | component, exception, operation, result |
+| floecat.service.planning.pointer.warm.latency | TIMER | ms | v1 | Planner pointer index warm-up latency. | component, operation, result | component, exception, operation, result |
+| floecat.service.planning.pointer.warm.starts.total | COUNTER |  | v1 | Planner pointer index warm-up attempts. | component, operation | component, operation |
 | floecat.service.reconcile.cancel_job.total | COUNTER |  | v1 | CancelReconcileJob request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.capture_now.total | COUNTER |  | v1 | CaptureNow request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
 | floecat.service.reconcile.errors.total | COUNTER |  | v1 | Errors recorded by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |

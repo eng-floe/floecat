@@ -640,6 +640,56 @@
     "allowedTags": ["component", "operation"]
   },
   {
+    "name": "floecat.service.planning.pointer.entries",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Number of planner pointer entries resident in the authoritative in-memory index.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
+    "name": "floecat.service.planning.pointer.partitions",
+    "type": "GAUGE",
+    "unit": "count",
+    "since": "v1",
+    "origin": "service",
+    "description": "Number of planner pointer partitions by readiness state.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation", "result"]
+  },
+  {
+    "name": "floecat.service.planning.pointer.warm.errors.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Planner pointer index warm-up failures.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.service.planning.pointer.warm.latency",
+    "type": "TIMER",
+    "unit": "ms",
+    "since": "v1",
+    "origin": "service",
+    "description": "Planner pointer index warm-up latency.",
+    "requiredTags": ["component", "operation", "result"],
+    "allowedTags": ["component", "exception", "operation", "result"]
+  },
+  {
+    "name": "floecat.service.planning.pointer.warm.starts.total",
+    "type": "COUNTER",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Planner pointer index warm-up attempts.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
     "name": "floecat.service.reconcile.cancel_job.total",
     "type": "COUNTER",
     "unit": "",
