@@ -44,6 +44,7 @@ import java.util.function.Supplier;
 /** The authoritative in-memory index for planner-visible pointer state. */
 public final class PlanningPointerIndex {
   private static final int PAGE_SIZE = 1_000;
+  private static final long LOAD_RETRY_PAUSE_NANOS = Duration.ofSeconds(5).toNanos();
   private static final String GLOBAL = "<account-directory>";
 
   enum Readiness {
@@ -118,8 +119,12 @@ public final class PlanningPointerIndex {
     this.warmObserver = java.util.Objects.requireNonNull(warmObserver, "warmObserver");
   }
 
+  // Every fallback below reads consistently. The index answers from memory when it is the
+  // authority for a key; reaching the store means it is not, and an answer that stands in for
+  // the authority has to be the settled one. Only the fallback pays -- the planner path it
+  // replaced never reads the store at all.
   Optional<Pointer> get(String key) {
-    return get(key, false);
+    return get(key, true);
   }
 
   Optional<Pointer> getConsistent(String key) {
@@ -152,7 +157,7 @@ public final class PlanningPointerIndex {
   }
 
   Map<String, Pointer> getBatch(List<String> keys) {
-    return getBatch(keys, false);
+    return getBatch(keys, true);
   }
 
   Map<String, Pointer> getBatchConsistent(List<String> keys) {
@@ -212,7 +217,7 @@ public final class PlanningPointerIndex {
   }
 
   List<Pointer> list(String prefix, int limit, String token, StringBuilder nextToken) {
-    return list(prefix, limit, token, nextToken, false);
+    return list(prefix, limit, token, nextToken, true);
   }
 
   List<Pointer> listConsistent(String prefix, int limit, String token, StringBuilder nextToken) {
@@ -266,7 +271,7 @@ public final class PlanningPointerIndex {
   }
 
   int count(String prefix) {
-    return count(prefix, false);
+    return count(prefix, true);
   }
 
   int countConsistent(String prefix) {
@@ -589,6 +594,14 @@ public final class PlanningPointerIndex {
   }
 
   private void warmPartition(String partitionKey, Partition partition) {
+    // Decide before announcing a warm. A paused partition is skipped under the lock below too,
+    // but reporting a start for a warm that will not attempt anything leaves an observation with
+    // no completion behind it -- reads keep scheduling these, so the gap grows for as long as the
+    // store stays unwell and looks like warms that never finished.
+    if (loadPaused(partition)) {
+      partition.warmScheduled.set(false);
+      return;
+    }
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
     if (permit.isEmpty()) {
       partition.warmScheduled.set(false);
@@ -602,12 +615,18 @@ public final class PlanningPointerIndex {
     try {
       // Ownership can be revoked after the task captured the partition but before it acquired the
       // write lock. Do not resurrect an image that the handoff already removed.
+      // No pause check here on purpose. It is checked before the start is announced; repeating
+      // it under the lock would let a pause that arrived while this task waited leave a start
+      // with no completion behind it -- the very gap the early check exists to close. At worst
+      // one attempt gets through and re-arms the pause when it fails.
       if (partitions.get(partitionKey) == partition && partition.readiness != Readiness.COMPLETE) {
         loadLocked(partitionKey, partition);
         loaded = true;
       }
     } catch (RuntimeException loadFailure) {
-      // A failed load is not a partial index. Keep it LOADING; a later read or mutation retries.
+      // A failed load is not a partial index. Keep it LOADING; a later read or mutation retries,
+      // once the pause has passed -- reads reach here too, and reads are the common case.
+      partition.loadRetryNotBeforeNanos = System.nanoTime() + LOAD_RETRY_PAUSE_NANOS;
       failure = loadFailure;
     } finally {
       partition.lock.writeLock().unlock();
@@ -784,13 +803,26 @@ public final class PlanningPointerIndex {
     }
   }
 
+  /** nanoTime's origin is unspecified and may be negative, so compare differences, never values. */
+  private static boolean loadPaused(Partition partition) {
+    return System.nanoTime() - partition.loadRetryNotBeforeNanos < 0;
+  }
+
   private void ensureLoadedWhileLocked(String name, Partition partition) {
-    if (partition.readiness != Readiness.COMPLETE && partitions.get(name) == partition) {
-      try {
-        loadLocked(name, partition);
-      } catch (RuntimeException ignored) {
-        // The durable mutation remains valid. A later read retries the complete load.
-      }
+    if (partition.readiness == Readiness.COMPLETE || partitions.get(name) != partition) {
+      return;
+    }
+    // A failed load leaves the caller's mutation valid, so the cheap thing is to carry on and
+    // let a later one retry. Without a pause that "later one" is the very next mutation, and a
+    // load that fails because the store is shedding load would have every mutation on the
+    // account re-run a full scan under this write lock -- feeding whatever caused the failure.
+    if (loadPaused(partition)) {
+      return;
+    }
+    try {
+      loadLocked(name, partition);
+    } catch (RuntimeException ignored) {
+      partition.loadRetryNotBeforeNanos = System.nanoTime() + LOAD_RETRY_PAUSE_NANOS;
     }
   }
 
@@ -844,6 +876,7 @@ public final class PlanningPointerIndex {
     private final ConcurrentHashMap<String, KeyLock> keyLocks = new ConcurrentHashMap<>();
     private final AtomicBoolean warmScheduled = new AtomicBoolean();
     private volatile Readiness readiness = Readiness.LOADING;
+    private volatile long loadRetryNotBeforeNanos = System.nanoTime();
   }
 
   private static final class KeyLock {

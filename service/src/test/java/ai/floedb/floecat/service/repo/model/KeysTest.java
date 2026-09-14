@@ -340,6 +340,15 @@ class KeysTest {
   }
 
   @Test
+  void theAccountRootPrefixIsPlanner() {
+    // The partition loader pages this prefix, so it has to classify as planner state; the load
+    // then filters each row. Untested until now, and the whole index rests on it.
+    assertEquals(
+        Keys.PointerNamespace.PLANNER, Keys.pointerNamespace(Keys.accountRootPrefix("acct")));
+    assertEquals(Keys.PointerNamespace.UNKNOWN, Keys.pointerNamespace(Keys.accountRootPrefix()));
+  }
+
+  @Test
   void operationalFamiliesStayOperational() {
     assertEquals(
         Keys.PointerNamespace.OPERATIONAL,

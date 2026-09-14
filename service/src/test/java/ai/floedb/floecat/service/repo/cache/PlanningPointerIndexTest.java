@@ -30,6 +30,65 @@ import org.junit.jupiter.api.Test;
 
 class PlanningPointerIndexTest {
   @Test
+  void aFailedPartitionLoadPausesBeforeItIsRetried() {
+    // Without a pause the next mutation re-runs the whole failing scan under the write lock, so
+    // a store shedding load gets one full account scan per mutation from every account at once.
+    FailingLoadStore durable = new FailingLoadStore();
+    IndexedPointerStore store = new IndexedPointerStore(durable, synchronousIndex(durable));
+    String key = Keys.tablePointerById("acct", "table");
+
+    for (int i = 0; i < 5; i++) {
+      store.compareAndSet(key, i, pointer(key, "s3://table/" + i));
+    }
+
+    assertThat(durable.loadAttempts.get()).as("one attempt, not one per mutation").isEqualTo(1);
+
+    // Reads reach the same load, and reads are the common case.
+    for (int i = 0; i < 5; i++) {
+      store.get(key);
+    }
+
+    assertThat(durable.loadAttempts.get()).as("one attempt, not one per read").isEqualTo(1);
+  }
+
+  @Test
+  void aPausedWarmAnnouncesNothingRatherThanAStartItNeverFinishes() {
+    FailingLoadStore durable = new FailingLoadStore();
+    AtomicInteger started = new AtomicInteger();
+    AtomicInteger finished = new AtomicInteger();
+    PlanningPointerIndex.WarmObserver observer =
+        new PlanningPointerIndex.WarmObserver() {
+          @Override
+          public void started(String partitionKey) {
+            started.incrementAndGet();
+          }
+
+          @Override
+          public void completed(String partitionKey, java.time.Duration duration) {
+            finished.incrementAndGet();
+          }
+
+          @Override
+          public void failed(String partitionKey, java.time.Duration duration, Throwable failure) {
+            finished.incrementAndGet();
+          }
+        };
+    PlanningPointerIndex index =
+        new PlanningPointerIndex(
+            durable, PlanningPointerIndex.Ownership.ALWAYS_OWNED, Runnable::run, observer);
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+
+    for (int i = 0; i < 5; i++) {
+      store.get(Keys.tablePointerById("acct", "table"));
+    }
+
+    // Equality alone proves nothing: the unpaused path announces five starts and five failures,
+    // which is also balanced. The property is that a skipped warm announces nothing at all.
+    assertThat(started.get()).as("only the attempt that ran should announce itself").isEqualTo(1);
+    assertThat(finished.get()).as("and it should finish").isEqualTo(1);
+  }
+
+  @Test
   void completeAccountIndexMakesMissingPlannerPointerAuthoritative() {
     CountingStore durable = new CountingStore();
     String present = Keys.tablePointerById("acct", "table");
@@ -373,6 +432,18 @@ class PlanningPointerIndexTest {
     return Pointer.newBuilder().setKey(key).setBlobUri(uri).build();
   }
 
+  /** Fails every partition load, counting the attempts. */
+  private static final class FailingLoadStore extends InMemoryPointerStore {
+    private final AtomicInteger loadAttempts = new AtomicInteger();
+
+    @Override
+    public synchronized List<Pointer> listPointersByPrefixConsistent(
+        String prefix, int limit, String token, StringBuilder next) {
+      loadAttempts.incrementAndGet();
+      throw new IllegalStateException("store is shedding load");
+    }
+  }
+
   private static final class CountingStore extends InMemoryPointerStore {
     private final AtomicInteger pointReads = new AtomicInteger();
     private final AtomicInteger batchReads = new AtomicInteger();
@@ -394,6 +465,13 @@ class PlanningPointerIndexTest {
     public synchronized Map<String, Pointer> getBatch(List<String> keys) {
       batchReads.incrementAndGet();
       return super.getBatch(keys);
+    }
+
+    // The index reads consistently whenever it falls back, so both arrive here.
+    @Override
+    public synchronized Map<String, Pointer> getBatchConsistent(List<String> keys) {
+      batchReads.incrementAndGet();
+      return super.getBatchConsistent(keys);
     }
 
     @Override
