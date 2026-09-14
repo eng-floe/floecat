@@ -328,7 +328,7 @@ the caller inside the `QueryDescriptor`.
 `AccountAssignment` decides which accounts this process serves. In the default `standalone` mode
 every account is served and GC-allowed and nothing below applies. In `managed` mode Core pushes each
 process its complete assignment through the internal `AccountAssignmentControl` service
-(`ApplyAssignment`, `GetAssignmentStatus`; permission `account-assignment-control.internal`):
+(`ApplyAssignment`, `GetAssignmentStatus`; permission `account-ownership-control.internal`):
 an epoch, the epoch's phase (`DRAINING` or `SERVING`), the owned account ids and the subset that
 may run GC. The phase describes the epoch and is pushed unchanged to every process; whether this
 process serves an account is per account.
