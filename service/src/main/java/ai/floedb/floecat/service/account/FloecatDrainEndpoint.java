@@ -33,9 +33,11 @@ import org.jboss.logging.Logger;
  *
  * <p>{@code GET /internal/drain} reports process status. {@code GET|POST /internal/drain?wait=true}
  * moves the process to draining and returns {@code 200} once active mutations and resolutions are
- * zero, or {@code 202} at the timeout. The kubelet reaches it on the pod address; through the mesh
- * an authorization policy restricts it to the management identities. The shutdown observer applies
- * the same drain when the hook never arrived.
+ * zero, or {@code 202} at the timeout. Draining is irreversible for the life of the process, so the
+ * mutating form is refused unless the caller is pod-local: the {@code preStop} hook reaches it on
+ * the loopback address and never crosses the mesh, and nothing else needs to drain a pod remotely.
+ * Reporting status stays open. The shutdown observer applies the same drain when the hook never
+ * arrived.
  */
 @ApplicationScoped
 public class FloecatDrainEndpoint {
@@ -44,7 +46,11 @@ public class FloecatDrainEndpoint {
   static final long MAX_TIMEOUT_MS = Duration.ofHours(1).toMillis();
   private static final long POLL_MILLIS = 25L;
 
-  record Request(String method, boolean awaitDrain, String timeoutMsParam) {}
+  record Request(String method, boolean awaitDrain, String timeoutMsParam, boolean podLocal) {
+    boolean mutating() {
+      return awaitDrain || "POST".equalsIgnoreCase(method);
+    }
+  }
 
   record Response(int status, String body) {}
 
@@ -76,7 +82,8 @@ public class FloecatDrainEndpoint {
         new Request(
             context.request().method().name(),
             Boolean.parseBoolean(context.request().getParam("wait")),
-            context.request().getParam("timeoutMs"));
+            context.request().getParam("timeoutMs"),
+            podLocal(context));
     if (!request.awaitDrain()) {
       respond(context, handle(request));
       return;
@@ -90,6 +97,9 @@ public class FloecatDrainEndpoint {
 
   /** Transport-free request handling; the HTTP route and the tests both go through here. */
   Response handle(Request request) {
+    if (request.mutating() && !request.podLocal()) {
+      return new Response(403, error("drain is pod-local"));
+    }
     if (!request.awaitDrain()) {
       if ("POST".equalsIgnoreCase(request.method())) {
         return respond(assignment.beginProcessDrain());
@@ -102,6 +112,16 @@ public class FloecatDrainEndpoint {
     }
     assignment.beginProcessDrain();
     return respond(awaitDrained(timeoutMs));
+  }
+
+  /** True for the loopback peer the {@code preStop} hook connects from. */
+  private static boolean podLocal(RoutingContext context) {
+    var address = context.request().remoteAddress();
+    if (address == null) {
+      return false;
+    }
+    String host = address.hostAddress();
+    return "127.0.0.1".equals(host) || "::1".equals(host) || "0:0:0:0:0:0:0:1".equals(host);
   }
 
   /** Parsed and clamped to {@code [0, MAX_TIMEOUT_MS]}; null when the parameter is malformed. */
