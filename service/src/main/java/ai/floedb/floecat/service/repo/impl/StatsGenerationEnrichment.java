@@ -47,6 +47,8 @@ import java.util.Set;
  *       (role, sketch_type) identity — the same identity the serving path matches on.
  *   <li><b>Sketches only.</b> Scalar fields (row counts, min/max, NDV estimates) come from the new
  *       capture and are authoritative; only immutable sketch payloads are carried forward.
+ *   <li><b>Same column identity only.</b> A sketch captured under a different schema identity
+ *       fingerprint is not valid evidence for the incoming generation.
  * </ul>
  */
 final class StatsGenerationEnrichment {
@@ -59,7 +61,11 @@ final class StatsGenerationEnrichment {
    */
   static TargetStatsRecord carrySketchesForward(
       TargetStatsRecord incoming, TargetStatsRecord previous) {
-    if (!incoming.hasScalar() || !previous.hasScalar()) {
+    if (!incoming.hasScalar()
+        || !previous.hasScalar()
+        || !incoming
+            .getColumnIdentityFingerprint()
+            .equals(previous.getColumnIdentityFingerprint())) {
       return incoming;
     }
     ScalarStats incomingScalar = incoming.getScalar();

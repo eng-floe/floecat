@@ -63,6 +63,15 @@ final class SnapshotPinResolver implements SnapshotPinLookup {
   }
 
   @Override
+  public Optional<String> pinnedColumnIdentityFingerprint(ResourceId tableId) {
+    QueryContext ctx = liveContext();
+    if (ctx == null) {
+      return Optional.empty();
+    }
+    return ctx.findTablePin(tableId, correlationId).map(pin -> pin.getColumnIdentityFingerprint());
+  }
+
+  @Override
   public Optional<PinnedConstraintsRef> pinnedConstraintsRef(ResourceId tableId) {
     QueryContext ctx = liveContext();
     if (ctx == null) {

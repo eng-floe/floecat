@@ -1609,6 +1609,39 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void enrichmentDoesNotCarrySketchesAcrossColumnIdentityFingerprints() {
+    long snapshotId = 4248L;
+    long columnId = 7L;
+    TargetStatsRecord previous =
+        TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                columnId,
+                ScalarStats.newBuilder()
+                    .setLogicalType("BIGINT")
+                    .setRowCount(1L)
+                    .addSketches(quantileSketch("stale"))
+                    .build(),
+                null)
+            .toBuilder()
+            .setColumnIdentityFingerprint("old-fingerprint")
+            .build();
+    TargetStatsRecord incoming =
+        TargetStatsRecords.columnRecord(
+                TABLE_ID,
+                snapshotId,
+                columnId,
+                ScalarStats.newBuilder().setLogicalType("BIGINT").setRowCount(2L).build(),
+                null)
+            .toBuilder()
+            .setColumnIdentityFingerprint("new-fingerprint")
+            .build();
+
+    assertThat(StatsGenerationEnrichment.carrySketchesForward(incoming, previous))
+        .isEqualTo(incoming);
+  }
+
+  @Test
   void publishingDraftGenerationCarriesSupersededSketchesIntoFinalAggregates() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());

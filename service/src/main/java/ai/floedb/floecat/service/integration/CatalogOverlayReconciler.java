@@ -1062,7 +1062,7 @@ public class CatalogOverlayReconciler {
   private static ColumnIdAlgorithm columnIdAlgorithm(String format) {
     return switch (tableFormat(format)) {
       case TF_ICEBERG -> ColumnIdAlgorithm.CID_FIELD_ID;
-      case TF_DELTA -> ColumnIdAlgorithm.CID_PATH_ORDINAL;
+      case TF_DELTA -> ColumnIdAlgorithm.CID_CANONICAL_MAP;
       default -> throw new IllegalArgumentException("Unsupported upstream table format=" + format);
     };
   }
