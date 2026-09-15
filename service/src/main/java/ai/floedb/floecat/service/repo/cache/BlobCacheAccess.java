@@ -20,6 +20,7 @@ import ai.floedb.floecat.cache.BlobCache;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import java.nio.ByteBuffer;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -125,7 +126,7 @@ public final class BlobCacheAccess {
             });
     Map<String, BlobCache.Content> byUri = new LinkedHashMap<>();
     content.forEach((key, body) -> byUri.put(uriByKey.get(key), body));
-    return new Contents(byUri);
+    return new Contents(byUri, content.values());
   }
 
   public Contents referencedContents(
@@ -165,15 +166,21 @@ public final class BlobCacheAccess {
         result.put(entry.getKey().getKey(), body);
       }
     }
-    return new Contents(result);
+    // Close what was fetched, not what the result map kept. The result is keyed by pointer key
+    // while the fetch is keyed by cache key, so two pointers sharing a pointer key would drop one
+    // body out of the map -- and an unclosed mapped body pins its arena and its file for good.
+    return new Contents(result, content.values());
   }
 
   /** A batch whose buffers remain valid only until the batch is closed. */
   public static final class Contents implements AutoCloseable {
     private final Map<String, BlobCache.Content> content;
+    private final List<BlobCache.Content> fetched;
 
-    private Contents(Map<String, BlobCache.Content> content) {
+    private Contents(
+        Map<String, BlobCache.Content> content, Collection<BlobCache.Content> fetched) {
       this.content = Map.copyOf(content);
+      this.fetched = List.copyOf(fetched);
     }
 
     public Set<String> keys() {
@@ -189,6 +196,7 @@ public final class BlobCacheAccess {
     public void close() {
       Set<BlobCache.Content> unique =
           java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+      unique.addAll(fetched);
       unique.addAll(content.values());
       unique.forEach(BlobCache.Content::close);
     }

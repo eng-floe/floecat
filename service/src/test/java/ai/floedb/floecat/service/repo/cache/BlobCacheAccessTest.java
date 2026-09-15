@@ -34,6 +34,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -269,5 +270,46 @@ class BlobCacheAccessTest {
       }
       return Arrays.copyOfRange(bytes, Math.toIntExact(offset), Math.toIntExact(offset) + length);
     }
+  }
+
+  @Test
+  void everyFetchedBodyIsClosedEvenWhenTwoPointersShareAPointerKey() {
+    // The result map is keyed by pointer key, the fetch by cache key. A pointer key reused for
+    // two blob URIs drops one body out of that map, and an unclosed mapped body pins its arena
+    // and keeps its file undeletable for the life of the process.
+    var delegate = new CountingBlobStore();
+    String firstUri = "/accounts/a/first-object";
+    String secondUri = "/accounts/a/second-object";
+    delegate.put(firstUri, new byte[] {1, 2, 3}, "application/octet-stream");
+    delegate.put(secondUri, new byte[] {4, 5, 6}, "application/octet-stream");
+    var disk =
+        new DiskBlobCache(
+            tempDir.resolve("shared-key"), 1024 * 1024, 1, Duration.ZERO, BlobCacheEvents.none());
+    var access = new BlobCacheAccess(disk);
+
+    String sharedKey = "/accounts/a/tables/t/table";
+    List<Pointer> sharing =
+        List.of(pointer(sharedKey, firstUri, 1L), pointer(sharedKey, secondUri, 2L));
+    Function<List<String>, Map<String, byte[]>> loader =
+        uris -> {
+          Map<String, byte[]> loaded = new java.util.LinkedHashMap<>();
+          for (String uri : uris) {
+            byte[] body = delegate.get(uri);
+            if (body != null) {
+              loaded.put(uri, body);
+            }
+          }
+          return loaded;
+        };
+
+    // The cold fetch serves the loaded bytes from heap; the warm one maps them off disk.
+    access.referencedContents(sharing, BlobCache.Fill.FILL, ignored -> true, loader).close();
+
+    try (BlobCacheAccess.Contents warm =
+        access.referencedContents(sharing, BlobCache.Fill.FILL, ignored -> true, loader)) {
+      assertThat(disk.liveMappings()).isEqualTo(2);
+    }
+
+    assertThat(disk.liveMappings()).as("a fetched body was never closed").isZero();
   }
 }
