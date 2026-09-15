@@ -1237,7 +1237,7 @@ public class PlannerStatsBundleService {
             // right bytes and logs nothing, so the warning below now fires on a miss rather than
             // on every read. This leg reports no repair either way -- unlike the table and
             // snapshot legs, which enqueue through PinnedReadContract.
-            constraintRepository.getByBlobUri(pinnedRef.get().uri());
+            constraintRepository.getByBlobUri(tableId, pinnedRef.get().uri());
         if (bundle.isEmpty()) {
           // The pin froze a bundle ref whose blob is no longer retrievable: pinned blobs are
           // GC-rooted for the query's lifetime, so this is a broken invariant, never client state.

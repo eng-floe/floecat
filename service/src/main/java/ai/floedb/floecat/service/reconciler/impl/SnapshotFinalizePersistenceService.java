@@ -29,6 +29,8 @@ import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -129,17 +131,25 @@ public class SnapshotFinalizePersistenceService {
   public long persistStats(List<TargetStatsRecord> records) {
     long processed = 0L;
     List<TargetStatsRecord> canonical = canonicalize(records);
-    LinkedHashSet<TableSnapshot> touched = new LinkedHashSet<>();
+    LinkedHashMap<TableSnapshot, List<TargetStatsRecord>> touched = new LinkedHashMap<>();
     for (TargetStatsRecord record : canonical) {
       statsStore.putTargetStats(record);
+      // Invalidate after each durable write: if a later record fails, the successful prefix must
+      // not remain cached under the live view.
       statsOrchestrator.invalidateStatsCache(
           record.getTableId(), record.getSnapshotId(), record.getTarget());
-      touched.add(new TableSnapshot(record.getTableId(), record.getSnapshotId()));
+      touched
+          .computeIfAbsent(
+              new TableSnapshot(record.getTableId(), record.getSnapshotId()),
+              ignored -> new ArrayList<>())
+          .add(record);
       processed++;
     }
     // The first put on a snapshot may have created its active generation; the commit no-ops when
     // the root already carries the generation's ref.
-    for (TableSnapshot pair : touched) {
+    for (var entry : touched.entrySet()) {
+      TableSnapshot pair = entry.getKey();
+      List<TargetStatsRecord> persisted = List.copyOf(entry.getValue());
       commitGenerationToRoot(pair.tableId(), pair.snapshotId());
     }
     return processed;
@@ -148,10 +158,11 @@ public class SnapshotFinalizePersistenceService {
   private record TableSnapshot(ResourceId tableId, long snapshotId) {}
 
   /** Record the snapshot's (possibly new or removed) active stats generation on the table root. */
-  private void commitGenerationToRoot(ResourceId tableId, long snapshotId) {
-    if (rootWriter != null) {
-      rootWriter.commitStatsGeneration(tableId, snapshotId);
+  private String commitGenerationToRoot(ResourceId tableId, long snapshotId) {
+    if (rootWriter == null) {
+      return "";
     }
+    return rootWriter.commitStatsGeneration(tableId, snapshotId).orElse("");
   }
 
   public long persistEmptySnapshotCompletionMarker(

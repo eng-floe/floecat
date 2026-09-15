@@ -48,18 +48,15 @@ final class CacheFixtures {
     return cache(maxBytes, CacheEvents.none());
   }
 
-  /**
-   * A cache over any value type, for tests about weighing, the fence, or a value with another
-   * shape.
-   */
+  /** A cache over any value type, for tests about weighing or a value with another shape. */
   static <V> CaffeineMemoryCache<String, V> cacheForAnyValue(CacheEvents events) {
     return new CaffeineMemoryCache<>(
-        CacheFamily.POINTER, AMPLE_BUDGET, CacheFixtures::keyWeight, events);
+        CacheFamily.OBJECT, AMPLE_BUDGET, CacheFixtures::keyWeight, events);
   }
 
   static MemoryCache<String, Versioned> cache(long maxBytes, CacheEvents events) {
     return new CaffeineMemoryCache<>(
-        CacheFamily.POINTER, maxBytes, CacheFixtures::keyWeight, events);
+        CacheFamily.OBJECT, maxBytes, CacheFixtures::keyWeight, events);
   }
 
   /**

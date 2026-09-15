@@ -21,10 +21,10 @@ import java.util.concurrent.atomic.LongAdder;
 
 /**
  * The single in-flight telemetry tally for one GetUserObjects request: every phase timer plus every
- * found/not-found and cache counter. The request-level instance lives on the driver; each parallel
- * build task keeps its own instance that the driver folds back in via {@link #mergeFrom} once the
- * task has joined. Every slot is a {@link LongAdder}, so concurrent selection updates, driver
- * updates, and per-task merges are lock-free and thread-safe.
+ * found/not-found counter. The request-level instance lives on the driver; each parallel build task
+ * keeps its own instance that the driver folds back in via {@link #mergeFrom} once the task has
+ * joined. Every slot is a {@link LongAdder}, so concurrent selection updates, driver updates, and
+ * per-task merges are lock-free and thread-safe.
  */
 final class TimingAccumulator {
   private final LongAdder statsLookupNanos = new LongAdder();
@@ -52,10 +52,6 @@ final class TimingAccumulator {
   private final LongAdder foundCount = new LongAdder();
   private final LongAdder notFoundCount = new LongAdder();
   private final LongAdder defaultCatalogLookups = new LongAdder();
-  private final LongAdder nameResolutionCacheHits = new LongAdder();
-  private final LongAdder nameResolutionCacheMisses = new LongAdder();
-  private final LongAdder nodeResolutionCacheHits = new LongAdder();
-  private final LongAdder nodeResolutionCacheMisses = new LongAdder();
 
   void addStatsLookupNanos(long nanos) {
     statsLookupNanos.add(nanos);
@@ -181,22 +177,6 @@ final class TimingAccumulator {
     defaultCatalogLookups.increment();
   }
 
-  void recordNameCacheHit() {
-    nameResolutionCacheHits.increment();
-  }
-
-  void recordNameCacheMiss() {
-    nameResolutionCacheMisses.increment();
-  }
-
-  void recordNodeCacheHit() {
-    nodeResolutionCacheHits.increment();
-  }
-
-  void recordNodeCacheMiss() {
-    nodeResolutionCacheMisses.increment();
-  }
-
   long resolveNanos() {
     return resolveNanos.sum();
   }
@@ -257,10 +237,6 @@ final class TimingAccumulator {
     foundCount.add(other.foundCount.sum());
     notFoundCount.add(other.notFoundCount.sum());
     defaultCatalogLookups.add(other.defaultCatalogLookups.sum());
-    nameResolutionCacheHits.add(other.nameResolutionCacheHits.sum());
-    nameResolutionCacheMisses.add(other.nameResolutionCacheMisses.sum());
-    nodeResolutionCacheHits.add(other.nodeResolutionCacheHits.sum());
-    nodeResolutionCacheMisses.add(other.nodeResolutionCacheMisses.sum());
   }
 
   /** Write the request summary using the diagnostics contract documented for GetUserObjects. */
@@ -296,13 +272,6 @@ final class TimingAccumulator {
     diagnostics.nanos(
         "hint_persist", decoratePersistRelationNanos.sum() + decoratePersistColumnsNanos.sum());
     diagnostics.put("default_catalog_lookups", defaultCatalogLookups.sum());
-    diagnostics.put("name_cache_hits", nameResolutionCacheHits.sum());
-    diagnostics.put("name_cache_misses", nameResolutionCacheMisses.sum());
-    diagnostics.put("node_cache_hits", nodeResolutionCacheHits.sum());
-    diagnostics.put("node_cache_misses", nodeResolutionCacheMisses.sum());
-    diagnostics.put("name_cache_entries", ctx.nameCacheEntries());
-    diagnostics.put("node_cache_entries", ctx.nodeCacheEntries());
-    diagnostics.put("relation_cache_entries", ctx.relationCacheEntries());
     diagnostics.put("outcome", ctx.outcome());
     diagnostics.emit("floecat.get_user_objects.summary");
   }
@@ -317,7 +286,4 @@ record SummaryContext(
     double totalMs,
     double pinMs,
     double schedulingMs,
-    int nameCacheEntries,
-    int nodeCacheEntries,
-    int relationCacheEntries,
     String outcome) {}

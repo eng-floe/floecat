@@ -64,13 +64,6 @@ class TimingAccumulatorTest {
           "decorator_warm_hits",
           "hint_persist",
           "default_catalog_lookups",
-          "name_cache_hits",
-          "name_cache_misses",
-          "node_cache_hits",
-          "node_cache_misses",
-          "name_cache_entries",
-          "node_cache_entries",
-          "relation_cache_entries",
           "outcome");
 
   @Test
@@ -99,10 +92,6 @@ class TimingAccumulatorTest {
     a.recordFound();
     a.recordNotFound();
     a.recordDefaultCatalogLookup();
-    a.recordNameCacheHit();
-    a.recordNameCacheMiss();
-    a.recordNodeCacheHit();
-    a.recordNodeCacheMiss();
 
     TimingAccumulator b = new TimingAccumulator();
     b.addStatsLookupNanos(10);
@@ -128,10 +117,6 @@ class TimingAccumulatorTest {
     b.recordFound();
     b.recordNotFound();
     b.recordDefaultCatalogLookup();
-    b.recordNameCacheHit();
-    b.recordNameCacheMiss();
-    b.recordNodeCacheHit();
-    b.recordNodeCacheMiss();
 
     a.mergeFrom(b);
 
@@ -163,10 +148,6 @@ class TimingAccumulatorTest {
     assertThat(rec.get("not_found")).isEqualTo(2L);
     assertThat(rec.get("decorator_warm_hits")).isEqualTo(11L);
     assertThat(rec.get("default_catalog_lookups")).isEqualTo(2L);
-    assertThat(rec.get("name_cache_hits")).isEqualTo(2L);
-    assertThat(rec.get("name_cache_misses")).isEqualTo(2L);
-    assertThat(rec.get("node_cache_hits")).isEqualTo(2L);
-    assertThat(rec.get("node_cache_misses")).isEqualTo(2L);
   }
 
   @Test
@@ -197,14 +178,8 @@ class TimingAccumulatorTest {
     tally.recordFound();
     tally.recordNotFound();
     tally.recordDefaultCatalogLookup();
-    tally.recordNameCacheHit();
-    tally.recordNameCacheMiss();
-    tally.recordNameCacheMiss();
-    tally.recordNodeCacheHit();
-    tally.recordNodeCacheMiss();
 
-    SummaryContext ctx =
-        new SummaryContext("q-1", "corr-1", 5, 3, 12.5, 1.7, 0.4, 11, 13, 17, "completed");
+    SummaryContext ctx = new SummaryContext("q-1", "corr-1", 5, 3, 12.5, 1.7, 0.4, "completed");
 
     RecordingDiagnostics rec = new RecordingDiagnostics();
     tally.flushInto(rec, ctx);
@@ -220,9 +195,6 @@ class TimingAccumulatorTest {
     assertThat(rec.get("total_ms")).isEqualTo(12.5);
     assertThat(rec.get("pin_ms")).isEqualTo(1.7);
     assertThat(rec.get("scheduling_ms")).isEqualTo(0.4);
-    assertThat(rec.get("name_cache_entries")).isEqualTo(11L);
-    assertThat(rec.get("node_cache_entries")).isEqualTo(13L);
-    assertThat(rec.get("relation_cache_entries")).isEqualTo(17L);
     assertThat(rec.get("outcome")).isEqualTo("completed");
 
     // Tally-owned timers and counters.
@@ -248,10 +220,6 @@ class TimingAccumulatorTest {
     assertThat(rec.get("found")).isEqualTo(2L);
     assertThat(rec.get("not_found")).isEqualTo(1L);
     assertThat(rec.get("default_catalog_lookups")).isEqualTo(1L);
-    assertThat(rec.get("name_cache_hits")).isEqualTo(1L);
-    assertThat(rec.get("name_cache_misses")).isEqualTo(2L);
-    assertThat(rec.get("node_cache_hits")).isEqualTo(1L);
-    assertThat(rec.get("node_cache_misses")).isEqualTo(1L);
   }
 
   /**
@@ -271,7 +239,7 @@ class TimingAccumulatorTest {
   }
 
   private static SummaryContext context(String outcome) {
-    return new SummaryContext("q", "c", 0, 0, 0.0, 0.0, 0.0, 0, 0, 0, outcome);
+    return new SummaryContext("q", "c", 0, 0, 0.0, 0.0, 0.0, outcome);
   }
 
   /**

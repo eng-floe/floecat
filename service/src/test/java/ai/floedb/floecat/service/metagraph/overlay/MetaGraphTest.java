@@ -27,7 +27,6 @@ import static org.mockito.Mockito.*;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
@@ -36,11 +35,11 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
-import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph;
@@ -62,7 +61,6 @@ class MetaGraphTest {
   UserGraph user;
   SystemGraph system;
   MetaGraph meta;
-  LogicalSchemaMapper schemaMapper;
   EngineContext context;
 
   ResourceId sysTable =
@@ -84,20 +82,12 @@ class MetaGraphTest {
     user = mock(UserGraph.class);
     system = mock(SystemGraph.class);
 
-    schemaMapper =
-        new LogicalSchemaMapper() {
-          @Override
-          public SchemaDescriptor map(UserTableNode t) {
-            return SchemaDescriptor.getDefaultInstance();
-          }
-        };
-
     EngineContextProvider engine = mock(EngineContextProvider.class);
     context = EngineContext.of("engine", "1");
     when(engine.engineContext()).thenReturn(context);
     when(engine.isPresent()).thenReturn(true);
 
-    meta = new MetaGraph(user, schemaMapper, system, engine);
+    meta = new MetaGraph(user, ObjectCache.forTesting(), system, engine);
   }
 
   @AfterEach
@@ -821,7 +811,7 @@ class MetaGraphTest {
     EngineContextProvider engine = mock(EngineContextProvider.class);
     when(engine.isPresent()).thenReturn(false);
 
-    MetaGraph metaNoEngine = new MetaGraph(user, schemaMapper, system, engine);
+    MetaGraph metaNoEngine = new MetaGraph(user, ObjectCache.forTesting(), system, engine);
 
     NameRef ref = NameRef.newBuilder().setName("t").build();
     when(system.resolveTable(ref, EngineContext.empty())).thenReturn(Optional.empty());

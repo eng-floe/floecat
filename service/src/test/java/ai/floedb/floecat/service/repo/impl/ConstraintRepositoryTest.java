@@ -30,6 +30,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.IdempotencyInProgressException;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
@@ -86,6 +87,24 @@ class ConstraintRepositoryTest {
     assertTrue(repo.deleteSnapshotConstraints(tableId, 101L));
     assertTrue(repo.getSnapshotConstraints(tableId, 101L).isEmpty());
     assertEquals(0, repo.countSnapshotConstraints(tableId));
+  }
+
+  @Test
+  void decodedConstraintsAreSharedByImmutableContentIdentity() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    CountingBlobStore blobs = new CountingBlobStore();
+    ConstraintRepository constraints =
+        new ConstraintRepository(pointers, blobs, null, ObjectCache.forTesting());
+    SnapshotConstraints payload =
+        constraintsForSnapshot(
+            tableId, 102L, List.of(definition("pk_orders", ConstraintType.CT_PRIMARY_KEY)));
+    assertTrue(constraints.putSnapshotConstraints(tableId, 102L, payload));
+    blobs.gets.set(0);
+
+    assertTrue(constraints.getSnapshotConstraints(tableId, 102L).isPresent());
+    assertTrue(constraints.getSnapshotConstraints(tableId, 102L).isPresent());
+
+    assertEquals(1, blobs.gets.get());
   }
 
   @Test
@@ -553,6 +572,16 @@ class ConstraintRepositoryTest {
               .build());
     }
     return builder.build();
+  }
+
+  private static final class CountingBlobStore extends InMemoryBlobStore {
+    private final AtomicInteger gets = new AtomicInteger();
+
+    @Override
+    public byte[] get(String uri) {
+      gets.incrementAndGet();
+      return super.get(uri);
+    }
   }
 
   private static final class ConflictFirstBatchPointerStore

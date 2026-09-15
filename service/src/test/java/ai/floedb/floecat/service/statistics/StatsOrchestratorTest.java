@@ -43,6 +43,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -654,7 +655,14 @@ class StatsOrchestratorTest {
       TableRepository tableRepository,
       StatsSyncCapture syncCapture) {
     return new StatsOrchestrator(
-        statsStore, jobStore, tableRepository, connectorRepositoryWith(), syncCapture, true, null);
+        statsStore,
+        jobStore,
+        tableRepository,
+        connectorRepositoryWith(),
+        syncCapture,
+        ObjectCache.forTesting(),
+        true,
+        null);
   }
 
   private static ConnectorRepository connectorRepositoryWith() {
@@ -746,7 +754,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void resolvePlannerBatch_firstCallHitsDynamoDB_secondCallHitsCache() {
+  void resolvePlannerBatch_liveFactsAreReadThrough() {
     StatsStore store = Mockito.mock(StatsStore.class);
     ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
     TableRepository tableRepo = Mockito.mock(TableRepository.class);
@@ -765,11 +773,11 @@ class StatsOrchestratorTest {
     assertThat(result1.get(storageId).stats()).isPresent().contains(rec);
     verify(store, Mockito.times(1)).getTargetStatsBatch(any(), anyLong(), any());
 
-    // Second call (same snapshot): served from cache, store NOT called again.
+    // Live/newest stats have no immutable generation identity, so the second call reads through.
     Map<String, StatsResolutionResult> result2 =
         o.resolvePlannerBatch(List.of(req), Long.MAX_VALUE);
     assertThat(result2.get(storageId).stats()).isPresent().contains(rec);
-    verify(store, Mockito.times(1)).getTargetStatsBatch(any(), anyLong(), any()); // still 1
+    verify(store, Mockito.times(2)).getTargetStatsBatch(any(), anyLong(), any());
   }
 
   @Test
@@ -1113,6 +1121,171 @@ class StatsOrchestratorTest {
     // Pinned generation lacks the target, so the newest generation backstops before capture.
     assertThat(r.hasStats()).isTrue();
     assertThat(r.stats().get().getTable().getRowCount()).isEqualTo(3L);
+  }
+
+  @Test
+  void pinnedTableFactsDoNotRetainAMutableFallbackUnderThePinnedKey() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+    TargetStatsRecord first = record(request);
+    TargetStatsRecord replacement =
+        first.toBuilder().setTable(first.getTable().toBuilder().setRowCount(19L)).build();
+    when(store.getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), "gen-pinned", request.target()))
+        .thenThrow(new IllegalStateException("frozen manifest unavailable"));
+    when(store.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.of(first), Optional.of(replacement));
+
+    assertThat(
+            orchestrator
+                .resolveTableFactsInGeneration(request, Optional.of("gen-pinned"), true)
+                .orElseThrow()
+                .rowCount())
+        .hasValue(7L);
+    assertThat(
+            orchestrator
+                .resolveTableFactsInGeneration(request, Optional.of("gen-pinned"), true)
+                .orElseThrow()
+                .rowCount())
+        .hasValue(19L);
+
+    verify(store, Mockito.times(2))
+        .getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), "gen-pinned", request.target());
+    verify(store, Mockito.times(2))
+        .getTargetStats(request.tableId(), request.snapshotId(), request.target());
+  }
+
+  @Test
+  void liveTableFactsAreNotCachedWithoutAGenerationIdentity() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+    TargetStatsRecord first = record(request);
+    TargetStatsRecord replacement =
+        first.toBuilder().setTable(first.getTable().toBuilder().setRowCount(19)).build();
+    when(store.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.of(first), Optional.of(replacement));
+
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(7L);
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(19L);
+    verify(store, Mockito.times(2))
+        .getTargetStats(request.tableId(), request.snapshotId(), request.target());
+  }
+
+  @Test
+  void historicalTableFactsReadThroughWithoutDisplacingCurrentMetadata() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+    TargetStatsRecord first = record(request);
+    TargetStatsRecord replacement =
+        first.toBuilder().setTable(first.getTable().toBuilder().setRowCount(19)).build();
+    when(store.getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), "historical", request.target()))
+        .thenReturn(Optional.of(first), Optional.of(replacement));
+
+    assertThat(
+            orchestrator
+                .resolveTableFactsInGeneration(request, Optional.of("historical"), false)
+                .orElseThrow()
+                .rowCount())
+        .hasValue(7L);
+    assertThat(
+            orchestrator
+                .resolveTableFactsInGeneration(request, Optional.of("historical"), false)
+                .orElseThrow()
+                .rowCount())
+        .hasValue(19L);
+
+    verify(store, Mockito.times(2))
+        .getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), "historical", request.target());
+  }
+
+  @Test
+  void committedTableFactsAreReadThroughByTheirGenerationIdentity() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+    TargetStatsRecord first = record(request);
+    TargetStatsRecord replacement =
+        first.toBuilder().setTable(first.getTable().toBuilder().setRowCount(19)).build();
+    String generation = "generation-uri";
+    when(store.getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), generation, request.target()))
+        .thenReturn(Optional.of(first), Optional.of(replacement));
+
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.of(generation), true))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(7L);
+
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.of(generation), true))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(7L);
+    verify(store, Mockito.times(1))
+        .getTargetStatsInGeneration(
+            request.tableId(), request.snapshotId(), generation, request.target());
+  }
+
+  @Test
+  void wholeSnapshotReplacementWithoutTableFactsDoesNotRetainLiveFacts() {
+    StatsStore store = Mockito.mock(StatsStore.class);
+    StatsOrchestrator orchestrator =
+        orchestrator(
+            store,
+            Mockito.mock(ReconcileJobStore.class),
+            Mockito.mock(TableRepository.class),
+            Mockito.mock(StatsSyncCapture.class));
+    StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+    TargetStatsRecord first = record(request);
+    TargetStatsRecord replacement =
+        first.toBuilder().setTable(first.getTable().toBuilder().setRowCount(19)).build();
+    when(store.getTargetStats(request.tableId(), request.snapshotId(), request.target()))
+        .thenReturn(Optional.of(first), Optional.of(replacement));
+
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(7L);
+
+    orchestrator.invalidateStatsCache(request.tableId(), request.snapshotId());
+
+    assertThat(orchestrator.resolveTableFactsInGeneration(request, Optional.empty(), true))
+        .get()
+        .extracting(facts -> facts.rowCount().getAsLong())
+        .isEqualTo(19L);
+    verify(store, Mockito.times(2))
+        .getTargetStats(request.tableId(), request.snapshotId(), request.target());
   }
 
   /**

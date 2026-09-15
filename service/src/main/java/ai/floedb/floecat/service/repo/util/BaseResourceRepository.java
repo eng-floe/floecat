@@ -259,6 +259,19 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   /**
+   * Resolve one ordinary read pointer while a higher-level object cache owns decoded content.
+   * Pointer selection, the authoritative retry after a vanished blob, and dangling-pointer
+   * detection remain centralized in this repository.
+   */
+  protected final Optional<T> readThrough(
+      String key, Function<String, Optional<T>> decodedBodyReader) {
+    Objects.requireNonNull(decodedBodyReader, "decodedBodyReader");
+    BiFunction<String, String, Optional<T>> reader =
+        (ignoredPointerKey, blobUri) -> decodedBodyReader.apply(blobUri);
+    return readResolved(key, pointerReads, reader, reader);
+  }
+
+  /**
    * Resolve one pointer with the selected read capability, loading its referenced blob through
    * {@code blobLoader}. A blob-cache hit skips the loader, so the selected boundary holds for the
    * POINTER; the body then comes from the decoded cache rather than the seam this was called with,
@@ -272,6 +285,22 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
     RepositoryReads.Pointers pointers = reads.pointers();
     BiFunction<String, String, Optional<T>> blobLoader =
         (pointerKey, blobUri) -> loadAndParseReferencedBlob(pointerKey, blobUri, reads.blobs());
+    BiFunction<String, String, Optional<T>> firstReader =
+        (pointerKey, blobUri) ->
+            blobCacheable()
+                ? ReusableArtifactBundleUris.isBundleUri(blobUri)
+                    ? blobCache.getProjection(
+                        blobUri, pointerKey, ignored -> blobLoader.apply(pointerKey, blobUri))
+                    : blobCache.get(blobUri, ignored -> blobLoader.apply(pointerKey, blobUri))
+                : blobLoader.apply(pointerKey, blobUri);
+    return readResolved(key, pointers, firstReader, blobLoader);
+  }
+
+  private Optional<T> readResolved(
+      String key,
+      RepositoryReads.Pointers pointers,
+      BiFunction<String, String, Optional<T>> firstReader,
+      BiFunction<String, String, Optional<T>> freshReader) {
     var pointerStoreOpt = pointers.get(key);
     if (pointerStoreOpt.isEmpty()) {
       return Optional.empty();
@@ -279,18 +308,14 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
     var pointer = pointerStoreOpt.get();
     String blobUri = requireBlobReference(pointer, key);
-    Optional<T> loaded =
-        blobCacheable()
-            ? ReusableArtifactBundleUris.isBundleUri(blobUri)
-                ? blobCache.getProjection(blobUri, key, ignored -> blobLoader.apply(key, blobUri))
-                : blobCache.get(blobUri, ignored -> blobLoader.apply(key, blobUri))
-            : blobLoader.apply(key, blobUri);
+    Optional<T> loaded = firstReader.apply(key, blobUri);
     if (loaded.isPresent()) {
       return loaded;
     }
     // The pointed-at blob is absent: the pointer moved under us, or it genuinely dangles. One
     // place decides, past the cache, and resolves the moved case rather than reporting absence.
-    return reloadAfterVanishedBlob(key, fresh -> blobLoader.apply(key, fresh.getBlobUri()))
+    return reloadAfterVanishedBlob(
+            key, fresh -> freshReader.apply(key, requireBlobReference(fresh, key)))
         .map(Reloaded::value);
   }
 
