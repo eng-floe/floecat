@@ -260,6 +260,23 @@ public final class ObjectCache {
         loader);
   }
 
+  /**
+   * A resident target-stat record, or empty. Unlike {@link #targetStats} this runs no loader and
+   * records nothing. The caller is asking whether a record is resident; only it knows whether what
+   * comes back is complete enough to serve, and PlannerStatsResolver records the hit where that is
+   * decided. Counting one here would claim a hit for records it goes on to reload.
+   */
+  public Optional<TargetStatsRecord> peekTargetStats(
+      ResourceId tableId, long snapshotId, String generationIdentity, String storageId) {
+    if (!enabled) {
+      return Optional.empty();
+    }
+    return entries
+        .peek(targetStatsKey(tableId, snapshotId, generationIdentity, storageId))
+        .map(Value::value)
+        .map(TargetStatsRecord.class::cast);
+  }
+
   /** Evict all target-stat records for one table snapshot after a successful mutation. */
   public void evictTargetStats(ResourceId tableId, long snapshotId) {
     entries.evictPartition(

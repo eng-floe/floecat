@@ -384,13 +384,11 @@ final class PlannerStatsResolver {
     if (generationToken == null || generationToken.isBlank()) {
       return null;
     }
+    // A probe, not a lookup: peek so a resident-or-not check is not recorded as a miss with a
+    // near-zero load time, which would skew the very metrics used to judge this cache.
     return objects
-        .targetStats(
-            request.tableId(),
-            request.snapshotId(),
-            generationToken,
-            storageId(request),
-            Optional::empty)
+        .peekTargetStats(
+            request.tableId(), request.snapshotId(), generationToken, storageId(request))
         .orElse(null);
   }
 

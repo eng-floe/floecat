@@ -29,6 +29,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
@@ -450,5 +451,44 @@ class ObjectCacheTest {
 
   private static ResourceId resource(String accountId, String id, ResourceKind kind) {
     return ResourceId.newBuilder().setAccountId(accountId).setId(id).setKind(kind).build();
+  }
+
+  @Test
+  void peekingDoesNotRecordALookup() {
+    // A probe asks "is this resident"; counting it as a lookup skews the hit rate and pulls the
+    // load-time distribution toward zero -- the metrics used to judge whether this cache earns
+    // its heap share.
+    java.util.concurrent.atomic.AtomicInteger hits =
+        new java.util.concurrent.atomic.AtomicInteger();
+    java.util.concurrent.atomic.AtomicInteger misses =
+        new java.util.concurrent.atomic.AtomicInteger();
+    CacheEvents counting =
+        new CacheEvents() {
+          @Override
+          public void hit(java.time.Duration elapsed) {
+            hits.incrementAndGet();
+          }
+
+          @Override
+          public void miss() {
+            misses.incrementAndGet();
+          }
+        };
+    ObjectCache cache = new ObjectCache(1024 * 1024, counting, true);
+    ResourceId table = ResourceId.newBuilder().setAccountId("acct").setId("t").build();
+
+    assertThat(cache.peekTargetStats(table, 7L, "gen", "target")).isEmpty();
+    assertThat(misses).hasValue(0);
+    assertThat(hits).hasValue(0);
+
+    cache.targetStats(
+        table, 7L, "gen", "target", () -> Optional.of(TargetStatsRecord.getDefaultInstance()));
+    assertThat(misses).hasValue(1);
+
+    // Still nothing recorded: whether a resident record counts as a hit depends on completeness,
+    // which only the caller knows, and PlannerStatsResolver records it there.
+    assertThat(cache.peekTargetStats(table, 7L, "gen", "target")).isPresent();
+    assertThat(hits).as("a probe is not a lookup").hasValue(0);
+    assertThat(misses).as("and it loaded nothing").hasValue(1);
   }
 }
