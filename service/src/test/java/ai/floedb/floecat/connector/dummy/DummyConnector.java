@@ -17,6 +17,7 @@
 package ai.floedb.floecat.connector.dummy;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -148,7 +149,17 @@ public final class DummyConnector implements FloecatConnector {
     String schemaJson = describe(namespace, table).schemaJson();
     return List.of(
         new SnapshotBundle(
-            snapshotId, 0L, createdAt, schemaJson, null, 0L, null, Map.of(), 0, null));
+            snapshotId,
+            0L,
+            createdAt,
+            schemaJson,
+            null,
+            0L,
+            null,
+            Map.of(),
+            0,
+            null,
+            ColumnIdentityMap.getDefaultInstance()));
   }
 
   @Override
@@ -175,7 +186,8 @@ public final class DummyConnector implements FloecatConnector {
               c.name,
               c.name, // physical path for nested refs in tests (dot-separated)
               c.ordinal, // stable 1-based ordinal for PATH_ORDINAL algorithms
-              c.colId // fieldId for Iceberg-style schemas
+              c.colId, // fieldId for Iceberg-style schemas
+              0L // no authoritative canonical identity map
               );
 
       cstats.add(
@@ -201,7 +213,8 @@ public final class DummyConnector implements FloecatConnector {
                     c.name,
                     c.name, // physical path for nested refs in tests (dot-separated)
                     c.ordinal, // stable 1-based ordinal for PATH_ORDINAL algorithms
-                    c.colId // fieldId for Iceberg-style schemas
+                    c.colId, // fieldId for Iceberg-style schemas
+                    0L // no authoritative canonical identity map
                     );
 
             cols.add(
@@ -284,7 +297,8 @@ public final class DummyConnector implements FloecatConnector {
       Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy) {
+      ColumnSelectorPolicy columnSelectorPolicy,
+      ColumnIdentityMap columnIdentityMap) {
     Set<String> effectivePaths =
         plannedFilePaths == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(plannedFilePaths));
     if (effectivePaths.isEmpty()) {

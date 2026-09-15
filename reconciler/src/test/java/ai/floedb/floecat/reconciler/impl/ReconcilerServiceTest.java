@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -1250,7 +1251,17 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+                42L,
+                0L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
 
       @Override
@@ -1451,7 +1462,17 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+                42L,
+                0L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
     }
 
@@ -1606,11 +1627,41 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         backend.capturedKnownSnapshotIds = options.knownSnapshotIds();
         return List.of(
             new SnapshotBundle(
-                42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null),
+                42L,
+                0L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()),
             new SnapshotBundle(
-                43L, 42L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null),
+                43L,
+                42L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()),
             new SnapshotBundle(
-                44L, 43L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+                44L,
+                43L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
     }
 
@@ -1751,9 +1802,29 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                201L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null),
+                201L,
+                0L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()),
             new SnapshotBundle(
-                202L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+                202L,
+                0L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
     }
 
@@ -2063,7 +2134,18 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
         return List.of(
-            new SnapshotBundle(201L, -1L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
+            new SnapshotBundle(
+                201L,
+                -1L,
+                createdAtMs,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
     }
 
@@ -2189,7 +2271,8 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                         null,
                         Map.of(),
                         0,
-                        null));
+                        null,
+                        ColumnIdentityMap.getDefaultInstance()));
               }
             };
 
@@ -2356,7 +2439,8 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                         null,
                         Map.of(),
                         0,
-                        null));
+                        null,
+                        ColumnIdentityMap.getDefaultInstance()));
               }
             };
 
@@ -2500,7 +2584,18 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
         return List.of(
-            new SnapshotBundle(501L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
+            new SnapshotBundle(
+                501L,
+                0L,
+                createdAtMs,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
 
       @Override
@@ -2650,7 +2745,18 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
         return List.of(
-            new SnapshotBundle(201L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
+            new SnapshotBundle(
+                201L,
+                0L,
+                createdAtMs,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
     }
 
@@ -2792,7 +2898,18 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
         return List.of(
-            new SnapshotBundle(201L, -1L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
+            new SnapshotBundle(
+                201L,
+                -1L,
+                createdAtMs,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
 
       @Override
@@ -2955,7 +3072,17 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                101L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+                101L,
+                0L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
 
       @Override
@@ -3087,7 +3214,17 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                102L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+                102L,
+                0L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
 
       @Override
@@ -3223,7 +3360,17 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                103L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+                103L,
+                0L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
 
       @Override
@@ -3356,7 +3503,17 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
           SnapshotEnumerationOptions options) {
         return List.of(
             new SnapshotBundle(
-                104L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
+                104L,
+                0L,
+                Instant.now().toEpochMilli(),
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
       }
 
       @Override

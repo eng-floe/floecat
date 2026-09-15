@@ -59,7 +59,8 @@ final class JavaConnectorFileGroupCaptureAdapter {
             request.indexColumns(),
             request.requestedStatsTargetKinds(),
             request.capturePageIndex(),
-            request.columnSelectorPolicy());
+            request.columnSelectorPolicy(),
+            request.columnIdentityMap());
     List<TargetStatsRecord> capturedFileStats =
         uniqueFileStats(captured.statsRecords(), publishedFileTargets);
     realizedStatsSelectors.addAll(captured.realizedStatsSelectors());
@@ -76,7 +77,8 @@ final class JavaConnectorFileGroupCaptureAdapter {
                         request.columnSelectorPolicy(),
                         new java.util.LinkedHashSet<>(request.plannedFilePaths()),
                         captured.pageIndexEntries(),
-                        captured.pageIndexRowGroups())
+                        captured.pageIndexRowGroups(),
+                        request.columnIdentityMap())
                     .orElseGet(
                         () ->
                             filterPageIndexEntries(
