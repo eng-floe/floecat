@@ -73,7 +73,13 @@ public final class CachingPointerStore implements PointerStore {
 
   @Override
   public Optional<Pointer> get(String key) {
-    return pointers.get(key);
+    ReentrantLock lock = mutationLock(key);
+    lock.lock();
+    try {
+      return pointers.get(key);
+    } finally {
+      lock.unlock();
+    }
   }
 
   /**
@@ -104,7 +110,13 @@ public final class CachingPointerStore implements PointerStore {
     if (keys == null || keys.isEmpty()) {
       return Map.of();
     }
-    return pointers.getBatch(keys);
+    int[] stripes = mutationStripesForKeys(keys);
+    lockMutations(stripes);
+    try {
+      return pointers.getBatch(keys);
+    } finally {
+      unlockMutations(stripes);
+    }
   }
 
   /** The authoritative batch view bypasses the cache and repairs every key it read. */
@@ -129,7 +141,12 @@ public final class CachingPointerStore implements PointerStore {
   @Override
   public List<Pointer> listPointersByPrefix(
       String prefix, int limit, String pageToken, StringBuilder nextTokenOut) {
-    return pointers.list(prefix, limit, pageToken, nextTokenOut);
+    lockAllMutations();
+    try {
+      return pointers.list(prefix, limit, pageToken, nextTokenOut);
+    } finally {
+      unlockAllMutations();
+    }
   }
 
   @Override
@@ -154,7 +171,12 @@ public final class CachingPointerStore implements PointerStore {
 
   @Override
   public int countByPrefix(String prefix) {
-    return pointers.count(prefix);
+    lockAllMutations();
+    try {
+      return pointers.count(prefix);
+    } finally {
+      unlockAllMutations();
+    }
   }
 
   @Override
