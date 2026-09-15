@@ -54,6 +54,37 @@ class FloecatDrainEndpointTest {
     return endpoint;
   }
 
+  /**
+   * Which requests start the irreversible drain, pinned as a matrix because the documented rule has
+   * been written three different ways and been wrong each time. A preStop hook is built from this.
+   */
+  @Test
+  void onlyTheseRequestsStartTheDrain() {
+    record Case(String method, String waitParam, String timeoutMs, boolean drains) {}
+    List<Case> cases =
+        List.of(
+            new Case("GET", null, null, false),
+            new Case("GET", null, "-1", false),
+            new Case("GET", "1", null, false),
+            new Case("GET", "yes", null, false),
+            new Case("GET", "true", null, true),
+            new Case("GET", "TRUE", null, true),
+            new Case("GET", "true", "soon", false),
+            new Case("POST", null, null, true),
+            new Case("POST", null, "-1", true),
+            new Case("POST", "true", "-1", false));
+
+    for (Case each : cases) {
+      FloecatDrainEndpoint endpoint = endpoint(managed());
+      endpoint.handle(
+          FloecatDrainEndpoint.request(each.method(), each.waitParam(), each.timeoutMs()));
+
+      assertThat(endpoint.assignment.status().processDraining())
+          .as("%s wait=%s timeoutMs=%s", each.method(), each.waitParam(), each.timeoutMs())
+          .isEqualTo(each.drains());
+    }
+  }
+
   private static Request request(String method, boolean wait, String timeoutMs) {
     return new Request(method, wait, timeoutMs);
   }

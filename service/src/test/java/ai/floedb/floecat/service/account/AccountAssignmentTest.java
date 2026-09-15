@@ -495,7 +495,6 @@ class AccountAssignmentTest {
     return raw.get(Keys.accountAssignmentFence(accountId)).map(Pointer::getBlobUri);
   }
 
-  /** A successor takes the account: the fence pointer moves to its marker. */
   @Test
   void anAccountHandedBackServesAgainWithoutWaitingOutItsDrain() {
     assignment.apply(5L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
@@ -513,6 +512,7 @@ class AccountAssignmentTest {
     inFlight.close();
   }
 
+  /** A successor takes the account: the fence pointer moves to its marker. */
   @Test
   void aReturningAccountIsRevokedWhenItsFenceMovedWhileDraining() {
     assignment.apply(5L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);

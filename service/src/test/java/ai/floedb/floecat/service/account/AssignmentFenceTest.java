@@ -249,10 +249,9 @@ class AssignmentFenceTest {
         PointerReferences.opaqueMarkerPointer(fenceKey, "owned/2/floecat-1", held + 1L));
     assignment.selfCheck();
 
-    // The control plane hands the account back. Draining because the fence was lost is not the same
-    // as
-    // draining because the control plane moved it: this process must not resume on a version it no
-    // longer owns.
+    // The control plane hands the account back. Draining because the fence was lost is not the
+    // same as draining because the control plane moved it: this process must not resume on a
+    // version it no longer owns.
     assignment.apply(3L, AssignmentPhase.SERVING, List.of(A), List.of(), INCARNATION);
     assertThat(assignment.status(A).mode()).isNotEqualTo(AccountMode.SERVING);
 
