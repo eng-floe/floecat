@@ -176,9 +176,12 @@ public final class HintCache {
                   ai.floedb.floecat.service.repo.util.GenericResourceRepository.ResourceWithMeta<
                       RelationHintsResource>>
               created = repository.create(merged, relation);
-          // An empty result means the relation changed while we were creating the hint resource.
-          // Re-read it and merge against the new version instead of silently dropping an advisory
-          // hint produced for a live relation.
+          // An unsatisfied condition, on either the hints pointer or the relation fence. Only
+          // the first is worth another attempt: the relation version is the one this call was
+          // given and is never re-read, so if that is what moved, every remaining attempt
+          // asserts the same dead version and fails the same way. Hints are advisory and the
+          // next decoration recomputes them, so the wasted attempts cost latency on one
+          // best-effort thread rather than correctness.
           if (created.isEmpty()) {
             continue;
           }
