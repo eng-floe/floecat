@@ -35,6 +35,8 @@ enum ColumnIdAlgorithm {
   CID_UNSPECIFIED = 0;
   CID_FIELD_ID = 1;
   CID_PATH_ORDINAL = 2;
+  // IDs are supplied by the snapshot's authoritative column identity map.
+  CID_CANONICAL_MAP = 3;
   CID_UNKNOWN = 50;
 }
 

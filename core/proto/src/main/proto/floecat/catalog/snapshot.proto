@@ -39,6 +39,45 @@ message Snapshot {
   int32 schema_id = 11;
   optional string metadata_location = 12;
   SnapshotReuseManifestRef reuse_manifest_ref = 13;
+  // Authoritative column identities for this source schema version. The fingerprint binds schema,
+  // capture, and reuse consumers to the exact same mapping.
+  ColumnIdentityMap column_identity_map = 14;
+  string column_identity_fingerprint = 15;
+}
+
+enum ColumnIdentityMode {
+  COLUMN_IDENTITY_MODE_UNSPECIFIED = 0;
+  COLUMN_IDENTITY_MODE_NATIVE_FIELD_ID = 1;
+  COLUMN_IDENTITY_MODE_STRUCTURED_PATH = 2;
+}
+
+enum ColumnIdentityPathElementKind {
+  COLUMN_IDENTITY_PATH_ELEMENT_KIND_UNSPECIFIED = 0;
+  COLUMN_IDENTITY_PATH_ELEMENT_KIND_FIELD = 1;
+  COLUMN_IDENTITY_PATH_ELEMENT_KIND_ARRAY_ELEMENT = 2;
+  COLUMN_IDENTITY_PATH_ELEMENT_KIND_MAP_KEY = 3;
+  COLUMN_IDENTITY_PATH_ELEMENT_KIND_MAP_VALUE = 4;
+}
+
+message ColumnIdentityPathElement {
+  ColumnIdentityPathElementKind kind = 1;
+  // Set only for FIELD elements. Collection-interior elements never carry a name.
+  string name = 2;
+}
+
+message ColumnIdentityEntry {
+  repeated ColumnIdentityPathElement path = 1;
+  optional int32 native_field_id = 2;
+  int64 column_id = 3;
+}
+
+message ColumnIdentityMap {
+  uint32 format_version = 1;
+  int64 source_version = 2;
+  int64 high_water_mark = 3;
+  ColumnIdentityMode mode = 4;
+  repeated ColumnIdentityEntry entries = 5;
+  string fingerprint = 6;
 }
 
 // System-owned reference to the compact artifact-reuse manifest produced when this snapshot's
@@ -118,6 +157,11 @@ message SnapshotSpec {
   map<string,string> summary = 10;
   optional int32 schema_id = 11;
   optional string metadata_location = 12;
+  // 13 is intentionally unused: Snapshot.reuse_manifest_ref occupies it, and holding the two
+  // messages on the same numbering keeps the spec/snapshot field mapping readable.
+  reserved 13;
+  ColumnIdentityMap column_identity_map = 14;
+  string column_identity_fingerprint = 15;
 }
 
 message CreateSnapshotRequest {
