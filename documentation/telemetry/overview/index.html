@@ -2106,7 +2106,7 @@ report, where they are needed to identify an unexpected read.</p>
 <ul>
 <li>The service sets <code>telemetry.strict</code> (true in <code>%dev</code>/<code>%test</code>, false in prod) so strict mode throws on contract violations while lenient mode only increments <code>floecat.core.observability.dropped.tags.total</code>.</li>
 <li>Observability instrumentation should never refer to Micrometer directly; only the extensions (e.g., <code>telemetry-hub-backend-micrometer</code>, <code>telemetry-hub-integration-quarkus</code>) need backend dependencies.</li>
-<li>Helpers and cache owners like <code>EngineHintManager</code>, <code>MetadataCaches</code>, and <code>StorageUsageMetrics</code> call into the hub’s <code>Observability</code> API and rely on the metric definitions described above.</li>
+<li>Helpers and cache owners like <code>MetadataCaches</code>, <code>HintCache</code>, and <code>StorageUsageMetrics</code> call into the hub’s <code>Observability</code> API and rely on the metric definitions described above.</li>
 </ul>
 <h2 id="backendexporter-behavior">Backend/exporter behavior<a class="headerlink" href="#backendexporter-behavior" title="Permanent link">&para;</a></h2>
 <ul>

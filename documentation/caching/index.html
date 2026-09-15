@@ -1951,7 +1951,7 @@ sizing harness use the same arithmetic.</p>
 </tr>
 <tr>
 <td><code>CacheFamily</code></td>
-<td>The independently budgeted in-memory families that use this module. Pointer planning state is not a <code>MemoryCache</code> family: it is a complete index with no eviction budget. <code>OBJECT</code> is the decoded metadata family; <code>HINT</code> is added when its layer lands. Disk blob caching has its own volume budget.</td>
+<td>The independently budgeted in-memory families that use this module. Pointer planning state is not a <code>MemoryCache</code> family: it is a complete index with no eviction budget. <code>OBJECT</code> is decoded metadata and <code>HINT</code> is decoded engine-specific metadata. Disk blob caching has its own volume budget.</td>
 </tr>
 <tr>
 <td><code>CacheBudget</code> / <code>CacheBudgetResolver</code></td>
