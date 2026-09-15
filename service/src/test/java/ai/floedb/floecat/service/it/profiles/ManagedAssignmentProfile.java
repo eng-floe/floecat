@@ -19,7 +19,7 @@ package ai.floedb.floecat.service.it.profiles;
 import io.quarkus.test.junit.QuarkusTestProfile;
 import java.util.Map;
 
-/** Managed account assignment: nothing is served until Core pushes an assignment. */
+/** Managed account assignment: nothing is served until the control plane pushes an assignment. */
 public class ManagedAssignmentProfile implements QuarkusTestProfile {
   @Override
   public Map<String, String> getConfigOverrides() {

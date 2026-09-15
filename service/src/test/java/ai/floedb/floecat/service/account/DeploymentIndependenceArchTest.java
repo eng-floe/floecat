@@ -42,7 +42,7 @@ class DeploymentIndependenceArchTest {
           () ->
               kubernetes
                   + " is on Floecat's classpath. Which accounts this process serves comes from"
-                  + " Core, not from the cluster; put anything that needs Kubernetes in"
+                  + " the control plane, not from the cluster; put anything that needs Kubernetes in"
                   + " floecat-runtime.");
     }
   }

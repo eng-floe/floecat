@@ -56,15 +56,16 @@ import org.jboss.logging.Logger;
 /**
  * Which accounts this process serves, and the permits gating pins, mutations and GC on them.
  *
- * <p>Core pushes complete assignments through {@link #apply}; nothing here calls out. The only KV
- * writes are taking an account's fence and recording the member index, both when it enters {@code
- * SERVING} and both off the request path. {@link AssignmentFence} carries the fence version on
- * every account-scoped write, so the store is what enforces exclusivity.
+ * <p>The control plane pushes complete assignments through {@link #apply}; nothing here calls out.
+ * The only KV writes are taking an account's fence and recording the member index, both when it
+ * enters {@code SERVING} and both off the request path. {@link AssignmentFence} carries the fence
+ * version on every account-scoped write, so the store is what enforces exclusivity.
  *
  * <p>{@code standalone} behaves exactly like {@link PlanningPointerIndex.Ownership#ALWAYS_OWNED}.
  */
 @ApplicationScoped
-public class AccountAssignment implements AccountScope, PlanningPointerIndex.Ownership {
+public class AccountAssignment
+    implements AccountScope, AssignmentControl, PlanningPointerIndex.Ownership {
 
   private static final Logger LOG = Logger.getLogger(AccountAssignment.class);
   private static final int CONSISTENT_READ_BATCH = 100;
@@ -87,59 +88,6 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
                 "floecat.account-assignment.mode must be standalone, managed or none: "
                     + configured);
       };
-    }
-  }
-
-  public enum AccountMode {
-    UNASSIGNED,
-    SERVING,
-    DRAINING
-  }
-
-  public enum AssignmentPhase {
-    DRAINING,
-    SERVING
-  }
-
-  public record AccountStatus(
-      String accountId,
-      AccountMode mode,
-      boolean gcAllowed,
-      long activeResolutions,
-      long activeMutations,
-      long activeGc,
-      String pointerIndexState) {
-    public boolean drained() {
-      return activeResolutions == 0L && activeMutations == 0L;
-    }
-  }
-
-  public record Status(
-      String memberId,
-      String incarnation,
-      long epoch,
-      AssignmentPhase phase,
-      boolean recoveredFromStore,
-      boolean processDraining,
-      List<AccountStatus> accounts) {
-    public boolean drained() {
-      return accounts.stream().allMatch(AccountStatus::drained);
-    }
-
-    public long activeResolutions() {
-      return accounts.stream().mapToLong(AccountStatus::activeResolutions).sum();
-    }
-
-    public long activeMutations() {
-      return accounts.stream().mapToLong(AccountStatus::activeMutations).sum();
-    }
-
-    public long activeGc() {
-      return accounts.stream().mapToLong(AccountStatus::activeGc).sum();
-    }
-
-    public Optional<AccountStatus> account(String accountId) {
-      return accounts.stream().filter(status -> status.accountId().equals(accountId)).findFirst();
     }
   }
 
@@ -327,6 +275,7 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
     return mode;
   }
 
+  @Override
   public boolean managed() {
     return mode == Mode.MANAGED;
   }
@@ -436,12 +385,11 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
   // ---------------------------------------------------------------------------------------------
 
   /**
-   * Applies one complete assignment from Core. Rejects a wrong incarnation and a lower epoch; an
-   * equal epoch is accepted only when it repeats the current account set and does not move {@code
-   * SERVING -> DRAINING}. Fencing joining accounts and writing the member index run in the
-   * background; the returned status shows joining accounts as {@code UNASSIGNED} until the fence
-   * commits.
+   * Fencing joining accounts and writing the member index run in the background, so the returned
+   * status shows joining accounts as {@code UNASSIGNED} until the fence commits. The contract,
+   * including every rejection, is on {@link AssignmentControl#apply}.
    */
+  @Override
   public Status apply(
       long epoch,
       AssignmentPhase phase,
@@ -529,10 +477,10 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
             }
             case DRAINING -> {
               if (phase == AssignmentPhase.SERVING && !state.fenceLost) {
-                // Core wants it back. Resume on the remembered fence rather than wait out the
-                // drain: waiting would hold the account out of service for as long as its
+                // The control plane wants it back. Resume on the remembered fence rather than
+                // wait out the drain: waiting would hold the account out of service as long as its
                 // longest in-flight query, and forever if a permit is never closed. But
-                // fenceLost only records having been told, and nobody tells a pod that Core
+                // fenceLost only records having been told, and nobody tells a pod the control plane
                 // declared vanished, so prove the fence against the store as soon as the locks
                 // are free -- a moved one revokes there, in a round trip rather than a
                 // self-check interval.
@@ -570,6 +518,7 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
     return status();
   }
 
+  @Override
   public Status status() {
     List<String> accountIds;
     long currentEpoch;
@@ -649,6 +598,7 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
           : OptionalLong.of(state.fenceVersion);
     }
   }
+
 
   // ---------------------------------------------------------------------------------------------
   // Process drain
@@ -1072,7 +1022,7 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
    * the remembered fence version has to outlive in-flight writes so they fail their {@code
    * CasCheck} against the moved fence. Clearing it here would drop the check instead, letting a
    * write commit unfenced while the new owner serves, and would hide the in-flight work from {@link
-   * #status()} so Core could open {@code SERVING} elsewhere while it runs.
+   * #status()} so the control plane could open {@code SERVING} elsewhere while it runs.
    */
   private void revoke(String accountId, String reason) {
     AccountState state = accounts.get(accountId);
@@ -1103,8 +1053,8 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
 
   private void unassignLocked(String accountId, AccountState state, List<Runnable> afterLock) {
     // An apply that could not be honoured yet — the account was still draining a fence it had
-    // lost — survives the clear, so the take happens now instead of waiting for Core to repeat
-    // itself. A revoke on its own never sets this, so losing the fence is not a reason to race
+    // lost — survives the clear, so the take happens now instead of waiting for the control plane
+    // to repeat itself. A revoke never sets this, so losing the fence is not a reason to race
     // the process that took it.
     boolean wanted = state.pending;
     // A revoke has already dropped the local image; firing again would be a second forget.

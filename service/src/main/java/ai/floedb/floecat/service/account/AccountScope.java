@@ -26,8 +26,8 @@ import java.util.Optional;
  *
  * <p>The answer is a decision, never a computation: it does not depend on where the process is
  * deployed, how many replicas exist, or how accounts hash onto them. {@link AccountAssignment}
- * answers it from the assignment Core pushed and is the only implementation; a deployment that
- * decided differently would bind its own without touching a single caller.
+ * answers it from the assignment its control plane pushed and is the only implementation; a
+ * deployment that decided differently would bind its own without touching a single caller.
  *
  * <p>Permission only. How a write is then held to the account — the store fence and the version it
  * carries — is Floecat's own business and stays off this interface, so an implementation decides

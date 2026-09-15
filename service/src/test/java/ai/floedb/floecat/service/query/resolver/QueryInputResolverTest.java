@@ -35,6 +35,7 @@ import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AssignmentControl;
 import ai.floedb.floecat.service.concurrent.UninterruptibleBlocker;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
@@ -275,7 +276,7 @@ public class QueryInputResolverTest {
         AccountAssignment.managedForTesting(
             "m", "m/inc", new InMemoryPointerStore(), new TestObservability());
     assignment.apply(
-        1L, AccountAssignment.AssignmentPhase.SERVING, List.of("acct-x"), List.of(), "m/inc");
+        1L, AssignmentControl.AssignmentPhase.SERVING, List.of("acct-x"), List.of(), "m/inc");
     var blockingGraph = new NonInterruptiblePinGraph("SLOW");
     var store = org.mockito.Mockito.mock(QueryContextStore.class);
     var fenced =
@@ -319,9 +320,9 @@ public class QueryInputResolverTest {
     assertEquals(0L, assignment.status("acct-x").activeResolutions());
     var drained =
         assignment.apply(
-            2L, AccountAssignment.AssignmentPhase.DRAINING, List.of(), List.of(), "m/inc");
+            2L, AssignmentControl.AssignmentPhase.DRAINING, List.of(), List.of(), "m/inc");
     assertEquals(
-        AccountAssignment.AccountMode.UNASSIGNED, drained.account("acct-x").orElseThrow().mode());
+        AssignmentControl.AccountMode.UNASSIGNED, drained.account("acct-x").orElseThrow().mode());
   }
 
   private static ResourceId ownedRid(String accountId, String id) {

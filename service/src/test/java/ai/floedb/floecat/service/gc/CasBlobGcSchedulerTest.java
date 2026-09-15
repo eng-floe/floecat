@@ -32,6 +32,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.account.AccountScope;
+import ai.floedb.floecat.service.account.AssignmentControl;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
@@ -134,10 +135,11 @@ class CasBlobGcSchedulerTest {
     AccountAssignment assignment =
         AccountAssignment.managedForTesting(
             "m", "m/inc", new InMemoryPointerStore(), observability);
-    // acct-a is GC-allowed, acct-b is owned but gated by Core, acct-c is not owned here.
+    // acct-a is GC-allowed, acct-b is owned but gated by the control plane, acct-c is not owned
+    // here.
     assignment.apply(
         1L,
-        AccountAssignment.AssignmentPhase.SERVING,
+        AssignmentControl.AssignmentPhase.SERVING,
         List.of("acct-a", "acct-b"),
         List.of("acct-a"),
         "m/inc");
@@ -173,7 +175,7 @@ class CasBlobGcSchedulerTest {
             "m", "m/inc", new InMemoryPointerStore(), observability);
     assignment.apply(
         1L,
-        AccountAssignment.AssignmentPhase.SERVING,
+        AssignmentControl.AssignmentPhase.SERVING,
         List.of("acct-a", "acct-b"),
         List.of("acct-a", "acct-b"),
         "m/inc");
