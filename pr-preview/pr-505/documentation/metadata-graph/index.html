@@ -2170,9 +2170,11 @@ keeps them entirely in memory until FloeCAT restarts.</p>
 identity, and the content-addressed hint blob URI. A pointer move therefore selects a new decoded
 entry without invalidation, while a warm pointer and body lookup performs no store reads. The
 resource also records the relation blob URI whose metadata produced the payload; a mismatch is a
-safe miss and the runtime recomputes the hint. Legacy <code>engine.hint.*</code> relation properties remain a
-fallback during migration, but new writes never rewrite the relation blob. Builtin hints do not
-need this cache: <code>SystemNodeRegistry</code> already caches complete immutable engine-version snapshots.</p>
+safe miss and the runtime recomputes the hint. Hints are read only from this resource: relations
+still carrying <code>engine.hint.*</code> properties from before it existed are a miss, so the runtime
+re-derives and persists them on first use. New writes never rewrite the relation blob. Builtin
+hints do not need this cache: <code>SystemNodeRegistry</code> already caches complete immutable
+engine-version snapshots.</p>
 <h2 id="graph-apis">Graph APIs<a class="headerlink" href="#graph-apis" title="Permanent link">&para;</a></h2>
 <p>The <code>UserGraph</code> façade (CDI <code>@ApplicationScoped</code>, see <code>service/metagraph/overlay/user/UserGraph.java</code>)
 exposes the Metadata Graph APIs that higher layers call. Key methods:</p>
