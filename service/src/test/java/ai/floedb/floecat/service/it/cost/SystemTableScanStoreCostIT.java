@@ -60,11 +60,11 @@ import org.junit.jupiter.params.provider.CsvSource;
  * question is what its curve looks like.
  *
  * <p>The catalog is populated to a given table count and then scanned twice, so the second scan is
- * warm in whatever sense the running service is warm. The cost is then ASSERTED, as a constant
- * rather than a formula: zero KV round trips and one blob object at both catalog sizes, and no
- * listing. A scan resolves the catalog and does not pay per table, so a number that starts scaling
- * with the catalog is the regression this exists to catch. The rows are asserted too, because a
- * scan that returned nothing would touch few stores and report a flattering number.
+ * warm in whatever sense the running service is warm. The cost is then ASSERTED: zero KV round
+ * trips, zero blob-store reads, and no listing at both catalog sizes. A scan resolves the catalog
+ * and does not pay per table, so a number that starts scaling with the catalog is the regression
+ * this exists to catch. The rows are asserted too, because a scan that returned nothing would touch
+ * few stores and report a flattering number.
  */
 @QuarkusTest
 @TestProfile(StoreCostProfile.class)
@@ -179,9 +179,9 @@ class SystemTableScanStoreCostIT {
     // Asserted, like the resolution suite. This used to record without gating, because the
     // app-scoped caches are shared across the JVM and the same scan read one pointer alone and
     // twenty after a neighbour had evicted what it relied on. The profile now sizes those caches
-    // past anything a fixture creates, and the cost is flat: zero KV round trips and one S3 object,
-    // at both catalog sizes, alone and after the sibling suite. Flat and unasserted is the worst of
-    // both -- it looks like evidence and defends nothing.
+    // past anything a fixture creates, and the cost is zero at both catalog sizes, alone and after
+    // the sibling suite. Flat and unasserted is the worst of both -- it looks like evidence and
+    // defends nothing.
     //
     // A constant, not a formula: a system-table scan resolves the catalog and reads its root, and
     // does not pay per table in the catalog. That is the finding this suite exists to record, so a
@@ -196,9 +196,7 @@ class SystemTableScanStoreCostIT {
         reads.accountDirectoryRoundTrips(),
         "the scan pays only its fixed account-directory lookup");
     assertEquals(
-        1,
-        reads.blobObjectGets(),
-        "a system-table scan must not scale its blob reads with the catalog");
+        0, reads.blobObjectGets(), "a warm system-table scan must not reach the blob store");
     assertEquals(
         0, reads.blobHeads(), "a system-table scan must not probe the blob store per table");
 

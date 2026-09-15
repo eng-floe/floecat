@@ -13,6 +13,7 @@ import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
+import java.nio.ByteBuffer;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -25,6 +26,11 @@ public final class ReusableArtifactBundles {
   private ReusableArtifactBundles() {}
 
   public static ReusableArtifactBundlePayload parse(byte[] bytes)
+      throws InvalidProtocolBufferException {
+    return parse(ByteBuffer.wrap(bytes));
+  }
+
+  public static ReusableArtifactBundlePayload parse(ByteBuffer bytes)
       throws InvalidProtocolBufferException {
     ReusableArtifactBundlePayload payload = ReusableArtifactBundlePayload.parseFrom(bytes);
     if (payload.getFormatVersion() != FORMAT_VERSION) {

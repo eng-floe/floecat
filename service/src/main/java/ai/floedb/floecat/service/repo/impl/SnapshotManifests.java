@@ -282,7 +282,7 @@ public final class SnapshotManifests {
       }
       SnapshotManifestPage loaded =
           // Mutation chains (tableId set) run inside the commit funnel and read pages LIVE; the
-          // read one-shots (tableId null) serve content and stay on the decoded cache.
+          // read one-shots (tableId null) serve serialized content through the disk cache.
           (tableId != null ? roots.getManifestPageLive(ref) : roots.getManifestPage(ref))
               .orElseThrow(
                   () ->
@@ -314,11 +314,10 @@ public final class SnapshotManifests {
   /**
    * One-shot {@link Chain#findEntry}; reads need no table identity. The head page is probed first:
    * the hottest lookups (CURRENT, a recent AS_OF) match there, and serving them from one (cached)
-   * page read means a cold decoded cache never pays a full-chain build for them — a long-history
-   * table is hundreds of pages whose refs resolve serially, and that walk would land exactly on the
-   * latency-sensitive pin/planning path. Only a lookup that has to go deeper builds (and caches)
-   * the per-head {@code snapshotId → entry} index; when caching is off it falls back to the
-   * fail-closed page walk.
+   * page read means a cold process never pays a full-chain build for them — a long-history table is
+   * hundreds of pages whose refs resolve serially, and that walk would land exactly on the
+   * latency-sensitive pin/planning path. A lookup that has to go deeper follows the fail-closed
+   * page chain; the immutable pages themselves are served from the disk blob tier.
    */
   public static Optional<SnapshotManifestEntry> findEntry(
       TableRootRepository roots, BlobRef head, long snapshotId) {
@@ -334,10 +333,6 @@ public final class SnapshotManifests {
         }
       }
       // A missing head page falls through: the index build / page walk below fails closed on it.
-    }
-    var index = roots.manifestEntryIndex(head);
-    if (index != null) {
-      return Optional.ofNullable(index.get(snapshotId));
     }
     return chain(roots, null, head).findEntry(snapshotId);
   }

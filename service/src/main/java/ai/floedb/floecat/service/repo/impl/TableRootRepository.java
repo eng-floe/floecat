@@ -16,12 +16,12 @@
 
 package ai.floedb.floecat.service.repo.impl;
 
+import ai.floedb.floecat.cache.BlobCache;
 import ai.floedb.floecat.catalog.rpc.BlobRef;
-import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestPage;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
+import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -34,9 +34,7 @@ import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.InvalidProtocolBufferException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.Collections;
 import java.util.HashSet;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -56,15 +54,15 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
 
   private final PointerStore pointerStore;
   private final BlobStore blobStore;
-  // Nullable (tests): decoded-content cache for the immutable root blobs and manifest pages.
-  private final ImmutableBlobCache blobCache;
+  // Serialized-content cache for immutable root blobs and manifest pages.
+  private final BlobCacheAccess blobCache;
 
   public TableRootRepository(PointerStore pointerStore, BlobStore blobStore) {
-    this(pointerStore, pointerStore, blobStore, null);
+    this(pointerStore, pointerStore, blobStore, BlobCacheAccess.disabled());
   }
 
   public TableRootRepository(
-      PointerStore pointerStore, BlobStore blobStore, ImmutableBlobCache blobCache) {
+      PointerStore pointerStore, BlobStore blobStore, BlobCacheAccess blobCache) {
     this(pointerStore, pointerStore, blobStore, blobCache);
   }
 
@@ -73,7 +71,7 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
       PointerStore pointerStore,
       @CachedPointerStore PointerStore pointerReads,
       BlobStore blobStore,
-      ImmutableBlobCache blobCache) {
+      BlobCacheAccess blobCache) {
     super(
         pointerStore,
         pointerReads,
@@ -84,7 +82,7 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
         blobCache);
     this.pointerStore = pointerStore;
     this.blobStore = blobStore;
-    this.blobCache = blobCache;
+    this.blobCache = java.util.Objects.requireNonNull(blobCache, "blobCache");
   }
 
   /**
@@ -119,10 +117,8 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
     String sha = Hashing.sha256Hex(bytes);
     String uri = Keys.snapshotManifestBlobUri(accountId, tableId, sha);
     blobStore.put(uri, bytes, CONTENT_TYPE);
-    if (blobCache != null) {
-      // Write-through: the writer holds the decoded page; the next reader (often the same commit's
-      // read-back, or the first query after it) should not pay a cold fetch for content we have.
-      blobCache.put(uri, page);
+    if (blobCache.enabled()) {
+      blobCache.putImmutable(uri, bytes);
     }
     return BlobRef.newBuilder().setUri(uri).setVersion(sha).build();
   }
@@ -132,42 +128,19 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
     if (ref == null || ref.getUri().isEmpty()) {
       return Optional.empty();
     }
-    if (blobCache != null && blobCache.enabled()) {
-      return blobCache.get(ref.getUri(), this::loadManifestPage);
+    if (blobCache.enabled()) {
+      Optional<BlobCache.Content> content =
+          blobCache.immutable(
+              ref.getUri(), BlobCache.Fill.FILL, () -> loadManifestPageBytes(ref.getUri()));
+      if (content.isEmpty()) return Optional.empty();
+      try (BlobCache.Content body = content.orElseThrow()) {
+        return Optional.of(SnapshotManifestPage.parseFrom(body.buffer()));
+      } catch (InvalidProtocolBufferException e) {
+        throw new BaseResourceRepository.CorruptionException(
+            "manifest page parse failed: " + ref.getUri(), e);
+      }
     }
     return loadManifestPage(ref.getUri());
-  }
-
-  /**
-   * Read-path index of a manifest chain — {@code snapshotId → entry} — keyed by the chain's HEAD
-   * URI. The head is content-addressed and every next-page ref inside it is too, so the head URI
-   * pins the entire chain's content: the index is immutable and needs no invalidation. Built once
-   * per head by one page walk (through the decoded page cache); pin creation's per-query entry
-   * lookup becomes a map probe. Returns {@code null} when caching is off — callers fall back to the
-   * page walk, which also keeps the fail-closed missing-page behavior (the walk throws).
-   */
-  public Map<Long, SnapshotManifestEntry> manifestEntryIndex(BlobRef head) {
-    if (blobCache == null || !blobCache.enabled() || head == null || head.getUri().isEmpty()) {
-      return null;
-    }
-    // Probe-then-build-then-put, deliberately NOT a loading get: the build walks pages through
-    // this SAME cache (getManifestPage), and a nested compute inside a Caffeine compute is
-    // prohibited — a same-bin hash collision between the "#index" key and a page key would throw
-    // "Recursive update" or livelock, nondeterministically. A duplicate concurrent build is
-    // harmless (the index is deterministic and immutable); the pages themselves stay single-flight.
-    String indexKey = head.getUri() + "#index";
-    Map<Long, SnapshotManifestEntry> hit = blobCache.probe(indexKey);
-    if (hit != null) {
-      return hit;
-    }
-    Map<Long, SnapshotManifestEntry> index = new java.util.HashMap<>();
-    // forEachEntry walks through getManifestPage (decoded-cache-backed) and THROWS on a missing
-    // page — fail-closed manifest reads are preserved, and the failure is never cached.
-    SnapshotManifests.forEachEntry(this, head, e -> index.put(e.getSnapshotId(), e));
-    // The local map never leaks mutable; an unmodifiable VIEW avoids copying a wide index.
-    Map<Long, SnapshotManifestEntry> built = Collections.unmodifiableMap(index);
-    blobCache.put(indexKey, built);
-    return built;
   }
 
   /**
@@ -233,19 +206,23 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
   }
 
   private Optional<SnapshotManifestPage> loadManifestPage(String uri) {
+    byte[] bytes = loadManifestPageBytes(uri);
+    if (bytes == null) return Optional.empty();
     try {
-      byte[] bytes = blobStore.get(uri);
-      if (bytes == null) {
-        return Optional.empty();
-      }
       return Optional.of(SnapshotManifestPage.parseFrom(bytes));
+    } catch (InvalidProtocolBufferException e) {
+      throw new BaseResourceRepository.CorruptionException("manifest page parse failed: " + uri, e);
+    }
+  }
+
+  private byte[] loadManifestPageBytes(String uri) {
+    try {
+      return blobStore.get(uri);
     } catch (StorageNotFoundException e) {
-      return Optional.empty();
+      return null;
     } catch (StorageAbortRetryableException e) {
       throw new BaseResourceRepository.AbortRetryableException(
           "manifest page read retryable: " + uri);
-    } catch (InvalidProtocolBufferException e) {
-      throw new BaseResourceRepository.CorruptionException("manifest page parse failed: " + uri, e);
     }
   }
 }

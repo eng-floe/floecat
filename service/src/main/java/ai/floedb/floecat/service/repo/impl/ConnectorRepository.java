@@ -23,8 +23,8 @@ import ai.floedb.floecat.service.repo.model.ConnectorKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
 import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
+import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.spi.BlobStore;
-import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -38,12 +38,21 @@ public class ConnectorRepository {
 
   private final GenericResourceRepository<Connector, ConnectorKey> repo;
 
-  @Inject
-  public ConnectorRepository(@CachedPointerStore PointerStore pointerStore, BlobStore blobStore) {
+  public ConnectorRepository(PointerStore pointerStore, BlobStore blobStore) {
     this.repo =
         new GenericResourceRepository<>(
             pointerStore,
             blobStore,
+            Schemas.CONNECTOR,
+            Connector::parseFrom,
+            Connector::toByteArray,
+            "application/x-protobuf");
+  }
+
+  @Inject
+  public ConnectorRepository(MetadataRepositoryFactory repositories) {
+    this.repo =
+        repositories.create(
             Schemas.CONNECTOR,
             Connector::parseFrom,
             Connector::toByteArray,

@@ -18,9 +18,11 @@ import ai.floedb.floecat.reconciler.rpc.ReusableArtifactIndexRunReference;
 import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
+import ai.floedb.floecat.storage.spi.BlobStore.ScopedObjects;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -49,19 +51,16 @@ public final class ReusableArtifactIndexStore {
   static final int MAX_L0_RUNS = 32;
   static final int MAX_L1_RUNS = 32;
   static final int MAX_BLOOM_BYTES = 16 * 1024 * 1024;
-  private static final int MAX_SINGLE_CACHED_OBJECT_BYTES =
-      ReusableArtifactIndexObjectCache.MAX_SINGLE_OBJECT_BYTES;
+  private static final int MAX_SINGLE_BATCHED_OBJECT_BYTES = 16 * 1024 * 1024;
+  private static final long MAX_BATCH_BYTES = 64L * 1024L * 1024L;
   private static final long MAX_BLOOM_OBJECT_BYTES = 9L + MAX_BLOOM_BYTES;
-  private static final long MAX_RUN_MANIFEST_BYTES = MAX_SINGLE_CACHED_OBJECT_BYTES;
+  private static final long MAX_RUN_MANIFEST_BYTES = MAX_SINGLE_BATCHED_OBJECT_BYTES;
   private static final long MAX_DELTA_BUFFER_BYTES = 8L * 1024L * 1024L;
   private static final int MAX_SEQUENTIAL_READ_WINDOW_BYTES = 8 * 1024 * 1024;
   private static final int MAX_SEQUENTIAL_READ_BUDGET_BYTES = 64 * 1024 * 1024;
   private static final int OBJECT_AUTHENTICATION_WINDOW_BYTES = 8 * 1024 * 1024;
   static final int INLINE_OBJECT_BYTES = 64 * 1024;
   private static final int MAX_RUN_LEVEL = 32;
-  private static final ReusableArtifactIndexObjectCache SHARED_OBJECT_CACHE =
-      new ReusableArtifactIndexObjectCache();
-  private static final long MAX_CACHED_BYTES = SHARED_OBJECT_CACHE.maxBytes();
   private static final String PROTOBUF_CONTENT_TYPE = "application/x-protobuf";
   private static final String FILTER_CONTENT_TYPE = "application/x-floecat-bloom-filter";
   private static final String PACK_CONTENT_TYPE = "application/x-floecat-reusable-index-pack";
@@ -102,25 +101,26 @@ public final class ReusableArtifactIndexStore {
     validateReference(effective);
     Map<String, ReusableArtifactIndexObjectReference> packs = new HashMap<>();
     for (List<ReusableArtifactIndexRunReference> batch : metadataBatches(effective.getRunsList())) {
-      primeRunMetadata(batch);
-      for (ReusableArtifactIndexRunReference run : batch) {
-        validateOwnedObject(ownedPrefix, run.getFilter());
-        validateOwnedObject(ownedPrefix, run.getManifest());
-        loadFilter(run);
-        ReusableArtifactIndexRunManifest manifest = loadRunManifest(run);
-        for (ReusableArtifactIndexBlockReference block : manifest.getBlocksList()) {
-          ReusableArtifactIndexObjectReference object = block.getObject();
-          validateOwnedObject(ownedPrefix, object);
-          if (!object.getInlinePayload().isEmpty()) {
-            validateObjectBytes(object, object.getInlinePayload().toByteArray());
-          } else if (authenticatePacks) {
-            ReusableArtifactIndexObjectReference existing =
-                packs.putIfAbsent(object.getUri(), object);
-            if (existing == null) {
-              authenticateExternalObject(object);
-            } else if (!existing.equals(object)) {
-              throw new IllegalArgumentException(
-                  "reusable artifact index pack has conflicting references");
+      try (ScopedObjects primed = primeRunMetadata(batch)) {
+        for (ReusableArtifactIndexRunReference run : batch) {
+          validateOwnedObject(ownedPrefix, run.getFilter());
+          validateOwnedObject(ownedPrefix, run.getManifest());
+          loadFilter(run, primed);
+          ReusableArtifactIndexRunManifest manifest = loadRunManifest(run, primed);
+          for (ReusableArtifactIndexBlockReference block : manifest.getBlocksList()) {
+            ReusableArtifactIndexObjectReference object = block.getObject();
+            validateOwnedObject(ownedPrefix, object);
+            if (!object.getInlinePayload().isEmpty()) {
+              validateObjectBytes(object, object.getInlinePayload().toByteArray());
+            } else if (authenticatePacks) {
+              ReusableArtifactIndexObjectReference existing =
+                  packs.putIfAbsent(object.getUri(), object);
+              if (existing == null) {
+                authenticateExternalObject(object);
+              } else if (!existing.equals(object)) {
+                throw new IllegalArgumentException(
+                    "reusable artifact index pack has conflicting references");
+              }
             }
           }
         }
@@ -233,11 +233,14 @@ public final class ReusableArtifactIndexStore {
             (left, right) -> INDEXED_ENTRY_ORDER.compare(left.current(), right.current()));
     int readWindowBytes = sequentialReadWindowBytes(runs.size());
     for (List<ReusableArtifactIndexRunReference> batch : metadataBatches(runs)) {
-      primeObjects(batch.stream().map(ReusableArtifactIndexRunReference::getManifest).toList());
-      for (ReusableArtifactIndexRunReference run : batch) {
-        RunCursor cursor = new RunCursor(loadRunManifest(run), after, readWindowBytes);
-        if (cursor.current() != null) {
-          pending.add(cursor);
+      try (ScopedObjects primed =
+          primeObjects(
+              batch.stream().map(ReusableArtifactIndexRunReference::getManifest).toList())) {
+        for (ReusableArtifactIndexRunReference run : batch) {
+          RunCursor cursor = new RunCursor(loadRunManifest(run, primed), after, readWindowBytes);
+          if (cursor.current() != null) {
+            pending.add(cursor);
+          }
         }
       }
     }
@@ -437,34 +440,35 @@ public final class ReusableArtifactIndexStore {
     Map<String, ReusableArtifactIndexEntry> found = new LinkedHashMap<>();
     List<ReusableArtifactIndexRunReference> runs = orderedRuns(effective.getRunsList());
     for (List<ReusableArtifactIndexRunReference> batch : metadataBatches(runs)) {
-      primeRunMetadata(batch);
-      for (ReusableArtifactIndexRunReference run : batch) {
-        ReusableArtifactIndexRunManifest manifest = loadRunManifest(run);
-        ReusableArtifactIndexBloomFilter filter = loadFilter(run);
-        Map<BlockIdentity, List<String>> blockKeys = new LinkedHashMap<>();
-        Map<BlockIdentity, ReusableArtifactIndexBlockReference> blocks = new LinkedHashMap<>();
-        keyHashes.forEach(
-            (key, digest) -> {
-              if (!filter.mightContain(digest)) {
-                return;
+      try (ScopedObjects primed = primeRunMetadata(batch)) {
+        for (ReusableArtifactIndexRunReference run : batch) {
+          ReusableArtifactIndexRunManifest manifest = loadRunManifest(run, primed);
+          ReusableArtifactIndexBloomFilter filter = loadFilter(run, primed);
+          Map<BlockIdentity, List<String>> blockKeys = new LinkedHashMap<>();
+          Map<BlockIdentity, ReusableArtifactIndexBlockReference> blocks = new LinkedHashMap<>();
+          keyHashes.forEach(
+              (key, digest) -> {
+                if (!filter.mightContain(digest)) {
+                  return;
+                }
+                ReusableArtifactIndexBlockReference block = findBlock(manifest, digest);
+                if (block != null) {
+                  BlockIdentity identity = blockIdentity(block);
+                  blocks.put(identity, block);
+                  blockKeys.computeIfAbsent(identity, ignored -> new ArrayList<>()).add(key);
+                }
+              });
+          for (Map.Entry<BlockIdentity, List<String>> selected : blockKeys.entrySet()) {
+            ReusableArtifactIndexBlock block = loadBlock(blocks.get(selected.getKey()));
+            Map<String, ReusableArtifactIndexEntry> byKey = new HashMap<>();
+            for (ReusableArtifactIndexEntry entry : block.getEntriesList()) {
+              byKey.put(entryKey(entry), entry);
+            }
+            for (String key : selected.getValue()) {
+              ReusableArtifactIndexEntry entry = byKey.get(key);
+              if (entry != null && found.putIfAbsent(key, entry) != null) {
+                throw new IllegalArgumentException("reusable artifact index contains a duplicate");
               }
-              ReusableArtifactIndexBlockReference block = findBlock(manifest, digest);
-              if (block != null) {
-                BlockIdentity identity = blockIdentity(block);
-                blocks.put(identity, block);
-                blockKeys.computeIfAbsent(identity, ignored -> new ArrayList<>()).add(key);
-              }
-            });
-        for (Map.Entry<BlockIdentity, List<String>> selected : blockKeys.entrySet()) {
-          ReusableArtifactIndexBlock block = loadBlock(blocks.get(selected.getKey()));
-          Map<String, ReusableArtifactIndexEntry> byKey = new HashMap<>();
-          for (ReusableArtifactIndexEntry entry : block.getEntriesList()) {
-            byKey.put(entryKey(entry), entry);
-          }
-          for (String key : selected.getValue()) {
-            ReusableArtifactIndexEntry entry = byKey.get(key);
-            if (entry != null && found.putIfAbsent(key, entry) != null) {
-              throw new IllegalArgumentException("reusable artifact index contains a duplicate");
             }
           }
         }
@@ -473,14 +477,14 @@ public final class ReusableArtifactIndexStore {
     return Map.copyOf(found);
   }
 
-  private void primeRunMetadata(List<ReusableArtifactIndexRunReference> runs) {
+  private ScopedObjects primeRunMetadata(List<ReusableArtifactIndexRunReference> runs) {
     List<ReusableArtifactIndexObjectReference> references = new ArrayList<>(runs.size() * 2);
     runs.forEach(
         run -> {
           references.add(run.getFilter());
           references.add(run.getManifest());
         });
-    primeObjects(references);
+    return primeObjects(references);
   }
 
   private static List<List<ReusableArtifactIndexRunReference>> metadataBatches(
@@ -491,13 +495,13 @@ public final class ReusableArtifactIndexStore {
     for (ReusableArtifactIndexRunReference run : runs) {
       long runBytes =
           Math.addExact(run.getFilter().getPayloadBytes(), run.getManifest().getPayloadBytes());
-      if (!batch.isEmpty() && runBytes > MAX_CACHED_BYTES - bytes) {
+      if (!batch.isEmpty() && runBytes > MAX_BATCH_BYTES - bytes) {
         batches.add(List.copyOf(batch));
         batch.clear();
         bytes = 0L;
       }
       batch.add(run);
-      bytes = runBytes > MAX_CACHED_BYTES ? MAX_CACHED_BYTES : bytes + runBytes;
+      bytes = runBytes > MAX_BATCH_BYTES ? MAX_BATCH_BYTES : bytes + runBytes;
     }
     if (!batch.isEmpty()) {
       batches.add(List.copyOf(batch));
@@ -813,7 +817,6 @@ public final class ReusableArtifactIndexStore {
     }
     String uri = prefix + HexFormat.of().formatHex(digest) + suffix;
     blobStore.putImmutable(uri, bytes, contentType);
-    cache(uri, bytes);
     return ReusableArtifactIndexObjectReference.newBuilder()
         .setUri(uri)
         .setPayloadBytes(bytes.length)
@@ -822,7 +825,14 @@ public final class ReusableArtifactIndexStore {
   }
 
   private ReusableArtifactIndexRunManifest loadRunManifest(ReusableArtifactIndexRunReference run) {
-    byte[] bytes = loadObject(run.getManifest());
+    try (ScopedObjects empty = emptyObjects()) {
+      return loadRunManifest(run, empty);
+    }
+  }
+
+  private ReusableArtifactIndexRunManifest loadRunManifest(
+      ReusableArtifactIndexRunReference run, ScopedObjects primed) {
+    ByteBuffer bytes = loadObject(run.getManifest(), primed);
     try {
       ReusableArtifactIndexRunManifest manifest = ReusableArtifactIndexRunManifest.parseFrom(bytes);
       validateRunManifest(manifest, run.getEntryCount());
@@ -892,10 +902,6 @@ public final class ReusableArtifactIndexStore {
       validateObjectBytes(object, pack);
       return sliceBlock(reference, pack);
     }
-    byte[] cached = cached(object);
-    if (cached != null) {
-      return sliceBlock(reference, cached);
-    }
     byte[] bytes =
         blobStore.getRange(object.getUri(), reference.getOffset(), reference.getLength());
     if (bytes == null) {
@@ -916,69 +922,88 @@ public final class ReusableArtifactIndexStore {
   }
 
   private ReusableArtifactIndexBloomFilter loadFilter(ReusableArtifactIndexRunReference run) {
-    validateFilterReference(run.getFilter());
-    return ReusableArtifactIndexBloomFilter.parse(loadObject(run.getFilter()), run.getEntryCount());
+    try (ScopedObjects empty = emptyObjects()) {
+      return loadFilter(run, empty);
+    }
   }
 
-  private byte[] loadObject(ReusableArtifactIndexObjectReference reference) {
+  private ReusableArtifactIndexBloomFilter loadFilter(
+      ReusableArtifactIndexRunReference run, ScopedObjects primed) {
+    validateFilterReference(run.getFilter());
+    return ReusableArtifactIndexBloomFilter.parse(
+        loadObject(run.getFilter(), primed), run.getEntryCount());
+  }
+
+  private ByteBuffer loadObject(
+      ReusableArtifactIndexObjectReference reference, ScopedObjects primed) {
     validateObjectReference(reference);
     if (!reference.getInlinePayload().isEmpty()) {
       byte[] bytes = reference.getInlinePayload().toByteArray();
       validateObjectBytes(reference, bytes);
-      return bytes;
+      return ByteBuffer.wrap(bytes).asReadOnlyBuffer();
     }
-    byte[] cached = cached(reference);
-    if (cached != null) {
-      return cached;
+    ByteBuffer primedBytes = primed.get(reference.getUri());
+    if (primedBytes != null) {
+      validateObjectBytes(reference, primedBytes);
+      return primedBytes.asReadOnlyBuffer();
     }
     byte[] bytes = blobStore.get(reference.getUri());
     validateObjectBytes(reference, bytes);
-    cache(reference.getUri(), bytes);
-    return bytes;
+    return ByteBuffer.wrap(bytes).asReadOnlyBuffer();
   }
 
-  private void primeObjects(List<ReusableArtifactIndexObjectReference> references) {
+  private ScopedObjects primeObjects(List<ReusableArtifactIndexObjectReference> references) {
     Map<String, ReusableArtifactIndexObjectReference> missingReferences = new LinkedHashMap<>();
-    long missingBytes = 0L;
     for (ReusableArtifactIndexObjectReference reference : references) {
       validateObjectReference(reference);
       if (!reference.getInlinePayload().isEmpty()) {
         validateObjectBytes(reference, reference.getInlinePayload().toByteArray());
         continue;
       }
-      if (isCached(reference.getUri()) || missingReferences.containsKey(reference.getUri())) {
+      if (missingReferences.containsKey(reference.getUri())) {
         continue;
       }
-      if (reference.getPayloadBytes() > MAX_CACHED_BYTES
-          || reference.getPayloadBytes() > MAX_SINGLE_CACHED_OBJECT_BYTES) {
+      if (reference.getPayloadBytes() > MAX_BATCH_BYTES
+          || reference.getPayloadBytes() > MAX_SINGLE_BATCHED_OBJECT_BYTES) {
         continue;
-      }
-      if (reference.getPayloadBytes() > MAX_CACHED_BYTES - missingBytes) {
-        loadObjectBatch(missingReferences);
-        missingReferences.clear();
-        missingBytes = 0L;
       }
       missingReferences.put(reference.getUri(), reference);
-      missingBytes += reference.getPayloadBytes();
     }
-    loadObjectBatch(missingReferences);
+    return loadObjectBatch(missingReferences);
   }
 
-  private void loadObjectBatch(
+  private ScopedObjects loadObjectBatch(
       Map<String, ReusableArtifactIndexObjectReference> missingReferences) {
     List<String> missing = List.copyOf(missingReferences.keySet());
     if (missing.isEmpty()) {
-      return;
+      return emptyObjects();
     }
-    Map<String, byte[]> loaded = blobStore.getBatch(missing);
-    for (String uri : missing) {
-      byte[] bytes = loaded.get(uri);
-      if (bytes == null) {
-        throw new StorageNotFoundException("reusable artifact index object is missing: " + uri);
+    ScopedObjects loaded = blobStore.getBatchScoped(missing);
+    try {
+      for (String uri : missing) {
+        ByteBuffer bytes = loaded.get(uri);
+        if (bytes == null) {
+          throw new StorageNotFoundException("reusable artifact index object is missing: " + uri);
+        }
+        validateObjectBytes(missingReferences.get(uri), bytes);
       }
-      validateObjectBytes(missingReferences.get(uri), bytes);
-      cache(uri, bytes);
+      return loaded;
+    } catch (RuntimeException | Error failure) {
+      loaded.close();
+      throw failure;
     }
+  }
+
+  private static ScopedObjects emptyObjects() {
+    return new ScopedObjects() {
+      @Override
+      public ByteBuffer get(String uri) {
+        return null;
+      }
+
+      @Override
+      public void close() {}
+    };
   }
 
   private void authenticateExternalObject(ReusableArtifactIndexObjectReference reference) {
@@ -1247,7 +1272,16 @@ public final class ReusableArtifactIndexStore {
       throw new StorageNotFoundException(
           "reusable artifact index object is missing: " + reference.getUri());
     }
-    if (bytes.length != reference.getPayloadBytes()
+    validateObjectBytes(reference, ByteBuffer.wrap(bytes));
+  }
+
+  private static void validateObjectBytes(
+      ReusableArtifactIndexObjectReference reference, ByteBuffer bytes) {
+    if (bytes == null) {
+      throw new StorageNotFoundException(
+          "reusable artifact index object is missing: " + reference.getUri());
+    }
+    if (bytes.remaining() != reference.getPayloadBytes()
         || !MessageDigest.isEqual(sha256(bytes), reference.getPayloadSha256().toByteArray())) {
       throw new IllegalArgumentException("reusable artifact index object metadata mismatch");
     }
@@ -1329,28 +1363,18 @@ public final class ReusableArtifactIndexStore {
         : reference;
   }
 
-  static void clearSharedCacheForTests() {
-    SHARED_OBJECT_CACHE.clear();
-  }
-
-  private static void cache(String uri, byte[] bytes) {
-    SHARED_OBJECT_CACHE.put(uri, bytes);
-  }
-
-  private static byte[] cached(ReusableArtifactIndexObjectReference reference) {
-    return SHARED_OBJECT_CACHE.get(reference);
-  }
-
-  private static boolean isCached(String uri) {
-    return SHARED_OBJECT_CACHE.contains(uri);
-  }
-
   private static byte[] hash(String value) {
     return sha256(value.getBytes(StandardCharsets.UTF_8));
   }
 
   private static byte[] sha256(byte[] bytes) {
     return sha256Digest().digest(bytes);
+  }
+
+  private static byte[] sha256(ByteBuffer bytes) {
+    MessageDigest digest = sha256Digest();
+    digest.update(bytes.duplicate());
+    return digest.digest();
   }
 
   private static MessageDigest sha256Digest() {

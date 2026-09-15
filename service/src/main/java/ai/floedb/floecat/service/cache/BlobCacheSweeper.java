@@ -14,11 +14,24 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.repo.util;
+package ai.floedb.floecat.service.cache;
 
-import java.nio.ByteBuffer;
+import ai.floedb.floecat.cache.BlobCache;
+import io.quarkus.scheduler.Scheduled;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 
-@FunctionalInterface
-public interface ProtoParser<T> {
-  T parse(ByteBuffer bytes) throws Exception;
+/** Periodic disk-budget enforcement kept outside request threads. */
+@ApplicationScoped
+public class BlobCacheSweeper {
+  @Inject BlobCache blobs;
+
+  @Scheduled(
+      every = "{floecat.cache.blob.disk.sweep-interval}",
+      concurrentExecution = Scheduled.ConcurrentExecution.SKIP)
+  void sweep() {
+    if (blobs.enabled()) {
+      blobs.sweep();
+    }
+  }
 }
