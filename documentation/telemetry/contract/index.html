@@ -1826,6 +1826,15 @@
 <td>account, cache, component, operation</td>
 </tr>
 <tr>
+<td>floecat.core.cache.corruptions</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Local cache entries rejected because their stored envelope was corrupt.</td>
+<td>cache, component, operation</td>
+<td>account, cache, component, operation</td>
+</tr>
+<tr>
 <td>floecat.core.cache.enabled</td>
 <td>GAUGE</td>
 <td></td>
@@ -1889,6 +1898,15 @@
 <td>account, cache, component, exception, operation, result</td>
 </tr>
 <tr>
+<td>floecat.core.cache.live.mappings</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Mapped cache entries currently protected from reclamation.</td>
+<td>cache, component, operation</td>
+<td>account, cache, component, operation</td>
+</tr>
+<tr>
 <td>floecat.core.cache.max.weight.bytes</td>
 <td>GAUGE</td>
 <td>bytes</td>
@@ -1903,6 +1921,15 @@
 <td></td>
 <td>v1</td>
 <td>Number of cache lookup misses, tagged by cache name.</td>
+<td>cache, component, operation</td>
+<td>account, cache, component, operation</td>
+</tr>
+<tr>
+<td>floecat.core.cache.sweep.reclaimed.bytes</td>
+<td>COUNTER</td>
+<td>bytes</td>
+<td>v1</td>
+<td>Local disk bytes reclaimed by cache budget sweeps.</td>
 <td>cache, component, operation</td>
 <td>account, cache, component, operation</td>
 </tr>

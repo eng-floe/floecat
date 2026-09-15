@@ -2030,9 +2030,9 @@
 between the pointer/blob repositories and any RPC that needs to inspect catalogs, namespaces, tables,
 or views. The graph provides:</p>
 <ul>
-<li>Immutable node models that can be safely reused across requests. Nodes are pure derivations of
-  their source blob and are cached content-addressed (keyed by <code>blobUri + "#node"</code>) in the
-  process-wide <code>ImmutableBlobCache</code>, so they need no invalidation.</li>
+<li>Immutable node models that can be safely reused across requests. Nodes are assembled through the
+  repository and <code>ObjectCache</code>; serialized inputs are read through <code>BlobCacheAccess</code> when the disk
+  cache is enabled. There is no separate graph-level decoded-node cache.</li>
 <li>Resource-ID → current-blob resolution served by the owner-managed planner index
   (<code>PlanningPointerIndex</code> behind <code>IndexedPointerStore</code>), which
   is refreshed on write and does not expire, so a commit is visible to the replica that made it as
@@ -2057,8 +2057,9 @@ facade sit inside <code>service/metagraph</code>. The split looks like this:</p>
 <li><code>core/metagraph/model/</code> – Immutable node records (<code>CatalogNode</code>, <code>NamespaceNode</code>, <code>TableNode</code>,
   <code>ViewNode</code>, <code>SystemViewNode</code>) plus shared enums (<code>GraphNodeKind</code>, <code>EngineKey</code>, <code>EngineHint</code>,
   <code>GraphNodeOrigin</code>, etc.).</li>
-<li><code>service/repo/cache/</code> – the pointer index owns complete namespace and relation-name indexes;
-  derived nodes live content-keyed by blob URI in the process-wide <code>ImmutableBlobCache</code>.</li>
+<li><code>service/repo/cache/</code> – the planner index owns complete namespace and relation-name indexes;
+  serialized immutable bodies are handled by <code>BlobCacheAccess</code>, while assembled metadata is held
+  by <code>ObjectCache</code>.</li>
 <li><code>service/metagraph/loader/</code> – <code>NodeLoader</code> wraps the catalog/namespace/table/view repositories to
   hydrate immutable nodes from protobuf metadata (<code>metaForSafe</code> + pointer fetches).</li>
 <li><code>service/metagraph/resolver/</code> – <code>NameResolver</code> handles catalog/namespace/table/view lookups and
@@ -2227,11 +2228,12 @@ planners requesting different engine versions or planner modes never interfere w
 <ol>
 <li>Reads the pointer through <code>nodes.mutationMeta(id)</code>. There is no graph-level meta cache to probe
    first: the indexed store selects the complete owned partition or its durable fallback.</li>
-<li>Returns the derived node at <code>blobUri + "#node"</code> from the <code>ImmutableBlobCache</code> when present.</li>
+<li>Loads the immutable serialized body through the repository's <code>BlobCacheAccess</code> seam when disk
+   caching is enabled.</li>
 <li>Rehydrates the protobuf record (<code>Catalog</code>, <code>Namespace</code>, <code>Table</code>, <code>View</code>) into the immutable node
-   and stores it content-keyed under <code>blobUri + "#node"</code>.</li>
-<li>Serves the node from cache for as long as the blob stays hot; a DDL writes a new blob, so the
-   fresh pointer simply names a different node entry — no eviction required.</li>
+   and stores the assembled relation/schema products in <code>ObjectCache</code>.</li>
+<li>A DDL publishes a new pointer and content identity, so the next resolution naturally uses the
+   new object key; no graph-level invalidation is required.</li>
 </ol>
 <h3 id="snapshot-pinning-semantics">Snapshot Pinning Semantics<a class="headerlink" href="#snapshot-pinning-semantics" title="Permanent link">&para;</a></h3>
 <ul>
@@ -2300,7 +2302,7 @@ still resolve as <code>FOUND</code> while individual columns report <code>COLUMN
 </tr>
 <tr>
 <td><code>blob-cache</code></td>
-<td>Node/blob caching itself: the <code>ImmutableBlobCache</code> registers enabled, max weight, entries, weighted size, and hit/miss under this name.</td>
+<td>Disk blob-cache hits, misses, mappings, corruption and sweep activity.</td>
 </tr>
 </tbody>
 </table>
