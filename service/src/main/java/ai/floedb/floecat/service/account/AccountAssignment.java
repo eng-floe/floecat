@@ -599,6 +599,17 @@ public class AccountAssignment
     }
   }
 
+  /**
+   * Whether a control plane has ever reached this process, by an apply or by a restart recovery.
+   * Not "owns something": an account set can be legitimately empty, and an account it has let go
+   * stays listed as {@code UNASSIGNED} until a later epoch clears it, so neither says anything
+   * about whether anyone is assigning.
+   */
+  boolean everAssigned() {
+    synchronized (lock) {
+      return applied || recoveredFromStore;
+    }
+  }
 
   // ---------------------------------------------------------------------------------------------
   // Process drain
