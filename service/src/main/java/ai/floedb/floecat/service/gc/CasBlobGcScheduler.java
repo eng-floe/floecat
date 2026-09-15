@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
@@ -55,6 +56,7 @@ public class CasBlobGcScheduler {
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<CasBlobGc> casBlobGc;
   @Inject Provider<StorageUsageMetrics> storageUsageMetrics;
+  @Inject AccountScope assignment;
   @Inject Observability observability;
 
   private GcMetrics gcMetrics;
@@ -195,8 +197,7 @@ public class CasBlobGcScheduler {
                   .orElse(null);
           if (account == null) {
             gc.abandonContinuation();
-            continuationAccountId = "";
-            consecutiveContinuationTicks = 0;
+            forgetRetainedAccount();
             lastCleanSweepMs.remove(retainedAccountId);
             continue;
           }
@@ -207,8 +208,28 @@ public class CasBlobGcScheduler {
         long accountStart = System.nanoTime();
         String accountId = account.getResourceId().getId();
         CasBlobGc.Result result;
-        try {
-          result = gc.runForAccount(accountId, deadline);
+        var acquired = assignment.tryAcquireGc(accountId);
+        if (acquired.isEmpty()) {
+          gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "account-not-owned"));
+          if (!fromPage) {
+            // The retained mark belongs to an account this process no longer collects for.
+            gc.abandonContinuation();
+            forgetRetainedAccount();
+          } else if (advanceAccountCursor(gc)) {
+            break;
+          }
+          continue;
+        }
+        try (var permit = acquired.get()) {
+          result = gc.runForAccount(accountId, deadline, permit);
+        } catch (AccountScope.GcPermitRevokedException revoked) {
+          // The collector already dropped its mark epoch; only the scheduler's bookkeeping remains.
+          gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "account-revoked"));
+          forgetRetainedAccount();
+          if (fromPage && advanceAccountCursor(gc)) {
+            break;
+          }
+          continue;
         } catch (RuntimeException e) {
           // Isolate one account's failure from the rest of the tick. A version-targeted delete
           // throws StorageAbortRetryableException on a transient SDK fault and maps non-404 S3
@@ -282,13 +303,11 @@ public class CasBlobGcScheduler {
           // An oversized account may need a larger cap; the backlog metric exposes that condition.
           if (consecutiveContinuationTicks >= maxConsecutiveContinuationTicks) {
             gc.abandonContinuation();
-            continuationAccountId = "";
-            consecutiveContinuationTicks = 0;
+            forgetRetainedAccount();
           }
           break;
         } else if (accountId.equals(continuationAccountId)) {
-          continuationAccountId = "";
-          consecutiveContinuationTicks = 0;
+          forgetRetainedAccount();
         }
         if (discoveryCycleComplete) {
           break;
@@ -334,6 +353,12 @@ public class CasBlobGcScheduler {
       }
     }
     return null;
+  }
+
+  /** Forgets which account the retained mark epoch belonged to. */
+  private void forgetRetainedAccount() {
+    continuationAccountId = "";
+    consecutiveContinuationTicks = 0;
   }
 
   private boolean advanceAccountCursor(CasBlobGc gc) {

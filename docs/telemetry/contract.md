@@ -69,6 +69,11 @@ This lists all metrics currently available in the repository:
 
 | Metric | Type | Unit | Since | Description | Required Tags | Allowed Tags |
 | --- | --- | --- | --- | --- | --- | --- |
+| floecat.service.account_assignment.accounts | GAUGE | count | v1 | Accounts tracked by this process per assignment state (unassigned, serving, draining). | component, mode, operation | component, mode, operation |
+| floecat.service.account_assignment.fence_bumps.total | COUNTER |  | v1 | Fence take outcomes when an account enters SERVING (ok, conflict, error). | component, operation, result | component, operation, result |
+| floecat.service.account_assignment.fence_rejections.total | COUNTER |  | v1 | Account-scoped writes that failed their fence condition (revoked, conflict, error). | component, operation, result | component, operation, result |
+| floecat.service.account_assignment.gc_allowed_accounts | GAUGE | count | v1 | Accounts this process may currently collect garbage for. | component, operation | component, operation |
+| floecat.service.account_assignment.self_checks.total | COUNTER |  | v1 | Fence self-check outcomes (ok, mismatch, error), per sweep and per GC permit. | component, operation, result | component, operation, result |
 | floecat.service.flight.cancelled.total | COUNTER |  | v1 | Flight request cancellations by operation, table, and reason. | component, operation, reason | component, operation, reason, resource, status |
 | floecat.service.flight.errors.total | COUNTER |  | v1 | Flight request failures by operation, table, and reason. | component, operation, reason | component, operation, reason, resource, status |
 | floecat.service.flight.inflight | GAUGE |  | v1 | Current number of in-flight Flight streams. | component, operation | component, operation, resource |
