@@ -543,6 +543,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Account Assignment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#binding-a-control-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      Binding a control plane
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -1969,6 +1984,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Account Assignment">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#binding-a-control-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      Binding a control plane
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -2454,17 +2484,18 @@ account? — asked by every caller that needs to know, rather than reading assig
 It answers permission only: the store fence below is Floecat's own, so an implementation decides
 who serves what without maintaining the mechanism that enforces it. <code>AccountAssignment</code> is the
 only implementation and decides which accounts this process serves. In the default <code>standalone</code> mode
-every account is served and GC-allowed and nothing below applies. In <code>managed</code> mode Core pushes each
-process its complete assignment through the internal <code>AccountAssignmentControl</code> service
+every account is served and GC-allowed and nothing below applies. In <code>managed</code> mode an external
+control plane pushes each process its complete assignment through the internal
+<code>AccountAssignmentControl</code> service
 (<code>ApplyAssignment</code>, <code>GetAssignmentStatus</code>; permission <code>account-assignment-control.internal</code>):
 an epoch, the epoch's phase (<code>DRAINING</code> or <code>SERVING</code>), the owned account ids and the subset that
 may run GC. The phase describes the epoch and is pushed unchanged to every process; whether this
-process serves an account is per account.
-Floecat never calls Core or another Floecat, and never learns where it is deployed: the account
-set arrives over the RPC and is never derived from a cluster, a replica count or a placement hash
-(<code>DeploymentIndependenceArchTest</code>). An apply is rejected when <code>target_incarnation</code> is not
-this process, when the epoch is older than the applied one, or when an equal epoch changes the
-account set or moves <code>SERVING -&gt; DRAINING</code>.</p>
+process serves an account is per account. FloeDB's Core is one such control plane; the contract
+is on <code>AssignmentControl</code>.
+Floecat never calls its control plane or another Floecat, and never learns where it is deployed: the
+account set arrives over the RPC and is never derived from a cluster, a replica count or a placement
+hash (<code>DeploymentIndependenceArchTest</code>, which fails if a Kubernetes client reaches the classpath).
+The rejection rules are on <code>AssignmentControl.apply</code>.</p>
 <p>For an owned account the process admits pins and mutations under a permit and reads from the
 planning pointer index. For a non-owned account reads fall through to the durable store and
 <code>BeginQuery</code>, pin resolution and mutations fail with <code>FAILED_PRECONDITION</code> whose message carries
@@ -2484,16 +2515,35 @@ work and drops its index at once, but keeps the fence version so writes already 
 condition rather than committing unconditioned — and a sweep that cannot reach the store fences pins
 and writes on every owned account until one succeeds. At
 startup the process restores the accounts whose fence still names its member id, <code>SERVING</code> but
-never GC-allowed. <code>none</code> mode serves reads only.</p>
+never GC-allowed. Restoring takes the fence rather than adopting it: member ids are stable across
+restarts and the marker carries no incarnation, so a marker naming this member proves only that some
+process took it once, possibly one still running. The restore CASes the version forward, which is
+what makes that predecessor's next write fail its condition; losing the CAS means the account is
+someone else's now. <code>none</code> mode owns no account, so every account takes the
+non-owned path above and the process runs no query; account-directory reads and writes are
+unaffected, as they are for any unowned account.</p>
+<h4 id="binding-a-control-plane">Binding a control plane<a class="headerlink" href="#binding-a-control-plane" title="Permanent link">&para;</a></h4>
+<p><code>AssignmentControl</code> is the seam: <code>managed()</code>, <code>apply(...)</code>, <code>status()</code>. <code>AccountAssignment</code>
+implements it; the <code>AccountAssignmentControl</code> RPC is one implementation over one transport, and a
+deployment deciding placement in process binds its own control plane against the same three methods.
+The contract is on <code>AssignmentControl</code>, beside the code that enforces it.</p>
+<p>Nothing drives it by default. A <code>managed</code> process that has never been assigned owns nothing, logs
+<code>account_assignment_absent</code> on a cadence, and refuses account-scoped writes. Account-directory
+writes are not account-scoped and stay available, so a control plane can still create the accounts
+it is about to place -- though a create carrying an idempotency key reserves an account-scoped
+record and is refused with the rest.</p>
 <p>Pointer GC needs no fence of its own: every delete it makes is a pointer CAS through the fenced
 store. CAS blob GC deletes objects the store cannot condition, so it revalidates its permit before
 each delete.</p>
-<p><code>GET /internal/drain</code> reports the process status; <code>GET|POST /internal/drain?wait=true[&amp;timeoutMs=N]</code>
-moves the process to draining and returns <code>200</code> once active mutations and resolutions are zero,
-<code>202</code> at the timeout. Draining is irreversible for the life of the process, so the mutating form is
-refused with <code>403</code> unless the caller is pod-local: the <code>preStop</code> hook reaches it on loopback and
-nothing drains a pod remotely. Reporting status stays open. The shutdown observer applies the same
-drain when the hook never arrived.</p>
+<p><code>wait=true</code> waits for the drain: <code>400</code> if <code>timeoutMs</code> is malformed or negative, and then nothing
+drains; otherwise <code>200</code> once active mutations and resolutions are zero, or <code>202</code> at the timeout,
+with <code>timeoutMs</code> clamped to one hour. Without <code>wait=true</code> a <code>POST</code> starts the drain and returns at
+once, and a <code>GET</code> only reports. <code>wait</code> is read as a boolean, so <code>?wait=TRUE</code> drains while <code>?wait=1</code>
+reports; only <code>GET</code> and <code>POST</code> are routed at all. Draining is irreversible for the life of the process and the endpoint authenticates
+no one: the <code>preStop</code> hook is a kubelet <code>httpGet</code> arriving from the node address, which no in-process
+check can tell from any other caller, so restricting access is the deployment's job — a mesh
+authorization policy or equivalent. The shutdown observer applies the same drain when the hook never
+arrived.</p>
 <h3 id="builtin-catalog-service">Builtin Catalog Service<a class="headerlink" href="#builtin-catalog-service" title="Permanent link">&para;</a></h3>
 <p><code>SystemObjectsLoader</code> reads immutable builtin catalogs (<code>&lt;engine_kind&gt;.pb[pbtxt]</code>) from the
 configured location, caches them by engine kind, and exposes them through
