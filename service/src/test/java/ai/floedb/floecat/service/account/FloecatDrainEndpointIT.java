@@ -43,7 +43,7 @@ class FloecatDrainEndpointIT {
     String accountId = "drain-http-account";
     assignment.apply(
         1L,
-        AccountAssignment.AssignmentPhase.SERVING,
+        AssignmentControl.AssignmentPhase.SERVING,
         List.of(accountId),
         List.of(),
         assignment.incarnation());
@@ -76,7 +76,7 @@ class FloecatDrainEndpointIT {
 
   private void awaitServing(String accountId) throws InterruptedException {
     long deadline = System.currentTimeMillis() + 10_000L;
-    while (assignment.status(accountId).mode() != AccountAssignment.AccountMode.SERVING) {
+    while (assignment.status(accountId).mode() != AssignmentControl.AccountMode.SERVING) {
       if (System.currentTimeMillis() > deadline) {
         throw new AssertionError("account never entered SERVING: " + assignment.status(accountId));
       }

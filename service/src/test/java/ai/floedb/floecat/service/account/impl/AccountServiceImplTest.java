@@ -33,6 +33,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AssignmentControl;
 import ai.floedb.floecat.service.account.AssignmentFence;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
@@ -496,7 +497,7 @@ class AccountServiceImplTest {
     AccountAssignment managed =
         AccountAssignment.managedForTesting("m", "m/inc", pointers, new TestObservability());
     managed.apply(
-        1L, AccountAssignment.AssignmentPhase.SERVING, List.of("acct"), List.of("acct"), "m/inc");
+        1L, AssignmentControl.AssignmentPhase.SERVING, List.of("acct"), List.of("acct"), "m/inc");
     PointerStore fenced = new AssignmentFence(pointers, managed);
     service.assignment = managed;
     service.pointerStore = fenced;
@@ -518,7 +519,7 @@ class AccountServiceImplTest {
         fenceVersionBeforeDeletion,
         managed.fenceVersion("acct").orElseThrow(),
         "deletion leaves ownership untouched");
-    assertEquals(AccountAssignment.AccountMode.SERVING, managed.status("acct").mode());
+    assertEquals(AssignmentControl.AccountMode.SERVING, managed.status("acct").mode());
 
     String late = Keys.catalogPointerById("acct", "cat");
     assertThrows(

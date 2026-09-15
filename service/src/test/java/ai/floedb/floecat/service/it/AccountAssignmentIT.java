@@ -63,8 +63,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Drives a managed Floecat through {@code AccountAssignmentControl} only, the way Core does, and
- * checks what the public services do on each side of the assignment.
+ * Drives a managed Floecat through {@code AccountAssignmentControl} only, the way the control plane
+ * does, and checks what the public services do on each side of the assignment.
  */
 @QuarkusTest
 @TestProfile(ManagedAssignmentProfile.class)
@@ -129,7 +129,8 @@ class AccountAssignmentIT {
     assertFalse(initial.getRecoveredFromStore());
     assertTrue(account(initial).isEmpty());
 
-    // Not assigned: the query path refuses with the contract Core keys its route invalidation on.
+    // Not assigned: the query path refuses with the contract the control plane keys its route
+    // invalidation on.
     ResourceId noCatalog =
         ResourceId.newBuilder()
             .setAccountId(accountId)
@@ -141,7 +142,7 @@ class AccountAssignmentIT {
             queries.beginQuery(
                 BeginQueryRequest.newBuilder().setDefaultCatalogId(noCatalog).build()));
 
-    // Core pushes SERVING; the fence commits in the background.
+    // the control plane pushes SERVING; the fence commits in the background.
     epoch++;
     control.applyAssignment(
         apply(epoch, AssignmentPhase.AP_SERVING, List.of(accountId), List.of(accountId)));
@@ -217,7 +218,8 @@ class AccountAssignmentIT {
                     .setDefaultCatalogId(cat.getResourceId())
                     .addInputs(QueryInput.newBuilder().setTableId(tbl.getResourceId()))
                     .build()));
-    // Every account-scoped mutation, not just the query path, must tell Core to re-resolve.
+    // Every account-scoped mutation, not just the query path, must tell the control plane to
+    // re-resolve.
     assertNotAssigned(() -> TestSupport.createCatalog(catalog, "assignment_it_after", ""));
     queries.endQuery(EndQueryRequest.newBuilder().setQueryId(queryId).build());
   }

@@ -27,6 +27,7 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AssignmentControl;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.telemetry.TestObservability;
@@ -50,7 +51,7 @@ class PointerGcSchedulerTest {
     // acct-a and acct-b may be collected, acct-c is owned but gated, acct-d is not owned at all.
     assignment.apply(
         1L,
-        AccountAssignment.AssignmentPhase.SERVING,
+        AssignmentControl.AssignmentPhase.SERVING,
         List.of("acct-a", "acct-b", "acct-c"),
         List.of("acct-a", "acct-b"),
         INCARNATION);

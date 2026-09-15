@@ -20,9 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.account.AccountAssignment.AccountMode;
-import ai.floedb.floecat.service.account.AccountAssignment.AssignmentPhase;
 import ai.floedb.floecat.service.account.AccountAssignment.Mode;
+import ai.floedb.floecat.service.account.AssignmentControl.AccountMode;
+import ai.floedb.floecat.service.account.AssignmentControl.AssignmentPhase;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
@@ -229,7 +229,7 @@ class AssignmentFenceTest {
     assertThat(raw.get(key)).isEmpty();
 
     assertThat(assignment.status().drained())
-        .as("Core must not see this pod as idle while the write is in flight")
+        .as("the control plane must not see this pod as idle while the write is in flight")
         .isFalse();
 
     permit.close();
@@ -249,8 +249,10 @@ class AssignmentFenceTest {
         PointerReferences.opaqueMarkerPointer(fenceKey, "owned/2/floecat-1", held + 1L));
     assignment.selfCheck();
 
-    // Core hands the account back. Draining because the fence was lost is not the same as
-    // draining because Core moved it: this process must not resume on a version it no longer owns.
+    // The control plane hands the account back. Draining because the fence was lost is not the same
+    // as
+    // draining because the control plane moved it: this process must not resume on a version it no
+    // longer owns.
     assignment.apply(3L, AssignmentPhase.SERVING, List.of(A), List.of(), INCARNATION);
     assertThat(assignment.status(A).mode()).isNotEqualTo(AccountMode.SERVING);
 

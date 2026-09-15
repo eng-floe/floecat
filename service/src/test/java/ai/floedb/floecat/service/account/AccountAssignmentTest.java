@@ -20,9 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.account.AccountAssignment.AccountMode;
-import ai.floedb.floecat.service.account.AccountAssignment.AssignmentPhase;
 import ai.floedb.floecat.service.account.AccountAssignment.Mode;
+import ai.floedb.floecat.service.account.AssignmentControl.AccountMode;
+import ai.floedb.floecat.service.account.AssignmentControl.AssignmentPhase;
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.Access;
@@ -251,7 +251,8 @@ class AccountAssignmentTest {
     assertThat(permit.valid()).isTrue();
     assertThat(assignment.status(A).activeGc()).isEqualTo(1L);
 
-    // Core withdraws GC for A at the same epoch: the held permit is revoked, not just future ones.
+    // The control plane withdraws GC for A at the same epoch: the held permit is revoked, not just
+    // future ones.
     assignment.apply(1L, AssignmentPhase.SERVING, List.of(A, B), List.of(), INCARNATION);
     assertThat(permit.valid()).isFalse();
     assertThatThrownBy(permit::requireValid)
@@ -363,7 +364,7 @@ class AccountAssignmentTest {
     assertThat(fenced.compareAndSet(key, 0L, PointerReferences.blobPointer(key, "s3://t", 1L)))
         .isTrue();
 
-    // Core's next push at a later epoch reopens GC and clears the recovered flag.
+    // The control plane's next push at a later epoch reopens GC and clears the recovered flag.
     var pushed =
         restarted.apply(6L, AssignmentPhase.SERVING, List.of(A), List.of(A), "floecat-0/restart");
     assertThat(pushed.recoveredFromStore()).isFalse();
@@ -496,7 +497,7 @@ class AccountAssignmentTest {
 
   /** A successor takes the account: the fence pointer moves to its marker. */
   @Test
-  void anAccountCoreReturnsServesAgainWithoutWaitingOutItsDrain() {
+  void anAccountHandedBackServesAgainWithoutWaitingOutItsDrain() {
     assignment.apply(5L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
     // Hold a permit so the account cannot finish draining.
     var inFlight = assignment.acquire(A, Access.WRITE).orElseThrow();

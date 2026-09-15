@@ -24,8 +24,9 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
 /**
- * Restores this member's accounts from {@code assignments/<member>} at startup, before Core has
- * said anything. Synchronous in the startup observer so requests never see a half-recovered set.
+ * Restores this member's accounts from {@code assignments/<member>} at startup, before its control
+ * plane has said anything. Synchronous in the startup observer so requests never see a
+ * half-recovered set.
  */
 @ApplicationScoped
 public class AssignmentRecovery {
@@ -37,7 +38,7 @@ public class AssignmentRecovery {
     if (!assignment.managed()) {
       return;
     }
-    AccountAssignment.Status status = assignment.recoverFromStore();
+    AssignmentControl.Status status = assignment.recoverFromStore();
     LOG.infof(
         "account_assignment_startup member=%s incarnation=%s recovered=%s accounts=%d",
         assignment.memberId(),

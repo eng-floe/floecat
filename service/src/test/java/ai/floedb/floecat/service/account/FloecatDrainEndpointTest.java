@@ -19,8 +19,8 @@ package ai.floedb.floecat.service.account;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ai.floedb.floecat.service.account.AccountAssignment.AssignmentPhase;
 import ai.floedb.floecat.service.account.AccountAssignment.Mode;
+import ai.floedb.floecat.service.account.AssignmentControl.AssignmentPhase;
 import ai.floedb.floecat.service.account.FloecatDrainEndpoint.Request;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;

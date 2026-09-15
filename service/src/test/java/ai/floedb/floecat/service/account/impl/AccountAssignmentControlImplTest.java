@@ -27,6 +27,7 @@ import ai.floedb.floecat.account.rpc.AssignmentPhase;
 import ai.floedb.floecat.account.rpc.GetAssignmentStatusRequest;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AssignmentControl;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -138,7 +139,7 @@ class AccountAssignmentControlImplTest {
             service.applyAssignment(
                 apply(5L, AssignmentPhase.AP_UNSPECIFIED).addAccountIds("a").build()));
     assertThat(assignment.status().epoch()).isEqualTo(4L);
-    assertThat(assignment.status("a").mode()).isEqualTo(AccountAssignment.AccountMode.SERVING);
+    assertThat(assignment.status("a").mode()).isEqualTo(AssignmentControl.AccountMode.SERVING);
   }
 
   @Test
