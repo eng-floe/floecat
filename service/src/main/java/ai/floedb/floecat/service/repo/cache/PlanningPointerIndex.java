@@ -82,8 +82,9 @@ public final class PlanningPointerIndex {
     Optional<Permit> acquire(String accountId, Access access);
 
     /**
-     * A write was refused because this process does not serve the account. Carries the token Core
-     * keys its route refresh on, so every refused mutation tells it to re-resolve, not just retry.
+     * A write was refused because this process does not serve the account. Carries the token the
+     * control plane keys its route refresh on, so every refused mutation tells it to re-resolve,
+     * not just retry.
      */
     final class NotOwnedException extends StorageAbortRetryableException {
       private final String accountId;

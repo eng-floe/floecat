@@ -31,9 +31,11 @@ import org.jboss.logging.Logger;
 /**
  * Pod lifecycle endpoint, registered only in managed mode and never writing KV.
  *
- * <p>{@code GET /internal/drain} reports process status. {@code GET|POST /internal/drain?wait=true}
- * moves the process to draining and returns {@code 200} once active mutations and resolutions are
- * zero, or {@code 202} at the timeout. Draining is irreversible for the life of the process, and
+ * <p>{@code GET /internal/drain} reports process status. A {@code POST}, or any request carrying
+ * {@code wait=true}, starts the drain -- except that {@code wait=true} validates {@code timeoutMs}
+ * first and refuses a malformed or negative one with {@code 400}, draining nothing. Which requests
+ * drain is pinned by {@code FloecatDrainEndpointTest.onlyTheseRequestsStartTheDrain}; the rule is
+ * stated once in {@code docs/service.md}. Draining is irreversible for the life of the process, and
  * the endpoint authenticates no one: the {@code preStop} hook is a kubelet {@code httpGet} from the
  * node address, which no in-process check can tell from any other caller, so access is the mesh
  * authorization policy's job. The shutdown observer applies the same drain when the hook never
@@ -75,9 +77,9 @@ public class FloecatDrainEndpoint {
 
   private void handleHttp(RoutingContext context) {
     Request request =
-        new Request(
+        request(
             context.request().method().name(),
-            Boolean.parseBoolean(context.request().getParam("wait")),
+            context.request().getParam("wait"),
             context.request().getParam("timeoutMs"));
     if (!request.awaitDrain()) {
       respond(context, handle(request));
@@ -88,6 +90,13 @@ public class FloecatDrainEndpoint {
         .executeBlocking(() -> handle(request), false)
         .onSuccess(response -> respond(context, response))
         .onFailure(context::fail);
+  }
+
+  /**
+   * Reads {@code wait} the same way for the route and for tests: a boolean, so only {@code true}.
+   */
+  static Request request(String method, String waitParam, String timeoutMsParam) {
+    return new Request(method, Boolean.parseBoolean(waitParam), timeoutMsParam);
   }
 
   /** Transport-free request handling; the HTTP route and the tests both go through here. */

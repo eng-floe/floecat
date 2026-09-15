@@ -315,18 +315,28 @@ A Floecat process runs in one of three modes (`FLOECAT_ACCOUNT_ASSIGNMENT_MODE`)
 
 - `standalone` (default): serves every account and runs GC for all of them. Single-process and
   OSS deployments need nothing else.
-- `managed`: serves only the accounts Core assigns to it. Requires `FLOECAT_MEMBER_ID`, the
-  process's stable identity across restarts (the deployment sets it to the pod name). Core decides
-  placement and pushes assignments; a restarted process recovers its own accounts from the store
-  before Core says anything, so reads and writes continue while Core is unavailable.
-- `none`: serves reads only; for processes deliberately outside the assignment.
+- `managed`: serves only the accounts a control plane assigns to it. Requires `FLOECAT_MEMBER_ID`,
+  the process's stable identity across restarts (the deployment sets it to the pod name). The control
+  plane decides placement and pushes assignments; a restarted process recovers its own accounts from
+  the store before it hears anything, so reads and writes continue while the control plane is
+  unavailable.
+- `none`: serves no account at all. Account-scoped reads fall through to the durable store and
+  pin resolution is refused, so the process answers directory and metadata reads but runs no query.
+
+`managed` needs a control plane. Setting the mode without something calling `ApplyAssignment` leaves
+the process owning nothing: reads fall through to the durable store, account-scoped writes fail with
+`floecat.not_assigned`, and `account_assignment_absent` is logged on a cadence. See
+[binding a control plane](service.md#binding-a-control-plane) before running this mode outside
+FloeDB.
 
 The drain endpoint is registered only in `managed` mode. Pods in that mode should drain before
 termination with a `preStop` hook on
 `GET /internal/drain?wait=true&timeoutMs=<ms>`; the response is `200` when in-flight mutations and
 resolutions are gone and `202` at the timeout. `GET /internal/drain` shows the current status.
-Starting a drain is irreversible for the life of the process, so it is refused unless the caller is
-pod-local; reading the status is unrestricted. Related
+Draining is irreversible for the life of the process, and the endpoint authenticates no one —
+restricting it is the deployment's job. Under `wait=true` a malformed or negative `timeoutMs` is
+refused with `400` and drains nothing; without it a `POST` drains regardless of `timeoutMs` and returns at
+once, so a hook that interpolates one wants `wait=true` for a bad value to be caught. Related
 metrics: `floecat.service.account_assignment.accounts` (per state), `gc_allowed_accounts`,
 `self_checks.total`, `fence_bumps.total` and `fence_rejections.total` (by result).
 

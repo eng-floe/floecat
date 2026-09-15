@@ -142,7 +142,7 @@ class AccountAssignmentIT {
             queries.beginQuery(
                 BeginQueryRequest.newBuilder().setDefaultCatalogId(noCatalog).build()));
 
-    // the control plane pushes SERVING; the fence commits in the background.
+    // The control plane pushes SERVING; the fence commits in the background.
     epoch++;
     control.applyAssignment(
         apply(epoch, AssignmentPhase.AP_SERVING, List.of(accountId), List.of(accountId)));
