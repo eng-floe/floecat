@@ -558,6 +558,20 @@ public final class PointerCache {
     return accountCount(Readiness.COMPLETE);
   }
 
+  /**
+   * Drops every cached pointer and complete index.
+   *
+   * <p>This is intended for test fixture resets that have cleared the underlying store directly.
+   * The next cached read repopulates the required index from that now-authoritative store.
+   */
+  public void clear() {
+    partitions.clear();
+    completeBytes.set(0L);
+    completeEntries.set(0L);
+    resident.evictPartition(key -> true);
+    resident.maximumBytes(maxBytes);
+  }
+
   public long degradedAccountCount() {
     return accountCount(Readiness.DEGRADED);
   }

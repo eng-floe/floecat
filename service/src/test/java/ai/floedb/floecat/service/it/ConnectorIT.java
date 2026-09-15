@@ -161,6 +161,7 @@ public class ConnectorIT {
     seeder.seedData();
     seedAccountId =
         accountRepository.getByName(TestSupport.DEFAULT_SEED_ACCOUNT).orElseThrow().getResourceId();
+    resetter.warmPointerCache(seedAccountId.getId());
   }
 
   @Test
