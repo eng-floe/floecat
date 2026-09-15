@@ -141,10 +141,11 @@ snapshots. `HintClearDecision` controls what to clear:
 - Fine-grained constructor — clears only specific `payloadType` sets or individual column IDs, for
   plugins that want to avoid unnecessary hint recomputation on unrelated schema changes
 
-`SystemCatalogHintProvider` (in `ai.floedb.floecat.systemcatalog.hint`) automatically publishes
-each object's `engine_specific` rules as `EngineHint` entries keyed by `(engineKind, engineVersion,
-payloadType)`. Plugins that rely solely on `properties`-based metadata in their `.pbtxt` files get
-hint publishing for free without implementing `decideHintClear`.
+`SystemNodeRegistry` automatically materializes each object's matching `engine_specific` rules as
+`EngineHint` entries keyed by `(engineKind, engineVersion, payloadType)`. Plugins that rely solely
+on `properties`-based metadata in their `.pbtxt` files get immutable system hints without a second
+provider or cache path. `decideHintClear` applies only to legacy property-backed user hints during
+migration.
 
 ## Core Components
 

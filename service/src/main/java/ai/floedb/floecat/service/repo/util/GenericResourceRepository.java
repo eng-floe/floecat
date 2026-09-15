@@ -191,7 +191,7 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
    * cached body with metadata from another version or omit the authoritative retry when a selected
    * blob vanished.
    */
-  public Optional<T> getByKeyThrough(K key, Function<String, Optional<T>> bodyReader) {
+  public <R> Optional<R> getByKeyThrough(K key, Function<String, Optional<R>> bodyReader) {
     Objects.requireNonNull(bodyReader, "bodyReader");
     return observeRepository(
         "get_by_key", () -> readThrough(schema.canonicalPointerForKey.apply(key), bodyReader));
@@ -226,6 +226,23 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
                   pointer, pointerKey, blobUri, Timestamps.fromMillis(clock.millis()));
           return Optional.of(new ResourceWithMeta<>(value, meta));
         });
+  }
+
+  /**
+   * Returns the body and canonical pointer version from one authoritative mutation read. This is
+   * the read half of an optimistic merge: neither value may come through a query cache.
+   */
+  public Optional<ResourceWithMeta<T>> getByKeyWithMetaForMutation(K key) {
+    return observeRepository(
+        "get_by_key_with_meta_for_mutation",
+        () ->
+            readForMutationWithPointer(schema.canonicalPointerForKey.apply(key))
+                .map(
+                    resolved ->
+                        new ResourceWithMeta<>(
+                            resolved.value(),
+                            pointerMeta(
+                                resolved.pointer(), Timestamps.fromMillis(clock.millis())))));
   }
 
   /**

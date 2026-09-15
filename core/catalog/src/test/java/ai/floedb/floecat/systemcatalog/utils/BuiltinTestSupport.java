@@ -26,12 +26,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.hint.SystemCatalogHintProvider;
-import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
-import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
-import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
-import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.util.SignatureUtil;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -45,13 +40,6 @@ public final class BuiltinTestSupport {
         .addPath(full.substring(0, idx))
         .setName(full.substring(idx + 1))
         .build();
-  }
-
-  public static SystemCatalogHintProvider providerFrom(String engine, SystemCatalogData data) {
-    var registry =
-        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(engine, data)));
-    var nodeRegistry = new SystemNodeRegistry(registry, new FloecatInternalProvider(), providers());
-    return new SystemCatalogHintProvider(nodeRegistry, registry);
   }
 
   public static String json(EngineHint h) {

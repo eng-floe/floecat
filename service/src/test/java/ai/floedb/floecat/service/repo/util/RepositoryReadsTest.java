@@ -90,6 +90,28 @@ class RepositoryReadsTest {
     assertThat(admittedReads).hasValue(0);
   }
 
+  @Test
+  void mutationBodyAndVersionPairStayOnRawStores() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    AtomicInteger admittedReads = new AtomicInteger();
+    GenericResourceRepository<Catalog, CatalogKey> repository =
+        repository(
+            pointers,
+            blobs,
+            BlobCacheAccess.disabled(),
+            countedReads(pointers, blobs, admittedReads));
+    Catalog catalog = catalog("sales");
+    repository.create(catalog);
+    admittedReads.set(0);
+
+    var current = repository.getByKeyWithMetaForMutation(KEY).orElseThrow();
+
+    assertThat(current.value()).isEqualTo(catalog);
+    assertThat(current.meta().getPointerVersion()).isPositive();
+    assertThat(admittedReads).hasValue(0);
+  }
+
   /** Build a catalog repository with explicit read policy and optional immutable cache. */
   private static GenericResourceRepository<Catalog, CatalogKey> repository(
       InMemoryPointerStore pointers,

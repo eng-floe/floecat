@@ -56,6 +56,22 @@ class KeysTest {
   }
 
   @Test
+  void relationHintKeysKeepEngineIdentityInThePath() {
+    assertEquals(
+        "/accounts/acct%20id/relations/relation%2Fid/hints/by-engine/floe%20db/v1%2Fbeta",
+        Keys.relationHintsPointer("acct id", "relation/id", "floe db", "v1/beta"));
+    assertEquals(
+        "/accounts/acct%20id/relations/relation%2Fid/hints/floe%20db/v1%2Fbeta/sha%20value.pb",
+        Keys.relationHintsBlobUri("acct id", "relation/id", "floe db", "v1/beta", "sha value"));
+    assertEquals(
+        "/accounts/acct/relations/relation/hints/by-engine/floedb/%00",
+        Keys.relationHintsPointer("acct", "relation", "floedb", ""));
+    assertEquals(
+        "/accounts/acct%20id/relations/relation%2Fid/hints/by-engine/",
+        Keys.relationHintsPointerPrefix("acct id", "relation/id"));
+  }
+
+  @Test
   void encodeSegmentUsesRfc3986PathSegmentRules() {
     assertEquals("a%20b", Keys.encodeSegment("a b"));
     assertEquals("a%2Bb", Keys.encodeSegment("a+b"));
@@ -264,6 +280,14 @@ class KeysTest {
     assertEquals(
         Keys.snapshotConstraintsPointer("a c", "tbl 1", 7L),
         Keys.ownerPointerKeyForBlob(Keys.snapshotConstraintsBlobUri("a c", "tbl 1", 7L, "sha")));
+    assertEquals(
+        Keys.relationHintsPointer("a c", "tbl 1", "floe db", "v1/beta"),
+        Keys.ownerPointerKeyForBlob(
+            Keys.relationHintsBlobUri("a c", "tbl 1", "floe db", "v1/beta", "sha")));
+    assertEquals(
+        Keys.relationHintsPointer("a c", "tbl 1", "floe db", ""),
+        Keys.ownerPointerKeyForBlob(
+            Keys.relationHintsBlobUri("a c", "tbl 1", "floe db", "", "sha")));
     assertEquals(
         Keys.snapshotIndexArtifactCaptureManifestPointer("a c", "tbl 1", 7L),
         Keys.ownerPointerKeyForBlob(
