@@ -2449,14 +2449,20 @@ currently reports <code>DeleteRef.all_deletes=true</code>; finer-grain delete re
 applicability logic is defined. The lease data (snapshots, expansion map, obligations) is returned to
 the caller inside the <code>QueryDescriptor</code>.</p>
 <h3 id="account-assignment">Account Assignment<a class="headerlink" href="#account-assignment" title="Permanent link">&para;</a></h3>
-<p><code>AccountAssignment</code> decides which accounts this process serves. In the default <code>standalone</code> mode
+<p><code>AccountScope</code> is the question — may this process mutate, resolve pins for, or collect this
+account? — asked by every caller that needs to know, rather than reading assignment state directly.
+It answers permission only: the store fence below is Floecat's own, so an implementation decides
+who serves what without maintaining the mechanism that enforces it. <code>AccountAssignment</code> is the
+only implementation and decides which accounts this process serves. In the default <code>standalone</code> mode
 every account is served and GC-allowed and nothing below applies. In <code>managed</code> mode Core pushes each
 process its complete assignment through the internal <code>AccountAssignmentControl</code> service
 (<code>ApplyAssignment</code>, <code>GetAssignmentStatus</code>; permission <code>account-assignment-control.internal</code>):
 an epoch, the epoch's phase (<code>DRAINING</code> or <code>SERVING</code>), the owned account ids and the subset that
 may run GC. The phase describes the epoch and is pushed unchanged to every process; whether this
 process serves an account is per account.
-Floecat never calls Core or another Floecat. An apply is rejected when <code>target_incarnation</code> is not
+Floecat never calls Core or another Floecat, and never learns where it is deployed: the account
+set arrives over the RPC and is never derived from a cluster, a replica count or a placement hash
+(<code>DeploymentIndependenceArchTest</code>). An apply is rejected when <code>target_incarnation</code> is not
 this process, when the epoch is older than the applied one, or when an equal epoch changes the
 account set or moves <code>SERVING -&gt; DRAINING</code>.</p>
 <p>For an owned account the process admits pins and mutations under a permit and reads from the
@@ -2464,8 +2470,11 @@ planning pointer index. For a non-owned account reads fall through to the durabl
 <code>BeginQuery</code>, pin resolution and mutations fail with <code>FAILED_PRECONDITION</code> whose message carries
 <code>floecat.not_assigned</code>; <code>RenewQuery</code> and <code>EndQuery</code> for contexts the process already holds keep
 working. Entering <code>SERVING</code> takes the account's fence pointer <code>assignment-fence/&lt;account&gt;</code> by CAS
-to an <code>owned</code> marker and writes the member index <code>assignments/&lt;member&gt;</code>, both in the background;
-from then on every account-scoped write carries <code>CasCheck(fence, remembered_version)</code>
+to an <code>owned</code> marker and writes the member index <code>assignments/&lt;member&gt;</code>, both in the background on
+one thread, since taking a fence is a read then a CAS and two takers would each believe a different
+version. Both records sit outside <code>accounts/</code> and get one store partition each, so deleting an
+account's prefix cannot take its fence with it.
+From then on every account-scoped write carries <code>CasCheck(fence, remembered_version)</code>
 (<code>AssignmentFence</code>, wired once beneath <code>IndexedPointerStore</code>), so a previous owner's next write
 fails its condition. The fence is separate from the account-deletion fence, which keeps its own
 shards and its existing deletion-in-progress error. A fence self-check (one consistent read of the

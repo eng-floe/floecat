@@ -110,16 +110,6 @@
     "allowedTags": ["account", "cache", "component", "operation"]
   },
   {
-    "name": "floecat.core.cache.loads.discarded",
-    "type": "COUNTER",
-    "unit": "",
-    "since": "v1",
-    "origin": "core",
-    "description": "Loads whose value was not retained because a write may have raced the key while it was being loaded, tagged by cache name. Raised on both the read-through and the batch path. A sustained rate means the cache is not warming.",
-    "requiredTags": ["cache", "component", "operation"],
-    "allowedTags": ["account", "cache", "component", "operation"]
-  },
-  {
     "name": "floecat.core.cache.max.weight.bytes",
     "type": "GAUGE",
     "unit": "bytes",
@@ -158,16 +148,6 @@
     "description": "Total weight (bytes) of cache entries, tagged by cache name.",
     "requiredTags": ["cache", "component", "operation"],
     "allowedTags": ["account", "cache", "component", "operation"]
-  },
-  {
-    "name": "floecat.core.cache.write.through",
-    "type": "COUNTER",
-    "unit": "",
-    "since": "v1",
-    "origin": "core",
-    "description": "Write-through publications, tagged by whether they were applied or skipped by the cache's safety guards.",
-    "requiredTags": ["cache", "component", "operation", "result"],
-    "allowedTags": ["account", "cache", "component", "operation", "result"]
   },
   {
     "name": "floecat.core.exec.active",

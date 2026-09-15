@@ -1907,15 +1907,6 @@
 <td>account, cache, component, operation</td>
 </tr>
 <tr>
-<td>floecat.core.cache.loads.discarded</td>
-<td>COUNTER</td>
-<td></td>
-<td>v1</td>
-<td>Loads whose value was not retained because a write may have raced the key while it was being loaded, tagged by cache name. Raised on both the read-through and the batch path. A sustained rate means the cache is not warming.</td>
-<td>cache, component, operation</td>
-<td>account, cache, component, operation</td>
-</tr>
-<tr>
 <td>floecat.core.cache.max.weight.bytes</td>
 <td>GAUGE</td>
 <td>bytes</td>
@@ -1950,15 +1941,6 @@
 <td>Total weight (bytes) of cache entries, tagged by cache name.</td>
 <td>cache, component, operation</td>
 <td>account, cache, component, operation</td>
-</tr>
-<tr>
-<td>floecat.core.cache.write.through</td>
-<td>COUNTER</td>
-<td></td>
-<td>v1</td>
-<td>Write-through publications, tagged by whether they were applied or skipped by the cache's safety guards.</td>
-<td>cache, component, operation, result</td>
-<td>account, cache, component, operation, result</td>
 </tr>
 <tr>
 <td>floecat.core.exec.active</td>
