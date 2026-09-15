@@ -18,10 +18,12 @@ package ai.floedb.floecat.service.util;
 
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.reconciler.jobs.durable.store.MemoryReconcileJobIndexBackend;
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import ai.floedb.floecat.storage.spi.PointerStoreKeys;
+import ai.floedb.floecat.storage.spi.RawPointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
@@ -34,10 +36,13 @@ import software.amazon.awssdk.services.dynamodb.model.ScanRequest;
 
 @ApplicationScoped
 public class TestDataResetter {
-  @Inject PointerStore ptr;
+  // Fixture cleanup must bypass the indexed view: it is deliberately deleting the durable state
+  // in bulk and clears the in-memory planner image once afterward.
+  @Inject @RawPointerStore PointerStore ptr;
   @Inject BlobStore blobs;
   @Inject Instance<DynamoDbClient> dynamoDb;
   @Inject Instance<MemoryReconcileJobIndexBackend> memoryReconcileJobIndexBackend;
+  @Inject Instance<PlanningPointerIndex> planningPointerIndex;
 
   @ConfigProperty(name = "floecat.kv", defaultValue = "memory")
   String kvMode;
@@ -90,6 +95,9 @@ public class TestDataResetter {
         memoryReconcileJobIndexBackend.get().clearInMemoryState();
       }
       wipeDynamoKvTableIfPresent();
+      if (planningPointerIndex != null && planningPointerIndex.isResolvable()) {
+        planningPointerIndex.get().clear();
+      }
 
       for (var tid : accountIds) {
         blobs.deletePrefix("/accounts/" + tid + "/");
@@ -99,6 +107,36 @@ public class TestDataResetter {
       if (!ptr.isEmpty()) {
         ptr.dump("AFTER WIPE, NON-EMPTY");
       }
+    }
+  }
+
+  /** Starts the non-blocking planner-index warm for the account used by integration fixtures. */
+  public void warmPointerIndex(String accountId) {
+    if (accountId == null
+        || accountId.isBlank()
+        || planningPointerIndex == null
+        || !planningPointerIndex.isResolvable()) {
+      return;
+    }
+    planningPointerIndex.get().warm(accountId);
+  }
+
+  /**
+   * Warms the fixture account and waits only in tests for the background image to become usable.
+   */
+  public void warmPointerIndexAndWait(String accountId) {
+    warmPointerIndex(accountId);
+    if (planningPointerIndex == null || !planningPointerIndex.isResolvable()) {
+      return;
+    }
+    long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30);
+    while (planningPointerIndex.get().completePartitionCount() == 0
+        && System.nanoTime() < deadline) {
+      java.util.concurrent.locks.LockSupport.parkNanos(
+          java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(5));
+    }
+    if (planningPointerIndex.get().completePartitionCount() == 0) {
+      throw new AssertionError("planner pointer index did not become complete for " + accountId);
     }
   }
 

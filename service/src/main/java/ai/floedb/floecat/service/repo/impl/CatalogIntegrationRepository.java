@@ -10,7 +10,6 @@ package ai.floedb.floecat.service.repo.impl;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
-import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.model.CatalogIntegrationKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -46,7 +45,7 @@ public class CatalogIntegrationRepository {
       PointerStore pointerStore,
       @CachedPointerStore PointerStore pointerReads,
       BlobStore blobStore) {
-    this.pointerStore = AuthoritativePointerStore.of(pointerStore);
+    this.pointerStore = pointerStore;
     repo =
         new GenericResourceRepository<>(
             pointerStore,

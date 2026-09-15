@@ -129,7 +129,7 @@ public class TableRepository {
     return repo.getByKey(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
-  /** Loads the table through the mutation read path, bypassing the query pointer cache. */
+  /** Loads the table through the same indexed store seam used by ordinary reads. */
   public Optional<Table> getByIdConsistent(ResourceId tableResourceId) {
     return repo.getByKeyForMutation(
         new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
@@ -265,7 +265,7 @@ public class TableRepository {
     return repo.metaForSafe(new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));
   }
 
-  /** Reads table metadata through the mutation path, bypassing the query pointer cache. */
+  /** Reads table metadata through the same indexed store seam used by ordinary reads. */
   public MutationMeta metaForSafeConsistent(ResourceId tableResourceId) {
     return repo.metaForSafeConsistent(
         new TableKey(tableResourceId.getAccountId(), tableResourceId.getId()));

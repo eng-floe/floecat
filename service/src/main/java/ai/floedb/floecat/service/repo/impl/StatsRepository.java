@@ -25,7 +25,6 @@ import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
-import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -143,7 +142,7 @@ public class StatsRepository implements StatsStore {
       BlobStore blobStore,
       ImmutableBlobCache blobCache,
       TableBlobReachabilityGuard reachabilityGuard) {
-    this.pointerStore = AuthoritativePointerStore.of(pointerStore);
+    this.pointerStore = pointerStore;
     this.pointerReads = pointerReads;
     this.blobStore = blobStore;
     this.blobCache = blobCache;

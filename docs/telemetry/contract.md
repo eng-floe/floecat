@@ -16,11 +16,9 @@ This lists all metrics currently available in the repository:
 | floecat.core.cache.evictions | COUNTER |  | v1 | Entries evicted to stay within the cache's budget, tagged by cache name. For a cache with no expiry this is the signal that its budget is too small. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.hits | COUNTER |  | v1 | Number of cache lookup hits, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.latency | TIMER | seconds | v1 | Cache latency distribution for operations. | cache, component, operation, result | account, cache, component, exception, operation, result |
-| floecat.core.cache.loads.discarded | COUNTER |  | v1 | Loads whose value was not retained because a write may have raced the key while it was being loaded, tagged by cache name. Raised on both the read-through and the batch path. A sustained rate means the cache is not warming. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.max.weight.bytes | GAUGE | bytes | v1 | Configured maximum weight (bytes) for the cache. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.misses | COUNTER |  | v1 | Number of cache lookup misses, tagged by cache name. | cache, component, operation | account, cache, component, operation |
 | floecat.core.cache.weighted.size.bytes | GAUGE | bytes | v1 | Total weight (bytes) of cache entries, tagged by cache name. | cache, component, operation | account, cache, component, operation |
-| floecat.core.cache.write.through | COUNTER |  | v1 | Write-through publications, tagged by whether they were applied or skipped by the cache's safety guards. | cache, component, operation, result | account, cache, component, operation, result |
 | floecat.core.exec.active | GAUGE | count | v1 | Number of threads actively executing tasks per pool. | component, operation, pool | component, operation, pool |
 | floecat.core.exec.queue.depth | GAUGE | count | v1 | Number of work items waiting in the executor queue per pool. | component, operation, pool | component, operation, pool |
 | floecat.core.exec.rejected | COUNTER |  | v1 | Number of task submissions rejected by the executor. | component, operation, pool | component, operation, pool |
@@ -86,6 +84,11 @@ This lists all metrics currently available in the repository:
 | floecat.service.metadata_io.admission.waiters | GAUGE | count | v1 | Threads waiting for metadata-I/O admission. | component, operation | component, operation |
 | floecat.service.metadata_io.permits.capacity | GAUGE | count | v1 | Configured process-wide metadata-I/O concurrency ceiling. | component, operation | component, operation |
 | floecat.service.metadata_io.permits.in_use | GAUGE | count | v1 | Metadata-I/O admission permits held by in-flight store calls. | component, operation | component, operation |
+| floecat.service.planning.pointer.entries | GAUGE | count | v1 | Number of planner pointer entries resident in the authoritative in-memory index. | component, operation | component, operation |
+| floecat.service.planning.pointer.partitions | GAUGE | count | v1 | Number of planner pointer partitions by readiness state. | component, operation | component, operation, result |
+| floecat.service.planning.pointer.warm.errors.total | COUNTER |  | v1 | Planner pointer index warm-up failures. | component, operation | component, exception, operation, result |
+| floecat.service.planning.pointer.warm.latency | TIMER | ms | v1 | Planner pointer index warm-up latency. | component, operation, result | component, exception, operation, result |
+| floecat.service.planning.pointer.warm.starts.total | COUNTER |  | v1 | Planner pointer index warm-up attempts. | component, operation | component, operation |
 | floecat.service.reconcile.cancel_job.total | COUNTER |  | v1 | CancelReconcileJob request outcomes. | component, operation, result | component, operation, reason, result |
 | floecat.service.reconcile.capture_now.total | COUNTER |  | v1 | CaptureNow request outcomes by trigger type. | component, operation, result, trigger | component, operation, reason, result, trigger |
 | floecat.service.reconcile.errors.total | COUNTER |  | v1 | Errors recorded by reconcile jobs. | component, mode, operation, result | component, mode, operation, reason, result |

@@ -456,7 +456,9 @@ public class PointerGc {
     if (key == null || key.isBlank()) {
       return true;
     }
-    return key.contains(Keys.SEG_IDEMPOTENCY) || key.contains(Keys.SEG_MARKERS);
+    // Segment-exact, so a namespace named "markers" is not mistaken for a marker key and
+    // silently skipped: the key vocabulary owns this test, not a substring match here.
+    return Keys.isIdempotencyOrMarkerKey(key);
   }
 
   private static String canonicalPointerForBlobUri(String blobUri) {

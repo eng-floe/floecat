@@ -73,6 +73,11 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
             TagKey.REASON,
             TagKey.RESOURCE,
             TagKey.SCOPE);
+    Set<String> planningPointerRequired = Set.of(TagKey.COMPONENT, TagKey.OPERATION);
+    Set<String> planningPointerResultAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT);
+    Set<String> planningPointerErrorAllowed =
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT, TagKey.EXCEPTION);
 
     add(
         defs,
@@ -101,6 +106,36 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "Stored partial-pointer-state anomalies surfaced (non-retryably) by the repository layer: a"
             + " canonical/secondary pointer mismatch that an atomic create/createIfAbsent can never"
             + " itself produce and that must be reconciled out of band.");
+    add(
+        defs,
+        ServiceMetrics.PlanningPointer.PARTITIONS,
+        planningPointerRequired,
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION, TagKey.RESULT),
+        "Number of planner pointer partitions by readiness state.");
+    add(
+        defs,
+        ServiceMetrics.PlanningPointer.ENTRIES,
+        planningPointerRequired,
+        planningPointerRequired,
+        "Number of planner pointer entries resident in the authoritative in-memory index.");
+    add(
+        defs,
+        ServiceMetrics.PlanningPointer.WARM_STARTS,
+        planningPointerRequired,
+        planningPointerRequired,
+        "Planner pointer index warm-up attempts.");
+    add(
+        defs,
+        ServiceMetrics.PlanningPointer.WARM_LATENCY,
+        planningPointerResultAllowed,
+        planningPointerErrorAllowed,
+        "Planner pointer index warm-up latency.");
+    add(
+        defs,
+        ServiceMetrics.PlanningPointer.WARM_ERRORS,
+        Set.of(TagKey.COMPONENT, TagKey.OPERATION),
+        planningPointerErrorAllowed,
+        "Planner pointer index warm-up failures.");
     add(
         defs,
         ServiceMetrics.Flight.REQUESTS,

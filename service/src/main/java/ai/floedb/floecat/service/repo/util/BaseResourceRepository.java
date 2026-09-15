@@ -22,7 +22,6 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.service.repo.ResourceRepository;
-import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
@@ -203,9 +202,8 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   /**
    * Compose the stores a mutation transaction writes through with the read capabilities selected
-   * for this repository family. A read taken as part of a write protocol goes past the cache -- see
-   * {@link #readForMutation} -- so the body and the version it will CAS against come from the same
-   * consistent view.
+   * for this repository family. Mutation reads use the same PointerStore seam as ordinary reads;
+   * the indexed store selects its complete in-memory partition or its durable fallback internally.
    */
   protected BaseResourceRepository(
       PointerStore mutationPointerStore,
@@ -216,8 +214,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
       ImmutableBlobCache blobCache,
       RepositoryReads reads) {
     this.mutationPointerStore =
-        AuthoritativePointerStore.of(
-            Objects.requireNonNull(mutationPointerStore, "mutationPointerStore"));
+        Objects.requireNonNull(mutationPointerStore, "mutationPointerStore");
     this.mutationBlobStore = Objects.requireNonNull(mutationBlobStore, "blobs");
     this.mutationReads = RepositoryReads.direct(this.mutationPointerStore, mutationBlobStore);
     this.reads = Objects.requireNonNull(reads, "reads");
@@ -252,14 +249,10 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   /**
-   * Read one mutation prerequisite: the body a write protocol is about to act on, resolved past the
-   * cache.
-   *
-   * <p>The version this write will CAS against comes from a consistent read, so the POINTER naming
-   * the body is read the same way; the bytes it names are content-addressed, so a decoded copy of
-   * that uri is the same content. Taking one from each is a torn read -- a delete computing its
-   * secondary-name CasDeletes from a body one rename stale removes the old names and orphans the
-   * current one.
+   * Read one mutation prerequisite through the same indexed pointer seam as ordinary reads.
+   * Mutations serialize durable commit and index publication under the account partition lock, so
+   * the body and pointer version come from one state machine. The referenced bytes are immutable
+   * and content-addressed.
    */
   protected final Optional<T> readForMutation(String key) {
     return read(key, mutationReads);
@@ -372,28 +365,20 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    * does: the pointer moved or vanished under the read (a benign race, report absence), or it still
    * names the missing blob (corruption, and loud).
    *
-   * <p>Reads past the cache, always. The pointer cache holds entries indefinitely and only a local
-   * write publishes into it, so a pointer cached on this replica can name a blob that a commit on
-   * another replica superseded and CAS GC then swept. Asking the cache here would compare that
-   * stale value against itself, find them equal, and call a healthy resource corrupt -- for good,
-   * since nothing expires.
-   *
-   * <p>And it re-resolves rather than reporting absence. Reporting absence was defensible while a
-   * moving pointer was a sub-millisecond race; with nothing expiring it is the ordinary state of
-   * every replica that did not make the write, so "the pointer moved" would surface as a resource
-   * that has vanished -- a spurious NOT_FOUND, or a row quietly missing from a listing, which the
-   * caller cannot even detect. The authoritative pointer is in hand here, so the answer is
-   * available: load what it names.
+   * <p>The pointer is resolved through the indexed store. A complete owned planner partition is
+   * authoritative in memory; loading, handoff, and non-owned partitions use durable KV. Re-reading
+   * through that same seam handles a pointer that moved between the initial pointer read and the
+   * blob read without creating a second caller-visible consistency path.
    *
    * <p>The re-read decides both cases at once: whatever uri the authoritative pointer names is
    * probed, so a pointer that moved resolves there and one that still names the vanished blob -- or
    * has reverted onto it -- is answered by that same probe.
    *
-   * <p>Past the POINTER cache, not the blob cache. A resident decode of the vanished blob means the
-   * caller never gets here at all, so this detector is silent while an entry stays warm. That errs
-   * toward serving immutable content whose blob has been swept, never toward calling a healthy
-   * resource corrupt; a read whose emptiness is itself the verdict uses the live blob path instead
-   * ({@code getByBlobUriLive}).
+   * <p>Past the decoded blob cache, not the pointer index. A resident decode of the vanished blob
+   * means the caller never gets here at all, so this detector is silent while an entry stays warm.
+   * That errs toward serving immutable content whose blob has been swept, never toward calling a
+   * healthy resource corrupt; a read whose emptiness is itself the verdict uses the live blob path
+   * instead ({@code getByBlobUriLive}).
    *
    * @return the value at the pointer as the store now holds it, with the pointer it came from, or
    *     empty when the key itself is gone. Throws when the blob that pointer names is missing too

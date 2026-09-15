@@ -89,7 +89,7 @@ public abstract class TableScopedPointerRepository<T> {
     return repo.getByKey(key(tableId));
   }
 
-  /** Loads the pointer through the mutation read path, bypassing the query pointer cache. */
+  /** Loads the pointer through the same indexed store seam used by ordinary reads. */
   public Optional<T> getForMutation(ResourceId tableId) {
     return repo.getByKeyForMutation(key(tableId));
   }
@@ -110,7 +110,10 @@ public abstract class TableScopedPointerRepository<T> {
     return repo.metaFor(key(tableId));
   }
 
-  /** Pointer meta read past any cache, for CAS versions and for probes whose emptiness answers. */
+  /**
+   * Pointer meta read through the indexed store for CAS versions and probes whose emptiness
+   * answers.
+   */
   public MutationMeta metaForSafeConsistent(ResourceId tableId) {
     return repo.metaForSafeConsistent(key(tableId));
   }

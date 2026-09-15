@@ -116,20 +116,6 @@ class CacheMetricsTest {
   }
 
   @Test
-  void recordsALoadDiscardedBecauseAWriteMayHaveRacedIt() {
-    // The one cache failure that looks like health: the caller is served correctly either way, so
-    // without its own series a cache that has stopped warming reports a steady miss count and
-    // nothing else.
-    TestObservability observability = new TestObservability();
-    CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "users");
-
-    metrics.recordLoadDiscarded();
-    metrics.recordLoadDiscarded();
-
-    assertThat(observability.counterValue(Telemetry.Metrics.CACHE_LOADS_DISCARDED)).isEqualTo(2d);
-  }
-
-  @Test
   void recordsAnAdmissionRejectedByTheBudget() {
     TestObservability observability = new TestObservability();
     CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "users");
@@ -141,29 +127,5 @@ class CacheMetricsTest {
     assertThat(
             observability.counterTagHistory(Telemetry.Metrics.CACHE_ADMISSION_REJECTED).getFirst())
         .contains(Tag.of(TagKey.ACCOUNT, "acct"));
-  }
-
-  @Test
-  void recordsWriteThroughOutcomes() {
-    TestObservability observability = new TestObservability();
-    CacheMetrics metrics = new CacheMetrics(observability, "svc", "op", "pointers");
-
-    metrics.recordWriteThrough(true, Tag.of(TagKey.ACCOUNT, "acct"));
-    metrics.recordWriteThrough(false);
-
-    assertThat(observability.counterValue(Telemetry.Metrics.CACHE_WRITE_THROUGH)).isEqualTo(2d);
-    assertThat(observability.counterTagHistory(Telemetry.Metrics.CACHE_WRITE_THROUGH))
-        .containsExactly(
-            List.of(
-                Tag.of(TagKey.COMPONENT, "svc"),
-                Tag.of(TagKey.OPERATION, "op"),
-                Tag.of(TagKey.CACHE_NAME, "pointers"),
-                Tag.of(TagKey.RESULT, "applied"),
-                Tag.of(TagKey.ACCOUNT, "acct")),
-            List.of(
-                Tag.of(TagKey.COMPONENT, "svc"),
-                Tag.of(TagKey.OPERATION, "op"),
-                Tag.of(TagKey.CACHE_NAME, "pointers"),
-                Tag.of(TagKey.RESULT, "skipped")));
   }
 }

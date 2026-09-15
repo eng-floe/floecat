@@ -30,7 +30,6 @@ import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
-import ai.floedb.floecat.service.repo.cache.AuthoritativePointerStore;
 import ai.floedb.floecat.service.repo.cache.ImmutableBlobCache;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -122,7 +121,7 @@ public class IndexArtifactRepository {
       BlobStore blobStore,
       ImmutableBlobCache blobCache,
       TableBlobReachabilityGuard reachabilityGuard) {
-    this.pointerStore = AuthoritativePointerStore.of(pointerStore);
+    this.pointerStore = pointerStore;
     this.blobStore = blobStore;
     this.blobCache = Objects.requireNonNull(blobCache, "blobCache");
     this.reachabilityGuard = reachabilityGuard;
