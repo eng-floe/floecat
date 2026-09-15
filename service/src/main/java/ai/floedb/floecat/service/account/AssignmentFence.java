@@ -135,9 +135,14 @@ public final class AssignmentFence implements PointerStore {
     return delegate.deleteByPrefix(prefix);
   }
 
-  /** Account teardown; the marker transaction that precedes it already carried the fence. */
+  /**
+   * Account teardown. The deletion marker that precedes it was written under the fence, but a long
+   * stretch of listing and cleanup runs between that commit and this purge, and nothing in it would
+   * notice the fence moving. Check it here too, like every other prefix delete.
+   */
   @Override
   public int deleteByPrefixExcluding(String prefix, String excludedKey) {
+    checkFor(prefix).ifPresent(this::requireFenceUnchanged);
     return delegate.deleteByPrefixExcluding(prefix, excludedKey);
   }
 

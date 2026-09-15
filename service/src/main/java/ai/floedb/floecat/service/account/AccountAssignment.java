@@ -48,6 +48,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.eclipse.microprofile.config.Config;
 import org.jboss.logging.Logger;
@@ -528,11 +529,17 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
             }
             case DRAINING -> {
               if (phase == AssignmentPhase.SERVING && !state.fenceLost) {
-                // Draining only because Core moved it; the fence is still this process's.
+                // Core wants it back. Resume on the remembered fence rather than wait out the
+                // drain: waiting would hold the account out of service for as long as its
+                // longest in-flight query, and forever if a permit is never closed. But
+                // fenceLost only records having been told, and nobody tells a pod that Core
+                // declared vanished, so prove the fence against the store as soon as the locks
+                // are free -- a moved one revokes there, in a round trip rather than a
+                // self-check interval.
                 state.resumeServing(gcIds.contains(accountId));
+                long resumedAt = state.generation;
+                afterLock.add(() -> verifyResumedFence(accountId, state, resumedAt));
               } else {
-                // The store handed the fence to someone else, so it has to be taken again once
-                // the work that is still draining finishes.
                 state.pending = true;
               }
             }
@@ -823,12 +830,41 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
     for (String accountId : index.accountIds()) {
       long version;
       try {
-        Pointer fence = durable.read(Keys.accountAssignmentFence(accountId)).orElse(null);
+        String fenceKey = Keys.accountAssignmentFence(accountId);
+        Pointer fence = durable.read(fenceKey).orElse(null);
         if (fence == null
             || ownedMarkerMember(fence.getBlobUri()).filter(memberId::equals).isEmpty()) {
           continue;
         }
-        version = fence.getVersion();
+        // Decide before moving anything: taking the fence for an account this process already
+        // serves would strand that state's remembered version -- fencing ourselves out of an
+        // account we own. Read the map rather than creating an entry, so an account that turns
+        // out to be someone else's leaves no trace here.
+        AccountState owned = accounts.get(accountId);
+        if (owned != null) {
+          synchronized (owned) {
+            if (owned.mode != AccountMode.UNASSIGNED) {
+              continue;
+            }
+          }
+        }
+        // Take the fence, do not adopt it. member-id is stable across restarts and the marker
+        // carries no incarnation, so a marker naming this member proves only that some process
+        // called this once -- possibly one still running and still holding this version. Writing
+        // the version forward leaves that predecessor's CasCheck asserting a version that no
+        // longer exists, which is what makes it stop. Losing the CAS means the account is
+        // someone else's now.
+        long held = fence.getVersion();
+        if (!durable.compareAndSet(
+            fenceKey,
+            held,
+            PointerReferences.opaqueMarkerPointer(fenceKey, fence.getBlobUri(), held + 1L))) {
+          LOG.warnf(
+              "account_assignment_recovery_fence_lost member=%s account_id=%s",
+              memberId, accountId);
+          continue;
+        }
+        version = held + 1L;
       } catch (RuntimeException failure) {
         LOG.warnf(
             failure,
@@ -841,6 +877,10 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
       synchronized (lock) {
         synchronized (state) {
           if (state.mode != AccountMode.UNASSIGNED) {
+            // Nothing else runs during recovery, so this is unreachable rather than tolerated:
+            // say so loudly, because the fence has already moved past what that state remembers.
+            LOG.warnf(
+                "account_assignment_recovery_raced member=%s account_id=%s", memberId, accountId);
             continue;
           }
           state.startServing(version, false);
@@ -947,6 +987,30 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
     // the version it wrote — leaving the process fenced out of an account it owns.
     for (String accountId : pending) {
       background.execute(() -> fenceAndServe(accountId, currentEpoch));
+    }
+  }
+
+  /**
+   * Proves a resumed account still holds the fence it remembers. Scheduled rather than run under
+   * the locks, so it carries the generation it was scheduled for: by the time it runs the account
+   * may have been revoked and retaken, and self-check compares against whatever version it finds
+   * then -- revoking the generation that replaced this one. Dropping the task is safe either way,
+   * because a fence that moved fails the CasCheck on the next write; this only shortens the wait.
+   */
+  private void verifyResumedFence(String accountId, AccountState state, long resumedAt) {
+    try {
+      background.execute(
+          () -> {
+            synchronized (state) {
+              if (state.generation != resumedAt || state.mode != AccountMode.SERVING) {
+                return;
+              }
+            }
+            selfCheckOne(accountId, state);
+          });
+    } catch (RejectedExecutionException shuttingDown) {
+      // The periodic self-check covers it; losing this must not abandon the rest of the apply.
+      LOG.debugf("account_assignment_resume_check_rejected account_id=%s", accountId);
     }
   }
 
@@ -1158,7 +1222,10 @@ public class AccountAssignment implements AccountScope, PlanningPointerIndex.Own
     /** The store says another process holds this account: the remembered version is spent. */
     private boolean fenceLost;
 
-    /** Resume a fence that is still valid; this is not a new ownership generation. */
+    /**
+     * Serve again on the fence this state already holds. Not a new ownership generation: the
+     * version is unchanged, so work in flight under it stays valid.
+     */
     private void resumeServing(boolean gcAllowed) {
       mode = AccountMode.SERVING;
       leaving = false;

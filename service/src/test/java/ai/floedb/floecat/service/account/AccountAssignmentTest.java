@@ -371,6 +371,36 @@ class AccountAssignmentTest {
   }
 
   @Test
+  void recoveryFencesOutAPredecessorHoldingTheSameMemberId() {
+    // member-id is stable across restarts and the marker carries no incarnation, so a replacement
+    // pod cannot tell "I wrote this" from "a still-running me wrote this". Adopting the version
+    // would leave both processes passing the same CasCheck -- two writers on one account.
+    assignment.apply(5L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
+    var predecessor = new AssignmentFence(raw, assignment);
+    String key = Keys.tablePointerById(A, "table");
+    assertThat(predecessor.compareAndSet(key, 0L, PointerReferences.blobPointer(key, "s3://t", 1L)))
+        .as("the original owner writes before the restart")
+        .isTrue();
+
+    AccountAssignment restarted =
+        AccountAssignment.forTesting(
+            Mode.MANAGED,
+            MEMBER,
+            "floecat-0/restart",
+            raw,
+            new RecordingHooks(),
+            Runnable::run,
+            observability);
+    assertThat(restarted.recoverFromStore().account(A).orElseThrow().mode())
+        .isEqualTo(AccountMode.SERVING);
+
+    assertThat(
+            predecessor.compareAndSet(key, 1L, PointerReferences.blobPointer(key, "s3://t2", 2L)))
+        .as("the predecessor still holds the superseded fence and must be refused")
+        .isFalse();
+  }
+
+  @Test
   void recoveryWithNoMemberIndexOwnsNothing() {
     var status = assignment.recoverFromStore();
 
@@ -465,6 +495,40 @@ class AccountAssignmentTest {
   }
 
   /** A successor takes the account: the fence pointer moves to its marker. */
+  @Test
+  void anAccountCoreReturnsServesAgainWithoutWaitingOutItsDrain() {
+    assignment.apply(5L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
+    // Hold a permit so the account cannot finish draining.
+    var inFlight = assignment.acquire(A, Access.WRITE).orElseThrow();
+    assignment.apply(6L, AssignmentPhase.DRAINING, List.of(), List.of(), INCARNATION);
+    assertThat(assignment.status().account(A).orElseThrow().mode()).isEqualTo(AccountMode.DRAINING);
+
+    assignment.apply(7L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
+
+    // Waiting for the drain would hold it out of service for the length of that query, and
+    // forever if the permit leaked.
+    assertThat(assignment.status().account(A).orElseThrow().mode()).isEqualTo(AccountMode.SERVING);
+    assertThat(assignment.acquire(A, Access.WRITE)).isPresent();
+    inFlight.close();
+  }
+
+  @Test
+  void aReturningAccountIsRevokedWhenItsFenceMovedWhileDraining() {
+    assignment.apply(5L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
+    var inFlight = assignment.acquire(A, Access.WRITE).orElseThrow();
+    assignment.apply(6L, AssignmentPhase.DRAINING, List.of(), List.of(), INCARNATION);
+    // Another process took it while this one was draining; nothing tells this pod so.
+    takeFence(A, "owned/6/" + Keys.encodeSegment("floecat-9"));
+
+    assignment.apply(7L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
+
+    // Resuming is optimistic, so the check against the store is what has to catch it.
+    assertThat(assignment.acquire(A, Access.WRITE))
+        .as("a resumed account whose fence moved must not keep serving")
+        .isEmpty();
+    inFlight.close();
+  }
+
   private void takeFence(String accountId, String payload) {
     String key = Keys.accountAssignmentFence(accountId);
     long version = raw.get(key).map(Pointer::getVersion).orElse(0L);
