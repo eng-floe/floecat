@@ -1865,7 +1865,7 @@ identity; they do not replace a value in an existing key.</p>
 <td>Pointers</td>
 <td><code>PlanningPointerIndex</code> behind <code>IndexedPointerStore</code></td>
 <td>All planner pointer records for an account, including current roots, names, snapshots, constraints, stats and hint-resource pointers</td>
-<td>Not a cache. A partition is either <code>LOADING</code> or <code>COMPLETE</code>. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. Every mutation commits to durable KV and publishes the result while holding the partition write lock. Operational pointers remain on the durable adapter.</td>
+<td>Not a cache. A partition is either <code>LOADING</code> or <code>COMPLETE</code>. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter.</td>
 </tr>
 <tr>
 <td>Objects</td>
@@ -1892,6 +1892,25 @@ weighing, one budget to operate, and cross-layer sharing — a node and the page
 compete honestly for the same memory. The cost is that one tenant's wide-schema or long-history
 scans can evict another tenant's hot entries, softened by Caffeine's TinyLFU admission policy,
 which favours frequently reused entries over one-shot scan traffic.</p>
+<p>An owned pointer partition can be warmed in the background when ownership is granted. The first
+read also schedules the warm if no ownership notification was received. Reads never wait for this
+work: while the partition is <code>LOADING</code>, they use durable KV. Mutations take the partition write
+lock for a prefix or account-wide operation, so they wait for a load already in progress; point
+mutations use the read side plus a per-key lock, so unrelated tables in the same account can mutate
+in parallel. Every mutation commits to KV before publishing the new pointer. A failed warm leaves
+the partition <code>LOADING</code> and the next read continues using KV.</p>
+<p>The pointer index has one account gate and one lock per planner key. Point reads use the gate's
+read side and do not wait for another table's mutation. A point mutation takes its key locks in
+sorted order, performs the durable operation, then publishes or removes the entry before releasing
+them. Sorting is only needed for multi-key mutations; it prevents two batches from acquiring the
+same key set in opposite orders. Listing, counting, batch reads, warming, reload, and account
+deletion take the account write side because they need one stable ordered view. There is no
+application-level in-flight request map or version fence in this path: the partition gate and
+key-lock ownership define the ordering.</p>
+<p>Standalone Floecat uses <code>ALWAYS_OWNED</code>, because there is no competing owner. A managed deployment
+provides the <code>PlanningPointerIndex.Ownership</code> implementation and connects ownership handoff to the
+index: revoke ownership before routing the account away, then drop the old partition; after the
+new owner is granted, start warming it. The index never assumes ownership from a cache hit.</p>
 <p><code>floecat.metadata.graph.cache-max-size</code> gates node caching (<code>0</code> = off); node memory is governed by
 <code>floecat.blob.cache.max-weight-bytes</code>.</p>
 <p><code>ObjectCache</code> stores immutable-generation target statistics by <code>(accountId, tableId, snapshotId,
@@ -2011,7 +2030,15 @@ contract and publishes its own subset; <code>graph-cache</code> is node-load tim
 </tr>
 <tr>
 <td>Are pointer indexes ready?</td>
-<td><code>floecat_core_cache_accounts</code>, tagged <code>result=loading|complete</code></td>
+<td><code>floecat.service.planning.pointer.partitions</code>, tagged <code>result=loading|complete</code></td>
+</tr>
+<tr>
+<td>How is pointer warming behaving?</td>
+<td><code>floecat.service.planning.pointer.warm.*</code>; failures are also logged with <code>account_id</code></td>
+</tr>
+<tr>
+<td>Which pointer entries are resident?</td>
+<td><code>floecat.service.planning.pointer.entries</code></td>
 </tr>
 </tbody>
 </table>
@@ -2019,8 +2046,11 @@ contract and publishes its own subset; <code>graph-cache</code> is node-load tim
 computed from a cumulative gauge cannot tell an idle cache from one that is missing everything.
 An account moves from <code>loading</code> to <code>complete</code> after its durable planner rows have been loaded. A
 load failure leaves it on the durable path; the next read can retry the load.</p>
-<p>Nothing expires in the pointer cache. The eviction series count only capacity-driven removals;
-explicit deletes, prefix sweeps, and authoritative-read repairs are not included. A non-zero
+<p>Warm-up metrics are intentionally aggregate: account IDs are not metric labels. A failed warm-up
+also emits a structured log containing the account ID, elapsed time, and exception, so an operator
+can identify the affected account without creating one time series per account.</p>
+<p>Nothing expires in the pointer index. The eviction series count only capacity-driven removals in
+the memory-cache families; explicit deletes and prefix sweeps are not included. A non-zero
 eviction rate therefore directly signals size pressure. The weight alongside the count
 distinguishes many small evictions from a few large ones.</p>
 <p>There is no independent pointer-cache switch. Pointer reads always go through <code>IndexedPointerStore</code>;
@@ -2066,11 +2096,6 @@ keys. This keeps the read and mutation path identical in tests and production.</
 <td>Commit funnel, pointer and blob</td>
 <td><code>TableRootCommitter</code></td>
 <td>The CAS needs an expected version no cached pointer can supply, and the base blob's emptiness is the corruption detector.</td>
-</tr>
-<tr>
-<td>Every pointer read in the GC</td>
-<td><code>PointerGc</code>, <code>CasBlobGc</code>, <code>ReconcileJobGc</code>, <code>TransactionGc</code></td>
-<td>The GC deletes based on what it reads. A stale canonical pointer makes a live name pointer look orphaned and CAS-deletes it; a stale root pointer puts a superseded blob in the mark set and omits the current one, which is then swept. <code>ConsistentReadRulesTest</code> holds the line.</td>
 </tr>
 </tbody>
 </table>
