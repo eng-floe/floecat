@@ -28,6 +28,7 @@ import ai.floedb.floecat.catalog.access.CatalogCapabilities;
 import ai.floedb.floecat.catalog.access.CatalogCapability;
 import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogObjectName;
+import ai.floedb.floecat.catalog.access.IcebergRestAccessDelegationMode;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
@@ -87,7 +88,7 @@ class CatalogIntegrationDiscoveryTest {
     CatalogIntegration noDelegation =
         CatalogIntegration.newBuilder()
             .setType(CatalogIntegrationType.CIT_ICEBERG_REST)
-            .putProperties(CatalogIntegrationAccessDelegation.MODE_PROPERTY, "none")
+            .putProperties(IcebergRestAccessDelegationMode.PROPERTY, "none")
             .build();
     when(access.open(noDelegation)).thenReturn(client);
     when(client.capabilities()).thenReturn(validationCapabilities());

@@ -16,14 +16,12 @@
 
 package ai.floedb.floecat.service.integration;
 
+import ai.floedb.floecat.catalog.access.IcebergRestAccessDelegationMode;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 
 /** Reads credential-vending intent from a Catalog Integration. */
 public final class CatalogIntegrationAccessDelegation {
-  public static final String MODE_PROPERTY = "access-delegation-mode";
-  private static final String NONE = "none";
-
   private CatalogIntegrationAccessDelegation() {}
 
   /** Whether this integration is configured to request credentials from its source catalog. */
@@ -34,7 +32,8 @@ public final class CatalogIntegrationAccessDelegation {
     if (integration.getType() != CatalogIntegrationType.CIT_ICEBERG_REST) {
       return true;
     }
-    return !NONE.equalsIgnoreCase(
-        integration.getPropertiesMap().getOrDefault(MODE_PROPERTY, "").trim());
+    return IcebergRestAccessDelegationMode.parse(
+            integration.getPropertiesMap().get(IcebergRestAccessDelegationMode.PROPERTY))
+        .requestsVendedCredentials();
   }
 }

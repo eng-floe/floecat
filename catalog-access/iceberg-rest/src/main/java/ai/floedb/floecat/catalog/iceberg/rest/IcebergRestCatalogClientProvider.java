@@ -20,13 +20,13 @@ import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogClientProvider;
 import ai.floedb.floecat.catalog.access.CatalogConnectionConfig;
 import ai.floedb.floecat.catalog.access.CatalogProtocol;
+import ai.floedb.floecat.catalog.access.IcebergRestAccessDelegationMode;
 import ai.floedb.floecat.catalog.access.ResolvedCatalogCredentials;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.AwsCredentialScope;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.CatalogSigV4AuthManager;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.RefreshingAwsCredentialsRegistry;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.RegistryBackedAwsCredentialsProvider;
 import java.util.HashMap;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -45,9 +45,6 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
   private static final String ACCESS_DELEGATION_HEADER = "X-Iceberg-Access-Delegation";
   private static final String ACCESS_DELEGATION_HEADER_PROPERTY =
       "header." + ACCESS_DELEGATION_HEADER;
-  private static final String ACCESS_DELEGATION_MODE_PROPERTY = "access-delegation-mode";
-  private static final String VENDED_CREDENTIALS = "vended-credentials";
-  private static final String NO_ACCESS_DELEGATION = "none";
   private static final String REST_CONNECTION_TIMEOUT_MS = "rest.client.connection-timeout-ms";
   private static final String REST_SOCKET_TIMEOUT_MS = "rest.client.socket-timeout-ms";
   private static final String DEFAULT_REST_CONNECTION_TIMEOUT_MS = "10000";
@@ -131,9 +128,9 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
     rejectResolvedOnlyProperties(config.authentication().properties());
     Map<String, String> properties = new HashMap<>(config.properties());
     properties.putAll(config.authentication().properties());
-    String accessDelegationMode =
-        properties.getOrDefault(ACCESS_DELEGATION_MODE_PROPERTY, VENDED_CREDENTIALS);
-    properties.remove(ACCESS_DELEGATION_MODE_PROPERTY);
+    IcebergRestAccessDelegationMode accessDelegationMode =
+        IcebergRestAccessDelegationMode.parse(
+            properties.remove(IcebergRestAccessDelegationMode.PROPERTY));
 
     properties.put(CatalogProperties.URI, config.endpoint().toString());
     properties.putIfAbsent(REST_CONNECTION_TIMEOUT_MS, DEFAULT_REST_CONNECTION_TIMEOUT_MS);
@@ -148,13 +145,10 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
               }
               properties.put("header." + name, value);
             });
-    switch (accessDelegationMode.trim().toLowerCase(Locale.ROOT)) {
+    switch (accessDelegationMode) {
       case VENDED_CREDENTIALS ->
-          properties.put(ACCESS_DELEGATION_HEADER_PROPERTY, VENDED_CREDENTIALS);
-      case NO_ACCESS_DELEGATION -> {}
-      default ->
-          throw new IllegalArgumentException(
-              "Unsupported access-delegation-mode: " + accessDelegationMode);
+          properties.put(ACCESS_DELEGATION_HEADER_PROPERTY, accessDelegationMode.propertyValue());
+      case NONE -> {}
     }
 
     switch (config.authentication().scheme()) {

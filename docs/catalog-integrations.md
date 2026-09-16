@@ -24,8 +24,11 @@ and does not affect query paths.
 After creating an Integration, clients call `ValidateCatalogIntegration` with its resource ID. The
 response reports catalog connection, catalog authentication, namespace/table discovery, credential
 vending, and storage access as separate checks. Credential issues distinguish vending failure,
-expiry, and invalid scope. `valid` is true only when all five checks pass; an empty catalog cannot
-prove credential vending and therefore does not report full validation success.
+expiry, and invalid scope. With the default `vended-credentials` mode, `valid` is true only when all
+five checks pass; an empty catalog cannot prove credential vending and therefore does not report
+full validation success. For an Iceberg REST Integration configured with
+`access-delegation-mode=none`, credential vending and its storage probe are intentionally not run,
+and validation succeeds after connection, authentication, and discovery pass.
 
 The response capability set covers operations relevant to public Integration validation and
 discovery. Internal table and view loading capabilities belong to reconciliation and are not
@@ -41,19 +44,16 @@ These operations require `catalog-integration.read` and `catalog-integration.use
 catalog-access SPI directly and never call or fall back to the legacy Connector path.
 
 Tables materialized by an Iceberg REST overlay retain their source Catalog Integration identity.
-When no storage authority covers a table read, Floecat reopens that Integration through the
-catalog-access SPI and asks the upstream catalog for table-scoped storage credentials. The query
-path therefore does not reconstruct or depend on a legacy Connector.
+With the default `vended-credentials` mode, Floecat reopens that Integration through the
+catalog-access SPI and asks the upstream catalog for table-scoped storage credentials when no
+storage authority covers a table read. If vending was requested but the provider cannot supply
+usable credentials, the read fails with the vending cause rather than silently changing credential
+sources.
 
-A storage authority is not an alternative for an Integration-backed table, and Floecat does not fall
-back to one. Pairing an authority with an Integration is the split-brain this feature removes --
-authenticate to the catalog here, obtain storage credentials somewhere else -- and the Integration
-record has no way to express it: nothing on it names an authority, and `ValidateCatalogIntegration`
-reports an Integration whose provider cannot vend as invalid rather than as configured differently.
-Anything that means "this Integration cannot vend" therefore fails the read naming the cause: a
-provider that does not advertise storage-credential vending, an authentication mode the
-catalog-access SPI does not implement, a provider reporting that what it can vend does not cover the
-upstream table, or a catalog that returns no credentials for it.
+`access-delegation-mode=none` explicitly selects the alternative path. Floecat does not request
+credentials from the upstream catalog and normal storage-authority resolution remains responsible
+for the table read. The query path does not reconstruct or depend on a legacy Connector in either
+mode.
 
 One case is not a refusal. When the catalog vends a scope that does not reach the location Floecat
 asked about, the credential is returned stamped with the location the caller was authorized for and
