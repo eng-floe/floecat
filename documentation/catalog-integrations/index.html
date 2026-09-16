@@ -1757,8 +1757,11 @@ and does not affect query paths.</p>
 <p>After creating an Integration, clients call <code>ValidateCatalogIntegration</code> with its resource ID. The
 response reports catalog connection, catalog authentication, namespace/table discovery, credential
 vending, and storage access as separate checks. Credential issues distinguish vending failure,
-expiry, and invalid scope. <code>valid</code> is true only when all five checks pass; an empty catalog cannot
-prove credential vending and therefore does not report full validation success.</p>
+expiry, and invalid scope. With the default <code>vended-credentials</code> mode, <code>valid</code> is true only when all
+five checks pass; an empty catalog cannot prove credential vending and therefore does not report
+full validation success. For an Iceberg REST Integration configured with
+<code>access-delegation-mode=none</code>, credential vending and its storage probe are intentionally not run,
+and validation succeeds after connection, authentication, and discovery pass.</p>
 <p>The response capability set covers operations relevant to public Integration validation and
 discovery. Internal table and view loading capabilities belong to reconciliation and are not
 reported by this RPC.</p>
@@ -1770,18 +1773,15 @@ directly into an Overlay's <code>include_namespaces</code> or <code>exclude_name
 <p>These operations require <code>catalog-integration.read</code> and <code>catalog-integration.use</code>. They use the
 catalog-access SPI directly and never call or fall back to the legacy Connector path.</p>
 <p>Tables materialized by an Iceberg REST overlay retain their source Catalog Integration identity.
-When no storage authority covers a table read, Floecat reopens that Integration through the
-catalog-access SPI and asks the upstream catalog for table-scoped storage credentials. The query
-path therefore does not reconstruct or depend on a legacy Connector.</p>
-<p>A storage authority is not an alternative for an Integration-backed table, and Floecat does not fall
-back to one. Pairing an authority with an Integration is the split-brain this feature removes --
-authenticate to the catalog here, obtain storage credentials somewhere else -- and the Integration
-record has no way to express it: nothing on it names an authority, and <code>ValidateCatalogIntegration</code>
-reports an Integration whose provider cannot vend as invalid rather than as configured differently.
-Anything that means "this Integration cannot vend" therefore fails the read naming the cause: a
-provider that does not advertise storage-credential vending, an authentication mode the
-catalog-access SPI does not implement, a provider reporting that what it can vend does not cover the
-upstream table, or a catalog that returns no credentials for it.</p>
+With the default <code>vended-credentials</code> mode, Floecat reopens that Integration through the
+catalog-access SPI and asks the upstream catalog for table-scoped storage credentials when no
+storage authority covers a table read. If vending was requested but the provider cannot supply
+usable credentials, the read fails with the vending cause rather than silently changing credential
+sources.</p>
+<p><code>access-delegation-mode=none</code> explicitly selects the alternative path. Floecat does not request
+credentials from the upstream catalog and normal storage-authority resolution remains responsible
+for the table read. The query path does not reconstruct or depend on a legacy Connector in either
+mode.</p>
 <p>One case is not a refusal. When the catalog vends a scope that does not reach the location Floecat
 asked about, the credential is returned stamped with the location the caller was authorized for and
 the mismatch is logged, because the read may still succeed and the object store enforces the real
@@ -1939,8 +1939,11 @@ role properties above. Access-key uses the access-key properties above. The CLI 
 properties instead of silently dropping them.</p>
 <p><code>--props</code> supplies non-secret provider connection properties. For Iceberg REST catalogs such as
 Polaris, <code>warehouse=&lt;catalog-name&gt;</code> selects the upstream catalog without putting a query parameter in
-the base URI. Updating properties replaces the complete map; passing <code>--props</code> with no values clears
-it.</p>
+the base URI. Iceberg REST integrations request <code>vended-credentials</code> by default. Set
+<code>access-delegation-mode=none</code> to omit <code>X-Iceberg-Access-Delegation</code> when Floecat already has the
+storage configuration needed by the downstream reader. In that mode, source-catalog credential
+vending is skipped and normal storage-authority resolution is used instead. Updating properties
+replaces the complete map; passing <code>--props</code> with no values clears it.</p>
 <p>For Delta Sharing, supported properties are <code>http.connect.ms</code>, <code>http.read.ms</code>,
 <code>delta.sharing.strict-access-modes</code>, <code>delta.sharing.reader-features</code>, <code>s3.region</code>, <code>s3.endpoint</code>,
 <code>client.region</code>, and <code>s3.path-style-access</code>. The S3 properties route reads of credentials the share
