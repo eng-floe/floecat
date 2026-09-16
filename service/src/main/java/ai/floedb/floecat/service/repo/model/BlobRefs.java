@@ -18,6 +18,9 @@ package ai.floedb.floecat.service.repo.model;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.common.rpc.MutationMeta;
+import java.util.Base64;
+import java.util.HexFormat;
+import java.util.Optional;
 
 /** Conversions between pointer metadata and the immutable blob refs the table root stores. */
 public final class BlobRefs {
@@ -31,6 +34,47 @@ public final class BlobRefs {
     if (meta == null || meta.getBlobUri().isEmpty()) {
       return null;
     }
-    return BlobRef.newBuilder().setUri(meta.getBlobUri()).setVersion(meta.getEtag()).build();
+    String version =
+        meta.getEtag().isBlank() ? etagFromCasUri(meta.getBlobUri()).orElse("") : meta.getEtag();
+    return BlobRef.newBuilder().setUri(meta.getBlobUri()).setVersion(version).build();
+  }
+
+  /**
+   * Returns the store ETag for a content-addressed URI when the URI carries a SHA-256 filename.
+   *
+   * <p>Floecat stores the digest in URI paths as lowercase hex, while blob stores expose the same
+   * digest as Base64 metadata. Stable URIs therefore let callers avoid a HEAD without changing the
+   * externally visible ETag value. Non-CAS and legacy URIs deliberately return empty so their
+   * existing HEAD-based behavior remains in place.
+   */
+  public static Optional<String> etagFromCasUri(String uri) {
+    if (uri == null || uri.isBlank()) {
+      return Optional.empty();
+    }
+    int slash = uri.lastIndexOf('/');
+    String filename = slash < 0 ? uri : uri.substring(slash + 1);
+    int dot = filename.lastIndexOf('.');
+    if (dot <= 0) {
+      return Optional.empty();
+    }
+    String hex = filename.substring(0, dot);
+    if (hex.length() != 64 || !isLowerHex(hex)) {
+      return Optional.empty();
+    }
+    try {
+      return Optional.of(Base64.getEncoder().encodeToString(HexFormat.of().parseHex(hex)));
+    } catch (IllegalArgumentException invalidHex) {
+      return Optional.empty();
+    }
+  }
+
+  private static boolean isLowerHex(String value) {
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+        return false;
+      }
+    }
+    return true;
   }
 }
