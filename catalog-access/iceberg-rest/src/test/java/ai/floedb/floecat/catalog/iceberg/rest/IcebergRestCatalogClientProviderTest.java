@@ -56,6 +56,49 @@ class IcebergRestCatalogClientProviderTest {
   }
 
   @Test
+  void omitsAccessDelegationHeaderWhenDisabled() {
+    Map<String, String> properties =
+        IcebergRestCatalogClientProvider.catalogProperties(
+            config(
+                CatalogAuthentication.none(),
+                Map.of("warehouse", "sales", "access-delegation-mode", "none")),
+            ResolvedCatalogCredentials.none());
+
+    assertFalse(properties.containsKey("access-delegation-mode"));
+    assertFalse(properties.containsKey("header.X-Iceberg-Access-Delegation"));
+    assertFalse(RESTUtil.configHeaders(properties).containsKey("X-Iceberg-Access-Delegation"));
+  }
+
+  @Test
+  void readsAccessDelegationModeAfterAuthenticationPropertiesAreMerged() {
+    Map<String, String> properties =
+        IcebergRestCatalogClientProvider.catalogProperties(
+            config(
+                new CatalogAuthentication(
+                    CatalogAuthenticationScheme.NONE, Map.of("access-delegation-mode", "none")),
+                Map.of("access-delegation-mode", "vended-credentials")),
+            ResolvedCatalogCredentials.none());
+
+    assertFalse(properties.containsKey("access-delegation-mode"));
+    assertFalse(properties.containsKey("header.X-Iceberg-Access-Delegation"));
+  }
+
+  @Test
+  void rejectsUnsupportedAccessDelegationMode() {
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                IcebergRestCatalogClientProvider.catalogProperties(
+                    config(
+                        CatalogAuthentication.none(),
+                        Map.of("access-delegation-mode", "remote-signing")),
+                    ResolvedCatalogCredentials.none()));
+
+    assertEquals("Unsupported access-delegation-mode: remote-signing", error.getMessage());
+  }
+
+  @Test
   void injectsOauthSecretsOnlyAtOpenBoundary() {
     Map<String, String> properties =
         IcebergRestCatalogClientProvider.catalogProperties(

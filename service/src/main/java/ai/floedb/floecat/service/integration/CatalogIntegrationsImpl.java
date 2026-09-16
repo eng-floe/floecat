@@ -17,6 +17,7 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.CatalogCapability;
+import ai.floedb.floecat.catalog.access.IcebergRestAccessDelegationMode;
 import ai.floedb.floecat.common.rpc.CreateMode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -355,7 +356,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                   validateType(spec.getType(), corr);
                   String uri = validateCatalogUri(spec.getCatalogUri(), corr);
                   Map<String, String> properties =
-                      validateConnectionProperties(spec.getPropertiesMap(), corr);
+                      validateConnectionProperties(spec.getType(), spec.getPropertiesMap(), corr);
                   if (!spec.hasAuthentication()
                       || spec.getAuthentication().getConfigurationCase()
                           == CatalogAuthentication.ConfigurationCase.CONFIGURATION_NOT_SET) {
@@ -631,7 +632,9 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                         .clearProperties()
                         .putAllProperties(
                             validateConnectionProperties(
-                                request.getSpec().getPropertiesMap(), corr));
+                                desiredBuilder.getType(),
+                                request.getSpec().getPropertiesMap(),
+                                corr));
                   }
                   CatalogIntegration desired = desiredBuilder.setUpdatedAt(nowTs()).build();
                   try {
@@ -961,9 +964,18 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   }
 
   private static Map<String, String> validateConnectionProperties(
-      Map<String, String> properties, String corr) {
+      CatalogIntegrationType type, Map<String, String> properties, String corr) {
     ai.floedb.floecat.service.common.PersistedSecretPropertyValidator.validateNoSecretKeys(
         properties, corr, "properties");
+    if (type == CatalogIntegrationType.CIT_ICEBERG_REST) {
+      try {
+        IcebergRestAccessDelegationMode.parse(
+            properties.get(IcebergRestAccessDelegationMode.PROPERTY));
+      } catch (IllegalArgumentException failure) {
+        throw GrpcErrors.invalidArgument(
+            corr, FIELD, Map.of("field", "properties." + IcebergRestAccessDelegationMode.PROPERTY));
+      }
+    }
     return Map.copyOf(properties);
   }
 

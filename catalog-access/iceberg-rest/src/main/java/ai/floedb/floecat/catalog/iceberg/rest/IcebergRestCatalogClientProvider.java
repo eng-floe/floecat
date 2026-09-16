@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogClientProvider;
 import ai.floedb.floecat.catalog.access.CatalogConnectionConfig;
 import ai.floedb.floecat.catalog.access.CatalogProtocol;
+import ai.floedb.floecat.catalog.access.IcebergRestAccessDelegationMode;
 import ai.floedb.floecat.catalog.access.ResolvedCatalogCredentials;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.AwsCredentialScope;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.CatalogSigV4AuthManager;
@@ -44,7 +45,6 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
   private static final String ACCESS_DELEGATION_HEADER = "X-Iceberg-Access-Delegation";
   private static final String ACCESS_DELEGATION_HEADER_PROPERTY =
       "header." + ACCESS_DELEGATION_HEADER;
-  private static final String VENDED_CREDENTIALS = "vended-credentials";
   private static final String REST_CONNECTION_TIMEOUT_MS = "rest.client.connection-timeout-ms";
   private static final String REST_SOCKET_TIMEOUT_MS = "rest.client.socket-timeout-ms";
   private static final String DEFAULT_REST_CONNECTION_TIMEOUT_MS = "10000";
@@ -127,8 +127,11 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
     rejectResolvedOnlyProperties(config.properties());
     rejectResolvedOnlyProperties(config.authentication().properties());
     Map<String, String> properties = new HashMap<>(config.properties());
-
     properties.putAll(config.authentication().properties());
+    IcebergRestAccessDelegationMode accessDelegationMode =
+        IcebergRestAccessDelegationMode.parse(
+            properties.remove(IcebergRestAccessDelegationMode.PROPERTY));
+
     properties.put(CatalogProperties.URI, config.endpoint().toString());
     properties.putIfAbsent(REST_CONNECTION_TIMEOUT_MS, DEFAULT_REST_CONNECTION_TIMEOUT_MS);
     properties.putIfAbsent(REST_SOCKET_TIMEOUT_MS, DEFAULT_REST_SOCKET_TIMEOUT_MS);
@@ -142,7 +145,11 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
               }
               properties.put("header." + name, value);
             });
-    properties.put(ACCESS_DELEGATION_HEADER_PROPERTY, VENDED_CREDENTIALS);
+    switch (accessDelegationMode) {
+      case VENDED_CREDENTIALS ->
+          properties.put(ACCESS_DELEGATION_HEADER_PROPERTY, accessDelegationMode.propertyValue());
+      case NONE -> {}
+    }
 
     switch (config.authentication().scheme()) {
       case NONE -> {

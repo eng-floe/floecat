@@ -159,6 +159,26 @@ class CatalogIntegrationsImplTest {
   }
 
   @Test
+  void createRejectsUnsupportedIcebergRestAccessDelegationMode() {
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogIntegration(
+                        validCreateRequest().toBuilder()
+                            .setSpec(
+                                validCreateRequest().getSpec().toBuilder()
+                                    .putProperties("access-delegation-mode", "nonee"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(service.integrations, never()).createWithMeta(any());
+  }
+
+  @Test
   void createRejectsMalformedAndSecretBearingCatalogUris() {
     for (String uri :
         List.of(
@@ -1170,6 +1190,42 @@ class CatalogIntegrationsImplTest {
     assertEquals(Map.of("warehouse", "new-catalog"), response.getIntegration().getPropertiesMap());
     assertEquals("https://catalog.example", response.getIntegration().getCatalogUri());
     assertEquals(5L, response.getMeta().getPointerVersion());
+  }
+
+  @Test
+  void updateRejectsUnsupportedIcebergRestAccessDelegationMode() {
+    var integrationId = id("integration", ResourceKind.RK_CATALOG_INTEGRATION);
+    var current =
+        CatalogIntegration.newBuilder()
+            .setResourceId(integrationId)
+            .setType(CatalogIntegrationType.CIT_ICEBERG_REST)
+            .setDisplayName("Warehouse")
+            .setCatalogUri("https://catalog.example")
+            .build();
+    when(service.integrations.getByIdWithMeta(integrationId))
+        .thenReturn(
+            Optional.of(
+                new ResourceWithMeta<>(
+                    current, MutationMeta.newBuilder().setPointerVersion(4L).build())));
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .updateCatalogIntegration(
+                        UpdateCatalogIntegrationRequest.newBuilder()
+                            .setIntegrationId(integrationId)
+                            .setSpec(
+                                CatalogIntegrationSpec.newBuilder()
+                                    .putProperties("access-delegation-mode", "remote-signing"))
+                            .setUpdateMask(FieldMask.newBuilder().addPaths("properties"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(service.integrations, never()).updateWithMetaUnlessDeleting(any(), anyLong());
   }
 
   @Test

@@ -158,6 +158,21 @@ class SourceCatalogCredentialVendorTest {
     verify(client).close();
   }
 
+  @Test
+  void disabledIntegrationDelegationFallsBackToStorageAuthorityResolution() {
+    integration = integration.toBuilder().putProperties("access-delegation-mode", "none").build();
+    when(integrations.getById(INTEGRATION_ID)).thenReturn(Optional.of(integration));
+
+    var response =
+        vendor.vendForTable(
+            integrationTable(),
+            "s3://warehouse/orders/metadata/v1.metadata.json",
+            SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
+
+    assertThat(response).isNull();
+    verifyNoInteractions(access, client);
+  }
+
   /**
    * A Unity integration vend carries the whole session triple. The fixture used to omit the session
    * token while still supplying an expiry, which is not a shape Unity produces -- {@code
