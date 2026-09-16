@@ -282,30 +282,21 @@ class WarmRequestStoreCostIT {
    */
   private static final Cost KV = new Cost("KV round trips", 0, 1, t -> t.reads.pointerRoundTrips());
 
-  /**
-   * The two live retention reads per table, measured per fetch with their callers.
-   *
-   * <p>The root's manifest page and the published stats generation manifest are deliberately read
-   * through the authoritative path: their continued existence is the retention verdict. Immutable
-   * query data, including the account and pinned root blobs, is served by the disk cache.
-   *
-   * <p>The object cache also absorbs the second generation-manifest lookup and deterministic target
-   * stats record lookup by retaining decoded snapshot facts under their pinned generation identity.
-   */
+  /** Immutable pinned content is served through the object/blob caches, with no live probes. */
   private static final Cost S3_GET =
-      new Cost("S3 objects GET", 2, 0, t -> t.reads.blobObjectGets());
+      new Cost("S3 objects GET", 0, 0, t -> t.reads.blobObjectGets());
 
   /**
-   * Both HEADs are pointer-meta reads of the table root: one at pin construction ({@code
-   * TableRootRepository.metaForSafe}) and one for the currency check at pin registration ({@code
-   * metaForSafeConsistent}). No per-request part -- a request that names no table pays none.
+   * One HEAD is the pointer-meta read of the table root at pin construction ({@code
+   * TableRootRepository.metaForSafe}). No per-request part -- a request that names no table pays
+   * none.
    *
    * <p>Unmoved by the pointer cache, and that is the point: a HEAD is a BLOB read taken to get an
    * etag, so caching the pointer changes which store answers the pointer lookup and nothing about
    * the header fetch. Both sites still take one. Removing either needs the object or blob cache, or
    * one of the two reads to go; pointer-cache coverage does not affect blob metadata reads.
    */
-  private static final Cost S3_HEAD = new Cost("S3 objects HEAD", 2, 0, t -> t.reads.blobHeads());
+  private static final Cost S3_HEAD = new Cost("S3 objects HEAD", 1, 0, t -> t.reads.blobHeads());
 
   private static final List<Cost> COSTS = List.of(KV, S3_GET, S3_HEAD);
 
