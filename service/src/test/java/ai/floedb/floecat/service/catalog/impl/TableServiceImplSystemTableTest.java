@@ -475,6 +475,8 @@ class TableServiceImplSystemTableTest {
         .thenReturn(Optional.empty());
     when(tableRepo.metaForSafe(tableId))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(8L).build());
+    when(tableRepo.pointerMetaForSafe(tableId))
+        .thenReturn(MutationMeta.newBuilder().setPointerVersion(8L).build());
 
     var req =
         UpdateTableRequest.newBuilder()
