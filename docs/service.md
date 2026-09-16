@@ -374,10 +374,12 @@ definition/snapshot/generation-manifest/constraints blob they reference). A pinn
 its whole chain, so pinned blobs stay readable for the query's lifetime. Deletes are fenced by a
 30 s min-age (`floecat.gc.cas.min-age-ms`, age since the blob was written), and any failed
 root-chain walk poisons the account's delete phase — the referenced set is untrustworthy, so
-nothing is deleted that pass (fail closed). CAS GC is disabled by default because query pin roots
-are process-local. In a multi-replica deployment, enable `FLOECAT_GC_CAS_ENABLED=true` on exactly
-one designated control-plane replica only when all live query contexts are visible to that replica;
-otherwise leave it disabled. A retained account continuation is abandoned after
+nothing is deleted that pass (fail closed). CAS GC is disabled by default as a conservative rollout
+setting. In managed deployments it may be enabled on every owner: the scheduler acquires a GC
+permit only for accounts this process owns, and handoff removes that permit before the old owner
+drains. Query pin roots and publication are process-local, so this account ownership boundary is
+what makes the per-account mark complete. Otherwise leave CAS GC disabled. A retained account
+continuation is abandoned after
 `floecat.gc.cas.max-consecutive-continuation-ticks` so one large account cannot starve every other
 account; raise that bound if the oldest-sweep-age metric shows a large account repeatedly restarting.
 Snapshot compatibility artifacts under `snapshots/<id>/compat/` are gateway-managed mutable
