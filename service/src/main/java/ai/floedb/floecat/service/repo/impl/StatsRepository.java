@@ -218,34 +218,6 @@ public class StatsRepository implements StatsStore {
     }
   }
 
-  /**
-   * Fails closed unless a frozen generation manifest is live, content-valid, and still published.
-   * Query-pin registration calls this while holding the table reachability guard shared with GC
-   * generation reclamation.
-   */
-  public Keys.GenerationKey requirePublishedGenerationLive(ResourceId tableId, String manifestUri) {
-    Keys.GenerationKey generation = Keys.generationFromManifestBlobUri(manifestUri);
-    if (generation == null
-        || !manifestUri.equals(
-            Keys.snapshotTargetStatsManifestBlobUri(
-                tableId.getAccountId(),
-                tableId.getId(),
-                generation.snapshotId(),
-                generation.generationId()))) {
-      throw new BaseResourceRepository.CorruptionException(
-          "frozen stats generation belongs to a different table: " + manifestUri);
-    }
-    String lifecycle =
-        generationLifecycleState(tableId, generation.snapshotId(), generation.generationId());
-    String storedGeneration = loadGenerationId(manifestUri).orElse("");
-    if (!GENERATION_PUBLISHED.equals(lifecycle)
-        || !generation.generationId().equals(storedGeneration)) {
-      throw new BaseResourceRepository.CorruptionException(
-          "frozen stats generation is unavailable: " + manifestUri);
-    }
-    return generation;
-  }
-
   @Override
   public void putTargetStats(TargetStatsRecord value) {
     TargetStatsRecord canonicalRecord = canonicalRecord(value);

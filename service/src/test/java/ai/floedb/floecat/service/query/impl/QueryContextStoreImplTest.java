@@ -19,25 +19,15 @@ package ai.floedb.floecat.service.query.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ai.floedb.floecat.catalog.rpc.BlobRef;
-import ai.floedb.floecat.catalog.rpc.SnapshotManifestPage;
-import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.TablePin;
-import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
-import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.query.QueryPins;
-import ai.floedb.floecat.service.repo.impl.StatsRepository;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
-import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
-import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
-import ai.floedb.floecat.types.Hashing;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -68,7 +58,6 @@ class QueryContextStoreImplTest {
     store.safetyExpiryMinutes = 10L;
     store.resolvingPinGraceMs = 60_000L;
     store.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
-    store.repairs = RootRepairRequests.disabled();
     store.init();
   }
 
@@ -176,84 +165,28 @@ class QueryContextStoreImplTest {
   }
 
   @Test
-  void resolvingPinValidatesItsRootAndManifestChainBeforeRegistration() {
-    InMemoryBlobStore blobs = new InMemoryBlobStore();
-    store.tableRoots = new TableRootRepository(new InMemoryPointerStore(), blobs);
+  void resolvingPinRegistrationDoesNotProbeImmutableRoots() {
     ResourceId tableId = table("t1");
-    SnapshotManifestPage page = SnapshotManifestPage.newBuilder().build();
-    String pageUri =
-        Keys.snapshotManifestBlobUri(
-            tableId.getAccountId(), tableId.getId(), Hashing.sha256Hex(page.toByteArray()));
-    blobs.put(pageUri, page.toByteArray(), "application/x-protobuf");
-    TableRoot root =
-        TableRoot.newBuilder()
-            .setTableId(tableId)
-            .setSnapshotManifestRef(BlobRef.newBuilder().setUri(pageUri))
-            .build();
-    String rootUri =
-        Keys.tableRootBlobUri(
-            tableId.getAccountId(), tableId.getId(), Hashing.sha256Hex(root.toByteArray()));
-    blobs.put(rootUri, root.toByteArray(), "application/x-protobuf");
+    String rootUri = Keys.tableRootBlobUri(tableId.getAccountId(), tableId.getId(), "root-sha");
+    String generationUri =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            tableId.getAccountId(), tableId.getId(), 7L, "generation");
 
-    store.registerResolvingPinBlobs("q-live", tableId, List.of(rootUri));
-    blobs.delete(pageUri);
+    // Account-scoped CAS GC and the reachability guard serialize collection with this publication.
+    // The actual pinned reads remain the place where a missing immutable blob is detected; this
+    // registration must not issue a second live probe.
+    store.registerResolvingPinBlobs("q", tableId, List.of(rootUri, generationUri));
 
-    assertThatThrownBy(
-            () -> store.registerResolvingPinBlobs("q-dangling", tableId, List.of(rootUri)))
-        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
-        .hasMessageContaining("manifest page missing");
-    assertThat(store.referencedPinBlobUris()).containsExactly(rootUri);
+    assertThat(store.referencedPinBlobUris()).containsExactlyInAnyOrder(rootUri, generationUri);
   }
 
   @Test
-  void aVanishedPinnedRootEnqueuesTheTableForRepair() {
-    // The root leg is the one requirePinnedTableBlob/requirePinnedSnapshotBlob do not cover. Before
-    // the up-front probe was removed it reported here; without this the table's committed root can
-    // name data no read can load and nothing ever re-derives it.
-    InMemoryPointerStore repairPointers = new InMemoryPointerStore();
-    store.tableRoots = new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    store.repairs = new RootRepairRequests(new RootResyncQueue(repairPointers));
-    ResourceId tableId = table("t1");
-    String missingRoot =
-        Keys.tableRootBlobUri(tableId.getAccountId(), tableId.getId(), "sha-never-written");
-
-    assertThatThrownBy(() -> store.registerResolvingPinBlobs("q", tableId, List.of(missingRoot)))
-        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
-        .hasMessageContaining("pinned table root is missing");
-
-    assertThat(
-            repairPointers.get(
-                Keys.rootResyncPendingPointer(tableId.getAccountId(), tableId.getId())))
-        .isPresent();
-  }
-
-  @Test
-  void resolvingPinRejectsARootScopedToAnotherTable() {
-    store.tableRoots = new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
+  void resolvingPinRejectsARootScopedToAnotherTableWithoutReadingStorage() {
     String otherRoot = Keys.tableRootBlobUri("acct", "other", "root-sha");
 
     assertThatThrownBy(() -> store.registerResolvingPinBlobs("q", table("t1"), List.of(otherRoot)))
         .isInstanceOf(BaseResourceRepository.CorruptionException.class)
         .hasMessageContaining("different table");
-    assertThat(store.referencedPinBlobUris()).isEmpty();
-  }
-
-  @Test
-  void resolvingPinRejectsAFrozenGenerationDeletedBeforePublication() {
-    InMemoryPointerStore pointers = new InMemoryPointerStore();
-    InMemoryBlobStore blobs = new InMemoryBlobStore();
-    StatsRepository stats = new StatsRepository(pointers, blobs);
-    ResourceId tableId = table("t1");
-    stats.publishStatsGeneration(tableId, 7L, "generation", List.of());
-    String manifest =
-        Keys.snapshotTargetStatsManifestBlobUri(
-            tableId.getAccountId(), tableId.getId(), 7L, "generation");
-    blobs.delete(manifest);
-    store.statsRepository = stats;
-
-    assertThatThrownBy(() -> store.registerResolvingPinBlobs("q", tableId, List.of(manifest)))
-        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
-        .hasMessageContaining("generation is unavailable");
     assertThat(store.referencedPinBlobUris()).isEmpty();
   }
 
