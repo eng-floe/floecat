@@ -161,6 +161,8 @@ Each repository extends `BaseResourceRepository<T>`:
 - Reserves pointer keys via CAS before writing blobs.
 - Writes blobs with checksum verification (`sha256B64`).
 - Maintains `MutationMeta` (pointer key, blob URI, pointer version, ETag, timestamp).
+- For immutable CAS blobs, the ETag is derived from the hash in the URI; mutable and legacy blobs
+  retain the `HEAD` fallback so their RPC and precondition semantics do not change.
 - Provides convenience accessors such as `getByName`, `getById`, `list`, and `metaForSafe`.
 - Deletes tolerate missing blobs when cleaning up pointers, so skewed pointer/blob states can still be removed safely.
 

@@ -31,6 +31,7 @@ import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.model.BlobRefs;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
@@ -933,7 +934,14 @@ public class IndexArtifactRepository {
                     new BaseResourceRepository.NotFoundException(
                         "index artifact pointer is missing"));
     String pointerKey = pointer.getKey();
-    String etag = blobStore.head(pointer.getBlobUri()).map(header -> header.getEtag()).orElse("");
+    String etag =
+        BlobRefs.etagFromCasUri(pointer.getBlobUri())
+            .orElseGet(
+                () ->
+                    blobStore
+                        .head(pointer.getBlobUri())
+                        .map(header -> header.getEtag())
+                        .orElse(""));
     return MutationMeta.newBuilder()
         .setPointerKey(pointerKey)
         .setBlobUri(pointer.getBlobUri())
