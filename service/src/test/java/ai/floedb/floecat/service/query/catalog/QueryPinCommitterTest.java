@@ -19,31 +19,18 @@ package ai.floedb.floecat.service.query.catalog;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
-import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.common.rpc.SnapshotRef;
-import ai.floedb.floecat.metagraph.model.RelationNode;
-import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
-import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
-import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
-import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryContextStore;
-import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryInputResolver;
 import ai.floedb.floecat.service.query.impl.QueryContext;
-import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
-import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.UnaryOperator;
@@ -54,9 +41,9 @@ import org.junit.jupiter.api.Test;
  * Direct tests of {@link QueryPinCommitter}: the collect→commit pin-durability transaction the
  * {@link UserObjectBundleService} conductor drives per chunk. {@code accumulate} folds the
  * resolver's pins into the pending set; {@code commit} writes them durably to the QueryContext
- * exactly once and, on any failure arm, releases the transient GC roots the resolver registered at
- * resolution. Uses the shared {@link TestQueryInputResolver} + {@link TestQueryContextStore} fakes
- * over a real {@link TimingAccumulator}.
+ * exactly once and, on any failure arm, releases the transient GC roots registered during
+ * resolution. The committer deliberately receives only immutable pin sets: resolution is owned by
+ * the caller, not repeated here.
  */
 class QueryPinCommitterTest {
 
@@ -91,41 +78,43 @@ class QueryPinCommitterTest {
           .setKind(ResourceKind.RK_TABLE)
           .build();
 
-  private final FakeCatalogGraphView graphView = new FakeCatalogGraphView();
-  private TestQueryInputResolver resolver;
   private TimingAccumulator timings;
 
   @BeforeEach
   void setUp() {
-    graphView.clear();
-    registerTable(TABLE_A, "a");
-    registerTable(TABLE_B, "b");
-    registerTable(TABLE_C, "c");
-    resolver = new TestQueryInputResolver();
     timings = new TimingAccumulator();
   }
 
   @Test
   void accumulateGrowsPendingPinCountAcrossRelations() {
     TestQueryContextStore store = seededStore();
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer = new QueryPinCommitter(store, ctx(), CID, timings);
 
     assertThat(committer.pendingPinCount()).isZero();
 
-    committer.accumulate(List.of(resolved(TABLE_A), resolved(TABLE_B)), PhaseDiagnostics.NOOP);
-    // The fake resolver mints one pin per TABLE_ID input.
+    committer.accumulate(
+        SnapshotTestSupport.relationPins(
+            SnapshotTestSupport.blobBackedPin(TABLE_A, 1),
+            SnapshotTestSupport.blobBackedPin(TABLE_B, 1)),
+        PhaseDiagnostics.NOOP);
     assertThat(committer.pendingPinCount()).isEqualTo(2);
 
-    committer.accumulate(List.of(resolved(TABLE_C)), PhaseDiagnostics.NOOP);
+    committer.accumulate(
+        SnapshotTestSupport.relationPins(SnapshotTestSupport.blobBackedPin(TABLE_C, 1)),
+        PhaseDiagnostics.NOOP);
     assertThat(committer.pendingPinCount()).isEqualTo(3);
   }
 
   @Test
   void commitWritesToQueryContextExactlyOnceAndIsDurable() {
     TestQueryContextStore store = seededStore();
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer = new QueryPinCommitter(store, ctx(), CID, timings);
 
-    committer.accumulate(List.of(resolved(TABLE_A), resolved(TABLE_B)), PhaseDiagnostics.NOOP);
+    committer.accumulate(
+        SnapshotTestSupport.relationPins(
+            SnapshotTestSupport.blobBackedPin(TABLE_A, 1),
+            SnapshotTestSupport.blobBackedPin(TABLE_B, 1)),
+        PhaseDiagnostics.NOOP);
     committer.commit();
 
     // One durable write; the pending set is drained.
@@ -147,9 +136,11 @@ class QueryPinCommitterTest {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
     store.failUpdateWith(new IllegalStateException("boom"));
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer = new QueryPinCommitter(store, ctx(), CID, timings);
 
-    committer.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP);
+    committer.accumulate(
+        SnapshotTestSupport.relationPins(SnapshotTestSupport.blobBackedPin(TABLE_A, 1)),
+        PhaseDiagnostics.NOOP);
 
     assertThatThrownBy(committer::commit).isInstanceOf(IllegalStateException.class);
     // The transient GC roots registered at resolution are released on the failure arm.
@@ -161,10 +152,13 @@ class QueryPinCommitterTest {
   void cancellationBeforeCommitReleasesPendingRootsWithoutUpdatingContext() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer = new QueryPinCommitter(store, ctx(), CID, timings);
     AtomicBoolean cancelled = new AtomicBoolean();
 
-    committer.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP, cancelled::get);
+    committer.accumulate(
+        SnapshotTestSupport.relationPins(SnapshotTestSupport.blobBackedPin(TABLE_A, 1)),
+        PhaseDiagnostics.NOOP,
+        cancelled::get);
     cancelled.set(true);
 
     assertThatThrownBy(() -> committer.commit(cancelled::get))
@@ -179,15 +173,23 @@ class QueryPinCommitterTest {
   void accumulateMergeFailureReleasesPriorAndIncomingPinBlobs() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
-    QueryPinCommitter committer =
-        new QueryPinCommitter(new SnapshotAwareResolver(), store, ctx(), CID, timings);
+    QueryPinCommitter committer = new QueryPinCommitter(store, ctx(), CID, timings);
 
-    committer.accumulate(List.of(resolved(TABLE_A, selected(TABLE_A, 1L))), PhaseDiagnostics.NOOP);
+    committer.accumulate(
+        SnapshotTestSupport.relationPins(
+            SnapshotTestSupport.blobBackedPin(TABLE_A, 1).toBuilder()
+                .setPinKind(ai.floedb.floecat.query.rpc.PinKind.PIN_KIND_SNAPSHOT_ID)
+                .build()),
+        PhaseDiagnostics.NOOP);
 
     assertThatThrownBy(
             () ->
                 committer.accumulate(
-                    List.of(resolved(TABLE_A, selected(TABLE_A, 2L))), PhaseDiagnostics.NOOP))
+                    SnapshotTestSupport.relationPins(
+                        SnapshotTestSupport.blobBackedPin(TABLE_A, 2).toBuilder()
+                            .setPinKind(ai.floedb.floecat.query.rpc.PinKind.PIN_KIND_SNAPSHOT_ID)
+                            .build()),
+                    PhaseDiagnostics.NOOP))
         .isInstanceOf(RuntimeException.class);
 
     assertThat(committer.pendingPinCount()).isZero();
@@ -200,46 +202,14 @@ class QueryPinCommitterTest {
   void emptyAccumulateThenCommitIsANoOp() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer = new QueryPinCommitter(store, ctx(), CID, timings);
 
-    committer.accumulate(List.of(), PhaseDiagnostics.NOOP);
+    committer.accumulate(RelationPinSet.getDefaultInstance(), PhaseDiagnostics.NOOP);
     assertThat(committer.pendingPinCount()).isZero();
 
     committer.commit();
     assertThat(store.updateCount()).isZero();
     assertThat(store.releasedQueryIds()).isEmpty();
-  }
-
-  private void registerTable(ResourceId id, String name) {
-    graphView.registerTable(
-        id,
-        UserObjectBundleTestSupport.schemaFor("id_" + name),
-        NameRef.newBuilder().setCatalog("cat").setName(name).build());
-  }
-
-  private ResolvedRelation resolved(ResourceId table) {
-    return resolved(table, QueryInput.newBuilder().setTableId(table).build());
-  }
-
-  private ResolvedRelation resolved(ResourceId table, QueryInput selectedInput) {
-    RelationNode node = (RelationNode) graphView.resolve(table).orElseThrow();
-    return new ResolvedRelation(
-        TableReferenceCandidate.newBuilder()
-            .addCandidates(QueryInput.newBuilder().setTableId(table))
-            .build(),
-        table,
-        node,
-        selectedInput,
-        graphView
-            .tableName(table)
-            .orElse(NameRef.newBuilder().setName(node.displayName()).build()));
-  }
-
-  private static QueryInput selected(ResourceId table, long snapshotId) {
-    return QueryInput.newBuilder()
-        .setTableId(table)
-        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snapshotId))
-        .build();
   }
 
   private TestQueryContextStore seededStore() {
@@ -264,35 +234,6 @@ class QueryPinCommitterTest {
         .version(1)
         .queryDefaultCatalogId(CATALOG)
         .build();
-  }
-
-  private static final class SnapshotAwareResolver extends QueryInputResolver {
-    private SnapshotAwareResolver() {
-      super(null);
-    }
-
-    @Override
-    protected ResolutionResult resolveInputsAttempt(
-        String queryId,
-        String correlationId,
-        List<QueryInput> inputs,
-        Optional<Timestamp> asOfDefault,
-        Optional<ResourceId> defaultCatalogId,
-        QueryInputResolver.ResolutionAttempt attempt) {
-      RelationPinSet.Builder pins = RelationPinSet.newBuilder();
-      List<ResourceId> resolved = new ArrayList<>(inputs.size());
-      for (QueryInput input : inputs) {
-        ResourceId tableId = input.getTableId();
-        long snapshotId = input.getSnapshot().getSnapshotId();
-        resolved.add(tableId);
-        pins.addPins(
-            QueryPins.ofTable(
-                SnapshotTestSupport.blobBackedPin(tableId, snapshotId).toBuilder()
-                    .setPinKind(PinKind.PIN_KIND_SNAPSHOT_ID)
-                    .build()));
-      }
-      return new ResolutionResult(resolved, pins.build(), null);
-    }
   }
 
   /**
