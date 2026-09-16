@@ -34,6 +34,8 @@ class BlobRefsTest {
     String expected = Base64.getEncoder().encodeToString(digest);
 
     assertThat(BlobRefs.etagFromCasUri("/accounts/a/table/" + hex + ".pb")).contains(expected);
+    assertThat(BlobRefs.etagFromCasUri("/accounts/a/table/logical-" + hex + ".pb"))
+        .contains(expected);
   }
 
   @Test
