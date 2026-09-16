@@ -143,13 +143,17 @@ public class CatalogIntegrationDiscovery {
       return clientOpenFailure(failure);
     }
     try {
-      return validate(client, budget);
+      return validate(
+          client,
+          budget,
+          CatalogIntegrationAccessDelegation.requestsVendedCredentials(integration));
     } finally {
       closeClient(client);
     }
   }
 
-  private ValidationResult validate(CatalogClient client, CatalogUpstreamBudget budget) {
+  private ValidationResult validate(
+      CatalogClient client, CatalogUpstreamBudget budget, boolean requestVendedCredentials) {
     List<CatalogIntegrationValidationCheck> checks = new ArrayList<>();
     CatalogCapabilities capabilities = client.capabilities();
     if (!capabilities.supports(CatalogCapability.VALIDATE)) {
@@ -212,7 +216,9 @@ public class CatalogIntegrationDiscovery {
       addNotRunAfterDiscovery(checks);
       return new ValidationResult(false, checks, capabilities);
     }
-    boolean canVend = capabilities.supports(CatalogCapability.VEND_STORAGE_CREDENTIALS);
+    boolean canVend =
+        requestVendedCredentials
+            && capabilities.supports(CatalogCapability.VEND_STORAGE_CREDENTIALS);
     boolean canValidateStorage = capabilities.supports(CatalogCapability.VALIDATE_STORAGE_ACCESS);
     ValidationTableSearch validationTables;
     try {
@@ -290,6 +296,20 @@ public class CatalogIntegrationDiscovery {
         passed(
             CatalogIntegrationValidationCheckType.CIVCT_DISCOVERY,
             "The catalog can enumerate upstream namespaces and tables."));
+
+    if (!requestVendedCredentials) {
+      checks.add(
+          notRun(
+              CatalogIntegrationValidationCheckType.CIVCT_CREDENTIAL_VENDING,
+              "Storage credential vending was not tested because access delegation is disabled"
+                  + " for this integration."));
+      checks.add(
+          notRun(
+              CatalogIntegrationValidationCheckType.CIVCT_STORAGE_ACCESS,
+              "Storage access was not tested because access delegation is disabled for this"
+                  + " integration."));
+      return new ValidationResult(true, checks, capabilities);
+    }
 
     if (!canVend) {
       checks.add(

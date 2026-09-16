@@ -130,11 +130,11 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
     rejectResolvedOnlyProperties(config.properties());
     rejectResolvedOnlyProperties(config.authentication().properties());
     Map<String, String> properties = new HashMap<>(config.properties());
+    properties.putAll(config.authentication().properties());
     String accessDelegationMode =
         properties.getOrDefault(ACCESS_DELEGATION_MODE_PROPERTY, VENDED_CREDENTIALS);
     properties.remove(ACCESS_DELEGATION_MODE_PROPERTY);
 
-    properties.putAll(config.authentication().properties());
     properties.put(CatalogProperties.URI, config.endpoint().toString());
     properties.putIfAbsent(REST_CONNECTION_TIMEOUT_MS, DEFAULT_REST_CONNECTION_TIMEOUT_MS);
     properties.putIfAbsent(REST_SOCKET_TIMEOUT_MS, DEFAULT_REST_SOCKET_TIMEOUT_MS);
@@ -151,7 +151,7 @@ public final class IcebergRestCatalogClientProvider implements CatalogClientProv
     switch (accessDelegationMode.trim().toLowerCase(Locale.ROOT)) {
       case VENDED_CREDENTIALS ->
           properties.put(ACCESS_DELEGATION_HEADER_PROPERTY, VENDED_CREDENTIALS);
-      case NO_ACCESS_DELEGATION -> properties.remove(ACCESS_DELEGATION_HEADER_PROPERTY);
+      case NO_ACCESS_DELEGATION -> {}
       default ->
           throw new IllegalArgumentException(
               "Unsupported access-delegation-mode: " + accessDelegationMode);

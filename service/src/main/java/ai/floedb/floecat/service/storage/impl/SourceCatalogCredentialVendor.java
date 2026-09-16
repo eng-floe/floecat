@@ -41,6 +41,7 @@ import ai.floedb.floecat.connector.spi.SourceCatalogVending;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.service.credentials.AuthResolutionContexts;
 import ai.floedb.floecat.service.integration.CatalogIntegrationAccess;
+import ai.floedb.floecat.service.integration.CatalogIntegrationAccessDelegation;
 import ai.floedb.floecat.service.integration.CatalogUpstreamBudget;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -81,21 +82,11 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
  * <p>Callers own admission: this class assumes the caller has already authorized access to the
  * table and decided that no storage authority covers the location.
  *
- * <p>The two upstream kinds answer differently, and deliberately. A legacy Connector opts in to
- * vending -- {@code IcebergAccessDelegation.declaresVendedCredentials} is the switch -- so a
- * connector that does not, or cannot, is answered with {@code null} and the caller falls back to
- * the storage authority the operator configured instead. A Catalog Integration has no such switch
- * and no such alternative: nothing on the record names an authority, and {@code
- * ValidateCatalogIntegration} reports an Integration whose provider cannot vend as invalid rather
- * than as configured some other way. Reaching for an authority beside an Integration is the
- * split-brain this feature exists to remove, so every "cannot vend" condition on that path is a
- * refusal naming the cause, not a fall-back.
- *
- * <p>Nothing was lost by that. This vend is reached only once no authority covers the location, so
- * a {@code null} from the Integration path landed on {@code
- * StorageAuthorityResolver.buildResponse(null, ...)}, which raises no-matching-authority -- the one
- * consumer that absorbs that error gates on a {@code ConnectorConfig}. The fall-back could only
- * ever relabel a specific cause as "you configured no storage authority".
+ * <p>Both upstream kinds gate vending on declared delegation intent. A Connector opts in through
+ * {@code IcebergAccessDelegation.declaresVendedCredentials}; an Iceberg REST Catalog Integration
+ * requests vending by default and opts out with {@code access-delegation-mode=none}. A source that
+ * does not request vending is answered with {@code null}, allowing the caller's normal storage
+ * authority resolution to take over.
  *
  * <p>What it throws is classified, because the reconcile path acts on it: only a condition a retry
  * cannot change -- an authorization refusal, a vanished upstream table, an incomplete credential
@@ -367,6 +358,12 @@ public class SourceCatalogCredentialVendor {
               + " of table "
               + tableId.getId()
               + " not found");
+    }
+    if (!CatalogIntegrationAccessDelegation.requestsVendedCredentials(integration)) {
+      LOG.infof(
+          "source-catalog vending skipped: Catalog Integration %s disabled access delegation",
+          integration.getResourceId().getId());
+      return null;
     }
     // Opening an integration resolves its stored secret and spends an OAuth exchange against the
     // upstream on the caller's behalf, so it takes the same permission every other site that opens

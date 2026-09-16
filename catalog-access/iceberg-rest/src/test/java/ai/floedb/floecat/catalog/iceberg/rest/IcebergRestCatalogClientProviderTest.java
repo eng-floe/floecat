@@ -70,6 +70,20 @@ class IcebergRestCatalogClientProviderTest {
   }
 
   @Test
+  void readsAccessDelegationModeAfterAuthenticationPropertiesAreMerged() {
+    Map<String, String> properties =
+        IcebergRestCatalogClientProvider.catalogProperties(
+            config(
+                new CatalogAuthentication(
+                    CatalogAuthenticationScheme.NONE, Map.of("access-delegation-mode", "none")),
+                Map.of("access-delegation-mode", "vended-credentials")),
+            ResolvedCatalogCredentials.none());
+
+    assertFalse(properties.containsKey("access-delegation-mode"));
+    assertFalse(properties.containsKey("header.X-Iceberg-Access-Delegation"));
+  }
+
+  @Test
   void rejectsUnsupportedAccessDelegationMode() {
     IllegalArgumentException error =
         assertThrows(

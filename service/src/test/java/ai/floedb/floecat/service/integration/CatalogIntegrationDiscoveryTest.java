@@ -31,6 +31,7 @@ import ai.floedb.floecat.catalog.access.CatalogObjectName;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
+import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationCheckType;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationIssue;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationValidationStatus;
@@ -79,6 +80,33 @@ class CatalogIntegrationDiscoveryTest {
             .allMatch(
                 check -> check.getStatus() == CatalogIntegrationValidationStatus.CIVS_PASSED));
     verify(client).validateStorageAccess(orders, vended);
+  }
+
+  @Test
+  void validationSkipsCredentialChecksWhenIcebergRestDelegationIsDisabled() {
+    CatalogIntegration noDelegation =
+        CatalogIntegration.newBuilder()
+            .setType(CatalogIntegrationType.CIT_ICEBERG_REST)
+            .putProperties(CatalogIntegrationAccessDelegation.MODE_PROPERTY, "none")
+            .build();
+    when(access.open(noDelegation)).thenReturn(client);
+    when(client.capabilities()).thenReturn(validationCapabilities());
+    when(client.listTables(NamespacePath.root()))
+        .thenReturn(
+            List.of(new CatalogObjectName(NamespacePath.of("production", "sales"), "orders")));
+
+    var result = discovery.validate(noDelegation);
+
+    assertTrue(result.valid());
+    assertEquals(5, result.checks().size());
+    assertEquals(
+        CatalogIntegrationValidationStatus.CIVS_PASSED, result.checks().get(2).getStatus());
+    assertEquals(
+        CatalogIntegrationValidationStatus.CIVS_NOT_RUN, result.checks().get(3).getStatus());
+    assertEquals(
+        CatalogIntegrationValidationStatus.CIVS_NOT_RUN, result.checks().get(4).getStatus());
+    verify(client, never()).vendStorageCredentials(any());
+    verify(client, never()).validateStorageAccess(any(), any());
   }
 
   @Test
