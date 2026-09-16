@@ -878,10 +878,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    */
   protected MutationMeta readMetaOrDefault(
       Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
-    Optional<String> casEtag =
-        referencedBlobImmutable(pointerKey, blobUri)
-            ? BlobRefs.etagFromCasUri(blobUri)
-            : Optional.empty();
+    Optional<String> casEtag = immutableBlobEtag(pointerKey, blobUri);
     return meta(
         casEtag.orElseGet(() -> blobReads.head(blobUri).map(BlobHeader::getEtag).orElse("")),
         pointerOpt,
@@ -908,10 +905,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    */
   protected MutationMeta committedMeta(
       Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
-    Optional<String> casEtag =
-        referencedBlobImmutable(pointerKey, blobUri)
-            ? BlobRefs.etagFromCasUri(blobUri)
-            : Optional.empty();
+    Optional<String> casEtag = immutableBlobEtag(pointerKey, blobUri);
     return meta(
         casEtag.orElseGet(
             () -> mutationBlobStore.head(blobUri).map(BlobHeader::getEtag).orElse("")),
@@ -919,6 +913,13 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
         pointerKey,
         blobUri,
         nowTs);
+  }
+
+  /** Returns a locally derivable ETag only for an immutable URI owned by this repository. */
+  protected Optional<String> immutableBlobEtag(String pointerKey, String blobUri) {
+    return referencedBlobImmutable(pointerKey, blobUri)
+        ? BlobRefs.etagFromCasUri(blobUri)
+        : Optional.empty();
   }
 
   private static MutationMeta meta(

@@ -57,7 +57,9 @@ public final class BlobRefs {
     if (dot <= 0) {
       return Optional.empty();
     }
-    String hex = filename.substring(0, dot);
+    String stem = filename.substring(0, dot);
+    int dash = stem.lastIndexOf('-');
+    String hex = dash < 0 ? stem : stem.substring(dash + 1);
     if (hex.length() != 64 || !isLowerHex(hex)) {
       return Optional.empty();
     }

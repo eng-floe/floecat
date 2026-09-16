@@ -28,6 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.model.BlobRefs;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
@@ -2912,6 +2913,16 @@ public class StatsRepository implements StatsStore {
     @Override
     protected boolean referencedBlobImmutable(String pointerKey, String blobUri) {
       return ReusableArtifactBundleUris.isBundleUri(blobUri) || isExactTargetStatsBlobUri(blobUri);
+    }
+
+    @Override
+    protected Optional<String> immutableBlobEtag(String pointerKey, String blobUri) {
+      // Legacy target-stat URIs contain only the logical identity, not the serialized-body hash.
+      // Keep their HEAD fallback; only the exact identity form can provide the body ETag locally.
+      if (isExactTargetStatsBlobUri(blobUri) || ReusableArtifactBundleUris.isBundleUri(blobUri)) {
+        return BlobRefs.etagFromCasUri(blobUri);
+      }
+      return Optional.empty();
     }
 
     @Override
