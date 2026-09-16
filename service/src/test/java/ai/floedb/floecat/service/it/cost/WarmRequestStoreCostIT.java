@@ -288,17 +288,8 @@ class WarmRequestStoreCostIT {
   private static final Cost S3_GET =
       new Cost("S3 objects GET", 0, 0, t -> t.reads.blobObjectGets());
 
-  /**
-   * One HEAD is the pointer-meta read of the table root at pin construction ({@code
-   * TableRootRepository.metaForSafe}). No per-request part -- a request that names no table pays
-   * none.
-   *
-   * <p>Unmoved by the pointer cache, and that is the point: a HEAD is a BLOB read taken to get an
-   * etag, so caching the pointer changes which store answers the pointer lookup and nothing about
-   * the header fetch. Both sites still take one. Removing either needs the object or blob cache, or
-   * one of the two reads to go; pointer-cache coverage does not affect blob metadata reads.
-   */
-  private static final Cost S3_HEAD = new Cost("S3 objects HEAD", 1, 0, t -> t.reads.blobHeads());
+  /** The query pin path needs the root URI and pointer version, not the blob ETag. */
+  private static final Cost S3_HEAD = new Cost("S3 objects HEAD", 0, 0, t -> t.reads.blobHeads());
 
   private static final List<Cost> COSTS = List.of(KV, S3_GET, S3_HEAD);
 
