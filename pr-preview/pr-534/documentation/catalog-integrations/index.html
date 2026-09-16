@@ -1941,8 +1941,9 @@ properties instead of silently dropping them.</p>
 Polaris, <code>warehouse=&lt;catalog-name&gt;</code> selects the upstream catalog without putting a query parameter in
 the base URI. Iceberg REST integrations request <code>vended-credentials</code> by default. Set
 <code>access-delegation-mode=none</code> to omit <code>X-Iceberg-Access-Delegation</code> when Floecat already has the
-storage configuration needed by the downstream reader. Updating properties replaces the complete
-map; passing <code>--props</code> with no values clears it.</p>
+storage configuration needed by the downstream reader. In that mode, source-catalog credential
+vending is skipped and normal storage-authority resolution is used instead. Updating properties
+replaces the complete map; passing <code>--props</code> with no values clears it.</p>
 <p>For Delta Sharing, supported properties are <code>http.connect.ms</code>, <code>http.read.ms</code>,
 <code>delta.sharing.strict-access-modes</code>, <code>delta.sharing.reader-features</code>, <code>s3.region</code>, <code>s3.endpoint</code>,
 <code>client.region</code>, and <code>s3.path-style-access</code>. The S3 properties route reads of credentials the share

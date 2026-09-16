@@ -1826,6 +1826,15 @@
 <td>account, cache, component, operation</td>
 </tr>
 <tr>
+<td>floecat.core.cache.corruptions</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Local cache entries rejected because their stored envelope was corrupt.</td>
+<td>cache, component, operation</td>
+<td>account, cache, component, operation</td>
+</tr>
+<tr>
 <td>floecat.core.cache.enabled</td>
 <td>GAUGE</td>
 <td></td>
@@ -1889,11 +1898,11 @@
 <td>account, cache, component, exception, operation, result</td>
 </tr>
 <tr>
-<td>floecat.core.cache.loads.discarded</td>
-<td>COUNTER</td>
-<td></td>
+<td>floecat.core.cache.live.mappings</td>
+<td>GAUGE</td>
+<td>count</td>
 <td>v1</td>
-<td>Loads whose value was not retained because a write may have raced the key while it was being loaded, tagged by cache name. Raised on both the read-through and the batch path. A sustained rate means the cache is not warming.</td>
+<td>Mapped cache entries currently protected from reclamation.</td>
 <td>cache, component, operation</td>
 <td>account, cache, component, operation</td>
 </tr>
@@ -1916,6 +1925,15 @@
 <td>account, cache, component, operation</td>
 </tr>
 <tr>
+<td>floecat.core.cache.sweep.reclaimed.bytes</td>
+<td>COUNTER</td>
+<td>bytes</td>
+<td>v1</td>
+<td>Local disk bytes reclaimed by cache budget sweeps.</td>
+<td>cache, component, operation</td>
+<td>account, cache, component, operation</td>
+</tr>
+<tr>
 <td>floecat.core.cache.weighted.size.bytes</td>
 <td>GAUGE</td>
 <td>bytes</td>
@@ -1923,15 +1941,6 @@
 <td>Total weight (bytes) of cache entries, tagged by cache name.</td>
 <td>cache, component, operation</td>
 <td>account, cache, component, operation</td>
-</tr>
-<tr>
-<td>floecat.core.cache.write.through</td>
-<td>COUNTER</td>
-<td></td>
-<td>v1</td>
-<td>Write-through publications, tagged by whether they were applied or skipped by the cache's safety guards.</td>
-<td>cache, component, operation, result</td>
-<td>account, cache, component, operation, result</td>
 </tr>
 <tr>
 <td>floecat.core.exec.active</td>
@@ -2428,6 +2437,51 @@
 <td>count</td>
 <td>v1</td>
 <td>Metadata-I/O admission permits held by in-flight store calls.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.planning.pointer.entries</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Number of planner pointer entries resident in the authoritative in-memory index.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.planning.pointer.partitions</td>
+<td>GAUGE</td>
+<td>count</td>
+<td>v1</td>
+<td>Number of planner pointer partitions by readiness state.</td>
+<td>component, operation</td>
+<td>component, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.planning.pointer.warm.errors.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Planner pointer index warm-up failures.</td>
+<td>component, operation</td>
+<td>component, exception, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.planning.pointer.warm.latency</td>
+<td>TIMER</td>
+<td>ms</td>
+<td>v1</td>
+<td>Planner pointer index warm-up latency.</td>
+<td>component, operation, result</td>
+<td>component, exception, operation, result</td>
+</tr>
+<tr>
+<td>floecat.service.planning.pointer.warm.starts.total</td>
+<td>COUNTER</td>
+<td></td>
+<td>v1</td>
+<td>Planner pointer index warm-up attempts.</td>
 <td>component, operation</td>
 <td>component, operation</td>
 </tr>

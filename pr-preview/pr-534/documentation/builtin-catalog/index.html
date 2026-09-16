@@ -2669,10 +2669,11 @@ snapshots. <code>HintClearDecision</code> controls what to clear:</p>
 <li>Fine-grained constructor — clears only specific <code>payloadType</code> sets or individual column IDs, for
   plugins that want to avoid unnecessary hint recomputation on unrelated schema changes</li>
 </ul>
-<p><code>SystemCatalogHintProvider</code> (in <code>ai.floedb.floecat.systemcatalog.hint</code>) automatically publishes
-each object's <code>engine_specific</code> rules as <code>EngineHint</code> entries keyed by <code>(engineKind, engineVersion,
-payloadType)</code>. Plugins that rely solely on <code>properties</code>-based metadata in their <code>.pbtxt</code> files get
-hint publishing for free without implementing <code>decideHintClear</code>.</p>
+<p><code>SystemNodeRegistry</code> automatically materializes each object's matching <code>engine_specific</code> rules as
+<code>EngineHint</code> entries keyed by <code>(engineKind, engineVersion, payloadType)</code>. Plugins that rely solely
+on <code>properties</code>-based metadata in their <code>.pbtxt</code> files get immutable system hints without a second
+provider or cache path. <code>decideHintClear</code> applies only to legacy property-backed user hints during
+migration.</p>
 <h2 id="core-components">Core Components<a class="headerlink" href="#core-components" title="Permanent link">&para;</a></h2>
 <h3 id="enginespecific-proto">EngineSpecific (Proto)<a class="headerlink" href="#enginespecific-proto" title="Permanent link">&para;</a></h3>
 <p>The core envelope in <code>proto/src/main/proto/floecat/query/engine_specific.proto</code>:</p>
