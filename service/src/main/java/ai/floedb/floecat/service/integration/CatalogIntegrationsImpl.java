@@ -973,9 +973,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
             properties.get(IcebergRestAccessDelegationMode.PROPERTY));
       } catch (IllegalArgumentException failure) {
         throw GrpcErrors.invalidArgument(
-            corr,
-            FIELD,
-            Map.of("field", "properties." + IcebergRestAccessDelegationMode.PROPERTY));
+            corr, FIELD, Map.of("field", "properties." + IcebergRestAccessDelegationMode.PROPERTY));
       }
     }
     return Map.copyOf(properties);

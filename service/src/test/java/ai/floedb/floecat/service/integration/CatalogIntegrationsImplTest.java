@@ -168,9 +168,7 @@ class CatalogIntegrationsImplTest {
                     .createCatalogIntegration(
                         validCreateRequest().toBuilder()
                             .setSpec(
-                                validCreateRequest()
-                                    .getSpec()
-                                    .toBuilder()
+                                validCreateRequest().getSpec().toBuilder()
                                     .putProperties("access-delegation-mode", "nonee"))
                             .build())
                     .await()
