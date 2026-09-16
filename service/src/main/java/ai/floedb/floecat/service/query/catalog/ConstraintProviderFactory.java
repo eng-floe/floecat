@@ -173,7 +173,7 @@ public final class ConstraintProviderFactory {
 
     /** The constraint bundle's pointer version for (table, snapshot); 0 when none exists. */
     private long bundleVersion(ResourceId relationId, long snapshotId) {
-      MutationMeta meta = repository.metaForSafe(relationId, snapshotId);
+      MutationMeta meta = repository.pointerMetaForSafe(relationId, snapshotId);
       return meta == null ? 0L : meta.getPointerVersion();
     }
   }

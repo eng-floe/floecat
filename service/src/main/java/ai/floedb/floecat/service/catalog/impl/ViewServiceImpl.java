@@ -443,7 +443,7 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
                           corr,
                           "view update",
                           meta.getPointerVersion(),
-                          viewRepo.metaForSafe(viewId).getPointerVersion());
+                          viewRepo.pointerMetaForSafe(viewId).getPointerVersion());
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
                     throw GrpcErrors.alreadyExists(corr, VIEW_ALREADY_EXISTS, conflictInfo);
