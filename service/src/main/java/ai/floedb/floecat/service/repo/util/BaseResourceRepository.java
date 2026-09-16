@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.ResourceRepository;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.model.BlobRefs;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
@@ -877,7 +878,16 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
    */
   protected MutationMeta readMetaOrDefault(
       Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
-    return meta(blobReads.head(blobUri), pointerOpt, pointerKey, blobUri, nowTs);
+    Optional<String> casEtag =
+        referencedBlobImmutable(pointerKey, blobUri)
+            ? BlobRefs.etagFromCasUri(blobUri)
+            : Optional.empty();
+    return meta(
+        casEtag.orElseGet(() -> blobReads.head(blobUri).map(BlobHeader::getEtag).orElse("")),
+        pointerOpt,
+        pointerKey,
+        blobUri,
+        nowTs);
   }
 
   /** Metadata for a pointer already selected by an internal read, without a redundant blob HEAD. */
@@ -892,25 +902,32 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
   }
 
   /**
-   * Meta assembly for a mutation that has just committed. It heads the raw mutation blob store
-   * rather than the read adapter: the etag describes bytes this call wrote moments ago, so it must
-   * not be resolved through a read path that may be cached, eventually consistent, or subject to
-   * read admission. Mutation protocols keep every prerequisite and post-commit read on the raw
-   * stores they mutate.
+   * Meta assembly for a mutation that has just committed. CAS URIs carry the content digest, so
+   * their ETag is derived locally. Mutable or legacy URIs still use the raw mutation store, where
+   * the ETag describes the bytes this call wrote rather than a potentially cached read.
    */
   protected MutationMeta committedMeta(
       Optional<Pointer> pointerOpt, String pointerKey, String blobUri, Timestamp nowTs) {
-    return meta(mutationBlobStore.head(blobUri), pointerOpt, pointerKey, blobUri, nowTs);
+    Optional<String> casEtag =
+        referencedBlobImmutable(pointerKey, blobUri)
+            ? BlobRefs.etagFromCasUri(blobUri)
+            : Optional.empty();
+    return meta(
+        casEtag.orElseGet(
+            () -> mutationBlobStore.head(blobUri).map(BlobHeader::getEtag).orElse("")),
+        pointerOpt,
+        pointerKey,
+        blobUri,
+        nowTs);
   }
 
   private static MutationMeta meta(
-      Optional<BlobHeader> header,
+      String etag,
       Optional<Pointer> pointerOpt,
       String pointerKey,
       String blobUri,
       Timestamp nowTs) {
     long version = pointerOpt.map(Pointer::getVersion).orElse(0L);
-    String etag = header.map(BlobHeader::getEtag).orElse("");
 
     return MutationMeta.newBuilder()
         .setPointerKey(pointerKey)
