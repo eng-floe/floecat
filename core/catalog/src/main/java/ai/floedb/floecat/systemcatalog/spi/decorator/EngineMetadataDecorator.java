@@ -41,17 +41,11 @@ public interface EngineMetadataDecorator {
     return false;
   }
 
-  default void decorateNamespace(EngineContext ctx, NamespaceDecoration ns) {}
-
   default void decorateRelation(EngineContext ctx, RelationDecoration rel) {}
 
   default void decorateColumn(EngineContext ctx, ColumnDecoration col) {}
 
   default void decorateView(EngineContext ctx, ViewDecoration view) {}
-
-  default void decorateType(EngineContext ctx, TypeDecoration type) {}
-
-  default void decorateFunction(EngineContext ctx, FunctionDecoration fn) {}
 
   /**
    * Lifecycle callback with an explicit set of ready column IDs to commit.
