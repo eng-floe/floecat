@@ -108,7 +108,8 @@ import org.jboss.logging.Logger;
 public class TransactionsServiceImpl extends BaseServiceImpl implements Transactions {
 
   private static final Logger LOG = Logger.getLogger(TransactionsServiceImpl.class);
-  private static final int MAX_POINTER_TXN_OPS = 100;
+  // Leave two DynamoDB transaction slots for account-deletion and ownership checks.
+  private static final int MAX_POINTER_TXN_OPS = 98;
   private static final int APPLY_OPS_PER_PLAIN_INTENT = 3;
 
   // Every intent pays two index-cleanup deletes (its by-target and by-tx intent pointers), which

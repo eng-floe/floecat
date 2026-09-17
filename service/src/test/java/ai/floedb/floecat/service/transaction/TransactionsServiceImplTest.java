@@ -1491,7 +1491,7 @@ class TransactionsServiceImplTest {
    */
   @Test
   void prepareChargesATableDeleteForWhatItEmitsRatherThanForAnUpsert() throws Exception {
-    // 19 deletes: 1 account fence + 19*5 + 1 finalize = 97, inside the 100-op ceiling.
+    // 19 deletes: 1 account fence + 19*5 + 1 finalize = 97, inside the 98-op payload ceiling.
     assertEquals(TransactionState.TS_PREPARED, prepareTableDeletes(19).getState());
 
     // 20 would be 102. The ceiling still holds -- this is not a widened limit.
@@ -1500,7 +1500,7 @@ class TransactionsServiceImplTest {
             java.lang.reflect.InvocationTargetException.class, () -> prepareTableDeletes(20));
     assertInstanceOf(IllegalArgumentException.class, tooMany.getCause());
     assertTrue(
-        tooMany.getCause().getMessage().contains("more than 100 pointer operations"),
+        tooMany.getCause().getMessage().contains("more than 98 pointer operations"),
         "refused for the op ceiling, not something else: " + tooMany.getCause().getMessage());
   }
 

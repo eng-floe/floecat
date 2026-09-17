@@ -34,11 +34,12 @@ import java.util.OptionalLong;
  * commit. Sits once beneath {@code IndexedPointerStore}, leaving repositories unchanged.
  *
  * <p>A single-key write becomes a two-item transaction; a batch gains one check per account it
- * writes; a prefix delete, which cannot be transactional, is preceded by one consistent read.
- * Outside managed mode, and for accounts this process does not own, every call passes through.
+ * writes; a prefix delete holds the existing account mutation permit while it runs. Outside managed
+ * mode, and for accounts this process does not own, every call passes through.
  */
 public final class AssignmentFence implements PointerStore {
   private static final int DELETE_ATTEMPTS = 3;
+  private static final int MAX_TRANSACTION_ACTIONS = 100;
 
   private final PointerStore delegate;
   private final AccountAssignment assignment;
@@ -108,6 +109,7 @@ public final class AssignmentFence implements PointerStore {
 
   @Override
   public boolean compareAndSetBatch(List<CasOp> ops) {
+    requireWithinTransactionLimit(ops == null ? 0 : ops.size());
     List<Check> checks = checksFor(ops);
     return checks.isEmpty() ? delegate.compareAndSetBatch(ops) : fenced(checks, ops);
   }
@@ -131,19 +133,32 @@ public final class AssignmentFence implements PointerStore {
 
   @Override
   public int deleteByPrefix(String prefix) {
-    checkFor(prefix).ifPresent(this::requireFenceUnchanged);
-    return delegate.deleteByPrefix(prefix);
+    Optional<Check> check = checkFor(prefix);
+    if (check.isEmpty()) {
+      return delegate.deleteByPrefix(prefix);
+    }
+    try (var permit = assignment.admitMutation(check.get().accountId())) {
+      requireFenceUnchanged(check.get());
+      return delegate.deleteByPrefix(prefix);
+    }
   }
 
   /**
    * Account teardown. The deletion marker that precedes it was written under the fence, but a long
-   * stretch of listing and cleanup runs between that commit and this purge, and nothing in it would
-   * notice the fence moving. Check it here too, like every other prefix delete.
+   * stretch of listing and cleanup runs between that commit and this purge. Hold the existing
+   * mutation permit for the whole purge so handoff waits for it, and check the remembered fence
+   * before starting the work.
    */
   @Override
   public int deleteByPrefixExcluding(String prefix, String excludedKey) {
-    checkFor(prefix).ifPresent(this::requireFenceUnchanged);
-    return delegate.deleteByPrefixExcluding(prefix, excludedKey);
+    Optional<Check> check = checkFor(prefix);
+    if (check.isEmpty()) {
+      return delegate.deleteByPrefixExcluding(prefix, excludedKey);
+    }
+    try (var permit = assignment.admitMutation(check.get().accountId())) {
+      requireFenceUnchanged(check.get());
+      return delegate.deleteByPrefixExcluding(prefix, excludedKey);
+    }
   }
 
   @Override
@@ -171,6 +186,7 @@ public final class AssignmentFence implements PointerStore {
   private record Check(String accountId, long version) {}
 
   private boolean fenced(List<Check> checks, List<CasOp> ops) {
+    requireWithinTransactionLimit(ops.size() + checks.size());
     List<CasOp> fencedOps = new ArrayList<>(ops.size() + checks.size());
     for (Check check : checks) {
       fencedOps.add(new CasCheck(Keys.accountAssignmentFence(check.accountId()), check.version()));
@@ -181,6 +197,17 @@ public final class AssignmentFence implements PointerStore {
       checks.forEach(check -> assignment.fenceRejected(check.accountId(), check.version()));
     }
     return committed;
+  }
+
+  private static void requireWithinTransactionLimit(int actionCount) {
+    if (actionCount > MAX_TRANSACTION_ACTIONS) {
+      throw new IllegalArgumentException(
+          "pointer transaction has "
+              + actionCount
+              + " actions; maximum is "
+              + MAX_TRANSACTION_ACTIONS
+              + " after ownership fencing");
+    }
   }
 
   private void requireFenceUnchanged(Check check) {

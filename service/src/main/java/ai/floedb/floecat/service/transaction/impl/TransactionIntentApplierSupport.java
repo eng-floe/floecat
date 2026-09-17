@@ -50,7 +50,8 @@ import org.jboss.logging.Logger;
 public class TransactionIntentApplierSupport {
 
   private static final Logger LOG = Logger.getLogger(TransactionIntentApplierSupport.class);
-  private static final int MAX_POINTER_TXN_OPS = 100;
+  // Leave two DynamoDB transaction slots for account-deletion and ownership checks.
+  private static final int MAX_POINTER_TXN_OPS = 98;
 
   /** Owns ordered, key-unique assembly of one pointer-store transaction. */
   private static final class PointerBatch {

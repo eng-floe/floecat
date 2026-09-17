@@ -175,6 +175,22 @@ class AssignmentFenceTest {
   }
 
   @Test
+  void rejectsABatchThatWouldOverflowTheDurableTransactionLimit() {
+    serve();
+    List<CasOp> ops = new ArrayList<>();
+    for (int i = 0; i < 100; i++) {
+      String key = Keys.tablePointerById(A, "table-" + i);
+      ops.add(new CasUpsert(key, 0L, pointer("s3://" + i)));
+    }
+
+    assertThatThrownBy(() -> fence.compareAndSetBatch(ops))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("101 actions")
+        .hasMessageContaining("maximum is 100");
+    assertThat(raw.batches).isEmpty();
+  }
+
+  @Test
   void deletionInProgressStopsWritesWithoutTouchingOwnership() {
     serve();
     String marker = Keys.accountDeletionMarker(A);
