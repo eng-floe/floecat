@@ -460,7 +460,7 @@ public class AccountAssignment
               }
             }
             case UNASSIGNED -> {
-              if (state.leftAtEpoch < epoch) {
+              if (state.leftAtEpoch < epoch && state.drained()) {
                 accounts.remove(accountId, state);
               }
             }
@@ -1113,7 +1113,12 @@ public class AccountAssignment
     List<Runnable> afterLock = new ArrayList<>();
     synchronized (lock) {
       synchronized (state) {
-        if (state.mode == AccountMode.DRAINING && state.leaving && state.drained()) {
+        if (state.mode == AccountMode.UNASSIGNED
+            && state.leftAtEpoch < epoch
+            && state.drained()
+            && !assignedAccounts.contains(accountId)) {
+          accounts.remove(accountId, state);
+        } else if (state.mode == AccountMode.DRAINING && state.leaving && state.drained()) {
           unassignLocked(accountId, state, afterLock);
         }
       }

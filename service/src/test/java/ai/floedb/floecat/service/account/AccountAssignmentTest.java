@@ -37,6 +37,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -459,6 +462,42 @@ class AccountAssignmentTest {
   }
 
   @Test
+  void processDrainCountsAnAdmittedFenceTakeAfterItsAccountLeavesTheAssignment() throws Exception {
+    CountDownLatch fenceReadStarted = new CountDownLatch(1);
+    CountDownLatch releaseFenceRead = new CountDownLatch(1);
+    AtomicReference<Thread> worker = new AtomicReference<>();
+    raw.blockFenceRead(fenceReadStarted, releaseFenceRead);
+    assignment =
+        AccountAssignment.forTesting(
+            Mode.MANAGED,
+            MEMBER,
+            INCARNATION,
+            raw,
+            hooks,
+            command -> {
+              Thread thread = new Thread(command);
+              worker.set(thread);
+              thread.start();
+            },
+            observability);
+
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(), INCARNATION);
+    assertThat(fenceReadStarted.await(1, TimeUnit.SECONDS)).isTrue();
+    Thread fenceWorker = worker.get();
+    assertThat(fenceWorker).isNotNull();
+
+    assignment.apply(2L, AssignmentPhase.SERVING, List.of(), List.of(), INCARNATION);
+    assertThat(assignment.beginProcessDrain().drained())
+        .as("the in-flight fence take remains visible after the account is removed")
+        .isFalse();
+
+    releaseFenceRead.countDown();
+    fenceWorker.join(1_000L);
+    assertThat(fenceWorker.isAlive()).isFalse();
+    assertThat(assignment.status().drained()).isTrue();
+  }
+
+  @Test
   void standaloneServesEverythingAndTouchesNoStore() {
     AccountAssignment standalone =
         AccountAssignment.forTesting(
@@ -589,13 +628,40 @@ class AccountAssignmentTest {
   static final class FailableStore extends InMemoryPointerStore {
     volatile boolean failConsistentReads;
     volatile boolean failWrites;
+    private volatile CountDownLatch fenceReadStarted;
+    private volatile CountDownLatch releaseFenceRead;
+
+    void blockFenceRead(CountDownLatch started, CountDownLatch release) {
+      fenceReadStarted = started;
+      releaseFenceRead = release;
+    }
+
+    private void awaitFenceRead(String key) {
+      CountDownLatch started = fenceReadStarted;
+      CountDownLatch release = releaseFenceRead;
+      if (Keys.accountAssignmentFence(A).equals(key) && started != null && release != null) {
+        started.countDown();
+        try {
+          if (!release.await(1, TimeUnit.SECONDS)) {
+            throw new AssertionError("timed out waiting to release the fence read");
+          }
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw new AssertionError(
+              "interrupted while waiting to release the fence read", interrupted);
+        }
+      }
+    }
 
     @Override
-    public synchronized java.util.Optional<Pointer> getConsistent(String key) {
-      if (failConsistentReads) {
-        throw new StorageAbortRetryableException("store unreachable");
+    public java.util.Optional<Pointer> getConsistent(String key) {
+      awaitFenceRead(key);
+      synchronized (this) {
+        if (failConsistentReads) {
+          throw new StorageAbortRetryableException("store unreachable");
+        }
+        return super.getConsistent(key);
       }
-      return super.getConsistent(key);
     }
 
     @Override
