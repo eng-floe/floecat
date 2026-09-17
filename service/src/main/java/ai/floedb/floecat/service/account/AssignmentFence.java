@@ -29,9 +29,11 @@ import java.util.Optional;
 import java.util.OptionalLong;
 
 /**
- * The store fence: every account-scoped write by an owning process carries {@code
+ * The store fence: every account-scoped data write by an owning process carries {@code
  * CasCheck(assignment fence, remembered version)}, so a process that lost the account cannot
- * commit. Sits once beneath {@code IndexedPointerStore}, leaving repositories unchanged.
+ * commit. Sits once beneath {@code IndexedPointerStore}, leaving repositories unchanged. The
+ * assignment coordinator's own write that creates or advances the fence is the deliberate
+ * exception: it is the authority establishing the check key, so it cannot be fenced by that key.
  *
  * <p>A single-key write becomes a two-item transaction; a batch gains one check per account it
  * writes; a prefix delete holds the existing account mutation permit while it runs. Outside managed
