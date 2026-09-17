@@ -55,6 +55,7 @@ final class UnityCatalogAccessClient implements CatalogClient {
   private final AutoCloseable authenticationOwner;
   private final DeltaLogStorageProbe storageValidator;
   private final Map<String, String> storageRouting;
+  private final String catalog;
   private final AtomicBoolean closed = new AtomicBoolean();
 
   /**
@@ -89,11 +90,13 @@ final class UnityCatalogAccessClient implements CatalogClient {
       UnityCatalogClient unity,
       AutoCloseable authenticationOwner,
       DeltaLogStorageProbe storageValidator,
-      Map<String, String> storageRouting) {
+      Map<String, String> storageRouting,
+      String catalog) {
     this.unity = Objects.requireNonNull(unity, "unity");
     this.authenticationOwner = authenticationOwner;
     this.storageValidator = Objects.requireNonNull(storageValidator, "storageValidator");
     this.storageRouting = Map.copyOf(Objects.requireNonNull(storageRouting, "storageRouting"));
+    this.catalog = Objects.requireNonNull(catalog, "catalog");
   }
 
   @Override
@@ -103,7 +106,7 @@ final class UnityCatalogAccessClient implements CatalogClient {
 
   @Override
   public void validate() {
-    UnityCatalogErrors.run("connection validation", unity::listCatalogs);
+    UnityCatalogErrors.run("connection validation", () -> unity.listSchemas(catalog));
   }
 
   @Override
@@ -113,17 +116,9 @@ final class UnityCatalogAccessClient implements CatalogClient {
         "namespace listing",
         () -> {
           if (parent.segments().isEmpty()) {
-            return unity.listCatalogs().stream()
-                .filter(name -> !name.isBlank())
-                .map(name -> new NamespacePath(List.of(name)))
-                .sorted()
-                .toList();
-          }
-          if (parent.segments().size() == 1) {
-            String catalog = parent.segments().getFirst();
             return unity.listSchemas(catalog).stream()
                 .filter(name -> !name.isBlank())
-                .map(name -> new NamespacePath(List.of(catalog, name)))
+                .map(name -> new NamespacePath(List.of(name)))
                 .sorted()
                 .toList();
           }
@@ -436,8 +431,10 @@ final class UnityCatalogAccessClient implements CatalogClient {
     return relations;
   }
 
-  private static String fullName(CatalogObjectName name) {
-    List<String> segments = new ArrayList<>(name.namespace().segments());
+  private String fullName(CatalogObjectName name) {
+    List<String> segments = new ArrayList<>();
+    segments.add(catalog);
+    segments.addAll(name.namespace().segments());
     segments.add(name.name());
     return String.join(".", segments);
   }
@@ -445,31 +442,27 @@ final class UnityCatalogAccessClient implements CatalogClient {
   /**
    * The schema a listing should read, or {@code null} when the namespace cannot hold one.
    *
-   * <p>Listing is not addressing. Unity keeps tables in {@code catalog.schema}, so "what tables are
-   * in this catalog?" has a true answer -- none -- and a namespace walk that asks is behaving
-   * correctly, not misconfigured. {@code listNamespaces} hands out one-segment catalog paths by
-   * design, and {@code CatalogOverlayReconciler} lists tables for every namespace an overlay
-   * selects, which with no include filters is all of them: the documented default. Throwing here
-   * failed every unfiltered overlay against a Unity workspace on the first catalog it reached.
+   * <p>The Integration is already scoped to one Unity catalog, so one namespace segment names its
+   * schema. The root cannot contain tables, and deeper paths are not representable by Unity.
    *
    * <p>{@link #requireSchema} still throws for {@code loadTable}, vending and validation, where a
    * namespace of the wrong depth is a caller naming an object that cannot exist.
    */
-  private static Namespace schemaOrNull(NamespacePath namespace) {
+  private Namespace schemaOrNull(NamespacePath namespace) {
     Objects.requireNonNull(namespace, "namespace");
-    return namespace.segments().size() == 2
-        ? new Namespace(namespace.segments().get(0), namespace.segments().get(1))
+    return namespace.segments().size() == 1
+        ? new Namespace(catalog, namespace.segments().getFirst())
         : null;
   }
 
-  private static Namespace requireSchema(NamespacePath namespace) {
+  private Namespace requireSchema(NamespacePath namespace) {
     Objects.requireNonNull(namespace, "namespace");
-    if (namespace.segments().size() != 2) {
+    if (namespace.segments().size() != 1) {
       throw new CatalogAccessException(
           CatalogAccessException.Code.INVALID_CONFIGURATION,
-          "Unity Catalog table namespaces must contain catalog and schema");
+          "Unity Catalog table namespaces must contain exactly one schema");
     }
-    return new Namespace(namespace.segments().get(0), namespace.segments().get(1));
+    return new Namespace(catalog, namespace.segments().getFirst());
   }
 
   /**
@@ -535,7 +528,7 @@ final class UnityCatalogAccessClient implements CatalogClient {
    * purpose: an INVALID_CONFIGURATION from listing or loading really does describe the Integration,
    * and still ends the walk.
    */
-  private static RuntimeException credentialRouteFailure(
+  private RuntimeException credentialRouteFailure(
       CatalogObjectName name, UnityCatalogException failure) {
     if (failure.failure() != UnityCatalogException.Failure.INVALID_REQUEST) {
       return failure;
@@ -586,7 +579,7 @@ final class UnityCatalogAccessClient implements CatalogClient {
    * none for view columns; for a view's output schema position is the identity, which is what a
    * reader resolving output columns needs.
    */
-  private static String viewSchemaJson(CatalogObjectName name, UnityCatalogTable table) {
+  private String viewSchemaJson(CatalogObjectName name, UnityCatalogTable table) {
     requireColumns(name, table, "view");
     var fields = JSON.createArrayNode();
     int[] nextId = {1};
@@ -786,7 +779,7 @@ final class UnityCatalogAccessClient implements CatalogClient {
   /**
    * Both load paths funnel through a schema builder, so the guard belongs here rather than twice.
    */
-  private static void requireColumns(CatalogObjectName name, UnityCatalogTable table, String kind) {
+  private void requireColumns(CatalogObjectName name, UnityCatalogTable table, String kind) {
     if (table.columns().isEmpty()) {
       // Refused per object rather than published as an empty schema. parseColumns treats an absent
       // or JSON-null "columns" as an empty list even in strict mode -- only a malformed one raises
@@ -801,7 +794,7 @@ final class UnityCatalogAccessClient implements CatalogClient {
     }
   }
 
-  private static String schemaJson(CatalogObjectName name, UnityCatalogTable table) {
+  private String schemaJson(CatalogObjectName name, UnityCatalogTable table) {
     requireColumns(name, table, "table");
     var fields = JSON.createArrayNode();
     for (UnityCatalogTable.Column column : table.columns()) {

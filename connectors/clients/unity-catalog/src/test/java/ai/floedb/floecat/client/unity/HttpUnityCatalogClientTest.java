@@ -134,11 +134,27 @@ class HttpUnityCatalogClientTest {
   }
 
   @Test
-  void listSchemasTreatsAnOmittedCollectionAsEmpty() {
+  void schemaAndTableListingsRequestServerSelectedPagination() {
+    var schemaQuery = new AtomicReference<String>();
+    var tableQuery = new AtomicReference<String>();
     server.createContext(
-        "/api/2.1/unity-catalog/schemas", exchange -> respond(exchange, 200, "{}"));
+        "/api/2.1/unity-catalog/schemas",
+        exchange -> {
+          schemaQuery.set(exchange.getRequestURI().getRawQuery());
+          respond(exchange, 200, "{}");
+        });
+    server.createContext(
+        "/api/2.1/unity-catalog/tables",
+        exchange -> {
+          tableQuery.set(exchange.getRequestURI().getRawQuery());
+          respond(exchange, 200, "{}");
+        });
 
     assertThat(client.listSchemas("empty_catalog")).isEmpty();
+    assertThat(client.listTables("empty_catalog", "empty_schema")).isEmpty();
+    assertThat(schemaQuery.get()).isEqualTo("catalog_name=empty_catalog&max_results=0");
+    assertThat(tableQuery.get())
+        .isEqualTo("catalog_name=empty_catalog&schema_name=empty_schema&max_results=0");
   }
 
   @Test

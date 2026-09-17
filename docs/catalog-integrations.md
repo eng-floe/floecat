@@ -86,12 +86,11 @@ For Unity Catalog with a bearer token, the equivalent Delta integration is:
 ```text
 integration create databricks unity https://workspace.example \
   --auth-type bearer --cred token=secret \
-  --props s3.region=us-east-1
-overlay create delta-sales databricks local-catalog --include main.sales
+  --props catalog=main s3.region=us-east-1
+overlay create delta-sales databricks local-catalog --include sales
 integration validate databricks
 integration namespaces databricks
-integration namespaces databricks --parent main
-integration objects databricks main.sales --kinds table,view
+integration objects databricks sales --kinds table,view
 overlay reconcile delta-sales
 ```
 
@@ -227,7 +226,9 @@ For Delta Sharing, supported properties are `http.connect.ms`, `http.read.ms`,
 vends; they do not supply storage credentials. `s3.endpoint` is held to the same rule as Unity's,
 below, for the same reason: a Delta Sharing vend also carries an AWS session token.
 
-For Unity Catalog, supported properties are `http.connect.ms`, `http.read.ms`,
+For Unity Catalog, `catalog` is required and scopes the Integration to exactly one Unity catalog.
+That catalog's schemas are exposed as root Floecat namespaces. Other supported properties are
+`http.connect.ms`, `http.read.ms`,
 `unity.temporary-table-vend-path`, `s3.region`, `s3.endpoint`, and `s3.path-style-access`. The S3
 properties route validation of credentials vended by Unity; they do not supply storage credentials.
 There is no `s3.access-point` property: validation probes the bucket named in the object URI, which

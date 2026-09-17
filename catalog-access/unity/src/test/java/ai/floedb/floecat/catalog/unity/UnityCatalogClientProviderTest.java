@@ -23,6 +23,7 @@ import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.http.guards.HttpEndpointGuards;
 import java.net.URI;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.concurrent.atomic.AtomicReference;
@@ -97,6 +98,22 @@ class UnityCatalogClientProviderTest {
             failure ->
                 assertThat(failure.code())
                     .isEqualTo(CatalogAccessException.Code.INVALID_CONFIGURATION));
+  }
+
+  @Test
+  void requiresOneConfiguredCatalog() {
+    UnityCatalogClientProvider provider =
+        new UnityCatalogClientProvider(
+            (uri, connect, read, auth, path) -> mock(UnityCatalogClient.class));
+
+    assertThatThrownBy(() -> provider.open(unscopedConfig(Map.of()), credentials()))
+        .isInstanceOfSatisfying(
+            CatalogAccessException.class,
+            failure -> {
+              assertThat(failure.code())
+                  .isEqualTo(CatalogAccessException.Code.INVALID_CONFIGURATION);
+              assertThat(failure.getMessage()).contains("catalog property");
+            });
   }
 
   @Test
@@ -193,6 +210,12 @@ class UnityCatalogClientProviderTest {
   }
 
   private static CatalogConnectionConfig config(Map<String, String> properties) {
+    Map<String, String> scoped = new HashMap<>(properties);
+    scoped.put("catalog", "main");
+    return unscopedConfig(scoped);
+  }
+
+  private static CatalogConnectionConfig unscopedConfig(Map<String, String> properties) {
     return new CatalogConnectionConfig(
         CatalogProtocol.UNITY_CATALOG,
         URI.create("https://catalog.example"),
