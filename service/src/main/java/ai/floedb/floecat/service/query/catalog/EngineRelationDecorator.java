@@ -361,7 +361,7 @@ final class EngineRelationDecorator {
   }
 
   boolean isRequired(EngineContext context) {
-    return enabled && context != null && context.enginePluginOverlaysEnabled();
+    return enabled && context != null && provider.expectsDecoration(context);
   }
 
   private static List<SchemaColumn> immutable(List<SchemaColumn> schema) {

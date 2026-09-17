@@ -19,11 +19,19 @@ package ai.floedb.floecat.systemcatalog.provider;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
+import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
+import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -117,5 +125,70 @@ class ServiceLoaderSystemCatalogProviderTest {
             "information_schema.tables",
             "information_schema.columns",
             "information_schema.schemata");
+  }
+
+  @Test
+  void expectsDecoration_dependsOnRegistrationAndDecorator() {
+    ServiceLoaderSystemCatalogProvider provider =
+        new ServiceLoaderSystemCatalogProvider(
+            List.of(
+                new FakeExtension("floedb", new EngineMetadataDecorator() {}),
+                new FakeExtension("duckdb", null)));
+
+    // No engine headers at all: there is no engine to decorate for.
+    assertThat(provider.expectsDecoration(EngineContext.empty())).isFalse();
+    // Registered with a decorator: decorated, as before this method existed.
+    assertThat(provider.expectsDecoration(EngineContext.of("floedb", "1"))).isTrue();
+    // Registered without one: wants no decoration, and is served as-is.
+    assertThat(provider.expectsDecoration(EngineContext.of("duckdb", "1"))).isFalse();
+    // Registered for nothing: a misconfigured or misspelled kind still fails closed.
+    assertThat(provider.expectsDecoration(EngineContext.of("not-registered", "1"))).isTrue();
+  }
+
+  /** Registers an engine kind, with a decorator or deliberately without one. */
+  private static final class FakeExtension implements EngineSystemCatalogExtension {
+    private final String kind;
+    private final EngineMetadataDecorator decorator;
+
+    FakeExtension(String kind, EngineMetadataDecorator decorator) {
+      this.kind = kind;
+      this.decorator = decorator;
+    }
+
+    @Override
+    public String engineKind() {
+      return kind;
+    }
+
+    @Override
+    public SystemCatalogData loadSystemCatalog() {
+      return SystemCatalogData.empty();
+    }
+
+    @Override
+    public Optional<EngineMetadataDecorator> decorator() {
+      return Optional.ofNullable(decorator);
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions() {
+      return List.of();
+    }
+
+    @Override
+    public boolean supportsEngine(String engineKind) {
+      return kind.equals(engineKind);
+    }
+
+    @Override
+    public boolean supports(NameRef name, String engineKind) {
+      return false;
+    }
+
+    @Override
+    public Optional<SystemObjectScanner> provide(
+        String scannerId, String engineKind, String engineVersion) {
+      return Optional.empty();
+    }
   }
 }
