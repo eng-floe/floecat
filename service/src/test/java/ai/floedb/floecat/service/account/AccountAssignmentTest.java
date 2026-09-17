@@ -441,6 +441,24 @@ class AccountAssignmentTest {
   }
 
   @Test
+  void processDrainRejectsQueuedFenceTakesBeforeTheyTouchDurableState() {
+    List<Runnable> queued = new ArrayList<>();
+    assignment =
+        AccountAssignment.forTesting(
+            Mode.MANAGED, MEMBER, INCARNATION, raw, hooks, queued::add, observability);
+
+    assignment.apply(1L, AssignmentPhase.SERVING, List.of(A), List.of(A), INCARNATION);
+    assertThat(queued).hasSize(1);
+
+    assertThat(assignment.beginProcessDrain().drained()).isTrue();
+    queued.removeFirst().run();
+
+    assertThat(raw.get(Keys.accountAssignmentFence(A))).isEmpty();
+    assertThat(assignment.status(A).mode()).isEqualTo(AccountMode.UNASSIGNED);
+    assertThat(hooks.gained).isEmpty();
+  }
+
+  @Test
   void standaloneServesEverythingAndTouchesNoStore() {
     AccountAssignment standalone =
         AccountAssignment.forTesting(

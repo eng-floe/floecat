@@ -617,7 +617,9 @@ public class AccountAssignment
 
   /** Stops admitting pins, mutations and GC on every account. Irreversible; touches no KV. */
   public Status beginProcessDrain() {
-    processDraining = true;
+    synchronized (lock) {
+      processDraining = true;
+    }
     return status();
   }
 
@@ -628,59 +630,81 @@ public class AccountAssignment
   /** Takes an account's fence and starts serving it. Runs only on {@link #background}. */
   private void fenceAndServe(String accountId, long epoch) {
     AccountState state = accounts.get(accountId);
-    if (state == null) {
+    if (state == null || !admitFenceTake(accountId, state, epoch)) {
       return;
     }
+    try {
+      String key = Keys.accountAssignmentFence(accountId);
+      String payload = ownedPayload(epoch);
+      long version;
+      try {
+        long current = durable.read(key).map(Pointer::getVersion).orElse(0L);
+        // The store assigns the next version, so the taken fence is the one the CAS just wrote.
+        if (!durable.compareAndSet(
+            key, current, PointerReferences.opaqueMarkerPointer(key, payload, current + 1L))) {
+          LOG.warnf(
+              "account_assignment_fence_conflict account_id=%s epoch=%d member=%s",
+              accountId, epoch, memberId);
+          fenceBump("conflict");
+          return;
+        }
+        version = current + 1L;
+      } catch (RuntimeException failure) {
+        LOG.warnf(
+            failure,
+            "account_assignment_fence_failed account_id=%s member=%s",
+            accountId,
+            memberId);
+        fenceBump("error");
+        return;
+      }
+      boolean serving = false;
+      synchronized (lock) {
+        synchronized (state) {
+          if (!processDraining
+              && this.epoch == epoch
+              && phase == AssignmentPhase.SERVING
+              && assignedAccounts.contains(accountId)
+              && state.pending
+              && state.mode == AccountMode.UNASSIGNED) {
+            state.startServing(version, gcAllowedAccounts.contains(accountId));
+            serving = true;
+          }
+        }
+      }
+      fenceBump("ok");
+      if (serving) {
+        hooks.ownershipGained(accountId);
+      }
+    } finally {
+      releaseFenceTake(accountId, state);
+    }
+  }
+
+  /** Admits a queued fence take as drain-visible work and closes admission once draining starts. */
+  private boolean admitFenceTake(String accountId, AccountState state, long expectedEpoch) {
     synchronized (lock) {
-      if (this.epoch != epoch
+      if (processDraining
+          || this.epoch != expectedEpoch
           || phase != AssignmentPhase.SERVING
           || !assignedAccounts.contains(accountId)) {
-        return;
+        return false;
       }
       synchronized (state) {
         if (!state.pending || state.mode != AccountMode.UNASSIGNED) {
-          return;
+          return false;
         }
+        state.activeMutations++;
+        return true;
       }
     }
-    String key = Keys.accountAssignmentFence(accountId);
-    String payload = ownedPayload(epoch);
-    long version;
-    try {
-      long current = durable.read(key).map(Pointer::getVersion).orElse(0L);
-      // The store assigns the next version, so the taken fence is the one the CAS just wrote.
-      if (!durable.compareAndSet(
-          key, current, PointerReferences.opaqueMarkerPointer(key, payload, current + 1L))) {
-        LOG.warnf(
-            "account_assignment_fence_conflict account_id=%s epoch=%d member=%s",
-            accountId, epoch, memberId);
-        fenceBump("conflict");
-        return;
-      }
-      version = current + 1L;
-    } catch (RuntimeException failure) {
-      LOG.warnf(
-          failure, "account_assignment_fence_failed account_id=%s member=%s", accountId, memberId);
-      fenceBump("error");
-      return;
+  }
+
+  private void releaseFenceTake(String accountId, AccountState state) {
+    synchronized (state) {
+      state.activeMutations--;
     }
-    boolean serving = false;
-    synchronized (lock) {
-      synchronized (state) {
-        if (this.epoch == epoch
-            && phase == AssignmentPhase.SERVING
-            && assignedAccounts.contains(accountId)
-            && state.pending
-            && state.mode == AccountMode.UNASSIGNED) {
-          state.startServing(version, gcAllowedAccounts.contains(accountId));
-          serving = true;
-        }
-      }
-    }
-    fenceBump("ok");
-    if (serving) {
-      hooks.ownershipGained(accountId);
-    }
+    finishDrainIfIdle(accountId, state);
   }
 
   private boolean isCurrentServing(long expectedEpoch, List<String> expectedAccounts) {
