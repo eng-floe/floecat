@@ -152,6 +152,39 @@ class ColumnsScannerTest {
   }
 
   @Test
+  void scan_numbersUserTableColumnsByPositionNotFieldId() {
+    // Iceberg field ids have gaps after a drop and need not ascend in declaration order; an
+    // unmapped Delta table reports 0 for every column. Neither can stand in for ordinal_position.
+    var builder = TestTableScanContextBuilder.builder("marketing");
+    var ns = builder.addNamespace(List.of("org", "sales"), "sales", "org.sales");
+    builder.addTableWithSchema(
+        ns,
+        "orders",
+        List.of(
+            positionColumn("id", "long", 40),
+            positionColumn("name", "string", 0),
+            positionColumn("amount", "long", 7)));
+
+    var rows =
+        new ColumnsScanner().scan(builder.build()).map(r -> Arrays.asList(r.values())).toList();
+
+    assertThat(rows)
+        .extracting(row -> row.get(3), row -> row.get(5))
+        .containsExactly(tuple("id", 1), tuple("name", 2), tuple("amount", 3));
+  }
+
+  private static SchemaColumn positionColumn(String name, String type, int fieldId) {
+    return SchemaColumn.newBuilder()
+        .setName(name)
+        .setPhysicalPath(name)
+        .setType(LogicalTypeProtoAdapter.parseToProto(type))
+        .setFieldId(fieldId)
+        .setLeaf(true)
+        .setNullable(false)
+        .build();
+  }
+
+  @Test
   void scan_withNoTables_returnsNoRows() {
     var builder = TestTableScanContextBuilder.builder("marketing");
     var ns = builder.addNamespace("finance.sales");
@@ -217,6 +250,45 @@ class ColumnsScannerTest {
               .toList();
 
       assertThat(arrowRows).isEqualTo(expected);
+    }
+  }
+
+  @Test
+  void scanArrow_numbersColumnsByPositionNotFieldId() {
+    // The Arrow path builds its own rows, so the row-path regression does not cover it. Field ids
+    // chosen to fail loudly if either path ever reverts to reporting or sorting by them: 40 and 7
+    // are out of declaration order, and 0 is what an unmapped Delta column carries.
+    var builder = TestTableScanContextBuilder.builder("marketing");
+    var ns = builder.addNamespace(List.of("org", "sales"), "sales", "org.sales");
+    builder.addTableWithSchema(
+        ns,
+        "orders",
+        List.of(
+            positionColumn("id", "long", 40),
+            positionColumn("name", "string", 0),
+            positionColumn("amount", "long", 7)));
+    SystemObjectScanContext ctx = builder.build();
+    var scanner = new ColumnsScanner();
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      List<List<String>> arrowRows =
+          scanner
+              .scanArrow(ctx, null, List.of(), allocator)
+              .map(
+                  batch -> {
+                    try (batch) {
+                      return toRows(batch.root());
+                    }
+                  })
+              .flatMap(List::stream)
+              .toList();
+
+      assertThat(arrowRows)
+          .extracting(row -> row.get(3), row -> row.get(5))
+          .containsExactly(tuple("id", "1"), tuple("name", "2"), tuple("amount", "3"));
+      // Both paths answer the same query; a reader cannot tell which is right if they disagree.
+      assertThat(arrowRows)
+          .isEqualTo(scanner.scan(ctx).map(row -> toStringList(row.values())).toList());
     }
   }
 
