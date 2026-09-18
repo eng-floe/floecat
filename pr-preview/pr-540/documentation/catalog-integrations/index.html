@@ -1948,9 +1948,10 @@ replaces the complete map; passing <code>--props</code> with no values clears it
 <code>client.region</code>, and <code>s3.path-style-access</code>. The S3 properties route reads of credentials the share
 vends; they do not supply storage credentials. <code>s3.endpoint</code> is held to the same rule as Unity's,
 below, for the same reason: a Delta Sharing vend also carries an AWS session token.</p>
-<p>For Unity Catalog, <code>catalog</code> is required and scopes the Integration to exactly one Unity catalog.
-That catalog's schemas are exposed as root Floecat namespaces. Other supported properties are
-<code>http.connect.ms</code>, <code>http.read.ms</code>,
+<p>For Unity Catalog, the optional <code>catalog</code> property scopes the Integration to exactly one Unity
+catalog and exposes that catalog's schemas as root Floecat namespaces. Without <code>catalog</code>, all Unity
+catalogs are exposed as root namespaces and their schemas as child namespaces, preserving the
+behavior of existing Integrations. Other supported properties are <code>http.connect.ms</code>, <code>http.read.ms</code>,
 <code>unity.temporary-table-vend-path</code>, <code>s3.region</code>, <code>s3.endpoint</code>, and <code>s3.path-style-access</code>. The S3
 properties route validation of credentials vended by Unity; they do not supply storage credentials.
 There is no <code>s3.access-point</code> property: validation probes the bucket named in the object URI, which
