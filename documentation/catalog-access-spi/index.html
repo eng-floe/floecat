@@ -1840,7 +1840,8 @@ the table format. Missing and duplicate providers fail explicitly.</p>
 <ul>
 <li>bearer tokens and OAuth client credentials, with catalog-token refresh kept separate from
   storage credential vending;</li>
-<li>catalog/schema discovery mapped onto hierarchical namespace paths;</li>
+<li>optional discovery within one configured Unity catalog, with its schemas mapped to root namespace
+  paths; without one, catalogs and schemas retain their original two-level namespace shape;</li>
 <li>Delta table and view discovery, metadata loading, and stable identity through Unity table IDs;</li>
 <li>table-scoped AWS credentials from Unity Catalog's temporary-table-credentials endpoint; and</li>
 <li>non-mutating validation of the vended credentials against the table's Delta log, without ambient
@@ -1851,7 +1852,9 @@ resources or <code>FloecatConnector</code>. Unity-hosted non-Delta tables are no
 Iceberg catalogs use the Iceberg REST integration path.</p>
 <p>OAuth client credentials use <code>oauth2-server-uri</code> and optional <code>scope</code> authentication properties.
 When no token URI is configured, the provider resolves <code>/oidc/v1/token</code> against the catalog URI.
-Provider connection properties include <code>http.connect.ms</code>, <code>http.read.ms</code>,
+The optional <code>catalog</code> provider connection property selects one upstream Unity catalog. When it is
+absent, all catalogs are exposed for compatibility with existing Integrations. Other provider
+connection properties include <code>http.connect.ms</code>, <code>http.read.ms</code>,
 <code>unity.temporary-table-vend-path</code>, <code>s3.region</code>, <code>s3.endpoint</code>, and <code>s3.path-style-access</code>.</p>
 <p>Table schemas reported through this slice are the ones Unity holds, not the ones the Delta log
 holds. The Unity Delta <em>Connector</em> prefers the log for a table with a storage location and falls
