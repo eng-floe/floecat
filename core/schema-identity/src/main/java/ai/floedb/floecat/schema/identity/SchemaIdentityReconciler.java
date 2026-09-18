@@ -29,14 +29,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.Set;
 
 /**
- * Assigns canonical IDs by reconciling one source schema against its immediate predecessor.
- * Structured-path identity cannot distinguish a drop and re-add of the same path when both occur
- * entirely within one source version; the intermediate absence must be observable to allocate a new
- * ID.
+ * Assigns canonical IDs by reconciling one source schema against its predecessor. Structured-path
+ * identity cannot distinguish a drop and re-add of the same path unless the caller observes every
+ * intervening metadata change, so the caller must attest whether that history is complete.
  */
 public final class SchemaIdentityReconciler {
   private SchemaIdentityReconciler() {}
@@ -45,17 +43,54 @@ public final class SchemaIdentityReconciler {
       ResolvedSchema schema,
       long sourceVersion,
       IdentityMode mode,
-      Optional<SchemaIdentityState> previous) {
-    return reconcileInternal(schema, sourceVersion, mode, previous, 0L);
+      Optional<SchemaIdentityState> previous,
+      HistoryCoverage historyCoverage) {
+    Objects.requireNonNull(previous, "previous");
+    Objects.requireNonNull(historyCoverage, "historyCoverage");
+    previous.ifPresent(
+        state -> {
+          validateSourceVersion(sourceVersion, state);
+          validateMode(mode, state);
+        });
+    long retainedHighWaterMark = previous.map(SchemaIdentityState::highWaterMark).orElse(0L);
+    Optional<SchemaIdentityState> effectivePrevious =
+        historyCoverage == HistoryCoverage.GAP ? Optional.empty() : previous;
+    return reconcileInternal(schema, sourceVersion, mode, effectivePrevious, retainedHighWaterMark);
   }
 
   /** Starts a new identity generation without allowing the canonical ID counter to regress. */
   public static Result reset(
       ResolvedSchema schema, long sourceVersion, IdentityMode mode, long previousHighWaterMark) {
-    if (previousHighWaterMark < 0L) {
-      throw new IllegalArgumentException("Previous high-water mark must be non-negative");
-    }
+    validateHighWaterMark(previousHighWaterMark);
     return reconcileInternal(schema, sourceVersion, mode, Optional.empty(), previousHighWaterMark);
+  }
+
+  /**
+   * Advances a state after the caller attests that the interval contains no unobserved metadata
+   * changes.
+   */
+  public static SchemaIdentityState stampSourceVersion(
+      SchemaIdentityState state, long sourceVersion, HistoryCoverage historyCoverage) {
+    Objects.requireNonNull(state, "state");
+    Objects.requireNonNull(historyCoverage, "historyCoverage");
+    if (historyCoverage != HistoryCoverage.COMPLETE_METADATA_HISTORY) {
+      throw new IllegalArgumentException("Cannot stamp across a metadata history gap");
+    }
+    if (sourceVersion < state.sourceVersion()) {
+      throw new IllegalArgumentException(
+          "Cannot stamp source version " + sourceVersion + " before " + state.sourceVersion());
+    }
+    if (sourceVersion == state.sourceVersion()) {
+      return state;
+    }
+    String stateChecksum = stateChecksum(state.fingerprint(), state.highWaterMark(), sourceVersion);
+    return new SchemaIdentityState(
+        sourceVersion,
+        state.highWaterMark(),
+        state.mode(),
+        state.entries(),
+        state.fingerprint(),
+        stateChecksum);
   }
 
   private static Result reconcileInternal(
@@ -67,11 +102,10 @@ public final class SchemaIdentityReconciler {
     Objects.requireNonNull(schema, "schema");
     Objects.requireNonNull(mode, "mode");
     Objects.requireNonNull(previous, "previous");
+    validateHighWaterMark(initialHighWaterMark);
     if (sourceVersion < 0) {
       throw new IllegalArgumentException("Source version must be non-negative");
     }
-    previous.ifPresent(state -> validatePredecessor(sourceVersion, mode, state));
-
     long highWaterMark =
         Math.max(initialHighWaterMark, previous.map(SchemaIdentityState::highWaterMark).orElse(0L));
     Map<ColumnPath, SchemaIdentityEntry> previousByPath = new HashMap<>();
@@ -84,13 +118,16 @@ public final class SchemaIdentityReconciler {
     for (SchemaNode node : schema.nodes()) {
       long canonicalId;
       if (mode == IdentityMode.NATIVE_FIELD_ID) {
-        canonicalId = requiredNativeId(node);
+        canonicalId =
+            node.kind() == NodeKind.FIELD
+                ? CanonicalColumnId.nativeFieldId(node)
+                : CanonicalColumnId.collectionInteriorId(schema, node);
       } else {
         SchemaIdentityEntry prior = previousByPath.get(node.path());
         if (prior != null) {
           canonicalId = prior.canonicalId();
         } else {
-          if (highWaterMark == Long.MAX_VALUE) {
+          if (highWaterMark == CanonicalColumnId.MAX_ALLOCATED_ID) {
             throw new IllegalStateException("Canonical column ID space exhausted");
           }
           canonicalId = ++highWaterMark;
@@ -99,62 +136,66 @@ public final class SchemaIdentityReconciler {
       if (!usedIds.add(canonicalId)) {
         throw new IllegalArgumentException("Duplicate canonical column ID " + canonicalId);
       }
-      highWaterMark = Math.max(highWaterMark, canonicalId);
+      if (!CanonicalColumnId.isDerived(canonicalId)) {
+        highWaterMark = Math.max(highWaterMark, canonicalId);
+      }
       nodes.add(new CanonicalSchemaNode(node, canonicalId));
       entries.add(new SchemaIdentityEntry(node.path(), node.nativeFieldId(), canonicalId));
     }
 
-    String fingerprint = fingerprint(mode, highWaterMark, entries);
+    String fingerprint = fingerprint(mode, entries);
+    String stateChecksum = stateChecksum(fingerprint, highWaterMark, sourceVersion);
     SchemaIdentityState state =
-        new SchemaIdentityState(sourceVersion, highWaterMark, mode, entries, fingerprint);
+        new SchemaIdentityState(
+            sourceVersion, highWaterMark, mode, entries, fingerprint, stateChecksum);
     return new Result(nodes, state);
   }
 
-  private static void validatePredecessor(
-      long sourceVersion, IdentityMode mode, SchemaIdentityState previous) {
+  private static void validateSourceVersion(long sourceVersion, SchemaIdentityState previous) {
     if (sourceVersion <= previous.sourceVersion()) {
       throw new IllegalArgumentException(
           "Source version " + sourceVersion + " does not follow " + previous.sourceVersion());
     }
+  }
+
+  private static void validateMode(IdentityMode mode, SchemaIdentityState previous) {
+    Objects.requireNonNull(mode, "mode");
     if (mode != previous.mode()) {
       throw new IllegalArgumentException(
           "Identity mode changed; a clean identity reset is required");
     }
-    if (mode == IdentityMode.STRUCTURED_PATH && sourceVersion != previous.sourceVersion() + 1) {
+  }
+
+  private static void validateHighWaterMark(long highWaterMark) {
+    if (highWaterMark < 0L || highWaterMark > CanonicalColumnId.MAX_ALLOCATED_ID) {
       throw new IllegalArgumentException(
-          "Unmapped identity reconciliation cannot skip source versions: expected "
-              + (previous.sourceVersion() + 1)
-              + " but received "
-              + sourceVersion);
+          "High-water mark must be in the allocated canonical ID space");
     }
   }
 
-  private static long requiredNativeId(SchemaNode node) {
-    OptionalInt nativeId = node.nativeFieldId();
-    if (nativeId.isEmpty() || nativeId.getAsInt() <= 0) {
-      throw new IllegalArgumentException(
-          "Mapped node " + node.path().display() + " has no positive native field ID");
-    }
-    return nativeId.getAsInt();
-  }
-
-  static String fingerprint(
-      IdentityMode mode, long highWaterMark, List<SchemaIdentityEntry> entries) {
+  static String fingerprint(IdentityMode mode, List<SchemaIdentityEntry> entries) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
       updateString(digest, mode.name());
-      digest.update(ByteBuffer.allocate(Long.BYTES).putLong(highWaterMark).array());
       entries.stream()
           .sorted(Comparator.comparing(entry -> structuredPath(entry.path())))
           .forEach(
               entry -> {
                 updateString(digest, structuredPath(entry.path()));
-                digest.update(
-                    ByteBuffer.allocate(Integer.BYTES)
-                        .putInt(entry.nativeFieldId().orElse(0))
-                        .array());
                 digest.update(ByteBuffer.allocate(Long.BYTES).putLong(entry.canonicalId()).array());
               });
+      return "sha256:" + HexFormat.of().formatHex(digest.digest());
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is unavailable", e);
+    }
+  }
+
+  static String stateChecksum(String fingerprint, long highWaterMark, long sourceVersion) {
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      updateString(digest, fingerprint);
+      digest.update(ByteBuffer.allocate(Long.BYTES).putLong(highWaterMark).array());
+      digest.update(ByteBuffer.allocate(Long.BYTES).putLong(sourceVersion).array());
       return "sha256:" + HexFormat.of().formatHex(digest.digest());
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 is unavailable", e);
@@ -164,7 +205,7 @@ public final class SchemaIdentityReconciler {
   public static String structuredPath(ColumnPath path) {
     StringBuilder out = new StringBuilder();
     for (ColumnPath.Element element : path.elements()) {
-      out.append(element.kind().ordinal()).append(':');
+      out.append(element.kind().stableCode()).append(':');
       String name = element.name() == null ? "" : element.name();
       out.append(name.length()).append(':').append(name).append(';');
     }

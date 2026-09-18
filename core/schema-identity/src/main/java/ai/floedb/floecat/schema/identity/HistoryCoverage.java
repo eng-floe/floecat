@@ -16,11 +16,13 @@
 
 package ai.floedb.floecat.schema.identity;
 
-/** The source fact used to reconcile a node across schema versions. */
-public enum IdentityMode {
-  /** Native IDs identify fields; collection interiors derive identity from their nearest field. */
-  NATIVE_FIELD_ID,
+/** What the caller knows about identity-bearing source changes since the previous state. */
+public enum HistoryCoverage {
+  /** Every metadata-changing source commit in the interval was observed in order. */
+  COMPLETE_METADATA_HISTORY,
 
-  /** Exact structured paths identify every node and newly observed paths receive allocated IDs. */
-  STRUCTURED_PATH
+  /**
+   * Some metadata-changing commits may be unavailable; reconciliation must start a new generation.
+   */
+  GAP
 }
