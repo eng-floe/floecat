@@ -35,6 +35,7 @@ import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
 import ai.floedb.floecat.systemcatalog.validation.ValidationFailures;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssueFormatter;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -80,6 +81,7 @@ public final class ServiceLoaderSystemCatalogProvider
 
     Map<String, EngineCatalogProvider> providerMap = new HashMap<>();
     Map<String, EngineMetadataDecorator> decoratorMap = new HashMap<>();
+    List<EngineCatalogProvider> acceptedEngineProviders = new ArrayList<>();
     for (EngineCatalogProvider provider : engineProviders) {
       String normalizedKind = EngineIdentityNormalizer.normalizeEngineKind(provider.engineKind());
       if (normalizedKind.isEmpty()) {
@@ -91,6 +93,7 @@ public final class ServiceLoaderSystemCatalogProvider
                 + provider.getClass());
         continue;
       }
+      acceptedEngineProviders.add(provider);
       EngineCatalogProvider previous = providerMap.put(normalizedKind, provider);
       if (previous != null) {
         throw new IllegalStateException(
@@ -136,7 +139,9 @@ public final class ServiceLoaderSystemCatalogProvider
     this.environmentProviders = List.copyOf(loadedEnvironmentProviders);
 
     this.providers =
-        engineProviders.stream().map(provider -> (SystemObjectScannerProvider) provider).toList();
+        acceptedEngineProviders.stream()
+            .map(provider -> (SystemObjectScannerProvider) provider)
+            .toList();
   }
 
   @Override
