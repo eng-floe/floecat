@@ -1016,7 +1016,8 @@ class QueuedReconcileWorkerSupport {
       long statsProcessedBase) {
     ensureNotCancelled(cancelRequested);
     FloecatConnector.TableDescriptor upstream =
-        connector.describe(table.sourceNamespace(), table.sourceTable());
+        withConnectorColumnIdentityCapability(
+            connector, connector.describe(table.sourceNamespace(), table.sourceTable()));
     String destTableDisplay =
         table.destinationTableDisplayName() == null || table.destinationTableDisplayName().isBlank()
             ? upstream.tableName()
@@ -1601,6 +1602,30 @@ class QueuedReconcileWorkerSupport {
         upstream.schemaJson(),
         upstream.partitionKeys(),
         upstream.columnIdAlgorithm(),
+        upstream.properties());
+  }
+
+  static FloecatConnector.TableDescriptor withConnectorColumnIdentityCapability(
+      FloecatConnector connector, FloecatConnector.TableDescriptor upstream) {
+    ColumnIdAlgorithm algorithm =
+        switch (connector.format()) {
+          case CF_ICEBERG -> ColumnIdAlgorithm.CID_FIELD_ID;
+          case CF_DELTA ->
+              connector instanceof CanonicalIdentityConnector
+                  ? ColumnIdAlgorithm.CID_CANONICAL_MAP
+                  : ColumnIdAlgorithm.CID_PATH_ORDINAL;
+          default -> upstream.columnIdAlgorithm();
+        };
+    if (algorithm == upstream.columnIdAlgorithm()) {
+      return upstream;
+    }
+    return new FloecatConnector.TableDescriptor(
+        upstream.namespaceFq(),
+        upstream.tableName(),
+        upstream.storageLocation(),
+        upstream.schemaJson(),
+        upstream.partitionKeys(),
+        algorithm,
         upstream.properties());
   }
 

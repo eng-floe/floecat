@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintEnforcement;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.schema.identity.ColumnPath;
+import ai.floedb.floecat.schema.identity.HistoryCoverage;
 import ai.floedb.floecat.schema.identity.IdentityMode;
 import ai.floedb.floecat.schema.identity.ResolvedSchema;
 import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
@@ -153,6 +154,22 @@ class DeltaConstraintMappingTest {
     assertThat(checks.get(0).getName()).isEqualTo("ck_id");
   }
 
+  @Test
+  void constraintsUseTheCurrentIdentityGenerationAcrossModeChange() {
+    StructType schema =
+        new StructType().add("a", LongType.LONG, false).add("b", LongType.LONG, false);
+    ColumnIdentityMap structured = identityMap("a", "b");
+    ColumnIdentityMap mapped = nativeIdentityMap(Map.of("a", 2, "b", 1));
+
+    List<ConstraintDefinition> before =
+        DeltaConnector.mapDeltaConstraints(schema, Map.of(), structured);
+    List<ConstraintDefinition> after = DeltaConnector.mapDeltaConstraints(schema, Map.of(), mapped);
+
+    assertThat(structured.getFingerprint()).isNotEqualTo(mapped.getFingerprint());
+    assertThat(columnIdsByName(before)).containsExactlyInAnyOrderEntriesOf(Map.of("a", 1L, "b", 2L));
+    assertThat(columnIdsByName(after)).containsExactlyInAnyOrderEntriesOf(Map.of("a", 2L, "b", 1L));
+  }
+
   /** Builds a valid structured-path identity map for the test schema paths. */
   private static ColumnIdentityMap identityMap(String... dottedPaths) {
     List<SchemaNode> nodes =
@@ -168,7 +185,42 @@ class DeltaConstraintMappingTest {
             .toList();
     return DeltaCanonicalIdentity.toProto(
         SchemaIdentityReconciler.reconcile(
-                ResolvedSchema.of(nodes), 0L, IdentityMode.STRUCTURED_PATH, Optional.empty())
+                ResolvedSchema.of(nodes),
+                0L,
+                IdentityMode.STRUCTURED_PATH,
+                Optional.empty(),
+                HistoryCoverage.COMPLETE_METADATA_HISTORY)
             .state());
+  }
+
+  private static ColumnIdentityMap nativeIdentityMap(Map<String, Integer> nativeIds) {
+    List<SchemaNode> nodes =
+        nativeIds.entrySet().stream()
+            .sorted(Map.Entry.comparingByKey())
+            .map(
+                entry ->
+                    new SchemaNode(
+                        ColumnPath.ROOT.field(entry.getKey()),
+                        1,
+                        true,
+                        OptionalInt.of(entry.getValue()),
+                        Optional.empty()))
+            .toList();
+    return DeltaCanonicalIdentity.toProto(
+        SchemaIdentityReconciler.reconcile(
+                ResolvedSchema.of(nodes),
+                1L,
+                IdentityMode.NATIVE_FIELD_ID,
+                Optional.empty(),
+                HistoryCoverage.COMPLETE_METADATA_HISTORY)
+            .state());
+  }
+
+  private static Map<String, Long> columnIdsByName(List<ConstraintDefinition> constraints) {
+    return constraints.stream()
+        .collect(
+            java.util.stream.Collectors.toMap(
+                constraint -> constraint.getColumns(0).getColumnName(),
+                constraint -> constraint.getColumns(0).getColumnId()));
   }
 }

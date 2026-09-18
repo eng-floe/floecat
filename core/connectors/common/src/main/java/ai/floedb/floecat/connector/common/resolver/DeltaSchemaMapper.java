@@ -308,7 +308,8 @@ final class DeltaSchemaMapper {
             identityMap.getHighWaterMark(),
             mode,
             entries,
-            identityMap.getFingerprint());
+            identityMap.getFingerprint(),
+            identityMap.getStateChecksum());
     Map<ColumnPath, Long> result = new LinkedHashMap<>();
     state
         .entries()
