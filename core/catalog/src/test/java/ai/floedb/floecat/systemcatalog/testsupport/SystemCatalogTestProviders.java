@@ -19,10 +19,13 @@ package ai.floedb.floecat.systemcatalog.testsupport;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
+import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
@@ -95,6 +98,64 @@ public final class SystemCatalogTestProviders {
 
     private SystemNamespaceDef namespaceFor(String engineKind) {
       return new SystemNamespaceDef(NameRefUtil.name(engineKind), engineKind, List.of());
+    }
+  }
+
+  public static final class EnvironmentTableProvider implements CatalogEnvironmentProvider {
+
+    private final String environmentKind;
+    private final String tableName;
+
+    public EnvironmentTableProvider(String environmentKind, String tableName) {
+      this.environmentKind = environmentKind;
+      this.tableName = tableName;
+    }
+
+    @Override
+    public String environmentKind() {
+      return environmentKind;
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions(CatalogContext context) {
+      return List.of(
+          new SystemNamespaceDef(NameRefUtil.name("environment"), "environment", List.of()),
+          new SystemTableDef(
+              NameRefUtil.name("environment", tableName),
+              tableName,
+              List.of(),
+              TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+              "environment-scanner",
+              "",
+              "",
+              List.of(),
+              null));
+    }
+
+    @Override
+    public boolean supportsEnvironment(EnvironmentContext environment) {
+      return CatalogEnvironmentProvider.super.supportsEnvironment(environment);
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions() {
+      return definitions(CatalogContext.of(null, null));
+    }
+
+    @Override
+    public boolean supportsEngine(String engineKind) {
+      return true;
+    }
+
+    @Override
+    public boolean supports(NameRef name, String engineKind) {
+      return true;
+    }
+
+    @Override
+    public Optional<SystemObjectScanner> provide(
+        String scannerId, String engineKind, String engineVersion) {
+      return Optional.empty();
     }
   }
 

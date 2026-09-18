@@ -21,7 +21,7 @@ import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import java.util.List;
 
 /**
- * Provides system objects metadata catalogs per engine.
+ * Provides system object metadata catalogs per catalog context.
  *
  * <p>Used by SystemDefinitionRegistry. Production uses the ServiceLoader-based implementation,
  * while tests can supply their own static catalogs.

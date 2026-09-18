@@ -30,6 +30,7 @@ import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastMethod;
@@ -625,6 +626,22 @@ class SystemNodeRegistryTest {
     nodeRegistry.nodesFor(FLOE_KIND, "16.0");
 
     assertThat(provider.invocationCount()).isEqualTo(1);
+  }
+
+  @Test
+  void environmentProviderContributesOnlyToSelectedEnvironment() {
+    var provider =
+        new SystemCatalogTestProviders.EnvironmentTableProvider("floe", "environment_table");
+    var nodeRegistry = registryWith(registryWithCatalogs(), provider);
+    var engine = EngineContext.of(FLOE_KIND, "16.0");
+
+    var floeNodes =
+        nodeRegistry.nodesFor(CatalogContext.of(EnvironmentContext.of("floe", "1"), engine));
+    var otherNodes =
+        nodeRegistry.nodesFor(CatalogContext.of(EnvironmentContext.of("other", "1"), engine));
+
+    assertThat(canonicalTableNames(floeNodes)).contains("environment.environment_table");
+    assertThat(canonicalTableNames(otherNodes)).doesNotContain("environment.environment_table");
   }
 
   @Test

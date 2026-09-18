@@ -61,6 +61,7 @@ public final class ServiceLoaderSystemCatalogProvider
       new FloecatInternalProvider();
 
   private final Map<String, EngineCatalogProvider> providersByEngine;
+  private final List<CatalogEnvironmentProvider> environmentProviders;
   private final Map<String, EngineMetadataDecorator> decorators;
   private final List<SystemObjectScannerProvider> providers;
 
@@ -121,6 +122,18 @@ public final class ServiceLoaderSystemCatalogProvider
     this.providersByEngine = Map.copyOf(providerMap);
     this.decorators = Map.copyOf(decoratorMap);
 
+    List<CatalogEnvironmentProvider> loadedEnvironmentProviders;
+    try {
+      loadedEnvironmentProviders =
+          ServiceLoader.load(CatalogEnvironmentProvider.class).stream()
+              .map(ServiceLoader.Provider::get)
+              .toList();
+    } catch (Exception e) {
+      LOG.warn("Failed to load CatalogEnvironmentProvider implementations", e);
+      loadedEnvironmentProviders = List.of();
+    }
+    this.environmentProviders = List.copyOf(loadedEnvironmentProviders);
+
     /*
      * Extract every SystemObjectScannerProvider from the extensions so we can merge any extra
      * namespace/table/view definitions into the cached catalog later on.
@@ -131,7 +144,9 @@ public final class ServiceLoaderSystemCatalogProvider
      * EngineCatalogProvider implementation.
      */
     List<SystemObjectScannerProvider> extensionProviders =
-        engineProviders.stream().map(provider -> (SystemObjectScannerProvider) provider).toList();
+        Stream.concat(engineProviders.stream(), environmentProviders.stream())
+            .map(provider -> (SystemObjectScannerProvider) provider)
+            .toList();
     this.providers = extensionProviders.stream().collect(Collectors.toUnmodifiableList());
   }
 
@@ -203,6 +218,11 @@ public final class ServiceLoaderSystemCatalogProvider
 
   public List<SystemObjectScannerProvider> providers() {
     return providers;
+  }
+
+  /** Returns all environment providers discovered through the service loader. */
+  public List<CatalogEnvironmentProvider> environmentProviders() {
+    return environmentProviders;
   }
 
   /** Returns the floecat_internal provider that always seeds every catalog build. */
