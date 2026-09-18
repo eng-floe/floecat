@@ -24,13 +24,13 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * SPI for executor-owned system object definitions and scanners.
+ * SPI for internal or engine-owned system object definitions and scanners.
  *
  * <p>Definitions returned by this SPI are merged for the supplied catalog context. Providers may
- * build them from static resources or from live executor metadata; the catalog model does not
+ * build them from static resources or from live engine metadata; the catalog model does not
  * distinguish those implementations. The internal provider is selected separately; executor
- * providers do not inherit or override its definitions. Environment-owned definitions use {@link
- * CatalogEnvironmentProvider} instead.
+ * providers do not inherit or override its definitions. Environment-owned definitions and scanners
+ * use {@link CatalogEnvironmentProvider} instead.
  */
 public interface SystemObjectScannerProvider {
 

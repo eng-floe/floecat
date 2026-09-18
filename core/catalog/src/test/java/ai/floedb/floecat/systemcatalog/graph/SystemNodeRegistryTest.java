@@ -17,6 +17,7 @@
 package ai.floedb.floecat.systemcatalog.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
@@ -207,7 +208,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("custom", "t"),
             "t",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -250,7 +251,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("custom", "ok"),
             "ok",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -261,7 +262,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("orphan"),
             "orphan",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -296,7 +297,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("missing", "table"),
             "table",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -693,6 +694,169 @@ class SystemNodeRegistryTest {
   }
 
   @Test
+  void conflictingEngineAndEnvironmentRelationsFailInsteadOfOverriding() {
+    EngineCatalogProvider engineProvider =
+        new SystemCatalogTestProviders.EngineTableProvider(
+            PG_KIND, NameRefUtil.name("shared", "relation"));
+    CatalogEnvironmentProvider environmentProvider =
+        new CatalogEnvironmentProvider() {
+          @Override
+          public String environmentKind() {
+            return "floe";
+          }
+
+          @Override
+          public List<SystemObjectDef> definitions(CatalogContext context) {
+            return List.of(
+                new SystemNamespaceDef(NameRefUtil.name("shared"), "shared", List.of()),
+                new SystemTableDef(
+                    NameRefUtil.name("shared", "relation"),
+                    "relation",
+                    List.of(),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "environment-scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null));
+          }
+
+          @Override
+          public boolean supports(NameRef name, CatalogContext context) {
+            return true;
+          }
+
+          @Override
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+            return Optional.empty();
+          }
+        };
+    var registry =
+        new SystemNodeRegistry(
+            registryWithCatalogs(),
+            internalProvider(),
+            List.of(engineProvider),
+            List.of(environmentProvider));
+
+    assertThatThrownBy(
+            () ->
+                registry.nodesFor(
+                    CatalogContext.of(
+                        EnvironmentContext.of("floe", "1"), EngineContext.of(PG_KIND, "16.0"))))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Conflicting system object definition")
+        .hasMessageContaining("relation");
+  }
+
+  @Test
+  void engineProviderMustDeclareEngineTables() {
+    EngineCatalogProvider provider =
+        new EngineCatalogProvider() {
+          @Override
+          public String engineKind() {
+            return PG_KIND;
+          }
+
+          @Override
+          public List<SystemObjectDef> definitions(CatalogContext context) {
+            return List.of(
+                new SystemTableDef(
+                    NameRefUtil.name("engine", "table"),
+                    "table",
+                    List.of(),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null));
+          }
+
+          @Override
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+            return Optional.empty();
+          }
+        };
+    var registry =
+        new SystemNodeRegistry(
+            new SystemDefinitionRegistry(
+                new StaticSystemCatalogProvider(Map.of(PG_KIND, SystemCatalogData.empty()))),
+            internalProvider(),
+            List.of(provider),
+            List.of());
+
+    assertThatThrownBy(() -> registry.nodesFor(context(PG_KIND, "16.0")))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("expected TABLE_BACKEND_KIND_ENGINE");
+  }
+
+  @Test
+  void identicalDefinitionsAreDeduplicated() {
+    EngineCatalogProvider first =
+        new SystemCatalogTestProviders.EngineTableProvider(
+            PG_KIND, NameRefUtil.name("shared", "relation"));
+    EngineCatalogProvider second =
+        new SystemCatalogTestProviders.EngineTableProvider(
+            PG_KIND, NameRefUtil.name("shared", "relation"));
+    var registry =
+        new SystemNodeRegistry(
+            new SystemDefinitionRegistry(
+                new StaticSystemCatalogProvider(Map.of(PG_KIND, SystemCatalogData.empty()))),
+            internalProvider(),
+            List.of(first, second),
+            List.of());
+
+    assertThat(canonicalTableNames(registry.nodesFor(context(PG_KIND, "16.0"))))
+        .containsExactly("shared.relation");
+  }
+
+  @Test
+  void relationKindCollisionsFail() {
+    SystemNamespaceDef namespace =
+        new SystemNamespaceDef(NameRefUtil.name("shared"), "shared", List.of());
+    SystemTableDef table =
+        new SystemTableDef(
+            NameRefUtil.name("shared", "relation"),
+            "relation",
+            List.of(),
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+            "",
+            "",
+            "",
+            List.of(),
+            null);
+    SystemViewDef view =
+        new SystemViewDef(
+            NameRefUtil.name("shared", "relation"),
+            "relation",
+            "select 1",
+            "",
+            List.of(),
+            List.of());
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace),
+            List.of(table),
+            List.of(view),
+            List.of());
+    var registry =
+        registryWith(
+            new SystemDefinitionRegistry(
+                new StaticSystemCatalogProvider(Map.of(PG_KIND, catalog))));
+
+    assertThatThrownBy(() -> registry.nodesFor(context(PG_KIND, "16.0")))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Conflicting system object definition")
+        .hasMessageContaining("relation");
+  }
+
+  @Test
   void invalidationRebuildsDynamicEngineContributions() {
     AtomicReference<String> functionName = new AtomicReference<>("before_reload");
     EngineCatalogProvider provider =
@@ -761,7 +925,7 @@ class SystemNodeRegistryTest {
                     NameRefUtil.name("missing_ns", "bad_table"),
                     "bad_table",
                     List.of(),
-                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
                     "scanner",
                     "",
                     "",
@@ -1047,7 +1211,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("custom", "legacy_table"),
             "legacy_table",
             List.of(column("value")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "legacy_scanner",
             "",
             "",
@@ -1156,7 +1320,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("orphan"),
             "orphan",
             List.<SystemColumnDef>of(),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -1188,7 +1352,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("missing", "table"),
             "table",
             List.<SystemColumnDef>of(),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -1214,7 +1378,7 @@ class SystemNodeRegistryTest {
   }
 
   @Test
-  void pluginTableOverridesInternalDefinition() {
+  void engineProviderContributesEngineRelation() {
     SystemDefinitionRegistry defs = registryWithCatalogs();
     EngineCatalogProvider provider =
         new SystemCatalogTestProviders.OverridingTableProvider(
@@ -1228,11 +1392,9 @@ class SystemNodeRegistryTest {
             .filter(def -> NameRefUtil.canonical(def.name()).equals("information_schema.tables"))
             .findFirst()
             .orElseThrow();
-    assertThat(overridden.scannerId()).isEqualTo("overridden_scanner");
+    assertThat(overridden.backendKind()).isEqualTo(TableBackendKind.TABLE_BACKEND_KIND_ENGINE);
     assertThat(nodes.tableNodes())
         .anySatisfy(
-            node ->
-                assertThat(((SystemTableNode.FloeCatSystemTableNode) node).scannerId())
-                    .isEqualTo("overridden_scanner"));
+            node -> assertThat(node).isInstanceOf(SystemTableNode.EngineSystemTableNode.class));
   }
 }

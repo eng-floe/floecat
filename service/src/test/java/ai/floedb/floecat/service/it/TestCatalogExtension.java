@@ -224,11 +224,11 @@ public final class TestCatalogExtension implements EngineCatalogProvider {
   }
 
   /**
-   * One engine-gated system table, {@code sys.const}, mirroring the shape of engine-extension
-   * catalogs deployed in production. It exists only in the {@code test-engine} snapshot — never in
-   * the default one — so resolving it by name succeeds only while the request's engine context is
-   * visible to the resolving thread. {@code QueryContextPropagationIT} relies on this to detect
-   * silent engine-context loss (eng-floe/floecat#361).
+   * One engine-gated system table, {@code sys.const}, mirroring the shape of engine-owned catalogs.
+   * It exists only in the {@code test-engine} snapshot — never in the default one — so resolving it
+   * by name succeeds only while the request's engine context is visible to the resolving thread.
+   * {@code QueryContextPropagationIT} relies on this to detect silent engine-context loss
+   * (eng-floe/floecat#361).
    */
   private static List<SystemTableDef> tables() {
     return List.of(
@@ -236,9 +236,9 @@ public final class TestCatalogExtension implements EngineCatalogProvider {
             nr("sys.const"),
             "const",
             List.of(new SystemColumnDef("value", nr("pg_catalog.int4"), false, 1, null, List.of())),
-            TableBackendKind.TABLE_BACKEND_KIND_STORAGE,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             /* scannerId= */ "",
-            /* storagePath= */ "memory://test-engine/sys/const",
+            /* storagePath= */ "",
             /* storageEndpointKey= */ "",
             List.of(),
             /* flightEndpoint= */ null,
