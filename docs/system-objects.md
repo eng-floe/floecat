@@ -14,7 +14,7 @@ Every system node exposes a `ResourceId` whose `id` field looks like a UUID but 
 
 Metagraph and system-graph callers never rewrite `_system` IDs themselves. Instead they use a dedicated `SystemCatalogTranslator` that knows how to:
   * normalize any UUID carrying the system marker so its `account_id` is `_system` before the graph cache looks it up,
-  * map user-provided NameRefs into the current engine’s catalog context (rewriting the catalog to `EngineContext.effectiveEngineKind()` before a namespace or table lookup),
+  * map user-provided NameRefs into the selected catalog context before a namespace or table lookup,
   * alias the matched system name back to the user catalog so responses still show `examples.information_schema.pg_class`.
 
 These translator helpers keep ID/name wrangling centralized, which makes it obvious why the graph view can resolve `_system` objects even when the CLI is using a different account or catalog. Callers simply run user inputs through `SystemCatalogTranslator` before hitting `SystemGraph`/`MetaGraph`, and every system snapshot is still keyed by the `_system` account in the registry.
