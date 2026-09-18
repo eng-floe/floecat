@@ -82,28 +82,12 @@ public final class SystemScannerResolver {
           correlationId, SYSTEM_SCAN_MISSING_SCANNER, Map.of("table_id", tableId.getId()));
     }
 
-    for (var provider : providers) {
-      safeDiagnostics.count("system_scanner_provider_checks");
-      var scanner =
-          safeDiagnostics.time(
-              "system_scanner_provider_provide", () -> provide(provider, scannerId, context));
-
-      if (scanner.isPresent()) {
-        safeDiagnostics.count("system_scanner_provider_matches");
-        return scanner.get();
-      }
-    }
-
-    for (var provider : environmentProviders) {
-      safeDiagnostics.count("system_scanner_provider_checks");
-      var scanner =
-          safeDiagnostics.time(
-              "system_scanner_provider_provide", () -> provide(provider, scannerId, context));
-
-      if (scanner.isPresent()) {
-        safeDiagnostics.count("system_scanner_provider_matches");
-        return scanner.get();
-      }
+    Optional<SystemObjectScanner> scanner =
+        context.environment().hasEnvironmentKind()
+            ? findEnvironmentScanner(scannerId, context, safeDiagnostics)
+            : findEngineScanner(scannerId, context, safeDiagnostics);
+    if (scanner.isPresent()) {
+      return scanner.get();
     }
 
     throw GrpcErrors.notFound(
@@ -111,6 +95,36 @@ public final class SystemScannerResolver {
         SYSTEM_SCAN_SCANNER_NOT_FOUND,
         Map.of(
             "scanner_id", scannerId, "engine_kind", engineKind, "engine_version", engineVersion));
+  }
+
+  private Optional<SystemObjectScanner> findEngineScanner(
+      String scannerId, CatalogContext context, PhaseDiagnostics diagnostics) {
+    for (var provider : providers) {
+      diagnostics.count("system_scanner_provider_checks");
+      var scanner =
+          diagnostics.time(
+              "system_scanner_provider_provide", () -> provide(provider, scannerId, context));
+      if (scanner.isPresent()) {
+        diagnostics.count("system_scanner_provider_matches");
+        return scanner;
+      }
+    }
+    return Optional.empty();
+  }
+
+  private Optional<SystemObjectScanner> findEnvironmentScanner(
+      String scannerId, CatalogContext context, PhaseDiagnostics diagnostics) {
+    for (var provider : environmentProviders) {
+      diagnostics.count("system_scanner_provider_checks");
+      var scanner =
+          diagnostics.time(
+              "system_scanner_provider_provide", () -> provide(provider, scannerId, context));
+      if (scanner.isPresent()) {
+        diagnostics.count("system_scanner_provider_matches");
+        return scanner;
+      }
+    }
+    return Optional.empty();
   }
 
   private Optional<SystemTableNode.FloeCatSystemTableNode> resolveSystemTable(
