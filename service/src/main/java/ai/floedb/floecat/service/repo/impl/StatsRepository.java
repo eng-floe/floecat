@@ -74,8 +74,8 @@ import org.eclipse.microprofile.config.ConfigProvider;
 
 @ApplicationScoped
 public class StatsRepository implements StatsStore {
-  // Leave one DynamoDB transaction slot for the account-deletion fence check.
-  private static final int MAX_POINTER_BATCH_SIZE = 99;
+  // Leave two DynamoDB transaction slots for account-deletion and ownership checks.
+  private static final int MAX_POINTER_BATCH_SIZE = 98;
   private static final String GENERATION_WRITING = "WRITING";
   private static final String GENERATION_PUBLISHING = "PUBLISHING";
   private static final String GENERATION_PUBLISHED = "PUBLISHED";

@@ -11,10 +11,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -30,6 +32,9 @@ import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AssignmentControl;
+import ai.floedb.floecat.service.account.AssignmentFence;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -42,6 +47,7 @@ import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -49,12 +55,15 @@ import ai.floedb.floecat.service.storage.impl.StorageAuthorityResolver;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
+import ai.floedb.floecat.storage.spi.PointerStore;
+import ai.floedb.floecat.telemetry.TestObservability;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.inject.Instance;
 import java.lang.reflect.Field;
 import java.util.Base64;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -85,6 +94,7 @@ class AccountServiceImplTest {
     service.objects = ObjectCache.forTesting();
     service.hints = mock(HintCache.class);
     service.blobs = mock(BlobCacheAccess.class);
+    service.assignment = AccountAssignment.standaloneForTesting(pointers, new TestObservability());
     installBasePrincipal(service, service.principal);
     when(service.principal.get())
         .thenReturn(
@@ -479,6 +489,98 @@ class AccountServiceImplTest {
     assertEquals(Status.Code.FAILED_PRECONDITION, decoded.canonicalCode());
     assertEquals("account.deletion.in.progress", decoded.messageKey());
     assertEquals("acct", decoded.params().get("account_id"));
+  }
+
+  /** Deletion is a mutation on the owner and leaves the separate ownership fence alone. */
+  @Test
+  void managedDeletionInstallsTheDeletionFenceWithoutDisturbingOwnership() {
+    AccountAssignment managed =
+        AccountAssignment.managedForTesting("m", "m/inc", pointers, new TestObservability());
+    managed.apply(
+        1L, AssignmentControl.AssignmentPhase.SERVING, List.of("acct"), List.of("acct"), "m/inc");
+    PointerStore fenced = new AssignmentFence(pointers, managed);
+    service.assignment = managed;
+    service.pointerStore = fenced;
+    long fenceVersionBeforeDeletion = managed.fenceVersion("acct").orElseThrow();
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
+    when(service.accountRepo.deleteWithPrecondition(accountId, 7L)).thenReturn(true);
+
+    service
+        .deleteAccount(DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
+        .await()
+        .indefinitely();
+
+    assertTrue(pointers.get(Keys.accountDeletionMarker("acct")).isPresent());
+    for (String each : Keys.accountDeletionFenceShards("acct")) {
+      assertEquals("deleting", pointers.get(each).orElseThrow().getBlobUri(), each);
+    }
+    assertEquals(
+        fenceVersionBeforeDeletion,
+        managed.fenceVersion("acct").orElseThrow(),
+        "deletion leaves ownership untouched");
+    assertEquals(AssignmentControl.AccountMode.SERVING, managed.status("acct").mode());
+
+    String late = Keys.catalogPointerById("acct", "cat");
+    assertThrows(
+        BaseResourceRepository.AccountDeletionInProgressException.class,
+        () ->
+            AccountDeletionFence.compareAndSetBatch(
+                fenced,
+                "acct",
+                List.of(
+                    new PointerStore.CasUpsert(
+                        late, 0L, PointerReferences.blobPointer(late, "s3://late", 1L)))));
+    assertTrue(pointers.get(late).isEmpty());
+  }
+
+  @Test
+  void managedDeletionOnANonOwnerIsRefusedAsNotAssigned() {
+    service.assignment =
+        AccountAssignment.managedForTesting("m", "m/inc", pointers, new TestObservability());
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .deleteAccount(
+                        DeleteAccountRequest.newBuilder().setAccountId(accountId).build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, failure.getStatus().getCode());
+    assertTrue(failure.getStatus().getDescription().contains("floecat.not_assigned"));
+    assertTrue(pointers.get(Keys.accountDeletionMarker("acct")).isEmpty());
+    assertTrue(
+        Keys.accountDeletionFenceShards("acct").stream()
+            .allMatch(key -> pointers.get(key).isEmpty()));
+  }
+
+  @Test
+  void managedUpdateOnANonOwnerIsRefusedAsNotAssigned() {
+    service.assignment =
+        AccountAssignment.managedForTesting("m", "m/inc", pointers, new TestObservability());
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .updateAccount(
+                        UpdateAccountRequest.newBuilder()
+                            .setAccountId(accountId)
+                            .setSpec(AccountSpec.newBuilder().setDisplayName("beta"))
+                            .setUpdateMask(FieldMask.newBuilder().addPaths("display_name"))
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, failure.getStatus().getCode());
+    assertTrue(failure.getStatus().getDescription().contains("floecat.not_assigned"));
+    verify(service.accountRepo, never()).update(any(Account.class), anyLong());
   }
 
   private static void installBasePrincipal(

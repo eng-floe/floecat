@@ -47,6 +47,11 @@ public final class PlanningPointerIndex {
   private static final long LOAD_RETRY_PAUSE_NANOS = Duration.ofSeconds(5).toNanos();
   private static final String GLOBAL = "<account-directory>";
 
+  /** The partition name under which account-directory writes ask for ownership. */
+  public static boolean isAccountDirectoryPartition(String partitionKey) {
+    return GLOBAL.equals(partitionKey);
+  }
+
   enum Readiness {
     LOADING,
     COMPLETE
@@ -75,6 +80,24 @@ public final class PlanningPointerIndex {
     }
 
     Optional<Permit> acquire(String accountId, Access access);
+
+    /**
+     * A write was refused because this process does not serve the account. Carries the token the
+     * control plane keys its route refresh on, so every refused mutation tells it to re-resolve,
+     * not just retry.
+     */
+    final class NotOwnedException extends StorageAbortRetryableException {
+      private final String accountId;
+
+      public NotOwnedException(String accountId) {
+        super("floecat.not_assigned: account is not served by this Floecat member: " + accountId);
+        this.accountId = accountId;
+      }
+
+      public String accountId() {
+        return accountId;
+      }
+    }
   }
 
   /** Receives low-cardinality observations for background partition warming. */
@@ -405,8 +428,7 @@ public final class PlanningPointerIndex {
         forget(partitionKey);
         closeReverse(permits);
         if (required) {
-          throw new StorageAbortRetryableException(
-              "account is not owned by this Floecat instance: " + partitionKey);
+          throw new Ownership.NotOwnedException(partitionKey);
         }
         return null;
       }
@@ -503,6 +525,12 @@ public final class PlanningPointerIndex {
   Readiness readiness(String accountId) {
     Partition partition = partitions.get(accountId);
     return partition == null ? Readiness.LOADING : partition.readiness;
+  }
+
+  /** Readiness of the account partition as reported in assignment status. */
+  public String partitionState(String accountId) {
+    Partition partition = accountId == null ? null : partitions.get(accountId);
+    return partition == null ? "ABSENT" : partition.readiness.name();
   }
 
   public long entryCount() {
@@ -842,11 +870,17 @@ public final class PlanningPointerIndex {
         && Keys.pointerNamespace(prefix) == Keys.PointerNamespace.PLANNER;
   }
 
+  /**
+   * The bare account record ({@code /accounts/<id>}) is directory state like its by-id and by-name
+   * entries: it is created before any process owns the account, so it is not gated by account
+   * ownership and is read from the durable store.
+   */
   private String partitionFor(String key) {
     if (key == null || !key.startsWith(Keys.accountRootPrefix())) return null;
     String remainder = key.substring(Keys.accountRootPrefix().length());
     int slash = remainder.indexOf('/');
-    String encodedAccount = slash < 0 ? remainder : remainder.substring(0, slash);
+    if (slash < 0) return remainder.isBlank() ? null : GLOBAL;
+    String encodedAccount = remainder.substring(0, slash);
     if (encodedAccount.isBlank()) return null;
     if (Keys.isReservedAccountDirectorySegment(encodedAccount)) return GLOBAL;
     return Keys.decodeSegment(encodedAccount);

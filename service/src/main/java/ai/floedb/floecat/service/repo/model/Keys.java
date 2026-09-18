@@ -167,6 +167,23 @@ public final class Keys {
     return "/accounts/";
   }
 
+  /**
+   * Member index of a managed Floecat process: the account ids and epoch of its last applied {@code
+   * SERVING} assignment. Outside the account namespace; a recovery hint, not the fence.
+   */
+  public static String memberAssignmentIndex(String memberId) {
+    return PointerStoreKeys.MEMBER_ASSIGNMENT_PREFIX + encode(req("member_id", memberId));
+  }
+
+  /**
+   * Ownership fence of one account: the marker naming the member that may write, whose version
+   * every write by that member carries. Outside the account namespace, so account teardown and the
+   * planner index never touch it.
+   */
+  public static String accountAssignmentFence(String accountId) {
+    return PointerStoreKeys.ASSIGNMENT_FENCE_PREFIX + encode(req("account_id", accountId));
+  }
+
   /** The durable pointer namespace used by the planner store seam. */
   public enum PointerNamespace {
     PLANNER,

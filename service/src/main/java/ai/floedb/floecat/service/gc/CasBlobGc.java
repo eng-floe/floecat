@@ -24,6 +24,8 @@ import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -115,6 +117,7 @@ public class CasBlobGc {
   private static final String SCAN_COMPLETE = "\u0000";
   private PassContinuation continuation;
   private long activeDeadlineMs = Long.MAX_VALUE;
+  private AccountScope.GcPermit activePermit;
 
   private static final class DeferredPageState {
     private final String prefix;
@@ -185,6 +188,9 @@ public class CasBlobGc {
 
   private static final class PassContinuation {
     private final String accountId;
+    // Ownership generation of the permit that started this mark epoch; a different generation
+    // means the account changed hands and the mark must not be resumed.
+    private final long permitGeneration;
     private final long passStartedAtMs;
     private final ReferenceIndex referenced;
     private final long referenceCapacity;
@@ -222,6 +228,7 @@ public class CasBlobGc {
 
     private PassContinuation(
         String accountId,
+        long permitGeneration,
         long passStartedAtMs,
         ReferenceIndex referenced,
         long referenceCapacity,
@@ -229,6 +236,7 @@ public class CasBlobGc {
         int maxTableIds,
         int maxGenerationKeys) {
       this.accountId = accountId;
+      this.permitGeneration = permitGeneration;
       this.passStartedAtMs = passStartedAtMs;
       this.referenced = referenced;
       this.referenceCapacity = referenceCapacity;
@@ -383,13 +391,33 @@ public class CasBlobGc {
   }
 
   public synchronized Result runForAccount(String accountId, long deadlineMs) {
+    return runForAccount(accountId, deadlineMs, AccountAssignment.unfencedGcPermit(accountId));
+  }
+
+  /**
+   * Account sweep under a GC permit, revalidated at every deadline check and before every blob
+   * delete. Revocation drops the retained mark epoch and propagates as {@link
+   * AccountScope.GcPermitRevokedException}; it is never folded into a result.
+   */
+  public synchronized Result runForAccount(
+      String accountId, long deadlineMs, AccountScope.GcPermit permit) {
+    if (!accountId.equals(permit.accountId())) {
+      throw new IllegalArgumentException("GC permit does not match account");
+    }
+    permit.requireValid();
     if (continuation != null && !continuation.accountId.equals(accountId)) {
       // Only one local mark epoch is retained, which gives the process a hard memory bound. The
       // scheduler prioritizes this account on the next tick; callers reaching another account in
       // the same tick receive a safe pending result without replacing the incomplete mark.
       return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false, true);
     }
+    if (continuation != null && continuation.permitGeneration != permit.generation()) {
+      // The mark belongs to the ownership generation that built it; deleting from it after the
+      // account changed hands would trust a view another owner may have invalidated.
+      clearContinuation();
+    }
     activeDeadlineMs = deadlineMs;
+    activePermit = permit;
     try {
       while (true) {
         try {
@@ -398,6 +426,9 @@ public class CasBlobGc {
           return result;
         } catch (DeadlineReached ignored) {
           return incompleteResult(continuation);
+        } catch (AccountScope.GcPermitRevokedException revoked) {
+          clearContinuation();
+          throw revoked;
         } catch (StatsRepository.GenerationGcCapacityExceededException e) {
           if (skipOversizedGenerationTable(accountId, e)) {
             continue;
@@ -423,6 +454,7 @@ public class CasBlobGc {
         }
       }
     } finally {
+      activePermit = null;
       activeDeadlineMs = Long.MAX_VALUE;
     }
   }
@@ -578,9 +610,16 @@ public class CasBlobGc {
   }
 
   private void checkDeadline() {
+    activePermit.requireValid();
     if (System.currentTimeMillis() >= activeDeadlineMs) {
       throw DeadlineReached.INSTANCE;
     }
+  }
+
+  /** Every irreversible blob delete revalidates the permit first. */
+  private boolean deleteBlob(String key, String versionId) {
+    activePermit.requireValid();
+    return blobStore.delete(key, versionId);
   }
 
   private boolean isRetainedContinuationIndex(ReferenceIndex index) {
@@ -659,6 +698,7 @@ public class CasBlobGc {
       continuation =
           new PassContinuation(
               accountId,
+              activePermit.generation(),
               passStart,
               newReferenceIndex(
                   referenceCapacity,
@@ -1365,7 +1405,7 @@ public class CasBlobGc {
         // the entire GC tick.
         var guarded =
             reachabilityGuard.deleteIfUnchanged(
-                state.remarkProof, () -> blobStore.delete(candidate.key(), candidate.versionId()));
+                state.remarkProof, () -> deleteBlob(candidate.key(), candidate.versionId()));
         if (guarded.changed()) {
           state.publicationAfterDelete |= !state.deletedKeys.isEmpty();
           resetDeferredRemark(tableId, state);
@@ -1709,7 +1749,9 @@ public class CasBlobGc {
         continuation.traversal.clearActiveChain();
       }
       return true;
-    } catch (DeadlineReached | ReferenceIndex.CapacityExceededException e) {
+    } catch (DeadlineReached
+        | ReferenceIndex.CapacityExceededException
+        | AccountScope.GcPermitRevokedException e) {
       throw e;
     } catch (RuntimeException e) {
       LOG.warnf(e, "cas gc chain walk failed for root %s; sweep will be skipped", rootBlobUri);
@@ -1908,7 +1950,9 @@ public class CasBlobGc {
             rememberTableGeneration(referenced, generationManifest);
           });
       return true;
-    } catch (DeadlineReached | ReferenceIndex.CapacityExceededException error) {
+    } catch (DeadlineReached
+        | ReferenceIndex.CapacityExceededException
+        | AccountScope.GcPermitRevokedException error) {
       throw error;
     } catch (Exception error) {
       LOG.warnf(
@@ -2359,7 +2403,7 @@ public class CasBlobGc {
           // and
           // the act name the same immutable object and the pointer stays resolvable in every
           // interleaving.
-          if (blobStore.delete(key, versionId)) {
+          if (deleteBlob(key, versionId)) {
             progress.deleted++;
             // Defensive post-delete corruption detector. The sweep only reaches here on a
             // versioned store (unversioned/blank-version blobs fail closed above), where a

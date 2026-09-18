@@ -68,8 +68,8 @@ import java.util.function.Supplier;
 
 @ApplicationScoped
 public class IndexArtifactRepository {
-  // Leave one DynamoDB transaction slot for the account-deletion fence check.
-  private static final int MAX_POINTER_BATCH_SIZE = 99;
+  // Leave two DynamoDB transaction slots for account-deletion and ownership checks.
+  private static final int MAX_POINTER_BATCH_SIZE = 98;
   private static final int MAX_PARALLEL_SIDECAR_CHECKS = 50;
   private static final String DIRECT_GENERATION = Keys.INDEX_ARTIFACT_DIRECT_GENERATION;
   private static final String LIST_TOKEN_PREFIX = "v1.";

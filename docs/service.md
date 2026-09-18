@@ -324,6 +324,79 @@ currently reports `DeleteRef.all_deletes=true`; finer-grain delete references wi
 applicability logic is defined. The lease data (snapshots, expansion map, obligations) is returned to
 the caller inside the `QueryDescriptor`.
 
+### Account Assignment
+`AccountScope` is the question — may this process mutate, resolve pins for, or collect this
+account? — asked by every caller that needs to know, rather than reading assignment state directly.
+It answers permission only: the store fence below is Floecat's own, so an implementation decides
+who serves what without maintaining the mechanism that enforces it. `AccountAssignment` is the
+only implementation and decides which accounts this process serves. In the default `standalone` mode
+every account is served and GC-allowed and nothing below applies. In `managed` mode an external
+control plane pushes each process its complete assignment through the internal
+`AccountAssignmentControl` service
+(`ApplyAssignment`, `GetAssignmentStatus`; permission `account-assignment-control.internal`):
+an epoch, the epoch's phase (`DRAINING` or `SERVING`), the owned account ids and the subset that
+may run GC. The phase describes the epoch and is pushed unchanged to every process; whether this
+process serves an account is per account. FloeDB's Core is one such control plane; the contract
+is on `AssignmentControl`.
+Floecat never calls its control plane or another Floecat, and never learns where it is deployed: the
+account set arrives over the RPC and is never derived from a cluster, a replica count or a placement
+hash (`DeploymentIndependenceArchTest`, which fails if a Kubernetes client reaches the classpath).
+The rejection rules are on `AssignmentControl.apply`.
+
+For an owned account the process admits pins and mutations under a permit and reads from the
+planning pointer index. For a non-owned account reads fall through to the durable store and
+`BeginQuery`, pin resolution and mutations fail with `FAILED_PRECONDITION` whose message carries
+`floecat.not_assigned`; `RenewQuery` and `EndQuery` for contexts the process already holds keep
+working. Entering `SERVING` takes the account's fence pointer `assignment-fence/<account>` by CAS
+to an `owned` marker and writes the member index `assignments/<member>`, both in the background on
+one thread, since taking a fence is a read then a CAS and two takers would each believe a different
+version. Both records sit outside `accounts/` and get one store partition each, so deleting an
+account's prefix cannot take its fence with it.
+From then on every account-scoped write carries `CasCheck(fence, remembered_version)`
+(`AssignmentFence`, wired once beneath `IndexedPointerStore`), so a previous owner's next write
+fails its condition. The fence is separate from the account-deletion fence, which keeps its own
+shards and its existing deletion-in-progress error. A fence self-check (one consistent read of the
+fence pointer per owned account) runs on every GC permit and every
+`floecat.account-assignment.self-check-interval`; a mismatch drains the account — it stops admitting
+work and drops its index at once, but keeps the fence version so writes already admitted fail their
+condition rather than committing unconditioned — and a sweep that cannot reach the store fences pins
+and writes on every owned account until one succeeds. At
+startup the process restores the accounts whose fence still names its member id, `SERVING` but
+never GC-allowed. Restoring takes the fence rather than adopting it: member ids are stable across
+restarts and the marker carries no incarnation, so a marker naming this member proves only that some
+process took it once, possibly one still running. The restore CASes the version forward, which is
+what makes that predecessor's next write fail its condition; losing the CAS means the account is
+someone else's now. `none` mode owns no account, so every account takes the
+non-owned path above and the process runs no query; account-directory reads and writes are
+unaffected, as they are for any unowned account.
+
+#### Binding a control plane
+
+`AssignmentControl` is the seam: `managed()`, `apply(...)`, `status()`. `AccountAssignment`
+implements it; the `AccountAssignmentControl` RPC is one implementation over one transport, and a
+deployment deciding placement in process binds its own control plane against the same three methods.
+The contract is on `AssignmentControl`, beside the code that enforces it.
+
+Nothing drives it by default. A `managed` process that has never been assigned owns nothing, logs
+`account_assignment_absent` on a cadence, and refuses account-scoped writes. Account-directory
+writes are not account-scoped and stay available, so a control plane can still create the accounts
+it is about to place -- though a create carrying an idempotency key reserves an account-scoped
+record and is refused with the rest.
+
+Pointer GC needs no fence of its own: every delete it makes is a pointer CAS through the fenced
+store. CAS blob GC deletes objects the store cannot condition, so it revalidates its permit before
+each delete.
+
+`wait=true` waits for the drain: `400` if `timeoutMs` is malformed or negative, and then nothing
+drains; otherwise `200` once active mutations and resolutions are zero, or `202` at the timeout,
+with `timeoutMs` clamped to one hour. Without `wait=true` a `POST` starts the drain and returns at
+once, and a `GET` only reports. `wait` is read as a boolean, so `?wait=TRUE` drains while `?wait=1`
+reports; only `GET` and `POST` are routed at all. Draining is irreversible for the life of the process and the endpoint authenticates
+no one: the `preStop` hook is a kubelet `httpGet` arriving from the node address, which no in-process
+check can tell from any other caller, so restricting access is the deployment's job — a mesh
+authorization policy or equivalent. The shutdown observer applies the same drain when the hook never
+arrived.
+
 ### Builtin Catalog Service
 `SystemObjectsLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the
 configured location, caches them by engine kind, and exposes them through
@@ -401,6 +474,10 @@ Notable `application.properties` keys:
 | `floecat.query.metadata-io.max-concurrency` | Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use `64`; present malformed, blank, or out-of-range values fail startup. |
 | `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for GetUserObjects. Defaults to `8`. |
 | `floecat.catalog.bundle.max_parallel_stats_warms` | Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to `16`; clamped to `>= 1`. |
+| `floecat.account-assignment.mode` | `standalone` (default), `managed`, or `none`; see Account Assignment. |
+| `floecat.account-assignment.member-id` | Stable process identity across restarts; required in `managed` (`FLOECAT_MEMBER_ID`). |
+| `floecat.account-assignment.self-check-interval` | Background fence self-check period in `managed` (`PT10S`). |
+| `floecat.account-assignment.drain-timeout-ms` | Default wait of `/internal/drain?wait=true` and of the shutdown drain (`110000`). |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |
