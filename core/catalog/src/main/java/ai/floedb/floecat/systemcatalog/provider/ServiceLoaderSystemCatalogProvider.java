@@ -26,6 +26,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
@@ -47,8 +48,8 @@ import java.util.stream.Stream;
 import org.jboss.logging.Logger;
 
 /**
- * Production implementation of SystemCatalogProvider. Discovers EngineSystemCatalogExtension
- * implementations using ServiceLoader.
+ * Production implementation of SystemCatalogProvider. Discovers static engine extensions and live
+ * engine catalog providers using ServiceLoader.
  */
 public final class ServiceLoaderSystemCatalogProvider
     implements SystemCatalogProvider, EngineMetadataDecoratorProvider {
@@ -60,6 +61,7 @@ public final class ServiceLoaderSystemCatalogProvider
       new FloecatInternalProvider();
 
   private final Map<String, EngineSystemCatalogExtension> plugins;
+  private final Map<String, EngineCatalogProvider> engineProviders;
   private final Map<String, EngineMetadataDecorator> decorators;
   private final List<SystemObjectScannerProvider> providers;
 
@@ -80,7 +82,20 @@ public final class ServiceLoaderSystemCatalogProvider
 
   /** Visible for testing: takes the extensions directly instead of discovering them. */
   ServiceLoaderSystemCatalogProvider(List<EngineSystemCatalogExtension> engineExtensions) {
+
+    List<EngineCatalogProvider> liveProviders;
+    try {
+      liveProviders =
+          ServiceLoader.load(EngineCatalogProvider.class).stream()
+              .map(ServiceLoader.Provider::get)
+              .toList();
+    } catch (Exception e) {
+      LOG.warn("Failed to load EngineCatalogProvider implementations", e);
+      liveProviders = List.of();
+    }
+
     Map<String, EngineSystemCatalogExtension> tmp = new HashMap<>();
+    Map<String, EngineCatalogProvider> liveProviderMap = new HashMap<>();
     Map<String, EngineMetadataDecorator> decoratorMap = new HashMap<>();
     for (EngineSystemCatalogExtension ext : engineExtensions) {
       String normalizedKind = EngineIdentityNormalizer.normalizeEngineKind(ext.engineKind());
@@ -120,7 +135,33 @@ public final class ServiceLoaderSystemCatalogProvider
                 }
               });
     }
+
+    for (EngineCatalogProvider provider : liveProviders) {
+      String normalizedKind = EngineIdentityNormalizer.normalizeEngineKind(provider.engineKind());
+      if (normalizedKind.isEmpty()) {
+        continue;
+      }
+      if (EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(normalizedKind)) {
+        LOG.warn(
+            "EngineCatalogProvider for floecat_internal is reserved; ignoring "
+                + provider.getClass());
+        continue;
+      }
+      EngineCatalogProvider previous = liveProviderMap.put(normalizedKind, provider);
+      if (previous != null) {
+        throw new IllegalStateException(
+            "Multiple live engine catalog providers registered for engine_kind="
+                + normalizedKind
+                + " (prev="
+                + previous.getClass().getName()
+                + ", next="
+                + provider.getClass().getName()
+                + ")");
+      }
+    }
+
     this.plugins = Map.copyOf(tmp);
+    this.engineProviders = Map.copyOf(liveProviderMap);
     this.decorators = Map.copyOf(decoratorMap);
 
     /*
@@ -134,13 +175,16 @@ public final class ServiceLoaderSystemCatalogProvider
      */
     List<SystemObjectScannerProvider> extensionProviders =
         engineExtensions.stream().map(ext -> (SystemObjectScannerProvider) ext).toList();
-    this.providers = extensionProviders.stream().collect(Collectors.toUnmodifiableList());
+    this.providers =
+        Stream.concat(extensionProviders.stream(), liveProviderMap.values().stream())
+            .collect(Collectors.toUnmodifiableList());
   }
 
   @Override
   public List<String> engineKinds() {
     return Stream.concat(
-            Stream.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG), plugins.keySet().stream())
+            Stream.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG),
+            Stream.concat(plugins.keySet().stream(), engineProviders.keySet().stream()))
         .distinct()
         .sorted()
         .toList();
@@ -159,7 +203,7 @@ public final class ServiceLoaderSystemCatalogProvider
 
     if (ext == null) {
       // No plugin registered: still serve floecat-internal (merged in later).
-      if (overlaysRequested) {
+      if (overlaysRequested && !engineProviders.containsKey(effectiveKind)) {
         LOG.warn(
             "No system catalog plugin found for engine_kind="
                 + effectiveKind
@@ -245,6 +289,15 @@ public final class ServiceLoaderSystemCatalogProvider
       return Optional.empty();
     }
     return Optional.ofNullable(plugins.get(engineKind));
+  }
+
+  /** Returns the live provider registered for the given engine, if any. */
+  public Optional<EngineCatalogProvider> engineProviderFor(String engineKind) {
+    if (engineKind == null || engineKind.isBlank()) {
+      return Optional.empty();
+    }
+    return Optional.ofNullable(
+        engineProviders.get(EngineIdentityNormalizer.normalizeEngineKind(engineKind)));
   }
 
   private static void logValidationIssues(
