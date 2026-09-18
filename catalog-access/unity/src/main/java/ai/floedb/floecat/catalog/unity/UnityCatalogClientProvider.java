@@ -30,6 +30,7 @@ import java.util.Optional;
 public final class UnityCatalogClientProvider implements CatalogClientProvider {
   static final String CONNECT_TIMEOUT_MS = "http.connect.ms";
   static final String READ_TIMEOUT_MS = "http.read.ms";
+  static final String CATALOG = "catalog";
   static final String VEND_PATH = "unity.temporary-table-vend-path";
   static final String TOKEN_URI = "oauth2-server-uri";
   static final String OAUTH_SCOPE = "scope";
@@ -85,6 +86,7 @@ public final class UnityCatalogClientProvider implements CatalogClientProvider {
     }
 
     Map<String, String> properties = config.properties();
+    String catalog = nonBlank(properties.get(CATALOG));
     Duration connectTimeout = duration(properties, CONNECT_TIMEOUT_MS, DEFAULT_CONNECT_TIMEOUT);
     Duration readTimeout = duration(properties, READ_TIMEOUT_MS, DEFAULT_READ_TIMEOUT);
     String vendPath =
@@ -123,7 +125,8 @@ public final class UnityCatalogClientProvider implements CatalogClientProvider {
           unity,
           authenticationOwner,
           DeltaLogStorageProbe.s3("Unity Catalog"),
-          routing(properties));
+          routing(properties),
+          catalog);
     } catch (RuntimeException | Error failure) {
       closeQuietly(unity);
       closeQuietly(authenticationOwner);

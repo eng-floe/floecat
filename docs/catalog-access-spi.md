@@ -48,7 +48,8 @@ The Unity Catalog provider adapts the transport-neutral client in
 
 - bearer tokens and OAuth client credentials, with catalog-token refresh kept separate from
   storage credential vending;
-- catalog/schema discovery mapped onto hierarchical namespace paths;
+- optional discovery within one configured Unity catalog, with its schemas mapped to root namespace
+  paths; without one, catalogs and schemas retain their original two-level namespace shape;
 - Delta table and view discovery, metadata loading, and stable identity through Unity table IDs;
 - table-scoped AWS credentials from Unity Catalog's temporary-table-credentials endpoint; and
 - non-mutating validation of the vended credentials against the table's Delta log, without ambient
@@ -60,7 +61,9 @@ Iceberg catalogs use the Iceberg REST integration path.
 
 OAuth client credentials use `oauth2-server-uri` and optional `scope` authentication properties.
 When no token URI is configured, the provider resolves `/oidc/v1/token` against the catalog URI.
-Provider connection properties include `http.connect.ms`, `http.read.ms`,
+The optional `catalog` provider connection property selects one upstream Unity catalog. When it is
+absent, all catalogs are exposed for compatibility with existing Integrations. Other provider
+connection properties include `http.connect.ms`, `http.read.ms`,
 `unity.temporary-table-vend-path`, `s3.region`, `s3.endpoint`, and `s3.path-style-access`.
 
 Table schemas reported through this slice are the ones Unity holds, not the ones the Delta log

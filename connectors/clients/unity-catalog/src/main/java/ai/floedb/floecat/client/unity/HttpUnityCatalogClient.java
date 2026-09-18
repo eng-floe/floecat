@@ -229,7 +229,7 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
   @Override
   public List<String> listSchemas(String catalogName) {
     return listAll(
-        API_ROOT + "/schemas?catalog_name=" + encode(catalogName),
+        API_ROOT + "/schemas?catalog_name=" + encode(catalogName) + "&max_results=0",
         "schemas",
         node -> text(node, "name"));
   }
@@ -241,7 +241,8 @@ public final class HttpUnityCatalogClient implements UnityCatalogClient {
             + "/tables?catalog_name="
             + encode(catalogName)
             + "&schema_name="
-            + encode(schemaName),
+            + encode(schemaName)
+            + "&max_results=0",
         "tables",
         this::listedTable);
   }

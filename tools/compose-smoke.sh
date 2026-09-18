@@ -1722,12 +1722,12 @@ quit")
     local unity_integration_name="smoke-unity-integration"
     local unity_overlay_name="smoke-unity-overlay"
     local unity_integration_catalog="${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_DEST_CATALOG}_integration"
-    local unity_integration_expected_table="${unity_integration_catalog}.${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS}.${unity_source_table}"
+    local unity_integration_expected_table="${unity_integration_catalog}.${unity_schema}.${unity_source_table}"
     local unity_integration_setup_out
     unity_integration_setup_out=$(run_cli_script "$compose_cmd" "account t-0001
 catalog create $unity_integration_catalog --desc compose-smoke-unity-integration
-integration create $unity_integration_name unity $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI --auth-type bearer --cred token=compose-smoke --props unity.temporary-table-vend-path=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_VEND_PATH s3.endpoint=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT s3.path-style-access=true s3.region=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION
-overlay create $unity_overlay_name $unity_integration_name $unity_integration_catalog --include $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS
+integration create $unity_integration_name unity $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_URI --auth-type bearer --cred token=compose-smoke --props catalog=$unity_catalog unity.temporary-table-vend-path=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_VEND_PATH s3.endpoint=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_ENDPOINT s3.path-style-access=true s3.region=$COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_S3_REGION
+overlay create $unity_overlay_name $unity_integration_name $unity_integration_catalog --include $unity_schema
 quit")
     echo "$unity_integration_setup_out"
     assert_contains "$label Unity integration setup" "$unity_integration_setup_out" "INTEGRATION_ID"
@@ -1746,20 +1746,19 @@ quit")
 
     # Split from the object listing on purpose. run_cli_script echoes the script it runs into the
     # captured output, so any assertion on a string the script itself contains passes whatever the
-    # server returned. Listing schemas under $unity_catalog echoes only "unity", which makes a
-    # later assertion on "unity.<schema>" a real check on the response rather than on the echo.
+    # server returned. The root listing command does not contain $unity_schema, making this a real
+    # check on the response rather than on the echo.
     local unity_namespace_discovery_out
     unity_namespace_discovery_out=$(run_cli_script "$compose_cmd" "account t-0001
 integration namespaces $unity_integration_name
-integration namespaces $unity_integration_name --parent $unity_catalog
 quit")
     echo "$unity_namespace_discovery_out"
-    assert_contains "$label Unity catalog discovery" "$unity_namespace_discovery_out" \
-      "$unity_catalog.$unity_schema"
+    assert_contains "$label Unity schema discovery" "$unity_namespace_discovery_out" \
+      "$unity_schema"
 
     local unity_integration_discovery_out
     unity_integration_discovery_out=$(run_cli_script "$compose_cmd" "account t-0001
-integration objects $unity_integration_name $COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS
+integration objects $unity_integration_name $unity_schema
 quit")
     echo "$unity_integration_discovery_out"
     assert_contains "$label Unity object discovery" "$unity_integration_discovery_out" "$unity_source_table"
@@ -1793,13 +1792,9 @@ quit")
     assert_no_authority_covers "$compose_cmd" \
       "$label Unity integration" "$unity_storage_location"
 
-    # A two-level upstream namespace, so the Iceberg REST separator applies: the gateway's own
-    # /v1/config advertises namespace-separator=%1F and NamespacePaths splits on 0x1F.
-    local unity_integration_ns_path="${COMPOSE_SMOKE_UPSTREAM_DELTA_UNITY_SOURCE_NS//./%1F}"
-
     assert_gateway_vends_session_tuple "$compose_project" \
       "$label upstream delta unity Catalog Integration" \
-      "http://iceberg-rest:9200/v1/${unity_integration_catalog}/namespaces/${unity_integration_ns_path}/tables/${unity_source_table}"
+      "http://iceberg-rest:9200/v1/${unity_integration_catalog}/namespaces/${unity_schema}/tables/${unity_source_table}"
 
     if [ "$label" = "localstack-remote" ]; then
       local unity_query_begin_out

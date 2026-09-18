@@ -10,10 +10,12 @@ package ai.floedb.floecat.catalog.unity;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.CatalogAuthentication;
 import ai.floedb.floecat.catalog.access.CatalogAuthenticationScheme;
+import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogClientProvider;
 import ai.floedb.floecat.catalog.access.CatalogConnectionConfig;
 import ai.floedb.floecat.catalog.access.CatalogProtocol;
@@ -97,6 +99,24 @@ class UnityCatalogClientProviderTest {
             failure ->
                 assertThat(failure.code())
                     .isEqualTo(CatalogAccessException.Code.INVALID_CONFIGURATION));
+  }
+
+  @Test
+  void allowsAnUnscopedIntegrationWithoutACatalog() {
+    AtomicReference<UnityCatalogClient> created = new AtomicReference<>();
+    UnityCatalogClientProvider provider =
+        new UnityCatalogClientProvider(
+            (uri, connect, read, auth, path) -> {
+              UnityCatalogClient client = mock(UnityCatalogClient.class);
+              created.set(client);
+              return client;
+            });
+
+    try (CatalogClient client = provider.open(config(Map.of()), credentials())) {
+      client.validate();
+    }
+
+    verify(created.get()).listCatalogs();
   }
 
   @Test

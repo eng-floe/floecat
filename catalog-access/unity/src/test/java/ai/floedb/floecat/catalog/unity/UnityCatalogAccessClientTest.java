@@ -33,13 +33,14 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class UnityCatalogAccessClientTest {
-  private static final NamespacePath SALES = NamespacePath.of("main", "sales");
+  private static final NamespacePath SALES = NamespacePath.of("sales");
   private static final CatalogObjectName ORDERS = new CatalogObjectName(SALES, "orders");
 
   private final UnityCatalogClient unity = mock(UnityCatalogClient.class);
   private final DeltaLogStorageProbe storageValidator = mock(DeltaLogStorageProbe.class);
   private final UnityCatalogAccessClient client =
-      new UnityCatalogAccessClient(unity, null, storageValidator, Map.of("s3.region", "us-east-1"));
+      new UnityCatalogAccessClient(
+          unity, null, storageValidator, Map.of("s3.region", "us-east-1"), "main");
 
   @Test
   void exposesTheIntegrationCapabilities() {
@@ -49,15 +50,41 @@ class UnityCatalogAccessClientTest {
   }
 
   @Test
-  void mapsCatalogsAndSchemasOntoHierarchicalNamespaces() {
-    when(unity.listCatalogs()).thenReturn(List.of("system", "main"));
+  void exposesSchemasFromTheConfiguredCatalogAsRootNamespaces() {
     when(unity.listSchemas("main")).thenReturn(List.of("sales", "default"));
 
     assertThat(client.listNamespaces(NamespacePath.root()))
-        .containsExactly(NamespacePath.of("main"), NamespacePath.of("system"));
-    assertThat(client.listNamespaces(NamespacePath.of("main")))
-        .containsExactly(NamespacePath.of("main", "default"), SALES);
+        .containsExactly(NamespacePath.of("default"), SALES);
     assertThat(client.listNamespaces(SALES)).isEmpty();
+  }
+
+  @Test
+  void preservesCatalogAndSchemaNamespacesWhenCatalogIsNotConfigured() {
+    UnityCatalogAccessClient unscoped =
+        new UnityCatalogAccessClient(unity, null, storageValidator, Map.of(), null);
+    when(unity.listCatalogs()).thenReturn(List.of("system", "main"));
+    when(unity.listSchemas("main")).thenReturn(List.of("sales", "default"));
+
+    assertThat(unscoped.listNamespaces(NamespacePath.root()))
+        .containsExactly(NamespacePath.of("main"), NamespacePath.of("system"));
+    assertThat(unscoped.listNamespaces(NamespacePath.of("main")))
+        .containsExactly(NamespacePath.of("main", "default"), NamespacePath.of("main", "sales"));
+    assertThat(unscoped.listNamespaces(NamespacePath.of("main", "sales"))).isEmpty();
+  }
+
+  @Test
+  void preservesCatalogQualifiedObjectAddressingWhenCatalogIsNotConfigured() {
+    UnityCatalogAccessClient unscoped =
+        new UnityCatalogAccessClient(unity, null, storageValidator, Map.of(), null);
+    NamespacePath namespace = NamespacePath.of("main", "sales");
+    UnityCatalogTable table = deltaTable("s3://warehouse/orders");
+    when(unity.listTables("main", "sales")).thenReturn(List.of(table));
+    when(unity.getTable("main.sales.orders")).thenReturn(Optional.of(table));
+
+    assertThat(unscoped.listTables(namespace))
+        .containsExactly(new CatalogObjectName(namespace, "orders"));
+    assertThat(unscoped.loadTable(new CatalogObjectName(namespace, "orders")).name())
+        .isEqualTo(new CatalogObjectName(namespace, "orders"));
   }
 
   @Test
@@ -243,17 +270,15 @@ class UnityCatalogAccessClientTest {
 
   /**
    * Listing a namespace that cannot hold tables is a question with a true answer -- none -- not a
-   * misconfiguration. listNamespaces hands out one-segment catalog paths by design, and an overlay
-   * with no include filters (the documented default) has the reconciler list tables for every one
-   * of them, so throwing here failed every unfiltered overlay against a Unity workspace on the
-   * first catalog it reached.
+   * misconfiguration. An overlay with no include filters asks at the root before walking the
+   * one-segment schema paths returned there.
    */
   @Test
   void listingANamespaceThatCannotHoldTablesIsEmptyRatherThanAFailure() {
     for (NamespacePath namespace :
         java.util.List.of(
             NamespacePath.root(),
-            NamespacePath.of("main"),
+            NamespacePath.of("main", "sales"),
             NamespacePath.of("main", "sales", "x"))) {
       assertThat(client.listTables(namespace)).as("tables %s", namespace).isEmpty();
       assertThat(client.listViews(namespace)).as("views %s", namespace).isEmpty();
@@ -265,14 +290,14 @@ class UnityCatalogAccessClientTest {
   /** Addressing an object is not listing: a namespace of the wrong depth cannot name one. */
   @Test
   void loadingThroughANamespaceThatCannotHoldTablesStillFails() {
-    CatalogObjectName shallow = new CatalogObjectName(NamespacePath.of("main"), "orders");
-    assertThatThrownBy(() -> client.loadTable(shallow))
+    CatalogObjectName nested = new CatalogObjectName(NamespacePath.of("main", "sales"), "orders");
+    assertThatThrownBy(() -> client.loadTable(nested))
         .isInstanceOfSatisfying(
             CatalogAccessException.class,
             failure ->
                 assertThat(failure.code())
                     .isEqualTo(CatalogAccessException.Code.INVALID_CONFIGURATION));
-    assertThatThrownBy(() -> client.vendStorageCredentials(shallow))
+    assertThatThrownBy(() -> client.vendStorageCredentials(nested))
         .isInstanceOf(CatalogAccessException.class);
   }
 
@@ -1100,7 +1125,7 @@ class UnityCatalogAccessClientTest {
         new CatalogAccessException(
             CatalogAccessException.Code.UNAUTHENTICATED,
             "Unity Catalog OAuth token request failed with HTTP 401");
-    when(unity.listCatalogs())
+    when(unity.listSchemas("main"))
         .thenThrow(
             new UnityCatalogException(
                 UnityCatalogException.Failure.TRANSPORT,
@@ -1115,7 +1140,8 @@ class UnityCatalogAccessClientTest {
   void closesTransportAndAuthenticationOwnerOnce() throws Exception {
     AutoCloseable authenticationOwner = mock(AutoCloseable.class);
     UnityCatalogAccessClient owned =
-        new UnityCatalogAccessClient(unity, authenticationOwner, storageValidator, Map.of());
+        new UnityCatalogAccessClient(
+            unity, authenticationOwner, storageValidator, Map.of(), "main");
 
     owned.close();
     owned.close();
