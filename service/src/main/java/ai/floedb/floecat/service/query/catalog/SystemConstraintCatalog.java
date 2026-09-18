@@ -90,7 +90,7 @@ final class SystemConstraintCatalog {
               constraints,
               Map.of(
                   "source", "system_catalog",
-                  "engine_kind", ctx.engine().effectiveEngineKind(),
+                  "engine_kind", ctx.effectiveSystemCatalogKind(),
                   "engine_version", ctx.engine().normalizedVersion(),
                   "environment_kind", ctx.environment().normalizedKind(),
                   "environment_version", ctx.environment().normalizedVersion())));
@@ -179,7 +179,7 @@ final class SystemConstraintCatalog {
       return new VersionKey(
           context.environment().normalizedKind(),
           context.environment().normalizedVersion(),
-          context.engine().effectiveEngineKind(),
+          context.effectiveSystemCatalogKind(),
           context.engine().normalizedVersion());
     }
   }

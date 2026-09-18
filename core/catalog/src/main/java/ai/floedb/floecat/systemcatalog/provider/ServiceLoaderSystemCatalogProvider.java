@@ -210,7 +210,7 @@ public final class ServiceLoaderSystemCatalogProvider
           "System catalog validation failed for engine_kind=" + selectedKind, validatorIssues);
     }
 
-    String resolvedEngineKind = selectedKind;
+    String resolvedEngineKind = canonical.effectiveSystemCatalogKind();
 
     return SystemEngineCatalog.from(resolvedEngineKind, catalog);
   }

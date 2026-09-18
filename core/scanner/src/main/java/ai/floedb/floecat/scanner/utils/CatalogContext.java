@@ -60,4 +60,20 @@ public record CatalogContext(EnvironmentContext environment, EngineContext engin
     }
     return of(environment, engine);
   }
+
+  /** Returns the catalog identity used for system resources in this context. */
+  public String effectiveSystemCatalogKind() {
+    if (engine.hasEngineKind()) {
+      return engine.normalizedKind();
+    }
+    if (environment.hasEnvironmentKind()) {
+      return environment.normalizedKind();
+    }
+    return EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
+  }
+
+  /** Returns the version used for system resources in this context. */
+  public String effectiveSystemCatalogVersion() {
+    return engine.hasEngineKind() ? engine.normalizedVersion() : environment.normalizedVersion();
+  }
 }

@@ -27,7 +27,6 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
-import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
@@ -267,7 +266,7 @@ public final class SystemGraph {
         .map(
             ns ->
                 NameRefUtil.name(ns.displayName(), table.displayName()).toBuilder()
-                    .setCatalog(engineCatalogKind(ctx.engine()))
+                    .setCatalog(ctx.effectiveSystemCatalogKind())
                     .build());
   }
 
@@ -278,19 +277,15 @@ public final class SystemGraph {
         .map(
             ns ->
                 NameRefUtil.name(ns.displayName(), view.displayName()).toBuilder()
-                    .setCatalog(engineCatalogKind(ctx.engine()))
+                    .setCatalog(ctx.effectiveSystemCatalogKind())
                     .build());
   }
 
   private NameRef buildNamespaceNameRef(NamespaceNode ns, CatalogContext ctx) {
     return NameRef.newBuilder()
-        .setCatalog(engineCatalogKind(ctx.engine()))
+        .setCatalog(ctx.effectiveSystemCatalogKind())
         .addPath(ns.displayName())
         .build();
-  }
-
-  private static String engineCatalogKind(EngineContext ctx) {
-    return Objects.requireNonNull(ctx, "engineContext").normalizedKind();
   }
 
   public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
@@ -304,8 +299,8 @@ public final class SystemGraph {
   /** Builds a new snapshot for the requested engine version. */
   private GraphSnapshot snapshotFor(CatalogContext ctx) {
     CatalogContext canonical = Objects.requireNonNull(ctx, "catalogContext");
-    String normalizedKind = engineCatalogKind(canonical.engine());
-    String normalizedVersion = canonical.engine().normalizedVersion();
+    String normalizedKind = canonical.effectiveSystemCatalogKind();
+    String normalizedVersion = canonical.effectiveSystemCatalogVersion();
 
     VersionKey key = VersionKey.from(canonical);
     GraphSnapshot cached = snapshots.get(key);

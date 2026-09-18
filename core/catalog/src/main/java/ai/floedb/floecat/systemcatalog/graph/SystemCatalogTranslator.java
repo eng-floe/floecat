@@ -17,7 +17,7 @@ package ai.floedb.floecat.systemcatalog.graph;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.UUID;
@@ -31,8 +31,7 @@ import java.util.UUID;
  * <ol>
  *   <li>Normalize any UUID stamped by {@link SystemResourceIdGenerator} so the account is {@link
  *       SystemNodeRegistry#SYSTEM_ACCOUNT} before the snapshot lookup.
- *   <li>Rewrite namespaces/tables to the current engine’s catalog context before querying the
- *       system graph.
+ *   <li>Rewrite namespaces/tables to the selected catalog context before querying the system graph.
  *   <li>Alias matched system names back to the user catalog so responses remain user-friendly.
  * </ol>
  */
@@ -65,14 +64,14 @@ public final class SystemCatalogTranslator {
   }
 
   /**
-   * Converts a user-provided namespace reference into the engine-specific system catalog namespace.
+   * Converts a user-provided namespace reference into the selected system catalog namespace.
    *
-   * <p>The catalog is replaced with the selected engine kind when present, and the path is
-   * reconstructed so the system graph can resolve the same namespace even if the user supplied a
-   * different catalog name.
+   * <p>The catalog is replaced with the selected system catalog kind, and the path is reconstructed
+   * so the system graph can resolve the same namespace even if the user supplied a different
+   * catalog name.
    */
-  public static NameRef toSystemNamespaceRef(NameRef userRef, EngineContext ctx) {
-    String catalog = ctx == null ? userRef.getCatalog() : ctx.normalizedKind();
+  public static NameRef toSystemNamespaceRef(NameRef userRef, CatalogContext ctx) {
+    String catalog = ctx == null ? userRef.getCatalog() : ctx.effectiveSystemCatalogKind();
     List<String> nsPath = NameRefUtil.namespacePath(userRef);
     NameRef.Builder builder = NameRef.newBuilder().setCatalog(catalog);
     if (!nsPath.isEmpty()) {
@@ -88,10 +87,10 @@ public final class SystemCatalogTranslator {
 
   /**
    * Turns a user-facing relation reference (table/view) into the matching system catalog reference
-   * for the current engine.
+   * for the selected context.
    */
-  public static NameRef toSystemRelationRef(NameRef userRef, EngineContext ctx) {
-    String catalog = ctx == null ? userRef.getCatalog() : ctx.normalizedKind();
+  public static NameRef toSystemRelationRef(NameRef userRef, CatalogContext ctx) {
+    String catalog = ctx == null ? userRef.getCatalog() : ctx.effectiveSystemCatalogKind();
     return userRef.toBuilder().setCatalog(catalog).build();
   }
 
