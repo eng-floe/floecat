@@ -166,7 +166,8 @@ class DeltaConstraintMappingTest {
     List<ConstraintDefinition> after = DeltaConnector.mapDeltaConstraints(schema, Map.of(), mapped);
 
     assertThat(structured.getFingerprint()).isNotEqualTo(mapped.getFingerprint());
-    assertThat(columnIdsByName(before)).containsExactlyInAnyOrderEntriesOf(Map.of("a", 1L, "b", 2L));
+    assertThat(columnIdsByName(before))
+        .containsExactlyInAnyOrderEntriesOf(Map.of("a", 1L, "b", 2L));
     assertThat(columnIdsByName(after)).containsExactlyInAnyOrderEntriesOf(Map.of("a", 2L, "b", 1L));
   }
 
