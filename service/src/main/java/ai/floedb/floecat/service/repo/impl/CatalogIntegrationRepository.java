@@ -260,6 +260,11 @@ public class CatalogIntegrationRepository {
     return repo.metaForSafe(key(integrationId));
   }
 
+  /** Pointer metadata without a blob HEAD for fence checks. */
+  public MutationMeta pointerMetaForSafe(ResourceId integrationId) {
+    return repo.pointerMetaForSafe(key(integrationId));
+  }
+
   private static CatalogIntegrationKey key(ResourceId id) {
     return new CatalogIntegrationKey(id.getAccountId(), id.getId());
   }

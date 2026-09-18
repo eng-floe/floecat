@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.repo.util;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.AccountKey;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -33,6 +35,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -48,11 +51,18 @@ class BaseResourceRepositoryWriteBlobTest {
 
   private static final class CountingBlobStore extends InMemoryBlobStore {
     final Map<String, Integer> puts = new HashMap<>();
+    final AtomicInteger heads = new AtomicInteger();
 
     @Override
     public void put(String uri, byte[] bytes, String contentType) {
       puts.merge(uri, 1, Integer::sum);
       super.put(uri, bytes, contentType);
+    }
+
+    @Override
+    public java.util.Optional<ai.floedb.floecat.common.rpc.BlobHeader> head(String uri) {
+      heads.incrementAndGet();
+      return super.head(uri);
     }
   }
 
@@ -113,6 +123,33 @@ class BaseResourceRepositoryWriteBlobTest {
     repo.putBlobStrictBytes(uri, bytes);
 
     assertEquals(2, blobs.puts.get(uri), "an identical strict re-write must still PUT");
+  }
+
+  @Test
+  void metadataForCasBlobDerivesEtagWithoutAHead() {
+    var blobs = new CountingBlobStore();
+    var repo = repo(blobs);
+    var value =
+        Account.newBuilder()
+            .setResourceId(
+                ResourceId.newBuilder()
+                    .setAccountId("acct-1")
+                    .setId("acct-1")
+                    .setKind(ResourceKind.RK_ACCOUNT)
+                    .build())
+            .setDisplayName("account")
+            .build();
+
+    repo.create(value);
+    blobs.heads.set(0);
+
+    var meta = repo.metaForSafe(new AccountKey("acct-1"));
+
+    assertEquals(0, blobs.heads.get(), "CAS metadata must not HEAD the immutable blob");
+    assertEquals(
+        BaseResourceRepository.sha256B64(value.toByteArray()),
+        meta.getEtag(),
+        "the URI-derived ETag must retain the store's Base64 representation");
   }
 
   @Test
