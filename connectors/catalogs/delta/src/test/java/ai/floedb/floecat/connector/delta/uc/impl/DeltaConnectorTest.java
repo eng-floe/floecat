@@ -26,6 +26,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotSelectionKind;
 import io.delta.kernel.Operation;
 import io.delta.kernel.ScanBuilder;
 import io.delta.kernel.Snapshot;
@@ -298,6 +299,53 @@ class DeltaConnectorTest {
             .map(FloecatConnector.SnapshotBundle::snapshotId)
             .collect(Collectors.toList());
     assertEquals(List.of(107800L, 107801L, 107802L, 107803L, 107804L, 107805L), snapshotIds);
+  }
+
+  @Test
+  void dataOnlyTargetUsesSparseHistoryAndStampsIdentity() {
+    StructType schema = new StructType().add("id", LongType.LONG, false);
+    Snapshot previousSnapshot = snapshot(10L, 10_000L, schema);
+    Snapshot latest = snapshot(1_000_000L, 20_000L, schema);
+    ColumnIdentityMap previous =
+        DeltaCanonicalIdentity.reset(previousSnapshot, 10L, ColumnIdentityMap.getDefaultInstance())
+            .identityMap();
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(1_000_000L, latest)));
+    connector.setMetadataHistory(DeltaConnector.MetadataHistory.complete(List.of()));
+
+    List<FloecatConnector.SnapshotBundle> bundles =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            new FloecatConnector.SnapshotEnumerationOptions(
+                false,
+                Set.of(10L),
+                Set.of(1_000_000L),
+                SnapshotSelectionKind.EXPLICIT,
+                Set.of(1_000_000L),
+                0,
+                previous));
+
+    assertEquals(1, connector.metadataHistoryCalls);
+    assertEquals(1, bundles.size());
+    ColumnIdentityMap stamped = bundles.getFirst().columnIdentityMap();
+    assertEquals(1_000_000L, stamped.getSourceVersion());
+    assertEquals(previous.getFingerprint(), stamped.getFingerprint());
+    assertFalse(previous.getStateChecksum().equals(stamped.getStateChecksum()));
+  }
+
+  @Test
+  void identityHistoryWalkIsBoundedBeforeReadingTheLog() {
+    Snapshot latest = snapshot(1L, 1L);
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(1L, latest)));
+
+    DeltaConnector.MetadataHistory history =
+        connector.readProductionMetadataVersions(0L, DeltaConnector.MAX_IDENTITY_HISTORY_COMMITS);
+
+    assertFalse(history.complete());
+    assertEquals("history-bound-exceeded", history.reason());
   }
 
   @Test
@@ -798,6 +846,8 @@ class DeltaConnectorTest {
     private String snapshotSchemaJson = TEST_SCHEMA_JSON;
     private Map<String, String> fallbackTableProperties = Map.of();
     private final AtomicBoolean fallbackCalled = new AtomicBoolean(false);
+    private MetadataHistory metadataHistory;
+    private int metadataHistoryCalls;
 
     TestDeltaConnector(Table table) {
       super("delta-test", null, path -> null, false, 0.0d, 0L, null);
@@ -812,6 +862,15 @@ class DeltaConnectorTest {
     @Override
     protected Table loadTable(String storageLocation) {
       return table;
+    }
+
+    @Override
+    protected MetadataHistory metadataVersions(
+        String storageLocation, long firstVersion, long lastVersion) {
+      metadataHistoryCalls++;
+      return metadataHistory == null
+          ? MetadataHistory.complete(List.of(lastVersion))
+          : metadataHistory;
     }
 
     @Override
@@ -847,6 +906,14 @@ class DeltaConnectorTest {
 
     void setSnapshotSchemaJson(String snapshotSchemaJson) {
       this.snapshotSchemaJson = snapshotSchemaJson;
+    }
+
+    void setMetadataHistory(MetadataHistory metadataHistory) {
+      this.metadataHistory = metadataHistory;
+    }
+
+    MetadataHistory readProductionMetadataVersions(long firstVersion, long lastVersion) {
+      return super.metadataVersions("ignored", firstVersion, lastVersion);
     }
   }
 

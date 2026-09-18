@@ -44,6 +44,8 @@ import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind;
+import ai.floedb.floecat.schema.identity.HistoryCoverage;
+import ai.floedb.floecat.schema.identity.IdentityMode;
 import ai.floedb.floecat.types.LogicalType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.delta.kernel.Snapshot;
@@ -107,6 +109,7 @@ abstract class DeltaConnector implements FloecatConnector {
       Pattern.compile("earliest available version is\\s+(\\d+)", Pattern.CASE_INSENSITIVE);
   private static final int MAX_DELTA_CHANGE_READ_PARALLELISM = 16;
   private static final int TARGET_COMMITS_PER_CHANGE_READER = 64;
+  static final long MAX_IDENTITY_HISTORY_COMMITS = 100_000L;
   private static final Logger LOG = Logger.getLogger(DeltaConnector.class);
 
   private final String connectorId;
@@ -184,103 +187,213 @@ abstract class DeltaConnector implements FloecatConnector {
     if (versions.isEmpty()) {
       return List.of();
     }
-    Set<Long> selectedVersions = new LinkedHashSet<>(versions);
     List<SnapshotBundle> bundles = new ArrayList<>(versions.size());
     ColumnIdentityMap previousIdentityMap =
         options == null
             ? ColumnIdentityMap.getDefaultInstance()
             : options.previousColumnIdentityMap();
+    long earliestAvailableVersion = 0L;
     boolean resetIdentityGeneration =
         fullRescan && !previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance());
-    boolean sequentialIdentity =
-        previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance())
-            || previousIdentityMap.getMode()
-                == ai.floedb.floecat.catalog.rpc.ColumnIdentityMode
-                    .COLUMN_IDENTITY_MODE_STRUCTURED_PATH;
-    long earliestAvailableVersion = 0L;
-    for (long version : identityVersionsToWalk(versions, previousIdentityMap, fullRescan)) {
-      if (version < earliestAvailableVersion) {
+    for (long selectedVersion : versions) {
+      if (selectedVersion < earliestAvailableVersion) {
         continue;
       }
-      SnapshotLoadResult snapshotResult =
-          version == latestVersion
+      SnapshotLoadResult selectedResult =
+          selectedVersion == latestVersion
               ? SnapshotLoadResult.snapshot(latestSnapshot)
-              : loadSnapshotAsOfVersion(table, version, storageLocation, earliestAvailableVersion);
-      if (snapshotResult.earliestAvailableVersion() > earliestAvailableVersion) {
-        earliestAvailableVersion = snapshotResult.earliestAvailableVersion();
-      }
-      Snapshot snapshot = snapshotResult.snapshot();
-      if (snapshot == null) {
-        resetIdentityGeneration |= sequentialIdentity;
+              : loadSnapshotAsOfVersion(
+                  table, selectedVersion, storageLocation, earliestAvailableVersion);
+      earliestAvailableVersion =
+          Math.max(earliestAvailableVersion, selectedResult.earliestAvailableVersion());
+      Snapshot selectedSnapshot = selectedResult.snapshot();
+      if (selectedSnapshot == null) {
+        resetIdentityGeneration = true;
         continue;
       }
+
       long previousIdentityVersion =
           previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance())
               ? -1L
               : previousIdentityMap.getSourceVersion();
-      if (version < previousIdentityVersion && !resetIdentityGeneration) {
+      if (selectedVersion < previousIdentityVersion && !resetIdentityGeneration) {
         LOG.warnf(
             "Cannot backfill Delta snapshot version %d below persisted identity version %d for %s",
-            Long.valueOf(version), Long.valueOf(previousIdentityVersion), storageLocation);
+            Long.valueOf(selectedVersion), Long.valueOf(previousIdentityVersion), storageLocation);
         continue;
       }
-      if (!resetIdentityGeneration && version == previousIdentityVersion) {
-        DeltaCanonicalIdentity.validateSnapshot(snapshot, previousIdentityMap);
-        if (selectedVersions.contains(version)) {
-          bundles.add(buildSnapshotBundle(storageLocation, version, snapshot, previousIdentityMap));
-        }
-        continue;
-      }
-      DeltaCanonicalIdentity.Reconciled identity =
-          resetIdentityGeneration
-              ? DeltaCanonicalIdentity.reset(snapshot, version, previousIdentityMap)
-              : DeltaCanonicalIdentity.reconcile(snapshot, version, previousIdentityMap);
-      previousIdentityMap = identity.identityMap();
-      resetIdentityGeneration = false;
-      sequentialIdentity =
-          identity.identity().state().mode()
-              == ai.floedb.floecat.schema.identity.IdentityMode.STRUCTURED_PATH;
-      if (selectedVersions.contains(version)) {
+      if (!resetIdentityGeneration && selectedVersion == previousIdentityVersion) {
+        DeltaCanonicalIdentity.validateSnapshot(selectedSnapshot, previousIdentityMap);
         bundles.add(
-            buildSnapshotBundle(storageLocation, version, snapshot, identity.identityMap()));
+            buildSnapshotBundle(
+                storageLocation, selectedVersion, selectedSnapshot, previousIdentityMap));
+        continue;
       }
+
+      IdentityMode selectedMode =
+          DeltaCanonicalIdentity.identityMode(DeltaColumnMapping.resolveSchema(selectedSnapshot));
+      boolean hasPrevious = !previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance());
+      IdentityMode previousMode =
+          !hasPrevious
+              ? selectedMode
+              : DeltaCanonicalIdentity.fromProto(previousIdentityMap).mode();
+
+      if (resetIdentityGeneration || !hasPrevious || selectedMode != previousMode) {
+        if (hasPrevious) {
+          LOG.warnf(
+              "DELTA_IDENTITY_CONTINUITY_RESET table=%s fromVersion=%d toVersion=%d reason=%s",
+              storageLocation,
+              Long.valueOf(previousIdentityVersion),
+              Long.valueOf(selectedVersion),
+              resetIdentityGeneration ? "history-gap" : "identity-mode-change");
+        }
+        previousIdentityMap =
+            DeltaCanonicalIdentity.reset(selectedSnapshot, selectedVersion, previousIdentityMap)
+                .identityMap();
+        resetIdentityGeneration = false;
+      } else if (selectedMode == IdentityMode.NATIVE_FIELD_ID) {
+        previousIdentityMap =
+            DeltaCanonicalIdentity.reconcile(
+                    selectedSnapshot,
+                    selectedVersion,
+                    previousIdentityMap,
+                    HistoryCoverage.COMPLETE_METADATA_HISTORY)
+                .identityMap();
+      } else {
+        MetadataHistory history =
+            metadataVersions(storageLocation, previousIdentityVersion + 1L, selectedVersion);
+        if (!history.complete()) {
+          LOG.warnf(
+              "DELTA_IDENTITY_CONTINUITY_RESET table=%s fromVersion=%d toVersion=%d reason=%s",
+              storageLocation,
+              Long.valueOf(previousIdentityVersion),
+              Long.valueOf(selectedVersion),
+              history.reason());
+          previousIdentityMap =
+              DeltaCanonicalIdentity.reset(selectedSnapshot, selectedVersion, previousIdentityMap)
+                  .identityMap();
+        } else {
+          boolean selectedReconciled = false;
+          for (long metadataVersion : history.versions()) {
+            Snapshot metadataSnapshot;
+            if (metadataVersion == selectedVersion) {
+              metadataSnapshot = selectedSnapshot;
+              selectedReconciled = true;
+            } else {
+              SnapshotLoadResult metadataResult =
+                  loadSnapshotAsOfVersion(
+                      table, metadataVersion, storageLocation, earliestAvailableVersion);
+              earliestAvailableVersion =
+                  Math.max(earliestAvailableVersion, metadataResult.earliestAvailableVersion());
+              metadataSnapshot = metadataResult.snapshot();
+            }
+            if (metadataSnapshot == null) {
+              LOG.warnf(
+                  "DELTA_IDENTITY_CONTINUITY_RESET table=%s fromVersion=%d toVersion=%d"
+                      + " reason=metadata-snapshot-unavailable",
+                  storageLocation,
+                  Long.valueOf(previousIdentityMap.getSourceVersion()),
+                  Long.valueOf(selectedVersion));
+              previousIdentityMap =
+                  DeltaCanonicalIdentity.reset(
+                          selectedSnapshot, selectedVersion, previousIdentityMap)
+                      .identityMap();
+              selectedReconciled = true;
+              break;
+            }
+            IdentityMode metadataMode =
+                DeltaCanonicalIdentity.identityMode(
+                    DeltaColumnMapping.resolveSchema(metadataSnapshot));
+            IdentityMode persistedMode =
+                DeltaCanonicalIdentity.fromProto(previousIdentityMap).mode();
+            if (metadataMode != persistedMode) {
+              LOG.warnf(
+                  "DELTA_IDENTITY_CONTINUITY_RESET table=%s fromVersion=%d toVersion=%d"
+                      + " reason=identity-mode-change",
+                  storageLocation,
+                  Long.valueOf(previousIdentityMap.getSourceVersion()),
+                  Long.valueOf(metadataVersion));
+            }
+            previousIdentityMap =
+                metadataMode == persistedMode
+                    ? DeltaCanonicalIdentity.reconcile(
+                            metadataSnapshot,
+                            metadataVersion,
+                            previousIdentityMap,
+                            HistoryCoverage.COMPLETE_METADATA_HISTORY)
+                        .identityMap()
+                    : DeltaCanonicalIdentity.reset(
+                            metadataSnapshot, metadataVersion, previousIdentityMap)
+                        .identityMap();
+          }
+          if (!selectedReconciled) {
+            previousIdentityMap =
+                DeltaCanonicalIdentity.stampSourceVersion(
+                    selectedSnapshot, selectedVersion, previousIdentityMap);
+          }
+        }
+      }
+      bundles.add(
+          buildSnapshotBundle(
+              storageLocation, selectedVersion, selectedSnapshot, previousIdentityMap));
     }
     return List.copyOf(bundles);
   }
 
-  static List<Long> identityVersionsToWalk(
-      List<Long> selectedVersions, ColumnIdentityMap previousIdentityMap, boolean fullRescan) {
-    if (selectedVersions == null || selectedVersions.isEmpty()) {
-      return List.of();
+  protected MetadataHistory metadataVersions(
+      String storageLocation, long firstVersion, long lastVersion) {
+    if (firstVersion > lastVersion) {
+      return MetadataHistory.complete(List.of());
     }
-    long firstSelected = selectedVersions.stream().mapToLong(Long::longValue).min().orElseThrow();
-    long lastSelected = selectedVersions.stream().mapToLong(Long::longValue).max().orElseThrow();
-    boolean hasPrevious =
-        previousIdentityMap != null
-            && !previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance());
-    boolean structured =
-        !hasPrevious
-            || previousIdentityMap.getMode()
-                == ai.floedb.floecat.catalog.rpc.ColumnIdentityMode
-                    .COLUMN_IDENTITY_MODE_STRUCTURED_PATH;
-    if (!structured) {
-      return List.copyOf(selectedVersions);
+    long commitCount = lastVersion - firstVersion + 1L;
+    if (commitCount <= 0L || commitCount > MAX_IDENTITY_HISTORY_COMMITS) {
+      return MetadataHistory.gap("history-bound-exceeded");
     }
-    long firstVersion =
-        hasPrevious && !fullRescan
-            ? Math.max(0L, previousIdentityMap.getSourceVersion() + 1L)
-            : firstSelected;
-    if (firstVersion > lastSelected) {
-      return List.copyOf(selectedVersions);
-    }
-    List<Long> versions = new ArrayList<>();
-    for (long version = firstVersion; version <= lastSelected; version++) {
-      versions.add(version);
-      if (version == Long.MAX_VALUE) {
-        break;
+    try {
+      List<FileStatus> commitFiles =
+          DeltaLogActionUtils.getCommitFilesForVersionRange(
+              engine, new Path(storageLocation), firstVersion, Optional.of(lastVersion));
+      LinkedHashSet<Long> versions = new LinkedHashSet<>();
+      try (var commits =
+              DeltaLogActionUtils.getActionsFromCommitFilesWithProtocolValidation(
+                  engine, storageLocation, commitFiles, Set.of(DeltaAction.METADATA));
+          CloseableIterator<io.delta.kernel.data.ColumnarBatch> batches =
+              TableChangesUtils.flattenCommitsAndAddMetadata(engine, commits)) {
+        while (batches.hasNext()) {
+          var batch = batches.next();
+          int versionOrdinal = batch.getSchema().indexOf("version");
+          int metadataOrdinal = batch.getSchema().indexOf(DeltaAction.METADATA.colName);
+          if (metadataOrdinal < 0) {
+            continue;
+          }
+          ColumnVector versionVector = batch.getColumnVector(versionOrdinal);
+          ColumnVector metadataVector = batch.getColumnVector(metadataOrdinal);
+          for (int row = 0; row < batch.getSize(); row++) {
+            if (!metadataVector.isNullAt(row)) {
+              versions.add(versionVector.getLong(row));
+            }
+          }
+        }
       }
+      return MetadataHistory.complete(List.copyOf(versions));
+    } catch (Exception e) {
+      LOG.warnf(e, "Unable to read Delta metadata history for %s", storageLocation);
+      return MetadataHistory.gap("history-unavailable");
     }
-    return List.copyOf(versions);
+  }
+
+  record MetadataHistory(List<Long> versions, boolean complete, String reason) {
+    MetadataHistory {
+      versions = List.copyOf(versions);
+    }
+
+    static MetadataHistory complete(List<Long> versions) {
+      return new MetadataHistory(versions, true, "");
+    }
+
+    static MetadataHistory gap(String reason) {
+      return new MetadataHistory(List.of(), false, reason);
+    }
   }
 
   @Override

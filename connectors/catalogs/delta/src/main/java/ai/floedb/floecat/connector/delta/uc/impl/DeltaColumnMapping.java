@@ -19,6 +19,7 @@ package ai.floedb.floecat.connector.delta.uc.impl;
 import ai.floedb.floecat.connector.delta.identity.ColumnMappingMode;
 import ai.floedb.floecat.connector.delta.identity.DeltaResolvedSchema;
 import ai.floedb.floecat.connector.delta.identity.DeltaSchemaResolver;
+import ai.floedb.floecat.schema.identity.NodeKind;
 import ai.floedb.floecat.schema.identity.SchemaNode;
 import io.delta.kernel.Snapshot;
 import io.delta.kernel.expressions.Column;
@@ -47,12 +48,19 @@ import java.util.Set;
  */
 final class DeltaColumnMapping {
 
+  static final String ICEBERG_COMPAT_V2_ENABLED = "delta.enableIcebergCompatV2";
+  static final String MAX_COLUMN_ID = "delta.columnMapping.maxColumnId";
+
   private DeltaColumnMapping() {}
 
   /** Resolves a snapshot's schema together with the mapping mode its readers may trust. */
   static DeltaResolvedSchema resolveSchema(Snapshot snapshot) {
     Objects.requireNonNull(snapshot, "snapshot");
-    return DeltaSchemaResolver.resolve(snapshot.getSchema(), effectiveMode(snapshot));
+    DeltaResolvedSchema resolved =
+        DeltaSchemaResolver.resolve(snapshot.getSchema(), effectiveMode(snapshot));
+    validateNestedIds(snapshot, resolved);
+    validateMaxColumnId(snapshot, resolved);
+    return resolved;
   }
 
   /**
@@ -67,6 +75,72 @@ final class DeltaColumnMapping {
   static boolean supportsColumnMapping(Protocol protocol) {
     Objects.requireNonNull(protocol, "protocol");
     return protocol.supportsFeature(TableFeatures.COLUMN_MAPPING_RW_FEATURE);
+  }
+
+  /** Whether the protocol and table configuration jointly activate Iceberg compatibility V2. */
+  static boolean icebergCompatV2Enabled(Snapshot snapshot) {
+    Objects.requireNonNull(snapshot, "snapshot");
+    return Boolean.parseBoolean(
+            snapshot.getTableProperties().getOrDefault(ICEBERG_COMPAT_V2_ENABLED, "false"))
+        && protocolOf(snapshot).supportsFeature(TableFeatures.ICEBERG_COMPAT_V2_W_FEATURE);
+  }
+
+  /** Delta's monotonic high-water mark for regular and collection-interior field IDs. */
+  static long maxColumnId(Snapshot snapshot) {
+    Objects.requireNonNull(snapshot, "snapshot");
+    String value = snapshot.getTableProperties().get(MAX_COLUMN_ID);
+    if (value == null) {
+      throw new IllegalArgumentException(
+          "Column-mapped Delta table is missing required property " + MAX_COLUMN_ID);
+    }
+    try {
+      long parsed = Long.parseLong(value);
+      if (parsed < 0 || parsed > Integer.MAX_VALUE) {
+        throw new IllegalArgumentException();
+      }
+      return parsed;
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid Delta table property " + MAX_COLUMN_ID + "=" + value, e);
+    }
+  }
+
+  private static void validateNestedIds(Snapshot snapshot, DeltaResolvedSchema resolved) {
+    if (!resolved.effectiveMappingMode().isEnabled() || !icebergCompatV2Enabled(snapshot)) {
+      return;
+    }
+    resolved.schema().nodes().stream()
+        .filter(node -> node.kind() != NodeKind.FIELD)
+        .filter(node -> node.nativeFieldId().isEmpty() || node.nativeFieldId().getAsInt() <= 0)
+        .findFirst()
+        .ifPresent(
+            node -> {
+              throw new IllegalArgumentException(
+                  "IcebergCompatV2 requires a nested field ID for " + node.path().display());
+            });
+  }
+
+  private static void validateMaxColumnId(Snapshot snapshot, DeltaResolvedSchema resolved) {
+    if (!resolved.effectiveMappingMode().isEnabled()) {
+      return;
+    }
+    long highWaterMark = maxColumnId(snapshot);
+    resolved.schema().nodes().stream()
+        .filter(node -> node.nativeFieldId().isPresent())
+        .filter(node -> node.nativeFieldId().getAsInt() > highWaterMark)
+        .findFirst()
+        .ifPresent(
+            node -> {
+              throw new IllegalArgumentException(
+                  "Column-mapped Delta table declares "
+                      + MAX_COLUMN_ID
+                      + "="
+                      + highWaterMark
+                      + " is below field ID "
+                      + node.nativeFieldId().getAsInt()
+                      + " for "
+                      + node.path().display());
+            });
   }
 
   /**
@@ -165,11 +239,19 @@ final class DeltaColumnMapping {
     return metadata == null ? null : metadata.getString(PHYSICAL_NAME_KEY);
   }
 
-  private static Protocol protocolOf(Snapshot snapshot) {
+  static Protocol protocolOf(Snapshot snapshot) {
     if (snapshot instanceof SnapshotImpl snapshotImpl) {
       return snapshotImpl.getProtocol();
     }
+    if (snapshot instanceof ProtocolSnapshot protocolSnapshot) {
+      return protocolSnapshot.protocol();
+    }
     throw new IllegalArgumentException(
         "A Delta snapshot with column mapping configured must expose its protocol");
+  }
+
+  /** Package-local fixture seam for protocol-bearing snapshots that are not Kernel internals. */
+  interface ProtocolSnapshot {
+    Protocol protocol();
   }
 }
