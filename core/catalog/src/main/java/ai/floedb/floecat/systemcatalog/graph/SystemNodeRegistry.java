@@ -36,7 +36,6 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
-import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
@@ -91,7 +90,8 @@ public class SystemNodeRegistry {
   private final SystemDefinitionRegistry definitionRegistry;
   private static final Logger LOG = Logger.getLogger(SystemNodeRegistry.class);
   private final SystemObjectScannerProvider internalProvider;
-  private final List<SystemObjectScannerProvider> extensionProviders;
+  private final List<SystemObjectScannerProvider> engineProviders;
+  private final List<CatalogEnvironmentProvider> environmentProviders;
 
   /*
    * Immutable cache of materialized system nodes.
@@ -103,11 +103,13 @@ public class SystemNodeRegistry {
   public SystemNodeRegistry(
       SystemDefinitionRegistry definitionRegistry,
       SystemObjectScannerProvider internalProvider,
-      List<SystemObjectScannerProvider> extensionProviders) {
+      List<SystemObjectScannerProvider> engineProviders,
+      List<CatalogEnvironmentProvider> environmentProviders) {
     this.definitionRegistry = Objects.requireNonNull(definitionRegistry);
     this.internalProvider = Objects.requireNonNull(internalProvider, "internalProvider");
-    this.extensionProviders =
-        List.copyOf(Objects.requireNonNull(extensionProviders, "extensionProviders"));
+    this.engineProviders = List.copyOf(Objects.requireNonNull(engineProviders, "engineProviders"));
+    this.environmentProviders =
+        List.copyOf(Objects.requireNonNull(environmentProviders, "environmentProviders"));
   }
 
   private static final SystemCatalogData EMPTY_CATALOG = SystemCatalogData.empty();
@@ -135,15 +137,6 @@ public class SystemNodeRegistry {
 
   public List<String> engineKinds() {
     return definitionRegistry.engineKinds();
-  }
-
-  public BuiltinNodes nodesFor(String engineKind, String engineVersion) {
-    return nodesFor(EngineContext.of(engineKind, engineVersion));
-  }
-
-  public BuiltinNodes nodesFor(EngineContext ctx) {
-    EngineContext canonical = ctx == null ? EngineContext.empty() : ctx;
-    return nodesFor(CatalogContext.of(null, canonical));
   }
 
   /** Resolves system nodes for the selected environment and engine. */
@@ -449,19 +442,25 @@ public class SystemNodeRegistry {
     }
 
     if (includeEngineProviders || canonical.environment().hasEnvironmentKind()) {
-      for (SystemObjectScannerProvider provider : extensionProviders) {
-        if (provider instanceof CatalogEnvironmentProvider environmentProvider) {
-          if (!environmentProvider.supportsEnvironment(canonical.environment())) {
+      if (includeEngineProviders) {
+        for (SystemObjectScannerProvider provider : engineProviders) {
+          if (!provider.supportsEngine(normalizedKind)) {
             continue;
           }
-          for (SystemObjectDef def : environmentProvider.definitions(canonical)) {
-            if (environmentProvider.supports(def.name(), canonical)) {
+          for (SystemObjectDef def : provider.definitions(normalizedKind, normalizedVersion)) {
+            if (provider.supports(def.name(), normalizedKind, normalizedVersion)) {
               mergeDefinition(def, namespaceByName, tableByName, viewByName);
             }
           }
-        } else if (includeEngineProviders && provider.supportsEngine(normalizedKind)) {
-          for (SystemObjectDef def : provider.definitions(normalizedKind, normalizedVersion)) {
-            if (provider.supports(def.name(), normalizedKind, normalizedVersion)) {
+        }
+      }
+      if (canonical.environment().hasEnvironmentKind()) {
+        for (CatalogEnvironmentProvider provider : environmentProviders) {
+          if (!provider.supportsEnvironment(canonical.environment())) {
+            continue;
+          }
+          for (SystemObjectDef def : provider.definitions(canonical)) {
+            if (provider.supports(def.name(), canonical)) {
               mergeDefinition(def, namespaceByName, tableByName, viewByName);
             }
           }

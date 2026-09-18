@@ -49,7 +49,11 @@ public final class FakeSystemNodeRegistry extends SystemNodeRegistry {
 
   private FakeSystemNodeRegistry(
       FakeSystemCatalogProvider provider, List<SystemObjectScannerProvider> extraProviders) {
-    super(new SystemDefinitionRegistry(provider), new FloecatInternalProvider(), extraProviders);
+    super(
+        new SystemDefinitionRegistry(provider),
+        new FloecatInternalProvider(),
+        extraProviders,
+        List.of());
     this.provider = provider;
   }
 

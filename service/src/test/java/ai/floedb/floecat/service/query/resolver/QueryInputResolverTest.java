@@ -33,7 +33,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
-import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.concurrent.UninterruptibleBlocker;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
@@ -1883,7 +1883,7 @@ public class QueryInputResolverTest {
 
     @Override
     public Optional<ResourceId> resolveName(
-        String correlationId, NameRef ref, EngineContext engineContext) {
+        String correlationId, NameRef ref, CatalogContext catalogContext) {
       return resolveName(correlationId, ref);
     }
 

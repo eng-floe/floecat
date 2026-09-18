@@ -64,6 +64,10 @@ class SystemGraphTest {
   private ResourceId tableId;
   private ResourceId defaultTableId;
 
+  private static CatalogContext context(String engineKind, String engineVersion) {
+    return CatalogContext.of(null, EngineContext.of(engineKind, engineVersion));
+  }
+
   @BeforeEach
   void setup() {
     FakeSystemNodeRegistry registry = new FakeSystemNodeRegistry();
@@ -125,13 +129,13 @@ class SystemGraphTest {
 
   @Test
   void listRelations_visibleFromAnyCatalog() {
-    List<RelationNode> nodes = systemGraph.listRelations(wrongCatalogId, ENGINE, VERSION);
+    List<RelationNode> nodes = systemGraph.listRelations(wrongCatalogId, context(ENGINE, VERSION));
     assertThat(nodes).extracting(node -> node.displayName()).contains("pg_class");
   }
 
   @Test
   void listRelations_returnsRelationsForCorrectCatalog() {
-    List<RelationNode> nodes = systemGraph.listRelations(systemCatalogId, ENGINE, VERSION);
+    List<RelationNode> nodes = systemGraph.listRelations(systemCatalogId, context(ENGINE, VERSION));
     assertThat(nodes).extracting(GraphNode::id).contains(tableId);
     assertThat(nodes).hasSizeGreaterThanOrEqualTo(1);
   }
@@ -139,20 +143,22 @@ class SystemGraphTest {
   @Test
   void listRelationsInNamespace_returnsRelations() {
     List<RelationNode> nodes =
-        systemGraph.listRelationsInNamespace(systemCatalogId, namespaceId, ENGINE, VERSION);
+        systemGraph.listRelationsInNamespace(
+            systemCatalogId, namespaceId, context(ENGINE, VERSION));
     assertThat(nodes).hasSize(1);
     assertThat(nodes.get(0).id()).isEqualTo(tableId);
   }
 
   @Test
   void listNamespaces_visibleFromAnyCatalog() {
-    List<NamespaceNode> nodes = systemGraph.listNamespaces(wrongCatalogId, ENGINE, VERSION);
+    List<NamespaceNode> nodes =
+        systemGraph.listNamespaces(wrongCatalogId, context(ENGINE, VERSION));
     assertThat(nodes).extracting(NamespaceNode::displayName).contains("pg_catalog");
   }
 
   @Test
   void listNamespaces_returnsNamespaces() {
-    assertThat(systemGraph.listNamespaces(systemCatalogId, ENGINE, VERSION))
+    assertThat(systemGraph.listNamespaces(systemCatalogId, context(ENGINE, VERSION)))
         .extracting(NamespaceNode::displayName)
         .contains("information_schema");
   }
@@ -178,37 +184,37 @@ class SystemGraphTest {
             .setId(ENGINE)
             .build();
 
-    assertThat(customGraph.listRelations(overrideCatalogId, ENGINE, VERSION))
+    assertThat(customGraph.listRelations(overrideCatalogId, context(ENGINE, VERSION)))
         .extracting(GraphNode::displayName)
         .contains("tables_override", "plugin_table")
         .doesNotContain("tables");
 
     assertThat(
             customGraph.resolveTable(
-                NameRefUtil.name("information_schema", "tables"), ENGINE, VERSION))
+                NameRefUtil.name("information_schema", "tables"), context(ENGINE, VERSION)))
         .isPresent();
 
     assertThat(
             customGraph.resolveTable(
-                NameRefUtil.name("information_schema", "plugin_table"), ENGINE, VERSION))
+                NameRefUtil.name("information_schema", "plugin_table"), context(ENGINE, VERSION)))
         .isPresent();
   }
 
   @Test
   void resolveTable_findsSystemTable() {
     NameRef ref = NameRefUtil.name("pg_catalog", "pg_class");
-    assertThat(systemGraph.resolveTable(ref, ENGINE, VERSION)).contains(tableId);
+    assertThat(systemGraph.resolveTable(ref, context(ENGINE, VERSION))).contains(tableId);
   }
 
   @Test
   void resolveTable_returnsEmptyForUnknown() {
     NameRef ref = NameRefUtil.name("pg_catalog", "does_not_exist");
-    assertThat(systemGraph.resolveTable(ref, ENGINE, VERSION)).isEmpty();
+    assertThat(systemGraph.resolveTable(ref, context(ENGINE, VERSION))).isEmpty();
   }
 
   @Test
   void tableName_reverseLookupWorks() {
-    assertThat(systemGraph.tableName(tableId, ENGINE, VERSION))
+    assertThat(systemGraph.tableName(tableId, context(ENGINE, VERSION)))
         .isPresent()
         .get()
         .satisfies(
@@ -221,7 +227,7 @@ class SystemGraphTest {
 
   @Test
   void tableName_withoutEngineUsesFloecatDefaultCatalog() {
-    assertThat(systemGraph.tableName(defaultTableId, "", ""))
+    assertThat(systemGraph.tableName(defaultTableId, context("", "")))
         .isPresent()
         .get()
         .satisfies(
@@ -231,7 +237,7 @@ class SystemGraphTest {
 
   @Test
   void tableName_withUppercaseEngineNormalizesCatalog() {
-    assertThat(systemGraph.tableName(tableId, "FLOEDB", VERSION))
+    assertThat(systemGraph.tableName(tableId, context("FLOEDB", VERSION)))
         .isPresent()
         .get()
         .satisfies(ref -> assertThat(ref.getCatalog()).isEqualTo("floedb"));
@@ -248,7 +254,7 @@ class SystemGraphTest {
 
   @Test
   void catalog_returnsCatalogNode() {
-    assertThat(systemGraph.catalog(systemCatalogId, ENGINE, VERSION))
+    assertThat(systemGraph.catalog(systemCatalogId, context(ENGINE, VERSION)))
         .isPresent()
         .hasValueSatisfying(node -> assertThat(node.displayName()).isEqualTo(ENGINE));
   }
@@ -334,7 +340,8 @@ class SystemGraphTest {
 
     SystemGraph graph = new SystemGraph(new StubSystemNodeRegistry(nodes), 16);
 
-    List<FunctionNode> functions = graph.listFunctions(namespaceId, engineKind, engineVersion);
+    List<FunctionNode> functions =
+        graph.listFunctions(namespaceId, context(engineKind, engineVersion));
     assertThat(functions).hasSize(1);
     assertThat(functions.get(0).displayName()).isEqualTo("short_name");
   }
@@ -410,12 +417,13 @@ class SystemGraphTest {
       super(
           new SystemDefinitionRegistry(new StubSystemCatalogProvider()),
           new StubSystemObjectScannerProvider(),
+          List.of(),
           List.of());
       this.nodes = nodes;
     }
 
     @Override
-    public BuiltinNodes nodesFor(EngineContext ctx) {
+    public BuiltinNodes nodesFor(CatalogContext ctx) {
       return nodes;
     }
   }

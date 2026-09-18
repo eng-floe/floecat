@@ -20,6 +20,7 @@ import ai.floedb.floecat.query.rpc.GetSystemObjectsRequest;
 import ai.floedb.floecat.query.rpc.GetSystemObjectsResponse;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.query.rpc.SystemObjectsService;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.context.EngineContextProvider;
@@ -99,7 +100,7 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
   }
 
   private SystemObjectsRegistry fetchSystemObjects(EngineContext ctx) {
-    BuiltinNodes nodes = nodeRegistry.nodesFor(ctx);
+    BuiltinNodes nodes = nodeRegistry.nodesFor(CatalogContext.of(null, ctx));
     return SystemCatalogProtoMapper.toProto(sanitize(nodes.toCatalogData()));
   }
 

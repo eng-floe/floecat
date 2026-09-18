@@ -46,6 +46,7 @@ import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
@@ -3017,9 +3018,9 @@ class UserObjectBundleServiceTest {
 
     @Override
     public Optional<ResourceId> resolveName(
-        String correlationId, NameRef ref, EngineContext engineContext) {
+        String correlationId, NameRef ref, CatalogContext catalogContext) {
       assertProducerThread();
-      return super.resolveName(correlationId, ref, engineContext);
+      return super.resolveName(correlationId, ref, catalogContext);
     }
 
     @Override

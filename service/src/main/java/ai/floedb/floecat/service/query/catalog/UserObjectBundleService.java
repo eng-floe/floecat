@@ -39,6 +39,7 @@ import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
@@ -455,16 +456,17 @@ public class UserObjectBundleService {
       this.defaultCatalogId = ctx.getQueryDefaultCatalogId();
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
       EngineContext requestEngine = engineContext.engineContext();
+      CatalogContext requestCatalog = CatalogContext.of(null, requestEngine);
       this.engineKind = requestEngine.normalizedKind();
       this.engineVersion = requestEngine.normalizedVersion();
       this.resolutionContext =
           MetadataResolutionContext.of(
               graphView,
               Objects.requireNonNull(ctx.getQueryDefaultCatalogId(), "query default catalog id"),
-              requestEngine,
+              requestCatalog,
               statsProvider);
       this.resolutionMemo =
-          new RelationResolutionMemo(graphView, correlationId, requestEngine, timings);
+          new RelationResolutionMemo(graphView, correlationId, requestCatalog, timings);
       this.decorationSelection = engineRelationDecorator.select(requestEngine);
       this.buildFanout = buildFanout(decorationSelection);
       this.pinCommitter =
