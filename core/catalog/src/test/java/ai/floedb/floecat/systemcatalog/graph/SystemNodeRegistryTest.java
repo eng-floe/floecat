@@ -967,7 +967,8 @@ class SystemNodeRegistryTest {
   }
 
   private static CatalogContext context(String engineKind, String engineVersion) {
-    return CatalogContext.of(null, EngineContext.of(engineKind, engineVersion));
+    EngineContext engine = EngineContext.of(engineKind, engineVersion);
+    return CatalogContext.of(EnvironmentContext.of(engineKind, engineVersion), engine);
   }
 
   private static SystemNodeRegistry registryWith(
@@ -990,10 +991,14 @@ class SystemNodeRegistryTest {
             defs, loader.internalProvider(), loader.providers(), loader.environmentProviders());
 
     EngineContext ctx = EngineContext.of("pg", "");
-    SystemEngineCatalog engineCatalog = defs.catalog(CatalogContext.of(null, ctx));
+    SystemEngineCatalog engineCatalog =
+        defs.catalog(
+            CatalogContext.of(EnvironmentContext.of(ctx.engineKind(), ctx.engineVersion()), ctx));
     assertThat(engineCatalog.tables()).isNotEmpty();
     assertThat(engineCatalog.namespaces()).isNotEmpty();
-    SystemNodeRegistry.BuiltinNodes nodes = registry.nodesFor(CatalogContext.of(null, ctx));
+    SystemNodeRegistry.BuiltinNodes nodes =
+        registry.nodesFor(
+            CatalogContext.of(EnvironmentContext.of(ctx.engineKind(), ctx.engineVersion()), ctx));
 
     assertThat(nodes.tableNames())
         .containsKey("information_schema.tables")

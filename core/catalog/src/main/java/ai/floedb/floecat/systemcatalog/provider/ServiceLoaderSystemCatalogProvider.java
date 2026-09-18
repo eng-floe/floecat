@@ -40,6 +40,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.function.Function;
@@ -150,7 +151,7 @@ public final class ServiceLoaderSystemCatalogProvider
 
   @Override
   public SystemEngineCatalog load(CatalogContext context) {
-    CatalogContext canonical = context == null ? CatalogContext.of(null, null) : context;
+    CatalogContext canonical = Objects.requireNonNull(context, "context");
     EngineContext engine = canonical.engine();
 
     // Rule: no header => floecat_internal only (which includes information_schema).

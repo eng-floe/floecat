@@ -156,6 +156,7 @@ final class SystemDefinitionRegistryTest {
   }
 
   private static CatalogContext context(EngineContext engine) {
-    return CatalogContext.of(null, engine);
+    return CatalogContext.of(
+        EnvironmentContext.of(engine.engineKind(), engine.engineVersion()), engine);
   }
 }

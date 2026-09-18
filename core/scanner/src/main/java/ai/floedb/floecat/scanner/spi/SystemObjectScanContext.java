@@ -27,6 +27,7 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -53,7 +54,7 @@ public record SystemObjectScanContext(
   public SystemObjectScanContext {
     Objects.requireNonNull(graph, "graph");
     Objects.requireNonNull(queryDefaultCatalogId, "queryDefaultCatalogId");
-    catalogContext = catalogContext == null ? CatalogContext.of(null, null) : catalogContext;
+    catalogContext = Objects.requireNonNull(catalogContext, "catalogContext");
     statsProvider = statsProvider == null ? StatsProvider.NONE : statsProvider;
     constraintProvider = constraintProvider == null ? ConstraintProvider.NONE : constraintProvider;
     memoizedValues = memoizedValues == null ? new ConcurrentHashMap<>() : memoizedValues;
@@ -116,7 +117,9 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        CatalogContext.of(null, engineContext),
+        CatalogContext.of(
+            EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
+            engineContext),
         StatsProvider.NONE,
         ConstraintProvider.NONE,
         new ConcurrentHashMap<>());
@@ -132,7 +135,9 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        CatalogContext.of(null, engineContext),
+        CatalogContext.of(
+            EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
+            engineContext),
         statsProvider,
         ConstraintProvider.NONE,
         new ConcurrentHashMap<>());
@@ -149,7 +154,9 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        CatalogContext.of(null, engineContext),
+        CatalogContext.of(
+            EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
+            engineContext),
         statsProvider,
         constraintProvider,
         new ConcurrentHashMap<>());
