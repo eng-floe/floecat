@@ -28,6 +28,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdentityPathElementKind;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.schema.identity.ColumnPath;
+import ai.floedb.floecat.schema.identity.HistoryCoverage;
 import ai.floedb.floecat.schema.identity.IdentityMode;
 import ai.floedb.floecat.schema.identity.ResolvedSchema;
 import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
@@ -571,7 +572,8 @@ class DeltaSchemaMapperTest {
                             Optional.empty()))),
                 0L,
                 IdentityMode.STRUCTURED_PATH,
-                Optional.empty())
+                Optional.empty(),
+                HistoryCoverage.COMPLETE_METADATA_HISTORY)
             .state();
     ColumnIdentityMap identityMap =
         ColumnIdentityMap.newBuilder()
@@ -580,6 +582,7 @@ class DeltaSchemaMapperTest {
             .setHighWaterMark(state.highWaterMark())
             .setMode(ColumnIdentityMode.COLUMN_IDENTITY_MODE_STRUCTURED_PATH)
             .setFingerprint(state.fingerprint())
+            .setStateChecksum(state.stateChecksum())
             .addEntries(
                 ColumnIdentityEntry.newBuilder()
                     .setColumnId(1L)

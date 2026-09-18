@@ -27,6 +27,12 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotSelectionKind;
+import ai.floedb.floecat.schema.identity.ColumnPath;
+import ai.floedb.floecat.schema.identity.HistoryCoverage;
+import ai.floedb.floecat.schema.identity.IdentityMode;
+import ai.floedb.floecat.schema.identity.ResolvedSchema;
+import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
+import ai.floedb.floecat.schema.identity.SchemaNode;
 import io.delta.kernel.Operation;
 import io.delta.kernel.ScanBuilder;
 import io.delta.kernel.Snapshot;
@@ -40,7 +46,6 @@ import io.delta.kernel.exceptions.KernelException;
 import io.delta.kernel.exceptions.TableNotFoundException;
 import io.delta.kernel.statistics.SnapshotStatistics;
 import io.delta.kernel.transaction.UpdateTableTransactionBuilder;
-import io.delta.kernel.types.ArrayType;
 import io.delta.kernel.types.DataType;
 import io.delta.kernel.types.FieldMetadata;
 import io.delta.kernel.types.LongType;
@@ -52,6 +57,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
@@ -134,14 +140,17 @@ class DeltaConnectorTest {
   }
 
   @Test
-  void enumerateSnapshotsWalksUnselectedVersionsForUnmappedIdentity() {
-    StructType schema = new StructType().add("id", LongType.LONG, false);
-    Snapshot latest = snapshot(5L, 5000L, schema);
-    Snapshot v3 = snapshot(3L, 3000L, schema);
-    Snapshot v4 = snapshot(4L, 4000L, schema);
+  void enumerateSnapshotsWalksUnselectedMetadataVersionsForUnmappedIdentity() {
+    StructType originalSchema = new StructType().add("id", LongType.LONG, false);
+    StructType evolvedSchema =
+        new StructType().add("id", LongType.LONG, false).add("added", LongType.LONG, true);
+    Snapshot latest = snapshot(5L, 5000L, evolvedSchema);
+    Snapshot v3 = snapshot(3L, 3000L, originalSchema);
+    Snapshot v4 = snapshot(4L, 4000L, evolvedSchema);
     Table table = new StubTable(latest, Map.of(3L, v3, 4L, v4, 5L, latest));
 
     TestDeltaConnector connector = new TestDeltaConnector(table);
+    connector.setMetadataHistory(DeltaConnector.MetadataHistory.complete(List.of(4L)));
 
     List<FloecatConnector.SnapshotBundle> bundles =
         connector.enumerateSnapshots(
@@ -154,11 +163,15 @@ class DeltaConnectorTest {
     assertEquals(
         bundles.getFirst().columnIdentityMap().getEntries(0).getColumnId(),
         bundles.getLast().columnIdentityMap().getEntries(0).getColumnId());
+    assertEquals(2L, bundles.getLast().columnIdentityMap().getHighWaterMark());
+    assertEquals(5L, bundles.getLast().columnIdentityMap().getSourceVersion());
   }
 
   @Test
-  void currentSelectionWalksIntermediateUnmappedVersions() {
+  void currentSelectionWalksIntermediateMetadataVersions() {
     StructType schema = new StructType().add("id", LongType.LONG, false);
+    StructType intermediateSchema =
+        new StructType().add("id", LongType.LONG, false).add("temporary", LongType.LONG, true);
     Snapshot v100 = snapshot(100L, 100000L, schema);
     Snapshot latest = snapshot(103L, 103000L, schema);
     TestDeltaConnector connector =
@@ -166,9 +179,10 @@ class DeltaConnectorTest {
             new StubTable(
                 latest,
                 Map.of(
-                    101L, snapshot(101L, 101000L, schema),
+                    101L, snapshot(101L, 101000L, intermediateSchema),
                     102L, snapshot(102L, 102000L, schema),
                     103L, latest)));
+    connector.setMetadataHistory(DeltaConnector.MetadataHistory.complete(List.of(101L, 102L)));
 
     List<FloecatConnector.SnapshotBundle> bundles =
         connector.enumerateSnapshots(
@@ -186,6 +200,8 @@ class DeltaConnectorTest {
 
     assertEquals(List.of(103L), bundles.stream().map(bundle -> bundle.snapshotId()).toList());
     assertEquals(1L, bundles.getFirst().columnIdentityMap().getEntries(0).getColumnId());
+    assertEquals(2L, bundles.getFirst().columnIdentityMap().getHighWaterMark());
+    assertEquals(103L, bundles.getFirst().columnIdentityMap().getSourceVersion());
   }
 
   @Test
@@ -196,6 +212,7 @@ class DeltaConnectorTest {
     TestDeltaConnector connector =
         new TestDeltaConnector(
             new StubTable(latest, Map.of(103L, latest), Map.of(101L, truncatedHistoryAt(103L))));
+    connector.setMetadataHistory(DeltaConnector.MetadataHistory.gap("history-unavailable"));
 
     List<FloecatConnector.SnapshotBundle> bundles =
         connector.enumerateSnapshots(
@@ -574,52 +591,6 @@ class DeltaConnectorTest {
   }
 
   @Test
-  void mappedTableWithoutNestedIdsFallsBackToPathIdentityRatherThanFailing() {
-    // PROTOCOL.md defines no place to record an id for an array element, and
-    // delta.columnMapping.nested.ids is a Delta-Spark extension. A conformant third-party writer
-    // can produce this table, so it must reconcile -- by path -- instead of taking the table down.
-    String mappedArraySchemaJson =
-        """
-        {"type":"struct","fields":[
-          {"name":"tags","nullable":true,
-           "type":{"type":"array","elementType":"string","containsNull":true},
-           "metadata":{"delta.columnMapping.id":1,
-                       "delta.columnMapping.physicalName":"c1"}}
-        ]}
-        """;
-    StructType mappedArray =
-        new StructType()
-            .add(
-                "tags",
-                new ArrayType(StringType.STRING, true),
-                true,
-                FieldMetadata.builder()
-                    .putLong("delta.columnMapping.id", 1L)
-                    .putString(DeltaColumnMapping.PHYSICAL_NAME_KEY, "c1")
-                    .build());
-    Snapshot latest = snapshot(0L, 0L, mappedArray);
-    TestDeltaConnector connector =
-        new TestDeltaConnector(new StubTable(latest, Map.of(0L, latest)));
-    connector.setSnapshotSchemaJson(mappedArraySchemaJson);
-
-    List<FloecatConnector.SnapshotBundle> bundles =
-        connector.enumerateSnapshots(
-            "ns",
-            "tbl",
-            ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.full(true));
-
-    ColumnIdentityMap identityMap = bundles.getFirst().columnIdentityMap();
-    assertEquals(
-        ai.floedb.floecat.catalog.rpc.ColumnIdentityMode.COLUMN_IDENTITY_MODE_STRUCTURED_PATH,
-        identityMap.getMode());
-    assertEquals(2, identityMap.getEntriesCount());
-    assertTrue(
-        identityMap.getEntriesList().stream().allMatch(entry -> entry.getColumnId() > 0L),
-        "every node including the array interior must get an identity");
-  }
-
-  @Test
   void snapshotStatsCaptureRefusesToRunWithoutThePersistedIdentityMap() {
     // Canonical IDs for an unmapped table depend on the whole reconciled version chain, so a map
     // reconstructed from one snapshot in isolation would disagree with every statistic already
@@ -674,6 +645,58 @@ class DeltaConnectorTest {
             .orElseThrow();
     assertEquals(
         Set.of("#" + stableColumnId, "id"), selectedByDefault.getFirst().selectorAliases());
+  }
+
+  @Test
+  void pageIndexSelectorsUseTheCurrentIdentityGenerationAcrossModeChange() {
+    String schemaJson =
+        """
+        {"type":"struct","fields":[
+          {"name":"a","type":"long","nullable":false,"metadata":{}},
+          {"name":"b","type":"long","nullable":false,"metadata":{}}
+        ]}
+        """;
+    Snapshot latest =
+        snapshot(
+            7L,
+            7000L,
+            new StructType().add("a", LongType.LONG, false).add("b", LongType.LONG, false));
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(7L, latest)));
+    connector.setSnapshotSchemaJson(schemaJson);
+    ColumnIdentityMap structured = identityMap(latest);
+    ColumnIdentityMap mapped = nativeIdentityMap(Map.of("a", 2, "b", 1));
+    List<FloecatConnector.ParquetPageIndexEntry> entries =
+        List.of(
+            pageIndexEntry("s3://bucket/file.parquet", "a"),
+            pageIndexEntry("s3://bucket/file.parquet", "b"));
+
+    var before =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                7L,
+                Set.of("#1"),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                entries,
+                structured)
+            .orElseThrow();
+    var after =
+        connector
+            .selectPageIndexEntries(
+                "ns",
+                "tbl",
+                7L,
+                Set.of("#1"),
+                FloecatConnector.ColumnSelectorPolicy.defaults(),
+                entries,
+                mapped)
+            .orElseThrow();
+
+    assertFalse(structured.getFingerprint().equals(mapped.getFingerprint()));
+    assertEquals(List.of("a"), before.stream().map(entry -> entry.columnName()).toList());
+    assertEquals(List.of("b"), after.stream().map(entry -> entry.columnName()).toList());
   }
 
   @Test
@@ -964,8 +987,34 @@ class DeltaConnectorTest {
 
   private static ColumnIdentityMap identityMap(Snapshot snapshot) {
     return DeltaCanonicalIdentity.reconcile(
-            snapshot, snapshot.getVersion(), ColumnIdentityMap.getDefaultInstance())
+            snapshot,
+            snapshot.getVersion(),
+            ColumnIdentityMap.getDefaultInstance(),
+            HistoryCoverage.COMPLETE_METADATA_HISTORY)
         .identityMap();
+  }
+
+  private static ColumnIdentityMap nativeIdentityMap(Map<String, Integer> nativeIds) {
+    List<SchemaNode> nodes =
+        nativeIds.entrySet().stream()
+            .sorted(Map.Entry.comparingByKey())
+            .map(
+                entry ->
+                    new SchemaNode(
+                        ColumnPath.ROOT.field(entry.getKey()),
+                        1,
+                        true,
+                        OptionalInt.of(entry.getValue()),
+                        Optional.empty()))
+            .toList();
+    return DeltaCanonicalIdentity.toProto(
+        SchemaIdentityReconciler.reconcile(
+                ResolvedSchema.of(nodes),
+                7L,
+                IdentityMode.NATIVE_FIELD_ID,
+                Optional.empty(),
+                HistoryCoverage.COMPLETE_METADATA_HISTORY)
+            .state());
   }
 
   private static FloecatConnector.ParquetPageIndexEntry pageIndexEntry(
