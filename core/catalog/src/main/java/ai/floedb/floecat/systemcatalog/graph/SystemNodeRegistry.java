@@ -52,6 +52,7 @@ import ai.floedb.floecat.systemcatalog.engine.EngineHintsMapper;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificMatcher;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
+import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
@@ -78,8 +79,8 @@ import org.jboss.logging.Logger;
  * SystemDefinitionRegistry}, filters it by engine kind and version, applies engine-specific rules,
  * and builds immutable {@link GraphNode} instances with stable {@code _system} {@link ResourceId}s.
  *
- * <p>Results are cached per {@code (engineKind, engineVersion)} pair to avoid repeated filtering
- * and node construction.
+ * <p>Results are cached per selected catalog context to avoid repeated filtering and node
+ * construction.
  *
  * <p>This registry is the authoritative source of system-level graph nodes (functions, types,
  * operators, casts, namespaces, tables, views) used by the catalog overlay.
@@ -423,7 +424,7 @@ public class SystemNodeRegistry {
     String engineKind = baseCatalog.engineKind();
     String normalizedKind = canonical.engine().normalizedKind();
     String normalizedVersion = canonical.engine().normalizedVersion();
-    boolean includeProviders =
+    boolean includeEngineProviders =
         canonical.engine().enginePluginOverlaysEnabled()
             && !EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(engineKind);
 
@@ -447,16 +448,23 @@ public class SystemNodeRegistry {
       viewByName.put(NameRefUtil.canonical(view.name()), view);
     }
 
-    if (includeProviders) {
+    if (includeEngineProviders || canonical.environment().hasEnvironmentKind()) {
       for (SystemObjectScannerProvider provider : extensionProviders) {
-        if (!provider.supportsEngine(normalizedKind)) {
-          continue;
-        }
-        for (SystemObjectDef def : provider.definitions(normalizedKind, normalizedVersion)) {
-          if (!provider.supports(def.name(), normalizedKind, normalizedVersion)) {
+        if (provider instanceof CatalogEnvironmentProvider environmentProvider) {
+          if (!environmentProvider.supportsEnvironment(canonical.environment())) {
             continue;
           }
-          mergeDefinition(def, namespaceByName, tableByName, viewByName);
+          for (SystemObjectDef def : environmentProvider.definitions(canonical)) {
+            if (environmentProvider.supports(def.name(), canonical)) {
+              mergeDefinition(def, namespaceByName, tableByName, viewByName);
+            }
+          }
+        } else if (includeEngineProviders && provider.supportsEngine(normalizedKind)) {
+          for (SystemObjectDef def : provider.definitions(normalizedKind, normalizedVersion)) {
+            if (provider.supports(def.name(), normalizedKind, normalizedVersion)) {
+              mergeDefinition(def, namespaceByName, tableByName, viewByName);
+            }
+          }
         }
       }
     }

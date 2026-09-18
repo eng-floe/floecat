@@ -36,6 +36,11 @@ public final class SystemDefinitionRegistry {
     this.provider = Objects.requireNonNull(provider);
   }
 
+  /**
+   * Returns the immutable catalog for the selected environment and engine.
+   *
+   * <p>The returned instance is cached for the normalized context until {@link #clear()} is called.
+   */
   public SystemEngineCatalog catalog(CatalogContext context) {
     CatalogContext canonical = context == null ? CatalogContext.of(null, null) : context;
     CatalogKey requestedKey = CatalogKey.from(canonical);

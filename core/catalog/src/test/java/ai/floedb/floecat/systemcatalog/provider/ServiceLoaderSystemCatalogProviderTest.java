@@ -100,6 +100,14 @@ class ServiceLoaderSystemCatalogProviderTest {
   }
 
   @Test
+  void environmentProviders_areDiscoveredSeparatelyFromEngineProviders() {
+    ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
+
+    assertThat(provider.environmentProviders())
+        .anyMatch(environment -> environment.environmentKind().equals("test-env"));
+  }
+
+  @Test
   void load_returnsIndependentSnapshots() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
