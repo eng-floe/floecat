@@ -224,7 +224,7 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
-  void registersDeltaInventoryWithLegacyIdentityUntilConnectorReconciliation() {
+  void preservesConnectorPromotedDeltaIdentityOnLaterOverlayReconciliation() {
     NamespacePath sales = NamespacePath.of("sales");
     client.children.put(NamespacePath.root(), List.of(sales));
     client.children.put(sales, List.of());
@@ -254,6 +254,23 @@ class CatalogOverlayReconcilerTest {
     assertEquals(
         ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_PATH_ORDINAL,
         table.getUpstream().getColumnIdAlgorithm());
+
+    MutationMeta tableMeta = tables.metaFor(table.getResourceId());
+    Table promoted =
+        table.toBuilder()
+            .setUpstream(
+                table.getUpstream().toBuilder()
+                    .setColumnIdAlgorithm(
+                        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP))
+            .build();
+    assertTrue(tables.update(promoted, tableMeta.getPointerVersion()));
+
+    var result = reconcile();
+    Table afterOverlay = tables.getById(table.getResourceId()).orElseThrow();
+    assertEquals(0, result.tablesUpdated());
+    assertEquals(
+        ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm.CID_CANONICAL_MAP,
+        afterOverlay.getUpstream().getColumnIdAlgorithm());
   }
 
   @Test

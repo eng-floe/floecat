@@ -769,7 +769,10 @@ public class CatalogOverlayReconciler {
             .setTableDisplayName(source.name().name())
             .setFormat(tableFormat(source.format()))
             .addAllPartitionKeys(source.partitionKeys())
-            .setColumnIdAlgorithm(columnIdAlgorithm(source.format()))
+            .setColumnIdAlgorithm(
+                current == null
+                    ? columnIdAlgorithm(source.format())
+                    : current.getUpstream().getColumnIdAlgorithm())
             .build();
     return Table.newBuilder()
         .setResourceId(id)
