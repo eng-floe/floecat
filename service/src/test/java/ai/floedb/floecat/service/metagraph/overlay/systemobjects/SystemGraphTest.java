@@ -28,6 +28,7 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.testsupport.FakeSystemNodeRegistry;
@@ -422,7 +423,7 @@ class SystemGraphTest {
   private static final class StubSystemCatalogProvider implements SystemCatalogProvider {
 
     @Override
-    public SystemEngineCatalog load(EngineContext ctx) {
+    public SystemEngineCatalog load(CatalogContext context) {
       return SystemEngineCatalog.from(
           EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, SystemCatalogData.empty());
     }

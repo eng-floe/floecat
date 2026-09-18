@@ -17,6 +17,7 @@
 package ai.floedb.floecat.systemcatalog.provider;
 
 import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
@@ -145,12 +146,13 @@ public final class ServiceLoaderSystemCatalogProvider
   }
 
   @Override
-  public SystemEngineCatalog load(EngineContext ctx) {
-    EngineContext canonical = ctx == null ? EngineContext.empty() : ctx;
+  public SystemEngineCatalog load(CatalogContext context) {
+    CatalogContext canonical = context == null ? CatalogContext.of(null, null) : context;
+    EngineContext engine = canonical.engine();
 
     // Rule: no header => floecat_internal only (which includes information_schema).
-    String effectiveKind = canonical.effectiveEngineKind();
-    boolean overlaysRequested = canonical.enginePluginOverlaysEnabled();
+    String effectiveKind = engine.effectiveEngineKind();
+    boolean overlaysRequested = engine.enginePluginOverlaysEnabled();
 
     EngineCatalogProvider provider = providersByEngine.get(effectiveKind);
     SystemCatalogData catalog;
@@ -162,7 +164,7 @@ public final class ServiceLoaderSystemCatalogProvider
             "No engine catalog provider found for engine_kind="
                 + effectiveKind
                 + " (ctx="
-                + canonical.engineKind()
+                + engine.engineKind()
                 + "), defaulting to floecat_internal-only content scoped as "
                 + effectiveKind);
       }
@@ -172,7 +174,7 @@ public final class ServiceLoaderSystemCatalogProvider
           "Loading engine catalog provider for engine_kind="
               + effectiveKind
               + " (ctx="
-              + canonical.engineKind()
+              + engine.engineKind()
               + ")");
       catalog = provider.loadSystemCatalog();
 
@@ -194,7 +196,7 @@ public final class ServiceLoaderSystemCatalogProvider
     catalog = mergeWithInternalCatalog(catalog);
 
     String resolvedEngineKind =
-        canonical.hasEngineHeaders() ? effectiveKind : EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
+        engine.hasEngineHeaders() ? effectiveKind : EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
 
     return SystemEngineCatalog.from(resolvedEngineKind, catalog);
   }

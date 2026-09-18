@@ -34,6 +34,7 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
@@ -93,8 +94,8 @@ public class SystemNodeRegistry {
 
   /*
    * Immutable cache of materialized system nodes.
-   * Entries are never evicted or mutated; a fresh registry instance
-   * should be created for test isolation or controlled reloads.
+   * Entries are never evicted or mutated; a fresh registry instance should be created for test
+   * isolation or controlled reloads.
    */
   private final ConcurrentMap<VersionKey, BuiltinNodes> cache = new ConcurrentHashMap<>();
 
@@ -141,19 +142,25 @@ public class SystemNodeRegistry {
 
   public BuiltinNodes nodesFor(EngineContext ctx) {
     EngineContext canonical = ctx == null ? EngineContext.empty() : ctx;
-    VersionKey key = new VersionKey(canonical.normalizedKind(), canonical.normalizedVersion());
+    return nodesFor(CatalogContext.of(null, canonical));
+  }
+
+  /** Resolves system nodes for the selected environment and engine. */
+  public BuiltinNodes nodesFor(CatalogContext context) {
+    CatalogContext canonical = context == null ? CatalogContext.of(null, null) : context;
+    VersionKey key = VersionKey.from(canonical);
     return cache.computeIfAbsent(key, ignored -> buildNodes(canonical));
   }
 
-  private BuiltinNodes buildNodes(EngineContext canonical) {
+  private BuiltinNodes buildNodes(CatalogContext canonical) {
     SystemEngineCatalog baseCatalog = definitionRegistry.catalog(canonical);
     SystemCatalogData mergedCatalogData = mergeCatalogData(canonical, baseCatalog);
     SystemEngineCatalog catalog =
         SystemEngineCatalog.from(baseCatalog.engineKind(), mergedCatalogData);
     long version = versionFromFingerprint(catalog.fingerprint());
-    String normalizedKind = canonical.normalizedKind();
-    String effectiveKind = canonical.effectiveEngineKind();
-    String normalizedVersion = canonical.normalizedVersion();
+    String normalizedKind = canonical.engine().normalizedKind();
+    String effectiveKind = canonical.engine().effectiveEngineKind();
+    String normalizedVersion = canonical.engine().normalizedVersion();
     ResourceId catalogId = systemCatalogContainerId(normalizedKind);
 
     // --- Namespaces ---
@@ -412,12 +419,12 @@ public class SystemNodeRegistry {
   }
 
   private SystemCatalogData mergeCatalogData(
-      EngineContext canonical, SystemEngineCatalog baseCatalog) {
+      CatalogContext canonical, SystemEngineCatalog baseCatalog) {
     String engineKind = baseCatalog.engineKind();
-    String normalizedKind = canonical.normalizedKind();
-    String normalizedVersion = canonical.normalizedVersion();
+    String normalizedKind = canonical.engine().normalizedKind();
+    String normalizedVersion = canonical.engine().normalizedVersion();
     boolean includeProviders =
-        canonical.enginePluginOverlaysEnabled()
+        canonical.engine().enginePluginOverlaysEnabled()
             && !EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(engineKind);
 
     Map<String, SystemNamespaceDef> namespaceByName = new LinkedHashMap<>();
@@ -1026,5 +1033,15 @@ public class SystemNodeRegistry {
     }
   }
 
-  private record VersionKey(String engineKind, String engineVersion) {}
+  private record VersionKey(
+      String environmentKind, String environmentVersion, String engineKind, String engineVersion) {
+
+    private static VersionKey from(CatalogContext context) {
+      return new VersionKey(
+          context.environment().normalizedKind(),
+          context.environment().normalizedVersion(),
+          context.engine().normalizedKind(),
+          context.engine().normalizedVersion());
+    }
+  }
 }
