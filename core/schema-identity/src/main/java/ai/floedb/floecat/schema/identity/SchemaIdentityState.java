@@ -31,6 +31,7 @@ public final class SchemaIdentityState {
   private final IdentityMode mode;
   private final List<SchemaIdentityEntry> entries;
   private final String fingerprint;
+  private final String stateChecksum;
   private final Map<ColumnPath, SchemaIdentityEntry> byPath;
 
   SchemaIdentityState(
@@ -38,18 +39,21 @@ public final class SchemaIdentityState {
       long highWaterMark,
       IdentityMode mode,
       List<SchemaIdentityEntry> entries,
-      String fingerprint) {
+      String fingerprint,
+      String stateChecksum) {
     if (sourceVersion < 0) {
       throw new IllegalArgumentException("Source version must be non-negative");
     }
-    if (highWaterMark < 0) {
-      throw new IllegalArgumentException("High-water mark must be non-negative");
+    if (highWaterMark < 0 || highWaterMark > CanonicalColumnId.MAX_ALLOCATED_ID) {
+      throw new IllegalArgumentException(
+          "High-water mark must be in the allocated canonical ID space");
     }
     this.sourceVersion = sourceVersion;
     this.highWaterMark = highWaterMark;
     this.mode = Objects.requireNonNull(mode, "mode");
     this.entries = List.copyOf(Objects.requireNonNull(entries, "entries"));
     this.fingerprint = Objects.requireNonNull(fingerprint, "fingerprint");
+    this.stateChecksum = Objects.requireNonNull(stateChecksum, "stateChecksum");
     this.byPath = new LinkedHashMap<>();
     Set<Long> canonicalIds = new HashSet<>();
     for (SchemaIdentityEntry entry : this.entries) {
@@ -57,7 +61,13 @@ public final class SchemaIdentityState {
       if (duplicate != null) {
         throw new IllegalArgumentException("Duplicate identity path " + entry.path().display());
       }
-      if (entry.canonicalId() > highWaterMark) {
+      if (CanonicalColumnId.isDerived(entry.canonicalId())
+          && !CanonicalColumnId.isWellFormedDerived(entry.canonicalId())) {
+        throw new IllegalArgumentException(
+            "Malformed derived canonical column ID " + entry.canonicalId());
+      }
+      if (!CanonicalColumnId.isDerived(entry.canonicalId())
+          && entry.canonicalId() > highWaterMark) {
         throw new IllegalArgumentException("Identity exceeds the high-water mark");
       }
       if (!canonicalIds.add(entry.canonicalId())) {
@@ -71,12 +81,19 @@ public final class SchemaIdentityState {
       long highWaterMark,
       IdentityMode mode,
       List<SchemaIdentityEntry> entries,
-      String fingerprint) {
+      String fingerprint,
+      String stateChecksum) {
     SchemaIdentityState state =
-        new SchemaIdentityState(sourceVersion, highWaterMark, mode, entries, fingerprint);
-    String expected = SchemaIdentityReconciler.fingerprint(mode, highWaterMark, entries);
-    if (!expected.equals(fingerprint)) {
+        new SchemaIdentityState(
+            sourceVersion, highWaterMark, mode, entries, fingerprint, stateChecksum);
+    String expectedFingerprint = SchemaIdentityReconciler.fingerprint(mode, entries);
+    if (!expectedFingerprint.equals(fingerprint)) {
       throw new IllegalArgumentException("Column identity fingerprint does not match its mapping");
+    }
+    String expectedChecksum =
+        SchemaIdentityReconciler.stateChecksum(fingerprint, highWaterMark, sourceVersion);
+    if (!expectedChecksum.equals(stateChecksum)) {
+      throw new IllegalArgumentException("Column identity state checksum does not match its state");
     }
     return state;
   }
@@ -85,6 +102,7 @@ public final class SchemaIdentityState {
     return sourceVersion;
   }
 
+  /** Highest ID in the native or allocated space; deterministic derived IDs are excluded. */
   public long highWaterMark() {
     return highWaterMark;
   }
@@ -99,6 +117,10 @@ public final class SchemaIdentityState {
 
   public String fingerprint() {
     return fingerprint;
+  }
+
+  public String stateChecksum() {
+    return stateChecksum;
   }
 
   public Optional<SchemaIdentityEntry> byPath(ColumnPath path) {

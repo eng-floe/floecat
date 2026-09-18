@@ -110,16 +110,100 @@ class SchemaIdentityReconcilerTest {
   }
 
   @Test
-  void unmappedGapIsRejectedBecauseDropReaddCannotBeDistinguished() {
-    var first = reconcile(3, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("x", 1));
+  void mappedCollectionInteriorsUseStableDerivedIdsWithoutAHighWaterAllocation() {
+    ColumnPath items = ColumnPath.ROOT.field("items");
+    ColumnPath element = items.arrayElement();
+    var withoutNestedId =
+        reconcile(
+            3,
+            IdentityMode.NATIVE_FIELD_ID,
+            Optional.empty(),
+            nativeNode(items, 1, 17),
+            node(element, 1));
+    var withNestedId =
+        reconcile(
+            9,
+            IdentityMode.NATIVE_FIELD_ID,
+            Optional.of(withoutNestedId.state()),
+            nativeNode(items, 1, 17),
+            nativeNode(element, 1, 99));
+
+    long expected = (1L << 62) | (17L << 24) | 1L;
+    assertThat(withoutNestedId.nodes())
+        .extracting(CanonicalSchemaNode::canonicalId)
+        .containsExactly(17L, expected);
+    assertThat(withoutNestedId.state().highWaterMark()).isEqualTo(17L);
+    assertThat(withNestedId.nodes().get(1).canonicalId()).isEqualTo(expected);
+    assertThat(withNestedId.state().entries().get(1).nativeFieldId()).hasValue(99);
+    assertThat(withNestedId.state().fingerprint()).isEqualTo(withoutNestedId.state().fingerprint());
+  }
+
+  @Test
+  void nestedCollectionSuffixesAreDistinctAndUseTheNearestFieldId() {
+    ColumnPath items = ColumnPath.ROOT.field("items");
+    ColumnPath element = items.arrayElement();
+    ColumnPath key = element.mapKey();
+    ColumnPath value = element.mapValue();
+    var result =
+        reconcile(
+            0,
+            IdentityMode.NATIVE_FIELD_ID,
+            Optional.empty(),
+            nativeNode(items, 1, 23),
+            node(element, 1),
+            node(key, 1),
+            node(value, 2));
+
+    long prefix = (1L << 62) | (23L << 24);
+    assertThat(result.nodes())
+        .extracting(CanonicalSchemaNode::canonicalId)
+        .containsExactly(23L, prefix | 1L, prefix | 6L, prefix | 7L);
+  }
+
+  @Test
+  void derivedCollectionIdentityRejectsMoreThanTwelveLevels() {
+    ColumnPath root = ColumnPath.ROOT.field("items");
+    ColumnPath tooDeep = root;
+    for (int i = 0; i < 13; i++) {
+      tooDeep = tooDeep.arrayElement();
+    }
+    SchemaNode deepNode = node(tooDeep, 1);
 
     assertThatThrownBy(
             () ->
                 reconcile(
-                    5, IdentityMode.STRUCTURED_PATH, Optional.of(first.state()), field("x", 1)))
+                    0,
+                    IdentityMode.NATIVE_FIELD_ID,
+                    Optional.empty(),
+                    nativeNode(root, 1, 1),
+                    deepNode))
         .isInstanceOf(IllegalArgumentException.class)
-        .hasMessageContaining("cannot skip source versions")
-        .hasMessageContaining("expected 4");
+        .hasMessageContaining("maximum derived depth of 12");
+  }
+
+  @Test
+  void completeMetadataHistoryAllowsSparseSourceVersions() {
+    var first = reconcile(3, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("x", 1));
+    var later =
+        reconcile(50, IdentityMode.STRUCTURED_PATH, Optional.of(first.state()), field("x", 1));
+
+    assertThat(later.nodes().getFirst().canonicalId()).isEqualTo(1L);
+  }
+
+  @Test
+  void historyGapForcesAResetAboveTheRetainedHighWaterMark() {
+    var first = reconcile(3, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("x", 1));
+
+    var reset =
+        SchemaIdentityReconciler.reconcile(
+            ResolvedSchema.of(List.of(field("x", 1))),
+            50,
+            IdentityMode.STRUCTURED_PATH,
+            Optional.of(first.state()),
+            HistoryCoverage.GAP);
+
+    assertThat(reset.nodes().getFirst().canonicalId()).isEqualTo(2L);
+    assertThat(reset.state().highWaterMark()).isEqualTo(2L);
   }
 
   @Test
@@ -149,7 +233,39 @@ class SchemaIdentityReconcilerTest {
   }
 
   @Test
-  void fingerprintIsDeterministicAndBindsHighWaterMark() {
+  void historyGapCannotBypassModeChangeGuard() {
+    var first = reconcile(3, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("x", 1));
+
+    assertThatThrownBy(
+            () ->
+                SchemaIdentityReconciler.reconcile(
+                    ResolvedSchema.of(List.of(nativeField("x", 1, 1))),
+                    4,
+                    IdentityMode.NATIVE_FIELD_ID,
+                    Optional.of(first.state()),
+                    HistoryCoverage.GAP))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("clean identity reset");
+  }
+
+  @Test
+  void historyGapCannotMoveSourceVersionBackwards() {
+    var first = reconcile(50, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("x", 1));
+
+    assertThatThrownBy(
+            () ->
+                SchemaIdentityReconciler.reconcile(
+                    ResolvedSchema.of(List.of(field("x", 1))),
+                    7,
+                    IdentityMode.STRUCTURED_PATH,
+                    Optional.of(first.state()),
+                    HistoryCoverage.GAP))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Source version 7 does not follow 50");
+  }
+
+  @Test
+  void fingerprintIsDeterministicAndBindsTheIdentityMapping() {
     var first =
         reconcile(1, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1), field("b", 2));
     var unchanged =
@@ -167,6 +283,95 @@ class SchemaIdentityReconcilerTest {
   }
 
   @Test
+  void nativeFingerprintIsIndependentOfReconciliationHistory() {
+    var prior =
+        reconcile(
+            1,
+            IdentityMode.NATIVE_FIELD_ID,
+            Optional.empty(),
+            nativeField("a", 1, 1),
+            nativeField("b", 2, 2),
+            nativeField("retired", 3, 99));
+    var warm =
+        reconcile(
+            2,
+            IdentityMode.NATIVE_FIELD_ID,
+            Optional.of(prior.state()),
+            nativeField("a", 1, 1),
+            nativeField("b", 2, 2));
+    var cold =
+        reconcile(
+            2,
+            IdentityMode.NATIVE_FIELD_ID,
+            Optional.empty(),
+            nativeField("a", 1, 1),
+            nativeField("b", 2, 2));
+
+    assertThat(warm.nodes()).isEqualTo(cold.nodes());
+    assertThat(warm.state().highWaterMark()).isEqualTo(99L);
+    assertThat(cold.state().highWaterMark()).isEqualTo(2L);
+    assertThat(warm.state().fingerprint()).isEqualTo(cold.state().fingerprint());
+    assertThat(warm.state().stateChecksum()).isNotEqualTo(cold.state().stateChecksum());
+  }
+
+  @Test
+  void fingerprintIgnoresNonIdentityNativeProvenance() {
+    var first =
+        reconcile(1, IdentityMode.STRUCTURED_PATH, Optional.empty(), nativeField("a", 1, 7));
+    var changedProvenance =
+        reconcile(
+            2, IdentityMode.STRUCTURED_PATH, Optional.of(first.state()), nativeField("a", 1, 11));
+
+    assertThat(changedProvenance.state().entries().getFirst().nativeFieldId()).hasValue(11);
+    assertThat(changedProvenance.state().fingerprint()).isEqualTo(first.state().fingerprint());
+  }
+
+  @Test
+  void stampingADataOnlyVersionPreservesIdentityAndFingerprint() {
+    var first = reconcile(4, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1));
+
+    SchemaIdentityState stamped =
+        SchemaIdentityReconciler.stampSourceVersion(
+            first.state(), 1_000_000L, HistoryCoverage.COMPLETE_METADATA_HISTORY);
+
+    assertThat(stamped.sourceVersion()).isEqualTo(1_000_000L);
+    assertThat(stamped.entries()).isEqualTo(first.state().entries());
+    assertThat(stamped.highWaterMark()).isEqualTo(first.state().highWaterMark());
+    assertThat(stamped.fingerprint()).isEqualTo(first.state().fingerprint());
+    assertThat(stamped.stateChecksum()).isNotEqualTo(first.state().stateChecksum());
+  }
+
+  @Test
+  void stampingCannotMoveSourceVersionBackwards() {
+    var first = reconcile(4, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1));
+
+    assertThatThrownBy(
+            () ->
+                SchemaIdentityReconciler.stampSourceVersion(
+                    first.state(), 3L, HistoryCoverage.COMPLETE_METADATA_HISTORY))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Cannot stamp source version 3 before 4");
+  }
+
+  @Test
+  void stampingRejectsAHistoryGap() {
+    var first = reconcile(4, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1));
+
+    assertThatThrownBy(
+            () ->
+                SchemaIdentityReconciler.stampSourceVersion(first.state(), 5L, HistoryCoverage.GAP))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Cannot stamp across a metadata history gap");
+  }
+
+  @Test
+  void structuredPathEncodingUsesStableNodeKindCodes() {
+    ColumnPath path = ColumnPath.ROOT.field("a").arrayElement().mapKey().mapValue();
+
+    assertThat(SchemaIdentityReconciler.structuredPath(path)).isEqualTo("1:1:a;2:0:;3:0:;4:0:;");
+  }
+
+  @Test
   void restoreRejectsDuplicateCanonicalIds() {
     List<SchemaIdentityEntry> entries =
         List.of(
@@ -176,7 +381,7 @@ class SchemaIdentityReconcilerTest {
     assertThatThrownBy(
             () ->
                 SchemaIdentityState.restore(
-                    1L, 1L, IdentityMode.STRUCTURED_PATH, entries, "irrelevant"))
+                    1L, 1L, IdentityMode.STRUCTURED_PATH, entries, "irrelevant", "irrelevant"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("Duplicate canonical column ID 1");
   }
@@ -206,9 +411,28 @@ class SchemaIdentityReconcilerTest {
                     state.highWaterMark(),
                     state.mode(),
                     state.entries(),
-                    "sha256:incorrect"))
+                    "sha256:incorrect",
+                    state.stateChecksum()))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("fingerprint does not match");
+  }
+
+  @Test
+  void restoreRejectsIncorrectStateChecksum() {
+    var state =
+        reconcile(1L, IdentityMode.STRUCTURED_PATH, Optional.empty(), field("a", 1)).state();
+
+    assertThatThrownBy(
+            () ->
+                SchemaIdentityState.restore(
+                    state.sourceVersion(),
+                    state.highWaterMark(),
+                    state.mode(),
+                    state.entries(),
+                    state.fingerprint(),
+                    "sha256:incorrect"))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("state checksum does not match");
   }
 
   private static SchemaIdentityReconciler.Result reconcile(
@@ -217,7 +441,11 @@ class SchemaIdentityReconcilerTest {
       Optional<SchemaIdentityState> previous,
       SchemaNode... nodes) {
     return SchemaIdentityReconciler.reconcile(
-        ResolvedSchema.of(List.of(nodes)), version, mode, previous);
+        ResolvedSchema.of(List.of(nodes)),
+        version,
+        mode,
+        previous,
+        HistoryCoverage.COMPLETE_METADATA_HISTORY);
   }
 
   private static SchemaNode field(String name, int ordinal) {
@@ -225,12 +453,11 @@ class SchemaIdentityReconcilerTest {
   }
 
   private static SchemaNode nativeField(String name, int ordinal, int nativeId) {
-    return new SchemaNode(
-        ColumnPath.ROOT.field(name),
-        ordinal,
-        true,
-        OptionalInt.of(nativeId),
-        Optional.of(ColumnPath.ROOT.field(name)));
+    return nativeNode(ColumnPath.ROOT.field(name), ordinal, nativeId);
+  }
+
+  private static SchemaNode nativeNode(ColumnPath path, int ordinal, int nativeId) {
+    return new SchemaNode(path, ordinal, true, OptionalInt.of(nativeId), Optional.of(path));
   }
 
   private static SchemaNode node(ColumnPath path, int ordinal) {

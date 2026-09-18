@@ -74,10 +74,14 @@ message ColumnIdentityEntry {
 message ColumnIdentityMap {
   uint32 format_version = 1;
   int64 source_version = 2;
+  // Highest ID in the native or allocated space. Deterministic collection-derived IDs are excluded.
   int64 high_water_mark = 3;
   ColumnIdentityMode mode = 4;
   repeated ColumnIdentityEntry entries = 5;
+  // Identity-only digest used to gate statistics reuse across snapshots.
   string fingerprint = 6;
+  // Integrity digest over fingerprint plus source version and high-water state.
+  string state_checksum = 7;
 }
 
 // System-owned reference to the compact artifact-reuse manifest produced when this snapshot's
