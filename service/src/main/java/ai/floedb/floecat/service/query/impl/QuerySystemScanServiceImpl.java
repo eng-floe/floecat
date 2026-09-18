@@ -131,15 +131,13 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       ResourceId tableId = request.getTableId();
       diagnostics.put("table_id", tableId.getId());
       EngineContext engineCtx = diagnostics.time("engine_context", engineContext::engineContext);
+      CatalogContext catalogContext = catalogContext();
       SystemObjectScanner scanner =
           diagnostics.time(
               "scanner_resolve",
               () ->
                   scanners.resolve(
-                      correlationIdHolder.get(),
-                      tableId,
-                      CatalogContext.forEngine(engineCtx),
-                      diagnostics));
+                      correlationIdHolder.get(), tableId, catalogContext, diagnostics));
       var statsProvider =
           diagnostics.time(
               "stats_provider",
@@ -149,9 +147,9 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
               graph,
               null,
               queryCtx.getQueryDefaultCatalogId(),
-              CatalogContext.forEngine(engineCtx),
+              catalogContext,
               statsProvider,
-              constraintFactory.provider(CatalogContext.forEngine(engineCtx)));
+              constraintFactory.provider(catalogContext));
       List<SchemaColumn> schema = diagnostics.time("schema", scanner::schema);
       List<String> requiredColumns = request.getRequiredColumnsList();
       List<Predicate> predicates = request.getPredicatesList();

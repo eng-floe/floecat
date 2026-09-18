@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import io.grpc.Context;
 import org.jboss.logging.MDC;
 import org.junit.jupiter.api.AfterEach;
@@ -50,6 +51,10 @@ class InboundContextInterceptorContextTest {
           "x-floe-session-token", InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get());
       assertEquals("Bearer token", InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get());
       assertEquals("floedb", InboundContextInterceptor.ENGINE_CONTEXT_KEY.get().engineKind());
+      assertEquals("floe", InboundContextInterceptor.ENVIRONMENT_KIND_KEY.get());
+      assertEquals("3.1", InboundContextInterceptor.ENVIRONMENT_VERSION_KEY.get());
+      assertEquals(
+          "floe", InboundContextInterceptor.ENVIRONMENT_CONTEXT_KEY.get().environmentKind());
     } finally {
       callContext.detach(previous);
     }
@@ -66,6 +71,8 @@ class InboundContextInterceptorContextTest {
     assertEquals("subject-1", MDC.get("floecat_subject"));
     assertEquals("floedb", MDC.get("floecat_engine_kind"));
     assertEquals("9.9.9", MDC.get("floecat_engine_version"));
+    assertEquals("floe", MDC.get("floecat_environment_kind"));
+    assertEquals("3.1", MDC.get("floecat_environment_version"));
 
     InboundContextInterceptor.clearMdc();
     assertEquals(null, MDC.get("query_id"));
@@ -95,6 +102,7 @@ class InboundContextInterceptorContextTest {
         "query-1",
         "corr-1",
         EngineContext.of("floedb", "9.9.9"),
+        EnvironmentContext.of("floe", "3.1"),
         "x-floe-session-token",
         "Bearer token");
   }

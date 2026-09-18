@@ -35,7 +35,6 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -56,7 +55,6 @@ class CatalogServiceImplSystemCatalogTest {
   private CatalogServiceImpl svc;
   private CatalogRepository catalogRepo;
   private CatalogGraphView graphView;
-  private EngineContextProvider engineContext;
   private MarkerStore markerStore;
   private IdempotencyRepository idempotencyStore;
 
@@ -67,7 +65,6 @@ class CatalogServiceImplSystemCatalogTest {
     catalogRepo = mock(CatalogRepository.class);
     PrincipalProvider principal = mock(PrincipalProvider.class);
     Authorizer authz = mock(Authorizer.class);
-    engineContext = mock(EngineContextProvider.class);
     graphView = mock(CatalogGraphView.class);
     markerStore = mock(MarkerStore.class);
     idempotencyStore = mock(IdempotencyRepository.class);
@@ -75,7 +72,6 @@ class CatalogServiceImplSystemCatalogTest {
     svc.catalogRepo = catalogRepo;
     svc.principal = principal;
     svc.authz = authz;
-    svc.engineContext = engineContext;
     svc.graphView = graphView;
     svc.markerStore = markerStore;
     svc.idempotencyStore = idempotencyStore;
@@ -84,8 +80,6 @@ class CatalogServiceImplSystemCatalogTest {
     when(principal.get()).thenReturn(pc);
     when(pc.getCorrelationId()).thenReturn("corr");
     when(pc.getAccountId()).thenReturn("acct");
-    when(engineContext.isPresent()).thenReturn(true);
-    when(engineContext.effectiveEngineKind()).thenReturn("floecat_internal");
     when(graphView.catalog(any(), any())).thenReturn(Optional.empty());
     doNothing().when(authz).require(any(), anyString());
   }

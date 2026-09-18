@@ -17,21 +17,41 @@
 package ai.floedb.floecat.service.context;
 
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.Optional;
 
 /**
- * Resolves the engine context declared by the current call.
+ * Resolves the engine context and complete catalog selection declared by the current call.
  *
  * <p>Reads the {@link ResolvedCallContexts} carrier first — the {@code io.grpc.Context} keys alone
  * are unreliable across Quarkus's worker thread-hops, and an engine context that silently reads
- * back empty makes engine-gated system objects unresolvable (eng-floe/floecat#361).
+ * back empty makes engine-gated system objects unresolvable (eng-floe/floecat#361). The {@link
+ * #catalogContext()} method keeps the environment axis on that same resolved-call carrier.
  */
 @ApplicationScoped
 public final class EngineContextProvider {
+
+  /** Returns the complete catalog selection carried by the current call. */
+  public CatalogContext catalogContext() {
+    ResolvedCallContext resolved = ResolvedCallContexts.currentOrNull();
+    if (resolved != null) {
+      return resolved.catalogContext();
+    }
+    EnvironmentContext environment = InboundContextInterceptor.ENVIRONMENT_CONTEXT_KEY.get();
+    if (environment == null) {
+      String kind =
+          Optional.ofNullable(InboundContextInterceptor.ENVIRONMENT_KIND_KEY.get()).orElse("");
+      String version =
+          Optional.ofNullable(InboundContextInterceptor.ENVIRONMENT_VERSION_KEY.get()).orElse("");
+      environment = EnvironmentContext.of(kind, version);
+    }
+    return CatalogContext.forRequest(environment, engineContext());
+  }
 
   public String engineKind() {
     return engineContext().engineKind();

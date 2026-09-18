@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.context.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.telemetry.grpc.GrpcTelemetryServerInterceptor;
@@ -61,7 +62,7 @@ public class InboundContextInterceptor {
       new ConcurrentHashMap<>();
 
   // -------------------------------------------------------------------------
-  //  gRPC Context keys — read by EngineContextProvider, PrincipalProvider, etc.
+  //  gRPC Context keys — read by context providers and other request-scoped services.
   // -------------------------------------------------------------------------
 
   public static final Context.Key<PrincipalContext> PC_KEY = PrincipalProvider.KEY;
@@ -69,6 +70,11 @@ public class InboundContextInterceptor {
   public static final Context.Key<String> ENGINE_VERSION_KEY = Context.key("engine_version");
   public static final Context.Key<String> ENGINE_KIND_KEY = Context.key("engine_kind");
   public static final Context.Key<EngineContext> ENGINE_CONTEXT_KEY = Context.key("engine_context");
+  public static final Context.Key<String> ENVIRONMENT_VERSION_KEY =
+      Context.key("environment_version");
+  public static final Context.Key<String> ENVIRONMENT_KIND_KEY = Context.key("environment_kind");
+  public static final Context.Key<EnvironmentContext> ENVIRONMENT_CONTEXT_KEY =
+      Context.key("environment_context");
   public static final Context.Key<String> CORR_KEY = Context.key("correlation_id");
   public static final Context.Key<String> SESSION_HEADER_VALUE_KEY =
       Context.key("session_header_value");
@@ -130,7 +136,8 @@ public class InboundContextInterceptor {
     MDC.put(
         "floecat_operation", GrpcTelemetryServerInterceptor.simplifyOp(call.getMethodDescriptor()));
     // Mirror the whole resolved call context onto the Vert.x duplicated context (same channel as
-    // MDC) so principal, correlation id, and engine context together survive Quarkus's gRPC
+    // MDC) so principal, correlation id, environment, and engine context together survive Quarkus's
+    // gRPC
     // dispatch worker thread-hops into the service body, where the io.grpc.Context keys alone are
     // unreliable. See ResolvedCallContexts for the full rationale.
     ResolvedCallContexts.storeOnDuplicatedContext(resolved);
@@ -192,6 +199,7 @@ public class InboundContextInterceptor {
     String queryId = resolved.queryId();
     String correlationId = resolved.correlationId();
     EngineContext engineContext = resolved.engineContext();
+    EnvironmentContext environmentContext = resolved.environmentContext();
     String engineKind = engineContext.engineKind();
     String engineVersion = engineContext.engineVersion();
     String sessionHeaderValue = resolved.sessionHeaderValue();
@@ -203,6 +211,9 @@ public class InboundContextInterceptor {
             .withValue(ENGINE_VERSION_KEY, engineVersion)
             .withValue(ENGINE_KIND_KEY, engineKind)
             .withValue(ENGINE_CONTEXT_KEY, engineContext)
+            .withValue(ENVIRONMENT_VERSION_KEY, environmentContext.environmentVersion())
+            .withValue(ENVIRONMENT_KIND_KEY, environmentContext.environmentKind())
+            .withValue(ENVIRONMENT_CONTEXT_KEY, environmentContext)
             .withValue(CORR_KEY, correlationId);
     if (sessionHeaderValue != null) {
       context = context.withValue(SESSION_HEADER_VALUE_KEY, sessionHeaderValue);
@@ -216,12 +227,15 @@ public class InboundContextInterceptor {
   public static void populateMdc(ResolvedCallContext resolved) {
     PrincipalContext principalContext = resolved.principalContext();
     EngineContext engineContext = resolved.engineContext();
+    EnvironmentContext environmentContext = resolved.environmentContext();
     MDC.put("query_id", resolved.queryId());
     MDC.put("correlation_id", resolved.correlationId());
     MDC.put("floecat_account_id", principalContext.getAccountId());
     MDC.put("floecat_subject", principalContext.getSubject());
     MDC.put("floecat_engine_kind", engineContext.engineKind());
     MDC.put("floecat_engine_version", engineContext.engineVersion());
+    MDC.put("floecat_environment_kind", environmentContext.environmentKind());
+    MDC.put("floecat_environment_version", environmentContext.environmentVersion());
   }
 
   public static void clearMdc() {
@@ -233,5 +247,7 @@ public class InboundContextInterceptor {
     MDC.remove("floecat_subject");
     MDC.remove("floecat_engine_kind");
     MDC.remove("floecat_engine_version");
+    MDC.remove("floecat_environment_kind");
+    MDC.remove("floecat_environment_version");
   }
 }

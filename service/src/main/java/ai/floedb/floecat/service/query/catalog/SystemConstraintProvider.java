@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
-import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -41,10 +40,6 @@ final class SystemConstraintProvider implements ConstraintProvider {
 
   @Override
   public Optional<ConstraintSetView> constraints(ResourceId relationId, OptionalLong snapshotId) {
-    EngineContext context =
-        engineContextProvider.isPresent()
-            ? engineContextProvider.engineContext()
-            : EngineContext.empty();
-    return catalog.constraints(context, relationId);
+    return catalog.constraints(engineContextProvider.catalogContext(), relationId);
   }
 }

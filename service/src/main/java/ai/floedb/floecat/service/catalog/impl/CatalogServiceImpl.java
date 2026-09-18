@@ -34,8 +34,6 @@ import ai.floedb.floecat.catalog.rpc.UpdateCatalogResponse;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.scanner.utils.CatalogContext;
-import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceCatalogs;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -44,7 +42,6 @@ import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
-import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
@@ -75,7 +72,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject MarkerStore markerStore;
-  @Inject EngineContextProvider engineContext;
   @Inject CatalogGraphView graphView;
 
   private static final Set<String> CATALOG_MUTABLE_PATHS =
@@ -434,14 +430,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
 
   private CatalogSurfaceCatalogs catalogSurfaceCatalogs() {
     return new CatalogSurfaceCatalogs(catalogRepo, graphView, catalogContext());
-  }
-
-  @Override
-  protected CatalogContext catalogContext() {
-    return CatalogContext.forEngine(
-        engineContext == null || engineContext.engineContext() == null
-            ? EngineContext.empty()
-            : engineContext.engineContext());
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
