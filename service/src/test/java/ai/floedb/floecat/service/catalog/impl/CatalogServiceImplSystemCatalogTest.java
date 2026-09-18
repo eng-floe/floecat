@@ -86,7 +86,7 @@ class CatalogServiceImplSystemCatalogTest {
     when(pc.getAccountId()).thenReturn("acct");
     when(engineContext.isPresent()).thenReturn(true);
     when(engineContext.effectiveEngineKind()).thenReturn("floecat_internal");
-    when(graphView.catalog(any())).thenReturn(Optional.empty());
+    when(graphView.catalog(any(), any())).thenReturn(Optional.empty());
     doNothing().when(authz).require(any(), anyString());
   }
 

@@ -36,6 +36,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
@@ -62,7 +63,7 @@ class CatalogSurfaceNamespacesTest {
   void setup() {
     namespaceRepo = mock(NamespaceRepository.class);
     graphView = new TestCatalogGraphView();
-    surface = new CatalogSurfaceNamespaces(namespaceRepo, graphView);
+    surface = new CatalogSurfaceNamespaces(namespaceRepo, graphView, CatalogContext.empty());
 
     graphView.addNode(catalogNode(catalogId, "examples"));
   }
@@ -166,7 +167,7 @@ class CatalogSurfaceNamespacesTest {
     var pointers = new ai.floedb.floecat.storage.memory.InMemoryPointerStore();
     var blobs = new ai.floedb.floecat.storage.memory.InMemoryBlobStore();
     var realRepo = new NamespaceRepository(pointers, blobs);
-    var realSurface = new CatalogSurfaceNamespaces(realRepo, graphView);
+    var realSurface = new CatalogSurfaceNamespaces(realRepo, graphView, CatalogContext.empty());
 
     var expected = new java.util.ArrayList<String>();
     for (int i = 0; i < 150; i++) {

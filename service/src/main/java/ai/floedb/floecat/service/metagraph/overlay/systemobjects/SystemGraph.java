@@ -27,7 +27,6 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
-import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
@@ -291,10 +290,7 @@ public final class SystemGraph {
   }
 
   private static String engineCatalogKind(EngineContext ctx) {
-    if (ctx == null) {
-      return EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
-    }
-    return ctx.normalizedKind();
+    return Objects.requireNonNull(ctx, "engineContext").normalizedKind();
   }
 
   public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
@@ -307,7 +303,7 @@ public final class SystemGraph {
 
   /** Builds a new snapshot for the requested engine version. */
   private GraphSnapshot snapshotFor(CatalogContext ctx) {
-    CatalogContext canonical = ctx == null ? CatalogContext.floecatInternal() : ctx;
+    CatalogContext canonical = Objects.requireNonNull(ctx, "catalogContext");
     String normalizedKind = engineCatalogKind(canonical.engine());
     String normalizedVersion = canonical.engine().normalizedVersion();
 

@@ -299,7 +299,8 @@ class UserObjectBundleServiceTest {
     FakeCatalogGraphView nullSchemaGraphView =
         new FakeCatalogGraphView() {
           @Override
-          public List<SchemaColumn> tableSchema(ResourceId tableId) {
+          public List<SchemaColumn> tableSchema(
+              ResourceId tableId, ai.floedb.floecat.scanner.utils.CatalogContext context) {
             return null;
           }
         };
@@ -3011,9 +3012,10 @@ class UserObjectBundleServiceTest {
     }
 
     @Override
-    public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(ResourceId id) {
+    public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(
+        ResourceId id, CatalogContext context) {
       assertProducerThread();
-      return super.catalog(id);
+      return super.catalog(id, context);
     }
 
     @Override
@@ -3024,9 +3026,9 @@ class UserObjectBundleServiceTest {
     }
 
     @Override
-    public Optional<GraphNode> resolve(ResourceId id) {
+    public Optional<GraphNode> resolve(ResourceId id, CatalogContext context) {
       assertProducerThread();
-      return super.resolve(id);
+      return super.resolve(id, context);
     }
 
     private void assertProducerThread() {

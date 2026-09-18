@@ -470,7 +470,8 @@ public class UserObjectBundleService {
       this.decorationSelection = engineRelationDecorator.select(requestEngine);
       this.buildFanout = buildFanout(decorationSelection);
       this.pinCommitter =
-          new QueryPinCommitter(inputResolver, queryStore, ctx, correlationId, timings);
+          new QueryPinCommitter(
+              inputResolver, queryStore, ctx, correlationId, timings, requestCatalog);
       initializeParentSpan();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
@@ -1266,7 +1267,10 @@ public class UserObjectBundleService {
         long startNs = System.nanoTime();
         try {
           defaultCatalogName =
-              graphView.catalog(defaultCatalogId).map(CatalogNode::displayName).orElse("");
+              graphView
+                  .catalog(defaultCatalogId, resolutionContext.catalogContext())
+                  .map(CatalogNode::displayName)
+                  .orElse("");
           defaultCatalogResolved = true;
           timings.recordDefaultCatalogLookup();
         } finally {

@@ -178,13 +178,15 @@ class RelationBundleBuilderTest {
   }
 
   private ResolvedRelation resolved(ResourceId id, TableReferenceCandidate candidate) {
-    RelationNode node = (RelationNode) graphView.resolve(id).orElseThrow();
+    RelationNode node = (RelationNode) graphView.resolve(id, CatalogContext.empty()).orElseThrow();
     return new ResolvedRelation(
         candidate,
         id,
         node,
         QueryInput.newBuilder().setTableId(id).build(),
-        graphView.tableName(id).orElse(NameRef.newBuilder().setName(node.displayName()).build()));
+        graphView
+            .tableName(id, CatalogContext.empty())
+            .orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 
   private static TableReferenceCandidate fullCandidate() {

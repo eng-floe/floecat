@@ -21,7 +21,10 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
+import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.TransactionIntentRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -133,6 +136,7 @@ public class TransactionIntentApplierSupport {
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject CatalogGraphView graphView;
+  @Inject EngineContextProvider engineContext;
   @Inject CatalogRepository catalogRepo;
   @Inject MarkerStore markerStore;
 
@@ -801,7 +805,7 @@ public class TransactionIntentApplierSupport {
     }
 
     try {
-      var writePolicy = new CatalogSurfaceWritePolicy(graphView);
+      var writePolicy = new CatalogSurfaceWritePolicy(graphView, catalogContext());
       if (checkExistingTable) {
         writePolicy.requireWritableTable(table.getResourceId(), "transaction-apply");
       }
@@ -825,6 +829,13 @@ public class TransactionIntentApplierSupport {
           "TABLE_WRITE_ELIGIBILITY_ERROR",
           "unable to evaluate table write eligibility: " + unexpected.getMessage());
     }
+  }
+
+  private CatalogContext catalogContext() {
+    return CatalogContext.forEngine(
+        engineContext == null || engineContext.engineContext() == null
+            ? EngineContext.empty()
+            : engineContext.engineContext());
   }
 
   private ApplyOutcome tableImmutableConflict(String tableId) {

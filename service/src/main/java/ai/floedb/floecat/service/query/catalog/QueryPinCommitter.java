@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
@@ -59,6 +60,7 @@ final class QueryPinCommitter {
   private final QueryContext ctx;
   private final String correlationId;
   private final TimingAccumulator timings;
+  private final CatalogContext catalogContext;
 
   // First-touch snapshot per relation id, shared with the resolver so a relation pins to one
   // snapshot for the life of the request.
@@ -73,12 +75,14 @@ final class QueryPinCommitter {
       QueryContextStore queryStore,
       QueryContext ctx,
       String correlationId,
-      TimingAccumulator timings) {
+      TimingAccumulator timings,
+      CatalogContext catalogContext) {
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
     this.ctx = ctx;
     this.correlationId = correlationId;
     this.timings = timings;
+    this.catalogContext = catalogContext;
   }
 
   /**
@@ -194,7 +198,8 @@ final class QueryPinCommitter {
             Optional.of(ctx.getQueryDefaultCatalogId()),
             snapshotPinMemo,
             diagnostics,
-            cancelled);
+            cancelled,
+            catalogContext);
     diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);
     RelationPinSet incoming = resolution.relationPinSet();
     RelationPinSet pins = incoming == null ? RelationPinSet.getDefaultInstance() : incoming;

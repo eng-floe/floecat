@@ -17,6 +17,8 @@ package ai.floedb.floecat.service.catalog.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -59,7 +61,7 @@ class TableIndexServiceImplTest {
             .setId("sys_index_table")
             .build();
 
-    when(svc.graphView.resolve(tableId))
+    when(svc.graphView.resolve(eq(tableId), any()))
         .thenReturn(Optional.of(TestNodes.systemTableNode(tableId)));
     var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 

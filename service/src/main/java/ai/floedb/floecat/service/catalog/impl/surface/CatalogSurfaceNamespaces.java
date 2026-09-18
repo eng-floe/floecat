@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -39,10 +40,11 @@ public final class CatalogSurfaceNamespaces {
   private final CatalogGraphView graphView;
   private final CatalogSurfaceWritePolicy writePolicy;
 
-  public CatalogSurfaceNamespaces(NamespaceRepository namespaceRepo, CatalogGraphView graphView) {
+  public CatalogSurfaceNamespaces(
+      NamespaceRepository namespaceRepo, CatalogGraphView graphView, CatalogContext context) {
     this.namespaceRepo = namespaceRepo;
     this.graphView = graphView;
-    this.writePolicy = new CatalogSurfaceWritePolicy(graphView);
+    this.writePolicy = new CatalogSurfaceWritePolicy(graphView, context);
   }
 
   public ListNamespacesResponse listNamespaces(
@@ -111,7 +113,7 @@ public final class CatalogSurfaceNamespaces {
     if (catalogId == null) {
       return List.of();
     }
-    return graphView.listSystemNamespaces(catalogId);
+    return graphView.listSystemNamespaces(catalogId, writePolicy.context());
   }
 
   private static ArrayList<String> append(List<String> parents, String last) {

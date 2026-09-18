@@ -643,7 +643,7 @@ public class CatalogOverlaysImpl extends BaseServiceImpl implements CatalogOverl
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView);
+    return new CatalogSurfaceWritePolicy(graphView, catalogContext());
   }
 
   private List<NamespacePath> normalizePaths(List<NamespacePath> paths, String field, String corr) {

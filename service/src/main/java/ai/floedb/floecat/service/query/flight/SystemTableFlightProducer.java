@@ -195,7 +195,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
             queryCtx.getQueryDefaultCatalogId(),
             contextForEngine(context.engineContext()),
             statsProvider,
-            constraintFactory.provider());
+            constraintFactory.provider(contextForEngine(context.engineContext())));
 
     return arrowPlanner.plan(
         scanner,

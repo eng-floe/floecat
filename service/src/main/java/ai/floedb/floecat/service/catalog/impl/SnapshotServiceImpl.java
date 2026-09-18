@@ -119,7 +119,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
     // The graph view is the source of truth for visibility in the current engine context.
     GraphNode node =
         graphView
-            .resolve(tableId)
+            .resolve(tableId, catalogContext())
             .orElseThrow(() -> GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId())));
 
     // Defensive: ensure the resolved node is actually a table node.
@@ -129,7 +129,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   }
 
   private void ensureTableWritable(ResourceId tableId, String corr) {
-    new CatalogSurfaceWritePolicy(graphView).requireWritableTable(tableId, corr);
+    new CatalogSurfaceWritePolicy(graphView, catalogContext()).requireWritableTable(tableId, corr);
   }
 
   private String schemaJsonForTable(String corr, ResourceId tableId) {

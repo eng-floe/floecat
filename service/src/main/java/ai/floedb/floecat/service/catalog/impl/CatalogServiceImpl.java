@@ -34,6 +34,8 @@ import ai.floedb.floecat.catalog.rpc.UpdateCatalogResponse;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceCatalogs;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -431,11 +433,19 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   }
 
   private CatalogSurfaceCatalogs catalogSurfaceCatalogs() {
-    return new CatalogSurfaceCatalogs(catalogRepo, graphView, engineContext);
+    return new CatalogSurfaceCatalogs(catalogRepo, graphView, catalogContext());
+  }
+
+  @Override
+  protected CatalogContext catalogContext() {
+    return CatalogContext.forEngine(
+        engineContext == null || engineContext.engineContext() == null
+            ? EngineContext.empty()
+            : engineContext.engineContext());
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView);
+    return new CatalogSurfaceWritePolicy(graphView, catalogContext());
   }
 
   private Catalog applyCatalogSpecPatch(

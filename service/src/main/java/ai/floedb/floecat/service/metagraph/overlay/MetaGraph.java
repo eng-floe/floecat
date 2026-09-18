@@ -33,11 +33,9 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
-import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.PageTokens;
-import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.systemobjects.SystemGraph;
@@ -70,29 +68,14 @@ public final class MetaGraph implements CatalogGraphView {
   private final ObjectCache objects;
   private final HintCache hints;
   private final SystemGraph systemGraph;
-  private final EngineContextProvider engine;
 
   @Inject
   public MetaGraph(
-      UserGraph userGraph,
-      ObjectCache objects,
-      HintCache hints,
-      SystemGraph systemGraph,
-      EngineContextProvider engine) {
+      UserGraph userGraph, ObjectCache objects, HintCache hints, SystemGraph systemGraph) {
     this.userGraph = userGraph;
     this.objects = objects;
     this.hints = hints;
     this.systemGraph = systemGraph;
-    this.engine = engine;
-  }
-
-  private EngineContext engineContext() {
-    return engine.isPresent() ? engine.engineContext() : EngineContext.empty();
-  }
-
-  private CatalogContext catalogContext() {
-    EngineContext engineContext = engineContext();
-    return CatalogContext.forEngine(engineContext);
   }
 
   @Override
@@ -109,11 +92,6 @@ public final class MetaGraph implements CatalogGraphView {
    * @param id the resource ID to resolve
    * @return the resolved graph node, or empty if not found
    */
-  @Override
-  public Optional<GraphNode> resolve(ResourceId id) {
-    return resolve(id, catalogContext());
-  }
-
   @Override
   public Optional<GraphNode> resolve(ResourceId id, CatalogContext catalogContext) {
     CatalogContext ctx = Objects.requireNonNull(catalogContext, "catalogContext");
@@ -140,11 +118,6 @@ public final class MetaGraph implements CatalogGraphView {
    * @return list of all relations in the catalog
    */
   @Override
-  public List<RelationNode> listRelations(ResourceId catalogId) {
-    return listRelations(catalogId, catalogContext());
-  }
-
-  @Override
   public List<RelationNode> listRelations(ResourceId catalogId, CatalogContext ctx) {
     return mergeLists(
         () -> systemGraph.listRelations(catalogId, ctx), () -> listUserRelations(catalogId, ctx));
@@ -160,11 +133,6 @@ public final class MetaGraph implements CatalogGraphView {
    * @param namespaceId the namespace to list relations from
    * @return list of all relations in the namespace
    */
-  @Override
-  public List<RelationNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
-    return listRelationsInNamespace(catalogId, namespaceId, catalogContext());
-  }
-
   @Override
   public List<RelationNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, CatalogContext ctx) {
@@ -183,11 +151,6 @@ public final class MetaGraph implements CatalogGraphView {
    * @return list of all functions in the namespace
    */
   @Override
-  public List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId) {
-    return listFunctions(catalogId, namespaceId, catalogContext());
-  }
-
-  @Override
   public List<FunctionNode> listFunctions(
       ResourceId catalogId, ResourceId namespaceId, CatalogContext ctx) {
     return mergeLists(
@@ -204,19 +167,9 @@ public final class MetaGraph implements CatalogGraphView {
    * @return list of all types in the catalog
    */
   @Override
-  public List<TypeNode> listTypes(ResourceId catalogId) {
-    return listTypes(catalogId, catalogContext());
-  }
-
-  @Override
   public List<TypeNode> listTypes(ResourceId catalogId, CatalogContext ctx) {
     return mergeLists(
         () -> systemGraph.listTypes(catalogId, ctx), () -> userGraph.listTypes(catalogId));
-  }
-
-  @Override
-  public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
-    return listNamespaces(catalogId, catalogContext());
   }
 
   @Override
@@ -227,21 +180,10 @@ public final class MetaGraph implements CatalogGraphView {
 
   @Override
   public List<RelationNode> listSystemRelationsInNamespace(
-      ResourceId catalogId, ResourceId namespaceId) {
-    return listSystemRelationsInNamespace(catalogId, namespaceId, catalogContext());
-  }
-
-  @Override
-  public List<RelationNode> listSystemRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, CatalogContext ctx) {
     return systemGraph.listRelationsInNamespace(catalogId, namespaceId, ctx).stream()
         .map(RelationNode.class::cast)
         .toList();
-  }
-
-  @Override
-  public List<NamespaceNode> listSystemNamespaces(ResourceId catalogId) {
-    return listSystemNamespaces(catalogId, catalogContext());
   }
 
   @Override
@@ -262,13 +204,13 @@ public final class MetaGraph implements CatalogGraphView {
    * @return the resolved catalog resource ID, if present
    */
   @Override
-  public Optional<ResourceId> resolveCatalog(String correlationId, String name) {
+  public Optional<ResourceId> resolveCatalog(
+      String correlationId, String name, CatalogContext ctx) {
     Optional<ResourceId> user = userGraph.resolveCatalog(correlationId, name);
     if (user.isPresent()) {
       return user;
     }
 
-    CatalogContext ctx = catalogContext();
     if (isSystemCatalogAlias(name, ctx)) {
       return Optional.of(
           SystemNodeRegistry.systemCatalogContainerId(ctx.engine().effectiveEngineKind()));
@@ -299,11 +241,6 @@ public final class MetaGraph implements CatalogGraphView {
    * @return the resolved namespace resource ID, if present
    */
   @Override
-  public Optional<ResourceId> resolveNamespace(String correlationId, NameRef ref) {
-    return resolveNamespace(correlationId, ref, catalogContext());
-  }
-
-  @Override
   public Optional<ResourceId> resolveNamespace(
       String correlationId, NameRef ref, CatalogContext ctx) {
     NameRef systemRef = SystemCatalogTranslator.toSystemNamespaceRef(ref, ctx.engine());
@@ -323,11 +260,6 @@ public final class MetaGraph implements CatalogGraphView {
    * @return the resolved table resource ID, if present
    */
   @Override
-  public Optional<ResourceId> resolveTable(String correlationId, NameRef ref) {
-    return resolveTable(correlationId, ref, catalogContext());
-  }
-
-  @Override
   public Optional<ResourceId> resolveTable(String correlationId, NameRef ref, CatalogContext ctx) {
     Optional<ResourceId> system = systemGraph.resolveTable(ref, ctx);
     return system.isPresent() ? system : userGraph.resolveTable(correlationId, ref);
@@ -345,11 +277,6 @@ public final class MetaGraph implements CatalogGraphView {
    * @return the resolved view resource ID, if present
    */
   @Override
-  public Optional<ResourceId> resolveView(String correlationId, NameRef ref) {
-    return resolveView(correlationId, ref, catalogContext());
-  }
-
-  @Override
   public Optional<ResourceId> resolveView(String correlationId, NameRef ref, CatalogContext ctx) {
     Optional<ResourceId> system = systemGraph.resolveView(ref, ctx);
     return system.isPresent() ? system : userGraph.resolveView(correlationId, ref);
@@ -366,11 +293,6 @@ public final class MetaGraph implements CatalogGraphView {
    * @param ref the name reference to resolve
    * @return the resolved relation resource ID, if present
    */
-  @Override
-  public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
-    return resolveName(correlationId, ref, catalogContext());
-  }
-
   @Override
   public Optional<ResourceId> resolveName(String correlationId, NameRef ref, CatalogContext ctx) {
     Optional<ResourceId> system = systemGraph.resolveName(ref, ctx);
@@ -398,8 +320,8 @@ public final class MetaGraph implements CatalogGraphView {
    * resolve through the pointer-backed user graph, with duplicate names resolved once.
    */
   @Override
-  public Map<NameRef, Optional<ResourceId>> resolveNames(String correlationId, List<NameRef> refs) {
-    CatalogContext ctx = catalogContext();
+  public Map<NameRef, Optional<ResourceId>> resolveNames(
+      String correlationId, List<NameRef> refs, CatalogContext ctx) {
     var out = new LinkedHashMap<NameRef, Optional<ResourceId>>(refs.size());
     var userRefs = new ArrayList<NameRef>(refs.size());
     for (NameRef ref : refs) {
@@ -419,28 +341,13 @@ public final class MetaGraph implements CatalogGraphView {
   }
 
   @Override
-  public Optional<ResourceId> resolveSystemTable(NameRef ref) {
-    return resolveSystemTable(ref, catalogContext());
-  }
-
-  @Override
   public Optional<ResourceId> resolveSystemTable(NameRef ref, CatalogContext ctx) {
     return systemGraph.resolveTable(ref, ctx);
   }
 
   @Override
-  public Optional<NameRef> resolveSystemTableName(ResourceId id) {
-    return resolveSystemTableName(id, catalogContext());
-  }
-
-  @Override
   public Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext ctx) {
     return systemGraph.tableName(id, ctx);
-  }
-
-  @Override
-  public Optional<TypeNode> resolveSystemType(String namespace, String typeName) {
-    return resolveSystemType(namespace, typeName, catalogContext());
   }
 
   @Override
@@ -465,8 +372,8 @@ public final class MetaGraph implements CatalogGraphView {
       String correlationId,
       ResourceId tableId,
       SnapshotRef override,
-      Optional<Timestamp> asOfDefault) {
-    CatalogContext ctx = catalogContext();
+      Optional<Timestamp> asOfDefault,
+      CatalogContext ctx) {
     // System tables have no snapshots and are never pinned.
     if (systemGraph.resolve(tableId, ctx).filter(SystemTableNode.class::isInstance).isPresent()) {
       return null;
@@ -487,8 +394,8 @@ public final class MetaGraph implements CatalogGraphView {
    */
   @Override
   public ResolveResult batchResolveTables(
-      String correlationId, List<NameRef> items, int limit, String token) {
-    return batchResolveRelations(correlationId, items, limit, token, true, catalogContext());
+      String correlationId, List<NameRef> items, int limit, String token, CatalogContext ctx) {
+    return batchResolveRelations(correlationId, items, limit, token, true, ctx);
   }
 
   /**
@@ -503,8 +410,8 @@ public final class MetaGraph implements CatalogGraphView {
    */
   @Override
   public ResolveResult listTablesByPrefix(
-      String correlationId, NameRef prefix, int limit, String token) {
-    return listRelationsByPrefix(correlationId, prefix, limit, token, true, catalogContext());
+      String correlationId, NameRef prefix, int limit, String token, CatalogContext ctx) {
+    return listRelationsByPrefix(correlationId, prefix, limit, token, true, ctx);
   }
 
   /**
@@ -519,8 +426,8 @@ public final class MetaGraph implements CatalogGraphView {
    */
   @Override
   public ResolveResult batchResolveViews(
-      String correlationId, List<NameRef> items, int limit, String token) {
-    return batchResolveRelations(correlationId, items, limit, token, false, catalogContext());
+      String correlationId, List<NameRef> items, int limit, String token, CatalogContext ctx) {
+    return batchResolveRelations(correlationId, items, limit, token, false, ctx);
   }
 
   /**
@@ -572,8 +479,8 @@ public final class MetaGraph implements CatalogGraphView {
    */
   @Override
   public ResolveResult listViewsByPrefix(
-      String correlationId, NameRef prefix, int limit, String token) {
-    return listRelationsByPrefix(correlationId, prefix, limit, token, false, catalogContext());
+      String correlationId, NameRef prefix, int limit, String token, CatalogContext ctx) {
+    return listRelationsByPrefix(correlationId, prefix, limit, token, false, ctx);
   }
 
   /**
@@ -684,25 +591,12 @@ public final class MetaGraph implements CatalogGraphView {
    * @return the fully qualified name reference, or empty if not found
    */
   @Override
-  public Optional<NameRef> namespaceName(ResourceId id) {
+  public Optional<NameRef> namespaceName(ResourceId id, CatalogContext ctx) {
     Optional<NameRef> user = userGraph.namespaceName(id);
     if (user.isPresent()) {
       return user;
     }
-    return systemGraph.namespaceName(id, catalogContext());
-  }
-
-  /**
-   * Gets the fully qualified name of a table by its resource ID.
-   *
-   * <p>Tries user graph first, then system graph for reverse lookup.
-   *
-   * @param id the table resource ID
-   * @return the fully qualified name reference, or empty if not found
-   */
-  @Override
-  public Optional<NameRef> tableName(ResourceId id) {
-    return tableName(id, catalogContext());
+    return systemGraph.namespaceName(id, ctx);
   }
 
   @Override
@@ -723,11 +617,6 @@ public final class MetaGraph implements CatalogGraphView {
    * @return the fully qualified name reference, or empty if not found
    */
   @Override
-  public Optional<NameRef> viewName(ResourceId id) {
-    return viewName(id, catalogContext());
-  }
-
-  @Override
   public Optional<NameRef> viewName(ResourceId id, CatalogContext context) {
     Optional<NameRef> user = userGraph.viewName(id);
     if (user.isPresent()) {
@@ -745,12 +634,12 @@ public final class MetaGraph implements CatalogGraphView {
    * @return the catalog node, or empty if not found
    */
   @Override
-  public Optional<CatalogNode> catalog(ResourceId id) {
+  public Optional<CatalogNode> catalog(ResourceId id, CatalogContext ctx) {
     Optional<CatalogNode> user = userGraph.catalog(id);
     if (user.isPresent()) {
       return user;
     }
-    return systemGraph.catalog(id, catalogContext());
+    return systemGraph.catalog(id, ctx);
   }
 
   /**
@@ -831,8 +720,8 @@ public final class MetaGraph implements CatalogGraphView {
   }
 
   @Override
-  public List<SchemaColumn> tableSchema(ResourceId tableId) {
-    return resolve(tableId)
+  public List<SchemaColumn> tableSchema(ResourceId tableId, CatalogContext ctx) {
+    return resolve(tableId, ctx)
         .filter(TableNode.class::isInstance)
         .map(TableNode.class::cast)
         .map(this::schemaForTable)
