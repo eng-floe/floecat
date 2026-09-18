@@ -28,6 +28,7 @@ import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
@@ -957,7 +958,7 @@ class SystemNodeRegistryTest {
         new SystemNodeRegistry(defs, loader.internalProvider(), loader.providers());
 
     EngineContext ctx = EngineContext.of("pg", "");
-    SystemEngineCatalog engineCatalog = defs.catalog(ctx);
+    SystemEngineCatalog engineCatalog = defs.catalog(CatalogContext.of(null, ctx));
     assertThat(engineCatalog.tables()).isNotEmpty();
     assertThat(engineCatalog.namespaces()).isNotEmpty();
     SystemNodeRegistry.BuiltinNodes nodes = registry.nodesFor(ctx);

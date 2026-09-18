@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.provider;
 
-import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import java.util.List;
 
@@ -28,8 +28,8 @@ import java.util.List;
  */
 public interface SystemCatalogProvider {
 
-  /** Loads the catalog for the given engine context. */
-  SystemEngineCatalog load(EngineContext ctx);
+  /** Loads the catalog for the selected environment and engine. */
+  SystemEngineCatalog load(CatalogContext context);
 
   List<String> engineKinds();
 }

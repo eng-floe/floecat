@@ -17,8 +17,8 @@
 package ai.floedb.floecat.service.testsupport;
 
 import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
-import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
@@ -78,15 +78,15 @@ public final class FakeSystemNodeRegistry extends SystemNodeRegistry {
     }
 
     @Override
-    public SystemEngineCatalog load(EngineContext ctx) {
-      String key = EngineIdentityNormalizer.normalizeEngineKind(ctx.normalizedKind());
+    public SystemEngineCatalog load(CatalogContext context) {
+      String key = EngineIdentityNormalizer.normalizeEngineKind(context.engine().normalizedKind());
       if (key.isBlank()) {
         key = EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
       }
       SystemEngineCatalog catalog = catalogs.get(key);
       if (catalog == null) {
         throw new IllegalStateException(
-            "No fake system catalog registered for engine: " + ctx.engineKind());
+            "No fake system catalog registered for engine: " + context.engine().engineKind());
       }
       return catalog;
     }
