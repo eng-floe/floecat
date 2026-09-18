@@ -65,7 +65,7 @@ class QueryInputResolverAdmissionTest {
             .setSnapshotId(1)
             .build();
     AtomicBoolean backendStarted = new AtomicBoolean();
-    when(graph.tablePinFor(anyString(), eq(tableId), nullable(SnapshotRef.class), any()))
+    when(graph.tablePinFor(anyString(), eq(tableId), nullable(SnapshotRef.class), any(), any()))
         .thenAnswer(
             ignored -> {
               backendStarted.set(true);

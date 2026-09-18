@@ -1817,7 +1817,7 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView);
+    return new CatalogSurfaceWritePolicy(graphView, catalogContext());
   }
 
   private boolean looksLikeDeleteSentinelBlobUri(String accountId, String blobUri) {

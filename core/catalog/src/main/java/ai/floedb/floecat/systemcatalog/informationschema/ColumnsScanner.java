@@ -238,7 +238,8 @@ public final class ColumnsScanner implements SystemObjectScanner {
 
     // Synthetic element/key/value placeholder rows are stats plumbing, not user columns.
     List<SchemaColumn> columns =
-        SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(table.id()));
+        SchemaColumns.withoutSyntheticNodes(
+            ctx.graph().tableSchema(table.id(), ctx.catalogContext()));
 
     if (table instanceof UserTableNode) {
       return columns.stream()
@@ -338,7 +339,8 @@ public final class ColumnsScanner implements SystemObjectScanner {
     if (node instanceof TableNode table) {
       // Synthetic element/key/value placeholder rows are stats plumbing, not user columns.
       List<SchemaColumn> columns =
-          SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(table.id()));
+          SchemaColumns.withoutSyntheticNodes(
+              ctx.graph().tableSchema(table.id(), ctx.catalogContext()));
       if (table instanceof UserTableNode) {
         return columns.stream()
             .sorted(Comparator.comparingInt(SchemaColumn::getFieldId))

@@ -151,7 +151,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
               queryCtx.getQueryDefaultCatalogId(),
               CatalogContext.forEngine(engineCtx),
               statsProvider,
-              constraintFactory.provider());
+              constraintFactory.provider(CatalogContext.forEngine(engineCtx)));
       List<SchemaColumn> schema = diagnostics.time("schema", scanner::schema);
       List<String> requiredColumns = request.getRequiredColumnsList();
       List<Predicate> predicates = request.getPredicatesList();

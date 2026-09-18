@@ -289,7 +289,7 @@ public final class ConstraintScanIndex {
 
   private static Map<Long, String> columnsById(SystemObjectScanContext ctx, ResourceId tableId) {
     List<SchemaColumn> columns =
-        SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(tableId));
+        SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(tableId, ctx.catalogContext()));
     if (columns.isEmpty()) {
       return Map.of();
     }

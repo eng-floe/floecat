@@ -18,6 +18,8 @@ package ai.floedb.floecat.service.catalog.impl.surface;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -36,6 +38,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
@@ -63,7 +66,7 @@ class CatalogSurfaceWritePolicyTest {
   @BeforeEach
   void setup() {
     graphView = new TestCatalogGraphView();
-    writePolicy = new CatalogSurfaceWritePolicy(graphView);
+    writePolicy = new CatalogSurfaceWritePolicy(graphView, CatalogContext.empty());
   }
 
   @Test
@@ -108,7 +111,7 @@ class CatalogSurfaceWritePolicyTest {
   @Test
   void requireWritableSystemIdsRejectBeforeGraphViewLookup() {
     CatalogGraphView mockedGraphView = mock(CatalogGraphView.class);
-    var policy = new CatalogSurfaceWritePolicy(mockedGraphView);
+    var policy = new CatalogSurfaceWritePolicy(mockedGraphView, CatalogContext.empty());
     var systemCatalogId = SystemNodeRegistry.systemCatalogContainerId("engine");
     var systemNamespaceId =
         SystemNodeRegistry.resourceId("engine", ResourceKind.RK_NAMESPACE, "information_schema");
@@ -164,10 +167,10 @@ class CatalogSurfaceWritePolicyTest {
   @Test
   void requireWritableDeleteChecksIgnoreGraphViewResolutionFailuresWhenCallerDoesNotCare() {
     CatalogGraphView throwingGraphView = mock(CatalogGraphView.class);
-    var throwingPolicy = new CatalogSurfaceWritePolicy(throwingGraphView);
-    when(throwingGraphView.resolve(tableId))
+    var throwingPolicy = new CatalogSurfaceWritePolicy(throwingGraphView, CatalogContext.empty());
+    when(throwingGraphView.resolve(eq(tableId), any()))
         .thenThrow(new IllegalStateException("graphView unavailable"));
-    when(throwingGraphView.resolve(viewId))
+    when(throwingGraphView.resolve(eq(viewId), any()))
         .thenThrow(new IllegalStateException("graphView unavailable"));
 
     assertDoesNotThrow(

@@ -96,11 +96,11 @@ public class ViewServiceImpl extends BaseServiceImpl implements ViewService {
   private static final Logger LOG = Logger.getLogger(ViewService.class);
 
   private CatalogSurfaceViews catalogSurfaceViews() {
-    return new CatalogSurfaceViews(viewRepo, graphView);
+    return new CatalogSurfaceViews(viewRepo, graphView, catalogContext());
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView);
+    return new CatalogSurfaceWritePolicy(graphView, catalogContext());
   }
 
   @Override

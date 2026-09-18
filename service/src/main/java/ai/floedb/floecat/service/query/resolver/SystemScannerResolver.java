@@ -32,6 +32,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 @ApplicationScoped
@@ -57,7 +58,7 @@ public final class SystemScannerResolver {
   public SystemObjectScanner resolve(
       String correlationId, ResourceId tableId, CatalogContext ctx, PhaseDiagnostics diagnostics) {
     PhaseDiagnostics safeDiagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
-    CatalogContext context = ctx == null ? CatalogContext.floecatInternal() : ctx;
+    CatalogContext context = Objects.requireNonNull(ctx, "catalogContext");
     String engineKind = context.engine().hasEngineKind() ? context.engine().normalizedKind() : "";
     String engineVersion = context.engine().normalizedVersion();
     safeDiagnostics.put("system_scanner_engine_kind", engineKind);

@@ -29,6 +29,7 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
@@ -108,7 +109,8 @@ class QueryPinCommitterTest {
   @Test
   void accumulateGrowsPendingPinCountAcrossRelations() {
     TestQueryContextStore store = seededStore();
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer =
+        new QueryPinCommitter(resolver, store, ctx(), CID, timings, CatalogContext.empty());
 
     assertThat(committer.pendingPinCount()).isZero();
 
@@ -123,7 +125,8 @@ class QueryPinCommitterTest {
   @Test
   void commitWritesToQueryContextExactlyOnceAndIsDurable() {
     TestQueryContextStore store = seededStore();
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer =
+        new QueryPinCommitter(resolver, store, ctx(), CID, timings, CatalogContext.empty());
 
     committer.accumulate(List.of(resolved(TABLE_A), resolved(TABLE_B)), PhaseDiagnostics.NOOP);
     committer.commit();
@@ -147,7 +150,8 @@ class QueryPinCommitterTest {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
     store.failUpdateWith(new IllegalStateException("boom"));
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer =
+        new QueryPinCommitter(resolver, store, ctx(), CID, timings, CatalogContext.empty());
 
     committer.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP);
 
@@ -161,7 +165,8 @@ class QueryPinCommitterTest {
   void cancellationBeforeCommitReleasesPendingRootsWithoutUpdatingContext() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer =
+        new QueryPinCommitter(resolver, store, ctx(), CID, timings, CatalogContext.empty());
     AtomicBoolean cancelled = new AtomicBoolean();
 
     committer.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP, cancelled::get);
@@ -180,7 +185,8 @@ class QueryPinCommitterTest {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
     QueryPinCommitter committer =
-        new QueryPinCommitter(new SnapshotAwareResolver(), store, ctx(), CID, timings);
+        new QueryPinCommitter(
+            new SnapshotAwareResolver(), store, ctx(), CID, timings, CatalogContext.empty());
 
     committer.accumulate(List.of(resolved(TABLE_A, selected(TABLE_A, 1L))), PhaseDiagnostics.NOOP);
 
@@ -200,7 +206,8 @@ class QueryPinCommitterTest {
   void emptyAccumulateThenCommitIsANoOp() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    QueryPinCommitter committer =
+        new QueryPinCommitter(resolver, store, ctx(), CID, timings, CatalogContext.empty());
 
     committer.accumulate(List.of(), PhaseDiagnostics.NOOP);
     assertThat(committer.pendingPinCount()).isZero();
@@ -222,7 +229,8 @@ class QueryPinCommitterTest {
   }
 
   private ResolvedRelation resolved(ResourceId table, QueryInput selectedInput) {
-    RelationNode node = (RelationNode) graphView.resolve(table).orElseThrow();
+    RelationNode node =
+        (RelationNode) graphView.resolve(table, CatalogContext.empty()).orElseThrow();
     return new ResolvedRelation(
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setTableId(table))
@@ -231,7 +239,7 @@ class QueryPinCommitterTest {
         node,
         selectedInput,
         graphView
-            .tableName(table)
+            .tableName(table, CatalogContext.empty())
             .orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 
