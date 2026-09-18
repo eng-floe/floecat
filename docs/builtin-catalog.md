@@ -83,17 +83,17 @@ builtins/
 
 The `_index.txt` file lists fragments in the order they should be merged. Lines that are blank or start with `#` are ignored. Each fragment is a proto-text encoding of `SystemObjectsRegistry` (see [`system_objects_registry.proto`][system-objects-registry-proto]). During startup Floe catalogs parse each fragment into a `SystemObjectsRegistry.Builder` and apply them sequentially via `SystemObjectsRegistryMerger`, which merges builder→builder to avoid extra allocations. The merged result is then rewritten by `SystemCatalogProtoMapper` and cached as `SystemCatalogData`.
 
-The loader applies the shared Floecat definitions first, then the selected executor's static catalog, then live executor contributions, and finally the selected environment's live contributions. Overrides happen deterministically because each stage stores entries in a `LinkedHashMap` keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging.
+The loader resolves the selected executor and environment independently. The registry composes only the selected providers; `floecat_internal` is not added as a hidden base layer. Overrides happen deterministically because each selected provider stage stores entries in a `LinkedHashMap` keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging.
 
 #### Override precedence contract
 
-1. The shared Floecat provider seeds every catalog with its common relations.
-2. The selected executor's static catalog overlays those relation definitions.
-3. The selected executor provider can contribute live relation definitions for the `(engineKind, engineVersion)` tuple.
-4. The selected environment provider contributes environment-owned relations for the complete catalog context.
-5. Within each stage, later fragments override earlier ones (controlled by `_index.txt` ordering); identical canonical names always respect the last writer.
+1. An explicitly selected executor contributes its static catalog.
+2. The selected executor provider can contribute live relation definitions for the `(engineKind, engineVersion)` tuple.
+3. The selected environment provider contributes environment-owned relations for the complete catalog context.
+4. `floecat_internal` contributes only when explicitly selected. A request boundary may turn a completely absent selection into that explicit selection for compatibility.
+5. Within each selected stage, later fragments override earlier ones (controlled by `_index.txt` ordering); identical canonical names always respect the last writer.
 
-When no environment is selected, the request uses the empty environment context; compatibility code at an external request boundary may explicitly derive an environment from an executor request.
+When no environment is selected, the request uses the empty environment context. An executor selection never derives an environment selection.
 
 ### System table backend contract
 

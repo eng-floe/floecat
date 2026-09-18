@@ -23,8 +23,8 @@ import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemCatalogTranslator;
@@ -68,15 +68,14 @@ final class SystemConstraintCatalog {
   }
 
   private Map<ResourceId, ConstraintProvider.ConstraintSetView> catalogFor(EngineContext ctx) {
-    EngineContext effective = ctx == null ? EngineContext.empty() : ctx;
+    EngineContext effective =
+        ctx == null ? EngineContext.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "") : ctx;
     VersionKey key = new VersionKey(effective.effectiveEngineKind(), effective.normalizedVersion());
     return byVersion.computeIfAbsent(key, ignored -> buildCatalog(effective));
   }
 
   private Map<ResourceId, ConstraintProvider.ConstraintSetView> buildCatalog(EngineContext ctx) {
-    var nodes =
-        systemNodeRegistry.nodesFor(
-            CatalogContext.of(EnvironmentContext.of(ctx.engineKind(), ctx.engineVersion()), ctx));
+    var nodes = systemNodeRegistry.nodesFor(CatalogContext.forEngine(ctx));
     Map<ResourceId, ConstraintProvider.ConstraintSetView> out = new LinkedHashMap<>();
     for (var tableDef : nodes.toCatalogData().tables()) {
       ResourceId tableId = nodes.tableNames().get(NameRefUtil.canonical(tableDef.name()));

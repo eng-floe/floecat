@@ -89,10 +89,7 @@ class MetaGraphTest {
 
     EngineContextProvider engine = mock(EngineContextProvider.class);
     EngineContext engineContext = EngineContext.of("engine", "1");
-    context =
-        CatalogContext.of(
-            EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
-            engineContext);
+    context = CatalogContext.of(EnvironmentContext.empty(), engineContext);
     when(engine.engineContext()).thenReturn(engineContext);
     when(engine.isPresent()).thenReturn(true);
 
@@ -207,9 +204,7 @@ class MetaGraphTest {
   void resolveAttachesHintsUsingTheExplicitRequestEngine() {
     UserTableNode table = TestNodes.tableNode(usrTable, "{}");
     EngineContext explicit = EngineContext.of("other", "2");
-    CatalogContext explicitCatalog =
-        CatalogContext.of(
-            EnvironmentContext.of(explicit.engineKind(), explicit.engineVersion()), explicit);
+    CatalogContext explicitCatalog = CatalogContext.of(EnvironmentContext.empty(), explicit);
     when(system.resolve(usrTable, explicitCatalog)).thenReturn(Optional.empty());
     when(user.resolve(usrTable)).thenReturn(Optional.of(table));
 
@@ -249,9 +244,7 @@ class MetaGraphTest {
   @Test
   void tableName_usesExplicitEngineContextForSystemFallback() {
     EngineContext explicit = EngineContext.of("other-engine", "2");
-    CatalogContext explicitCatalog =
-        CatalogContext.of(
-            EnvironmentContext.of(explicit.engineKind(), explicit.engineVersion()), explicit);
+    CatalogContext explicitCatalog = CatalogContext.of(EnvironmentContext.empty(), explicit);
     NameRef expected = NameRef.newBuilder().setCatalog("other-engine").setName("sys").build();
     when(system.tableName(sysTable, explicitCatalog)).thenReturn(Optional.of(expected));
 

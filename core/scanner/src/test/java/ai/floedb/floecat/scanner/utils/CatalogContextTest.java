@@ -42,4 +42,14 @@ final class CatalogContextTest {
     assertThat(context.environment().normalizedKind()).isEqualTo("floedb");
     assertThat(context.engine().normalizedKind()).isEqualTo("duckdb");
   }
+
+  @Test
+  void forEngine_selectsInternalOnlyWhenEngineIsAbsent() {
+    CatalogContext absent = CatalogContext.forEngine(EngineContext.empty());
+    CatalogContext explicit = CatalogContext.forEngine(EngineContext.of("duckdb", "1.0"));
+
+    assertThat(absent).isEqualTo(CatalogContext.floecatInternal());
+    assertThat(explicit.environment()).isEqualTo(EnvironmentContext.empty());
+    assertThat(explicit.engine().normalizedKind()).isEqualTo("duckdb");
+  }
 }

@@ -23,7 +23,6 @@ import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.scanner.utils.EnvironmentContext;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import org.junit.jupiter.api.Test;
@@ -31,53 +30,67 @@ import org.junit.jupiter.api.Test;
 /**
  * Tests for {@link ServiceLoaderSystemCatalogProvider}.
  *
- * <p>Because the provider serves only the raw engine catalog (without the floecat_internal merge),
- * {@link SystemNodeRegistry} is responsible for seeding {@code information_schema}. These tests
- * focus on the loader semantics:
+ * <p>The loader resolves only the explicitly selected engine catalog. These tests focus on the
+ * selection semantics:
  *
  * <ul>
- *   <li>Fallback behavior for incomplete engine contexts
- *   <li>Presence of the floecat_internal base provider
+ *   <li>Blank selections are not implicit internal selections
+ *   <li>Unknown selections fail instead of falling back
+ *   <li>Explicit selection of the floecat_internal provider
  *   <li>Snapshot immutability guarantees
  * </ul>
  */
 class ServiceLoaderSystemCatalogProviderTest {
 
   @Test
-  void load_nullEngineKindReturnsFloecatInternalCatalog() {
+  void load_nullEngineKindReturnsEmptyCatalog() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
     SystemEngineCatalog catalog = provider.load(context(EngineContext.of(null, null)));
 
-    assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+    assertThat(catalog.engineKind()).isEmpty();
     assertThat(catalog.functions()).isEmpty();
-    assertInfoSchemaTablesPresent(catalog);
+    assertThat(catalog.tables()).isEmpty();
   }
 
   @Test
-  void load_blankEngineKindReturnsFloecatInternalCatalog() {
+  void load_blankEngineKindReturnsEmptyCatalog() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
     SystemEngineCatalog catalog = provider.load(context(EngineContext.of("   ", null)));
 
-    assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
-    assertInfoSchemaTablesPresent(catalog);
+    assertThat(catalog.engineKind()).isEmpty();
+    assertThat(catalog.tables()).isEmpty();
   }
 
   @Test
-  void load_unknownHeaderReturnsFloecatInternalContentUnderUnknownHeader() {
+  void load_unknownHeaderFailsWithoutFallback() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    SystemEngineCatalog catalog = provider.load(context(EngineContext.of("unknown-engine", "")));
-    assertThat(catalog.engineKind()).isEqualTo("unknown-engine");
-    assertInfoSchemaTablesPresent(catalog);
+    assertThatThrownBy(() -> provider.load(context(EngineContext.of("unknown-engine", ""))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unknown engine kind");
   }
 
   @Test
-  void load_withoutHeadersStillProvidesFloecatInternal() {
+  void load_unknownEnvironmentFailsWithoutFallback() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    SystemEngineCatalog catalog = provider.load(context(EngineContext.empty()));
+    CatalogContext context =
+        CatalogContext.of(
+            EnvironmentContext.of("unknown-environment", ""), EngineContext.of("duckdb", ""));
+
+    assertThatThrownBy(() -> provider.load(context))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unknown catalog environment kind");
+  }
+
+  @Test
+  void explicitInternalSelectionProvidesFloecatInternal() {
+    ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
+
+    SystemEngineCatalog catalog =
+        provider.load(context(EngineContext.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "")));
 
     assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
     assertInfoSchemaTablesPresent(catalog);
@@ -112,8 +125,8 @@ class ServiceLoaderSystemCatalogProviderTest {
   void load_returnsIndependentSnapshots() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    SystemEngineCatalog c1 = provider.load(context(EngineContext.of("engine-x", "")));
-    SystemEngineCatalog c2 = provider.load(context(EngineContext.of("engine-x", "")));
+    SystemEngineCatalog c1 = provider.load(context(EngineContext.of("duckdb", "")));
+    SystemEngineCatalog c2 = provider.load(context(EngineContext.of("duckdb", "")));
 
     assertThat(c1).isNotSameAs(c2);
     assertThat(c1.fingerprint()).isEqualTo(c2.fingerprint());
@@ -140,7 +153,6 @@ class ServiceLoaderSystemCatalogProviderTest {
   }
 
   private static CatalogContext context(EngineContext engine) {
-    return CatalogContext.of(
-        EnvironmentContext.of(engine.engineKind(), engine.engineVersion()), engine);
+    return CatalogContext.of(EnvironmentContext.empty(), engine);
   }
 }

@@ -22,12 +22,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
-import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
-import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
@@ -37,7 +33,6 @@ import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 
 @ApplicationScoped
 public final class SystemScannerResolver {
@@ -62,8 +57,8 @@ public final class SystemScannerResolver {
   public SystemObjectScanner resolve(
       String correlationId, ResourceId tableId, CatalogContext ctx, PhaseDiagnostics diagnostics) {
     PhaseDiagnostics safeDiagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
-    CatalogContext context = ctx == null ? CatalogContext.empty() : ctx;
-    String engineKind = context.engine().effectiveEngineKind();
+    CatalogContext context = ctx == null ? CatalogContext.floecatInternal() : ctx;
+    String engineKind = context.engine().hasEngineKind() ? context.engine().normalizedKind() : "";
     String engineVersion = context.engine().normalizedVersion();
     safeDiagnostics.put("system_scanner_engine_kind", engineKind);
     safeDiagnostics.put("system_scanner_engine_version", engineVersion);
@@ -120,9 +115,7 @@ public final class SystemScannerResolver {
 
   private static CatalogContext contextForEngine(
       ai.floedb.floecat.scanner.utils.EngineContext engineContext) {
-    return CatalogContext.of(
-        EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
-        engineContext);
+    return CatalogContext.forEngine(engineContext);
   }
 
   private Optional<SystemTableNode.FloeCatSystemTableNode> resolveSystemTable(
@@ -137,55 +130,17 @@ public final class SystemScannerResolver {
           .map(SystemTableNode.FloeCatSystemTableNode.class::cast);
     }
 
-    UUID incomingUuid;
-    try {
-      incomingUuid = UUID.fromString(tableId.getId());
-    } catch (IllegalArgumentException e) {
-      return Optional.empty();
-    }
-    if (!SystemResourceIdGenerator.isSystemId(incomingUuid)) {
-      return Optional.empty();
-    }
-    byte[] incoming = SystemResourceIdGenerator.bytesFromUuid(incomingUuid);
-    if (EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(context.engine().effectiveEngineKind())) {
-      return Optional.empty();
-    }
-
-    return translateToDefault(graph, tableId, incoming, context);
-  }
-
-  private Optional<SystemTableNode.FloeCatSystemTableNode> translateToDefault(
-      CatalogGraphView graph, ResourceId tableId, byte[] incoming, CatalogContext context) {
-    String sourceEngineKind = context.engine().effectiveEngineKind();
-    if (EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(sourceEngineKind)) {
-      return Optional.empty();
-    }
-
-    byte[] base =
-        SystemResourceIdGenerator.xor(incoming, SystemResourceIdGenerator.mask(sourceEngineKind));
-    byte[] fallbackBytes =
-        SystemResourceIdGenerator.xor(
-            base, SystemResourceIdGenerator.mask(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG));
-    UUID defaultId = SystemResourceIdGenerator.uuidFromBytes(fallbackBytes);
-    ResourceId fallback =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(tableId.getKind())
-            .setId(defaultId.toString())
-            .build();
-    return graph
-        .resolve(fallback, context)
-        .filter(SystemTableNode.FloeCatSystemTableNode.class::isInstance)
-        .map(SystemTableNode.FloeCatSystemTableNode.class::cast);
+    return Optional.empty();
   }
 
   private static Optional<SystemObjectScanner> provide(
       SystemObjectScannerProvider provider, String scannerId, CatalogContext context) {
-    if (!provider.supportsEngine(context.engine().effectiveEngineKind())) {
+    if (!context.engine().hasEngineKind()
+        || !provider.supportsEngine(context.engine().normalizedKind())) {
       return Optional.empty();
     }
     return provider.provide(
-        scannerId, context.engine().effectiveEngineKind(), context.engine().normalizedVersion());
+        scannerId, context.engine().normalizedKind(), context.engine().normalizedVersion());
   }
 
   private static Optional<SystemObjectScanner> provide(

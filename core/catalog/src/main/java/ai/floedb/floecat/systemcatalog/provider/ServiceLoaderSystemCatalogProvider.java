@@ -20,17 +20,11 @@ import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
-import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
-import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
-import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
-import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
 import ai.floedb.floecat.systemcatalog.validation.ValidationFailures;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
@@ -38,7 +32,6 @@ import ai.floedb.floecat.systemcatalog.validation.ValidationIssueFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -63,6 +56,7 @@ public final class ServiceLoaderSystemCatalogProvider
       new FloecatInternalProvider();
 
   private final Map<String, EngineCatalogProvider> providersByEngine;
+  private final Map<String, CatalogEnvironmentProvider> providersByEnvironment;
   private final List<CatalogEnvironmentProvider> environmentProviders;
   private final Map<String, EngineMetadataDecorator> decorators;
   private final List<SystemObjectScannerProvider> providers;
@@ -136,7 +130,28 @@ public final class ServiceLoaderSystemCatalogProvider
       LOG.warn("Failed to load CatalogEnvironmentProvider implementations", e);
       loadedEnvironmentProviders = List.of();
     }
-    this.environmentProviders = List.copyOf(loadedEnvironmentProviders);
+    Map<String, CatalogEnvironmentProvider> environmentProviderMap = new HashMap<>();
+    for (CatalogEnvironmentProvider provider : loadedEnvironmentProviders) {
+      String normalizedKind =
+          EngineIdentityNormalizer.normalizeEngineKind(provider.environmentKind());
+      if (normalizedKind.isEmpty()) {
+        LOG.warn("CatalogEnvironmentProvider with blank environment kind was ignored");
+        continue;
+      }
+      CatalogEnvironmentProvider previous = environmentProviderMap.put(normalizedKind, provider);
+      if (previous != null) {
+        throw new IllegalStateException(
+            "Multiple catalog environment providers registered for environment_kind="
+                + normalizedKind
+                + " (prev="
+                + previous.getClass().getName()
+                + ", next="
+                + provider.getClass().getName()
+                + ")");
+      }
+    }
+    this.providersByEnvironment = Map.copyOf(environmentProviderMap);
+    this.environmentProviders = List.copyOf(environmentProviderMap.values());
 
     this.providers =
         acceptedEngineProviders.stream()
@@ -159,29 +174,25 @@ public final class ServiceLoaderSystemCatalogProvider
     CatalogContext canonical = Objects.requireNonNull(context, "context");
     EngineContext engine = canonical.engine();
 
-    // Rule: no header => floecat_internal only (which includes information_schema).
-    String effectiveKind = engine.effectiveEngineKind();
-    boolean overlaysRequested = engine.enginePluginOverlaysEnabled();
+    boolean explicitEngine = engine.hasEngineKind();
+    String selectedKind = explicitEngine ? engine.normalizedKind() : "";
+    boolean internalSelected = EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(selectedKind);
 
-    EngineCatalogProvider provider = providersByEngine.get(effectiveKind);
+    validateEnvironmentSelection(canonical);
+
+    EngineCatalogProvider provider = explicitEngine ? providersByEngine.get(selectedKind) : null;
     SystemCatalogData catalog;
 
-    if (provider == null) {
-      // No plugin registered: still serve floecat-internal (merged in later).
-      if (overlaysRequested) {
-        LOG.warn(
-            "No engine catalog provider found for engine_kind="
-                + effectiveKind
-                + " (ctx="
-                + engine.engineKind()
-                + "), defaulting to floecat_internal-only content scoped as "
-                + effectiveKind);
-      }
+    if (!explicitEngine) {
       catalog = SystemCatalogData.empty();
+    } else if (internalSelected) {
+      catalog = FloecatInternalProvider.catalogData();
+    } else if (provider == null) {
+      throw new IllegalArgumentException("Unknown engine kind: " + engine.engineKind());
     } else {
       LOG.info(
           "Loading engine catalog provider for engine_kind="
-              + effectiveKind
+              + selectedKind
               + " (ctx="
               + engine.engineKind()
               + ")");
@@ -192,20 +203,17 @@ public final class ServiceLoaderSystemCatalogProvider
         logValidationIssues(provider, extErrors);
       }
       ValidationFailures.throwOnErrorIssues(
-          "Engine extension validation failed for engine_kind=" + effectiveKind, extErrors);
+          "Engine extension validation failed for engine_kind=" + selectedKind, extErrors);
 
       List<ValidationIssue> validatorIssues = SystemCatalogValidator.validate(catalog);
       if (!validatorIssues.isEmpty()) {
         logValidationIssues(provider, validatorIssues);
       }
       ValidationFailures.throwOnErrorIssues(
-          "System catalog validation failed for engine_kind=" + effectiveKind, validatorIssues);
+          "System catalog validation failed for engine_kind=" + selectedKind, validatorIssues);
     }
 
-    catalog = mergeWithInternalCatalog(catalog);
-
-    String resolvedEngineKind =
-        engine.hasEngineHeaders() ? effectiveKind : EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
+    String resolvedEngineKind = selectedKind;
 
     return SystemEngineCatalog.from(resolvedEngineKind, catalog);
   }
@@ -219,7 +227,7 @@ public final class ServiceLoaderSystemCatalogProvider
     return environmentProviders;
   }
 
-  /** Returns the floecat_internal provider that always seeds every catalog build. */
+  /** Returns the provider for the explicitly selectable floecat_internal catalog. */
   public FloecatInternalProvider internalProvider() {
     return FLOECAT_INTERNAL_PROVIDER;
   }
@@ -230,7 +238,7 @@ public final class ServiceLoaderSystemCatalogProvider
     if (ctx == null || !ctx.enginePluginOverlaysEnabled()) {
       return Optional.empty();
     }
-    return Optional.ofNullable(decorators.get(ctx.effectiveEngineKind()));
+    return Optional.ofNullable(decorators.get(ctx.normalizedKind()));
   }
 
   /**
@@ -243,6 +251,17 @@ public final class ServiceLoaderSystemCatalogProvider
     }
     return Optional.ofNullable(
         providersByEngine.get(EngineIdentityNormalizer.normalizeEngineKind(engineKind)));
+  }
+
+  private void validateEnvironmentSelection(CatalogContext context) {
+    if (!context.environment().hasEnvironmentKind()) {
+      return;
+    }
+    String kind = context.environment().normalizedKind();
+    CatalogEnvironmentProvider provider = providersByEnvironment.get(kind);
+    if (provider == null || !provider.supportsEnvironment(context.environment())) {
+      throw new IllegalArgumentException("Unknown catalog environment kind: " + kind);
+    }
   }
 
   private static void logValidationIssues(
@@ -275,45 +294,5 @@ public final class ServiceLoaderSystemCatalogProvider
         .limit(5)
         .forEach(
             entry -> LOG.warnf("Engine validation count: %s=%d", entry.getKey(), entry.getValue()));
-  }
-
-  private static SystemCatalogData mergeWithInternalCatalog(SystemCatalogData baseCatalog) {
-    SystemCatalogData internalCatalog = FloecatInternalProvider.catalogData();
-
-    Map<String, SystemNamespaceDef> namespaceByName = new LinkedHashMap<>();
-    Map<String, SystemTableDef> tableByName = new LinkedHashMap<>();
-    Map<String, SystemViewDef> viewByName = new LinkedHashMap<>();
-
-    overlayDefinitions(internalCatalog.namespaces(), namespaceByName);
-    overlayDefinitions(baseCatalog.namespaces(), namespaceByName);
-    overlayDefinitions(internalCatalog.tables(), tableByName);
-    overlayDefinitions(baseCatalog.tables(), tableByName);
-    overlayDefinitions(internalCatalog.views(), viewByName);
-    overlayDefinitions(baseCatalog.views(), viewByName);
-
-    List<EngineSpecificRule> registryRules =
-        Stream.concat(
-                internalCatalog.registryEngineSpecific().stream(),
-                baseCatalog.registryEngineSpecific().stream())
-            .toList();
-
-    return new SystemCatalogData(
-        baseCatalog.functions(),
-        baseCatalog.operators(),
-        baseCatalog.types(),
-        baseCatalog.casts(),
-        baseCatalog.collations(),
-        baseCatalog.aggregates(),
-        List.copyOf(namespaceByName.values()),
-        List.copyOf(tableByName.values()),
-        List.copyOf(viewByName.values()),
-        registryRules);
-  }
-
-  private static <T extends SystemObjectDef> void overlayDefinitions(
-      List<T> definitions, Map<String, T> target) {
-    for (T def : definitions) {
-      target.put(NameRefUtil.canonical(def.name()), def);
-    }
   }
 }

@@ -153,8 +153,11 @@ public class SystemNodeRegistry {
     SystemEngineCatalog catalog =
         SystemEngineCatalog.from(baseCatalog.engineKind(), mergedCatalogData);
     long version = versionFromFingerprint(catalog.fingerprint());
-    String normalizedKind = canonical.engine().normalizedKind();
-    String effectiveKind = canonical.engine().effectiveEngineKind();
+    String normalizedKind =
+        canonical.engine().hasEngineKind()
+            ? canonical.engine().normalizedKind()
+            : baseCatalog.engineKind();
+    String effectiveKind = normalizedKind;
     String normalizedVersion = canonical.engine().normalizedVersion();
     ResourceId catalogId = systemCatalogContainerId(normalizedKind);
 
@@ -416,20 +419,26 @@ public class SystemNodeRegistry {
   private SystemCatalogData mergeCatalogData(
       CatalogContext canonical, SystemEngineCatalog baseCatalog) {
     String engineKind = baseCatalog.engineKind();
-    String normalizedKind = canonical.engine().normalizedKind();
+    String normalizedKind =
+        canonical.engine().hasEngineKind() ? canonical.engine().normalizedKind() : engineKind;
     String normalizedVersion = canonical.engine().normalizedVersion();
     boolean includeEngineProviders =
-        canonical.engine().enginePluginOverlaysEnabled()
-            && !EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(engineKind);
+        canonical.engine().hasEngineKind()
+            && !EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(normalizedKind);
+    boolean includeInternalProvider =
+        canonical.engine().hasEngineKind()
+            && EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(normalizedKind);
 
     Map<String, SystemNamespaceDef> namespaceByName = new LinkedHashMap<>();
     Map<String, SystemTableDef> tableByName = new LinkedHashMap<>();
     Map<String, SystemViewDef> viewByName = new LinkedHashMap<>();
 
-    for (SystemObjectDef def :
-        internalProvider.definitions(
-            EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, normalizedVersion)) {
-      mergeDefinition(def, namespaceByName, tableByName, viewByName);
+    if (includeInternalProvider) {
+      for (SystemObjectDef def :
+          internalProvider.definitions(
+              EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, normalizedVersion)) {
+        mergeDefinition(def, namespaceByName, tableByName, viewByName);
+      }
     }
 
     for (SystemNamespaceDef ns : baseCatalog.namespaces()) {
@@ -1042,12 +1051,19 @@ public class SystemNodeRegistry {
   }
 
   private record VersionKey(
-      String environmentKind, String environmentVersion, String engineKind, String engineVersion) {
+      boolean hasEnvironmentKind,
+      String environmentKind,
+      String environmentVersion,
+      boolean hasEngineKind,
+      String engineKind,
+      String engineVersion) {
 
     private static VersionKey from(CatalogContext context) {
       return new VersionKey(
+          context.environment().hasEnvironmentKind(),
           context.environment().normalizedKind(),
           context.environment().normalizedVersion(),
+          context.engine().hasEngineKind(),
           context.engine().normalizedKind(),
           context.engine().normalizedVersion());
     }
