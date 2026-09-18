@@ -23,6 +23,7 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
@@ -55,16 +56,13 @@ public final class SystemScannerResolver {
    */
   public SystemObjectScanner resolve(String correlationId, ResourceId tableId) {
     return resolve(
-        correlationId,
-        tableId,
-        CatalogContext.of(null, engine.engineContext()),
-        PhaseDiagnostics.NOOP);
+        correlationId, tableId, contextForEngine(engine.engineContext()), PhaseDiagnostics.NOOP);
   }
 
   public SystemObjectScanner resolve(
       String correlationId, ResourceId tableId, CatalogContext ctx, PhaseDiagnostics diagnostics) {
     PhaseDiagnostics safeDiagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
-    CatalogContext context = ctx == null ? CatalogContext.of(null, null) : ctx;
+    CatalogContext context = ctx == null ? CatalogContext.empty() : ctx;
     String engineKind = context.engine().effectiveEngineKind();
     String engineVersion = context.engine().normalizedVersion();
     safeDiagnostics.put("system_scanner_engine_kind", engineKind);
@@ -118,6 +116,13 @@ public final class SystemScannerResolver {
         SYSTEM_SCAN_SCANNER_NOT_FOUND,
         Map.of(
             "scanner_id", scannerId, "engine_kind", engineKind, "engine_version", engineVersion));
+  }
+
+  private static CatalogContext contextForEngine(
+      ai.floedb.floecat.scanner.utils.EngineContext engineContext) {
+    return CatalogContext.of(
+        EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
+        engineContext);
   }
 
   private Optional<SystemTableNode.FloeCatSystemTableNode> resolveSystemTable(

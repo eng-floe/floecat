@@ -26,17 +26,15 @@ public record CatalogContext(EnvironmentContext environment, EngineContext engin
     engine = Objects.requireNonNull(engine, "engine");
   }
 
-  /**
-   * Selects an environment and engine while preserving the current single-engine default: when no
-   * environment is supplied, the environment follows the engine.
-   */
+  /** Returns the empty catalog context. */
+  public static CatalogContext empty() {
+    return new CatalogContext(EnvironmentContext.empty(), EngineContext.empty());
+  }
+
+  /** Selects the environment and engine for a catalog operation. */
   public static CatalogContext of(EnvironmentContext environment, EngineContext engine) {
-    EngineContext selectedEngine = engine == null ? EngineContext.empty() : engine;
-    EnvironmentContext selectedEnvironment = environment;
-    if (selectedEnvironment == null || !selectedEnvironment.hasEnvironmentKind()) {
-      selectedEnvironment =
-          EnvironmentContext.of(selectedEngine.engineKind(), selectedEngine.engineVersion());
-    }
-    return new CatalogContext(selectedEnvironment, selectedEngine);
+    return new CatalogContext(
+        Objects.requireNonNull(environment, "environment"),
+        Objects.requireNonNull(engine, "engine"));
   }
 }

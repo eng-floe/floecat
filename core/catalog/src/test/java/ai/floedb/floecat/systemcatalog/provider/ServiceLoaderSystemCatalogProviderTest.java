@@ -22,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
@@ -139,6 +140,7 @@ class ServiceLoaderSystemCatalogProviderTest {
   }
 
   private static CatalogContext context(EngineContext engine) {
-    return CatalogContext.of(null, engine);
+    return CatalogContext.of(
+        EnvironmentContext.of(engine.engineKind(), engine.engineVersion()), engine);
   }
 }

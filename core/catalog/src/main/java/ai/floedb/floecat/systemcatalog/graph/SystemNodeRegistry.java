@@ -141,7 +141,7 @@ public class SystemNodeRegistry {
 
   /** Resolves system nodes for the selected environment and engine. */
   public BuiltinNodes nodesFor(CatalogContext context) {
-    CatalogContext canonical = context == null ? CatalogContext.of(null, null) : context;
+    CatalogContext canonical = Objects.requireNonNull(context, "context");
     VersionKey key = VersionKey.from(canonical);
     return cache.computeIfAbsent(key, ignored -> buildNodes(canonical));
   }

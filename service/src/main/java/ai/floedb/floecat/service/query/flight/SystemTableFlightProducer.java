@@ -34,6 +34,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.ConstraintProviderFactory;
@@ -193,7 +194,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
             graph,
             null,
             queryCtx.getQueryDefaultCatalogId(),
-            CatalogContext.of(null, context.engineContext()),
+            contextForEngine(context.engineContext()),
             statsProvider,
             constraintFactory.provider());
 
@@ -216,7 +217,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
     if (tableId.isEmpty()) {
       return false;
     }
-    CatalogContext catalogContext = CatalogContext.of(null, context.engineContext());
+    CatalogContext catalogContext = contextForEngine(context.engineContext());
     return graph
         .resolve(tableId.get(), catalogContext)
         .filter(SystemTableNode.FloeCatSystemTableNode.class::isInstance)
@@ -226,7 +227,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
   @Override
   protected Collection<String> tableNames(ResolvedCallContext context) {
     EngineContext ctx = context.engineContext();
-    var nodes = nodeRegistry.nodesFor(CatalogContext.of(null, ctx));
+    var nodes = nodeRegistry.nodesFor(contextForEngine(ctx));
     if (nodes == null) {
       return List.of();
     }
@@ -235,22 +236,25 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
 
   @Override
   protected Optional<ResourceId> resolveSystemTableId(NameRef name, ResolvedCallContext context) {
-    return graph.resolveSystemTable(name, CatalogContext.of(null, context.engineContext()));
+    return graph.resolveSystemTable(name, contextForEngine(context.engineContext()));
   }
 
   @Override
   protected Optional<String> resolveSystemTableName(ResourceId id, ResolvedCallContext context) {
     return graph
-        .resolveSystemTableName(id, CatalogContext.of(null, context.engineContext()))
+        .resolveSystemTableName(id, contextForEngine(context.engineContext()))
         .map(NameRefUtil::canonical);
   }
 
   private SystemObjectScanner resolveScanner(ResourceId tableId, ResolvedCallContext ctx) {
     return scannerResolver.resolve(
-        ctx.correlationId(),
-        tableId,
-        CatalogContext.of(null, ctx.engineContext()),
-        PhaseDiagnostics.NOOP);
+        ctx.correlationId(), tableId, contextForEngine(ctx.engineContext()), PhaseDiagnostics.NOOP);
+  }
+
+  private static CatalogContext contextForEngine(EngineContext engineContext) {
+    return CatalogContext.of(
+        EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
+        engineContext);
   }
 
   private static ResourceId requireTableId(Optional<ResourceId> tableId, String tableName) {

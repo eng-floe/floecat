@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -134,6 +135,7 @@ class StaticSystemCatalogProviderTest {
   }
 
   private static CatalogContext context(EngineContext engine) {
-    return CatalogContext.of(null, engine);
+    return CatalogContext.of(
+        EnvironmentContext.of(engine.engineKind(), engine.engineVersion()), engine);
   }
 }

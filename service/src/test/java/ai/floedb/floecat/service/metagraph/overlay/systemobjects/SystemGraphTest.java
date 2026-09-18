@@ -31,6 +31,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.testsupport.FakeSystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
@@ -65,7 +66,8 @@ class SystemGraphTest {
   private ResourceId defaultTableId;
 
   private static CatalogContext context(String engineKind, String engineVersion) {
-    return CatalogContext.of(null, EngineContext.of(engineKind, engineVersion));
+    EngineContext engine = EngineContext.of(engineKind, engineVersion);
+    return CatalogContext.of(EnvironmentContext.of(engineKind, engineVersion), engine);
   }
 
   @BeforeEach

@@ -39,6 +39,7 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.context.EngineContextProvider;
@@ -88,7 +89,10 @@ class MetaGraphTest {
 
     EngineContextProvider engine = mock(EngineContextProvider.class);
     EngineContext engineContext = EngineContext.of("engine", "1");
-    context = CatalogContext.of(null, engineContext);
+    context =
+        CatalogContext.of(
+            EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
+            engineContext);
     when(engine.engineContext()).thenReturn(engineContext);
     when(engine.isPresent()).thenReturn(true);
 
@@ -203,7 +207,9 @@ class MetaGraphTest {
   void resolveAttachesHintsUsingTheExplicitRequestEngine() {
     UserTableNode table = TestNodes.tableNode(usrTable, "{}");
     EngineContext explicit = EngineContext.of("other", "2");
-    CatalogContext explicitCatalog = CatalogContext.of(null, explicit);
+    CatalogContext explicitCatalog =
+        CatalogContext.of(
+            EnvironmentContext.of(explicit.engineKind(), explicit.engineVersion()), explicit);
     when(system.resolve(usrTable, explicitCatalog)).thenReturn(Optional.empty());
     when(user.resolve(usrTable)).thenReturn(Optional.of(table));
 
@@ -243,7 +249,9 @@ class MetaGraphTest {
   @Test
   void tableName_usesExplicitEngineContextForSystemFallback() {
     EngineContext explicit = EngineContext.of("other-engine", "2");
-    CatalogContext explicitCatalog = CatalogContext.of(null, explicit);
+    CatalogContext explicitCatalog =
+        CatalogContext.of(
+            EnvironmentContext.of(explicit.engineKind(), explicit.engineVersion()), explicit);
     NameRef expected = NameRef.newBuilder().setCatalog("other-engine").setName("sys").build();
     when(system.tableName(sysTable, explicitCatalog)).thenReturn(Optional.of(expected));
 
@@ -835,8 +843,7 @@ class MetaGraphTest {
     MetaGraph metaNoEngine = new MetaGraph(user, ObjectCache.forTesting(), hints, system, engine);
 
     NameRef ref = NameRef.newBuilder().setName("t").build();
-    when(system.resolveTable(ref, CatalogContext.of(null, EngineContext.empty())))
-        .thenReturn(Optional.empty());
+    when(system.resolveTable(ref, CatalogContext.empty())).thenReturn(Optional.empty());
     when(user.resolveTable("c", ref)).thenReturn(Optional.of(usrTable));
 
     Optional<ResourceId> out = metaNoEngine.resolveTable("c", ref);

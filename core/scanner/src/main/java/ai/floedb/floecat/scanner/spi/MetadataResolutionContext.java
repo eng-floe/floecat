@@ -94,7 +94,7 @@ public interface MetadataResolutionContext {
         StatsProvider statsProvider) {
       this.graphView = Objects.requireNonNull(graphView, "graphView");
       this.catalogId = Objects.requireNonNull(catalogId, "catalogId");
-      this.catalogContext = catalogContext == null ? CatalogContext.of(null, null) : catalogContext;
+      this.catalogContext = Objects.requireNonNull(catalogContext, "catalogContext");
       this.statsProvider = statsProvider == null ? StatsProvider.NONE : statsProvider;
       this.memoizedValues = new ConcurrentHashMap<>();
     }

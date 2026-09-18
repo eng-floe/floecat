@@ -35,6 +35,7 @@ import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.PageTokens;
@@ -91,7 +92,10 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
   }
 
   private CatalogContext catalogContext() {
-    return CatalogContext.of(null, engineContext());
+    EngineContext engineContext = engineContext();
+    return CatalogContext.of(
+        EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
+        engineContext);
   }
 
   private static CatalogContext orRequestCatalog(

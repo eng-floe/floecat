@@ -23,6 +23,7 @@ import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /** Test-only provider for supplying fixed builtin catalogs. */
 public final class StaticSystemCatalogProvider implements SystemCatalogProvider {
@@ -41,7 +42,7 @@ public final class StaticSystemCatalogProvider implements SystemCatalogProvider 
 
   @Override
   public SystemEngineCatalog load(CatalogContext context) {
-    CatalogContext canonical = context == null ? CatalogContext.of(null, null) : context;
+    CatalogContext canonical = Objects.requireNonNull(context, "context");
     String normalized = canonical.engine().effectiveEngineKind();
     SystemCatalogData data = catalogs.get(normalized);
     return SystemEngineCatalog.from(normalized, data != null ? data : SystemCatalogData.empty());

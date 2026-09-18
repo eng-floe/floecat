@@ -42,7 +42,7 @@ public final class SystemDefinitionRegistry {
    * <p>The returned instance is cached for the normalized context until {@link #clear()} is called.
    */
   public SystemEngineCatalog catalog(CatalogContext context) {
-    CatalogContext canonical = context == null ? CatalogContext.of(null, null) : context;
+    CatalogContext canonical = Objects.requireNonNull(context, "context");
     CatalogKey requestedKey = CatalogKey.from(canonical);
     SystemEngineCatalog existing = cache.get(requestedKey);
     if (existing != null) {
