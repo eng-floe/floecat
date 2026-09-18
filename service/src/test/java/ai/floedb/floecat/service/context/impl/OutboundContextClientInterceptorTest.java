@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -40,6 +41,10 @@ final class OutboundContextClientInterceptorTest {
       Metadata.Key.of("x-engine-kind", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> ENGINE_VERSION_KEY =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ENVIRONMENT_KIND_KEY =
+      Metadata.Key.of("x-environment-kind", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ENVIRONMENT_VERSION_KEY =
+      Metadata.Key.of("x-environment-version", Metadata.ASCII_STRING_MARSHALLER);
 
   @Test
   void doesNotEmitEmptyEngineHeadersWhenContextMissing() {
@@ -82,6 +87,34 @@ final class OutboundContextClientInterceptorTest {
     Metadata.Key<String> authKey =
         Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
     assertThat(captured.get().get(authKey)).isEqualTo("Bearer propagated");
+  }
+
+  @Test
+  void propagatesEnvironmentHeadersFromRequestContext() {
+    OutboundContextClientInterceptor interceptor =
+        new OutboundContextClientInterceptor(Optional.empty(), Optional.empty());
+    AtomicReference<Metadata> captured = new AtomicReference<>();
+    ResolvedCallContext resolved =
+        new ResolvedCallContext(
+            PrincipalContext.getDefaultInstance(),
+            "",
+            "",
+            EngineContext.of("duckdb", "1.0"),
+            EnvironmentContext.of("floe", "3.1"),
+            null,
+            null);
+
+    ResolvedCallContexts.runWith(
+        resolved,
+        () -> {
+          ClientCall<String, String> call =
+              interceptor.interceptCall(
+                  testMethod("test/environment"), CallOptions.DEFAULT, new TestChannel(captured));
+          call.start(new ClientCall.Listener<>() {}, new Metadata());
+        });
+
+    assertThat(captured.get().get(ENVIRONMENT_KIND_KEY)).isEqualTo("floe");
+    assertThat(captured.get().get(ENVIRONMENT_VERSION_KEY)).isEqualTo("3.1");
   }
 
   @Test

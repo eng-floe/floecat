@@ -50,4 +50,14 @@ public record CatalogContext(EnvironmentContext environment, EngineContext engin
         Objects.requireNonNull(environment, "environment"),
         Objects.requireNonNull(engine, "engine"));
   }
+
+  /** Resolves an inbound request selection, preserving the internal default when both axes omit. */
+  public static CatalogContext forRequest(EnvironmentContext environment, EngineContext engine) {
+    Objects.requireNonNull(environment, "environment");
+    Objects.requireNonNull(engine, "engine");
+    if (!environment.hasEnvironmentKind() && !engine.hasEngineKind()) {
+      return floecatInternal();
+    }
+    return of(environment, engine);
+  }
 }

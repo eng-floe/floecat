@@ -87,10 +87,9 @@ public abstract class BaseServiceImpl {
 
   /** Captures the explicit catalog selection at the external service boundary. */
   protected CatalogContext catalogContext() {
-    return CatalogContext.forEngine(
-        engineContextProvider == null
-            ? EngineContext.empty()
-            : engineContextProvider.engineContext());
+    return engineContextProvider == null
+        ? CatalogContext.forEngine(EngineContext.empty())
+        : engineContextProvider.catalogContext();
   }
 
   protected static final Duration BACKOFF_MIN = FenceRetry.BACKOFF_MIN;

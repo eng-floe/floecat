@@ -187,7 +187,7 @@ public interface SystemCatalogProvider {
 
 ### EngineContext & header semantics
 
-Every `SystemCatalogProvider` receives a complete `CatalogContext` containing an environment and an executor. The executor context selects capability providers and the environment context selects environment-owned relation providers. `SystemNodeRegistry` applies both axes independently, so a live environment can be paired with any executor without copying the executor's types or functions into environment definitions.
+Every `SystemCatalogProvider` receives a complete `CatalogContext` containing an environment and an executor. Requests carry the two axes independently in `x-environment-kind` / `x-environment-version` and `x-engine-kind` / `x-engine-version`; the resolved call context propagates both together across internal RPCs and worker hops. The executor context selects capability providers and the environment context selects environment-owned relation providers. `SystemNodeRegistry` applies both axes independently, so a live environment can be paired with any executor without copying the executor's types or functions into environment definitions.
 
 ### Caching Architecture
 

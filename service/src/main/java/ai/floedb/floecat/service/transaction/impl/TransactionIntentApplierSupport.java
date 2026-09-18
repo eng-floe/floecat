@@ -832,10 +832,9 @@ public class TransactionIntentApplierSupport {
   }
 
   private CatalogContext catalogContext() {
-    return CatalogContext.forEngine(
-        engineContext == null || engineContext.engineContext() == null
-            ? EngineContext.empty()
-            : engineContext.engineContext());
+    return engineContext == null
+        ? CatalogContext.forEngine(EngineContext.empty())
+        : engineContext.catalogContext();
   }
 
   private ApplyOutcome tableImmutableConflict(String tableId) {

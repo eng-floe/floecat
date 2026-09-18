@@ -154,12 +154,18 @@ class SystemObjectsServiceImplTest {
   }
 
   private static SystemObjectsServiceImpl createService(SystemNodeRegistry nodeRegistry) {
-    SystemObjectsServiceImpl service = new SystemObjectsServiceImpl();
+    TestSystemObjectsServiceImpl service = new TestSystemObjectsServiceImpl();
     service.principal = new PrincipalProvider();
     service.authz = new Authorizer();
     service.nodeRegistry = nodeRegistry;
-    service.engineContextProvider = new EngineContextProvider();
+    service.setEngineContextProvider(new EngineContextProvider());
     return service;
+  }
+
+  private static final class TestSystemObjectsServiceImpl extends SystemObjectsServiceImpl {
+    void setEngineContextProvider(EngineContextProvider provider) {
+      this.engineContextProvider = provider;
+    }
   }
 
   private static SystemCatalogData catalogWithRelations() {

@@ -298,7 +298,8 @@ standing between it and a concurrent delete.
 Namespace deletes assert nothing about their catalog. Removal is the direction that orphans nothing.
 
 ### Security and Context
-`InboundContextInterceptor` reads `x-query-id`, `x-engine-version`, and `x-correlation-id` headers,
+`InboundContextInterceptor` reads `x-query-id`, `x-engine-kind`, `x-engine-version`,
+`x-environment-kind`, `x-environment-version`, and `x-correlation-id` headers,
 plus optional OIDC session/authorization headers, validates account membership, hydrates
 MDC/OpenTelemetry attributes, and enforces the configured `floecat.auth.mode`.
 `OutboundContextClientInterceptor` mirrors the same headers for internal gRPC calls

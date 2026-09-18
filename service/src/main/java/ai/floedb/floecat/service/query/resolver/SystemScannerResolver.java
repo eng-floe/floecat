@@ -44,15 +44,14 @@ public final class SystemScannerResolver {
   @Inject List<CatalogEnvironmentProvider> environmentProviders;
 
   /**
-   * Resolves the scanner for the given table ID, reading the engine context from the current gRPC
-   * call's thread-local context via {@link EngineContextProvider}.
+   * Resolves the scanner for the given table ID, reading the complete catalog context from the
+   * current gRPC call's thread-local context via {@link EngineContextProvider}.
    *
    * <p>Use this overload from gRPC service implementations where the engine context is already
    * propagated by {@code InboundContextInterceptor}.
    */
   public SystemObjectScanner resolve(String correlationId, ResourceId tableId) {
-    return resolve(
-        correlationId, tableId, contextForEngine(engine.engineContext()), PhaseDiagnostics.NOOP);
+    return resolve(correlationId, tableId, engine.catalogContext(), PhaseDiagnostics.NOOP);
   }
 
   public SystemObjectScanner resolve(
@@ -112,11 +111,6 @@ public final class SystemScannerResolver {
         SYSTEM_SCAN_SCANNER_NOT_FOUND,
         Map.of(
             "scanner_id", scannerId, "engine_kind", engineKind, "engine_version", engineVersion));
-  }
-
-  private static CatalogContext contextForEngine(
-      ai.floedb.floecat.scanner.utils.EngineContext engineContext) {
-    return CatalogContext.forEngine(engineContext);
   }
 
   private Optional<SystemTableNode.FloeCatSystemTableNode> resolveSystemTable(

@@ -456,7 +456,7 @@ public class UserObjectBundleService {
       this.defaultCatalogId = ctx.getQueryDefaultCatalogId();
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
       EngineContext requestEngine = engineContext.engineContext();
-      CatalogContext requestCatalog = CatalogContext.forEngine(requestEngine);
+      CatalogContext requestCatalog = engineContext.catalogContext();
       this.engineKind = requestCatalog.engine().normalizedKind();
       this.engineVersion = requestEngine.normalizedVersion();
       this.resolutionContext =
