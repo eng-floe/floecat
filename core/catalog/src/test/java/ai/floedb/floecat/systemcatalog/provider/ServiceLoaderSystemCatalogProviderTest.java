@@ -97,6 +97,16 @@ class ServiceLoaderSystemCatalogProviderTest {
   }
 
   @Test
+  void liveEngineProvider_isDiscoveredSeparatelyFromStaticExtensions() {
+    ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
+
+    assertThat(provider.engineKinds()).contains("duckdb");
+    assertThat(provider.engineProviderFor(" DuckDB "))
+        .containsInstanceOf(DynamicDuckCatalogProvider.class);
+    assertThat(provider.providers()).anyMatch(DynamicDuckCatalogProvider.class::isInstance);
+  }
+
+  @Test
   void load_returnsIndependentSnapshots() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
