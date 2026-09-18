@@ -36,7 +36,6 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.scanner.utils.EnvironmentContext;
@@ -188,9 +187,10 @@ class MetaGraphTest {
     when(system.listRelations(any(), eq(context))).thenReturn(List.of(s));
     when(user.listNamespaceRefs(catalogId))
         .thenReturn(
-            List.of(new TopologyGraph.NamespaceRef(namespaceId, "ns", catalogId, List.of())));
+            List.of(new CatalogGraphView.NamespaceRef(namespaceId, "ns", catalogId, List.of())));
     when(user.listRelationRefs(catalogId, namespaceId))
-        .thenReturn(List.of(new TopologyGraph.RelationRef(usrTable, "usr", ResourceKind.RK_TABLE)));
+        .thenReturn(
+            List.of(new CatalogGraphView.RelationRef(usrTable, "usr", ResourceKind.RK_TABLE)));
     when(user.table(usrTable)).thenReturn(Optional.of(u));
 
     List<RelationNode> out = meta.listRelations(catalogId);
@@ -786,13 +786,14 @@ class MetaGraphTest {
     when(user.listNamespaceRefsByName(catalogId, names))
         .thenReturn(
             List.of(
-                new TopologyGraph.NamespaceRef(
+                new CatalogGraphView.NamespaceRef(
                     userNamespaceId, "sales", catalogId, List.of("sales"))));
 
-    List<TopologyGraph.NamespaceRef> refs = meta.listNamespaceRefsByName(catalogId, names);
+    List<CatalogGraphView.NamespaceRef> refs =
+        meta.listNamespaceRefsByName(catalogId, names, context);
 
     assertThat(refs)
-        .extracting(TopologyGraph.NamespaceRef::id)
+        .extracting(CatalogGraphView.NamespaceRef::id)
         .containsExactly(systemNamespaceId, userNamespaceId);
     verify(user).listNamespaceRefsByName(catalogId, names);
     verify(user, never()).listNamespaceRefs(catalogId);
@@ -818,12 +819,12 @@ class MetaGraphTest {
     when(user.listRelationRefsByName(catalogId, namespaceId, names))
         .thenReturn(
             List.of(
-                new TopologyGraph.RelationRef(userRelationId, "orders", ResourceKind.RK_TABLE)));
+                new CatalogGraphView.RelationRef(userRelationId, "orders", ResourceKind.RK_TABLE)));
 
-    List<TopologyGraph.RelationRef> refs =
-        meta.listRelationRefsByName(catalogId, namespaceId, names);
+    List<CatalogGraphView.RelationRef> refs =
+        meta.listRelationRefsByName(catalogId, namespaceId, names, context);
 
-    assertThat(refs).extracting(TopologyGraph.RelationRef::id).containsExactly(userRelationId);
+    assertThat(refs).extracting(CatalogGraphView.RelationRef::id).containsExactly(userRelationId);
     verify(user).listRelationRefsByName(catalogId, namespaceId, names);
     verify(user, never()).listRelationRefs(catalogId, namespaceId);
   }

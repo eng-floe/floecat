@@ -178,12 +178,12 @@ public record SystemObjectScanContext(
   }
 
   /** Lightweight namespace refs from the graph view; production avoids full node hydration. */
-  public List<TopologyGraph.NamespaceRef> listNamespaceRefs() {
+  public List<CatalogGraphView.NamespaceRef> listNamespaceRefs() {
     return graph.listNamespaceRefs(queryDefaultCatalogId, catalogContext);
   }
 
   /** Lightweight namespace refs matching the supplied information_schema names. */
-  public List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(java.util.Set<String> names) {
+  public List<CatalogGraphView.NamespaceRef> listNamespaceRefsByName(java.util.Set<String> names) {
     return graph.listNamespaceRefsByName(queryDefaultCatalogId, names, catalogContext);
   }
 
@@ -193,12 +193,12 @@ public record SystemObjectScanContext(
   }
 
   /** Lightweight relation refs for a namespace; production avoids full node hydration. */
-  public List<TopologyGraph.RelationRef> listRelationRefs(ResourceId namespaceId) {
+  public List<CatalogGraphView.RelationRef> listRelationRefs(ResourceId namespaceId) {
     return graph.listRelationRefs(queryDefaultCatalogId, namespaceId, catalogContext);
   }
 
   /** Lightweight relation refs matching the supplied names. */
-  public List<TopologyGraph.RelationRef> listRelationRefsByName(
+  public List<CatalogGraphView.RelationRef> listRelationRefsByName(
       ResourceId namespaceId, java.util.Set<String> names) {
     return graph.listRelationRefsByName(queryDefaultCatalogId, namespaceId, names, catalogContext);
   }

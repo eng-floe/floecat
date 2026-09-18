@@ -43,63 +43,45 @@ import java.util.Set;
  * <p>This interface unifies the MetadataGraph view and the builtin graph so callers can depend on a
  * single entry point and do not need to mix ad-hoc resolver code.
  *
- * <p>Catalog context is resolved implicitly from the request context.
+ * <p>Operations that depend on catalog selection accept the selected catalog context explicitly.
+ * Lightweight reference enumeration always uses that explicit context.
  */
 public interface CatalogGraphView {
 
-  /** Resolves any graph node for the given resource. Catalog context is resolved implicitly. */
+  /** Resolves any graph node for the given resource. */
   Optional<GraphNode> resolve(ResourceId id);
 
-  /**
-   * Resolves any graph node for the given resource using an explicit catalog context.
-   *
-   * <p>Prefer this overload wherever the caller already holds the request's catalog context (e.g.
-   * from a {@link MetadataResolutionContext}): re-reading the engine from the request context on
-   * every lookup is fragile across executor hops, and a silently empty engine makes engine-gated
-   * system objects unresolvable.
-   *
-   * <p><b>Implementers beware:</b> this default delegates to {@link #resolve(ResourceId)} and
-   * <em>ignores</em> the passed catalog context. Implementations that serve context-dependent
-   * objects must override it.
-   */
+  /** Resolves any graph node for the given resource using the selected catalog context. */
   default Optional<GraphNode> resolve(ResourceId id, CatalogContext catalogContext) {
     return resolve(id);
   }
 
   /**
    * Lists every relation under the requested catalog (namespaces, tables, views, plus system
-   * objects). Catalog context is resolved implicitly.
+   * objects).
    */
   List<RelationNode> listRelations(ResourceId catalogId);
 
-  /** Lists relations using the selected catalog context. */
   default List<RelationNode> listRelations(ResourceId catalogId, CatalogContext catalogContext) {
     return listRelations(catalogId);
   }
 
-  /** Lists namespaces owned by the requested catalog. Catalog context is resolved implicitly. */
+  /** Lists namespaces owned by the requested catalog. */
   List<NamespaceNode> listNamespaces(ResourceId catalogId);
 
-  /** Lists namespaces using the selected catalog context. */
   default List<NamespaceNode> listNamespaces(ResourceId catalogId, CatalogContext catalogContext) {
     return listNamespaces(catalogId);
   }
 
-  /**
-   * Lists relations that live inside the given namespace. Catalog context is resolved implicitly.
-   */
+  /** Lists relations that live inside the given namespace. */
   List<RelationNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId);
 
-  /** Lists namespace relations using the selected catalog context. */
   default List<RelationNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
     return listRelationsInNamespace(catalogId, namespaceId);
   }
 
-  /**
-   * Lists only system (built-in) relations in a namespace. Default falls back to a full list and
-   * filters; MetaGraph overrides this to skip the expensive user-object DynamoDB+S3 scan.
-   */
+  /** Lists only system (built-in) relations in a namespace. */
   default List<RelationNode> listSystemRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId) {
     return listRelationsInNamespace(catalogId, namespaceId).stream()
@@ -107,7 +89,6 @@ public interface CatalogGraphView {
         .toList();
   }
 
-  /** Lists system relations using the selected catalog context. */
   default List<RelationNode> listSystemRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
     return listRelationsInNamespace(catalogId, namespaceId, catalogContext).stream()
@@ -115,17 +96,13 @@ public interface CatalogGraphView {
         .toList();
   }
 
-  /**
-   * Lists only system namespaces in a catalog. Default falls back to a full list and filters;
-   * MetaGraph overrides to skip the user-namespace storage scan.
-   */
+  /** Lists only system namespaces in a catalog. */
   default List<NamespaceNode> listSystemNamespaces(ResourceId catalogId) {
     return listNamespaces(catalogId).stream()
         .filter(n -> n.origin() == GraphNodeOrigin.SYSTEM)
         .toList();
   }
 
-  /** Lists system namespaces using the selected catalog context. */
   default List<NamespaceNode> listSystemNamespaces(
       ResourceId catalogId, CatalogContext catalogContext) {
     return listNamespaces(catalogId, catalogContext).stream()
@@ -144,43 +121,18 @@ public interface CatalogGraphView {
   }
 
   /**
-   * Lists namespace refs for callers that only need topology metadata. Default derives refs from
-   * full namespace nodes; production graph views should override this with cache-backed pointer
-   * refs.
+   * Lists namespace refs for callers that only need topology metadata. Implementations should use a
+   * cache-backed pointer path when available; the default derives refs from full namespace nodes.
    */
-  default List<TopologyGraph.NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
-    return listNamespaces(catalogId).stream()
-        .map(
-            ns ->
-                new TopologyGraph.NamespaceRef(
-                    ns.id(), ns.displayName(), ns.catalogId(), ns.pathSegments()))
-        .toList();
-  }
-
-  /** Lists namespace refs using the selected catalog context. */
-  default List<TopologyGraph.NamespaceRef> listNamespaceRefs(
+  default List<NamespaceRef> listNamespaceRefs(
       ResourceId catalogId, CatalogContext catalogContext) {
     return listNamespaces(catalogId, catalogContext).stream()
-        .map(
-            ns ->
-                new TopologyGraph.NamespaceRef(
-                    ns.id(), ns.displayName(), ns.catalogId(), ns.pathSegments()))
+        .map(ns -> new NamespaceRef(ns.id(), ns.displayName(), ns.catalogId(), ns.pathSegments()))
         .toList();
   }
 
   /** Lists namespace refs whose rendered information_schema names match the supplied set. */
-  default List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(
-      ResourceId catalogId, Set<String> names) {
-    if (names == null || names.isEmpty()) {
-      return List.of();
-    }
-    return listNamespaceRefs(catalogId).stream()
-        .filter(ref -> names.contains(TopologyNames.namespaceName(ref.pathSegments(), ref.name())))
-        .toList();
-  }
-
-  /** Lists matching namespace refs using the selected catalog context. */
-  default List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(
+  default List<NamespaceRef> listNamespaceRefsByName(
       ResourceId catalogId, Set<String> names, CatalogContext catalogContext) {
     if (names == null || names.isEmpty()) {
       return List.of();
@@ -191,26 +143,11 @@ public interface CatalogGraphView {
   }
 
   /**
-   * Lists relation refs for callers that only need relation name/id/kind. Default derives refs from
-   * full relation nodes; production graph views should override this with cache-backed pointer
-   * refs.
+   * Lists relation refs for callers that only need relation name/id/kind. Implementations should
+   * use a cache-backed pointer path when available; the default derives refs from full relation
+   * nodes.
    */
-  default List<TopologyGraph.RelationRef> listRelationRefs(
-      ResourceId catalogId, ResourceId namespaceId) {
-    return listRelationsInNamespace(catalogId, namespaceId).stream()
-        .map(
-            rel -> {
-              ResourceKind kind =
-                  rel.id().getKind() == ResourceKind.RK_VIEW
-                      ? ResourceKind.RK_VIEW
-                      : ResourceKind.RK_TABLE;
-              return new TopologyGraph.RelationRef(rel.id(), rel.displayName(), kind);
-            })
-        .toList();
-  }
-
-  /** Lists relation refs using the selected catalog context. */
-  default List<TopologyGraph.RelationRef> listRelationRefs(
+  default List<RelationRef> listRelationRefs(
       ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
     return listRelationsInNamespace(catalogId, namespaceId, catalogContext).stream()
         .map(
@@ -219,24 +156,13 @@ public interface CatalogGraphView {
                   rel.id().getKind() == ResourceKind.RK_VIEW
                       ? ResourceKind.RK_VIEW
                       : ResourceKind.RK_TABLE;
-              return new TopologyGraph.RelationRef(rel.id(), rel.displayName(), kind);
+              return new RelationRef(rel.id(), rel.displayName(), kind);
             })
         .toList();
   }
 
-  /** Lists relation refs whose names match the supplied set. */
-  default List<TopologyGraph.RelationRef> listRelationRefsByName(
-      ResourceId catalogId, ResourceId namespaceId, Set<String> names) {
-    if (names == null || names.isEmpty()) {
-      return List.of();
-    }
-    return listRelationRefs(catalogId, namespaceId).stream()
-        .filter(ref -> names.contains(ref.name()))
-        .toList();
-  }
-
   /** Lists matching relation refs using the selected catalog context. */
-  default List<TopologyGraph.RelationRef> listRelationRefsByName(
+  default List<RelationRef> listRelationRefsByName(
       ResourceId catalogId,
       ResourceId namespaceId,
       Set<String> names,
@@ -251,7 +177,6 @@ public interface CatalogGraphView {
 
   List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId);
 
-  /** Lists functions using the selected catalog context. */
   default List<FunctionNode> listFunctions(
       ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
     return listFunctions(catalogId, namespaceId);
@@ -259,7 +184,6 @@ public interface CatalogGraphView {
 
   List<TypeNode> listTypes(ResourceId catalogId);
 
-  /** Lists types using the selected catalog context. */
   default List<TypeNode> listTypes(ResourceId catalogId, CatalogContext catalogContext) {
     return listTypes(catalogId);
   }
@@ -268,7 +192,6 @@ public interface CatalogGraphView {
 
   Optional<ResourceId> resolveNamespace(String correlationId, NameRef ref);
 
-  /** Resolves a namespace using the selected catalog context. */
   default Optional<ResourceId> resolveNamespace(
       String correlationId, NameRef ref, CatalogContext catalogContext) {
     return resolveNamespace(correlationId, ref);
@@ -276,7 +199,6 @@ public interface CatalogGraphView {
 
   Optional<ResourceId> resolveTable(String correlationId, NameRef ref);
 
-  /** Resolves a table using the selected catalog context. */
   default Optional<ResourceId> resolveTable(
       String correlationId, NameRef ref, CatalogContext catalogContext) {
     return resolveTable(correlationId, ref);
@@ -284,13 +206,17 @@ public interface CatalogGraphView {
 
   Optional<ResourceId> resolveView(String correlationId, NameRef ref);
 
-  /** Resolves a view using the selected catalog context. */
   default Optional<ResourceId> resolveView(
       String correlationId, NameRef ref, CatalogContext catalogContext) {
     return resolveView(correlationId, ref);
   }
 
   Optional<ResourceId> resolveName(String correlationId, NameRef ref);
+
+  default Optional<ResourceId> resolveName(
+      String correlationId, NameRef ref, CatalogContext catalogContext) {
+    return resolveName(correlationId, ref);
+  }
 
   /**
    * Batch kind-agnostic name resolution. The default loops {@link #resolveName}; graph views backed
@@ -324,21 +250,9 @@ public interface CatalogGraphView {
     return false;
   }
 
-  /**
-   * Resolves a relation (table or view) by name reference using an explicit catalog context.
-   *
-   * <p>Prefer this overload wherever the caller already holds the request's catalog context — see
-   * {@link #resolve(ResourceId, CatalogContext)}.
-   */
-  default Optional<ResourceId> resolveName(
-      String correlationId, NameRef ref, CatalogContext catalogContext) {
-    return resolveName(correlationId, ref);
-  }
-
   /** Resolves a system table name without involving the user graph. */
   Optional<ResourceId> resolveSystemTable(NameRef ref);
 
-  /** Resolves a system table name using the selected catalog context. */
   default Optional<ResourceId> resolveSystemTable(NameRef ref, CatalogContext catalogContext) {
     return resolveSystemTable(ref);
   }
@@ -346,7 +260,6 @@ public interface CatalogGraphView {
   /** Resolves a system table id back to name without involving the user graph. */
   Optional<NameRef> resolveSystemTableName(ResourceId id);
 
-  /** Resolves a system table id back to name using the selected catalog context. */
   default Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext catalogContext) {
     return resolveSystemTableName(id);
   }
@@ -354,7 +267,6 @@ public interface CatalogGraphView {
   /** Resolves a system type by namespace + type name without involving the user graph. */
   Optional<TypeNode> resolveSystemType(String namespace, String typeName);
 
-  /** Resolves a system type using the selected catalog context. */
   default Optional<TypeNode> resolveSystemType(
       String namespace, String typeName, CatalogContext catalogContext) {
     return resolveSystemType(namespace, typeName);
@@ -386,20 +298,12 @@ public interface CatalogGraphView {
 
   Optional<NameRef> tableName(ResourceId id);
 
-  /**
-   * Resolves a table's canonical name with an explicit catalog context. Implementations with
-   * context-dependent names should override this method.
-   */
   default Optional<NameRef> tableName(ResourceId id, CatalogContext catalogContext) {
     return tableName(id);
   }
 
   Optional<NameRef> viewName(ResourceId id);
 
-  /**
-   * Resolves a view's canonical name with an explicit catalog context. Implementations with
-   * context-dependent names should override this method.
-   */
   default Optional<NameRef> viewName(ResourceId id, CatalogContext catalogContext) {
     return viewName(id);
   }
@@ -422,7 +326,6 @@ public interface CatalogGraphView {
       String tableBlobUri,
       String snapshotBlobUri);
 
-  /** Resolve the schema from the current table pointer (no pin). */
   default SchemaResolution schemaFor(
       String correlationId, ResourceId tableId, SnapshotRef snapshot) {
     return schemaFor(correlationId, tableId, snapshot, "", "");
@@ -439,4 +342,16 @@ public interface CatalogGraphView {
   record QualifiedRelation(NameRef name, ResourceId resourceId) {}
 
   record SchemaResolution(UserTableNode table, String schemaJson) {}
+
+  record NamespaceRef(ResourceId id, String name, ResourceId catalogId, List<String> pathSegments) {
+    public NamespaceRef(ResourceId id, String name) {
+      this(id, name, null, List.of());
+    }
+
+    public NamespaceRef {
+      pathSegments = pathSegments == null ? List.of() : List.copyOf(pathSegments);
+    }
+  }
+
+  record RelationRef(ResourceId id, String name, ResourceKind kind) {}
 }

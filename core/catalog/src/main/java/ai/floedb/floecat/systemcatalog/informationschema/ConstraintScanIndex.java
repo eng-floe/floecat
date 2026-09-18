@@ -204,7 +204,9 @@ public final class ConstraintScanIndex {
         .computeIfAbsent(
             key,
             ignored ->
-                ctx.graph().resolveTable(RESOLVE_CORRELATION_ID, referencedTable).map(byId::get))
+                ctx.graph()
+                    .resolveTable(RESOLVE_CORRELATION_ID, referencedTable, ctx.catalogContext())
+                    .map(byId::get))
         .orElse(null);
   }
 
