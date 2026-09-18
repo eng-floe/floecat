@@ -138,23 +138,12 @@ public final class SystemCatalogTestProviders {
     }
 
     @Override
-    public List<SystemObjectDef> definitions() {
-      return definitions(CatalogContext.of(null, null));
-    }
-
-    @Override
-    public boolean supportsEngine(String engineKind) {
+    public boolean supports(NameRef name, CatalogContext context) {
       return true;
     }
 
     @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return true;
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
       return Optional.empty();
     }
   }

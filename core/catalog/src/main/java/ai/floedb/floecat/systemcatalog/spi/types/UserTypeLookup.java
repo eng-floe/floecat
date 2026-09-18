@@ -40,7 +40,8 @@ final class UserTypeLookup implements TypeLookup {
 
   UserTypeLookup(MetadataResolutionContext ctx) {
     Objects.requireNonNull(ctx, "ctx");
-    List<TypeNode> userTypes = userTypes(ctx.graphView().listTypes(ctx.catalogId()));
+    List<TypeNode> userTypes =
+        userTypes(ctx.graphView().listTypes(ctx.catalogId(), ctx.catalogContext()));
     if (userTypes.isEmpty()) {
       this.namespaceIdsByCanonicalName = Map.of();
       this.byIdentityAndName = Map.of();
@@ -113,7 +114,7 @@ final class UserTypeLookup implements TypeLookup {
     for (ResourceId namespaceId : namespaceIds) {
       Optional<NamespaceNode> namespace =
           ctx.graphView()
-              .resolve(namespaceId)
+              .resolve(namespaceId, ctx.catalogContext())
               .filter(NamespaceNode.class::isInstance)
               .map(NamespaceNode.class::cast);
       if (namespace.isEmpty()) {

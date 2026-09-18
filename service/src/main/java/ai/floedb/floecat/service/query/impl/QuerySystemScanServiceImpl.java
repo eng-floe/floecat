@@ -29,6 +29,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
@@ -133,7 +134,12 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       SystemObjectScanner scanner =
           diagnostics.time(
               "scanner_resolve",
-              () -> scanners.resolve(correlationIdHolder.get(), tableId, engineCtx, diagnostics));
+              () ->
+                  scanners.resolve(
+                      correlationIdHolder.get(),
+                      tableId,
+                      CatalogContext.of(null, engineCtx),
+                      diagnostics));
       var statsProvider =
           diagnostics.time(
               "stats_provider",
@@ -143,7 +149,7 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
               graph,
               null,
               queryCtx.getQueryDefaultCatalogId(),
-              engineCtx,
+              CatalogContext.of(null, engineCtx),
               statsProvider,
               constraintFactory.provider());
       List<SchemaColumn> schema = diagnostics.time("schema", scanner::schema);

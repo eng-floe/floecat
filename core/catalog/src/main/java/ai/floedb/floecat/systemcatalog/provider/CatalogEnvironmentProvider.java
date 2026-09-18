@@ -32,7 +32,7 @@ import java.util.Optional;
  * relation shape and scanner behavior. Engine capabilities belong to {@link
  * ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider}.
  */
-public interface CatalogEnvironmentProvider extends SystemObjectScannerProvider {
+public interface CatalogEnvironmentProvider {
 
   /** Stable identifier of the environment supplied by this provider. */
   String environmentKind();
@@ -46,23 +46,11 @@ public interface CatalogEnvironmentProvider extends SystemObjectScannerProvider 
   }
 
   /** Returns definitions for the complete catalog context. */
-  default List<SystemObjectDef> definitions(CatalogContext context) {
-    CatalogContext selected = context == null ? CatalogContext.of(null, null) : context;
-    return definitions(
-        selected.engine().effectiveEngineKind(), selected.engine().normalizedVersion());
-  }
+  List<SystemObjectDef> definitions(CatalogContext context);
 
   /** Returns whether this provider owns the named object in the complete catalog context. */
-  default boolean supports(NameRef name, CatalogContext context) {
-    CatalogContext selected = context == null ? CatalogContext.of(null, null) : context;
-    return supports(
-        name, selected.engine().effectiveEngineKind(), selected.engine().normalizedVersion());
-  }
+  boolean supports(NameRef name, CatalogContext context);
 
   /** Resolves a scanner for the complete catalog context. */
-  default Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-    CatalogContext selected = context == null ? CatalogContext.of(null, null) : context;
-    return provide(
-        scannerId, selected.engine().effectiveEngineKind(), selected.engine().normalizedVersion());
-  }
+  Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context);
 }

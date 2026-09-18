@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintEnforcement;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
@@ -72,7 +73,7 @@ final class SystemConstraintCatalog {
   }
 
   private Map<ResourceId, ConstraintProvider.ConstraintSetView> buildCatalog(EngineContext ctx) {
-    var nodes = systemNodeRegistry.nodesFor(ctx);
+    var nodes = systemNodeRegistry.nodesFor(CatalogContext.of(null, ctx));
     Map<ResourceId, ConstraintProvider.ConstraintSetView> out = new LinkedHashMap<>();
     for (var tableDef : nodes.toCatalogData().tables()) {
       ResourceId tableId = nodes.tableNames().get(NameRefUtil.canonical(tableDef.name()));

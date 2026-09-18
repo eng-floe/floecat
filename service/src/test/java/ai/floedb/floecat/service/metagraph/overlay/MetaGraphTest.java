@@ -21,7 +21,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.*;
 
 import ai.floedb.floecat.common.rpc.NameRef;
@@ -38,6 +37,7 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyGraph;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.cache.HintCache;
 import ai.floedb.floecat.service.cache.ObjectCache;
@@ -63,7 +63,7 @@ class MetaGraphTest {
   SystemGraph system;
   HintCache hints;
   MetaGraph meta;
-  EngineContext context;
+  CatalogContext context;
 
   ResourceId sysTable =
       ResourceId.newBuilder()
@@ -87,8 +87,9 @@ class MetaGraphTest {
     when(hints.attach(any(), any())).thenAnswer(call -> call.getArgument(0));
 
     EngineContextProvider engine = mock(EngineContextProvider.class);
-    context = EngineContext.of("engine", "1");
-    when(engine.engineContext()).thenReturn(context);
+    EngineContext engineContext = EngineContext.of("engine", "1");
+    context = CatalogContext.of(null, engineContext);
+    when(engine.engineContext()).thenReturn(engineContext);
     when(engine.isPresent()).thenReturn(true);
 
     meta = new MetaGraph(user, ObjectCache.forTesting(), hints, system, engine);
@@ -183,7 +184,7 @@ class MetaGraphTest {
             .setId("ns")
             .build();
 
-    when(system.listRelations(any(), same(context))).thenReturn(List.of(s));
+    when(system.listRelations(any(), eq(context))).thenReturn(List.of(s));
     when(user.listNamespaceRefs(catalogId))
         .thenReturn(
             List.of(new TopologyGraph.NamespaceRef(namespaceId, "ns", catalogId, List.of())));
@@ -194,7 +195,7 @@ class MetaGraphTest {
     List<RelationNode> out = meta.listRelations(catalogId);
 
     assertThat(out).containsExactly(s, u);
-    verify(hints).attach(u, context);
+    verify(hints).attach(u, context.engine());
     verify(user, never()).listRelations(catalogId);
   }
 
@@ -202,10 +203,11 @@ class MetaGraphTest {
   void resolveAttachesHintsUsingTheExplicitRequestEngine() {
     UserTableNode table = TestNodes.tableNode(usrTable, "{}");
     EngineContext explicit = EngineContext.of("other", "2");
-    when(system.resolve(usrTable, explicit)).thenReturn(Optional.empty());
+    CatalogContext explicitCatalog = CatalogContext.of(null, explicit);
+    when(system.resolve(usrTable, explicitCatalog)).thenReturn(Optional.empty());
     when(user.resolve(usrTable)).thenReturn(Optional.of(table));
 
-    assertThat(meta.resolve(usrTable, explicit)).contains(table);
+    assertThat(meta.resolve(usrTable, explicitCatalog)).contains(table);
 
     verify(hints).attach(table, explicit);
   }
@@ -241,13 +243,14 @@ class MetaGraphTest {
   @Test
   void tableName_usesExplicitEngineContextForSystemFallback() {
     EngineContext explicit = EngineContext.of("other-engine", "2");
+    CatalogContext explicitCatalog = CatalogContext.of(null, explicit);
     NameRef expected = NameRef.newBuilder().setCatalog("other-engine").setName("sys").build();
-    when(system.tableName(sysTable, explicit)).thenReturn(Optional.of(expected));
+    when(system.tableName(sysTable, explicitCatalog)).thenReturn(Optional.of(expected));
 
-    Optional<NameRef> name = meta.tableName(sysTable, explicit);
+    Optional<NameRef> name = meta.tableName(sysTable, explicitCatalog);
 
     assertThat(name).contains(expected);
-    verify(system).tableName(sysTable, explicit);
+    verify(system).tableName(sysTable, explicitCatalog);
     verify(system, never()).tableName(sysTable, context);
   }
 
@@ -718,7 +721,7 @@ class MetaGraphTest {
     meta.listTablesByPrefix("cid", prefix, 50, "");
 
     NameRef captured = captor.getValue();
-    assertThat(captured.getCatalog()).isEqualTo(context.effectiveEngineKind());
+    assertThat(captured.getCatalog()).isEqualTo(context.engine().effectiveEngineKind());
     assertThat(captured.getPathCount()).isZero();
     assertThat(captured.getName()).isEqualTo("information_schema");
   }
@@ -732,23 +735,24 @@ class MetaGraphTest {
             .setId("user-cat")
             .build();
 
-    when(user.resolveCatalog("cid", context.effectiveEngineKind()))
+    when(user.resolveCatalog("cid", context.engine().effectiveEngineKind()))
         .thenReturn(Optional.of(userCatalogId));
 
-    Optional<ResourceId> out = meta.resolveCatalog("cid", context.effectiveEngineKind());
+    Optional<ResourceId> out = meta.resolveCatalog("cid", context.engine().effectiveEngineKind());
 
     assertThat(out).contains(userCatalogId);
   }
 
   @Test
   void resolveCatalog_resolvesSystemCatalogFromEngineAlias() {
-    String alias = context.effectiveEngineKind().toUpperCase();
+    String alias = context.engine().effectiveEngineKind().toUpperCase();
     when(user.resolveCatalog("cid", alias)).thenReturn(Optional.empty());
 
     Optional<ResourceId> out = meta.resolveCatalog("cid", alias);
 
     assertThat(out)
-        .contains(SystemNodeRegistry.systemCatalogContainerId(context.effectiveEngineKind()));
+        .contains(
+            SystemNodeRegistry.systemCatalogContainerId(context.engine().effectiveEngineKind()));
   }
 
   @Test
@@ -831,7 +835,8 @@ class MetaGraphTest {
     MetaGraph metaNoEngine = new MetaGraph(user, ObjectCache.forTesting(), hints, system, engine);
 
     NameRef ref = NameRef.newBuilder().setName("t").build();
-    when(system.resolveTable(ref, EngineContext.empty())).thenReturn(Optional.empty());
+    when(system.resolveTable(ref, CatalogContext.of(null, EngineContext.empty())))
+        .thenReturn(Optional.empty());
     when(user.resolveTable("c", ref)).thenReturn(Optional.of(usrTable));
 
     Optional<ResourceId> out = metaNoEngine.resolveTable("c", ref);

@@ -25,6 +25,7 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import java.util.List;
 import java.util.Objects;
@@ -43,7 +44,7 @@ public record SystemObjectScanContext(
     CatalogGraphView graph,
     NameRef name,
     ResourceId queryDefaultCatalogId,
-    EngineContext engineContext,
+    CatalogContext catalogContext,
     StatsProvider statsProvider,
     ConstraintProvider constraintProvider,
     ConcurrentMap<Object, Object> memoizedValues)
@@ -52,10 +53,58 @@ public record SystemObjectScanContext(
   public SystemObjectScanContext {
     Objects.requireNonNull(graph, "graph");
     Objects.requireNonNull(queryDefaultCatalogId, "queryDefaultCatalogId");
-    engineContext = engineContext == null ? EngineContext.empty() : engineContext;
+    catalogContext = catalogContext == null ? CatalogContext.of(null, null) : catalogContext;
     statsProvider = statsProvider == null ? StatsProvider.NONE : statsProvider;
     constraintProvider = constraintProvider == null ? ConstraintProvider.NONE : constraintProvider;
     memoizedValues = memoizedValues == null ? new ConcurrentHashMap<>() : memoizedValues;
+  }
+
+  public SystemObjectScanContext(
+      CatalogGraphView graph,
+      NameRef name,
+      ResourceId queryDefaultCatalogId,
+      CatalogContext catalogContext) {
+    this(
+        graph,
+        name,
+        queryDefaultCatalogId,
+        catalogContext,
+        StatsProvider.NONE,
+        ConstraintProvider.NONE,
+        new ConcurrentHashMap<>());
+  }
+
+  public SystemObjectScanContext(
+      CatalogGraphView graph,
+      NameRef name,
+      ResourceId queryDefaultCatalogId,
+      CatalogContext catalogContext,
+      StatsProvider statsProvider) {
+    this(
+        graph,
+        name,
+        queryDefaultCatalogId,
+        catalogContext,
+        statsProvider,
+        ConstraintProvider.NONE,
+        new ConcurrentHashMap<>());
+  }
+
+  public SystemObjectScanContext(
+      CatalogGraphView graph,
+      NameRef name,
+      ResourceId queryDefaultCatalogId,
+      CatalogContext catalogContext,
+      StatsProvider statsProvider,
+      ConstraintProvider constraintProvider) {
+    this(
+        graph,
+        name,
+        queryDefaultCatalogId,
+        catalogContext,
+        statsProvider,
+        constraintProvider,
+        new ConcurrentHashMap<>());
   }
 
   public SystemObjectScanContext(
@@ -67,7 +116,7 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        engineContext,
+        CatalogContext.of(null, engineContext),
         StatsProvider.NONE,
         ConstraintProvider.NONE,
         new ConcurrentHashMap<>());
@@ -83,7 +132,7 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        engineContext,
+        CatalogContext.of(null, engineContext),
         statsProvider,
         ConstraintProvider.NONE,
         new ConcurrentHashMap<>());
@@ -100,14 +149,14 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        engineContext,
+        CatalogContext.of(null, engineContext),
         statsProvider,
         constraintProvider,
         new ConcurrentHashMap<>());
   }
 
   public GraphNode resolve(ResourceId id) {
-    return graph.resolve(id).orElseThrow();
+    return graph.resolve(id, catalogContext).orElseThrow();
   }
 
   @Override
@@ -121,17 +170,17 @@ public record SystemObjectScanContext(
   }
 
   public Optional<GraphNode> tryResolve(ResourceId id) {
-    return graph.resolve(id);
+    return graph.resolve(id, catalogContext);
   }
 
   /** Lightweight namespace refs from the graph view; production avoids full node hydration. */
   public List<TopologyGraph.NamespaceRef> listNamespaceRefs() {
-    return graph.listNamespaceRefs(queryDefaultCatalogId);
+    return graph.listNamespaceRefs(queryDefaultCatalogId, catalogContext);
   }
 
   /** Lightweight namespace refs matching the supplied information_schema names. */
   public List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(java.util.Set<String> names) {
-    return graph.listNamespaceRefsByName(queryDefaultCatalogId, names);
+    return graph.listNamespaceRefsByName(queryDefaultCatalogId, names, catalogContext);
   }
 
   /** Whether the graph view has a true lightweight ref implementation. */
@@ -141,23 +190,25 @@ public record SystemObjectScanContext(
 
   /** Lightweight relation refs for a namespace; production avoids full node hydration. */
   public List<TopologyGraph.RelationRef> listRelationRefs(ResourceId namespaceId) {
-    return graph.listRelationRefs(queryDefaultCatalogId, namespaceId);
+    return graph.listRelationRefs(queryDefaultCatalogId, namespaceId, catalogContext);
   }
 
   /** Lightweight relation refs matching the supplied names. */
   public List<TopologyGraph.RelationRef> listRelationRefsByName(
       ResourceId namespaceId, java.util.Set<String> names) {
-    return graph.listRelationRefsByName(queryDefaultCatalogId, namespaceId, names);
+    return graph.listRelationRefsByName(queryDefaultCatalogId, namespaceId, names, catalogContext);
   }
 
   /** Tables + views */
   public List<RelationNode> listRelations(ResourceId namespaceId) {
-    return graph.listRelationsInNamespace(queryDefaultCatalogId, namespaceId);
+    return graph.listRelationsInNamespace(queryDefaultCatalogId, namespaceId, catalogContext);
   }
 
   /** Tables only */
   public List<TableNode> listTables(ResourceId namespaceId) {
-    return graph.listRelationsInNamespace(queryDefaultCatalogId, namespaceId).stream()
+    return graph
+        .listRelationsInNamespace(queryDefaultCatalogId, namespaceId, catalogContext)
+        .stream()
         .filter(TableNode.class::isInstance)
         .map(TableNode.class::cast)
         .toList();
@@ -165,22 +216,24 @@ public record SystemObjectScanContext(
 
   /** Views only */
   public List<ViewNode> listViews(ResourceId namespaceId) {
-    return graph.listRelationsInNamespace(queryDefaultCatalogId, namespaceId).stream()
+    return graph
+        .listRelationsInNamespace(queryDefaultCatalogId, namespaceId, catalogContext)
+        .stream()
         .filter(ViewNode.class::isInstance)
         .map(ViewNode.class::cast)
         .toList();
   }
 
   public List<NamespaceNode> listNamespaces() {
-    return graph.listNamespaces(queryDefaultCatalogId);
+    return graph.listNamespaces(queryDefaultCatalogId, catalogContext);
   }
 
   public List<FunctionNode> listFunctions(ResourceId namespaceId) {
-    return graph.listFunctions(queryDefaultCatalogId, namespaceId);
+    return graph.listFunctions(queryDefaultCatalogId, namespaceId, catalogContext);
   }
 
   public List<TypeNode> listTypes() {
-    return graph.listTypes(queryDefaultCatalogId);
+    return graph.listTypes(queryDefaultCatalogId, catalogContext);
   }
 
   @Override

@@ -36,7 +36,7 @@ import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -235,7 +235,7 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public Optional<ResourceId> resolveName(
-        String correlationId, NameRef ref, EngineContext engineContext) {
+        String correlationId, NameRef ref, CatalogContext catalogContext) {
       return resolveName(correlationId, ref);
     }
 

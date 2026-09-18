@@ -45,6 +45,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
+import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.ServiceLoaderSystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
@@ -94,7 +95,7 @@ class SystemNodeRegistryTest {
     // ---------------------------------
     // example / version 16.0
     // ---------------------------------
-    var floe16 = nodeRegistry.nodesFor(FLOE_KIND, "16.0");
+    var floe16 = nodeRegistry.nodesFor(context(FLOE_KIND, "16.0"));
 
     assertThat(floe16.functions()).extracting(fn -> fn.displayName()).contains("pg_only");
 
@@ -106,7 +107,7 @@ class SystemNodeRegistryTest {
     // ---------------------------------
     // example / version 17.0
     // ---------------------------------
-    var floe17 = nodeRegistry.nodesFor(FLOE_KIND, "17.0");
+    var floe17 = nodeRegistry.nodesFor(context(FLOE_KIND, "17.0"));
 
     assertThat(floe17.functions()).extracting(fn -> fn.displayName()).contains("pg_only");
 
@@ -115,7 +116,7 @@ class SystemNodeRegistryTest {
     // ---------------------------------
     // pg / version 16.0   (alternate engine)
     // ---------------------------------
-    var pg16 = nodeRegistry.nodesFor(PG_KIND, "16.0");
+    var pg16 = nodeRegistry.nodesFor(context(PG_KIND, "16.0"));
 
     assertThat(pg16.functions()).extracting(fn -> fn.displayName()).contains("pg_fn");
 
@@ -150,7 +151,7 @@ class SystemNodeRegistryTest {
     var registry = registryWithCatalogs();
     var nodeRegistry = registryWith(registry);
 
-    assertThat(nodeRegistry.nodesFor("", "16.0").functions()).isEmpty();
+    assertThat(nodeRegistry.nodesFor(context("", "16.0")).functions()).isEmpty();
   }
 
   @Test
@@ -158,7 +159,7 @@ class SystemNodeRegistryTest {
     var registry = registryWithCatalogs();
     var nodeRegistry = registryWith(registry);
 
-    assertThat(nodeRegistry.nodesFor(FLOE_KIND, "").functions())
+    assertThat(nodeRegistry.nodesFor(context(FLOE_KIND, "")).functions())
         .extracting(fn -> fn.displayName())
         .contains(
             "shared_fn", "pg_legacy" // maxVersion applies only when version is known
@@ -172,11 +173,11 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(PG_KIND, catalog)));
     var registry = registryWith(defs);
 
-    var nodesV1 = registry.nodesFor(PG_KIND, "1.0");
+    var nodesV1 = registry.nodesFor(context(PG_KIND, "1.0"));
     assertThat(nodesV1.tableNames()).doesNotContainKey("custom.legacy_table");
     assertThat(nodesV1.viewNames()).containsKey("custom.preview_view");
 
-    var nodesV2 = registry.nodesFor(PG_KIND, "2.0");
+    var nodesV2 = registry.nodesFor(context(PG_KIND, "2.0"));
     assertThat(nodesV2.tableNames()).containsKey("custom.legacy_table");
     assertThat(nodesV2.viewNames()).doesNotContainKey("custom.preview_view");
   }
@@ -188,7 +189,7 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(PG_KIND, catalog)));
     var registry = registryWith(defs);
 
-    var nodes = registry.nodesFor(PG_KIND, "");
+    var nodes = registry.nodesFor(context(PG_KIND, ""));
     assertThat(nodes.tableNames()).doesNotContainKey("custom.legacy_table");
     assertThat(nodes.viewNames()).containsKey("custom.preview_view");
   }
@@ -229,7 +230,7 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(PG_KIND, catalog)));
     var registry = registryWith(defs);
 
-    var nodes = registry.nodesFor(PG_KIND, "16.0").toCatalogData();
+    var nodes = registry.nodesFor(context(PG_KIND, "16.0")).toCatalogData();
     ConstraintDefinition normalized =
         nodes.tables().stream()
             .filter(t -> "custom.t".equals(NameRefUtil.canonical(t.name())))
@@ -282,7 +283,7 @@ class SystemNodeRegistryTest {
 
     SystemDefinitionRegistry defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of("kind", catalog)));
-    var nodes = registryWith(defs).nodesFor("kind", "");
+    var nodes = registryWith(defs).nodesFor(context("kind", ""));
 
     assertThat(nodes.tableNames()).containsKey("custom.ok");
     assertThat(nodes.tableNames()).doesNotContainKey("orphan");
@@ -317,7 +318,7 @@ class SystemNodeRegistryTest {
 
     SystemDefinitionRegistry defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of("kind", catalog)));
-    var nodes = registryWith(defs).nodesFor("kind", "");
+    var nodes = registryWith(defs).nodesFor(context("kind", ""));
 
     assertThat(nodes.tableNames()).doesNotContainKey("missing.table");
   }
@@ -327,8 +328,8 @@ class SystemNodeRegistryTest {
     var registry = registryWithCatalogs();
     var nodeRegistry = registryWith(registry);
 
-    var nodesLower = nodeRegistry.nodesFor("example", "16.0");
-    var nodesUpper = nodeRegistry.nodesFor("EXAMPLE", "16.0");
+    var nodesLower = nodeRegistry.nodesFor(context("example", "16.0"));
+    var nodesUpper = nodeRegistry.nodesFor(context("EXAMPLE", "16.0"));
 
     // Same logical catalog, same instance from cache
     assertThat(nodesLower).isSameAs(nodesUpper);
@@ -351,7 +352,7 @@ class SystemNodeRegistryTest {
     var registry = registryWithCatalogs();
     var nodeRegistry = registryWith(registry);
 
-    var tables = canonicalTableNames(nodeRegistry.nodesFor("", ""));
+    var tables = canonicalTableNames(nodeRegistry.nodesFor(context("", "")));
 
     assertThat(tables)
         .contains(
@@ -384,7 +385,7 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
     var nodes =
         registryWith(registry, new SystemCatalogTestProviders.VersionedTableProvider(FLOE_KIND))
-            .nodesFor(FLOE_KIND, "1.0");
+            .nodesFor(context(FLOE_KIND, "1.0"));
 
     var built = nodes.functions().get(0);
 
@@ -435,7 +436,7 @@ class SystemNodeRegistryTest {
 
     var defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+    var nodes = registryWith(defs).nodesFor(context(FLOE_KIND, "1.0"));
 
     assertThat(nodes.functions()).hasSize(2);
 
@@ -490,7 +491,7 @@ class SystemNodeRegistryTest {
 
     var defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+    var nodes = registryWith(defs).nodesFor(context(FLOE_KIND, "1.0"));
 
     var ids = nodes.operators().stream().map(node -> node.id().getId()).toList();
     var expected =
@@ -543,7 +544,7 @@ class SystemNodeRegistryTest {
 
     var defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+    var nodes = registryWith(defs).nodesFor(context(FLOE_KIND, "1.0"));
 
     var expected =
         List.of(
@@ -578,7 +579,7 @@ class SystemNodeRegistryTest {
 
     var defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+    var nodes = registryWith(defs).nodesFor(context(FLOE_KIND, "1.0"));
 
     var expectedCollations =
         List.of(
@@ -596,8 +597,8 @@ class SystemNodeRegistryTest {
             registryWithCatalogs(),
             new SystemCatalogTestProviders.VersionedTableProvider(FLOE_KIND));
 
-    var tables16 = canonicalTableNames(nodeRegistry.nodesFor(FLOE_KIND, "16.0"));
-    var tables17 = canonicalTableNames(nodeRegistry.nodesFor(FLOE_KIND, "17.0"));
+    var tables16 = canonicalTableNames(nodeRegistry.nodesFor(context(FLOE_KIND, "16.0")));
+    var tables17 = canonicalTableNames(nodeRegistry.nodesFor(context(FLOE_KIND, "17.0")));
     var table16 = FLOE_KIND + ".versioned_16.0";
     var table17 = FLOE_KIND + ".versioned_17.0";
 
@@ -612,7 +613,7 @@ class SystemNodeRegistryTest {
     var provider = new SystemCatalogTestProviders.VersionedTableProvider(FLOE_KIND);
     var nodeRegistry = registryWith(registryWithCatalogs(), provider);
 
-    var tables = canonicalTableNames(nodeRegistry.nodesFor("", "16.0"));
+    var tables = canonicalTableNames(nodeRegistry.nodesFor(context("", "16.0")));
     assertThat(tables).doesNotContain(FLOE_KIND + ".versioned_16.0");
     assertThat(provider.invocationCount()).isEqualTo(0);
   }
@@ -622,8 +623,8 @@ class SystemNodeRegistryTest {
     var provider = new SystemCatalogTestProviders.VersionedTableProvider(FLOE_KIND);
     var nodeRegistry = registryWith(registryWithCatalogs(), provider);
 
-    nodeRegistry.nodesFor(FLOE_KIND, "16.0");
-    nodeRegistry.nodesFor(FLOE_KIND, "16.0");
+    nodeRegistry.nodesFor(context(FLOE_KIND, "16.0"));
+    nodeRegistry.nodesFor(context(FLOE_KIND, "16.0"));
 
     assertThat(provider.invocationCount()).isEqualTo(1);
   }
@@ -632,7 +633,7 @@ class SystemNodeRegistryTest {
   void environmentProviderContributesOnlyToSelectedEnvironment() {
     var provider =
         new SystemCatalogTestProviders.EnvironmentTableProvider("floe", "environment_table");
-    var nodeRegistry = registryWith(registryWithCatalogs(), provider);
+    var nodeRegistry = registryWith(registryWithCatalogs(), (CatalogEnvironmentProvider) provider);
     var engine = EngineContext.of(FLOE_KIND, "16.0");
 
     var floeNodes =
@@ -681,7 +682,7 @@ class SystemNodeRegistryTest {
         };
 
     var nodeRegistry = registryWith(registryWithCatalogs(), invalidProvider);
-    var nodes = nodeRegistry.nodesFor(FLOE_KIND, "16.0");
+    var nodes = nodeRegistry.nodesFor(context(FLOE_KIND, "16.0"));
     assertThat(nodes.tableNames()).doesNotContainKey("missing_ns.bad_table");
   }
 
@@ -754,7 +755,7 @@ class SystemNodeRegistryTest {
 
     var defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(HINT_ENGINE, catalog)));
-    var nodes = registryWith(defs).nodesFor(HINT_ENGINE, "1.0");
+    var nodes = registryWith(defs).nodesFor(context(HINT_ENGINE, "1.0"));
 
     assertHasHint(nodes.functions(), FUNCTION_HINT);
     assertHasHint(nodes.operators(), OPERATOR_HINT);
@@ -790,7 +791,8 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
     var nodeRegistry = registryWith(registry);
 
-    var merged = nodeRegistry.nodesFor(FLOE_KIND, "16.0").catalogData().registryEngineSpecific();
+    var merged =
+        nodeRegistry.nodesFor(context(FLOE_KIND, "16.0")).catalogData().registryEngineSpecific();
 
     assertThat(merged).hasSize(1);
     assertThat(merged.get(0)).isEqualTo(engineRule);
@@ -821,11 +823,13 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
     var nodeRegistry = registryWith(registry);
 
-    var merged15 = nodeRegistry.nodesFor(FLOE_KIND, "15.0").catalogData().registryEngineSpecific();
+    var merged15 =
+        nodeRegistry.nodesFor(context(FLOE_KIND, "15.0")).catalogData().registryEngineSpecific();
     assertThat(merged15).hasSize(1);
     assertThat(merged15.get(0)).isEqualTo(baseRule);
 
-    var merged16 = nodeRegistry.nodesFor(FLOE_KIND, "16.0").catalogData().registryEngineSpecific();
+    var merged16 =
+        nodeRegistry.nodesFor(context(FLOE_KIND, "16.0")).catalogData().registryEngineSpecific();
     assertThat(merged16).hasSize(1);
     assertThat(merged16.get(0)).isEqualTo(nextRule);
   }
@@ -962,9 +966,19 @@ class SystemNodeRegistryTest {
     return new FloecatInternalProvider();
   }
 
+  private static CatalogContext context(String engineKind, String engineVersion) {
+    return CatalogContext.of(null, EngineContext.of(engineKind, engineVersion));
+  }
+
   private static SystemNodeRegistry registryWith(
       SystemDefinitionRegistry defs, SystemObjectScannerProvider... extras) {
-    return new SystemNodeRegistry(defs, internalProvider(), extensionProviders(extras));
+    return new SystemNodeRegistry(defs, internalProvider(), extensionProviders(extras), List.of());
+  }
+
+  private static SystemNodeRegistry registryWith(
+      SystemDefinitionRegistry defs, CatalogEnvironmentProvider environmentProvider) {
+    return new SystemNodeRegistry(
+        defs, internalProvider(), List.of(), List.of(environmentProvider));
   }
 
   @Test
@@ -972,13 +986,14 @@ class SystemNodeRegistryTest {
     ServiceLoaderSystemCatalogProvider loader = new ServiceLoaderSystemCatalogProvider();
     SystemDefinitionRegistry defs = new SystemDefinitionRegistry(loader);
     SystemNodeRegistry registry =
-        new SystemNodeRegistry(defs, loader.internalProvider(), loader.providers());
+        new SystemNodeRegistry(
+            defs, loader.internalProvider(), loader.providers(), loader.environmentProviders());
 
     EngineContext ctx = EngineContext.of("pg", "");
     SystemEngineCatalog engineCatalog = defs.catalog(CatalogContext.of(null, ctx));
     assertThat(engineCatalog.tables()).isNotEmpty();
     assertThat(engineCatalog.namespaces()).isNotEmpty();
-    SystemNodeRegistry.BuiltinNodes nodes = registry.nodesFor(ctx);
+    SystemNodeRegistry.BuiltinNodes nodes = registry.nodesFor(CatalogContext.of(null, ctx));
 
     assertThat(nodes.tableNames())
         .containsKey("information_schema.tables")
@@ -999,7 +1014,7 @@ class SystemNodeRegistryTest {
   @Test
   void namespaceBucketsAlwaysHaveEntries() {
     var registry = registryWith(registryWithCatalogs());
-    SystemNodeRegistry.BuiltinNodes nodes = registry.nodesFor(FLOE_KIND, "16.0");
+    SystemNodeRegistry.BuiltinNodes nodes = registry.nodesFor(context(FLOE_KIND, "16.0"));
 
     for (NamespaceNode ns : nodes.namespaceNodes()) {
       assertThat(nodes.tablesByNamespace()).containsKey(ns.id());
@@ -1036,7 +1051,7 @@ class SystemNodeRegistryTest {
             List.of());
     SystemDefinitionRegistry defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of("kind", catalog)));
-    var nodes = registryWith(defs).nodesFor("kind", "");
+    var nodes = registryWith(defs).nodesFor(context("kind", ""));
 
     assertThat(nodes.tableNames()).doesNotContainKey("orphan");
   }
@@ -1068,7 +1083,7 @@ class SystemNodeRegistryTest {
             List.of());
     SystemDefinitionRegistry defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of("kind", catalog)));
-    var nodes = registryWith(defs).nodesFor("kind", "");
+    var nodes = registryWith(defs).nodesFor(context("kind", ""));
 
     assertThat(nodes.tableNames()).doesNotContainKey("missing.table");
   }
@@ -1081,7 +1096,7 @@ class SystemNodeRegistryTest {
             PG_KIND, NameRefUtil.name("information_schema", "tables"), "overridden_scanner");
 
     SystemNodeRegistry registry = registryWith(defs, provider);
-    var nodes = registry.nodesFor(PG_KIND, "16.0");
+    var nodes = registry.nodesFor(context(PG_KIND, "16.0"));
 
     SystemTableDef overridden =
         nodes.catalogData().tables().stream()

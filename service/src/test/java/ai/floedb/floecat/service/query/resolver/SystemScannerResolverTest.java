@@ -26,16 +26,20 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
+import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.grpc.Context;
 import java.util.List;
 import java.util.Map;
@@ -91,12 +95,29 @@ class SystemScannerResolverTest {
         .isSameAs(internalScanner);
   }
 
+  @Test
+  void resolvesScannerFromSelectedEnvironment() {
+    ResourceId tableId = systemTableId("pg", "foo");
+    SystemObjectScanner scanner = new TestSystemObjectScanner("environment-scanner");
+    SystemScannerResolver resolver =
+        buildResolver(
+            new TestCatalogGraphView().addNode(tableNode(tableId, "environment-scanner")),
+            Map.of("environment-scanner", scanner));
+    resolver.providers = List.of();
+    resolver.environmentProviders =
+        List.of(new TestEnvironmentProvider(Map.of("environment-scanner", scanner)));
+
+    CatalogContext context = CatalogContext.of(EnvironmentContext.of("floe", "1"), ENGINE_CTX);
+    assertThat(resolver.resolve("corr", tableId, context, PhaseDiagnostics.NOOP)).isSameAs(scanner);
+  }
+
   private static SystemScannerResolver buildResolver(
       CatalogGraphView graphView, Map<String, SystemObjectScanner> scanners) {
     SystemScannerResolver resolver = new SystemScannerResolver();
     resolver.graph = graphView;
     resolver.engine = new EngineContextProvider();
     resolver.providers = List.of(new TestScannerProvider(scanners));
+    resolver.environmentProviders = List.of();
     return resolver;
   }
 
@@ -147,6 +168,35 @@ class SystemScannerResolverTest {
     @Override
     public Optional<SystemObjectScanner> provide(
         String scannerId, String engineKind, String engineVersion) {
+      return Optional.ofNullable(scanners.get(scannerId));
+    }
+  }
+
+  private static final class TestEnvironmentProvider implements CatalogEnvironmentProvider {
+
+    private final Map<String, SystemObjectScanner> scanners;
+
+    private TestEnvironmentProvider(Map<String, SystemObjectScanner> scanners) {
+      this.scanners = Map.copyOf(scanners);
+    }
+
+    @Override
+    public String environmentKind() {
+      return "floe";
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions(CatalogContext context) {
+      return List.of();
+    }
+
+    @Override
+    public boolean supports(NameRef name, CatalogContext context) {
+      return true;
+    }
+
+    @Override
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
       return Optional.ofNullable(scanners.get(scannerId));
     }
   }

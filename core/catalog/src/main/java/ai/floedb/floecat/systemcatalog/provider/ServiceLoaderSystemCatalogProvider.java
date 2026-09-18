@@ -134,20 +134,8 @@ public final class ServiceLoaderSystemCatalogProvider
     }
     this.environmentProviders = List.copyOf(loadedEnvironmentProviders);
 
-    /*
-     * Extract every SystemObjectScannerProvider from the extensions so we can merge any extra
-     * namespace/table/view definitions into the cached catalog later on.
-     * Floecat default Information schema objects are always added but can be overwritten by the
-     * plugins own definition of the schema.
-     *
-     * Every engine-specific scanner provider should be surfaced through its
-     * EngineCatalogProvider implementation.
-     */
-    List<SystemObjectScannerProvider> extensionProviders =
-        Stream.concat(engineProviders.stream(), environmentProviders.stream())
-            .map(provider -> (SystemObjectScannerProvider) provider)
-            .toList();
-    this.providers = extensionProviders.stream().collect(Collectors.toUnmodifiableList());
+    this.providers =
+        engineProviders.stream().map(provider -> (SystemObjectScannerProvider) provider).toList();
   }
 
   @Override
