@@ -33,8 +33,8 @@ import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
-import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
+import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -109,8 +109,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .buildSnapshot(
                 ctx,
                 tableId,
-                org.mockito.Mockito.mock(
-                    ai.floedb.floecat.connector.spi.FloecatConnector.class),
+                org.mockito.Mockito.mock(ai.floedb.floecat.connector.spi.FloecatConnector.class),
                 bundle,
                 existing)
             .orElseThrow();
@@ -146,8 +145,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .buildSnapshot(
                 ctx,
                 tableId,
-                org.mockito.Mockito.mock(
-                    ai.floedb.floecat.connector.spi.FloecatConnector.class),
+                org.mockito.Mockito.mock(ai.floedb.floecat.connector.spi.FloecatConnector.class),
                 bundle,
                 null)
             .orElseThrow();

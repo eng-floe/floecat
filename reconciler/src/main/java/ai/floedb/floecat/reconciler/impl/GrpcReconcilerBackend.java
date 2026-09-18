@@ -79,11 +79,11 @@ import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
+import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
-import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
@@ -711,8 +711,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
               columnSelectorPolicy == null
                   ? FloecatConnector.ColumnSelectorPolicy.defaults()
                   : columnSelectorPolicy;
-          Set<String> columns =
-              includeColumns == null ? Set.of() : Set.copyOf(includeColumns);
+          Set<String> columns = includeColumns == null ? Set.of() : Set.copyOf(includeColumns);
           Set<FloecatConnector.StatsTargetKind> kinds =
               includeTargetKinds == null ? Set.of() : Set.copyOf(includeTargetKinds);
           if (source instanceof CanonicalIdentityConnector canonical) {
