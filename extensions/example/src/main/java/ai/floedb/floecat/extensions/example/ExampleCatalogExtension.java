@@ -25,7 +25,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
-import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import com.google.protobuf.ExtensionRegistry;
 import com.google.protobuf.TextFormat;
 import java.io.IOException;
@@ -73,7 +73,7 @@ import org.jboss.logging.Logger;
  * Unreadable or unparseable files are skipped with a warning. A missing configured directory
  * results in an empty catalog rather than a startup failure.
  */
-public final class ExampleCatalogExtension implements EngineSystemCatalogExtension {
+public final class ExampleCatalogExtension implements EngineCatalogProvider {
 
   private static final Logger LOG = Logger.getLogger(ExampleCatalogExtension.class);
 
@@ -93,7 +93,7 @@ public final class ExampleCatalogExtension implements EngineSystemCatalogExtensi
   private static final String CLASSPATH_RESOURCE_BASE = "/builtins/example/";
 
   // ---------------------------------------------------------------------------
-  // EngineSystemCatalogExtension
+  // EngineCatalogProvider
   // ---------------------------------------------------------------------------
 
   @Override

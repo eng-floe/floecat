@@ -21,12 +21,12 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
-import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import java.util.List;
 import java.util.Optional;
 
 /** Test-only extension that intentionally returns invalid catalog data. */
-public final class InvalidCatalogExtension implements EngineSystemCatalogExtension {
+public final class InvalidCatalogExtension implements EngineCatalogProvider {
 
   static final String ENGINE_KIND = "invalid_engine";
 
