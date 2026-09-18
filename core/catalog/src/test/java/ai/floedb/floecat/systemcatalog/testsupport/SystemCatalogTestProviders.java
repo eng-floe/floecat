@@ -74,8 +74,8 @@ public final class SystemCatalogTestProviders {
           NameRefUtil.name(engineKind, "versioned_" + suffix),
           "versioned_" + suffix,
           List.<SystemColumnDef>of(),
-          TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
-          "version-scanner",
+          TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+          "",
           "",
           "",
           List.of(),
@@ -134,16 +134,14 @@ public final class SystemCatalogTestProviders {
     }
   }
 
-  public static final class OverridingTableProvider implements EngineCatalogProvider {
+  public static final class EngineTableProvider implements EngineCatalogProvider {
 
     private final String engineKind;
     private final NameRef name;
-    private final String scannerId;
 
-    public OverridingTableProvider(String engineKind, NameRef name, String scannerId) {
+    public EngineTableProvider(String engineKind, NameRef name) {
       this.engineKind = engineKind;
       this.name = name;
-      this.scannerId = scannerId;
     }
 
     @Override
@@ -153,9 +151,9 @@ public final class SystemCatalogTestProviders {
 
     @Override
     public List<SystemObjectDef> definitions(CatalogContext context) {
+      NameRef namespace = NameRefUtil.namespaceRef(name).orElseThrow();
       return List.of(
-          new SystemNamespaceDef(
-              NameRefUtil.name("information_schema"), "information_schema", List.of()),
+          new SystemNamespaceDef(namespace, NameRefUtil.canonical(namespace), List.of()),
           tableDef());
     }
 
@@ -169,8 +167,8 @@ public final class SystemCatalogTestProviders {
           name,
           "overridden",
           List.<SystemColumnDef>of(),
-          TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
-          scannerId,
+          TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+          "",
           "",
           "",
           List.of(),

@@ -30,7 +30,8 @@ import java.util.Optional;
  *
  * <p>The selected engine remains available through {@link CatalogContext}; the environment owns
  * relation shape and scanner behavior. Engine capabilities belong to {@link
- * ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider}.
+ * ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider}; an environment provider must not
+ * contribute engine capabilities. Environment tables use the FLOECAT or STORAGE backend.
  */
 public interface CatalogEnvironmentProvider {
 

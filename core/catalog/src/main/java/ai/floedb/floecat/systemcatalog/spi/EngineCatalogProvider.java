@@ -31,7 +31,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Engine-owned system-catalog contribution.
+ * Engine-owned contribution to the materialized system catalog.
  *
  * <p>An implementation may provide materialised {@code SystemCatalogData}, live definitions and
  * scanners, or both. Live providers do not copy changing engine types, functions, or system
@@ -43,12 +43,15 @@ import java.util.Optional;
  * metadata. Floecat does not snapshot or persist the result of this SPI.
  *
  * <p>The selected catalog environment is intentionally not owned by this provider. The provider
- * describes the executor identified by {@link #engineKind()}; environment-owned catalog shape is
- * selected by the catalog composition layer.
+ * describes the engine identified by {@link #engineKind()}; environment-owned relations are
+ * selected independently by the catalog composition layer.
+ *
+ * <p>Engine-owned relation definitions must use {@code TABLE_BACKEND_KIND_ENGINE}. Other
+ * definitions describe engine capabilities such as functions, types, operators, and casts.
  */
 public interface EngineCatalogProvider extends SystemObjectScannerProvider {
 
-  /** Globally unique executor/engine identifier. */
+  /** Globally unique engine identifier. */
   String engineKind();
 
   /**
@@ -89,7 +92,7 @@ public interface EngineCatalogProvider extends SystemObjectScannerProvider {
     return EngineTypeMapper.EMPTY;
   }
 
-  /** Dynamic providers may return definitions obtained from the selected executor at runtime. */
+  /** Dynamic providers may return definitions obtained from the selected engine at runtime. */
   @Override
   default List<SystemObjectDef> definitions(CatalogContext context) {
     return List.of();
