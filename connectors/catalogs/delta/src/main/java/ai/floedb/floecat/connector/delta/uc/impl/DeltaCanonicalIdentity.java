@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdentityPathElement;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityPathElementKind;
 import ai.floedb.floecat.connector.delta.identity.DeltaResolvedSchema;
 import ai.floedb.floecat.schema.identity.ColumnPath;
+import ai.floedb.floecat.schema.identity.HistoryCoverage;
 import ai.floedb.floecat.schema.identity.IdentityMode;
 import ai.floedb.floecat.schema.identity.LegacyDottedKeyIndex;
 import ai.floedb.floecat.schema.identity.SchemaIdentityReconciler;
@@ -44,17 +45,42 @@ final class DeltaCanonicalIdentity {
   private DeltaCanonicalIdentity() {}
 
   static Reconciled reconcile(
-      Snapshot snapshot, long sourceVersion, ColumnIdentityMap previousIdentityMap) {
+      Snapshot snapshot,
+      long sourceVersion,
+      ColumnIdentityMap previousIdentityMap,
+      HistoryCoverage historyCoverage) {
     Objects.requireNonNull(snapshot, "snapshot");
     DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
-    IdentityMode mode = identityMode(resolved, previousIdentityMap);
+    IdentityMode mode = identityMode(resolved);
     Optional<SchemaIdentityState> previous =
         previousIdentityMap == null
                 || previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance())
             ? Optional.empty()
             : Optional.of(fromProto(previousIdentityMap));
-    SchemaIdentityReconciler.Result result =
-        SchemaIdentityReconciler.reconcile(resolved.schema(), sourceVersion, mode, previous);
+    SchemaIdentityReconciler.Result result;
+    if (mode == IdentityMode.NATIVE_FIELD_ID) {
+      previous.ifPresent(
+          state -> {
+            if (state.mode() != mode) {
+              throw new IllegalArgumentException(
+                  "Identity mode changed; a clean identity reset is required");
+            }
+            if (sourceVersion <= state.sourceVersion()) {
+              throw new IllegalArgumentException(
+                  "Source version " + sourceVersion + " does not follow " + state.sourceVersion());
+            }
+          });
+      long highWaterMark =
+          Math.max(
+              previous.map(SchemaIdentityState::highWaterMark).orElse(0L),
+              DeltaColumnMapping.maxColumnId(snapshot));
+      result =
+          SchemaIdentityReconciler.reset(resolved.schema(), sourceVersion, mode, highWaterMark);
+    } else {
+      result =
+          SchemaIdentityReconciler.reconcile(
+              resolved.schema(), sourceVersion, mode, previous, historyCoverage);
+    }
     return new Reconciled(resolved, result, toProto(result.state()));
   }
 
@@ -63,50 +89,46 @@ final class DeltaCanonicalIdentity {
       Snapshot snapshot, long sourceVersion, ColumnIdentityMap previousIdentityMap) {
     Objects.requireNonNull(snapshot, "snapshot");
     DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
-    IdentityMode mode = identityMode(resolved, previousIdentityMap);
+    IdentityMode mode = identityMode(resolved);
     long previousHighWaterMark =
         previousIdentityMap == null
                 || previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance())
             ? 0L
             : fromProto(previousIdentityMap).highWaterMark();
+    if (mode == IdentityMode.NATIVE_FIELD_ID) {
+      previousHighWaterMark =
+          Math.max(previousHighWaterMark, DeltaColumnMapping.maxColumnId(snapshot));
+    }
     SchemaIdentityReconciler.Result result =
         SchemaIdentityReconciler.reset(
             resolved.schema(), sourceVersion, mode, previousHighWaterMark);
     return new Reconciled(resolved, result, toProto(result.state()));
   }
 
+  /** Advances a reconciled map across commits known not to contain metadata changes. */
+  static ColumnIdentityMap stampSourceVersion(
+      Snapshot snapshot, long sourceVersion, ColumnIdentityMap identityMap) {
+    Objects.requireNonNull(snapshot, "snapshot");
+    SchemaIdentityState state = fromProto(identityMap);
+    SchemaIdentityState stamped =
+        SchemaIdentityReconciler.stampSourceVersion(
+            state, sourceVersion, HistoryCoverage.COMPLETE_METADATA_HISTORY);
+    ColumnIdentityMap result = toProto(stamped);
+    validateSnapshot(snapshot, result);
+    return result;
+  }
+
   /**
    * The identity mode this table reconciles under.
    *
-   * <p>Column mapping alone is not enough to use native IDs. PROTOCOL.md assigns an id to every
-   * column "nested or leaf", but gives array elements and map keys/values nowhere to record one --
-   * only StructField carries {@code metadata}. Delta-Spark works around that with {@code
-   * delta.columnMapping.nested.ids}, which is an extension rather than protocol, so a conformant
-   * third-party writer may produce a mapped table whose collection interiors have no native ID at
-   * all. Native-ID reconciliation needs one for every node, so such a table falls back to
-   * structured-path identity instead of being refused.
-   *
-   * <p>The choice is sticky: once a table reconciles by path it keeps doing so, even if a later
-   * writer starts emitting nested IDs. Switching modes mid-history is a reset, and silently
-   * triggering one on a writer upgrade would reissue live IDs.
+   * <p>Mapped StructFields use their protocol field IDs. Collection interiors use deterministic IDs
+   * derived from the nearest StructField, independent of whether nested provenance IDs are present.
+   * The protocol requires those nested IDs only while IcebergCompatV2 is active.
    */
-  static IdentityMode identityMode(
-      DeltaResolvedSchema resolved, ColumnIdentityMap previousIdentityMap) {
-    if (previousIdentityMap != null
-        && !previousIdentityMap.equals(ColumnIdentityMap.getDefaultInstance())) {
-      return previousIdentityMap.getMode()
-              == ColumnIdentityMode.COLUMN_IDENTITY_MODE_NATIVE_FIELD_ID
-          ? IdentityMode.NATIVE_FIELD_ID
-          : IdentityMode.STRUCTURED_PATH;
-    }
-    if (!resolved.effectiveMappingMode().isEnabled()) {
-      return IdentityMode.STRUCTURED_PATH;
-    }
-    boolean everyNodeHasNativeId =
-        resolved.schema().nodes().stream()
-            .allMatch(
-                node -> node.nativeFieldId().isPresent() && node.nativeFieldId().getAsInt() > 0);
-    return everyNodeHasNativeId ? IdentityMode.NATIVE_FIELD_ID : IdentityMode.STRUCTURED_PATH;
+  static IdentityMode identityMode(DeltaResolvedSchema resolved) {
+    return resolved.effectiveMappingMode().isEnabled()
+        ? IdentityMode.NATIVE_FIELD_ID
+        : IdentityMode.STRUCTURED_PATH;
   }
 
   static SchemaIdentityState fromProto(ColumnIdentityMap value) {
@@ -132,7 +154,12 @@ final class DeltaCanonicalIdentity {
               entry.getColumnId()));
     }
     return SchemaIdentityState.restore(
-        value.getSourceVersion(), value.getHighWaterMark(), mode, entries, value.getFingerprint());
+        value.getSourceVersion(),
+        value.getHighWaterMark(),
+        mode,
+        entries,
+        value.getFingerprint(),
+        value.getStateChecksum());
   }
 
   static void validateSnapshot(Snapshot snapshot, ColumnIdentityMap identityMap) {
@@ -145,12 +172,8 @@ final class DeltaCanonicalIdentity {
               + snapshot.getVersion());
     }
     DeltaResolvedSchema resolved = DeltaColumnMapping.resolveSchema(snapshot);
-    // Only one direction is an inconsistency. A native-ID map over a snapshot that is not column
-    // mapped names IDs the source cannot govern. The converse is legitimate: a mapped table whose
-    // collection interiors carry no native IDs reconciles by path (see identityMode), so a
-    // structured-path map over a mapped snapshot is the expected outcome, not a mismatch.
-    if (state.mode() == IdentityMode.NATIVE_FIELD_ID
-        && !resolved.effectiveMappingMode().isEnabled()) {
+    if ((state.mode() == IdentityMode.NATIVE_FIELD_ID)
+        != resolved.effectiveMappingMode().isEnabled()) {
       throw new IllegalArgumentException("Snapshot and column identity map use different modes");
     }
     Set<ColumnPath> sourcePaths =
@@ -161,17 +184,22 @@ final class DeltaCanonicalIdentity {
       throw new IllegalArgumentException("Snapshot schema does not match its column identity map");
     }
     if (state.mode() == IdentityMode.NATIVE_FIELD_ID) {
+      SchemaIdentityState expected =
+          SchemaIdentityReconciler.reset(
+                  resolved.schema(),
+                  snapshot.getVersion(),
+                  IdentityMode.NATIVE_FIELD_ID,
+                  DeltaColumnMapping.maxColumnId(snapshot))
+              .state();
       resolved
           .schema()
           .nodes()
           .forEach(
               node -> {
                 var mapped = state.byPath(node.path()).orElseThrow();
-                long mappedId = mapped.canonicalId();
-                if (node.nativeFieldId().isEmpty()
-                    || mapped.nativeFieldId().isEmpty()
-                    || node.nativeFieldId().getAsInt() != mappedId
-                    || mapped.nativeFieldId().getAsInt() != node.nativeFieldId().getAsInt()) {
+                var source = node.nativeFieldId();
+                if (mapped.canonicalId() != expected.byPath(node.path()).orElseThrow().canonicalId()
+                    || !mapped.nativeFieldId().equals(source)) {
                   throw new IllegalArgumentException(
                       "Mapped Delta identity changed for " + node.path().display());
                 }
@@ -224,7 +252,8 @@ final class DeltaCanonicalIdentity {
                 state.mode() == IdentityMode.NATIVE_FIELD_ID
                     ? ColumnIdentityMode.COLUMN_IDENTITY_MODE_NATIVE_FIELD_ID
                     : ColumnIdentityMode.COLUMN_IDENTITY_MODE_STRUCTURED_PATH)
-            .setFingerprint(state.fingerprint());
+            .setFingerprint(state.fingerprint())
+            .setStateChecksum(state.stateChecksum());
     for (ai.floedb.floecat.schema.identity.SchemaIdentityEntry entry : state.entries()) {
       ColumnIdentityEntry.Builder mapped =
           ColumnIdentityEntry.newBuilder()
