@@ -72,11 +72,12 @@ import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 /**
- * Materializes and caches engine-specific system catalog nodes.
+ * Materializes and caches system catalog nodes for a selected catalog context.
  *
  * <p>This registry takes declarative {@link SystemCatalogData} from the {@link
- * SystemDefinitionRegistry}, filters it by engine kind and version, applies engine-specific rules,
- * and builds immutable {@link GraphNode} instances with stable {@code _system} {@link ResourceId}s.
+ * SystemDefinitionRegistry}, filters it by executor kind and version, applies executor-specific
+ * rules, and builds immutable {@link GraphNode} instances with stable {@code _system} {@link
+ * ResourceId}s.
  *
  * <p>Results are cached per selected catalog context to avoid repeated filtering and node
  * construction.
