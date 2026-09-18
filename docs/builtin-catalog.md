@@ -95,6 +95,10 @@ The loader resolves the selected engine and environment independently. The regis
 
 When no environment is selected, the request uses the empty environment context. An engine selection never derives an environment selection.
 
+The system catalog identity follows the same rule: the selected engine kind wins; when the engine
+axis is empty, the selected environment kind names the system catalog; when both axes are empty, the
+request boundary selects `floecat_internal`.
+
 ### System table backend contract
 
 `SystemTableDef` records a `TableBackendKind` (proto `TABLE_BACKEND_KIND_*`) plus backend-specific metadata:  

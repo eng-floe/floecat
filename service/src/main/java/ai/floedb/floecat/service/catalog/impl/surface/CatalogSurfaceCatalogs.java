@@ -122,7 +122,7 @@ public final class CatalogSurfaceCatalogs {
   }
 
   private Catalog systemCatalogForCurrentEngine() {
-    String engineKind = catalogContext.engine().effectiveEngineKind();
+    String engineKind = catalogContext.effectiveSystemCatalogKind();
     return Catalog.newBuilder()
         .setResourceId(SystemNodeRegistry.systemCatalogContainerId(engineKind))
         .setDisplayName(engineKind)
@@ -178,7 +178,7 @@ public final class CatalogSurfaceCatalogs {
       return Optional.empty();
     }
     String currentId =
-        SystemNodeRegistry.systemCatalogContainerId(catalogContext.engine().effectiveEngineKind())
+        SystemNodeRegistry.systemCatalogContainerId(catalogContext.effectiveSystemCatalogKind())
             .getId();
     return normalized.getId().equals(currentId) ? Optional.of(normalized) : Optional.empty();
   }

@@ -213,7 +213,7 @@ public final class MetaGraph implements CatalogGraphView {
 
     if (isSystemCatalogAlias(name, ctx)) {
       return Optional.of(
-          SystemNodeRegistry.systemCatalogContainerId(ctx.engine().effectiveEngineKind()));
+          SystemNodeRegistry.systemCatalogContainerId(ctx.effectiveSystemCatalogKind()));
     }
     return Optional.empty();
   }
@@ -226,7 +226,7 @@ public final class MetaGraph implements CatalogGraphView {
     if (candidate.isEmpty()) {
       return false;
     }
-    return candidate.equalsIgnoreCase(ctx.engine().effectiveEngineKind());
+    return candidate.equalsIgnoreCase(ctx.effectiveSystemCatalogKind());
   }
 
   /**
@@ -243,7 +243,7 @@ public final class MetaGraph implements CatalogGraphView {
   @Override
   public Optional<ResourceId> resolveNamespace(
       String correlationId, NameRef ref, CatalogContext ctx) {
-    NameRef systemRef = SystemCatalogTranslator.toSystemNamespaceRef(ref, ctx.engine());
+    NameRef systemRef = SystemCatalogTranslator.toSystemNamespaceRef(ref, ctx);
     Optional<ResourceId> system = systemGraph.resolveNamespace(systemRef, ctx);
     return system.isPresent() ? system : userGraph.resolveNamespace(correlationId, ref);
   }
@@ -801,10 +801,8 @@ public final class MetaGraph implements CatalogGraphView {
     for (NameRef ref : refs) {
       Optional<ResourceId> sysId =
           tables
-              ? systemGraph.resolveTable(
-                  SystemCatalogTranslator.toSystemRelationRef(ref, ctx.engine()), ctx)
-              : systemGraph.resolveView(
-                  SystemCatalogTranslator.toSystemRelationRef(ref, ctx.engine()), ctx);
+              ? systemGraph.resolveTable(SystemCatalogTranslator.toSystemRelationRef(ref, ctx), ctx)
+              : systemGraph.resolveView(SystemCatalogTranslator.toSystemRelationRef(ref, ctx), ctx);
       if (sysId.isEmpty()) {
         continue;
       }
@@ -843,7 +841,7 @@ public final class MetaGraph implements CatalogGraphView {
   private int countSystemRelationsInNamespace(NameRef prefix, CatalogContext ctx, boolean tables) {
     Optional<ResourceId> sysNsId =
         systemGraph.resolveNamespace(
-            SystemCatalogTranslator.toSystemNamespaceRef(prefix, ctx.engine()), ctx);
+            SystemCatalogTranslator.toSystemNamespaceRef(prefix, ctx), ctx);
     if (sysNsId.isEmpty()) {
       return 0;
     }
@@ -861,7 +859,7 @@ public final class MetaGraph implements CatalogGraphView {
       NameRef prefix, CatalogContext ctx, boolean tables, int max) {
     Optional<ResourceId> sysNsId =
         systemGraph.resolveNamespace(
-            SystemCatalogTranslator.toSystemNamespaceRef(prefix, ctx.engine()), ctx);
+            SystemCatalogTranslator.toSystemNamespaceRef(prefix, ctx), ctx);
     if (sysNsId.isEmpty()) {
       return List.of();
     }

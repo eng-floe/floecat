@@ -657,6 +657,25 @@ class SystemNodeRegistryTest {
   }
 
   @Test
+  void environmentOnlyContextUsesEnvironmentCatalogIdentity() {
+    var provider =
+        new SystemCatalogTestProviders.EnvironmentTableProvider("floe", "environment_table");
+    var nodeRegistry = registryWith(registryWithCatalogs(), (CatalogEnvironmentProvider) provider);
+
+    var nodes =
+        nodeRegistry.nodesFor(
+            CatalogContext.of(EnvironmentContext.of("floe", "1"), EngineContext.empty()));
+
+    assertThat(nodes.engineKind()).isEqualTo("floe");
+    assertThat(nodes.tableNames().get("environment.environment_table"))
+        .isEqualTo(
+            SystemNodeRegistry.resourceId(
+                "floe",
+                ResourceKind.RK_TABLE,
+                NameRefUtil.name("environment", "environment_table")));
+  }
+
+  @Test
   void dynamicEngineAndEnvironmentContributionsCompose() {
     DynamicEngineProvider engineProvider = new DynamicEngineProvider("duckdb");
     var environmentProvider =
@@ -1381,8 +1400,8 @@ class SystemNodeRegistryTest {
   void engineProviderContributesEngineRelation() {
     SystemDefinitionRegistry defs = registryWithCatalogs();
     EngineCatalogProvider provider =
-        new SystemCatalogTestProviders.OverridingTableProvider(
-            PG_KIND, NameRefUtil.name("information_schema", "tables"), "overridden_scanner");
+        new SystemCatalogTestProviders.EngineTableProvider(
+            PG_KIND, NameRefUtil.name("information_schema", "tables"));
 
     SystemNodeRegistry registry = registryWith(defs, provider);
     var nodes = registry.nodesFor(context(PG_KIND, "16.0"));

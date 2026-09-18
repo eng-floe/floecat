@@ -20,7 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import org.junit.jupiter.api.Test;
 
 final class SystemCatalogTranslatorTest {
@@ -59,7 +61,8 @@ final class SystemCatalogTranslatorTest {
             .addPath("pg_catalog")
             .setName("information_schema")
             .build();
-    EngineContext ctx = EngineContext.of("pg", "1.0");
+    CatalogContext ctx =
+        CatalogContext.of(EnvironmentContext.empty(), EngineContext.of("pg", "1.0"));
 
     NameRef translated = SystemCatalogTranslator.toSystemNamespaceRef(userRef, ctx);
 
@@ -76,7 +79,8 @@ final class SystemCatalogTranslatorTest {
             .addPath("information_schema")
             .setName("tables")
             .build();
-    EngineContext ctx = EngineContext.of("pg", "1.0");
+    CatalogContext ctx =
+        CatalogContext.of(EnvironmentContext.empty(), EngineContext.of("pg", "1.0"));
 
     NameRef translated = SystemCatalogTranslator.toSystemRelationRef(userRef, ctx);
 
