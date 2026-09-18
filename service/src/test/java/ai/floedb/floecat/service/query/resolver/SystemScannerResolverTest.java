@@ -105,6 +105,24 @@ class SystemScannerResolverTest {
     assertThat(resolver.resolve("corr", tableId, context, PhaseDiagnostics.NOOP)).isSameAs(scanner);
   }
 
+  @Test
+  void selectedEnvironmentOwnsScannerLookup() {
+    ResourceId tableId = systemTableId("pg", "foo");
+    SystemObjectScanner engineScanner = new TestSystemObjectScanner("engine-scanner");
+    SystemObjectScanner environmentScanner = new TestSystemObjectScanner("environment-scanner");
+    SystemScannerResolver resolver =
+        buildResolver(
+            new TestCatalogGraphView().addNode(tableNode(tableId, "shared-scanner")),
+            Map.of("shared-scanner", engineScanner));
+    resolver.environmentProviders =
+        List.of(new TestEnvironmentProvider(Map.of("shared-scanner", environmentScanner)));
+
+    CatalogContext context = CatalogContext.of(EnvironmentContext.of("floe", "1"), ENGINE_CTX);
+
+    assertThat(resolver.resolve("corr", tableId, context, PhaseDiagnostics.NOOP))
+        .isSameAs(environmentScanner);
+  }
+
   private static SystemScannerResolver buildResolver(
       CatalogGraphView graphView, Map<String, SystemObjectScanner> scanners) {
     SystemScannerResolver resolver = new SystemScannerResolver();
