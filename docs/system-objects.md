@@ -167,12 +167,18 @@ Constraint view semantics are ANSI-oriented:
 
 ### Provider version contract
 
-Providers must keep their definitions and scanners aligned with the version they advertise. When emitting versioned metadata, override `definitions(engineKind, engineVersion)` and `supports(NameRef, engineKind, engineVersion)` so `SystemNodeRegistry.mergeCatalogData` can select the right overlays; remember that this merge is later replayed for scanners via the same `(engineKind, engineVersion)` tuple, so the `scannerId` in each definition must resolve to a scanner whose `provide(scannerId, engineKind, engineVersion)` honours the same version constraint. If your provider doesn’t need per-version behavior, rely on the simpler `definitions()`/`supports(...)` helpers but document that the merged overlay is still cached per `(engineKind, engineVersion)`, so changing the schema without bumping the version string may leave caches stale until invalidated.
+Providers must keep their definitions and scanners aligned with the version they advertise. The
+context-aware methods receive the complete `CatalogContext`, so inspect both axes when a provider's
+metadata depends on the selected environment and engine. The `scannerId` in each FLOECAT definition
+must resolve through `provide(scannerId, context)` under the same context. The merged overlay is
+cached per normalized `(environmentKind, environmentVersion, engineKind, engineVersion)` tuple; if
+metadata changes without a context/version change, call targeted registry invalidation before the
+next materialization.
 
 ### Performance & scalability notes
 
 - `SystemGraph` caches snapshots in an access-ordered `LinkedHashMap` sized by `floecat.system.graph.snapshot-cache-size` (default `16`). Each snapshot already buckets namespaces, relations, and node lookups, so repeated `_system` scans never rebuild the graph.
 - `SystemObjectScanContext` keeps the catalog/namespace `ResourceId`s, reuses `CatalogGraphView` enumeration methods, and caches `listNamespaces`, `listTables`, and `columnTypes`. Scanners should not duplicate this caching logic – the context forwards to the cached graph view that already talks to `MetadataGraph`. `SystemNodeRegistry.resourceId` generates deterministic UUIDs for engine/kind/signature tuples, so avoid parsing `ResourceId.id` strings and build every system `ResourceId` via the helper.
 - `CatalogGraphView`/`MetaGraph` implement `SystemObjectGraphView` (`ai.floedb.floecat.systemcatalog.spi.scanner`) so that the core catalog module stays unaware of the full metadata graph. `SystemGraph` answers `_system` requests while `MetadataGraph` handles user objects, but both feed into the same composite graph view.
-- `SystemTableNode.scannerId()` carries the bridge between metadata and row generation. Row-oriented components can look up the correct `SystemObjectScanner` by calling `provide(scannerId, engineKind, engineVersion)` on the discovered providers list.
+- `SystemTableNode.scannerId()` carries the bridge between metadata and row generation. Row-oriented components can look up the correct `SystemObjectScanner` by calling `provide(scannerId, context)` on the selected provider list.
 - Keep scanners lazy and stateless. Every `SystemObjectScanner` should stream rows, avoid boxing, and match its `SchemaColumn[]` exactly. The shared `SystemObjectScanContext` is the only place scanners should touch metadata – everything else (name resolution, schema parsing, column typing) is already cached.
