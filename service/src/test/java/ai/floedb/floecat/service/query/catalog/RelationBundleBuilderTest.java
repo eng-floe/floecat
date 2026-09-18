@@ -646,8 +646,8 @@ class RelationBundleBuilderTest {
         UserObjectBundleTestSupport.schemaFor("id_x"),
         NameRef.newBuilder().setCatalog("cat").setName("x").build());
 
-    // Decorates without emitting the required engine payload → PAYLOAD_REQUIRED_MISSING.
-    TestBuilder builder = builder(ctxIgnored -> Optional.of(new NoPayloadDecorator()), true);
+    // The engine's own decorator enforces its payload rule and names the failure.
+    TestBuilder builder = builder(ctxIgnored -> Optional.of(new PayloadDemandingDecorator()), true);
     RelationInfo info =
         builder
             .build(
@@ -665,6 +665,29 @@ class RelationBundleBuilderTest {
                 c.getStatus() == ColumnStatus.COLUMN_STATUS_FAILED
                     && c.getFailure().getCode()
                         == ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING);
+  }
+
+  @Test
+  void decoratorThatEmitsNothingLeavesColumnsOk() {
+    graphView.registerTable(
+        TABLE,
+        UserObjectBundleTestSupport.schemaFor("id_x"),
+        NameRef.newBuilder().setCatalog("cat").setName("x").build());
+
+    TestBuilder builder = builder(ctxIgnored -> Optional.of(new SilentDecorator()), true);
+    RelationInfo info =
+        builder
+            .build(
+                "cid",
+                resolved(TABLE, fullCandidate()),
+                ctx,
+                resolutionContext(StatsProvider.NONE),
+                Optional.empty(),
+                Optional.empty())
+            .info();
+
+    assertThat(info.getColumnsCount()).isEqualTo(1);
+    assertThat(info.getColumns(0).getStatus()).isEqualTo(ColumnStatus.COLUMN_STATUS_OK);
   }
 
   @Test
@@ -877,7 +900,7 @@ class RelationBundleBuilderTest {
 
     // Full schema, but a FAILED column makes the payload non-cacheable → token blanked, data kept.
     RelationInfo info =
-        builder(ctxIgnored -> Optional.of(new NoPayloadDecorator()), true)
+        builder(ctxIgnored -> Optional.of(new PayloadDemandingDecorator()), true)
             .build(
                 "cid",
                 resolved(TABLE, fullCandidate()),
@@ -914,16 +937,16 @@ class RelationBundleBuilderTest {
     assertThat(info.getPinIdentity().getTableBlobVersion()).isEqualTo("v-token");
   }
 
-  /** Runs column decoration but never emits the required engine payload. */
-  private static final class NoPayloadDecorator implements EngineMetadataDecorator {
+  /** Enforces a payload rule of its own, the way an engine that needs one does. */
+  private static final class PayloadDemandingDecorator implements EngineMetadataDecorator {
     @Override
     public void decorateColumn(EngineContext ctx, ColumnDecoration columnDecoration) {
-      // Emit a payload for a DIFFERENT engine kind so hasRequiredEnginePayload stays false for the
-      // requesting engine, marking the column PAYLOAD_REQUIRED_MISSING.
-      columnDecoration
-          .builder()
-          .addEngineSpecific(
-              EngineSpecific.newBuilder().setEngineKind("other-engine").setPayloadType("").build());
+      throw new DecorationException(
+          ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING,
+          "Engine-specific payload is required but missing");
     }
   }
+
+  /** Decorates nothing, the way an engine that decorates only relations or views does. */
+  private static final class SilentDecorator implements EngineMetadataDecorator {}
 }

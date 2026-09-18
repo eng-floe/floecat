@@ -63,17 +63,23 @@ public final class ServiceLoaderSystemCatalogProvider
   private final Map<String, EngineMetadataDecorator> decorators;
   private final List<SystemObjectScannerProvider> providers;
 
-  public ServiceLoaderSystemCatalogProvider() {
-    List<EngineSystemCatalogExtension> engineExtensions;
+  private static List<EngineSystemCatalogExtension> discoverExtensions() {
     try {
-      engineExtensions =
-          ServiceLoader.load(EngineSystemCatalogExtension.class).stream()
-              .map(ServiceLoader.Provider::get)
-              .toList();
+      return ServiceLoader.load(EngineSystemCatalogExtension.class).stream()
+          .map(ServiceLoader.Provider::get)
+          .toList();
     } catch (Exception e) {
       LOG.warn("Failed to load EngineSystemCatalogExtension implementations", e);
-      engineExtensions = List.of();
+      return List.of();
     }
+  }
+
+  public ServiceLoaderSystemCatalogProvider() {
+    this(discoverExtensions());
+  }
+
+  /** Visible for testing: takes the extensions directly instead of discovering them. */
+  ServiceLoaderSystemCatalogProvider(List<EngineSystemCatalogExtension> engineExtensions) {
     Map<String, EngineSystemCatalogExtension> tmp = new HashMap<>();
     Map<String, EngineMetadataDecorator> decoratorMap = new HashMap<>();
     for (EngineSystemCatalogExtension ext : engineExtensions) {
@@ -211,6 +217,23 @@ public final class ServiceLoaderSystemCatalogProvider
       return Optional.empty();
     }
     return Optional.ofNullable(decorators.get(ctx.effectiveEngineKind()));
+  }
+
+  /**
+   * A registered engine decorates only if it supplied a decorator. An unregistered kind is a
+   * misconfiguration, so it stays expected and fails closed rather than serving undecorated objects
+   * to an engine that needs them.
+   */
+  @Override
+  public boolean expectsDecoration(EngineContext ctx) {
+    if (ctx == null || !ctx.enginePluginOverlaysEnabled()) {
+      return false;
+    }
+    String engineKind = ctx.effectiveEngineKind();
+    if (!plugins.containsKey(engineKind)) {
+      return true;
+    }
+    return decorators.containsKey(engineKind);
   }
 
   /**

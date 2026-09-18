@@ -21,7 +21,6 @@ import ai.floedb.floecat.query.rpc.ColumnFailureCode;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.ColumnResult;
 import ai.floedb.floecat.query.rpc.ColumnStatus;
-import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.ViewDefinition;
@@ -335,20 +334,9 @@ final class EngineRelationDecorator {
         } finally {
           timings.addDecorateColumnInvokeNanos(System.nanoTime() - invokeStartNs);
         }
-        ColumnInfo decoratedColumn = columnDecoration.builder().build();
-        if (hasRequiredPayload(decoratedColumn, context)) {
-          decorated.add(readyColumn(decoratedColumn));
-        } else {
-          decorated.add(
-              failedColumn(
-                  decoratedColumn,
-                  ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING,
-                  "Engine-specific payload is required but missing",
-                  Map.of(
-                      "engine_kind", safe(context == null ? null : context.normalizedKind()),
-                      "engine_version",
-                          safe(context == null ? null : context.normalizedVersion()))));
-        }
+        // A decorator that emits nothing has decided this column needs nothing; one with an
+        // invariant of its own raises DecorationException.
+        decorated.add(readyColumn(columnDecoration.builder().build()));
       } catch (java.util.concurrent.CancellationException e) {
         throw e;
       } catch (RuntimeException e) {
@@ -361,7 +349,7 @@ final class EngineRelationDecorator {
   }
 
   boolean isRequired(EngineContext context) {
-    return enabled && context != null && context.enginePluginOverlaysEnabled();
+    return enabled && context != null && provider.expectsDecoration(context);
   }
 
   private static List<SchemaColumn> immutable(List<SchemaColumn> schema) {
@@ -434,21 +422,6 @@ final class EngineRelationDecorator {
         ColumnFailure.newBuilder().setCode(code).setMessage(userFacingFailureMessage(code));
     addEngineDetails(failure, context);
     return failure.build();
-  }
-
-  private static boolean hasRequiredPayload(ColumnInfo column, EngineContext context) {
-    String normalizedKind = context == null ? "" : safe(context.normalizedKind());
-    for (EngineSpecific specific : column.getEngineSpecificList()) {
-      String specificKind = safe(specific.getEngineKind());
-      boolean kindMatches =
-          specificKind.isBlank() || normalizedKind.isBlank() || specificKind.equals(normalizedKind);
-      if (kindMatches
-          && !safe(specific.getPayloadType()).isBlank()
-          && !specific.getPayload().isEmpty()) {
-        return true;
-      }
-    }
-    return false;
   }
 
   private static String userFacingFailureMessage(ColumnFailureCode code) {

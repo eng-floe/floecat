@@ -489,7 +489,7 @@ class UserObjectBundleServiceTest {
     // sharing one cache across engines would reuse engine-A decoration for an engine-B query.
     AtomicInteger decorations = new AtomicInteger();
     EngineMetadataDecoratorProvider provider =
-        c -> Optional.of(new CountingDecorator(decorations, true, false));
+        c -> Optional.of(new CountingDecorator(decorations, true, null));
     UserObjectBundleService decorated =
         new UserObjectBundleService(
             graphView,
@@ -558,7 +558,12 @@ class UserObjectBundleServiceTest {
     // later, and reuses the incomplete payload, locking in a transient failure instead of
     // re-fetching until decoration succeeds.
     EngineMetadataDecoratorProvider missingPayload =
-        c -> Optional.of(new CountingDecorator(new AtomicInteger(), false, false));
+        c ->
+            Optional.of(
+                new CountingDecorator(
+                    new AtomicInteger(),
+                    false,
+                    ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING));
     UserObjectBundleService failing =
         new UserObjectBundleService(
             graphView,
@@ -589,7 +594,7 @@ class UserObjectBundleServiceTest {
 
     // Control: when decoration succeeds, the same full response IS stamped and cacheable.
     EngineMetadataDecoratorProvider okPayload =
-        c -> Optional.of(new CountingDecorator(new AtomicInteger(), true, false));
+        c -> Optional.of(new CountingDecorator(new AtomicInteger(), true, null));
     UserObjectBundleService succeeding =
         new UserObjectBundleService(
             graphView,
@@ -1770,7 +1775,7 @@ class UserObjectBundleServiceTest {
   void decoratorSkippedWhenHeadersMissing() {
     AtomicInteger columnDecorations = new AtomicInteger();
     EngineMetadataDecoratorProvider provider =
-        ctx -> Optional.of(new CountingDecorator(columnDecorations, true, false));
+        ctx -> Optional.of(new CountingDecorator(columnDecorations, true, null));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
             graphView,
@@ -1803,7 +1808,7 @@ class UserObjectBundleServiceTest {
   void decoratorInvokedWhenHeadersPresent() {
     AtomicInteger columnDecorations = new AtomicInteger();
     EngineMetadataDecoratorProvider provider =
-        ctx -> Optional.of(new CountingDecorator(columnDecorations, true, false));
+        ctx -> Optional.of(new CountingDecorator(columnDecorations, true, null));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
             graphView,
@@ -1849,7 +1854,12 @@ class UserObjectBundleServiceTest {
   void decoratorMissingPayloadMarksColumnsFailed() {
     AtomicInteger columnDecorations = new AtomicInteger();
     EngineMetadataDecoratorProvider provider =
-        ctx -> Optional.of(new CountingDecorator(columnDecorations, false, false));
+        ctx ->
+            Optional.of(
+                new CountingDecorator(
+                    columnDecorations,
+                    false,
+                    ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
             graphView,
@@ -1902,7 +1912,12 @@ class UserObjectBundleServiceTest {
   void decoratorExceptionPropagatesAsPerColumnFailure() {
     AtomicInteger columnDecorations = new AtomicInteger();
     EngineMetadataDecoratorProvider provider =
-        ctx -> Optional.of(new CountingDecorator(columnDecorations, false, true));
+        ctx ->
+            Optional.of(
+                new CountingDecorator(
+                    columnDecorations,
+                    false,
+                    ColumnFailureCode.COLUMN_FAILURE_CODE_TYPE_NOT_SUPPORTED));
     UserObjectBundleService decoratedService =
         new UserObjectBundleService(
             graphView,
@@ -2102,6 +2117,10 @@ class UserObjectBundleServiceTest {
                                   .setPayloadType("test.column")
                                   .setPayload(com.google.protobuf.ByteString.copyFromUtf8("ok"))
                                   .build());
+                    } else {
+                      throw new DecorationException(
+                          ColumnFailureCode.COLUMN_FAILURE_CODE_ENGINE_PAYLOAD_REQUIRED_MISSING,
+                          "test decorator failure");
                     }
                   }
 
@@ -2312,21 +2331,20 @@ class UserObjectBundleServiceTest {
 
     private final AtomicInteger columnDecorations;
     private final boolean emitPayload;
-    private final boolean throwError;
+    private final ColumnFailureCode failWith;
 
     private CountingDecorator(
-        AtomicInteger columnDecorations, boolean emitPayload, boolean throwError) {
+        AtomicInteger columnDecorations, boolean emitPayload, ColumnFailureCode failWith) {
       this.columnDecorations = columnDecorations;
       this.emitPayload = emitPayload;
-      this.throwError = throwError;
+      this.failWith = failWith;
     }
 
     @Override
     public void decorateColumn(EngineContext ctx, ColumnDecoration columnDecoration) {
       columnDecorations.incrementAndGet();
-      if (throwError) {
-        throw new DecorationException(
-            ColumnFailureCode.COLUMN_FAILURE_CODE_TYPE_NOT_SUPPORTED, "test unsupported type");
+      if (failWith != null) {
+        throw new DecorationException(failWith, "test decorator failure");
       }
       if (emitPayload) {
         columnDecoration

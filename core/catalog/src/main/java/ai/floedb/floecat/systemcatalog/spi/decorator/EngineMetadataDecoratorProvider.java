@@ -31,4 +31,12 @@ public interface EngineMetadataDecoratorProvider {
    * values.
    */
   Optional<EngineMetadataDecorator> decorator(EngineContext ctx);
+
+  /**
+   * Whether the engine in {@code ctx} is expected to decorate the catalog objects it is served. A
+   * caller that then finds no decorator treats that as a failure.
+   */
+  default boolean expectsDecoration(EngineContext ctx) {
+    return ctx != null && ctx.enginePluginOverlaysEnabled();
+  }
 }
