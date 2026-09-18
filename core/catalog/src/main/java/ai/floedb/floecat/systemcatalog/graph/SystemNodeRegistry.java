@@ -148,6 +148,18 @@ public class SystemNodeRegistry {
     return cache.computeIfAbsent(key, ignored -> buildNodes(canonical));
   }
 
+  /**
+   * Invalidates the materialized nodes for one catalog context.
+   *
+   * <p>The next call to {@link #nodesFor(CatalogContext)} rebuilds the immutable node set and
+   * re-reads dynamic provider definitions. Existing callers retain their immutable result; no
+   * prepared-plan or snapshot rebinding is performed here.
+   */
+  public void invalidate(CatalogContext context) {
+    CatalogContext canonical = Objects.requireNonNull(context, "catalogContext");
+    cache.remove(VersionKey.from(canonical));
+  }
+
   private BuiltinNodes buildNodes(CatalogContext canonical) {
     SystemEngineCatalog baseCatalog = definitionRegistry.catalog(canonical);
     SystemCatalogData mergedCatalogData = mergeCatalogData(canonical, baseCatalog);
