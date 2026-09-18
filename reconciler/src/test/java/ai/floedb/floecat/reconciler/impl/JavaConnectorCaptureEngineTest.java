@@ -40,6 +40,7 @@ import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import java.util.List;
@@ -115,7 +116,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureDeclinesRequestsOutsideAdvertisedFileGroupContract() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -152,7 +153,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void capturePassesAuthorizationTokenToStorageResolver() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -218,7 +219,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureNormalizesTypedAwsAuthFailuresToTerminal() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -270,7 +271,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void capturePublishesFileStatsAndReturnsOnlyAggregatePartials() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -372,7 +373,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureUsesOnlyFileGroupStatsForFileOnlyRequests() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -446,7 +447,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void capturePreservesThetaSketchNdvInFileStats() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -517,7 +518,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureStopsAfterTheSingleGroupCaptureWhenCancellationIsRequested() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
     AtomicBoolean shouldStop = new AtomicBoolean();
@@ -572,7 +573,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureKeepsStatsAndPageIndexSelectorsSeparate() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -688,7 +689,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureResolvesStableIndexSelectorBeforeFilteringPhysicalPageEntries() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -751,7 +752,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureDoesNotApplyDefaultsWhenExplicitIndexSelectorsResolveToNoEntries() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -802,7 +803,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureUsesConnectorPreselectedPageIndexesWithoutASecondMetadataLookup() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -846,7 +847,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureResolvesDefaultFirstNPageIndexSelectors() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -894,7 +895,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureProducesNoPageIndexCoverageForExplicitOnlyWithoutSelectors() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -1024,7 +1025,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureReturnsAllFileStatsWithoutRollingUpColumns() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -1153,7 +1154,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void capturePreservesAttachedIcebergDeleteFileStats() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 

@@ -278,13 +278,29 @@ public interface FloecatConnector extends Closeable {
       ResourceId destinationTableId,
       long snapshotId,
       Set<String> includeColumns,
+      Set<StatsTargetKind> includeTargetKinds) {
+    return captureSnapshotTargetStatsDirect(
+        namespaceFq,
+        tableName,
+        destinationTableId,
+        snapshotId,
+        includeColumns,
+        includeTargetKinds,
+        ColumnSelectorPolicy.defaults());
+  }
+
+  default Optional<DirectSnapshotStatsCapture> captureSnapshotTargetStatsDirect(
+      String namespaceFq,
+      String tableName,
+      ResourceId destinationTableId,
+      long snapshotId,
+      Set<String> includeColumns,
       Set<StatsTargetKind> includeTargetKinds,
-      ColumnSelectorPolicy columnSelectorPolicy,
-      ColumnIdentityMap columnIdentityMap) {
+      ColumnSelectorPolicy columnSelectorPolicy) {
     return Optional.empty();
   }
 
-  /** Captures a planned group using the snapshot's authoritative column identity map. */
+  /** Captures requested outputs for one planned file-group within a snapshot. */
   FileGroupCaptureResult capturePlannedFileGroup(
       String namespaceFq,
       String tableName,
@@ -295,8 +311,7 @@ public interface FloecatConnector extends Closeable {
       Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy,
-      ColumnIdentityMap columnIdentityMap);
+      ColumnSelectorPolicy columnSelectorPolicy);
 
   /**
    * Applies connector-specific selector semantics to decoded Parquet page-index entries.
@@ -311,8 +326,7 @@ public interface FloecatConnector extends Closeable {
       long snapshotId,
       Set<String> selectors,
       ColumnSelectorPolicy columnSelectorPolicy,
-      List<ParquetPageIndexEntry> entries,
-      ColumnIdentityMap columnIdentityMap) {
+      List<ParquetPageIndexEntry> entries) {
     Set<String> plannedFilePaths = pageIndexPlannedFilePaths(entries);
     List<ParquetRowGroup> rowGroups = pageIndexRowGroups(entries);
     return selectPageIndexEntries(
@@ -323,8 +337,7 @@ public interface FloecatConnector extends Closeable {
         columnSelectorPolicy,
         plannedFilePaths,
         entries,
-        rowGroups,
-        columnIdentityMap);
+        rowGroups);
   }
 
   private static Set<String> pageIndexPlannedFilePaths(List<ParquetPageIndexEntry> entries) {
@@ -362,9 +375,8 @@ public interface FloecatConnector extends Closeable {
   }
 
   /**
-   * Applies connector-specific selector semantics using the authoritative column identity map.
-   *
-   * <p>Connectors without canonical identity requirements may ignore the identity map.
+   * Applies connector-specific selector semantics with complete planned-file and row-group
+   * metadata, including files for which no decodable page-index entry was produced.
    */
   default Optional<List<ParquetPageIndexEntry>> selectPageIndexEntries(
       String namespaceFq,
@@ -374,8 +386,7 @@ public interface FloecatConnector extends Closeable {
       ColumnSelectorPolicy columnSelectorPolicy,
       Set<String> plannedFilePaths,
       List<ParquetPageIndexEntry> entries,
-      List<ParquetRowGroup> rowGroups,
-      ColumnIdentityMap columnIdentityMap) {
+      List<ParquetRowGroup> rowGroups) {
     return Optional.empty();
   }
 
@@ -538,6 +549,23 @@ public interface FloecatConnector extends Closeable {
       Set<Long> selectionSnapshotIds,
       int latestN,
       ColumnIdentityMap previousColumnIdentityMap) {
+    public SnapshotEnumerationOptions(
+        boolean fullRescan,
+        Set<Long> knownSnapshotIds,
+        Set<Long> targetSnapshotIds,
+        SnapshotSelectionKind selectionKind,
+        Set<Long> selectionSnapshotIds,
+        int latestN) {
+      this(
+          fullRescan,
+          knownSnapshotIds,
+          targetSnapshotIds,
+          selectionKind,
+          selectionSnapshotIds,
+          latestN,
+          ColumnIdentityMap.getDefaultInstance());
+    }
+
     public SnapshotEnumerationOptions {
       knownSnapshotIds =
           knownSnapshotIds == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(knownSnapshotIds));
@@ -797,6 +825,31 @@ public interface FloecatConnector extends Closeable {
       int schemaId,
       String metadataLocation,
       ColumnIdentityMap columnIdentityMap) {
+    public SnapshotBundle(
+        long snapshotId,
+        long parentId,
+        long upstreamCreatedAtMs,
+        String schemaJson,
+        PartitionSpecInfo partitionSpec,
+        long sequenceNumber,
+        String manifestList,
+        Map<String, String> summary,
+        int schemaId,
+        String metadataLocation) {
+      this(
+          snapshotId,
+          parentId,
+          upstreamCreatedAtMs,
+          schemaJson,
+          partitionSpec,
+          sequenceNumber,
+          manifestList,
+          summary,
+          schemaId,
+          metadataLocation,
+          ColumnIdentityMap.getDefaultInstance());
+    }
+
     public SnapshotBundle {
       columnIdentityMap =
           columnIdentityMap == null ? ColumnIdentityMap.getDefaultInstance() : columnIdentityMap;

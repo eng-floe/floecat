@@ -83,6 +83,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
@@ -678,20 +679,37 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         ctx,
         tableId,
         Optional.<FloecatConnector.DirectSnapshotStatsCapture>empty(),
-        (source, sourceCtx) ->
-            source.captureSnapshotTargetStatsDirect(
+        (source, sourceCtx) -> {
+          FloecatConnector.ColumnSelectorPolicy selectors =
+              columnSelectorPolicy == null
+                  ? FloecatConnector.ColumnSelectorPolicy.defaults()
+                  : columnSelectorPolicy;
+          Set<String> columns =
+              includeColumns == null ? Set.of() : Set.copyOf(includeColumns);
+          Set<FloecatConnector.StatsTargetKind> kinds =
+              includeTargetKinds == null ? Set.of() : Set.copyOf(includeTargetKinds);
+          if (source instanceof CanonicalIdentityConnector canonical) {
+            return canonical.captureSnapshotTargetStatsDirect(
                 sourceCtx.sourceNamespace(),
                 sourceCtx.sourceTable(),
                 tableId,
                 snapshotId,
-                includeColumns == null ? Set.of() : Set.copyOf(includeColumns),
-                includeTargetKinds == null ? Set.of() : Set.copyOf(includeTargetKinds),
-                columnSelectorPolicy == null
-                    ? FloecatConnector.ColumnSelectorPolicy.defaults()
-                    : columnSelectorPolicy,
+                columns,
+                kinds,
+                selectors,
                 fetchSnapshot(ctx, tableId, snapshotId)
                     .map(Snapshot::getColumnIdentityMap)
-                    .orElse(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance())));
+                    .orElse(ColumnIdentityMap.getDefaultInstance()));
+          }
+          return source.captureSnapshotTargetStatsDirect(
+              sourceCtx.sourceNamespace(),
+              sourceCtx.sourceTable(),
+              tableId,
+              snapshotId,
+              columns,
+              kinds,
+              selectors);
+        });
   }
 
   private boolean hasAnyCapturedStats(ReconcileContext ctx, ResourceId tableId, long snapshotId) {

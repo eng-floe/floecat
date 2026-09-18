@@ -74,7 +74,15 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.<String>empty());
     Snapshot result =
-        queuedWorkerSupport().buildSnapshot(ctx, tableId, bundle, existing).orElseThrow();
+        queuedWorkerSupport()
+            .buildSnapshot(
+                ctx,
+                tableId,
+                org.mockito.Mockito.mock(
+                    ai.floedb.floecat.connector.spi.FloecatConnector.class),
+                bundle,
+                existing)
+            .orElseThrow();
 
     assertThat(result.getManifestList()).isEqualTo(existing.getManifestList());
     assertThat(result.getSchemaJson()).isEqualTo(existing.getSchemaJson());
@@ -102,7 +110,16 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
 
-    Snapshot result = queuedWorkerSupport().buildSnapshot(ctx, tableId, bundle, null).orElseThrow();
+    Snapshot result =
+        queuedWorkerSupport()
+            .buildSnapshot(
+                ctx,
+                tableId,
+                org.mockito.Mockito.mock(
+                    ai.floedb.floecat.connector.spi.FloecatConnector.class),
+                bundle,
+                null)
+            .orElseThrow();
 
     assertThat(result.hasParentSnapshotId()).isTrue();
     assertThat(result.getParentSnapshotId()).isZero();

@@ -17,7 +17,6 @@
 package ai.floedb.floecat.connector.iceberg.impl;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.ConstraintColumnRef;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintEnforcement;
@@ -330,8 +329,7 @@ public abstract class IcebergConnector implements FloecatConnector {
               manifestList,
               summary,
               schemaId,
-              metadataLocation,
-              ColumnIdentityMap.getDefaultInstance()));
+              metadataLocation));
     }
     return out;
   }
@@ -412,8 +410,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy,
-      ColumnIdentityMap columnIdentityMap) {
+      ColumnSelectorPolicy columnSelectorPolicy) {
     if (snapshotId < 0 || plannedFilePaths == null || plannedFilePaths.isEmpty()) {
       return FileGroupCaptureResult.empty();
     }
@@ -481,8 +478,7 @@ public abstract class IcebergConnector implements FloecatConnector {
       ColumnSelectorPolicy columnSelectorPolicy,
       Set<String> plannedFilePaths,
       List<ParquetPageIndexEntry> entries,
-      List<ParquetRowGroup> rowGroups,
-      ColumnIdentityMap columnIdentityMap) {
+      List<ParquetRowGroup> rowGroups) {
     Table table = loadTable(namespaceFq, tableName);
     Snapshot snapshot = table.snapshot(snapshotId);
     if (snapshot == null) {
