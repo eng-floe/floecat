@@ -17,7 +17,6 @@
 package ai.floedb.floecat.connector.dummy;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
-import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -158,8 +157,7 @@ public final class DummyConnector implements FloecatConnector {
             null,
             Map.of(),
             0,
-            null,
-            ColumnIdentityMap.getDefaultInstance()));
+            null));
   }
 
   @Override
@@ -297,8 +295,7 @@ public final class DummyConnector implements FloecatConnector {
       Set<String> indexColumns,
       Set<StatsTargetKind> includeTargetKinds,
       boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy,
-      ColumnIdentityMap columnIdentityMap) {
+      ColumnSelectorPolicy columnSelectorPolicy) {
     Set<String> effectivePaths =
         plannedFilePaths == null ? Set.of() : Set.copyOf(new LinkedHashSet<>(plannedFilePaths));
     if (effectivePaths.isEmpty()) {

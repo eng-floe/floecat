@@ -505,10 +505,9 @@ abstract class AbstractReconcilerServiceTestBase {
         Set<String> plannedFilePaths,
         Set<String> includeColumns,
         Set<String> indexColumns,
-        Set<StatsTargetKind> includeTargetKinds,
-        boolean captureIndexes,
-        ColumnSelectorPolicy columnSelectorPolicy,
-        ai.floedb.floecat.catalog.rpc.ColumnIdentityMap columnIdentityMap) {
+      Set<StatsTargetKind> includeTargetKinds,
+      boolean captureIndexes,
+      ColumnSelectorPolicy columnSelectorPolicy) {
       return FileGroupCaptureResult.empty();
     }
 

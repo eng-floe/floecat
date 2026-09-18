@@ -42,6 +42,7 @@ import ai.floedb.floecat.connector.common.resolver.ColumnIdComputer;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector.StatsTargetKind;
 import ai.floedb.floecat.schema.identity.HistoryCoverage;
@@ -101,7 +102,7 @@ import java.util.regex.Pattern;
 import org.apache.parquet.io.InputFile;
 import org.jboss.logging.Logger;
 
-abstract class DeltaConnector implements FloecatConnector {
+abstract class DeltaConnector implements CanonicalIdentityConnector {
 
   protected static final ObjectMapper M = new ObjectMapper();
   private static final String DELTA_CHECK_CONSTRAINT_PREFIX = "delta.constraints.";

@@ -18,7 +18,6 @@ package ai.floedb.floecat.reconciler.impl;
 
 import static ai.floedb.floecat.reconciler.util.NameParts.split;
 
-import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -301,8 +300,7 @@ public class ReconcilerService {
               targets,
               FloecatConnector.SnapshotSelectionKind.CURRENT,
               Set.of(),
-              0,
-              ColumnIdentityMap.getDefaultInstance());
+              0);
       case LATEST_N ->
           new FloecatConnector.SnapshotEnumerationOptions(
               fullRescan,
@@ -310,8 +308,7 @@ public class ReconcilerService {
               targets,
               FloecatConnector.SnapshotSelectionKind.LATEST_N,
               Set.of(),
-              effective.latestN(),
-              ColumnIdentityMap.getDefaultInstance());
+              effective.latestN());
       case EXPLICIT ->
           new FloecatConnector.SnapshotEnumerationOptions(
               fullRescan,
@@ -319,8 +316,7 @@ public class ReconcilerService {
               targets,
               FloecatConnector.SnapshotSelectionKind.EXPLICIT,
               Set.copyOf(effective.snapshotIds()),
-              0,
-              ColumnIdentityMap.getDefaultInstance());
+              0);
       case ALL, UNSPECIFIED ->
           fullRescan
               ? FloecatConnector.SnapshotEnumerationOptions.full(true, targets)

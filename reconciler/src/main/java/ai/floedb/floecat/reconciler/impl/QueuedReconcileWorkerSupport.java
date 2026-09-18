@@ -32,6 +32,7 @@ import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult;
@@ -1307,12 +1308,13 @@ class QueuedReconcileWorkerSupport {
   private boolean ensureSnapshot(
       ReconcileContext ctx,
       ResourceId tableId,
+      FloecatConnector connector,
       FloecatConnector.SnapshotBundle snapshotBundle,
       Snapshot existing) {
     if (snapshotBundle == null || snapshotBundle.snapshotId() < 0) {
       return false;
     }
-    Optional<Snapshot> snapshot = buildSnapshot(ctx, tableId, snapshotBundle, existing);
+    Optional<Snapshot> snapshot = buildSnapshot(ctx, tableId, connector, snapshotBundle, existing);
     snapshot.ifPresent(candidate -> backend.ingestSnapshot(ctx, tableId, candidate));
     return snapshot.isPresent();
   }
@@ -1361,7 +1363,8 @@ class QueuedReconcileWorkerSupport {
             snapshotsProcessedBase + snapshotsProcessed,
             statsProcessedBase,
             "Processing snapshot " + snapshotId + " for " + sourceNs + "." + sourceTable);
-        boolean snapshotChanged = ensureSnapshot(ctx, tableId, snapshotBundle, existingSnapshot);
+        boolean snapshotChanged =
+            ensureSnapshot(ctx, tableId, connector, snapshotBundle, existingSnapshot);
         boolean constraintsChanged =
             maybeIngestSnapshotConstraints(
                 ctx, tableId, connector, sourceNs, sourceTable, snapshotBundle, snapshotId);
@@ -1401,17 +1404,20 @@ class QueuedReconcileWorkerSupport {
             enumerationFullRescan,
             enumerationKnownSnapshotIds,
             targetSnapshotIds);
-    ai.floedb.floecat.catalog.rpc.ColumnIdentityMap previousColumnIdentityMap =
-        previousColumnIdentityMap(ctx, tableId, identitySnapshotIds);
-    FloecatConnector.SnapshotEnumerationOptions enumerationOptions =
-        new FloecatConnector.SnapshotEnumerationOptions(
-            baseEnumerationOptions.fullRescan(),
-            baseEnumerationOptions.knownSnapshotIds(),
-            baseEnumerationOptions.targetSnapshotIds(),
-            baseEnumerationOptions.selectionKind(),
-            baseEnumerationOptions.selectionSnapshotIds(),
-            baseEnumerationOptions.latestN(),
-            previousColumnIdentityMap);
+    FloecatConnector.SnapshotEnumerationOptions enumerationOptions = baseEnumerationOptions;
+    if (connector instanceof CanonicalIdentityConnector) {
+      ai.floedb.floecat.catalog.rpc.ColumnIdentityMap previousColumnIdentityMap =
+          previousColumnIdentityMap(ctx, tableId, identitySnapshotIds);
+      enumerationOptions =
+          new FloecatConnector.SnapshotEnumerationOptions(
+              baseEnumerationOptions.fullRescan(),
+              baseEnumerationOptions.knownSnapshotIds(),
+              baseEnumerationOptions.targetSnapshotIds(),
+              baseEnumerationOptions.selectionKind(),
+              baseEnumerationOptions.selectionSnapshotIds(),
+              baseEnumerationOptions.latestN(),
+              previousColumnIdentityMap);
+    }
     List<FloecatConnector.SnapshotBundle> upstreamBundles =
         connector.enumerateSnapshots(sourceNs, sourceTable, tableId, enumerationOptions);
     List<FloecatConnector.SnapshotBundle> bundles =
@@ -1696,6 +1702,7 @@ class QueuedReconcileWorkerSupport {
   Optional<Snapshot> buildSnapshot(
       ReconcileContext ctx,
       ResourceId tableId,
+      FloecatConnector connector,
       FloecatConnector.SnapshotBundle bundle,
       Snapshot existing) {
     long parentSnapshotId = bundle.parentId();
@@ -1719,14 +1726,17 @@ class QueuedReconcileWorkerSupport {
             .setTableId(tableId)
             .setSnapshotId(bundle.snapshotId())
             .setUpstreamCreatedAt(upstreamTimestamp);
-    if (bundle.columnIdentityMap() != null
+    if (connector instanceof CanonicalIdentityConnector
+        && bundle.columnIdentityMap() != null
         && !bundle
             .columnIdentityMap()
             .equals(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance())) {
       builder
           .setColumnIdentityMap(bundle.columnIdentityMap())
           .setColumnIdentityFingerprint(bundle.columnIdentityMap().getFingerprint());
-    } else if (existing != null && existing.hasColumnIdentityMap()) {
+    } else if (connector instanceof CanonicalIdentityConnector
+        && existing != null
+        && existing.hasColumnIdentityMap()) {
       builder
           .setColumnIdentityMap(existing.getColumnIdentityMap())
           .setColumnIdentityFingerprint(existing.getColumnIdentityFingerprint());
