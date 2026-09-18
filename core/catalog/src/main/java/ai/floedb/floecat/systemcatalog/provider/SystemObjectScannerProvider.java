@@ -28,9 +28,9 @@ import java.util.Optional;
  *
  * <p>Definitions returned by this SPI are merged for the supplied catalog context. Providers may
  * build them from static resources or from live engine metadata; the catalog model does not
- * distinguish those implementations. The internal provider is selected separately; executor
- * providers do not inherit or override its definitions. Environment-owned definitions and scanners
- * use {@link CatalogEnvironmentProvider} instead.
+ * distinguish those implementations. The internal provider is selected separately; engine providers
+ * do not inherit or override its definitions. Environment-owned definitions and scanners use {@link
+ * CatalogEnvironmentProvider} instead.
  */
 public interface SystemObjectScannerProvider {
 
