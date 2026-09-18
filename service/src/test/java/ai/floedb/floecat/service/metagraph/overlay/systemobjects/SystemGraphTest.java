@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.metagraph.overlay.systemobjects;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -77,6 +78,29 @@ class SystemGraphTest {
 
     NameRef nsName = NameRefUtil.name("pg_catalog");
     NameRef tableName = NameRefUtil.name("pg_catalog", "pg_class");
+    SystemNamespaceDef namespace = new SystemNamespaceDef(nsName, "pg_catalog", List.of());
+    SystemTableDef engineTable =
+        new SystemTableDef(
+            tableName,
+            "pg_class",
+            List.<SystemColumnDef>of(),
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+            "scanner",
+            "",
+            "",
+            List.of(),
+            null);
+    SystemTableDef floecatTable =
+        new SystemTableDef(
+            tableName,
+            "pg_class",
+            List.<SystemColumnDef>of(),
+            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            "scanner",
+            "",
+            "",
+            List.of(),
+            null);
 
     SystemCatalogData catalogData =
         new SystemCatalogData(
@@ -86,24 +110,25 @@ class SystemGraphTest {
             List.of(), // casts
             List.of(), // collations
             List.of(), // aggregates
-            List.of(new SystemNamespaceDef(nsName, "pg_catalog", List.of())),
-            List.of(
-                new SystemTableDef(
-                    tableName,
-                    "pg_class",
-                    List.<SystemColumnDef>of(),
-                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
-                    "scanner",
-                    "",
-                    "",
-                    List.of(),
-                    null)),
-            List.of() // views
-            ,
+            List.of(namespace),
+            List.of(engineTable),
+            List.of(), // views
+            List.of());
+    SystemCatalogData floecatCatalogData =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace),
+            List.of(floecatTable),
+            List.of(),
             List.of());
 
     registry.register(ENGINE, catalogData);
-    registry.register(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, catalogData);
+    registry.register(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, floecatCatalogData);
 
     systemGraph = new SystemGraph(registry, 16);
 
@@ -168,14 +193,36 @@ class SystemGraphTest {
   }
 
   @Test
-  void pluginOverridesInformationSchemaDefinitions() {
+  void conflictingInformationSchemaDefinitionsFail() {
     FakeSystemNodeRegistry registry =
         new FakeSystemNodeRegistry(new PluginInformationSchemaProvider());
 
+    SystemNamespaceDef informationSchema =
+        new SystemNamespaceDef(
+            NameRefUtil.name("information_schema"), "information_schema", List.of());
+    SystemTableDef tables =
+        new SystemTableDef(
+            NameRefUtil.name("information_schema", "tables"),
+            "tables",
+            List.of(),
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+            "scanner",
+            "",
+            "",
+            List.of(),
+            null);
     SystemCatalogData overrideCatalog =
         new SystemCatalogData(
-            List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
-            List.of(), List.of());
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(informationSchema),
+            List.of(tables),
+            List.of(),
+            List.of());
 
     registry.register(ENGINE, overrideCatalog);
 
@@ -188,20 +235,9 @@ class SystemGraphTest {
             .setId(ENGINE)
             .build();
 
-    assertThat(customGraph.listRelations(overrideCatalogId, context(ENGINE, VERSION)))
-        .extracting(GraphNode::displayName)
-        .contains("tables_override", "plugin_table")
-        .doesNotContain("tables");
-
-    assertThat(
-            customGraph.resolveTable(
-                NameRefUtil.name("information_schema", "tables"), context(ENGINE, VERSION)))
-        .isPresent();
-
-    assertThat(
-            customGraph.resolveTable(
-                NameRefUtil.name("information_schema", "plugin_table"), context(ENGINE, VERSION)))
-        .isPresent();
+    assertThatThrownBy(() -> customGraph.listRelations(overrideCatalogId, context(ENGINE, VERSION)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Conflicting system object definition");
   }
 
   @Test
@@ -361,7 +397,7 @@ class SystemGraphTest {
             NameRefUtil.name("information_schema", "tables"),
             "tables_override",
             List.of(),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -373,7 +409,7 @@ class SystemGraphTest {
             NameRefUtil.name("information_schema", "plugin_table"),
             "plugin_table",
             List.of(),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "plugin-scanner",
             "",
             "",
