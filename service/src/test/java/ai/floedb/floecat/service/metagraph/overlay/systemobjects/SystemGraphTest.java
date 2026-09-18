@@ -45,6 +45,7 @@ import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Map;
@@ -349,8 +350,7 @@ class SystemGraphTest {
     assertThat(functions.get(0).displayName()).isEqualTo("short_name");
   }
 
-  private static final class PluginInformationSchemaProvider
-      implements SystemObjectScannerProvider {
+  private static final class PluginInformationSchemaProvider implements EngineCatalogProvider {
 
     private final SystemNamespaceDef namespace =
         new SystemNamespaceDef(
@@ -381,33 +381,17 @@ class SystemGraphTest {
             null);
 
     @Override
-    public List<SystemObjectDef> definitions() {
+    public String engineKind() {
+      return ENGINE;
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions(CatalogContext context) {
       return List.of(namespace, tablesOverride, pluginTable);
     }
 
     @Override
-    public List<SystemObjectDef> definitions(String engineKind, String engineVersion) {
-      return definitions();
-    }
-
-    @Override
-    public boolean supportsEngine(String engineKind) {
-      return ENGINE.equals(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return supportsEngine(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind, String engineVersion) {
-      return supports(name, engineKind);
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
       return Optional.empty();
     }
   }
@@ -449,29 +433,13 @@ class SystemGraphTest {
       implements SystemObjectScannerProvider {
 
     @Override
-    public List<SystemObjectDef> definitions() {
+    public List<SystemObjectDef> definitions(CatalogContext context) {
       return List.of();
     }
 
     @Override
-    public boolean supportsEngine(String engineKind) {
-      return true;
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return true;
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
       return Optional.empty();
-    }
-
-    @Override
-    public List<SystemObjectDef> definitions(String engineKind, String engineVersion) {
-      return definitions();
     }
   }
 }

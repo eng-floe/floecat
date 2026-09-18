@@ -17,6 +17,7 @@
 package ai.floedb.floecat.systemcatalog.spi;
 
 import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.hint.HintClearContext;
@@ -32,16 +33,16 @@ import java.util.Optional;
 /**
  * Engine-owned system-catalog contribution.
  *
- * <p>An implementation may provide materialised {@code SystemCatalogData}, live relation
- * definitions/scanners, or both. Live providers do not copy changing engine types, functions, or
- * system relations into PBtxt files.
+ * <p>An implementation may provide materialised {@code SystemCatalogData}, live definitions and
+ * scanners, or both. Live providers do not copy changing engine types, functions, or system
+ * relations into PBtxt files.
  *
  * <p>Implementations are expected to obtain engine-owned metadata through their runtime bridge. The
- * inherited version-aware {@code definitions(...)} and {@code provide(...)} methods are called
- * while building the requested catalog, so the provider remains the source of truth for the
- * engine's current metadata. Floecat does not snapshot or persist the result of this SPI.
+ * context-aware {@code definitions(...)} and {@code provide(...)} methods are called while building
+ * the requested catalog, so the provider remains the source of truth for the engine's current
+ * metadata. Floecat does not snapshot or persist the result of this SPI.
  *
- * <p>The selected catalog environment is intentionally not part of this interface. The provider
+ * <p>The selected catalog environment is intentionally not owned by this provider. The provider
  * describes the executor identified by {@link #engineKind()}; environment-owned catalog shape is
  * selected by the catalog composition layer.
  */
@@ -88,22 +89,17 @@ public interface EngineCatalogProvider extends SystemObjectScannerProvider {
     return EngineTypeMapper.EMPTY;
   }
 
-  /**
-   * Dynamic providers normally have no checked-in object definitions.
-   *
-   * <p>They can override the inherited version-aware method when the engine exposes relation
-   * definitions dynamically. Returning an empty list is the intended default for a provider whose
-   * relation shape is supplied by the environment layer.
-   */
+  /** Dynamic providers may return definitions obtained from the selected executor at runtime. */
   @Override
-  default List<SystemObjectDef> definitions() {
+  default List<SystemObjectDef> definitions(CatalogContext context) {
     return List.of();
   }
 
-  /** Returns whether this provider handles the supplied engine identifier. */
   @Override
-  default boolean supportsEngine(String engineKind) {
-    return EngineIdentityNormalizer.normalizeEngineKind(engineKind)
-        .equals(EngineIdentityNormalizer.normalizeEngineKind(engineKind()));
+  default boolean supports(CatalogContext context) {
+    return context != null
+        && context.engine().hasEngineKind()
+        && EngineIdentityNormalizer.normalizeEngineKind(context.engine().engineKind())
+            .equals(EngineIdentityNormalizer.normalizeEngineKind(engineKind()));
   }
 }

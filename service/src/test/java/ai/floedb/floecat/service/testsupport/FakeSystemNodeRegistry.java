@@ -22,10 +22,10 @@ import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
-import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,12 +43,12 @@ public final class FakeSystemNodeRegistry extends SystemNodeRegistry {
     this(new FakeSystemCatalogProvider(), List.of());
   }
 
-  public FakeSystemNodeRegistry(SystemObjectScannerProvider... extraProviders) {
+  public FakeSystemNodeRegistry(EngineCatalogProvider... extraProviders) {
     this(new FakeSystemCatalogProvider(), List.of(extraProviders));
   }
 
   private FakeSystemNodeRegistry(
-      FakeSystemCatalogProvider provider, List<SystemObjectScannerProvider> extraProviders) {
+      FakeSystemCatalogProvider provider, List<EngineCatalogProvider> extraProviders) {
     super(
         new SystemDefinitionRegistry(provider),
         new FloecatInternalProvider(),

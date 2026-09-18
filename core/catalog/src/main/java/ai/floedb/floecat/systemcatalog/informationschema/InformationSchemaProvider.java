@@ -18,6 +18,7 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import java.util.List;
@@ -45,17 +46,12 @@ public final class InformationSchemaProvider implements SystemObjectScannerProvi
           "constraint_table_usage_scanner", new ConstraintTableUsageScanner());
 
   @Override
-  public List<SystemObjectDef> definitions() {
+  public List<SystemObjectDef> definitions(CatalogContext context) {
     return List.of();
   }
 
   @Override
-  public boolean supportsEngine(String engineKind) {
-    return true;
-  }
-
-  @Override
-  public boolean supports(NameRef name, String engineKind) {
+  public boolean supports(NameRef name, CatalogContext context) {
     if (name == null) {
       return false;
     }
@@ -68,8 +64,7 @@ public final class InformationSchemaProvider implements SystemObjectScannerProvi
   }
 
   @Override
-  public Optional<SystemObjectScanner> provide(
-      String scannerId, String engineKind, String engineVersion) {
+  public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
     if (scannerId == null) return Optional.empty();
     return Optional.ofNullable(scanners.get(scannerId.toLowerCase()));
   }

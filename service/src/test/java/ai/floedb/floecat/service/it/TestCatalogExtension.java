@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.catalog.it;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastMethod;
@@ -249,23 +250,12 @@ public final class TestCatalogExtension implements EngineCatalogProvider {
   // ---------------------------------------------------------------------------
 
   @Override
-  public List<SystemObjectDef> definitions() {
+  public List<SystemObjectDef> definitions(CatalogContext context) {
     return List.of();
   }
 
   @Override
-  public boolean supportsEngine(String engineKind) {
-    return ENGINE_KIND.equals(engineKind);
-  }
-
-  @Override
-  public boolean supports(NameRef name, String engineKind) {
-    return false;
-  }
-
-  @Override
-  public Optional<SystemObjectScanner> provide(
-      String scannerId, String engineKind, String engineVersion) {
+  public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
     return Optional.empty();
   }
 

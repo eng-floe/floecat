@@ -56,6 +56,7 @@ import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.SignatureUtil;
 import ai.floedb.floecat.systemcatalog.util.SystemSchemaMapper;
@@ -91,7 +92,7 @@ public class SystemNodeRegistry {
   private final SystemDefinitionRegistry definitionRegistry;
   private static final Logger LOG = Logger.getLogger(SystemNodeRegistry.class);
   private final SystemObjectScannerProvider internalProvider;
-  private final List<SystemObjectScannerProvider> engineProviders;
+  private final List<EngineCatalogProvider> engineProviders;
   private final List<CatalogEnvironmentProvider> environmentProviders;
 
   /*
@@ -104,7 +105,7 @@ public class SystemNodeRegistry {
   public SystemNodeRegistry(
       SystemDefinitionRegistry definitionRegistry,
       SystemObjectScannerProvider internalProvider,
-      List<SystemObjectScannerProvider> engineProviders,
+      List<EngineCatalogProvider> engineProviders,
       List<CatalogEnvironmentProvider> environmentProviders) {
     this.definitionRegistry = Objects.requireNonNull(definitionRegistry);
     this.internalProvider = Objects.requireNonNull(internalProvider, "internalProvider");
@@ -429,37 +430,23 @@ public class SystemNodeRegistry {
         canonical.engine().hasEngineKind()
             && EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(normalizedKind);
 
-    Map<String, SystemNamespaceDef> namespaceByName = new LinkedHashMap<>();
-    Map<String, SystemTableDef> tableByName = new LinkedHashMap<>();
-    Map<String, SystemViewDef> viewByName = new LinkedHashMap<>();
+    CatalogDataAccumulator merged = new CatalogDataAccumulator();
 
     if (includeInternalProvider) {
-      for (SystemObjectDef def :
-          internalProvider.definitions(
-              EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, normalizedVersion)) {
-        mergeDefinition(def, namespaceByName, tableByName, viewByName);
-      }
+      internalProvider.definitions(canonical).forEach(merged::add);
     }
 
-    for (SystemNamespaceDef ns : baseCatalog.namespaces()) {
-      namespaceByName.put(NameRefUtil.canonical(ns.name()), ns);
-    }
-    for (SystemTableDef table : baseCatalog.tables()) {
-      tableByName.put(NameRefUtil.canonical(table.name()), table);
-    }
-    for (SystemViewDef view : baseCatalog.views()) {
-      viewByName.put(NameRefUtil.canonical(view.name()), view);
-    }
+    merged.add(baseCatalog);
 
     if (includeEngineProviders || canonical.environment().hasEnvironmentKind()) {
       if (includeEngineProviders) {
-        for (SystemObjectScannerProvider provider : engineProviders) {
-          if (!provider.supportsEngine(normalizedKind)) {
+        for (EngineCatalogProvider provider : engineProviders) {
+          if (!provider.supports(canonical)) {
             continue;
           }
-          for (SystemObjectDef def : provider.definitions(normalizedKind, normalizedVersion)) {
-            if (provider.supports(def.name(), normalizedKind, normalizedVersion)) {
-              mergeDefinition(def, namespaceByName, tableByName, viewByName);
+          for (SystemObjectDef def : provider.definitions(canonical)) {
+            if (provider.supports(def.name(), canonical)) {
+              merged.add(def);
             }
           }
         }
@@ -471,7 +458,7 @@ public class SystemNodeRegistry {
           }
           for (SystemObjectDef def : provider.definitions(canonical)) {
             if (provider.supports(def.name(), canonical)) {
-              mergeDefinition(def, namespaceByName, tableByName, viewByName);
+              merged.add(def);
             }
           }
         }
@@ -486,30 +473,79 @@ public class SystemNodeRegistry {
                 normalizedVersion),
             normalizedKind);
 
-    return new SystemCatalogData(
-        baseCatalog.functions(),
-        baseCatalog.operators(),
-        baseCatalog.types(),
-        baseCatalog.casts(),
-        baseCatalog.collations(),
-        baseCatalog.aggregates(),
-        List.copyOf(namespaceByName.values()),
-        List.copyOf(tableByName.values()),
-        List.copyOf(viewByName.values()),
-        registryRules);
+    return merged.toCatalogData(registryRules);
   }
 
-  private static void mergeDefinition(
-      SystemObjectDef def,
-      Map<String, SystemNamespaceDef> namespaces,
-      Map<String, SystemTableDef> tables,
-      Map<String, SystemViewDef> views) {
-    if (def instanceof SystemNamespaceDef ns) {
-      putDefinition(namespaces, NameRefUtil.canonical(ns.name()), ns, "namespace");
-    } else if (def instanceof SystemTableDef table) {
-      putDefinition(tables, NameRefUtil.canonical(table.name()), table, "table");
-    } else if (def instanceof SystemViewDef view) {
-      putDefinition(views, NameRefUtil.canonical(view.name()), view, "view");
+  private static final class CatalogDataAccumulator {
+
+    private final Map<String, SystemNamespaceDef> namespaces = new LinkedHashMap<>();
+    private final Map<String, SystemTableDef> tables = new LinkedHashMap<>();
+    private final Map<String, SystemViewDef> views = new LinkedHashMap<>();
+    private final Map<String, SystemFunctionDef> functions = new LinkedHashMap<>();
+    private final Map<String, SystemOperatorDef> operators = new LinkedHashMap<>();
+    private final Map<String, SystemTypeDef> types = new LinkedHashMap<>();
+    private final Map<String, SystemCastDef> casts = new LinkedHashMap<>();
+    private final Map<String, SystemCollationDef> collations = new LinkedHashMap<>();
+    private final Map<String, SystemAggregateDef> aggregates = new LinkedHashMap<>();
+
+    private void add(SystemCatalogData data) {
+      data.functions().forEach(this::add);
+      data.operators().forEach(this::add);
+      data.types().forEach(this::add);
+      data.casts().forEach(this::add);
+      data.collations().forEach(this::add);
+      data.aggregates().forEach(this::add);
+      data.namespaces().forEach(this::add);
+      data.tables().forEach(this::add);
+      data.views().forEach(this::add);
+    }
+
+    private void add(SystemEngineCatalog catalog) {
+      catalog.functions().forEach(this::add);
+      catalog.operators().forEach(this::add);
+      catalog.types().forEach(this::add);
+      catalog.casts().forEach(this::add);
+      catalog.collations().forEach(this::add);
+      catalog.aggregates().forEach(this::add);
+      catalog.namespaces().forEach(this::add);
+      catalog.tables().forEach(this::add);
+      catalog.views().forEach(this::add);
+    }
+
+    private void add(SystemObjectDef def) {
+      if (def instanceof SystemNamespaceDef ns) {
+        putDefinition(namespaces, NameRefUtil.canonical(ns.name()), ns, "namespace");
+      } else if (def instanceof SystemTableDef table) {
+        putDefinition(tables, NameRefUtil.canonical(table.name()), table, "table");
+      } else if (def instanceof SystemViewDef view) {
+        putDefinition(views, NameRefUtil.canonical(view.name()), view, "view");
+      } else if (def instanceof SystemFunctionDef function) {
+        putDefinition(functions, SignatureUtil.identityString(function), function, "function");
+      } else if (def instanceof SystemOperatorDef operator) {
+        putDefinition(operators, SignatureUtil.identityString(operator), operator, "operator");
+      } else if (def instanceof SystemTypeDef type) {
+        putDefinition(types, SignatureUtil.identityString(type), type, "type");
+      } else if (def instanceof SystemCastDef cast) {
+        putDefinition(casts, SignatureUtil.identityString(cast), cast, "cast");
+      } else if (def instanceof SystemCollationDef collation) {
+        putDefinition(collations, SignatureUtil.identityString(collation), collation, "collation");
+      } else if (def instanceof SystemAggregateDef aggregate) {
+        putDefinition(aggregates, SignatureUtil.identityString(aggregate), aggregate, "aggregate");
+      }
+    }
+
+    private SystemCatalogData toCatalogData(List<EngineSpecificRule> registryEngineSpecific) {
+      return new SystemCatalogData(
+          List.copyOf(functions.values()),
+          List.copyOf(operators.values()),
+          List.copyOf(types.values()),
+          List.copyOf(casts.values()),
+          List.copyOf(collations.values()),
+          List.copyOf(aggregates.values()),
+          List.copyOf(namespaces.values()),
+          List.copyOf(tables.values()),
+          List.copyOf(views.values()),
+          registryEngineSpecific);
     }
   }
 

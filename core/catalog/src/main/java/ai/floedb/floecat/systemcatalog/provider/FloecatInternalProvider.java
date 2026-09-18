@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.informationschema.InformationSchemaProvider;
@@ -53,27 +54,26 @@ public final class FloecatInternalProvider implements SystemObjectScannerProvide
               .collect(Collectors.toUnmodifiableList()));
 
   @Override
-  public List<SystemObjectDef> definitions() {
+  public List<SystemObjectDef> definitions(CatalogContext context) {
     return definitions;
   }
 
   @Override
-  public boolean supportsEngine(String engineKind) {
-    return EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(
-        EngineIdentityNormalizer.normalizeEngineKind(engineKind));
+  public boolean supports(CatalogContext context) {
+    return context != null
+        && context.engine().hasEngineKind()
+        && EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(
+            EngineIdentityNormalizer.normalizeEngineKind(context.engine().engineKind()));
   }
 
   @Override
-  public boolean supports(NameRef name, String engineKind) {
-    return supportsEngine(engineKind) && informationSchema.supports(name, engineKind);
+  public boolean supports(NameRef name, CatalogContext context) {
+    return supports(context) && informationSchema.supports(name, context);
   }
 
   @Override
-  public Optional<SystemObjectScanner> provide(
-      String scannerId, String engineKind, String engineVersion) {
-    return supportsEngine(engineKind)
-        ? informationSchema.provide(scannerId, engineKind, engineVersion)
-        : Optional.empty();
+  public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+    return supports(context) ? informationSchema.provide(scannerId, context) : Optional.empty();
   }
 
   private static SystemCatalogData loadCatalogData() {
