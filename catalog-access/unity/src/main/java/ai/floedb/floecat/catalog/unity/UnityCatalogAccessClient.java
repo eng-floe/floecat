@@ -96,7 +96,7 @@ final class UnityCatalogAccessClient implements CatalogClient {
     this.authenticationOwner = authenticationOwner;
     this.storageValidator = Objects.requireNonNull(storageValidator, "storageValidator");
     this.storageRouting = Map.copyOf(Objects.requireNonNull(storageRouting, "storageRouting"));
-    this.catalog = Objects.requireNonNull(catalog, "catalog");
+    this.catalog = catalog;
   }
 
   @Override
@@ -106,7 +106,11 @@ final class UnityCatalogAccessClient implements CatalogClient {
 
   @Override
   public void validate() {
-    UnityCatalogErrors.run("connection validation", () -> unity.listSchemas(catalog));
+    if (catalog == null) {
+      UnityCatalogErrors.run("connection validation", unity::listCatalogs);
+    } else {
+      UnityCatalogErrors.run("connection validation", () -> unity.listSchemas(catalog));
+    }
   }
 
   @Override
@@ -116,9 +120,24 @@ final class UnityCatalogAccessClient implements CatalogClient {
         "namespace listing",
         () -> {
           if (parent.segments().isEmpty()) {
+            if (catalog == null) {
+              return unity.listCatalogs().stream()
+                  .filter(name -> !name.isBlank())
+                  .map(name -> new NamespacePath(List.of(name)))
+                  .sorted()
+                  .toList();
+            }
             return unity.listSchemas(catalog).stream()
                 .filter(name -> !name.isBlank())
                 .map(name -> new NamespacePath(List.of(name)))
+                .sorted()
+                .toList();
+          }
+          if (catalog == null && parent.segments().size() == 1) {
+            String parentCatalog = parent.segments().getFirst();
+            return unity.listSchemas(parentCatalog).stream()
+                .filter(name -> !name.isBlank())
+                .map(name -> new NamespacePath(List.of(parentCatalog, name)))
                 .sorted()
                 .toList();
           }
@@ -433,7 +452,9 @@ final class UnityCatalogAccessClient implements CatalogClient {
 
   private String fullName(CatalogObjectName name) {
     List<String> segments = new ArrayList<>();
-    segments.add(catalog);
+    if (catalog != null) {
+      segments.add(catalog);
+    }
     segments.addAll(name.namespace().segments());
     segments.add(name.name());
     return String.join(".", segments);
@@ -442,14 +463,20 @@ final class UnityCatalogAccessClient implements CatalogClient {
   /**
    * The schema a listing should read, or {@code null} when the namespace cannot hold one.
    *
-   * <p>The Integration is already scoped to one Unity catalog, so one namespace segment names its
-   * schema. The root cannot contain tables, and deeper paths are not representable by Unity.
+   * <p>A scoped Integration uses one namespace segment for its schema. An unscoped Integration
+   * preserves the original two-segment catalog/schema namespace shape. Other depths cannot hold
+   * tables.
    *
    * <p>{@link #requireSchema} still throws for {@code loadTable}, vending and validation, where a
    * namespace of the wrong depth is a caller naming an object that cannot exist.
    */
   private Namespace schemaOrNull(NamespacePath namespace) {
     Objects.requireNonNull(namespace, "namespace");
+    if (catalog == null) {
+      return namespace.segments().size() == 2
+          ? new Namespace(namespace.segments().get(0), namespace.segments().get(1))
+          : null;
+    }
     return namespace.segments().size() == 1
         ? new Namespace(catalog, namespace.segments().getFirst())
         : null;
@@ -457,12 +484,15 @@ final class UnityCatalogAccessClient implements CatalogClient {
 
   private Namespace requireSchema(NamespacePath namespace) {
     Objects.requireNonNull(namespace, "namespace");
-    if (namespace.segments().size() != 1) {
+    Namespace names = schemaOrNull(namespace);
+    if (names == null) {
       throw new CatalogAccessException(
           CatalogAccessException.Code.INVALID_CONFIGURATION,
-          "Unity Catalog table namespaces must contain exactly one schema");
+          catalog == null
+              ? "Unity Catalog table namespaces must contain catalog and schema"
+              : "Unity Catalog table namespaces must contain exactly one schema");
     }
-    return new Namespace(catalog, namespace.segments().getFirst());
+    return names;
   }
 
   /**

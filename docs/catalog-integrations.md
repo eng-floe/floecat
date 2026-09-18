@@ -226,9 +226,10 @@ For Delta Sharing, supported properties are `http.connect.ms`, `http.read.ms`,
 vends; they do not supply storage credentials. `s3.endpoint` is held to the same rule as Unity's,
 below, for the same reason: a Delta Sharing vend also carries an AWS session token.
 
-For Unity Catalog, `catalog` is required and scopes the Integration to exactly one Unity catalog.
-That catalog's schemas are exposed as root Floecat namespaces. Other supported properties are
-`http.connect.ms`, `http.read.ms`,
+For Unity Catalog, the optional `catalog` property scopes the Integration to exactly one Unity
+catalog and exposes that catalog's schemas as root Floecat namespaces. Without `catalog`, all Unity
+catalogs are exposed as root namespaces and their schemas as child namespaces, preserving the
+behavior of existing Integrations. Other supported properties are `http.connect.ms`, `http.read.ms`,
 `unity.temporary-table-vend-path`, `s3.region`, `s3.endpoint`, and `s3.path-style-access`. The S3
 properties route validation of credentials vended by Unity; they do not supply storage credentials.
 There is no `s3.access-point` property: validation probes the bucket named in the object URI, which

@@ -59,6 +59,35 @@ class UnityCatalogAccessClientTest {
   }
 
   @Test
+  void preservesCatalogAndSchemaNamespacesWhenCatalogIsNotConfigured() {
+    UnityCatalogAccessClient unscoped =
+        new UnityCatalogAccessClient(unity, null, storageValidator, Map.of(), null);
+    when(unity.listCatalogs()).thenReturn(List.of("system", "main"));
+    when(unity.listSchemas("main")).thenReturn(List.of("sales", "default"));
+
+    assertThat(unscoped.listNamespaces(NamespacePath.root()))
+        .containsExactly(NamespacePath.of("main"), NamespacePath.of("system"));
+    assertThat(unscoped.listNamespaces(NamespacePath.of("main")))
+        .containsExactly(NamespacePath.of("main", "default"), NamespacePath.of("main", "sales"));
+    assertThat(unscoped.listNamespaces(NamespacePath.of("main", "sales"))).isEmpty();
+  }
+
+  @Test
+  void preservesCatalogQualifiedObjectAddressingWhenCatalogIsNotConfigured() {
+    UnityCatalogAccessClient unscoped =
+        new UnityCatalogAccessClient(unity, null, storageValidator, Map.of(), null);
+    NamespacePath namespace = NamespacePath.of("main", "sales");
+    UnityCatalogTable table = deltaTable("s3://warehouse/orders");
+    when(unity.listTables("main", "sales")).thenReturn(List.of(table));
+    when(unity.getTable("main.sales.orders")).thenReturn(Optional.of(table));
+
+    assertThat(unscoped.listTables(namespace))
+        .containsExactly(new CatalogObjectName(namespace, "orders"));
+    assertThat(unscoped.loadTable(new CatalogObjectName(namespace, "orders")).name())
+        .isEqualTo(new CatalogObjectName(namespace, "orders"));
+  }
+
+  @Test
   void listsOnlyDeltaTablesAndListsViewsSeparately() {
     when(unity.listTables("main", "sales"))
         .thenReturn(

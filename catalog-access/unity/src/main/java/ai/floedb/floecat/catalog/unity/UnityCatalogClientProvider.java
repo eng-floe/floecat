@@ -87,11 +87,6 @@ public final class UnityCatalogClientProvider implements CatalogClientProvider {
 
     Map<String, String> properties = config.properties();
     String catalog = nonBlank(properties.get(CATALOG));
-    if (catalog == null) {
-      throw new CatalogAccessException(
-          CatalogAccessException.Code.INVALID_CONFIGURATION,
-          "Unity Catalog integration requires a non-blank catalog property");
-    }
     Duration connectTimeout = duration(properties, CONNECT_TIMEOUT_MS, DEFAULT_CONNECT_TIMEOUT);
     Duration readTimeout = duration(properties, READ_TIMEOUT_MS, DEFAULT_READ_TIMEOUT);
     String vendPath =

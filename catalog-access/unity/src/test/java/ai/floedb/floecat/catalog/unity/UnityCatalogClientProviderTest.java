@@ -10,10 +10,12 @@ package ai.floedb.floecat.catalog.unity;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.CatalogAuthentication;
 import ai.floedb.floecat.catalog.access.CatalogAuthenticationScheme;
+import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogClientProvider;
 import ai.floedb.floecat.catalog.access.CatalogConnectionConfig;
 import ai.floedb.floecat.catalog.access.CatalogProtocol;
@@ -23,7 +25,6 @@ import ai.floedb.floecat.client.unity.UnityCatalogClient;
 import ai.floedb.floecat.http.guards.HttpEndpointGuards;
 import java.net.URI;
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.concurrent.atomic.AtomicReference;
@@ -101,19 +102,21 @@ class UnityCatalogClientProviderTest {
   }
 
   @Test
-  void requiresOneConfiguredCatalog() {
+  void allowsAnUnscopedIntegrationWithoutACatalog() {
+    AtomicReference<UnityCatalogClient> created = new AtomicReference<>();
     UnityCatalogClientProvider provider =
         new UnityCatalogClientProvider(
-            (uri, connect, read, auth, path) -> mock(UnityCatalogClient.class));
-
-    assertThatThrownBy(() -> provider.open(unscopedConfig(Map.of()), credentials()))
-        .isInstanceOfSatisfying(
-            CatalogAccessException.class,
-            failure -> {
-              assertThat(failure.code())
-                  .isEqualTo(CatalogAccessException.Code.INVALID_CONFIGURATION);
-              assertThat(failure.getMessage()).contains("catalog property");
+            (uri, connect, read, auth, path) -> {
+              UnityCatalogClient client = mock(UnityCatalogClient.class);
+              created.set(client);
+              return client;
             });
+
+    try (CatalogClient client = provider.open(config(Map.of()), credentials())) {
+      client.validate();
+    }
+
+    verify(created.get()).listCatalogs();
   }
 
   @Test
@@ -210,12 +213,6 @@ class UnityCatalogClientProviderTest {
   }
 
   private static CatalogConnectionConfig config(Map<String, String> properties) {
-    Map<String, String> scoped = new HashMap<>(properties);
-    scoped.put("catalog", "main");
-    return unscopedConfig(scoped);
-  }
-
-  private static CatalogConnectionConfig unscopedConfig(Map<String, String> properties) {
     return new CatalogConnectionConfig(
         CatalogProtocol.UNITY_CATALOG,
         URI.create("https://catalog.example"),
