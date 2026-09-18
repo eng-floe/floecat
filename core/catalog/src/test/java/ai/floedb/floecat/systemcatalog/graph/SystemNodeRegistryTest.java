@@ -58,6 +58,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
@@ -689,6 +690,59 @@ class SystemNodeRegistryTest {
         .extracting(def -> NameRefUtil.canonical(def.name()))
         .contains("duck.pg_agg");
     assertThat(canonicalTableNames(nodes)).contains("environment.environment_table");
+  }
+
+  @Test
+  void invalidationRebuildsDynamicEngineContributions() {
+    AtomicReference<String> functionName = new AtomicReference<>("before_reload");
+    EngineCatalogProvider provider =
+        new EngineCatalogProvider() {
+          @Override
+          public String engineKind() {
+            return "duckdb";
+          }
+
+          @Override
+          public List<SystemObjectDef> definitions(CatalogContext context) {
+            NameRef int4 = NameRefUtil.name("duck", "int4");
+            return List.of(
+                new SystemNamespaceDef(NameRefUtil.name("duck"), "duck", List.of()),
+                new SystemTypeDef(int4, "N", false, null, List.of()),
+                new SystemFunctionDef(
+                    NameRefUtil.name("duck", functionName.get()),
+                    List.of(int4),
+                    int4,
+                    false,
+                    false,
+                    List.of()));
+          }
+
+          @Override
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+            return Optional.empty();
+          }
+        };
+    var defs =
+        new SystemDefinitionRegistry(
+            new StaticSystemCatalogProvider(Map.of("duckdb", SystemCatalogData.empty())));
+    var registry = new SystemNodeRegistry(defs, internalProvider(), List.of(provider), List.of());
+    var context = context("duckdb", "1");
+
+    var first = registry.nodesFor(context);
+    assertThat(first.catalogData().functions())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.before_reload");
+
+    functionName.set("after_reload");
+    assertThat(registry.nodesFor(context)).isSameAs(first);
+
+    registry.invalidate(context);
+    var second = registry.nodesFor(context);
+    assertThat(second).isNotSameAs(first);
+    assertThat(second.catalogData().functions())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.after_reload")
+        .doesNotContain("duck.before_reload");
   }
 
   @Test
