@@ -48,10 +48,10 @@ import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.ServiceLoaderSystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
-import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.testsupport.SystemCatalogTestProviders;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
@@ -655,11 +655,53 @@ class SystemNodeRegistryTest {
   }
 
   @Test
+  void dynamicEngineAndEnvironmentContributionsCompose() {
+    DynamicEngineProvider engineProvider = new DynamicEngineProvider("duckdb");
+    var environmentProvider =
+        new SystemCatalogTestProviders.EnvironmentTableProvider("floe", "environment_table");
+    var defs =
+        new SystemDefinitionRegistry(
+            new StaticSystemCatalogProvider(Map.of("duckdb", SystemCatalogData.empty())));
+    var registry =
+        new SystemNodeRegistry(
+            defs, internalProvider(), List.of(engineProvider), List.of(environmentProvider));
+
+    var context =
+        CatalogContext.of(EnvironmentContext.of("floe", "1"), EngineContext.of("DUCKDB", "1"));
+    var nodes = registry.nodesFor(context);
+
+    assertThat(nodes.catalogData().functions())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.pg_fn");
+    assertThat(nodes.catalogData().operators())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.pg_op");
+    assertThat(nodes.catalogData().types())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.int4");
+    assertThat(nodes.catalogData().casts())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.int4_to_text");
+    assertThat(nodes.catalogData().collations())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.default");
+    assertThat(nodes.catalogData().aggregates())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.pg_agg");
+    assertThat(canonicalTableNames(nodes)).contains("environment.environment_table");
+  }
+
+  @Test
   void providerDefinitionsWithUnknownNamespaceAreIgnored() {
-    SystemObjectScannerProvider invalidProvider =
-        new SystemObjectScannerProvider() {
+    EngineCatalogProvider invalidProvider =
+        new EngineCatalogProvider() {
           @Override
-          public List<SystemObjectDef> definitions() {
+          public String engineKind() {
+            return FLOE_KIND;
+          }
+
+          @Override
+          public List<SystemObjectDef> definitions(CatalogContext context) {
             return List.of(
                 new SystemTableDef(
                     NameRefUtil.name("missing_ns", "bad_table"),
@@ -674,18 +716,7 @@ class SystemNodeRegistryTest {
           }
 
           @Override
-          public boolean supportsEngine(String engineKind) {
-            return FLOE_KIND.equals(engineKind);
-          }
-
-          @Override
-          public boolean supports(NameRef name, String engineKind) {
-            return supportsEngine(engineKind);
-          }
-
-          @Override
-          public Optional<SystemObjectScanner> provide(
-              String scannerId, String engineKind, String engineVersion) {
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
             return Optional.empty();
           }
         };
@@ -900,13 +931,54 @@ class SystemNodeRegistryTest {
                 PG_KIND, catalog)));
   }
 
-  private static List<SystemObjectScannerProvider> extensionProviders(
-      SystemObjectScannerProvider... extras) {
+  private static List<EngineCatalogProvider> extensionProviders(EngineCatalogProvider... extras) {
     return Stream.of(extras).toList();
   }
 
   private static List<String> canonicalTableNames(SystemNodeRegistry.BuiltinNodes nodes) {
     return nodes.catalogData().tables().stream().map(t -> NameRefUtil.canonical(t.name())).toList();
+  }
+
+  private static final class DynamicEngineProvider implements EngineCatalogProvider {
+
+    private final String engineKind;
+
+    private DynamicEngineProvider(String engineKind) {
+      this.engineKind = engineKind;
+    }
+
+    @Override
+    public String engineKind() {
+      return engineKind;
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions(CatalogContext context) {
+      NameRef int4 = NameRefUtil.name("duck", "int4");
+      NameRef text = NameRefUtil.name("duck", "text");
+      return List.of(
+          new SystemNamespaceDef(NameRefUtil.name("duck"), "duck", List.of()),
+          new SystemTypeDef(int4, "N", false, null, List.of()),
+          new SystemTypeDef(text, "S", false, null, List.of()),
+          new SystemFunctionDef(
+              NameRefUtil.name("duck", "pg_fn"), List.of(int4), int4, false, false, List.of()),
+          new SystemOperatorDef(
+              NameRefUtil.name("duck", "pg_op"), int4, int4, int4, false, false, List.of()),
+          new SystemCastDef(
+              NameRefUtil.name("duck", "int4_to_text"),
+              int4,
+              text,
+              SystemCastMethod.EXPLICIT,
+              List.of()),
+          new SystemCollationDef(NameRefUtil.name("duck", "default"), "en_US", List.of()),
+          new SystemAggregateDef(
+              NameRefUtil.name("duck", "pg_agg"), List.of(int4), int4, int4, List.of()));
+    }
+
+    @Override
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+      return Optional.empty();
+    }
   }
 
   private static SystemCatalogData catalogWithVersionedObjects() {
@@ -981,7 +1053,7 @@ class SystemNodeRegistryTest {
   }
 
   private static SystemNodeRegistry registryWith(
-      SystemDefinitionRegistry defs, SystemObjectScannerProvider... extras) {
+      SystemDefinitionRegistry defs, EngineCatalogProvider... extras) {
     return new SystemNodeRegistry(defs, internalProvider(), extensionProviders(extras), List.of());
   }
 
@@ -1090,7 +1162,7 @@ class SystemNodeRegistryTest {
   @Test
   void pluginTableOverridesInternalDefinition() {
     SystemDefinitionRegistry defs = registryWithCatalogs();
-    SystemObjectScannerProvider provider =
+    EngineCatalogProvider provider =
         new SystemCatalogTestProviders.OverridingTableProvider(
             PG_KIND, NameRefUtil.name("information_schema", "tables"), "overridden_scanner");
 

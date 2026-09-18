@@ -136,12 +136,10 @@ public final class SystemScannerResolver {
 
   private static Optional<SystemObjectScanner> provide(
       SystemObjectScannerProvider provider, String scannerId, CatalogContext context) {
-    if (!context.engine().hasEngineKind()
-        || !provider.supportsEngine(context.engine().normalizedKind())) {
+    if (!provider.supports(context)) {
       return Optional.empty();
     }
-    return provider.provide(
-        scannerId, context.engine().normalizedKind(), context.engine().normalizedVersion());
+    return provider.provide(scannerId, context);
   }
 
   private static Optional<SystemObjectScanner> provide(

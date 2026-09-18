@@ -145,23 +145,12 @@ class SystemScannerResolverTest {
     }
 
     @Override
-    public List<SystemObjectDef> definitions() {
+    public List<SystemObjectDef> definitions(CatalogContext context) {
       return List.of();
     }
 
     @Override
-    public boolean supportsEngine(String engineKind) {
-      return true;
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return true;
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
       return Optional.ofNullable(scanners.get(scannerId));
     }
   }

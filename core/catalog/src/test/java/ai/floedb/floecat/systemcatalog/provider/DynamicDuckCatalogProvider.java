@@ -16,8 +16,8 @@
 
 package ai.floedb.floecat.systemcatalog.provider;
 
-import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import java.util.Optional;
 
@@ -32,13 +32,7 @@ public final class DynamicDuckCatalogProvider implements EngineCatalogProvider {
   }
 
   @Override
-  public boolean supports(NameRef name, String engineKind) {
-    return supportsEngine(engineKind);
-  }
-
-  @Override
-  public Optional<SystemObjectScanner> provide(
-      String scannerId, String engineKind, String engineVersion) {
+  public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
     return Optional.empty();
   }
 }

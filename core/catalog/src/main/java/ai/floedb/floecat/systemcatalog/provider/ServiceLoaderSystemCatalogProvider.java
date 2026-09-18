@@ -59,7 +59,7 @@ public final class ServiceLoaderSystemCatalogProvider
   private final Map<String, CatalogEnvironmentProvider> providersByEnvironment;
   private final List<CatalogEnvironmentProvider> environmentProviders;
   private final Map<String, EngineMetadataDecorator> decorators;
-  private final List<SystemObjectScannerProvider> providers;
+  private final List<EngineCatalogProvider> providers;
 
   public ServiceLoaderSystemCatalogProvider() {
     List<EngineCatalogProvider> engineProviders;
@@ -153,10 +153,7 @@ public final class ServiceLoaderSystemCatalogProvider
     this.providersByEnvironment = Map.copyOf(environmentProviderMap);
     this.environmentProviders = List.copyOf(environmentProviderMap.values());
 
-    this.providers =
-        acceptedEngineProviders.stream()
-            .map(provider -> (SystemObjectScannerProvider) provider)
-            .toList();
+    this.providers = List.copyOf(acceptedEngineProviders);
   }
 
   @Override
@@ -218,7 +215,7 @@ public final class ServiceLoaderSystemCatalogProvider
     return SystemEngineCatalog.from(resolvedEngineKind, catalog);
   }
 
-  public List<SystemObjectScannerProvider> providers() {
+  public List<EngineCatalogProvider> providers() {
     return providers;
   }
 
