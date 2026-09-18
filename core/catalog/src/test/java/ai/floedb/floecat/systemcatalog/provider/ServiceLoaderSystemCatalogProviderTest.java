@@ -101,7 +101,7 @@ class ServiceLoaderSystemCatalogProviderTest {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
     assertThat(provider.engineKinds()).contains("duckdb");
-    assertThat(provider.engineProviderFor(" DuckDB "))
+    assertThat(provider.providerFor(" DuckDB "))
         .containsInstanceOf(DynamicDuckCatalogProvider.class);
     assertThat(provider.providers()).anyMatch(DynamicDuckCatalogProvider.class::isInstance);
   }

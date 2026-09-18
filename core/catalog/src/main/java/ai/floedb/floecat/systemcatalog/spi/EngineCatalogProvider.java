@@ -19,17 +19,22 @@ package ai.floedb.floecat.systemcatalog.spi;
 import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
+import ai.floedb.floecat.systemcatalog.hint.HintClearContext;
+import ai.floedb.floecat.systemcatalog.hint.HintClearDecision;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
+import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
+import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;
+import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import java.util.List;
+import java.util.Optional;
 
 /**
- * Live system-catalog contribution from an engine.
+ * Engine-owned system-catalog contribution.
  *
- * <p>This SPI is deliberately separate from {@link EngineSystemCatalogExtension}. The older
- * extension loads a materialised {@code SystemCatalogData}, which is useful for Floecat-owned
- * static definitions. An engine integration such as DuckDB should not have to copy its changing
- * builtin types, functions, or system relations into PBtxt files.
+ * <p>An implementation may provide a materialised {@code SystemCatalogData} (the Floe use case),
+ * live relation definitions/scanners (the DuckDB use case), or both. Live providers do not copy
+ * changing engine types, functions, or system relations into PBtxt files.
  *
  * <p>Implementations are expected to obtain engine-owned metadata through their runtime bridge. The
  * inherited version-aware {@code definitions(...)} and {@code provide(...)} methods are called
@@ -44,6 +49,34 @@ public interface EngineCatalogProvider extends SystemObjectScannerProvider {
 
   /** Globally unique executor/engine identifier, for example {@code duckdb}. */
   String engineKind();
+
+  /**
+   * Returns static builtin catalog data for this engine.
+   *
+   * <p>Dynamic engine integrations should keep the default empty catalog and implement the live
+   * scanner methods inherited from {@link SystemObjectScannerProvider} instead.
+   */
+  default SystemCatalogData loadSystemCatalog() {
+    return SystemCatalogData.empty();
+  }
+
+  /** Optional extension-specific validation for static catalog data. */
+  default List<ValidationIssue> validate(SystemCatalogData catalog) {
+    return List.of();
+  }
+
+  /** Optional decorator for engine metadata sinks. */
+  default Optional<EngineMetadataDecorator> decorator() {
+    return Optional.empty();
+  }
+
+  /** Optional policy for clearing engine-specific hints. */
+  default HintClearDecision decideHintClear(EngineContext ctx, HintClearContext context) {
+    return HintClearDecision.dropAll();
+  }
+
+  /** Optional error hook for extension loading diagnostics. */
+  default void onLoadError(Exception e) {}
 
   /**
    * Returns the mapper for the selected engine version.

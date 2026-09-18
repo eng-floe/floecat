@@ -32,13 +32,13 @@ import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
-import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 /**
- * Test-only {@link EngineSystemCatalogExtension} for {@code SystemObjectsServiceIT}.
+ * Test-only {@link EngineCatalogProvider} for {@code SystemObjectsServiceIT}.
  *
  * <p>Provides a fully programmatic catalog for the {@code "test-engine"} engine kind, with exactly
  * the objects that {@code SystemObjectsServiceIT} asserts on. This avoids any dependency on the
@@ -47,7 +47,7 @@ import java.util.Optional;
  *
  * <p>Registered via {@code META-INF/services} in the test classpath.
  */
-public final class TestCatalogExtension implements EngineSystemCatalogExtension {
+public final class TestCatalogExtension implements EngineCatalogProvider {
 
   static final String ENGINE_KIND = "test-engine";
 
@@ -59,7 +59,7 @@ public final class TestCatalogExtension implements EngineSystemCatalogExtension 
       new EngineSpecificRule(ENGINE_KIND, "16.0", "", "test.payload", new byte[0], Map.of());
 
   // ---------------------------------------------------------------------------
-  // EngineSystemCatalogExtension
+  // EngineCatalogProvider
   // ---------------------------------------------------------------------------
 
   @Override

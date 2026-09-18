@@ -49,7 +49,7 @@ The architecture is **plugin-based**: each engine implements a builtin catalog p
        ▼
 ┌────────────────────────────────────────────────────────────┐
 │ ServiceLoaderSystemCatalogProvider                          │
-│ - discovers EngineSystemCatalogExtension via ServiceLoader   │
+│ - discovers EngineCatalogProvider via ServiceLoader           │
 │ - returns the raw SystemCatalogData for the normalized kind  │
 │ - fingerprints the kind-level catalog without provider merges│
 └──────┬──────────────────────────────────────────────────────┘
@@ -109,11 +109,11 @@ When headers are absent or the engine kind is unknown, `EngineContext.effectiveE
 
 Every `EngineSpecificRule` with a `payloadType` is mapped to a metagraph `EngineHint` whose key is `(engineKind, engineVersion, payloadType)` and whose value contains the payload bytes plus properties. The `EngineHintsMapper` replaces null payloads with an empty byte array to avoid NPEs, and it throws `IllegalStateException` if two rules share the same `(engineKind, engineVersion, payloadType)` triple. Column-level hints are grouped per column name; duplicate column names are already rejected by `SystemTableDef` so the per-column maps stay one-to-one with the schema. These hints drive scanner/table metadata, so when you add engine-specific definitions ensure each `EngineSpecificRule` has a unique payload type per engine/version.
 
-`ServiceLoaderSystemCatalogProvider` is the gatekeeper for engine plugins: it discovers every `EngineSystemCatalogExtension`, loads the normalized catalog snapshot for each engine kind, and fingerprints the raw data without applying any provider overlays. `SystemDefinitionRegistry` caches those snapshots keyed by `EngineContext.effectiveEngineKind()` (so blank headers collapse to `floecat_internal`) so the kind-level catalog only needs to parse once. The real layering happens in `SystemNodeRegistry`: on a cache miss it seeds the result with `FloecatInternalProvider` (the `floecat_internal` base that always brings `information_schema`), overlays the plugin catalog, and finally applies `SystemObjectScannerProvider.definitions(engineKind, engineVersion)` entries when overlays are enabled (i.e., headers are present and the plugin exists). The floecat_internal layer only contributes namespace/table/view metadata (the shared `information_schema`/`pg_catalog` relations and their hints) so functions/operators/types/casts/aggregates are never merged from this internal layer; those object classes must come from engine plugins/providers. Overrides happen deterministically because each step puts entries into a LinkedHashMap keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging. When headers are absent or the engine kind is unknown, `EngineContext.effectiveEngineKind()` resolves to `floecat_internal` and overlays are skipped, but the base definitions (and the shared `information_schema`) remain available. `SystemGraph` continues to reuse the merged `BuiltinNodes` to build `_system` snapshots (namespace buckets, relation map, `SystemTableNode`s) that `MetaGraph` exposes as `CatalogGraphView`/`SystemObjectGraphView`. That merged `_system` view (load + scan) is documented in [System objects](system-objects.md).
+`ServiceLoaderSystemCatalogProvider` is the gatekeeper for engine plugins: it discovers every `EngineCatalogProvider`, loads the optional normalized catalog data for each engine kind, and fingerprints the raw data without applying any provider overlays. `SystemDefinitionRegistry` caches those snapshots keyed by `EngineContext.effectiveEngineKind()` (so blank headers collapse to `floecat_internal`) so the kind-level catalog only needs to parse once. The real layering happens in `SystemNodeRegistry`: on a cache miss it seeds the result with `FloecatInternalProvider` (the `floecat_internal` base that always brings `information_schema`), overlays the provider catalog when present, and finally applies live `SystemObjectScannerProvider.definitions(engineKind, engineVersion)` entries. The floecat_internal layer only contributes namespace/table/view metadata (the shared `information_schema`/`pg_catalog` relations and their hints) so functions/operators/types/casts/aggregates are never merged from this internal layer; those object classes must come from engine providers. Overrides happen deterministically because each step puts entries into a LinkedHashMap keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging. When headers are absent or the engine kind is unknown, `EngineContext.effectiveEngineKind()` resolves to `floecat_internal` and overlays are skipped, but the base definitions (and the shared `information_schema`) remain available. `SystemGraph` continues to reuse the merged `BuiltinNodes` to build `_system` snapshots (namespace buckets, relation map, `SystemTableNode`s) that `MetaGraph` exposes as `CatalogGraphView`/`SystemObjectGraphView`. That merged `_system` view (load + scan) is documented in [System objects](system-objects.md).
 
 ### Plugin Implementations
 
-Plugins implement `EngineSystemCatalogExtension` directly and provide:
+Plugins implement `EngineCatalogProvider` directly and provide:
 
 1. **Engine Kind** – A stable identifier (e.g., `”example”`)
 2. **Catalog Data** – Loads `.pbtxt` resources and returns a `SystemCatalogData` snapshot
@@ -123,7 +123,7 @@ See `extensions/example/` for a complete reference implementation.
 
 ### Hint Lifecycle
 
-`EngineSystemCatalogExtension` extends `SystemObjectScannerProvider`, so every plugin can also
+`EngineCatalogProvider` extends `SystemObjectScannerProvider`, so every plugin can also
 serve system-table definitions and scanners. Plugins that persist engine hints (metadata attached
 to catalog objects at runtime) can control when those hints are invalidated by implementing
 `decideHintClear`:
@@ -267,7 +267,7 @@ resources/
 
 ### ServiceLoader Registration
 
-Each plugin registers itself in `META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension`:
+Each plugin registers itself in `META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider`:
 
 ```
 com.example.MyEngineCatalogExtension
@@ -434,12 +434,12 @@ Validation errors are logged; invalid catalogs are still returned (planner must 
 
 ## Creating a New Plugin
 
-### Step 1: Implement EngineSystemCatalogExtension
+### Step 1: Implement EngineCatalogProvider
 
-`EngineSystemCatalogExtension` lives in `ai.floedb.floecat.systemcatalog.spi` and already extends `SystemObjectScannerProvider`, so every plugin can also supply system table definitions and scanners without extra wiring.
+`EngineCatalogProvider` lives in `ai.floedb.floecat.systemcatalog.spi` and already extends `SystemObjectScannerProvider`, so every plugin can also supply system table definitions and scanners without extra wiring.
 
 ```java
-public class MyEngineCatalogExtension implements EngineSystemCatalogExtension {
+public class MyEngineCatalogExtension implements EngineCatalogProvider {
   @Override
   public String engineKind() {
     return "my-engine";
@@ -457,7 +457,7 @@ public class MyEngineCatalogExtension implements EngineSystemCatalogExtension {
 
 ### Step 2: Register with ServiceLoader
 
-Create `resources/META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension`:
+Create `resources/META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider`:
 
 ```
 com.example.MyEngineCatalogExtension
