@@ -34,7 +34,6 @@ import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.ConstraintProviderFactory;
@@ -252,9 +251,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
   }
 
   private static CatalogContext contextForEngine(EngineContext engineContext) {
-    return CatalogContext.of(
-        EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
-        engineContext);
+    return CatalogContext.forEngine(engineContext);
   }
 
   private static ResourceId requireTableId(Optional<ResourceId> tableId, String tableName) {

@@ -162,7 +162,10 @@ public final class SystemCatalogTestProviders {
 
     @Override
     public List<SystemObjectDef> definitions() {
-      return List.of(tableDef());
+      return List.of(
+          new SystemNamespaceDef(
+              NameRefUtil.name("information_schema"), "information_schema", List.of()),
+          tableDef());
     }
 
     @Override

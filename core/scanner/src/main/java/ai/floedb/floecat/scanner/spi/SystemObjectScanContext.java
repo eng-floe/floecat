@@ -27,7 +27,6 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -117,9 +116,7 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        CatalogContext.of(
-            EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
-            engineContext),
+        catalogContext(engineContext),
         StatsProvider.NONE,
         ConstraintProvider.NONE,
         new ConcurrentHashMap<>());
@@ -135,9 +132,7 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        CatalogContext.of(
-            EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
-            engineContext),
+        catalogContext(engineContext),
         statsProvider,
         ConstraintProvider.NONE,
         new ConcurrentHashMap<>());
@@ -154,9 +149,7 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        CatalogContext.of(
-            EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
-            engineContext),
+        catalogContext(engineContext),
         statsProvider,
         constraintProvider,
         new ConcurrentHashMap<>());
@@ -164,6 +157,10 @@ public record SystemObjectScanContext(
 
   public GraphNode resolve(ResourceId id) {
     return graph.resolve(id, catalogContext).orElseThrow();
+  }
+
+  private static CatalogContext catalogContext(EngineContext engineContext) {
+    return CatalogContext.forEngine(engineContext);
   }
 
   @Override

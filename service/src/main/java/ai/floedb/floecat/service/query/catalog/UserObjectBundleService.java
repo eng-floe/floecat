@@ -41,7 +41,6 @@ import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.EngineContextProvider;
@@ -457,11 +456,8 @@ public class UserObjectBundleService {
       this.defaultCatalogId = ctx.getQueryDefaultCatalogId();
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
       EngineContext requestEngine = engineContext.engineContext();
-      CatalogContext requestCatalog =
-          CatalogContext.of(
-              EnvironmentContext.of(requestEngine.engineKind(), requestEngine.engineVersion()),
-              requestEngine);
-      this.engineKind = requestEngine.normalizedKind();
+      CatalogContext requestCatalog = CatalogContext.forEngine(requestEngine);
+      this.engineKind = requestCatalog.engine().normalizedKind();
       this.engineVersion = requestEngine.normalizedVersion();
       this.resolutionContext =
           MetadataResolutionContext.of(

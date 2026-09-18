@@ -67,12 +67,12 @@ public final class SystemCatalogTranslator {
   /**
    * Converts a user-provided namespace reference into the engine-specific system catalog namespace.
    *
-   * <p>The catalog is replaced with {@code ctx.effectiveEngineKind()} when present, and the path is
+   * <p>The catalog is replaced with the selected engine kind when present, and the path is
    * reconstructed so the system graph can resolve the same namespace even if the user supplied a
    * different catalog name.
    */
   public static NameRef toSystemNamespaceRef(NameRef userRef, EngineContext ctx) {
-    String catalog = ctx == null ? userRef.getCatalog() : ctx.effectiveEngineKind();
+    String catalog = ctx == null ? userRef.getCatalog() : ctx.normalizedKind();
     List<String> nsPath = NameRefUtil.namespacePath(userRef);
     NameRef.Builder builder = NameRef.newBuilder().setCatalog(catalog);
     if (!nsPath.isEmpty()) {
@@ -91,7 +91,7 @@ public final class SystemCatalogTranslator {
    * for the current engine.
    */
   public static NameRef toSystemRelationRef(NameRef userRef, EngineContext ctx) {
-    String catalog = ctx == null ? userRef.getCatalog() : ctx.effectiveEngineKind();
+    String catalog = ctx == null ? userRef.getCatalog() : ctx.normalizedKind();
     return userRef.toBuilder().setCatalog(catalog).build();
   }
 

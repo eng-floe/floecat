@@ -62,12 +62,19 @@ public final class SystemDefinitionRegistry {
   }
 
   private record CatalogKey(
-      String environmentKind, String environmentVersion, String engineKind, String engineVersion) {
+      boolean hasEnvironmentKind,
+      String environmentKind,
+      String environmentVersion,
+      boolean hasEngineKind,
+      String engineKind,
+      String engineVersion) {
 
     private static CatalogKey from(CatalogContext context) {
       return new CatalogKey(
+          context.environment().hasEnvironmentKind(),
           context.environment().normalizedKind(),
           context.environment().normalizedVersion(),
+          context.engine().hasEngineKind(),
           context.engine().normalizedKind(),
           context.engine().normalizedVersion());
     }

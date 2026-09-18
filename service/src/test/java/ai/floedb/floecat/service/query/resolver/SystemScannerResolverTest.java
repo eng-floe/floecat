@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.resolver;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -80,19 +81,12 @@ class SystemScannerResolverTest {
   }
 
   @Test
-  void fallsBackWhenEngineTableMissing() {
+  void doesNotFallBackWhenEngineTableMissing() {
     ResourceId pgId = systemTableId("pg", "missing");
-    ResourceId fallbackId = systemTableId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "missing");
-    SystemTableNode.FloeCatSystemTableNode fallbackNode = tableNode(fallbackId, "internal-scanner");
+    SystemScannerResolver resolver = buildResolver(new TestCatalogGraphView(), Map.of());
 
-    SystemObjectScanner internalScanner = new TestSystemObjectScanner("internal-scanner");
-    SystemScannerResolver resolver =
-        buildResolver(
-            new TestCatalogGraphView().addNode(fallbackNode),
-            Map.of("internal-scanner", internalScanner));
-
-    assertThat(withEngineContext(ENGINE_CTX, () -> resolver.resolve("corr", pgId)))
-        .isSameAs(internalScanner);
+    assertThatThrownBy(() -> withEngineContext(ENGINE_CTX, () -> resolver.resolve("corr", pgId)))
+        .isInstanceOf(RuntimeException.class);
   }
 
   @Test

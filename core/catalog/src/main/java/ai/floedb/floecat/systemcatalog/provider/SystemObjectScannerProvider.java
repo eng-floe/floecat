@@ -25,11 +25,10 @@ import java.util.Optional;
 /**
  * SPI for executor-owned system object definitions and scanners.
  *
- * <p>All definitions returned by this SPI are merged into {@link
- * ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry#mergeCatalogData}, which seeds every
- * request with the shared {@link ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider}
- * (the common base). Executor providers can override those relation definitions when the selected
- * executor matches. Environment-owned definitions use {@link CatalogEnvironmentProvider} instead.
+ * <p>Definitions returned by this SPI are merged when the corresponding executor is explicitly
+ * selected. The internal provider is selected separately; executor providers do not inherit or
+ * override its definitions. Environment-owned definitions use {@link CatalogEnvironmentProvider}
+ * instead.
  *
  * <p>If your definitions vary by version (via {@link #definitions(String, String)}), the
  * corresponding {@link #provide(String, String, String)} call must resolve the `scannerId` to a

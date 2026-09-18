@@ -67,7 +67,7 @@ class SystemGraphTest {
 
   private static CatalogContext context(String engineKind, String engineVersion) {
     EngineContext engine = EngineContext.of(engineKind, engineVersion);
-    return CatalogContext.of(EnvironmentContext.of(engineKind, engineVersion), engine);
+    return CatalogContext.of(EnvironmentContext.empty(), engine);
   }
 
   @BeforeEach
@@ -162,7 +162,8 @@ class SystemGraphTest {
   void listNamespaces_returnsNamespaces() {
     assertThat(systemGraph.listNamespaces(systemCatalogId, context(ENGINE, VERSION)))
         .extracting(NamespaceNode::displayName)
-        .contains("information_schema");
+        .contains("pg_catalog")
+        .doesNotContain("information_schema");
   }
 
   @Test
@@ -228,8 +229,8 @@ class SystemGraphTest {
   }
 
   @Test
-  void tableName_withoutEngineUsesFloecatDefaultCatalog() {
-    assertThat(systemGraph.tableName(defaultTableId, context("", "")))
+  void tableName_explicitInternalUsesFloecatDefaultCatalog() {
+    assertThat(systemGraph.tableName(defaultTableId, CatalogContext.floecatInternal()))
         .isPresent()
         .get()
         .satisfies(

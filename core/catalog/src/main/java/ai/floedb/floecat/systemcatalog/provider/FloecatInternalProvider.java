@@ -17,6 +17,7 @@
 package ai.floedb.floecat.systemcatalog.provider;
 
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
@@ -58,18 +59,21 @@ public final class FloecatInternalProvider implements SystemObjectScannerProvide
 
   @Override
   public boolean supportsEngine(String engineKind) {
-    return true;
+    return EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(
+        EngineIdentityNormalizer.normalizeEngineKind(engineKind));
   }
 
   @Override
   public boolean supports(NameRef name, String engineKind) {
-    return informationSchema.supports(name, engineKind);
+    return supportsEngine(engineKind) && informationSchema.supports(name, engineKind);
   }
 
   @Override
   public Optional<SystemObjectScanner> provide(
       String scannerId, String engineKind, String engineVersion) {
-    return informationSchema.provide(scannerId, engineKind, engineVersion);
+    return supportsEngine(engineKind)
+        ? informationSchema.provide(scannerId, engineKind, engineVersion)
+        : Optional.empty();
   }
 
   private static SystemCatalogData loadCatalogData() {

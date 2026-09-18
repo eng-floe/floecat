@@ -21,7 +21,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
@@ -352,13 +351,23 @@ class SystemNodeRegistryTest {
     var registry = registryWithCatalogs();
     var nodeRegistry = registryWith(registry);
 
-    var tables = canonicalTableNames(nodeRegistry.nodesFor(context("", "")));
+    var tables = canonicalTableNames(nodeRegistry.nodesFor(CatalogContext.floecatInternal()));
 
     assertThat(tables)
         .contains(
             "information_schema.tables",
             "information_schema.columns",
             "information_schema.schemata");
+  }
+
+  @Test
+  void emptyContextRemainsDistinctFromExplicitInternal() {
+    var registry = registryWithCatalogs();
+    var nodeRegistry = registryWith(registry);
+
+    assertThat(nodeRegistry.nodesFor(CatalogContext.empty()).tableNames()).isEmpty();
+    assertThat(nodeRegistry.nodesFor(CatalogContext.floecatInternal()).tableNames().keySet())
+        .contains("information_schema.tables");
   }
 
   @Test
@@ -968,7 +977,7 @@ class SystemNodeRegistryTest {
 
   private static CatalogContext context(String engineKind, String engineVersion) {
     EngineContext engine = EngineContext.of(engineKind, engineVersion);
-    return CatalogContext.of(EnvironmentContext.of(engineKind, engineVersion), engine);
+    return CatalogContext.of(EnvironmentContext.empty(), engine);
   }
 
   private static SystemNodeRegistry registryWith(
@@ -983,37 +992,22 @@ class SystemNodeRegistryTest {
   }
 
   @Test
-  void floecatInternalTablesExistForEngineWithoutPlugin() {
+  void explicitEngineDoesNotInheritFloecatInternalTables() {
     ServiceLoaderSystemCatalogProvider loader = new ServiceLoaderSystemCatalogProvider();
     SystemDefinitionRegistry defs = new SystemDefinitionRegistry(loader);
     SystemNodeRegistry registry =
         new SystemNodeRegistry(
             defs, loader.internalProvider(), loader.providers(), loader.environmentProviders());
 
-    EngineContext ctx = EngineContext.of("pg", "");
+    EngineContext ctx = EngineContext.of("duckdb", "");
     SystemEngineCatalog engineCatalog =
-        defs.catalog(
-            CatalogContext.of(EnvironmentContext.of(ctx.engineKind(), ctx.engineVersion()), ctx));
-    assertThat(engineCatalog.tables()).isNotEmpty();
-    assertThat(engineCatalog.namespaces()).isNotEmpty();
+        defs.catalog(CatalogContext.of(EnvironmentContext.empty(), ctx));
+    assertThat(engineCatalog.tables()).isEmpty();
+    assertThat(engineCatalog.namespaces()).isEmpty();
     SystemNodeRegistry.BuiltinNodes nodes =
-        registry.nodesFor(
-            CatalogContext.of(EnvironmentContext.of(ctx.engineKind(), ctx.engineVersion()), ctx));
+        registry.nodesFor(CatalogContext.of(EnvironmentContext.empty(), ctx));
 
-    assertThat(nodes.tableNames())
-        .containsKey("information_schema.tables")
-        .containsKey("information_schema.columns")
-        .containsKey("information_schema.schemata");
-    String infoSchemaTableId =
-        SystemNodeRegistry.resourceId(
-                "pg", ResourceKind.RK_TABLE, NameRefUtil.name("information_schema", "tables"))
-            .getId();
-    assertThat(
-            nodes.tableNodes().stream()
-                .map(node -> node.id().getId())
-                .filter(id -> id.equals(infoSchemaTableId))
-                .toList())
-        .isNotEmpty();
+    assertThat(nodes.tableNames()).isEmpty();
   }
 
   @Test
@@ -1109,16 +1103,10 @@ class SystemNodeRegistryTest {
             .findFirst()
             .orElseThrow();
     assertThat(overridden.scannerId()).isEqualTo("overridden_scanner");
-    String scannerId = null;
-    ResourceId expectedTableId =
-        SystemNodeRegistry.resourceId(
-            PG_KIND, ResourceKind.RK_TABLE, NameRefUtil.name("information_schema", "tables"));
-    SystemTableNode overriddenNode =
-        nodes.tableNodes().stream()
-            .filter(node -> node.id().equals(expectedTableId))
-            .findFirst()
-            .orElseThrow();
-    assertThat(((SystemTableNode.FloeCatSystemTableNode) overriddenNode).scannerId())
-        .isEqualTo("overridden_scanner");
+    assertThat(nodes.tableNodes())
+        .anySatisfy(
+            node ->
+                assertThat(((SystemTableNode.FloeCatSystemTableNode) node).scannerId())
+                    .isEqualTo("overridden_scanner"));
   }
 }

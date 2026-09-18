@@ -307,7 +307,7 @@ public final class SystemGraph {
 
   /** Builds a new snapshot for the requested engine version. */
   private GraphSnapshot snapshotFor(CatalogContext ctx) {
-    CatalogContext canonical = ctx == null ? CatalogContext.empty() : ctx;
+    CatalogContext canonical = ctx == null ? CatalogContext.floecatInternal() : ctx;
     String normalizedKind = engineCatalogKind(canonical.engine());
     String normalizedVersion = canonical.engine().normalizedVersion();
 
