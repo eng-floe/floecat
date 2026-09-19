@@ -92,9 +92,9 @@ class FloecatConnectorDefaultChainTest {
         Set<String> plannedFilePaths,
         Set<String> includeColumns,
         Set<String> indexColumns,
-      Set<StatsTargetKind> includeTargetKinds,
-      boolean captureIndexes,
-      ColumnSelectorPolicy columnSelectorPolicy) {
+        Set<StatsTargetKind> includeTargetKinds,
+        boolean captureIndexes,
+        ColumnSelectorPolicy columnSelectorPolicy) {
       return FileGroupCaptureResult.empty();
     }
 

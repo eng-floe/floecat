@@ -78,8 +78,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .buildSnapshot(
                 ctx,
                 tableId,
-                org.mockito.Mockito.mock(
-                    ai.floedb.floecat.connector.spi.FloecatConnector.class),
+                org.mockito.Mockito.mock(ai.floedb.floecat.connector.spi.FloecatConnector.class),
                 bundle,
                 existing)
             .orElseThrow();
@@ -115,8 +114,7 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             .buildSnapshot(
                 ctx,
                 tableId,
-                org.mockito.Mockito.mock(
-                    ai.floedb.floecat.connector.spi.FloecatConnector.class),
+                org.mockito.Mockito.mock(ai.floedb.floecat.connector.spi.FloecatConnector.class),
                 bundle,
                 null)
             .orElseThrow();
