@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.metagraph.overlay.systemobjects;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -28,8 +29,10 @@ import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.testsupport.FakeSystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemFunctionDef;
@@ -43,6 +46,7 @@ import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Map;
@@ -63,12 +67,40 @@ class SystemGraphTest {
   private ResourceId tableId;
   private ResourceId defaultTableId;
 
+  private static CatalogContext context(String engineKind, String engineVersion) {
+    EngineContext engine = EngineContext.of(engineKind, engineVersion);
+    return CatalogContext.of(EnvironmentContext.empty(), engine);
+  }
+
   @BeforeEach
   void setup() {
     FakeSystemNodeRegistry registry = new FakeSystemNodeRegistry();
 
     NameRef nsName = NameRefUtil.name("pg_catalog");
     NameRef tableName = NameRefUtil.name("pg_catalog", "pg_class");
+    SystemNamespaceDef namespace = new SystemNamespaceDef(nsName, "pg_catalog", List.of());
+    SystemTableDef engineTable =
+        new SystemTableDef(
+            tableName,
+            "pg_class",
+            List.<SystemColumnDef>of(),
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+            "scanner",
+            "",
+            "",
+            List.of(),
+            null);
+    SystemTableDef floecatTable =
+        new SystemTableDef(
+            tableName,
+            "pg_class",
+            List.<SystemColumnDef>of(),
+            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            "scanner",
+            "",
+            "",
+            List.of(),
+            null);
 
     SystemCatalogData catalogData =
         new SystemCatalogData(
@@ -78,24 +110,25 @@ class SystemGraphTest {
             List.of(), // casts
             List.of(), // collations
             List.of(), // aggregates
-            List.of(new SystemNamespaceDef(nsName, "pg_catalog", List.of())),
-            List.of(
-                new SystemTableDef(
-                    tableName,
-                    "pg_class",
-                    List.<SystemColumnDef>of(),
-                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
-                    "scanner",
-                    "",
-                    "",
-                    List.of(),
-                    null)),
-            List.of() // views
-            ,
+            List.of(namespace),
+            List.of(engineTable),
+            List.of(), // views
+            List.of());
+    SystemCatalogData floecatCatalogData =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace),
+            List.of(floecatTable),
+            List.of(),
             List.of());
 
     registry.register(ENGINE, catalogData);
-    registry.register(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, catalogData);
+    registry.register(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, floecatCatalogData);
 
     systemGraph = new SystemGraph(registry, 16);
 
@@ -124,13 +157,13 @@ class SystemGraphTest {
 
   @Test
   void listRelations_visibleFromAnyCatalog() {
-    List<RelationNode> nodes = systemGraph.listRelations(wrongCatalogId, ENGINE, VERSION);
+    List<RelationNode> nodes = systemGraph.listRelations(wrongCatalogId, context(ENGINE, VERSION));
     assertThat(nodes).extracting(node -> node.displayName()).contains("pg_class");
   }
 
   @Test
   void listRelations_returnsRelationsForCorrectCatalog() {
-    List<RelationNode> nodes = systemGraph.listRelations(systemCatalogId, ENGINE, VERSION);
+    List<RelationNode> nodes = systemGraph.listRelations(systemCatalogId, context(ENGINE, VERSION));
     assertThat(nodes).extracting(GraphNode::id).contains(tableId);
     assertThat(nodes).hasSizeGreaterThanOrEqualTo(1);
   }
@@ -138,33 +171,58 @@ class SystemGraphTest {
   @Test
   void listRelationsInNamespace_returnsRelations() {
     List<RelationNode> nodes =
-        systemGraph.listRelationsInNamespace(systemCatalogId, namespaceId, ENGINE, VERSION);
+        systemGraph.listRelationsInNamespace(
+            systemCatalogId, namespaceId, context(ENGINE, VERSION));
     assertThat(nodes).hasSize(1);
     assertThat(nodes.get(0).id()).isEqualTo(tableId);
   }
 
   @Test
   void listNamespaces_visibleFromAnyCatalog() {
-    List<NamespaceNode> nodes = systemGraph.listNamespaces(wrongCatalogId, ENGINE, VERSION);
+    List<NamespaceNode> nodes =
+        systemGraph.listNamespaces(wrongCatalogId, context(ENGINE, VERSION));
     assertThat(nodes).extracting(NamespaceNode::displayName).contains("pg_catalog");
   }
 
   @Test
   void listNamespaces_returnsNamespaces() {
-    assertThat(systemGraph.listNamespaces(systemCatalogId, ENGINE, VERSION))
+    assertThat(systemGraph.listNamespaces(systemCatalogId, context(ENGINE, VERSION)))
         .extracting(NamespaceNode::displayName)
-        .contains("information_schema");
+        .contains("pg_catalog")
+        .doesNotContain("information_schema");
   }
 
   @Test
-  void pluginOverridesInformationSchemaDefinitions() {
+  void conflictingInformationSchemaDefinitionsFail() {
     FakeSystemNodeRegistry registry =
         new FakeSystemNodeRegistry(new PluginInformationSchemaProvider());
 
+    SystemNamespaceDef informationSchema =
+        new SystemNamespaceDef(
+            NameRefUtil.name("information_schema"), "information_schema", List.of());
+    SystemTableDef tables =
+        new SystemTableDef(
+            NameRefUtil.name("information_schema", "tables"),
+            "tables",
+            List.of(),
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+            "scanner",
+            "",
+            "",
+            List.of(),
+            null);
     SystemCatalogData overrideCatalog =
         new SystemCatalogData(
-            List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
-            List.of(), List.of());
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(informationSchema),
+            List.of(tables),
+            List.of(),
+            List.of());
 
     registry.register(ENGINE, overrideCatalog);
 
@@ -177,37 +235,26 @@ class SystemGraphTest {
             .setId(ENGINE)
             .build();
 
-    assertThat(customGraph.listRelations(overrideCatalogId, ENGINE, VERSION))
-        .extracting(GraphNode::displayName)
-        .contains("tables_override", "plugin_table")
-        .doesNotContain("tables");
-
-    assertThat(
-            customGraph.resolveTable(
-                NameRefUtil.name("information_schema", "tables"), ENGINE, VERSION))
-        .isPresent();
-
-    assertThat(
-            customGraph.resolveTable(
-                NameRefUtil.name("information_schema", "plugin_table"), ENGINE, VERSION))
-        .isPresent();
+    assertThatThrownBy(() -> customGraph.listRelations(overrideCatalogId, context(ENGINE, VERSION)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Conflicting system object definition");
   }
 
   @Test
   void resolveTable_findsSystemTable() {
     NameRef ref = NameRefUtil.name("pg_catalog", "pg_class");
-    assertThat(systemGraph.resolveTable(ref, ENGINE, VERSION)).contains(tableId);
+    assertThat(systemGraph.resolveTable(ref, context(ENGINE, VERSION))).contains(tableId);
   }
 
   @Test
   void resolveTable_returnsEmptyForUnknown() {
     NameRef ref = NameRefUtil.name("pg_catalog", "does_not_exist");
-    assertThat(systemGraph.resolveTable(ref, ENGINE, VERSION)).isEmpty();
+    assertThat(systemGraph.resolveTable(ref, context(ENGINE, VERSION))).isEmpty();
   }
 
   @Test
   void tableName_reverseLookupWorks() {
-    assertThat(systemGraph.tableName(tableId, ENGINE, VERSION))
+    assertThat(systemGraph.tableName(tableId, context(ENGINE, VERSION)))
         .isPresent()
         .get()
         .satisfies(
@@ -219,8 +266,8 @@ class SystemGraphTest {
   }
 
   @Test
-  void tableName_withoutEngineUsesFloecatDefaultCatalog() {
-    assertThat(systemGraph.tableName(defaultTableId, "", ""))
+  void tableName_explicitInternalUsesFloecatDefaultCatalog() {
+    assertThat(systemGraph.tableName(defaultTableId, CatalogContext.floecatInternal()))
         .isPresent()
         .get()
         .satisfies(
@@ -230,7 +277,7 @@ class SystemGraphTest {
 
   @Test
   void tableName_withUppercaseEngineNormalizesCatalog() {
-    assertThat(systemGraph.tableName(tableId, "FLOEDB", VERSION))
+    assertThat(systemGraph.tableName(tableId, context("FLOEDB", VERSION)))
         .isPresent()
         .get()
         .satisfies(ref -> assertThat(ref.getCatalog()).isEqualTo("floedb"));
@@ -247,7 +294,7 @@ class SystemGraphTest {
 
   @Test
   void catalog_returnsCatalogNode() {
-    assertThat(systemGraph.catalog(systemCatalogId, ENGINE, VERSION))
+    assertThat(systemGraph.catalog(systemCatalogId, context(ENGINE, VERSION)))
         .isPresent()
         .hasValueSatisfying(node -> assertThat(node.displayName()).isEqualTo(ENGINE));
   }
@@ -333,13 +380,13 @@ class SystemGraphTest {
 
     SystemGraph graph = new SystemGraph(new StubSystemNodeRegistry(nodes), 16);
 
-    List<FunctionNode> functions = graph.listFunctions(namespaceId, engineKind, engineVersion);
+    List<FunctionNode> functions =
+        graph.listFunctions(namespaceId, context(engineKind, engineVersion));
     assertThat(functions).hasSize(1);
     assertThat(functions.get(0).displayName()).isEqualTo("short_name");
   }
 
-  private static final class PluginInformationSchemaProvider
-      implements SystemObjectScannerProvider {
+  private static final class PluginInformationSchemaProvider implements EngineCatalogProvider {
 
     private final SystemNamespaceDef namespace =
         new SystemNamespaceDef(
@@ -350,7 +397,7 @@ class SystemGraphTest {
             NameRefUtil.name("information_schema", "tables"),
             "tables_override",
             List.of(),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -362,7 +409,7 @@ class SystemGraphTest {
             NameRefUtil.name("information_schema", "plugin_table"),
             "plugin_table",
             List.of(),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "plugin-scanner",
             "",
             "",
@@ -370,33 +417,17 @@ class SystemGraphTest {
             null);
 
     @Override
-    public List<SystemObjectDef> definitions() {
+    public String engineKind() {
+      return ENGINE;
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions(CatalogContext context) {
       return List.of(namespace, tablesOverride, pluginTable);
     }
 
     @Override
-    public List<SystemObjectDef> definitions(String engineKind, String engineVersion) {
-      return definitions();
-    }
-
-    @Override
-    public boolean supportsEngine(String engineKind) {
-      return ENGINE.equals(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return supportsEngine(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind, String engineVersion) {
-      return supports(name, engineKind);
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
       return Optional.empty();
     }
   }
@@ -409,12 +440,13 @@ class SystemGraphTest {
       super(
           new SystemDefinitionRegistry(new StubSystemCatalogProvider()),
           new StubSystemObjectScannerProvider(),
+          List.of(),
           List.of());
       this.nodes = nodes;
     }
 
     @Override
-    public BuiltinNodes nodesFor(EngineContext ctx) {
+    public BuiltinNodes nodesFor(CatalogContext ctx) {
       return nodes;
     }
   }
@@ -422,7 +454,7 @@ class SystemGraphTest {
   private static final class StubSystemCatalogProvider implements SystemCatalogProvider {
 
     @Override
-    public SystemEngineCatalog load(EngineContext ctx) {
+    public SystemEngineCatalog load(CatalogContext context) {
       return SystemEngineCatalog.from(
           EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, SystemCatalogData.empty());
     }
@@ -437,29 +469,13 @@ class SystemGraphTest {
       implements SystemObjectScannerProvider {
 
     @Override
-    public List<SystemObjectDef> definitions() {
+    public List<SystemObjectDef> definitions(CatalogContext context) {
       return List.of();
     }
 
     @Override
-    public boolean supportsEngine(String engineKind) {
-      return true;
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return true;
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
       return Optional.empty();
-    }
-
-    @Override
-    public List<SystemObjectDef> definitions(String engineKind, String engineVersion) {
-      return definitions();
     }
   }
 }

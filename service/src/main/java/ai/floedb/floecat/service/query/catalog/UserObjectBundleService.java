@@ -39,6 +39,7 @@ import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
@@ -455,20 +456,22 @@ public class UserObjectBundleService {
       this.defaultCatalogId = ctx.getQueryDefaultCatalogId();
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
       EngineContext requestEngine = engineContext.engineContext();
-      this.engineKind = requestEngine.normalizedKind();
+      CatalogContext requestCatalog = engineContext.catalogContext();
+      this.engineKind = requestCatalog.engine().normalizedKind();
       this.engineVersion = requestEngine.normalizedVersion();
       this.resolutionContext =
           MetadataResolutionContext.of(
               graphView,
               Objects.requireNonNull(ctx.getQueryDefaultCatalogId(), "query default catalog id"),
-              requestEngine,
+              requestCatalog,
               statsProvider);
       this.resolutionMemo =
-          new RelationResolutionMemo(graphView, correlationId, requestEngine, timings);
+          new RelationResolutionMemo(graphView, correlationId, requestCatalog, timings);
       this.decorationSelection = engineRelationDecorator.select(requestEngine);
       this.buildFanout = buildFanout(decorationSelection);
       this.pinCommitter =
-          new QueryPinCommitter(inputResolver, queryStore, ctx, correlationId, timings);
+          new QueryPinCommitter(
+              inputResolver, queryStore, ctx, correlationId, timings, requestCatalog);
       initializeParentSpan();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
@@ -1264,7 +1267,10 @@ public class UserObjectBundleService {
         long startNs = System.nanoTime();
         try {
           defaultCatalogName =
-              graphView.catalog(defaultCatalogId).map(CatalogNode::displayName).orElse("");
+              graphView
+                  .catalog(defaultCatalogId, resolutionContext.catalogContext())
+                  .map(CatalogNode::displayName)
+                  .orElse("");
           defaultCatalogResolved = true;
           timings.recordDefaultCatalogLookup();
         } finally {

@@ -78,10 +78,11 @@ class SystemObjectsServiceImplTest {
                 new StaticSystemCatalogProvider(
                     Map.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, SystemCatalogData.empty()))),
             new FloecatInternalProvider(),
+            List.of(),
             List.of()) {
 
           @Override
-          public BuiltinNodes nodesFor(EngineContext ctx) {
+          public BuiltinNodes nodesFor(ai.floedb.floecat.scanner.utils.CatalogContext ctx) {
             return builtin;
           }
         };
@@ -126,6 +127,7 @@ class SystemObjectsServiceImplTest {
                             EngineCatalogNames.FLOECAT_DEFAULT_CATALOG,
                             SystemCatalogData.empty()))),
                 new FloecatInternalProvider(),
+                List.of(),
                 List.of()));
 
     EngineContext ctx = EngineContext.of("pg", "1.0");
@@ -152,12 +154,18 @@ class SystemObjectsServiceImplTest {
   }
 
   private static SystemObjectsServiceImpl createService(SystemNodeRegistry nodeRegistry) {
-    SystemObjectsServiceImpl service = new SystemObjectsServiceImpl();
+    TestSystemObjectsServiceImpl service = new TestSystemObjectsServiceImpl();
     service.principal = new PrincipalProvider();
     service.authz = new Authorizer();
     service.nodeRegistry = nodeRegistry;
-    service.engineContextProvider = new EngineContextProvider();
+    service.setEngineContextProvider(new EngineContextProvider());
     return service;
+  }
+
+  private static final class TestSystemObjectsServiceImpl extends SystemObjectsServiceImpl {
+    void setEngineContextProvider(EngineContextProvider provider) {
+      this.engineContextProvider = provider;
+    }
   }
 
   private static SystemCatalogData catalogWithRelations() {

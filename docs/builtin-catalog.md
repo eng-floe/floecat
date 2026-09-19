@@ -2,9 +2,12 @@
 
 ## Overview
 
-Floecat's builtin catalog system provides engine-specific metadata (functions, operators, types, casts, collations, aggregates) to query planners. This enables the planner to understand and rewrite queries against heterogeneous engines (Floe, Postgres, Trino, Spark, etc.) without embedding engine-specific logic.
+Floecat's builtin catalog system provides engine-specific metadata (functions, operators, types, casts, collations, aggregates) and environment-owned system relations to query planners. A catalog request selects both an environment and an engine, so the two sources can be composed without making either one part of the other.
 
-The architecture is **plugin-based**: each engine implements a builtin catalog plugin that provides structured, versioned metadata matching the engine's capabilities.
+The architecture is **provider-based**: an engine provider supplies engine capabilities and
+engine-owned relations, while an environment provider supplies environment-owned relations.
+Either provider may obtain metadata from static PBtxt or from a live runtime; live providers do
+not need to duplicate changing engine metadata in PBtxt.
 
 ## Design Principles
 
@@ -18,15 +21,15 @@ The architecture is **plugin-based**: each engine implements a builtin catalog p
 ```
 ┌──────────────┐
 │ Planner      │
-│ (engine_kind,│
-│  engine_ver) │
+│ (environment,│
+│  engine)     │
 └──────┬───────┘
        │ gRPC GetSystemObjects
        ▼
 ┌────────────────────────────────────────────────────────────┐
 │ SystemObjectsServiceImpl (service)                        │
 │ - validates headers + correlation id                        │
-│ - calls SystemNodeRegistry.nodesFor(kind, version)          │
+│ - calls SystemNodeRegistry.nodesFor(CatalogContext)          │
 │ - maps SystemCatalogData → SystemObjectsRegistry via              │
 │   SystemCatalogProtoMapper                                    │
 └──────┬──────────────────────────────────────────────────────┘
@@ -34,7 +37,7 @@ The architecture is **plugin-based**: each engine implements a builtin catalog p
        ▼
 ┌────────────────────────────────────────────────────────────┐
 │ SystemNodeRegistry (core/catalog)                           │
-│ - caches BuiltinNodes per (engineKind, engineVersion)       │
+│ - caches BuiltinNodes per complete CatalogContext           │
 │ - filters SystemCatalogData with EngineSpecificMatcher       │
 │ - materialises GraphNodes + SystemTable/Table/View defs     │
 └──────┬──────────────────────────────────────────────────────┘
@@ -42,16 +45,16 @@ The architecture is **plugin-based**: each engine implements a builtin catalog p
        ▼
 ┌────────────────────────────────────────────────────────────┐
 │ SystemDefinitionRegistry                                    │
-│ - caches SystemEngineCatalog per engine kind                │
+│ - caches SystemEngineCatalog per complete CatalogContext    │
 │ - hands off to SystemCatalogProvider                        │
 └──────┬──────────────────────────────────────────────────────┘
        │
        ▼
 ┌────────────────────────────────────────────────────────────┐
 │ ServiceLoaderSystemCatalogProvider                          │
-│ - discovers EngineSystemCatalogExtension via ServiceLoader   │
-│ - returns the raw SystemCatalogData for the normalized kind  │
-│ - fingerprints the kind-level catalog without provider merges│
+│ - discovers engine and environment providers                │
+│ - loads the selected engine's static catalog, if any        │
+│ - leaves live provider composition to SystemNodeRegistry    │
 └──────┬──────────────────────────────────────────────────────┘
        │
    ┌───┴───┬───────────────────────┐
@@ -81,18 +84,31 @@ builtins/
     …
 ```
 
-The `_index.txt` file lists fragments in the order they should be merged. Lines that are blank or start with `#` are ignored. Each fragment is a proto-text encoding of `SystemObjectsRegistry` (see [`system_objects_registry.proto`][system-objects-registry-proto]). During startup Floe catalogs parse each fragment into a `SystemObjectsRegistry.Builder` and apply them sequentially via `SystemObjectsRegistryMerger`, which merges builder→builder to avoid extra allocations. The merged result is then rewritten by `SystemCatalogProtoMapper` and cached as `SystemCatalogData`.
+The `_index.txt` file lists fragments in the order they should be merged. Lines that are blank or start with `#` are ignored. Each fragment is a proto-text encoding of `SystemObjectsRegistry` (see [`system_objects_registry.proto`][system-objects-registry-proto]). During startup Floecat parses each fragment into a `SystemObjectsRegistry.Builder` and applies them sequentially via `SystemObjectsRegistryMerger`, which merges builder→builder to avoid extra allocations. The merged result is then rewritten by `SystemCatalogProtoMapper` and cached as `SystemCatalogData`. This static layout is optional for dynamic providers: an engine or environment provider may return live definitions directly from its SPI.
 
-The loader always applies `floecat_internal` first, then overlays the engine-specific catalog (for instance, `floedb`), and finally allows scanner-provided overlays from `SystemObjectScannerProvider` implementations when the request carried engine headers. Overrides happen deterministically because each stage stores entries in a `LinkedHashMap` keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging.
+The loader resolves the selected engine and environment independently. The registry composes only the selected providers; `floecat_internal` is not added as a hidden base layer. Providers contribute to one logical catalog, and the registry validates ownership and identity while composing it.
 
-#### Override precedence contract
+#### Composition contract
 
-1. `floecat_internal` (shared information_schema) seeds every catalog with namespaces/tables/views.
-2. The plugin catalog returned by `SystemDefinitionRegistry` overlays the base definitions.
-3. When engine headers are present and the normalized kind is not `floecat_internal`, each `SystemObjectScannerProvider` that supports that kind can overlay definitions for the specific `(engineKind, engineVersion)` tuple.
-4. Within each stage, later fragments override earlier ones (controlled by `_index.txt` ordering); identical canonical names always respect the last writer.
+1. An explicitly selected engine contributes its static catalog.
+2. The selected engine provider can contribute live definitions for the complete `CatalogContext`. Engine-owned tables use `TABLE_BACKEND_KIND_ENGINE`.
+3. The selected environment provider contributes environment-owned relations for the complete catalog context. Environment tables use `TABLE_BACKEND_KIND_FLOECAT` or `TABLE_BACKEND_KIND_STORAGE`.
+4. `floecat_internal` contributes only when explicitly selected. A request boundary may turn a completely absent selection into that explicit selection for compatibility.
+5. Every canonical identity has one definition in the materialized catalog. Structurally identical duplicates are deduplicated. Incompatible duplicates fail; no provider silently overrides another provider.
 
-When headers are absent or the engine kind is unknown, `EngineContext.effectiveEngineKind()` resolves to `floecat_internal`, so only the shared base relations are loaded.
+When no environment is selected, the request uses the empty environment context. An engine selection never derives an environment selection.
+
+The system catalog identity is the name of the one logical system catalog produced by the merge. It
+is not a precedence rule: it does not allow one provider to replace another provider's object. The
+selected engine kind names that catalog when present; otherwise the selected environment kind names
+it. At an external request boundary, `CatalogContext.forRequest(...)` converts a request with neither
+axis selected into the explicit `floecat_internal` context. `CatalogContext.empty()` is the neutral
+unselected context used inside the model and tests; it does not implicitly load `floecat_internal`.
+
+For example, `environment=env_a, engine=engine_b` produces one catalog named `engine_b`. The engine
+provider contributes engine-owned objects such as `pg_type` and `pg_proc`; the environment provider
+can contribute distinct environment-owned relations such as `sys.*`. If both providers define the same canonical object,
+identical definitions are deduplicated and incompatible definitions fail with provenance.
 
 ### System table backend contract
 
@@ -100,8 +116,8 @@ When headers are absent or the engine kind is unknown, `EngineContext.effectiveE
 | Backend | Description | Required field | Scanner policy |
 | --- | --- | --- | --- |
 | `FLOECAT` | Rows produced by Floecat scanners (information_schema, system tables, plugin metadata tables). | `scannerId` (non-blank) | `SystemScannerResolver` accepts only `FloeCatSystemTableNode` instances, so only FLOECAT tables can be scanned through `SystemScannerResolver`. |
-| `ENGINE` | Rows produced directly by an engine backend (e.g., engine information tables). | - | Metadata-only: not scanable through `SystemScannerResolver` and exposed solely for planners to reason about engine-provided hints. |
-| `STORAGE` | Tables whose rows are stored on disk. | `storagePath` | Metadata-only: not scanable via `SystemScannerResolver` and often serve as hints in downstream planning (e.g., partitions or external tables). |
+| `ENGINE` | Rows produced directly by the selected engine. | - | Not resolved through `SystemScannerResolver`; execution is delegated to the engine. |
+| `STORAGE` | Tables whose rows are supplied by storage or Flight. | `storagePath`, `storageEndpointKey`, or `flightEndpoint` | Not resolved through `SystemScannerResolver`; execution is delegated to the storage path or endpoint. |
 
  `SystemTableDef` throws at construction time when the required backend-specific value is missing, guaranteeing the graph never exposes partially-specified tables.
 
@@ -109,21 +125,26 @@ When headers are absent or the engine kind is unknown, `EngineContext.effectiveE
 
 Every `EngineSpecificRule` with a `payloadType` is mapped to a metagraph `EngineHint` whose key is `(engineKind, engineVersion, payloadType)` and whose value contains the payload bytes plus properties. The `EngineHintsMapper` replaces null payloads with an empty byte array to avoid NPEs, and it throws `IllegalStateException` if two rules share the same `(engineKind, engineVersion, payloadType)` triple. Column-level hints are grouped per column name; duplicate column names are already rejected by `SystemTableDef` so the per-column maps stay one-to-one with the schema. These hints drive scanner/table metadata, so when you add engine-specific definitions ensure each `EngineSpecificRule` has a unique payload type per engine/version.
 
-`ServiceLoaderSystemCatalogProvider` is the gatekeeper for engine plugins: it discovers every `EngineSystemCatalogExtension`, loads the normalized catalog snapshot for each engine kind, and fingerprints the raw data without applying any provider overlays. `SystemDefinitionRegistry` caches those snapshots keyed by `EngineContext.effectiveEngineKind()` (so blank headers collapse to `floecat_internal`) so the kind-level catalog only needs to parse once. The real layering happens in `SystemNodeRegistry`: on a cache miss it seeds the result with `FloecatInternalProvider` (the `floecat_internal` base that always brings `information_schema`), overlays the plugin catalog, and finally applies `SystemObjectScannerProvider.definitions(engineKind, engineVersion)` entries when overlays are enabled (i.e., headers are present and the plugin exists). The floecat_internal layer only contributes namespace/table/view metadata (the shared `information_schema`/`pg_catalog` relations and their hints) so functions/operators/types/casts/aggregates are never merged from this internal layer; those object classes must come from engine plugins/providers. Overrides happen deterministically because each step puts entries into a LinkedHashMap keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging. When headers are absent or the engine kind is unknown, `EngineContext.effectiveEngineKind()` resolves to `floecat_internal` and overlays are skipped, but the base definitions (and the shared `information_schema`) remain available. `SystemGraph` continues to reuse the merged `BuiltinNodes` to build `_system` snapshots (namespace buckets, relation map, `SystemTableNode`s) that `MetaGraph` exposes as `CatalogGraphView`/`SystemObjectGraphView`. That merged `_system` view (load + scan) is documented in [System objects](system-objects.md).
+`ServiceLoaderSystemCatalogProvider` discovers engine providers and environment providers separately. It loads optional static catalog data from the selected engine provider; `SystemDefinitionRegistry` caches that result by the complete `CatalogContext`. `SystemNodeRegistry` composes the static engine data, live engine definitions, and live environment definitions, validating ownership and conflicts along the way. The resulting `BuiltinNodes` are exposed through `SystemGraph` and `CatalogGraphView` for metadata resolution and scanning. That merged `_system` view (load + scan) is documented in [System objects](system-objects.md).
 
-### Plugin Implementations
+### Provider Implementations
 
-Plugins implement `EngineSystemCatalogExtension` directly and provide:
+Providers implement one of the two specialized SPIs:
 
-1. **Engine Kind** – A stable identifier (e.g., `”example”`)
-2. **Catalog Data** – Loads `.pbtxt` resources and returns a `SystemCatalogData` snapshot
-3. **Discovery** – Registered via ServiceLoader for automatic runtime discovery
+1. **`EngineCatalogProvider`** – A stable engine identifier, optional static catalog data, and/or
+   live engine definitions and scanners. Dynamic engines can leave `loadSystemCatalog()` empty.
+2. **`CatalogEnvironmentProvider`** – A stable environment identifier plus environment-owned
+   definitions and scanners. Its methods receive the complete `CatalogContext`, including the
+   selected engine.
+3. **Discovery** – Register the relevant SPI with `ServiceLoader` for automatic runtime discovery.
 
-See `extensions/example/` for a complete reference implementation.
+See `extensions/example/` for a static engine-provider reference implementation. A dynamic engine
+provider only needs to implement the context-aware definition/scanner methods and does not need one
+PBtxt file per engine function or relation.
 
 ### Hint Lifecycle
 
-`EngineSystemCatalogExtension` extends `SystemObjectScannerProvider`, so every plugin can also
+`EngineCatalogProvider` extends `SystemObjectScannerProvider`, so every plugin can also
 serve system-table definitions and scanners. Plugins that persist engine hints (metadata attached
 to catalog objects at runtime) can control when those hints are invalidated by implementing
 `decideHintClear`:
@@ -175,7 +196,7 @@ Interface for loading catalogs:
 
 ```java
 public interface SystemCatalogProvider {
-  SystemEngineCatalog load(EngineContext ctx);
+  SystemEngineCatalog load(CatalogContext ctx);
   List<String> engineKinds();
 }
 ```
@@ -186,7 +207,13 @@ public interface SystemCatalogProvider {
 
 ### EngineContext & header semantics
 
-Every `SystemCatalogProvider` receives an `EngineContext` (engine kind + version) derived from request headers. `EngineContext.effectiveEngineKind()` folds missing or blank headers to `floecat_internal` (which is also the registered `FloeCatInternalProvider`), so the base catalog is always available even when no headers are sent. When headers are present the normalized engine kind identifies the plugin whose catalog is cached in `SystemDefinitionRegistry`; the normalized version is used later by `SystemNodeRegistry` for version filtering. `SystemNodeRegistry` seeds every catalog build with the floecat_internal definitions, overlays the plugin snapshot when one exists, and only applies `SystemObjectScannerProvider` overlays when `EngineContext.enginePluginOverlaysEnabled()` is true (that is, headers were present and the normalized kind is not `floecat_internal`). Unknown engine kinds resolve to `floecat_internal`, so the shared base catalog remains available and provider overlays are not applied.
+Every provider receives a complete `CatalogContext` containing an environment and an engine. Requests
+carry the two axes independently in `x-environment-kind` / `x-environment-version` and
+`x-engine-kind` / `x-engine-version`; the resolved call context propagates both together across
+internal RPCs and worker hops. The engine context selects capability providers and the environment
+context selects environment-owned relation providers. `SystemNodeRegistry` applies both axes
+independently, so a live environment can be paired with any engine without copying the engine's
+types or functions into environment definitions.
 
 ### Caching Architecture
 
@@ -195,14 +222,18 @@ Builtins are cached at every stage of the pipeline:
 ```
 ┌──────────────────────────────────┐
 │ SystemDefinitionRegistry         │
-│ key = effectiveEngineKind        │
+│ key = (environmentKind,          │
+│        environmentVersion,       │
+│        engineKind, engineVersion)│
 │ value = SystemEngineCatalog       │
 │ (raw SystemCatalogData snapshot)  │
 └──────────────────────────────────┘
                 │
 ┌──────────────────────────────────┐
 │ SystemNodeRegistry               │
-│ key = (engineKind, engineVersion) │
+│ key = (environmentKind,           │
+│        environmentVersion,        │
+│        engineKind, engineVersion) │
 │ value = BuiltinNodes (GraphNodes +│
 │         merged SystemCatalogData │
 │         and overlays)             │
@@ -210,15 +241,15 @@ Builtins are cached at every stage of the pipeline:
                 │
 ┌──────────────────────────────────┐
 │ SystemGraph snapshot cache       │
-│ key = (engineKind, engineVersion) │
+│ key = complete CatalogContext     │
 │ value = GraphSnapshot (namespace →│
 │         relations + lookup map)   │
 └──────────────────────────────────┘
 ```
 
-1. **SystemDefinitionRegistry** – normalizes the engine kind (`Locale.ROOT`, case-insensitive) and caches the immutable `SystemEngineCatalog` produced by the `SystemCatalogProvider` under `EngineContext.effectiveEngineKind()`, so the layer-1 cache is kind-only. Every catalog is fingerprinted once before provider overlays are applied, making the kind-level fingerprint stable even if later merges change the result. Tests can reset this cache via `clear()`.
+1. **SystemDefinitionRegistry** – caches the immutable `SystemEngineCatalog` produced by the `SystemCatalogProvider` under the normalized environment/engine tuple. Static engine catalogs remain separate from live environment contributions. Tests can reset this cache via `clear()`.
 
-2. **SystemNodeRegistry** – filters the cached catalog through `EngineSpecificMatcher` (per `min_version`, `max_version` rules) and merges floecat_internal + plugin catalogs + provider overlays when overlays are enabled. The resulting `BuiltinNodes` record keeps copies of the filtered and merged `SystemCatalogData` (functions, types, casts, tables, etc.), so the same snapshot serves both the catalog service and the system graph; this layer’s fingerprint reflects the post-merge catalog that includes overlays. `VersionKey` is the `(engineKind, engineVersion)` tuple stored in a `ConcurrentHashMap`.
+2. **SystemNodeRegistry** – filters the cached catalog through `EngineSpecificMatcher` (per `min_version`, `max_version` rules) and composes static/live engine contributions with live environment contributions. The resulting `BuiltinNodes` record keeps copies of the filtered and merged `SystemCatalogData` (functions, types, casts, tables, etc.), so the same snapshot serves both the catalog service and the system graph. `VersionKey` is the normalized `(environmentKind, environmentVersion, engineKind, engineVersion)` tuple stored in a `ConcurrentHashMap`. Identical definitions are deduplicated; conflicting definitions fail rather than using stage order as precedence.
    Canonical names remain fully qualified for identity and namespace mapping, while node display labels are materialized separately (functions/operators/types/collations/aggregates default to leaf names unless a provider overrides them).
    Catalog validation is enforced at load time: providers fail fast on `Severity.ERROR` issues. The default namespace-scope policy currently requires known namespaces for `function/type/table/view` and leaves `operator/cast/collation/aggregate` relaxed unless a stricter policy is selected.
 
@@ -228,23 +259,43 @@ Builtins are cached at every stage of the pipeline:
 
 ## Plugin Architecture
 
-### EngineBuiltinExtension (SPI)
+### EngineCatalogProvider and CatalogEnvironmentProvider (SPI)
 
-Plugins implement this interface (defined in `extensions/builtin/spi/`):
+Engine providers implement the engine SPI:
 
 ```java
-public interface EngineBuiltinExtension {
+public interface EngineCatalogProvider {
   String engineKind();
-  SystemCatalogData loadSystemCatalog();
-  default void onLoadError(Exception e) { }
+  default SystemCatalogData loadSystemCatalog() {
+    return SystemCatalogData.empty();
+  }
+  List<SystemObjectDef> definitions(CatalogContext context);
+  Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context);
 }
 ```
 
+Environment providers implement the environment SPI:
+
+```java
+public interface CatalogEnvironmentProvider {
+  String environmentKind();
+  List<SystemObjectDef> definitions(CatalogContext context);
+  boolean supports(NameRef name, CatalogContext context);
+  Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context);
+}
+```
+
+The actual interfaces also provide default hooks for validation, type mapping, and provider
+selection. The important distinction is ownership: engine relations use `TABLE_BACKEND_KIND_ENGINE`;
+environment relations use `TABLE_BACKEND_KIND_FLOECAT` or `TABLE_BACKEND_KIND_STORAGE`.
+
 ### Reference Implementation
 
-The bundled `extensions/example/` module (`ExampleCatalogExtension`) is the canonical reference.
-It loads `.pbtxt` files from either a configured filesystem directory or from classpath resources
-under `builtins/<engine-kind>/`, reading fragment order from `_index.txt`.
+The bundled `extensions/example/` module (`ExampleCatalogExtension`) is the canonical static
+engine-provider reference. It loads `.pbtxt` files from either a configured filesystem directory
+or from classpath resources under `builtins/<engine-kind>/`, reading fragment order from `_index.txt`.
+An engine with live metadata can instead leave `loadSystemCatalog()` empty and implement the
+context-aware definition methods. It does not need one PBtxt file per engine function or relation.
 
 Each fragment independently defines the repeated field(s) it needs; the loader appends them in
 order to a single `SystemObjectsRegistry.Builder`.
@@ -267,35 +318,40 @@ resources/
 
 ### ServiceLoader Registration
 
-Each plugin registers itself in `META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension`:
+Each plugin registers itself in `META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider`:
 
 ```
-com.example.MyEngineCatalogExtension
+com.example.MyEngineCatalogProvider
 ```
 
 ## Data Flow
 
 ### Request Flow (Planner → Floecat)
 
-1. **Planner** sends `GetSystemObjectsRequest` with headers:
-   - `x-engine-kind: "example"`
+1. **Planner** sends `GetSystemObjectsRequest` with the selected catalog context:
+   - `x-environment-kind: "env_a"`
+   - `x-environment-version: "1.0"`
+   - `x-engine-kind: "engine_b"`
    - `x-engine-version: "1.0"`
-2. **SystemObjectsServiceImpl** validates the headers and calls `SystemNodeRegistry.nodesFor("example", "1.0")`.
-3. **SystemNodeRegistry** normalizes the kind, looks up `(engineKind, engineVersion)` in its cache, and, on a miss, asks `SystemDefinitionRegistry` for the raw `SystemEngineCatalog`.
-4. **SystemDefinitionRegistry** delegates to `ServiceLoaderSystemCatalogProvider` when it needs to load a raw catalog snapshot for the normalized engine kind.
-5. **SystemNodeRegistry** takes that snapshot, seeds it with `floecat_internal` + `InformationSchema` definitions, overlays the plugin catalog and any `SystemObjectScannerProvider.definitions(engineKind, engineVersion)` entries, re-fingerprints the merged catalog, and caches the result per `(engineKind, engineVersion)`. Plugin/provider overlays only occur when engine headers are present (engine-plugin overlays).
-6. **SystemNodeRegistry** filters the catalog by version (`EngineSpecificMatcher`), applies engine-specific rules, and materialises `BuiltinNodes` (graph nodes + filtered `SystemCatalogData`). The `BuiltinNodes` instance is cached for future requests for the same version.
+   The request boundary converts these headers into one `CatalogContext`. If both axes are absent,
+   it uses `CatalogContext.forRequest(...)` to select `floecat_internal`. `CatalogContext.empty()`
+   is reserved for neutral internal/test contexts and is not the request-defaulting function.
+2. **SystemObjectsServiceImpl** validates the request and calls `SystemNodeRegistry.nodesFor(CatalogContext)`.
+3. **SystemNodeRegistry** looks up the complete `(environmentKind, environmentVersion, engineKind, engineVersion)` context in its cache, and, on a miss, asks `SystemDefinitionRegistry` for the engine catalog data.
+4. **SystemDefinitionRegistry** delegates to `ServiceLoaderSystemCatalogProvider` when it needs to load the engine's static catalog snapshot.
+5. **SystemNodeRegistry** composes static engine data, live engine definitions, and live environment definitions. It caches the result per complete `CatalogContext`.
+6. **SystemNodeRegistry** filters the catalog by version (`EngineSpecificMatcher`), applies engine-specific rules, and materialises `BuiltinNodes` (graph nodes + filtered `SystemCatalogData`). The `BuiltinNodes` instance is cached for future requests for the same context.
 7. **SystemObjectsServiceImpl** receives the cached `BuiltinNodes`, hands its embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and streams the `GetSystemObjectsResponse` back to the planner.
 8. **SystemGraph** reuses the same `BuiltinNodes` to build `_system` catalog snapshots (namespace buckets, relation map, `SystemTableNode`s) that `MetaGraph` exposes as `CatalogGraphView`/`SystemObjectGraphView` for system object scanning.
-   * The scanner-visible system relations (information_schema, pg_catalog, etc.) are seeded from `floecat_internal` and merged into every engine namespace for `_system` scans. They are **not** emitted by `GetSystemObjects`, which only returns engine-visible SQL objects produced by plugins/providers.
+   * The scanner-visible system relations (information_schema, pg_catalog, etc.) are seeded from the shared provider and merged into the selected catalog context for `_system` scans.
 
 ### SystemNodeRegistry Caching
 
 All caches are case-normalized and thread-safe:
-* `SystemDefinitionRegistry` keeps one `SystemEngineCatalog` per engine kind in a `ConcurrentHashMap`. Loading once per kind is enough because `SystemEngineCatalog` references a parsed `SystemCatalogData` snapshot that contains every supported version.
-* `SystemNodeRegistry` caches `BuiltinNodes` per `VersionKey(engineKind, engineVersion)` via `ConcurrentHashMap.computeIfAbsent`. The result stores stable `ResourceId`s (via `SystemNodeRegistry.resourceId`) and a copy of the filtered `SystemCatalogData`.  
-  `SystemNodeRegistry.resourceId` derives a deterministic UUID (engine kind + resource kind + object signature) instead of concatenating readable `engine:suffix` strings, so every owner of a system node should call the helper rather than inventing their own IDs.
-* `SystemGraph` keeps a synchronized, access-ordered `LinkedHashMap` of `GraphSnapshot`s per version. Each snapshot already groups namespace relations and indexes every `GraphNode` so that `_system` list/lookups take constant time.
+* `SystemDefinitionRegistry` keeps one `SystemEngineCatalog` per normalized catalog context in a `ConcurrentHashMap`. The engine's static catalog may be reused across versions internally, but the public cache key remains the complete context so environment/engine composition cannot collide.
+* `SystemNodeRegistry` caches `BuiltinNodes` per normalized `(environmentKind, environmentVersion, engineKind, engineVersion)` via `ConcurrentHashMap.computeIfAbsent`. The result stores stable `ResourceId`s (via `SystemNodeRegistry.resourceId`) and a copy of the filtered and merged `SystemCatalogData`.
+  `SystemNodeRegistry.resourceId` derives a deterministic UUID (catalog kind + resource kind + object signature) instead of concatenating readable `catalog:suffix` strings, so every owner of a system node should call the helper rather than inventing their own IDs.
+* `SystemGraph` keeps a synchronized, access-ordered `LinkedHashMap` of `GraphSnapshot`s per complete catalog context. Each snapshot already groups namespace relations and indexes every `GraphNode` so that `_system` list/lookups take constant time.
 
 ## Version Matching
 
@@ -434,12 +490,12 @@ Validation errors are logged; invalid catalogs are still returned (planner must 
 
 ## Creating a New Plugin
 
-### Step 1: Implement EngineSystemCatalogExtension
+### Step 1: Implement EngineCatalogProvider
 
-`EngineSystemCatalogExtension` lives in `ai.floedb.floecat.systemcatalog.spi` and already extends `SystemObjectScannerProvider`, so every plugin can also supply system table definitions and scanners without extra wiring.
+`EngineCatalogProvider` lives in `ai.floedb.floecat.systemcatalog.spi` and already extends `SystemObjectScannerProvider`, so every plugin can also supply system table definitions and scanners without extra wiring.
 
 ```java
-public class MyEngineCatalogExtension implements EngineSystemCatalogExtension {
+public class MyEngineCatalogExtension implements EngineCatalogProvider {
   @Override
   public String engineKind() {
     return "my-engine";
@@ -457,7 +513,7 @@ public class MyEngineCatalogExtension implements EngineSystemCatalogExtension {
 
 ### Step 2: Register with ServiceLoader
 
-Create `resources/META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension`:
+Create `resources/META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider`:
 
 ```
 com.example.MyEngineCatalogExtension

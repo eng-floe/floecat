@@ -19,71 +19,78 @@ package ai.floedb.floecat.systemcatalog.provider;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
-import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
-import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
-import java.util.List;
-import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
  * Tests for {@link ServiceLoaderSystemCatalogProvider}.
  *
- * <p>Because the provider serves only the raw engine catalog (without the floecat_internal merge),
- * {@link SystemNodeRegistry} is responsible for seeding {@code information_schema}. These tests
- * focus on the loader semantics:
+ * <p>The loader resolves only the explicitly selected engine catalog. These tests focus on the
+ * selection semantics:
  *
  * <ul>
- *   <li>Fallback behavior for incomplete engine contexts
- *   <li>Presence of the floecat_internal base provider
+ *   <li>Blank selections are not implicit internal selections
+ *   <li>Unknown selections fail instead of falling back
+ *   <li>Explicit selection of the floecat_internal provider
  *   <li>Snapshot immutability guarantees
  * </ul>
  */
 class ServiceLoaderSystemCatalogProviderTest {
 
   @Test
-  void load_nullEngineKindReturnsFloecatInternalCatalog() {
+  void load_nullEngineKindReturnsEmptyCatalog() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    SystemEngineCatalog catalog = provider.load(EngineContext.of(null, null));
+    SystemEngineCatalog catalog = provider.load(context(EngineContext.of(null, null)));
 
-    assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+    assertThat(catalog.engineKind()).isEmpty();
     assertThat(catalog.functions()).isEmpty();
-    assertInfoSchemaTablesPresent(catalog);
+    assertThat(catalog.tables()).isEmpty();
   }
 
   @Test
-  void load_blankEngineKindReturnsFloecatInternalCatalog() {
+  void load_blankEngineKindReturnsEmptyCatalog() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    SystemEngineCatalog catalog = provider.load(EngineContext.of("   ", null));
+    SystemEngineCatalog catalog = provider.load(context(EngineContext.of("   ", null)));
 
-    assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
-    assertInfoSchemaTablesPresent(catalog);
+    assertThat(catalog.engineKind()).isEmpty();
+    assertThat(catalog.tables()).isEmpty();
   }
 
   @Test
-  void load_unknownHeaderReturnsFloecatInternalContentUnderUnknownHeader() {
+  void load_unknownHeaderFailsWithoutFallback() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    SystemEngineCatalog catalog = provider.load(EngineContext.of("unknown-engine", ""));
-    assertThat(catalog.engineKind()).isEqualTo("unknown-engine");
-    assertInfoSchemaTablesPresent(catalog);
+    assertThatThrownBy(() -> provider.load(context(EngineContext.of("unknown-engine", ""))))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unknown engine kind");
   }
 
   @Test
-  void load_withoutHeadersStillProvidesFloecatInternal() {
+  void load_unknownEnvironmentFailsWithoutFallback() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    SystemEngineCatalog catalog = provider.load(EngineContext.empty());
+    CatalogContext context =
+        CatalogContext.of(
+            EnvironmentContext.of("unknown-environment", ""), EngineContext.of("test-engine", ""));
+
+    assertThatThrownBy(() -> provider.load(context))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unknown catalog environment kind");
+  }
+
+  @Test
+  void explicitInternalSelectionProvidesFloecatInternal() {
+    ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
+
+    SystemEngineCatalog catalog =
+        provider.load(context(EngineContext.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "")));
 
     assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
     assertInfoSchemaTablesPresent(catalog);
@@ -97,11 +104,29 @@ class ServiceLoaderSystemCatalogProviderTest {
   }
 
   @Test
+  void liveEngineProvider_isDiscoveredSeparatelyFromStaticExtensions() {
+    ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
+
+    assertThat(provider.engineKinds()).contains("test-engine");
+    assertThat(provider.providerFor(" Test-Engine "))
+        .containsInstanceOf(DynamicTestEngineCatalogProvider.class);
+    assertThat(provider.providers()).anyMatch(DynamicTestEngineCatalogProvider.class::isInstance);
+  }
+
+  @Test
+  void environmentProviders_areDiscoveredSeparatelyFromEngineProviders() {
+    ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
+
+    assertThat(provider.environmentProviders())
+        .anyMatch(environment -> environment.environmentKind().equals("test-env"));
+  }
+
+  @Test
   void load_returnsIndependentSnapshots() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    SystemEngineCatalog c1 = provider.load(EngineContext.of("engine-x", ""));
-    SystemEngineCatalog c2 = provider.load(EngineContext.of("engine-x", ""));
+    SystemEngineCatalog c1 = provider.load(context(EngineContext.of("test-engine", "")));
+    SystemEngineCatalog c2 = provider.load(context(EngineContext.of("test-engine", "")));
 
     assertThat(c1).isNotSameAs(c2);
     assertThat(c1.fingerprint()).isEqualTo(c2.fingerprint());
@@ -112,7 +137,7 @@ class ServiceLoaderSystemCatalogProviderTest {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
     assertThatThrownBy(
-            () -> provider.load(EngineContext.of(InvalidCatalogExtension.ENGINE_KIND, "")))
+            () -> provider.load(context(EngineContext.of(InvalidCatalogExtension.ENGINE_KIND, ""))))
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("System catalog validation failed");
   }
@@ -127,68 +152,7 @@ class ServiceLoaderSystemCatalogProviderTest {
             "information_schema.schemata");
   }
 
-  @Test
-  void expectsDecoration_dependsOnRegistrationAndDecorator() {
-    ServiceLoaderSystemCatalogProvider provider =
-        new ServiceLoaderSystemCatalogProvider(
-            List.of(
-                new FakeExtension("floedb", new EngineMetadataDecorator() {}),
-                new FakeExtension("duckdb", null)));
-
-    // No engine headers at all: there is no engine to decorate for.
-    assertThat(provider.expectsDecoration(EngineContext.empty())).isFalse();
-    // Registered with a decorator: decorated, as before this method existed.
-    assertThat(provider.expectsDecoration(EngineContext.of("floedb", "1"))).isTrue();
-    // Registered without one: wants no decoration, and is served as-is.
-    assertThat(provider.expectsDecoration(EngineContext.of("duckdb", "1"))).isFalse();
-    // Registered for nothing: a misconfigured or misspelled kind still fails closed.
-    assertThat(provider.expectsDecoration(EngineContext.of("not-registered", "1"))).isTrue();
-  }
-
-  /** Registers an engine kind, with a decorator or deliberately without one. */
-  private static final class FakeExtension implements EngineSystemCatalogExtension {
-    private final String kind;
-    private final EngineMetadataDecorator decorator;
-
-    FakeExtension(String kind, EngineMetadataDecorator decorator) {
-      this.kind = kind;
-      this.decorator = decorator;
-    }
-
-    @Override
-    public String engineKind() {
-      return kind;
-    }
-
-    @Override
-    public SystemCatalogData loadSystemCatalog() {
-      return SystemCatalogData.empty();
-    }
-
-    @Override
-    public Optional<EngineMetadataDecorator> decorator() {
-      return Optional.ofNullable(decorator);
-    }
-
-    @Override
-    public List<SystemObjectDef> definitions() {
-      return List.of();
-    }
-
-    @Override
-    public boolean supportsEngine(String engineKind) {
-      return kind.equals(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return false;
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
-      return Optional.empty();
-    }
+  private static CatalogContext context(EngineContext engine) {
+    return CatalogContext.of(EnvironmentContext.empty(), engine);
   }
 }

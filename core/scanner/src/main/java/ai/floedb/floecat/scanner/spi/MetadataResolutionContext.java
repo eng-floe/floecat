@@ -17,6 +17,7 @@
 package ai.floedb.floecat.scanner.spi;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import java.util.Objects;
 import java.util.Optional;
@@ -31,7 +32,11 @@ public interface MetadataResolutionContext {
 
   ResourceId catalogId();
 
-  EngineContext engineContext();
+  CatalogContext catalogContext();
+
+  default EngineContext engineContext() {
+    return catalogContext().engine();
+  }
 
   default StatsProvider statsProvider() {
     return StatsProvider.NONE;
@@ -61,34 +66,35 @@ public interface MetadataResolutionContext {
   }
 
   static MetadataResolutionContext of(
-      CatalogGraphView graphView, ResourceId catalogId, EngineContext engineContext) {
-    return of(graphView, catalogId, engineContext, StatsProvider.NONE);
+      CatalogGraphView graphView, ResourceId catalogId, CatalogContext catalogContext) {
+    return of(graphView, catalogId, catalogContext, StatsProvider.NONE);
   }
 
   static MetadataResolutionContext of(
       CatalogGraphView graphView,
       ResourceId catalogId,
-      EngineContext engineContext,
+      CatalogContext catalogContext,
       StatsProvider statsProvider) {
-    return new DefaultMetadataResolutionContext(graphView, catalogId, engineContext, statsProvider);
+    return new DefaultMetadataResolutionContext(
+        graphView, catalogId, catalogContext, statsProvider);
   }
 
   final class DefaultMetadataResolutionContext implements MetadataResolutionContext {
 
     private final CatalogGraphView graphView;
     private final ResourceId catalogId;
-    private final EngineContext engineContext;
+    private final CatalogContext catalogContext;
     private final StatsProvider statsProvider;
     private final ConcurrentMap<Object, Object> memoizedValues;
 
     public DefaultMetadataResolutionContext(
         CatalogGraphView graphView,
         ResourceId catalogId,
-        EngineContext engineContext,
+        CatalogContext catalogContext,
         StatsProvider statsProvider) {
       this.graphView = Objects.requireNonNull(graphView, "graphView");
       this.catalogId = Objects.requireNonNull(catalogId, "catalogId");
-      this.engineContext = engineContext == null ? EngineContext.empty() : engineContext;
+      this.catalogContext = Objects.requireNonNull(catalogContext, "catalogContext");
       this.statsProvider = statsProvider == null ? StatsProvider.NONE : statsProvider;
       this.memoizedValues = new ConcurrentHashMap<>();
     }
@@ -104,8 +110,8 @@ public interface MetadataResolutionContext {
     }
 
     @Override
-    public EngineContext engineContext() {
-      return engineContext;
+    public CatalogContext catalogContext() {
+      return catalogContext;
     }
 
     @Override

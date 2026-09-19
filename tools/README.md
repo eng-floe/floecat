@@ -31,7 +31,7 @@ java -jar tools/builtin-validator/target/floecat-builtin-validator.jar \
 
 The CLI also accepts catalog directories that expose `_index.txt` under
 `service/src/main/resources/builtins/<engine_kind>/_index.txt`. When using
-`--engine`, the tool loads the matching `EngineSystemCatalogExtension` via
+`--engine`, the tool loads the matching `EngineCatalogProvider` via
 `ServiceLoader` (the extension JAR must be on the classpath) and runs
 extension-specific validation in addition to the builtin catalog checks.
 
@@ -107,7 +107,7 @@ and the JSON payload contains `engine_issues`, `engine_error_count`, and
 ### Engine-specific validation
 
 Passing `--engine <engine_kind>` (with or without a catalog path) loads the
-corresponding `EngineSystemCatalogExtension` via `ServiceLoader`. After the
+corresponding `EngineCatalogProvider` via `ServiceLoader`. After the
 builtin catalog checks complete, the tool invokes the extension’s `validate`
 hook and returns any issues it emits alongside the core errors/warnings. Those
 issues appear in the console as `engine_issues` (with severity-aware coloring)

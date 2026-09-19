@@ -29,6 +29,7 @@ import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
@@ -89,7 +90,8 @@ class RelationPayloadPolicyTest {
   }
 
   private ResolvedRelation resolved() {
-    RelationNode node = (RelationNode) graphView.resolve(TABLE).orElseThrow();
+    RelationNode node =
+        (RelationNode) graphView.resolve(TABLE, CatalogContext.empty()).orElseThrow();
     return new ResolvedRelation(
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setTableId(TABLE))
@@ -98,7 +100,7 @@ class RelationPayloadPolicyTest {
         node,
         QueryInput.newBuilder().setTableId(TABLE).build(),
         graphView
-            .tableName(TABLE)
+            .tableName(TABLE, CatalogContext.empty())
             .orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 

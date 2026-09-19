@@ -26,8 +26,7 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
-import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
-import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
@@ -79,20 +78,12 @@ public final class SystemGraph {
    * <p>The snapshot exposes the prebuilt nodes by id so resolution remains fast (map lookup)
    * without reconstructing the node list on each call.
    */
-  public Optional<GraphNode> resolve(ResourceId id, EngineContext ctx) {
+  public Optional<GraphNode> resolve(ResourceId id, CatalogContext ctx) {
     return snapshotFor(ctx).resolve(id);
   }
 
-  public Optional<GraphNode> resolve(ResourceId id, String engineKind, String engineVersion) {
-    return resolve(id, EngineContext.of(engineKind, engineVersion));
-  }
-
-  public Optional<CatalogNode> catalog(ResourceId id, EngineContext ctx) {
+  public Optional<CatalogNode> catalog(ResourceId id, CatalogContext ctx) {
     return snapshotFor(ctx).catalog(id);
-  }
-
-  public Optional<CatalogNode> catalog(ResourceId id, String engineKind, String engineVersion) {
-    return catalog(id, EngineContext.of(engineKind, engineVersion));
   }
 
   /**
@@ -101,7 +92,7 @@ public final class SystemGraph {
    * <p>The snapshot already groups namespace→relations so we can return the bucket without
    * recalculating it on every invocation.
    */
-  public List<RelationNode> listRelations(ResourceId catalogId, EngineContext ctx) {
+  public List<RelationNode> listRelations(ResourceId catalogId, CatalogContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
 
     return snapshot.namespaces().stream()
@@ -114,11 +105,6 @@ public final class SystemGraph {
         .toList();
   }
 
-  public List<RelationNode> listRelations(
-      ResourceId catalogId, String engineKind, String engineVersion) {
-    return listRelations(catalogId, EngineContext.of(engineKind, engineVersion));
-  }
-
   /**
    * Retrieves the pre-bucketed relations under a namespace so scanners can enumerate tables
    * quickly.
@@ -126,7 +112,7 @@ public final class SystemGraph {
    * @param catalogId is ignored as system objects have their own semantics for catalog
    */
   public List<RelationNode> listRelationsInNamespace(
-      ResourceId catalogId, ResourceId namespaceId, EngineContext ctx) {
+      ResourceId catalogId, ResourceId namespaceId, CatalogContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
 
     return Stream.concat(
@@ -136,19 +122,8 @@ public final class SystemGraph {
         .toList();
   }
 
-  public List<RelationNode> listRelationsInNamespace(
-      ResourceId catalogId, ResourceId namespaceId, String engineKind, String engineVersion) {
-    return listRelationsInNamespace(
-        catalogId, namespaceId, EngineContext.of(engineKind, engineVersion));
-  }
-
-  public List<FunctionNode> listFunctions(ResourceId namespaceId, EngineContext ctx) {
+  public List<FunctionNode> listFunctions(ResourceId namespaceId, CatalogContext ctx) {
     return snapshotFor(ctx).functionsInNamespace(namespaceId);
-  }
-
-  public List<FunctionNode> listFunctions(
-      ResourceId namespaceId, String engineKind, String engineVersion) {
-    return listFunctions(namespaceId, EngineContext.of(engineKind, engineVersion));
   }
 
   /**
@@ -157,31 +132,17 @@ public final class SystemGraph {
    * <p>The snapshot is already scoped to a single system catalog, so {@code catalogId} is not used
    * for filtering here.
    */
-  public List<NamespaceNode> listNamespaces(ResourceId catalogId, EngineContext ctx) {
+  public List<NamespaceNode> listNamespaces(ResourceId catalogId, CatalogContext ctx) {
     return snapshotFor(ctx).namespaces();
   }
 
-  public List<NamespaceNode> listNamespaces(
-      ResourceId catalogId, String engineKind, String engineVersion) {
-    return listNamespaces(catalogId, EngineContext.of(engineKind, engineVersion));
-  }
-
-  public List<TypeNode> listTypes(ResourceId catalogId, EngineContext ctx) {
+  public List<TypeNode> listTypes(ResourceId catalogId, CatalogContext ctx) {
     return registry.nodesFor(ctx).types();
   }
 
-  public List<TypeNode> listTypes(ResourceId catalogId, String engineKind, String engineVersion) {
-    return listTypes(catalogId, EngineContext.of(engineKind, engineVersion));
-  }
-
   /** Resolves a system type by namespace + type name for the active engine snapshot. */
-  public Optional<TypeNode> resolveType(String namespace, String typeName, EngineContext ctx) {
+  public Optional<TypeNode> resolveType(String namespace, String typeName, CatalogContext ctx) {
     return snapshotFor(ctx).resolveType(namespace, typeName);
-  }
-
-  public Optional<TypeNode> resolveType(
-      String namespace, String typeName, String engineKind, String engineVersion) {
-    return resolveType(namespace, typeName, EngineContext.of(engineKind, engineVersion));
   }
 
   public List<ResourceId> listCatalogs() {
@@ -196,14 +157,10 @@ public final class SystemGraph {
    * @param engineVersion the engine version for the system catalog
    * @return the resolved table resource ID, or empty if not found
    */
-  public Optional<ResourceId> resolveTable(NameRef ref, EngineContext ctx) {
+  public Optional<ResourceId> resolveTable(NameRef ref, CatalogContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
     String canonical = NameRefUtil.canonical(ref);
     return Optional.ofNullable(snapshot.tableNames().get(canonical));
-  }
-
-  public Optional<ResourceId> resolveTable(NameRef ref, String engineKind, String engineVersion) {
-    return resolveTable(ref, EngineContext.of(engineKind, engineVersion));
   }
 
   /**
@@ -214,14 +171,10 @@ public final class SystemGraph {
    * @param engineVersion the engine version for the system catalog
    * @return the resolved view resource ID, or empty if not found
    */
-  public Optional<ResourceId> resolveView(NameRef ref, EngineContext ctx) {
+  public Optional<ResourceId> resolveView(NameRef ref, CatalogContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
     String canonical = NameRefUtil.canonical(ref);
     return Optional.ofNullable(snapshot.viewNames().get(canonical));
-  }
-
-  public Optional<ResourceId> resolveView(NameRef ref, String engineKind, String engineVersion) {
-    return resolveView(ref, EngineContext.of(engineKind, engineVersion));
   }
 
   /**
@@ -232,15 +185,10 @@ public final class SystemGraph {
    * @param engineVersion the engine version for the system catalog
    * @return the resolved namespace resource ID, or empty if not found
    */
-  public Optional<ResourceId> resolveNamespace(NameRef ref, EngineContext ctx) {
+  public Optional<ResourceId> resolveNamespace(NameRef ref, CatalogContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
     String canonical = NameRefUtil.canonical(ref);
     return Optional.ofNullable(snapshot.namespaceNames().get(canonical));
-  }
-
-  public Optional<ResourceId> resolveNamespace(
-      NameRef ref, String engineKind, String engineVersion) {
-    return resolveNamespace(ref, EngineContext.of(engineKind, engineVersion));
   }
 
   /**
@@ -253,15 +201,11 @@ public final class SystemGraph {
    * @param engineVersion the engine version for the system catalog
    * @return the resolved resource ID, or empty if not found
    */
-  public Optional<ResourceId> resolveName(NameRef ref, EngineContext ctx) {
+  public Optional<ResourceId> resolveName(NameRef ref, CatalogContext ctx) {
     // For simplicity, try table, view, namespace in order
     return resolveTable(ref, ctx)
         .or(() -> resolveView(ref, ctx))
         .or(() -> resolveNamespace(ref, ctx));
-  }
-
-  public Optional<ResourceId> resolveName(NameRef ref, String engineKind, String engineVersion) {
-    return resolveName(ref, EngineContext.of(engineKind, engineVersion));
   }
 
   /**
@@ -272,17 +216,13 @@ public final class SystemGraph {
    * @param engineVersion the engine version for the system catalog
    * @return the fully qualified name reference, or empty if not found
    */
-  public Optional<NameRef> tableName(ResourceId id, EngineContext ctx) {
+  public Optional<NameRef> tableName(ResourceId id, CatalogContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
     return snapshot
         .resolve(id)
         .filter(TableNode.class::isInstance)
         .map(TableNode.class::cast)
         .flatMap(table -> buildTableNameRef(table, ctx));
-  }
-
-  public Optional<NameRef> tableName(ResourceId id, String engineKind, String engineVersion) {
-    return tableName(id, EngineContext.of(engineKind, engineVersion));
   }
 
   /**
@@ -293,17 +233,13 @@ public final class SystemGraph {
    * @param engineVersion the engine version for the system catalog
    * @return the fully qualified name reference, or empty if not found
    */
-  public Optional<NameRef> viewName(ResourceId id, EngineContext ctx) {
+  public Optional<NameRef> viewName(ResourceId id, CatalogContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
     return snapshot
         .resolve(id)
         .filter(ViewNode.class::isInstance)
         .map(ViewNode.class::cast)
         .flatMap(view -> buildViewNameRef(view, ctx));
-  }
-
-  public Optional<NameRef> viewName(ResourceId id, String engineKind, String engineVersion) {
-    return viewName(id, EngineContext.of(engineKind, engineVersion));
   }
 
   /**
@@ -314,7 +250,7 @@ public final class SystemGraph {
    * @param engineVersion the engine version for the system catalog
    * @return the fully qualified name reference, or empty if not found
    */
-  public Optional<NameRef> namespaceName(ResourceId id, EngineContext ctx) {
+  public Optional<NameRef> namespaceName(ResourceId id, CatalogContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
     return snapshot
         .resolve(id)
@@ -323,44 +259,33 @@ public final class SystemGraph {
         .map(ns -> buildNamespaceNameRef(ns, ctx));
   }
 
-  public Optional<NameRef> namespaceName(ResourceId id, String engineKind, String engineVersion) {
-    return namespaceName(id, EngineContext.of(engineKind, engineVersion));
-  }
-
-  private Optional<NameRef> buildTableNameRef(TableNode table, EngineContext ctx) {
+  private Optional<NameRef> buildTableNameRef(TableNode table, CatalogContext ctx) {
     return resolve(table.namespaceId(), ctx)
         .filter(NamespaceNode.class::isInstance)
         .map(NamespaceNode.class::cast)
         .map(
             ns ->
                 NameRefUtil.name(ns.displayName(), table.displayName()).toBuilder()
-                    .setCatalog(engineCatalogKind(ctx))
+                    .setCatalog(ctx.effectiveSystemCatalogKind())
                     .build());
   }
 
-  private Optional<NameRef> buildViewNameRef(ViewNode view, EngineContext ctx) {
+  private Optional<NameRef> buildViewNameRef(ViewNode view, CatalogContext ctx) {
     return resolve(view.namespaceId(), ctx)
         .filter(NamespaceNode.class::isInstance)
         .map(NamespaceNode.class::cast)
         .map(
             ns ->
                 NameRefUtil.name(ns.displayName(), view.displayName()).toBuilder()
-                    .setCatalog(engineCatalogKind(ctx))
+                    .setCatalog(ctx.effectiveSystemCatalogKind())
                     .build());
   }
 
-  private NameRef buildNamespaceNameRef(NamespaceNode ns, EngineContext ctx) {
+  private NameRef buildNamespaceNameRef(NamespaceNode ns, CatalogContext ctx) {
     return NameRef.newBuilder()
-        .setCatalog(engineCatalogKind(ctx))
+        .setCatalog(ctx.effectiveSystemCatalogKind())
         .addPath(ns.displayName())
         .build();
-  }
-
-  private static String engineCatalogKind(EngineContext ctx) {
-    if (ctx == null) {
-      return EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
-    }
-    return ctx.normalizedKind();
   }
 
   public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
@@ -372,12 +297,12 @@ public final class SystemGraph {
   }
 
   /** Builds a new snapshot for the requested engine version. */
-  private GraphSnapshot snapshotFor(EngineContext ctx) {
-    EngineContext canonical = ctx == null ? EngineContext.empty() : ctx;
-    String normalizedKind = engineCatalogKind(canonical);
-    String normalizedVersion = canonical.normalizedVersion();
+  private GraphSnapshot snapshotFor(CatalogContext ctx) {
+    CatalogContext canonical = Objects.requireNonNull(ctx, "catalogContext");
+    String normalizedKind = canonical.effectiveSystemCatalogKind();
+    String normalizedVersion = canonical.effectiveSystemCatalogVersion();
 
-    VersionKey key = new VersionKey(normalizedKind, normalizedVersion);
+    VersionKey key = VersionKey.from(canonical);
     GraphSnapshot cached = snapshots.get(key);
     if (cached != null) {
       return cached;
@@ -417,9 +342,9 @@ public final class SystemGraph {
    * Constructs the snapshot by gathering namespace/table nodes from the registry and organizing
    * them per namespace/catalog.
    */
-  private GraphSnapshot build(EngineContext ctx, String normalizedKind, String normalizedVersion) {
-    EngineContext canonical = ctx == null ? EngineContext.empty() : ctx;
-    var nodes = registry.nodesFor(canonical);
+  private GraphSnapshot build(
+      CatalogContext context, String normalizedKind, String normalizedVersion) {
+    var nodes = registry.nodesFor(context);
     if (nodes == null) {
       return GraphSnapshot.empty();
     }
@@ -536,5 +461,15 @@ public final class SystemGraph {
     }
   }
 
-  private record VersionKey(String engineKind, String engineVersion) {}
+  private record VersionKey(
+      String environmentKind, String environmentVersion, String engineKind, String engineVersion) {
+
+    private static VersionKey from(CatalogContext context) {
+      return new VersionKey(
+          context.environment().normalizedKind(),
+          context.environment().normalizedVersion(),
+          context.engine().normalizedKind(),
+          context.engine().normalizedVersion());
+    }
+  }
 }

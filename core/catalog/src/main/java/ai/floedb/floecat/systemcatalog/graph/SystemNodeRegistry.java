@@ -34,8 +34,9 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.query.rpc.TableBackendKind;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
-import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
@@ -51,10 +52,12 @@ import ai.floedb.floecat.systemcatalog.engine.EngineHintsMapper;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificMatcher;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
+import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.SignatureUtil;
 import ai.floedb.floecat.systemcatalog.util.SystemSchemaMapper;
@@ -71,14 +74,15 @@ import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 /**
- * Materializes and caches engine-specific system catalog nodes.
+ * Materializes and caches system catalog nodes for a selected catalog context.
  *
  * <p>This registry takes declarative {@link SystemCatalogData} from the {@link
  * SystemDefinitionRegistry}, filters it by engine kind and version, applies engine-specific rules,
  * and builds immutable {@link GraphNode} instances with stable {@code _system} {@link ResourceId}s.
  *
- * <p>Results are cached per {@code (engineKind, engineVersion)} pair to avoid repeated filtering
- * and node construction.
+ * <p>Results are cached per selected catalog context to avoid repeated filtering and node
+ * construction. The selected environment and engine providers contribute to one logical catalog;
+ * conflicting definitions are rejected rather than overridden.
  *
  * <p>This registry is the authoritative source of system-level graph nodes (functions, types,
  * operators, casts, namespaces, tables, views) used by the catalog overlay.
@@ -89,23 +93,26 @@ public class SystemNodeRegistry {
   private final SystemDefinitionRegistry definitionRegistry;
   private static final Logger LOG = Logger.getLogger(SystemNodeRegistry.class);
   private final SystemObjectScannerProvider internalProvider;
-  private final List<SystemObjectScannerProvider> extensionProviders;
+  private final List<EngineCatalogProvider> engineProviders;
+  private final List<CatalogEnvironmentProvider> environmentProviders;
 
   /*
    * Immutable cache of materialized system nodes.
-   * Entries are never evicted or mutated; a fresh registry instance
-   * should be created for test isolation or controlled reloads.
+   * Entries are never evicted or mutated; a fresh registry instance should be created for test
+   * isolation or controlled reloads.
    */
   private final ConcurrentMap<VersionKey, BuiltinNodes> cache = new ConcurrentHashMap<>();
 
   public SystemNodeRegistry(
       SystemDefinitionRegistry definitionRegistry,
       SystemObjectScannerProvider internalProvider,
-      List<SystemObjectScannerProvider> extensionProviders) {
+      List<EngineCatalogProvider> engineProviders,
+      List<CatalogEnvironmentProvider> environmentProviders) {
     this.definitionRegistry = Objects.requireNonNull(definitionRegistry);
     this.internalProvider = Objects.requireNonNull(internalProvider, "internalProvider");
-    this.extensionProviders =
-        List.copyOf(Objects.requireNonNull(extensionProviders, "extensionProviders"));
+    this.engineProviders = List.copyOf(Objects.requireNonNull(engineProviders, "engineProviders"));
+    this.environmentProviders =
+        List.copyOf(Objects.requireNonNull(environmentProviders, "environmentProviders"));
   }
 
   private static final SystemCatalogData EMPTY_CATALOG = SystemCatalogData.empty();
@@ -135,25 +142,34 @@ public class SystemNodeRegistry {
     return definitionRegistry.engineKinds();
   }
 
-  public BuiltinNodes nodesFor(String engineKind, String engineVersion) {
-    return nodesFor(EngineContext.of(engineKind, engineVersion));
-  }
-
-  public BuiltinNodes nodesFor(EngineContext ctx) {
-    EngineContext canonical = ctx == null ? EngineContext.empty() : ctx;
-    VersionKey key = new VersionKey(canonical.normalizedKind(), canonical.normalizedVersion());
+  /** Resolves system nodes for the selected environment and engine. */
+  public BuiltinNodes nodesFor(CatalogContext context) {
+    CatalogContext canonical = Objects.requireNonNull(context, "context");
+    VersionKey key = VersionKey.from(canonical);
     return cache.computeIfAbsent(key, ignored -> buildNodes(canonical));
   }
 
-  private BuiltinNodes buildNodes(EngineContext canonical) {
+  /**
+   * Invalidates the materialized nodes for one catalog context.
+   *
+   * <p>The next call to {@link #nodesFor(CatalogContext)} rebuilds the immutable node set and
+   * re-reads dynamic provider definitions. Existing callers retain their immutable result; no
+   * prepared-plan or snapshot rebinding is performed here.
+   */
+  public void invalidate(CatalogContext context) {
+    CatalogContext canonical = Objects.requireNonNull(context, "catalogContext");
+    cache.remove(VersionKey.from(canonical));
+  }
+
+  private BuiltinNodes buildNodes(CatalogContext canonical) {
     SystemEngineCatalog baseCatalog = definitionRegistry.catalog(canonical);
     SystemCatalogData mergedCatalogData = mergeCatalogData(canonical, baseCatalog);
     SystemEngineCatalog catalog =
         SystemEngineCatalog.from(baseCatalog.engineKind(), mergedCatalogData);
     long version = versionFromFingerprint(catalog.fingerprint());
-    String normalizedKind = canonical.normalizedKind();
-    String effectiveKind = canonical.effectiveEngineKind();
-    String normalizedVersion = canonical.normalizedVersion();
+    String normalizedKind = canonical.effectiveSystemCatalogKind();
+    String effectiveKind = normalizedKind;
+    String normalizedVersion = canonical.effectiveSystemCatalogVersion();
     ResourceId catalogId = systemCatalogContainerId(normalizedKind);
 
     // --- Namespaces ---
@@ -412,44 +428,49 @@ public class SystemNodeRegistry {
   }
 
   private SystemCatalogData mergeCatalogData(
-      EngineContext canonical, SystemEngineCatalog baseCatalog) {
-    String engineKind = baseCatalog.engineKind();
-    String normalizedKind = canonical.normalizedKind();
-    String normalizedVersion = canonical.normalizedVersion();
-    boolean includeProviders =
-        canonical.enginePluginOverlaysEnabled()
-            && !EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(engineKind);
+      CatalogContext canonical, SystemEngineCatalog baseCatalog) {
+    String normalizedKind = canonical.effectiveSystemCatalogKind();
+    String normalizedVersion = canonical.effectiveSystemCatalogVersion();
+    boolean includeEngineProviders =
+        canonical.engine().hasEngineKind()
+            && !EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(normalizedKind);
+    boolean includeInternalProvider =
+        canonical.engine().hasEngineKind()
+            && EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(normalizedKind);
 
-    Map<String, SystemNamespaceDef> namespaceByName = new LinkedHashMap<>();
-    Map<String, SystemTableDef> tableByName = new LinkedHashMap<>();
-    Map<String, SystemViewDef> viewByName = new LinkedHashMap<>();
+    CatalogDataAccumulator merged = new CatalogDataAccumulator();
 
-    for (SystemObjectDef def :
-        internalProvider.definitions(
-            EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, normalizedVersion)) {
-      mergeDefinition(def, namespaceByName, tableByName, viewByName);
+    if (includeInternalProvider) {
+      merged.add(
+          internalProvider.definitions(canonical),
+          DefinitionSource.internal(internalProvider.getClass().getName()));
     }
 
-    for (SystemNamespaceDef ns : baseCatalog.namespaces()) {
-      namespaceByName.put(NameRefUtil.canonical(ns.name()), ns);
-    }
-    for (SystemTableDef table : baseCatalog.tables()) {
-      tableByName.put(NameRefUtil.canonical(table.name()), table);
-    }
-    for (SystemViewDef view : baseCatalog.views()) {
-      viewByName.put(NameRefUtil.canonical(view.name()), view);
-    }
+    merged.add(baseCatalog, sourceForBaseCatalog(canonical, baseCatalog));
 
-    if (includeProviders) {
-      for (SystemObjectScannerProvider provider : extensionProviders) {
-        if (!provider.supportsEngine(normalizedKind)) {
-          continue;
-        }
-        for (SystemObjectDef def : provider.definitions(normalizedKind, normalizedVersion)) {
-          if (!provider.supports(def.name(), normalizedKind, normalizedVersion)) {
+    if (includeEngineProviders || canonical.environment().hasEnvironmentKind()) {
+      if (includeEngineProviders) {
+        for (EngineCatalogProvider provider : engineProviders) {
+          if (!provider.supports(canonical)) {
             continue;
           }
-          mergeDefinition(def, namespaceByName, tableByName, viewByName);
+          for (SystemObjectDef def : provider.definitions(canonical)) {
+            if (provider.supports(def.name(), canonical)) {
+              merged.add(def, DefinitionSource.engineProvider(provider.getClass().getName()));
+            }
+          }
+        }
+      }
+      if (canonical.environment().hasEnvironmentKind()) {
+        for (CatalogEnvironmentProvider provider : environmentProviders) {
+          if (!provider.supportsEnvironment(canonical.environment())) {
+            continue;
+          }
+          for (SystemObjectDef def : provider.definitions(canonical)) {
+            if (provider.supports(def.name(), canonical)) {
+              merged.add(def, DefinitionSource.environmentProvider(provider.getClass().getName()));
+            }
+          }
         }
       }
     }
@@ -462,42 +483,209 @@ public class SystemNodeRegistry {
                 normalizedVersion),
             normalizedKind);
 
-    return new SystemCatalogData(
-        baseCatalog.functions(),
-        baseCatalog.operators(),
-        baseCatalog.types(),
-        baseCatalog.casts(),
-        baseCatalog.collations(),
-        baseCatalog.aggregates(),
-        List.copyOf(namespaceByName.values()),
-        List.copyOf(tableByName.values()),
-        List.copyOf(viewByName.values()),
-        registryRules);
+    return merged.toCatalogData(registryRules);
   }
 
-  private static void mergeDefinition(
-      SystemObjectDef def,
-      Map<String, SystemNamespaceDef> namespaces,
-      Map<String, SystemTableDef> tables,
-      Map<String, SystemViewDef> views) {
-    if (def instanceof SystemNamespaceDef ns) {
-      putDefinition(namespaces, NameRefUtil.canonical(ns.name()), ns, "namespace");
-    } else if (def instanceof SystemTableDef table) {
-      putDefinition(tables, NameRefUtil.canonical(table.name()), table, "table");
-    } else if (def instanceof SystemViewDef view) {
-      putDefinition(views, NameRefUtil.canonical(view.name()), view, "view");
+  private static DefinitionSource sourceForBaseCatalog(
+      CatalogContext context, SystemEngineCatalog baseCatalog) {
+    if (EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(baseCatalog.engineKind())) {
+      return DefinitionSource.internal("base catalog");
+    }
+    if (context.engine().hasEngineKind()) {
+      return DefinitionSource.engineProvider("base catalog");
+    }
+    return DefinitionSource.unscoped("base catalog");
+  }
+
+  private static final class CatalogDataAccumulator {
+
+    private final Map<String, SystemNamespaceDef> namespaces = new LinkedHashMap<>();
+    private final Map<String, SystemTableDef> tables = new LinkedHashMap<>();
+    private final Map<String, SystemViewDef> views = new LinkedHashMap<>();
+    private final Map<String, SystemFunctionDef> functions = new LinkedHashMap<>();
+    private final Map<String, SystemOperatorDef> operators = new LinkedHashMap<>();
+    private final Map<String, SystemTypeDef> types = new LinkedHashMap<>();
+    private final Map<String, SystemCastDef> casts = new LinkedHashMap<>();
+    private final Map<String, SystemCollationDef> collations = new LinkedHashMap<>();
+    private final Map<String, SystemAggregateDef> aggregates = new LinkedHashMap<>();
+    private final Map<String, DefinitionEntry> identities = new LinkedHashMap<>();
+
+    private void add(SystemCatalogData data, DefinitionSource source) {
+      data.functions().forEach(def -> add(def, source));
+      data.operators().forEach(def -> add(def, source));
+      data.types().forEach(def -> add(def, source));
+      data.casts().forEach(def -> add(def, source));
+      data.collations().forEach(def -> add(def, source));
+      data.aggregates().forEach(def -> add(def, source));
+      data.namespaces().forEach(def -> add(def, source));
+      data.tables().forEach(def -> add(def, source));
+      data.views().forEach(def -> add(def, source));
+    }
+
+    private void add(List<SystemObjectDef> definitions, DefinitionSource source) {
+      definitions.forEach(def -> add(def, source));
+    }
+
+    private void add(SystemEngineCatalog catalog, DefinitionSource source) {
+      catalog.functions().forEach(def -> add(def, source));
+      catalog.operators().forEach(def -> add(def, source));
+      catalog.types().forEach(def -> add(def, source));
+      catalog.casts().forEach(def -> add(def, source));
+      catalog.collations().forEach(def -> add(def, source));
+      catalog.aggregates().forEach(def -> add(def, source));
+      catalog.namespaces().forEach(def -> add(def, source));
+      catalog.tables().forEach(def -> add(def, source));
+      catalog.views().forEach(def -> add(def, source));
+    }
+
+    private void add(SystemObjectDef def, DefinitionSource source) {
+      validateOwnership(def, source);
+      if (def instanceof SystemNamespaceDef ns) {
+        putDefinition(namespaces, NameRefUtil.canonical(ns.name()), ns, "namespace", source);
+      } else if (def instanceof SystemTableDef table) {
+        putDefinition(tables, NameRefUtil.canonical(table.name()), table, "table", source);
+      } else if (def instanceof SystemViewDef view) {
+        putDefinition(views, NameRefUtil.canonical(view.name()), view, "view", source);
+      } else if (def instanceof SystemFunctionDef function) {
+        putDefinition(
+            functions, SignatureUtil.identityString(function), function, "function", source);
+      } else if (def instanceof SystemOperatorDef operator) {
+        putDefinition(
+            operators, SignatureUtil.identityString(operator), operator, "operator", source);
+      } else if (def instanceof SystemTypeDef type) {
+        putDefinition(types, SignatureUtil.identityString(type), type, "type", source);
+      } else if (def instanceof SystemCastDef cast) {
+        putDefinition(casts, SignatureUtil.identityString(cast), cast, "cast", source);
+      } else if (def instanceof SystemCollationDef collation) {
+        putDefinition(
+            collations, SignatureUtil.identityString(collation), collation, "collation", source);
+      } else if (def instanceof SystemAggregateDef aggregate) {
+        putDefinition(
+            aggregates, SignatureUtil.identityString(aggregate), aggregate, "aggregate", source);
+      }
+    }
+
+    private <T extends SystemObjectDef> void putDefinition(
+        Map<String, T> target, String canonicalName, T def, String type, DefinitionSource source) {
+      String identity = identityKey(type, canonicalName);
+      DefinitionEntry previous = identities.get(identity);
+      if (previous == null) {
+        identities.put(identity, new DefinitionEntry(def, type, source));
+        target.put(canonicalName, def);
+        return;
+      }
+      if (previous.type().equals(type) && previous.definition().equals(def)) {
+        return;
+      }
+      throw new IllegalStateException(
+          "Conflicting system object definition for "
+              + identity
+              + ": "
+              + previous.source().description()
+              + " disagrees with "
+              + source.description());
+    }
+
+    private SystemCatalogData toCatalogData(List<EngineSpecificRule> registryEngineSpecific) {
+      return new SystemCatalogData(
+          List.copyOf(functions.values()),
+          List.copyOf(operators.values()),
+          List.copyOf(types.values()),
+          List.copyOf(casts.values()),
+          List.copyOf(collations.values()),
+          List.copyOf(aggregates.values()),
+          List.copyOf(namespaces.values()),
+          List.copyOf(tables.values()),
+          List.copyOf(views.values()),
+          registryEngineSpecific);
+    }
+
+    private static void validateOwnership(SystemObjectDef def, DefinitionSource source) {
+      if (source.role() == DefinitionRole.ENVIRONMENT
+          && !(def instanceof SystemNamespaceDef
+              || def instanceof SystemTableDef
+              || def instanceof SystemViewDef)) {
+        throw new IllegalStateException(
+            "Catalog environment provider "
+                + source.owner()
+                + " contributed non-relation system object "
+                + def.kind()
+                + " ("
+                + NameRefUtil.canonical(def.name())
+                + ")");
+      }
+      if (!(def instanceof SystemTableDef table)) {
+        return;
+      }
+      TableBackendKind backend = table.backendKind();
+      boolean valid =
+          switch (source.role()) {
+            case INTERNAL -> backend == TableBackendKind.TABLE_BACKEND_KIND_FLOECAT;
+            case ENGINE -> backend == TableBackendKind.TABLE_BACKEND_KIND_ENGINE;
+            case ENVIRONMENT ->
+                backend == TableBackendKind.TABLE_BACKEND_KIND_FLOECAT
+                    || backend == TableBackendKind.TABLE_BACKEND_KIND_STORAGE;
+            case UNSCOPED -> true;
+          };
+      if (!valid) {
+        throw new IllegalStateException(
+            source.description()
+                + " contributed "
+                + backend
+                + " table "
+                + NameRefUtil.canonical(table.name())
+                + "; expected "
+                + expectedBackends(source.role()));
+      }
+    }
+
+    private static String expectedBackends(DefinitionRole role) {
+      return switch (role) {
+        case INTERNAL -> "TABLE_BACKEND_KIND_FLOECAT";
+        case ENGINE -> "TABLE_BACKEND_KIND_ENGINE";
+        case ENVIRONMENT -> "TABLE_BACKEND_KIND_FLOECAT or TABLE_BACKEND_KIND_STORAGE";
+        case UNSCOPED -> "any table backend";
+      };
     }
   }
 
-  private static <T extends SystemObjectDef> void putDefinition(
-      Map<String, T> target, String canonicalName, T def, String type) {
-    T previous = target.put(canonicalName, def);
-    if (previous != null) {
-      LOG.infof(
-          "Overriding %s definition for %s: %s -> %s",
-          type, canonicalName, previous.getClass().getSimpleName(), def.getClass().getSimpleName());
+  private static String identityKey(String type, String canonicalName) {
+    String identityType = type.equals("table") || type.equals("view") ? "relation" : type;
+    return identityType + "\u0000" + canonicalName;
+  }
+
+  private enum DefinitionRole {
+    INTERNAL,
+    ENGINE,
+    ENVIRONMENT,
+    UNSCOPED
+  }
+
+  private record DefinitionSource(DefinitionRole role, String owner) {
+
+    private static DefinitionSource internal(String owner) {
+      return new DefinitionSource(DefinitionRole.INTERNAL, owner);
+    }
+
+    private static DefinitionSource engineProvider(String owner) {
+      return new DefinitionSource(DefinitionRole.ENGINE, owner);
+    }
+
+    private static DefinitionSource environmentProvider(String owner) {
+      return new DefinitionSource(DefinitionRole.ENVIRONMENT, owner);
+    }
+
+    private static DefinitionSource unscoped(String owner) {
+      return new DefinitionSource(DefinitionRole.UNSCOPED, owner);
+    }
+
+    private String description() {
+      return role.name().toLowerCase() + " source " + owner;
     }
   }
+
+  private record DefinitionEntry(
+      SystemObjectDef definition, String type, DefinitionSource source) {}
 
   // =======================================================================
   // Rule applications
@@ -1026,5 +1214,22 @@ public class SystemNodeRegistry {
     }
   }
 
-  private record VersionKey(String engineKind, String engineVersion) {}
+  private record VersionKey(
+      boolean hasEnvironmentKind,
+      String environmentKind,
+      String environmentVersion,
+      boolean hasEngineKind,
+      String engineKind,
+      String engineVersion) {
+
+    private static VersionKey from(CatalogContext context) {
+      return new VersionKey(
+          context.environment().hasEnvironmentKind(),
+          context.environment().normalizedKind(),
+          context.environment().normalizedVersion(),
+          context.engine().hasEngineKind(),
+          context.engine().normalizedKind(),
+          context.engine().normalizedVersion());
+    }
+  }
 }

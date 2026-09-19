@@ -24,6 +24,7 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.utils.BaseTestCatalogGraphView;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import java.util.HashMap;
 import java.util.List;
@@ -66,7 +67,8 @@ public class TestCatalogGraphView extends BaseTestCatalogGraphView {
   }
 
   @Override
-  public Optional<ResourceId> resolveTable(String correlationId, NameRef ref) {
+  public Optional<ResourceId> resolveTable(
+      String correlationId, NameRef ref, CatalogContext catalogContext) {
     if (ref == null || ref.getName().isBlank()) {
       return Optional.empty();
     }
@@ -93,13 +95,13 @@ public class TestCatalogGraphView extends BaseTestCatalogGraphView {
   }
 
   @Override
-  public List<SchemaColumn> tableSchema(ResourceId tableId) {
+  public List<SchemaColumn> tableSchema(ResourceId tableId, CatalogContext context) {
     tableSchemaLookups.computeIfAbsent(tableId, ignored -> new AtomicInteger()).incrementAndGet();
-    List<SchemaColumn> explicit = super.tableSchema(tableId);
+    List<SchemaColumn> explicit = super.tableSchema(tableId, context);
     if (!explicit.isEmpty()) {
       return explicit;
     }
-    GraphNode node = resolve(tableId).orElse(null);
+    GraphNode node = resolve(tableId, context).orElse(null);
     if (node instanceof SystemTableNode system) {
       return system.columns();
     }

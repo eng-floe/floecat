@@ -39,6 +39,7 @@ import ai.floedb.floecat.query.rpc.TargetStatsBundleEnd;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleHeader;
 import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
+import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -107,6 +108,7 @@ public class PlannerStatsBundleService {
   public PlannerStatsBundleService(
       StatsProviderFactory statsFactory,
       ConstraintProviderFactory constraintFactory,
+      EngineContextProvider engineContext,
       ConstraintRepository constraintRepository,
       ConstraintPrunerFactory constraintPrunerFactory,
       StatsOrchestrator statsOrchestrator,
@@ -118,7 +120,7 @@ public class PlannerStatsBundleService {
           int maxResultsPerChunk) {
     this(
         statsFactory,
-        constraintFactory::pinnedQueryProvider,
+        () -> constraintFactory.pinnedQueryProvider(engineContext.catalogContext()),
         constraintRepository,
         constraintPrunerFactory::forRequest,
         constraintPrunerFactory::forConstraintsOnlyRequest,

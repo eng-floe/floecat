@@ -19,9 +19,9 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
-import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Optional;
@@ -45,7 +45,7 @@ final class NamespaceScanSupport {
             ? null
             : request.constraints().values(schemaColumnName).orElse(null);
     if (ctx.supportsLightweightRefs()) {
-      List<TopologyGraph.NamespaceRef> refs;
+      List<CatalogGraphView.NamespaceRef> refs;
       if (schemaNames == null) {
         refs = ctx.listNamespaceRefs();
       } else if (canUseDirectNamespaceLookup(schemaNames)) {
@@ -69,7 +69,7 @@ final class NamespaceScanSupport {
         .toList();
   }
 
-  static List<TopologyGraph.RelationRef> relationRefs(
+  static List<CatalogGraphView.RelationRef> relationRefs(
       SystemObjectScanContext ctx,
       ResourceId namespaceId,
       SystemScanRequest request,
@@ -115,7 +115,7 @@ final class NamespaceScanSupport {
   }
 
   private static ResourceId catalogIdFor(
-      SystemObjectScanContext ctx, TopologyGraph.NamespaceRef namespace) {
+      SystemObjectScanContext ctx, CatalogGraphView.NamespaceRef namespace) {
     ResourceId catalogId = namespace.catalogId();
     if (catalogId == null || catalogId.getId().isBlank()) {
       return ctx.queryDefaultCatalogId();
@@ -127,7 +127,7 @@ final class NamespaceScanSupport {
     return NameRefUtil.namespaceName(namespace.pathSegments(), namespace.displayName());
   }
 
-  private static String schemaName(TopologyGraph.NamespaceRef namespace) {
+  private static String schemaName(CatalogGraphView.NamespaceRef namespace) {
     return NameRefUtil.namespaceName(namespace.pathSegments(), namespace.name());
   }
 

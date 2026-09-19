@@ -21,21 +21,20 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
-import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
-import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
-import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
+import ai.floedb.floecat.systemcatalog.informationschema.InformationSchemaProvider;
+import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
-import java.util.UUID;
 
 @ApplicationScoped
 public final class SystemScannerResolver {
@@ -43,40 +42,34 @@ public final class SystemScannerResolver {
   @Inject CatalogGraphView graph;
   @Inject EngineContextProvider engine;
   @Inject List<SystemObjectScannerProvider> providers;
+  @Inject List<CatalogEnvironmentProvider> environmentProviders;
+
+  private final InformationSchemaProvider sharedInformationSchema = new InformationSchemaProvider();
 
   /**
-   * Resolves the scanner for the given table ID, reading the engine context from the current gRPC
-   * call's thread-local context via {@link EngineContextProvider}.
+   * Resolves the scanner for the given table ID, reading the complete catalog context from the
+   * current gRPC call's thread-local context via {@link EngineContextProvider}.
    *
    * <p>Use this overload from gRPC service implementations where the engine context is already
    * propagated by {@code InboundContextInterceptor}.
    */
   public SystemObjectScanner resolve(String correlationId, ResourceId tableId) {
-    return resolve(correlationId, tableId, engine.engineContext(), PhaseDiagnostics.NOOP);
-  }
-
-  /**
-   * Resolves the scanner for the given table ID using an explicitly supplied engine context.
-   *
-   * <p>Use this overload from transports that carry their own context (e.g. Arrow Flight), where
-   * the gRPC thread-local context is not available.
-   */
-  public SystemObjectScanner resolve(String correlationId, ResourceId tableId, EngineContext ctx) {
-    return resolve(correlationId, tableId, ctx, PhaseDiagnostics.NOOP);
+    return resolve(correlationId, tableId, engine.catalogContext(), PhaseDiagnostics.NOOP);
   }
 
   public SystemObjectScanner resolve(
-      String correlationId, ResourceId tableId, EngineContext ctx, PhaseDiagnostics diagnostics) {
+      String correlationId, ResourceId tableId, CatalogContext ctx, PhaseDiagnostics diagnostics) {
     PhaseDiagnostics safeDiagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
-    String engineKind = ctx.effectiveEngineKind();
-    String engineVersion = ctx.normalizedVersion();
+    CatalogContext context = Objects.requireNonNull(ctx, "catalogContext");
+    String engineKind = context.engine().hasEngineKind() ? context.engine().normalizedKind() : "";
+    String engineVersion = context.engine().normalizedVersion();
     safeDiagnostics.put("system_scanner_engine_kind", engineKind);
     safeDiagnostics.put("system_scanner_engine_version", engineVersion);
     safeDiagnostics.put("system_scanner_table_id", tableId == null ? "" : tableId.getId());
 
     Optional<SystemTableNode.FloeCatSystemTableNode> nodeOptional =
         safeDiagnostics.time(
-            "system_scanner_graph_resolve", () -> resolveSystemTable(graph, tableId, engineKind));
+            "system_scanner_graph_resolve", () -> resolveSystemTable(graph, tableId, context));
     var node =
         nodeOptional.orElseThrow(
             () ->
@@ -92,17 +85,19 @@ public final class SystemScannerResolver {
           correlationId, SYSTEM_SCAN_MISSING_SCANNER, Map.of("table_id", tableId.getId()));
     }
 
-    for (var provider : providers) {
-      safeDiagnostics.count("system_scanner_provider_checks");
-      if (!provider.supportsEngine(engineKind)) {
-        continue;
-      }
+    Optional<SystemObjectScanner> scanner =
+        context.environment().hasEnvironmentKind()
+            ? findEnvironmentScanner(scannerId, context, safeDiagnostics)
+            : findEngineScanner(scannerId, context, safeDiagnostics);
+    if (scanner.isPresent()) {
+      return scanner.get();
+    }
 
-      var scanner =
+    if (context.environment().hasEnvironmentKind()) {
+      scanner =
           safeDiagnostics.time(
-              "system_scanner_provider_provide",
-              () -> provider.provide(scannerId, engineKind, engineVersion));
-
+              "shared_information_schema_scanner",
+              () -> sharedInformationSchema.provide(scannerId, context));
       if (scanner.isPresent()) {
         safeDiagnostics.count("system_scanner_provider_matches");
         return scanner.get();
@@ -116,56 +111,64 @@ public final class SystemScannerResolver {
             "scanner_id", scannerId, "engine_kind", engineKind, "engine_version", engineVersion));
   }
 
+  private Optional<SystemObjectScanner> findEngineScanner(
+      String scannerId, CatalogContext context, PhaseDiagnostics diagnostics) {
+    for (var provider : providers) {
+      diagnostics.count("system_scanner_provider_checks");
+      var scanner =
+          diagnostics.time(
+              "system_scanner_provider_provide", () -> provide(provider, scannerId, context));
+      if (scanner.isPresent()) {
+        diagnostics.count("system_scanner_provider_matches");
+        return scanner;
+      }
+    }
+    return Optional.empty();
+  }
+
+  private Optional<SystemObjectScanner> findEnvironmentScanner(
+      String scannerId, CatalogContext context, PhaseDiagnostics diagnostics) {
+    for (var provider : environmentProviders) {
+      diagnostics.count("system_scanner_provider_checks");
+      var scanner =
+          diagnostics.time(
+              "system_scanner_provider_provide", () -> provide(provider, scannerId, context));
+      if (scanner.isPresent()) {
+        diagnostics.count("system_scanner_provider_matches");
+        return scanner;
+      }
+    }
+    return Optional.empty();
+  }
+
   private Optional<SystemTableNode.FloeCatSystemTableNode> resolveSystemTable(
-      CatalogGraphView graph, ResourceId tableId, String effectiveEngineKind) {
+      CatalogGraphView graph, ResourceId tableId, CatalogContext context) {
     if (tableId == null || tableId.getId() == null) {
       return Optional.empty();
     }
-    Optional<?> resolved = graph.resolve(tableId);
+    Optional<?> resolved = graph.resolve(tableId, context);
     if (resolved.isPresent()) {
       return resolved
           .filter(SystemTableNode.FloeCatSystemTableNode.class::isInstance)
           .map(SystemTableNode.FloeCatSystemTableNode.class::cast);
     }
 
-    UUID incomingUuid;
-    try {
-      incomingUuid = UUID.fromString(tableId.getId());
-    } catch (IllegalArgumentException e) {
-      return Optional.empty();
-    }
-    if (!SystemResourceIdGenerator.isSystemId(incomingUuid)) {
-      return Optional.empty();
-    }
-    byte[] incoming = SystemResourceIdGenerator.bytesFromUuid(incomingUuid);
-    if (EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(effectiveEngineKind)) {
-      return Optional.empty();
-    }
-
-    return translateToDefault(graph, tableId, incoming, effectiveEngineKind);
+    return Optional.empty();
   }
 
-  private Optional<SystemTableNode.FloeCatSystemTableNode> translateToDefault(
-      CatalogGraphView graph, ResourceId tableId, byte[] incoming, String sourceEngineKind) {
-    if (EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(sourceEngineKind)) {
+  private static Optional<SystemObjectScanner> provide(
+      SystemObjectScannerProvider provider, String scannerId, CatalogContext context) {
+    if (!provider.supports(context)) {
       return Optional.empty();
     }
+    return provider.provide(scannerId, context);
+  }
 
-    byte[] base =
-        SystemResourceIdGenerator.xor(incoming, SystemResourceIdGenerator.mask(sourceEngineKind));
-    byte[] fallbackBytes =
-        SystemResourceIdGenerator.xor(
-            base, SystemResourceIdGenerator.mask(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG));
-    UUID defaultId = SystemResourceIdGenerator.uuidFromBytes(fallbackBytes);
-    ResourceId fallback =
-        ResourceId.newBuilder()
-            .setAccountId(SystemNodeRegistry.SYSTEM_ACCOUNT)
-            .setKind(tableId.getKind())
-            .setId(defaultId.toString())
-            .build();
-    return graph
-        .resolve(fallback)
-        .filter(SystemTableNode.FloeCatSystemTableNode.class::isInstance)
-        .map(SystemTableNode.FloeCatSystemTableNode.class::cast);
+  private static Optional<SystemObjectScanner> provide(
+      CatalogEnvironmentProvider provider, String scannerId, CatalogContext context) {
+    if (!provider.supportsEnvironment(context.environment())) {
+      return Optional.empty();
+    }
+    return provider.provide(scannerId, context);
   }
 }

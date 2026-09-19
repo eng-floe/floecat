@@ -23,6 +23,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -76,9 +77,9 @@ public final class ConstraintProviderFactory {
    * A fresh routed provider per call. Decoded user bundles are shared safely by the Object cache
    * under their immutable content identities; this provider retains only request routing.
    */
-  public ConstraintProvider provider() {
+  public ConstraintProvider provider(CatalogContext context) {
     ConstraintProvider userProvider = new UserConstraintProvider(repository, snapshots);
-    return new RoutedConstraintProvider(userProvider, systemProvider, graphView);
+    return new RoutedConstraintProvider(userProvider, systemProvider, graphView, context);
   }
 
   /**
@@ -86,8 +87,9 @@ public final class ConstraintProviderFactory {
    * empty — a pinned query serves user-table constraints only from the immutable bundle ref frozen
    * on its pin, never from the live pointer this factory's user provider reads.
    */
-  public ConstraintProvider pinnedQueryProvider() {
-    return new RoutedConstraintProvider(ConstraintProvider.NONE, systemProvider, graphView);
+  public ConstraintProvider pinnedQueryProvider(CatalogContext context) {
+    return new RoutedConstraintProvider(
+        ConstraintProvider.NONE, systemProvider, graphView, context);
   }
 
   private static final class RoutedConstraintProvider implements ConstraintProvider {
@@ -95,14 +97,17 @@ public final class ConstraintProviderFactory {
     private final ConstraintProvider userProvider;
     private final ConstraintProvider systemProvider;
     private final CatalogGraphView graphView;
+    private final CatalogContext context;
 
     private RoutedConstraintProvider(
         ConstraintProvider userProvider,
         ConstraintProvider systemProvider,
-        CatalogGraphView graphView) {
+        CatalogGraphView graphView,
+        CatalogContext context) {
       this.userProvider = userProvider;
       this.systemProvider = systemProvider;
       this.graphView = graphView;
+      this.context = context;
     }
 
     @Override
@@ -124,7 +129,7 @@ public final class ConstraintProviderFactory {
     private boolean isSystemRelation(ResourceId relationId) {
       try {
         return graphView
-            .resolve(relationId)
+            .resolve(relationId, context)
             .map(node -> node.origin() == GraphNodeOrigin.SYSTEM)
             .orElse(false);
       } catch (RuntimeException e) {

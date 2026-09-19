@@ -22,7 +22,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintEnforcement;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
-import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemCatalogTranslator;
@@ -39,7 +39,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Immutable, engine/version-scoped cache of system relation constraints.
+ * Immutable catalog-context-scoped cache of system relation constraints.
  *
  * <p>System constraints come from builtin system table definitions (pbtxt-backed), not from
  * information_schema scans, and are not snapshot-scoped.
@@ -57,21 +57,21 @@ final class SystemConstraintCatalog {
   }
 
   Optional<ConstraintProvider.ConstraintSetView> constraints(
-      EngineContext engineContext, ResourceId relationId) {
+      CatalogContext catalogContext, ResourceId relationId) {
     ResourceId normalized = SystemCatalogTranslator.normalizeSystemId(relationId);
     if (normalized == null) {
       normalized = relationId;
     }
-    return Optional.ofNullable(catalogFor(engineContext).get(normalized));
+    return Optional.ofNullable(catalogFor(catalogContext).get(normalized));
   }
 
-  private Map<ResourceId, ConstraintProvider.ConstraintSetView> catalogFor(EngineContext ctx) {
-    EngineContext effective = ctx == null ? EngineContext.empty() : ctx;
-    VersionKey key = new VersionKey(effective.effectiveEngineKind(), effective.normalizedVersion());
+  private Map<ResourceId, ConstraintProvider.ConstraintSetView> catalogFor(CatalogContext ctx) {
+    CatalogContext effective = ctx == null ? CatalogContext.floecatInternal() : ctx;
+    VersionKey key = VersionKey.from(effective);
     return byVersion.computeIfAbsent(key, ignored -> buildCatalog(effective));
   }
 
-  private Map<ResourceId, ConstraintProvider.ConstraintSetView> buildCatalog(EngineContext ctx) {
+  private Map<ResourceId, ConstraintProvider.ConstraintSetView> buildCatalog(CatalogContext ctx) {
     var nodes = systemNodeRegistry.nodesFor(ctx);
     Map<ResourceId, ConstraintProvider.ConstraintSetView> out = new LinkedHashMap<>();
     for (var tableDef : nodes.toCatalogData().tables()) {
@@ -90,8 +90,10 @@ final class SystemConstraintCatalog {
               constraints,
               Map.of(
                   "source", "system_catalog",
-                  "engine_kind", ctx.effectiveEngineKind(),
-                  "engine_version", ctx.normalizedVersion())));
+                  "engine_kind", ctx.effectiveSystemCatalogKind(),
+                  "engine_version", ctx.engine().normalizedVersion(),
+                  "environment_kind", ctx.environment().normalizedKind(),
+                  "environment_version", ctx.environment().normalizedVersion())));
     }
     return Map.copyOf(out);
   }
@@ -171,7 +173,16 @@ final class SystemConstraintCatalog {
     return "name:" + column.name();
   }
 
-  private record VersionKey(String engineKind, String engineVersion) {}
+  private record VersionKey(
+      String environmentKind, String environmentVersion, String engineKind, String engineVersion) {
+    private static VersionKey from(CatalogContext context) {
+      return new VersionKey(
+          context.environment().normalizedKind(),
+          context.environment().normalizedVersion(),
+          context.effectiveSystemCatalogKind(),
+          context.engine().normalizedVersion());
+    }
+  }
 
   private record SystemConstraintSetView(
       ResourceId relationId, List<ConstraintDefinition> constraints, Map<String, String> properties)

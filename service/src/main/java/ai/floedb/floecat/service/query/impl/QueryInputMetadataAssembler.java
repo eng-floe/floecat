@@ -22,6 +22,7 @@ import ai.floedb.floecat.query.rpc.ExpansionMap;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
+import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
@@ -40,6 +41,7 @@ import java.util.Optional;
 public class QueryInputMetadataAssembler {
 
   @Inject QueryInputResolver inputResolver;
+  @Inject EngineContextProvider engineContext;
   @Inject ViewExpansionResolver expansions;
   @Inject ObligationsResolver obligations;
   @Inject Observability observability;
@@ -82,7 +84,8 @@ public class QueryInputMetadataAssembler {
                       asOfDefault,
                       Optional.of(defaultCatalogId),
                       new SnapshotPinMemo(),
-                      diagnostics));
+                      diagnostics,
+                      engineContext.catalogContext()));
       diagnostics.put("resolved_inputs", resolution.resolved().size());
       RelationPinSet relationPinSet = resolution.relationPinSet();
       SnapshotSet snapshotSet = resolution.snapshotSet();

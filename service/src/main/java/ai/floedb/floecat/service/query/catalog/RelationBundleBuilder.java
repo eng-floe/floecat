@@ -35,6 +35,7 @@ import ai.floedb.floecat.query.rpc.ViewDefinition;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -208,7 +209,8 @@ final class RelationBundleBuilder {
           relation.node().origin());
     }
 
-    ObjectCache.RelationObject template = relationTemplate(correlationId, relation, queryContext);
+    ObjectCache.RelationObject template =
+        relationTemplate(correlationId, relation, queryContext, resolutionContext.catalogContext());
 
     // Relation payloads carry TOP-LEVEL columns only: ordinals are 1-based within the parent,
     // so any nested row — synthetic placeholder or struct child — shares its ordinal (and
@@ -335,7 +337,10 @@ final class RelationBundleBuilder {
 
   /** Resolve or build the full engine-neutral, DDL-shaped relation object. */
   private ObjectCache.RelationObject relationTemplate(
-      String correlationId, ResolvedRelation relation, QueryContext queryContext) {
+      String correlationId,
+      ResolvedRelation relation,
+      QueryContext queryContext,
+      CatalogContext catalogContext) {
     if (relation.node() instanceof UserTableNode userTable) {
       Optional<TablePin> pin = queryContext.findTablePin(relation.relationId(), correlationId);
       // Resolve the schema before entering ObjectCache's relation loader. Caffeine does not allow
@@ -368,7 +373,7 @@ final class RelationBundleBuilder {
             ? SchemaDescriptor.newBuilder().addAllColumns(view.outputColumns()).build()
             : SchemaDescriptor.newBuilder()
                 .addAllColumns(
-                    Optional.ofNullable(graphView.tableSchema(relation.node().id()))
+                    Optional.ofNullable(graphView.tableSchema(relation.node().id(), catalogContext))
                         .orElseGet(List::of))
                 .build();
     return new ObjectCache.RelationObject(buildTemplate(relation, schema, correlationId), schema);

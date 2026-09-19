@@ -42,7 +42,6 @@ import ai.floedb.floecat.service.common.IdempotencyGuard;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.common.PersistedSecretPropertyValidator;
-import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
@@ -73,7 +72,6 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject MarkerStore markerStore;
-  @Inject EngineContextProvider engineContext;
   @Inject CatalogGraphView graphView;
 
   private static final Set<String> CATALOG_MUTABLE_PATHS =
@@ -431,11 +429,11 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
   }
 
   private CatalogSurfaceCatalogs catalogSurfaceCatalogs() {
-    return new CatalogSurfaceCatalogs(catalogRepo, graphView, engineContext);
+    return new CatalogSurfaceCatalogs(catalogRepo, graphView, catalogContext());
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView);
+    return new CatalogSurfaceWritePolicy(graphView, catalogContext());
   }
 
   private Catalog applyCatalogSpecPatch(

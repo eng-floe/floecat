@@ -18,52 +18,35 @@ package ai.floedb.floecat.systemcatalog.provider;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import java.util.List;
 import java.util.Optional;
 
 /**
- * SPI for built-in and plugin providers of system objects scanner.
+ * SPI for internal or engine-owned system object definitions and scanners.
  *
- * <p>All definitions returned by this SPI are merged into {@link
- * ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry#mergeCatalogData}, which seeds every
- * request with the shared {@link ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider}
- * (the `floecat_internal` base). Plugin and overlay providers should expect their canonical names
- * to override the base definitions when an engine header is supplied.
- *
- * <p>If your definitions vary by version (via {@link #definitions(String, String)}), the
- * corresponding {@link #provide(String, String, String)} call must resolve the `scannerId` to a
- * scanner that produces rows matching the schema returned for the same `(engineKind,
- * engineVersion)` tuple.
+ * <p>Definitions returned by this SPI are merged for the supplied catalog context. Providers may
+ * build them from static resources or from live engine metadata; the catalog model does not
+ * distinguish those implementations. The internal provider is selected separately; engine providers
+ * do not inherit or override its definitions. Environment-owned definitions and scanners use {@link
+ * CatalogEnvironmentProvider} instead.
  */
 public interface SystemObjectScannerProvider {
 
-  /** All definitions provided by this provider (no filtering). */
-  List<SystemObjectDef> definitions();
+  /** Definitions provided by this provider for the supplied catalog context. */
+  List<SystemObjectDef> definitions(CatalogContext context);
 
-  /** Checks if this provider supports the engine kind. */
-  boolean supportsEngine(String engineKind);
-
-  /** Checks if this provider supports a given object based on a NameRef lookup. */
-  boolean supports(NameRef name, String engineKind);
-
-  /**
-   * Version-aware definition set; defaults to {@link #definitions()} when a provider doesn't care
-   * about versions.
-   */
-  default List<SystemObjectDef> definitions(String engineKind, String engineVersion) {
-    return definitions();
+  /** Checks if this provider is selected for the supplied catalog context. */
+  default boolean supports(CatalogContext context) {
+    return context != null;
   }
 
-  /**
-   * Version-aware support check.
-   *
-   * <p>Defaults to {@link #supports(NameRef, String)} when versions are irrelevant.
-   */
-  default boolean supports(NameRef name, String engineKind, String engineVersion) {
-    return supports(name, engineKind);
+  /** Checks if this provider owns a named object in the supplied catalog context. */
+  default boolean supports(NameRef name, CatalogContext context) {
+    return supports(context);
   }
 
-  /** Resolves scanner by scannerId (for SystemObjectNode lookups). */
-  Optional<SystemObjectScanner> provide(String scannerId, String engineKind, String engineVersion);
+  /** Resolves a scanner by scanner id for the supplied catalog context. */
+  Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context);
 }

@@ -33,7 +33,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
-import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.concurrent.UninterruptibleBlocker;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
@@ -1365,8 +1365,9 @@ public class QueryInputResolverTest {
               String correlationId,
               ResourceId id,
               SnapshotRef override,
-              Optional<Timestamp> asOfDefault) {
-            TablePin pin = super.tablePinFor(correlationId, id, override, asOfDefault);
+              Optional<Timestamp> asOfDefault,
+              CatalogContext context) {
+            TablePin pin = super.tablePinFor(correlationId, id, override, asOfDefault, context);
             return pin.toBuilder()
                 .setTableBlobUri("s3://" + id.getId() + "/table-" + pin.getSnapshotId() + ".pb")
                 .setSnapshotBlobUri("s3://" + id.getId() + "/snap-" + pin.getSnapshotId() + ".pb")
@@ -1848,7 +1849,8 @@ public class QueryInputResolverTest {
     }
 
     @Override
-    public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(ResourceId id) {
+    public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(
+        ResourceId id, CatalogContext context) {
       String name = catalogNames.get(id);
       if (name == null) return Optional.empty();
       return Optional.of(
@@ -1866,7 +1868,8 @@ public class QueryInputResolverTest {
     // MIMIC MetadataGraph API ---------------------------------------------
 
     @Override
-    public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
+    public Optional<ResourceId> resolveName(
+        String correlationId, NameRef ref, CatalogContext context) {
       if (ref.hasResourceId()) {
         return Optional.of(ref.getResourceId());
       }
@@ -1882,17 +1885,12 @@ public class QueryInputResolverTest {
     }
 
     @Override
-    public Optional<ResourceId> resolveName(
-        String correlationId, NameRef ref, EngineContext engineContext) {
-      return resolveName(correlationId, ref);
-    }
-
-    @Override
     public TablePin tablePinFor(
         String correlationId,
         ResourceId tableId,
         SnapshotRef override,
-        Optional<Timestamp> asOfDefault) {
+        Optional<Timestamp> asOfDefault,
+        CatalogContext context) {
 
       beforeTablePin.accept(tableId);
       if (failingPins.contains(tableId)) {
@@ -1982,11 +1980,12 @@ public class QueryInputResolverTest {
         String correlationId,
         ResourceId tableId,
         SnapshotRef override,
-        Optional<Timestamp> asOfDefault) {
+        Optional<Timestamp> asOfDefault,
+        CatalogContext context) {
       if (blockedTableId.equals(tableId.getId())) {
         slowPinBlocker.await();
       }
-      return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+      return super.tablePinFor(correlationId, tableId, override, asOfDefault, context);
     }
   }
 
@@ -2009,12 +2008,13 @@ public class QueryInputResolverTest {
         String correlationId,
         ResourceId tableId,
         SnapshotRef override,
-        Optional<Timestamp> asOfDefault) {
+        Optional<Timestamp> asOfDefault,
+        CatalogContext context) {
       if (Thread.currentThread() != callerThread) {
         throw new AssertionError("planning callback escaped the request thread");
       }
       planningThreads.add(Thread.currentThread());
-      return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+      return super.tablePinFor(correlationId, tableId, override, asOfDefault, context);
     }
 
     List<Thread> planningThreads() {
@@ -2038,13 +2038,14 @@ public class QueryInputResolverTest {
         String correlationId,
         ResourceId tableId,
         SnapshotRef override,
-        Optional<Timestamp> asOfDefault) {
+        Optional<Timestamp> asOfDefault,
+        CatalogContext context) {
       if (blockedTableId.equals(tableId.getId())) {
         slowPinStarted.countDown();
         awaitUninterruptibly(allowSlowPin);
         slowPinCompleted.countDown();
       }
-      return super.tablePinFor(correlationId, tableId, override, asOfDefault);
+      return super.tablePinFor(correlationId, tableId, override, asOfDefault, context);
     }
 
     private static void awaitUninterruptibly(CountDownLatch latch) {
@@ -2078,7 +2079,8 @@ public class QueryInputResolverTest {
         String correlationId,
         ResourceId tableId,
         SnapshotRef override,
-        Optional<Timestamp> asOfDefault) {
+        Optional<Timestamp> asOfDefault,
+        CatalogContext context) {
       if ("FAIL".equals(tableId.getId())) {
         try {
           if (!fastPinCompleted.await(1, TimeUnit.SECONDS)) {
@@ -2093,7 +2095,7 @@ public class QueryInputResolverTest {
         }
         throw new IllegalStateException("planned failure");
       }
-      TablePin pin = super.tablePinFor(correlationId, tableId, override, asOfDefault);
+      TablePin pin = super.tablePinFor(correlationId, tableId, override, asOfDefault, context);
       if ("FAST".equals(tableId.getId())) {
         fastPinHolder = snapshotPins.get(tableId);
         if (fastPinHolder == null) {

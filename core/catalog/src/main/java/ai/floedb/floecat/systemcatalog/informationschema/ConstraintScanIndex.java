@@ -204,7 +204,9 @@ public final class ConstraintScanIndex {
         .computeIfAbsent(
             key,
             ignored ->
-                ctx.graph().resolveTable(RESOLVE_CORRELATION_ID, referencedTable).map(byId::get))
+                ctx.graph()
+                    .resolveTable(RESOLVE_CORRELATION_ID, referencedTable, ctx.catalogContext())
+                    .map(byId::get))
         .orElse(null);
   }
 
@@ -287,7 +289,7 @@ public final class ConstraintScanIndex {
 
   private static Map<Long, String> columnsById(SystemObjectScanContext ctx, ResourceId tableId) {
     List<SchemaColumn> columns =
-        SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(tableId));
+        SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(tableId, ctx.catalogContext()));
     if (columns.isEmpty()) {
       return Map.of();
     }

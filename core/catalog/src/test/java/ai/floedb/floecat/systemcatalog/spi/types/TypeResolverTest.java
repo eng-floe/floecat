@@ -370,21 +370,24 @@ final class TypeResolverTest {
     private final AtomicInteger listNamespacesCount = new AtomicInteger();
 
     @Override
-    public Optional<ai.floedb.floecat.metagraph.model.GraphNode> resolve(ResourceId id) {
+    public Optional<ai.floedb.floecat.metagraph.model.GraphNode> resolve(
+        ResourceId id, ai.floedb.floecat.scanner.utils.CatalogContext catalogContext) {
       resolveCount.incrementAndGet();
-      return super.resolve(id);
+      return super.resolve(id, catalogContext);
     }
 
     @Override
-    public List<TypeNode> listTypes(ResourceId catalogId) {
+    public List<TypeNode> listTypes(
+        ResourceId catalogId, ai.floedb.floecat.scanner.utils.CatalogContext catalogContext) {
       listTypesCount.incrementAndGet();
-      return super.listTypes(catalogId);
+      return super.listTypes(catalogId, catalogContext);
     }
 
     @Override
-    public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
+    public List<NamespaceNode> listNamespaces(
+        ResourceId catalogId, ai.floedb.floecat.scanner.utils.CatalogContext catalogContext) {
       listNamespacesCount.incrementAndGet();
-      return super.listNamespaces(catalogId);
+      return super.listNamespaces(catalogId, catalogContext);
     }
 
     private int resolveCount() {

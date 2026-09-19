@@ -22,7 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.*;
 import ai.floedb.floecat.query.rpc.TablePin;
-import ai.floedb.floecat.scanner.spi.TopologyGraph;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -529,21 +529,21 @@ public final class UserGraph {
     return ids.stream().map(this::namespace).flatMap(Optional::stream).toList();
   }
 
-  public List<TopologyGraph.NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
+  public List<CatalogGraphView.NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
     return names.listNamespaceRefs(catalogId);
   }
 
-  public List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(
+  public List<CatalogGraphView.NamespaceRef> listNamespaceRefsByName(
       ResourceId catalogId, Set<String> selectedNames) {
     return names.listNamespaceRefsByName(catalogId, selectedNames);
   }
 
-  public List<TopologyGraph.RelationRef> listRelationRefs(
+  public List<CatalogGraphView.RelationRef> listRelationRefs(
       ResourceId catalogId, ResourceId namespaceId) {
     return names.listRelationRefs(catalogId, namespaceId);
   }
 
-  public List<TopologyGraph.RelationRef> listRelationRefsByName(
+  public List<CatalogGraphView.RelationRef> listRelationRefsByName(
       ResourceId catalogId, ResourceId namespaceId, Set<String> selectedNames) {
     return names.listRelationRefsByName(catalogId, namespaceId, selectedNames);
   }

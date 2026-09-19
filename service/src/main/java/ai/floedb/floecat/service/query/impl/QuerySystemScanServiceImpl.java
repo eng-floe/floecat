@@ -29,6 +29,7 @@ import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
@@ -130,10 +131,13 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
       ResourceId tableId = request.getTableId();
       diagnostics.put("table_id", tableId.getId());
       EngineContext engineCtx = diagnostics.time("engine_context", engineContext::engineContext);
+      CatalogContext catalogContext = catalogContext();
       SystemObjectScanner scanner =
           diagnostics.time(
               "scanner_resolve",
-              () -> scanners.resolve(correlationIdHolder.get(), tableId, engineCtx, diagnostics));
+              () ->
+                  scanners.resolve(
+                      correlationIdHolder.get(), tableId, catalogContext, diagnostics));
       var statsProvider =
           diagnostics.time(
               "stats_provider",
@@ -143,9 +147,9 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
               graph,
               null,
               queryCtx.getQueryDefaultCatalogId(),
-              engineCtx,
+              catalogContext,
               statsProvider,
-              constraintFactory.provider());
+              constraintFactory.provider(catalogContext));
       List<SchemaColumn> schema = diagnostics.time("schema", scanner::schema);
       List<String> requiredColumns = request.getRequiredColumnsList();
       List<Predicate> predicates = request.getPredicatesList();

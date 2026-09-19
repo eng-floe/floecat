@@ -27,6 +27,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
@@ -40,10 +41,11 @@ public final class CatalogSurfaceViews {
   private final CatalogGraphView graphView;
   private final CatalogSurfaceWritePolicy writePolicy;
 
-  public CatalogSurfaceViews(ViewRepository viewRepo, CatalogGraphView graphView) {
+  public CatalogSurfaceViews(
+      ViewRepository viewRepo, CatalogGraphView graphView, CatalogContext context) {
     this.viewRepo = Objects.requireNonNull(viewRepo, "view repository is required");
     this.graphView = graphView;
-    this.writePolicy = new CatalogSurfaceWritePolicy(graphView);
+    this.writePolicy = new CatalogSurfaceWritePolicy(graphView, context);
   }
 
   public ListViewsResponse listViews(ListViewsRequest request, String accountId, String corr) {
@@ -56,7 +58,8 @@ public final class CatalogSurfaceViews {
         CatalogSurfaceRelationPager.list(
             want,
             pageIn.token,
-            new CatalogSurfaceViewPageSource(viewRepo, graphView, accountId, nsNode, namespaceId),
+            new CatalogSurfaceViewPageSource(
+                viewRepo, graphView, accountId, nsNode, namespaceId, writePolicy.context()),
             corr);
 
     var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
