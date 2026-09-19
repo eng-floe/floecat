@@ -1308,7 +1308,7 @@ class SystemNodeRegistryTest {
         new SystemNodeRegistry(
             defs, loader.internalProvider(), loader.providers(), loader.environmentProviders());
 
-    EngineContext ctx = EngineContext.of("duckdb", "");
+    EngineContext ctx = EngineContext.of("test-engine", "");
     SystemEngineCatalog engineCatalog =
         defs.catalog(CatalogContext.of(EnvironmentContext.empty(), ctx));
     assertThat(engineCatalog.tables()).isEmpty();
