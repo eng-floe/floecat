@@ -50,7 +50,7 @@ import java.util.Optional;
  */
 public final class TestCatalogExtension implements EngineCatalogProvider {
 
-  static final String ENGINE_KIND = "test-engine";
+  public static final String ENGINE_KIND = "test-engine";
 
   /**
    * Version-constraining rule: functions carrying this rule are only served when the engine reports

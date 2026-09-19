@@ -26,6 +26,8 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.catalog.it.TestCatalogExtension;
+import ai.floedb.floecat.service.it.TestCatalogEnvironmentProvider;
 import ai.floedb.floecat.service.it.profiles.StoreCostProfile;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.testsupport.RecordingStoreReadObserver;
@@ -75,6 +77,12 @@ class SystemTableScanStoreCostIT {
 
   private static final Metadata.Key<String> ENGINE_VERSION_HEADER =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
+
+  private static final Metadata.Key<String> ENVIRONMENT_KIND_HEADER =
+      Metadata.Key.of("x-environment-kind", Metadata.ASCII_STRING_MARSHALLER);
+
+  private static final Metadata.Key<String> ENVIRONMENT_VERSION_HEADER =
+      Metadata.Key.of("x-environment-version", Metadata.ASCII_STRING_MARSHALLER);
 
   @GrpcClient("floecat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
@@ -156,12 +164,12 @@ class SystemTableScanStoreCostIT {
             .setQueryId(beginQuery(cat.getResourceId()))
             .setTableId(
                 SystemNodeRegistry.resourceId(
-                    "pg",
+                    TestCatalogExtension.ENGINE_KIND,
                     ResourceKind.RK_TABLE,
                     NameRefUtil.name("information_schema", systemTable)))
             .setOutputFormat(OutputFormat.ROWS)
             .build();
-    var stub = withEngine(systemScan, "pg");
+    var stub = withEngine(systemScan, TestCatalogExtension.ENGINE_KIND);
 
     assertScanned(collect(stub, request), systemTable, rowToken, expectedRows);
 
@@ -248,6 +256,8 @@ class SystemTableScanStoreCostIT {
     Metadata metadata = new Metadata();
     metadata.put(ENGINE_KIND_HEADER, engineKind);
     metadata.put(ENGINE_VERSION_HEADER, "");
+    metadata.put(ENVIRONMENT_KIND_HEADER, TestCatalogEnvironmentProvider.ENVIRONMENT_KIND);
+    metadata.put(ENVIRONMENT_VERSION_HEADER, "");
     return stub.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
   }
 
