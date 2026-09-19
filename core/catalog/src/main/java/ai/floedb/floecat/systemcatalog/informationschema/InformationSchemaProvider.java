@@ -26,10 +26,10 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Baseline system catalog provider for the SQL information_schema.
+ * Shared baseline scanner provider for the SQL information_schema.
  *
- * <p>This provider is engine-agnostic and is always loaded by the system catalog loader unless
- * explicitly overridden by another provider defining the same canonical object names.
+ * <p>The selected catalog environment owns the relation definitions. This provider supplies the
+ * standard scanner implementations when that environment does not override them.
  */
 public final class InformationSchemaProvider implements SystemObjectScannerProvider {
 

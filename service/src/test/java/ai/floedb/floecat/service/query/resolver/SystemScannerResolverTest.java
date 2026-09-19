@@ -36,6 +36,7 @@ import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
+import ai.floedb.floecat.systemcatalog.informationschema.SchemataScanner;
 import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
@@ -121,6 +122,19 @@ class SystemScannerResolverTest {
 
     assertThat(resolver.resolve("corr", tableId, context, PhaseDiagnostics.NOOP))
         .isSameAs(environmentScanner);
+  }
+
+  @Test
+  void resolvesSharedInformationSchemaScannerForSelectedEnvironment() {
+    ResourceId tableId = systemTableId("pg", "information_schema.schemata");
+    SystemScannerResolver resolver =
+        buildResolver(
+            new TestCatalogGraphView().addNode(tableNode(tableId, "schemata_scanner")), Map.of());
+
+    CatalogContext context = CatalogContext.of(EnvironmentContext.of("floe", "1"), ENGINE_CTX);
+
+    assertThat(resolver.resolve("corr", tableId, context, PhaseDiagnostics.NOOP))
+        .isInstanceOf(SchemataScanner.class);
   }
 
   private static SystemScannerResolver buildResolver(

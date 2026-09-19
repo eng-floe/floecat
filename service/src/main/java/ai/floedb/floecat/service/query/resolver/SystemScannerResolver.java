@@ -25,6 +25,7 @@ import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
+import ai.floedb.floecat.systemcatalog.informationschema.InformationSchemaProvider;
 import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
@@ -42,6 +43,8 @@ public final class SystemScannerResolver {
   @Inject EngineContextProvider engine;
   @Inject List<SystemObjectScannerProvider> providers;
   @Inject List<CatalogEnvironmentProvider> environmentProviders;
+
+  private final InformationSchemaProvider sharedInformationSchema = new InformationSchemaProvider();
 
   /**
    * Resolves the scanner for the given table ID, reading the complete catalog context from the
@@ -88,6 +91,17 @@ public final class SystemScannerResolver {
             : findEngineScanner(scannerId, context, safeDiagnostics);
     if (scanner.isPresent()) {
       return scanner.get();
+    }
+
+    if (context.environment().hasEnvironmentKind()) {
+      scanner =
+          safeDiagnostics.time(
+              "shared_information_schema_scanner",
+              () -> sharedInformationSchema.provide(scannerId, context));
+      if (scanner.isPresent()) {
+        safeDiagnostics.count("system_scanner_provider_matches");
+        return scanner.get();
+      }
     }
 
     throw GrpcErrors.notFound(
