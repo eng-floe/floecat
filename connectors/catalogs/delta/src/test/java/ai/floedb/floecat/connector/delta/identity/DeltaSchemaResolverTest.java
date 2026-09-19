@@ -229,10 +229,9 @@ class DeltaSchemaResolverTest {
 
   @Test
   void acceptsMappedCollectionsWhoseInteriorsCarryNoNestedIds() {
-    // PROTOCOL.md gives array elements and map keys/values nowhere to record an id -- only
-    // StructField carries metadata -- and delta.columnMapping.nested.ids is a Delta-Spark
-    // extension, not protocol. A conformant third-party writer may omit it, so resolution must
-    // accept the schema and leave the interior without a native id for the caller to handle.
+    // Plain column mapping assigns IDs to StructFields only. IcebergCompatV2 conditionally
+    // requires array elements and map keys/values to carry protocol nested IDs, so schema parsing
+    // must accept absence and leave feature-aware validation to the snapshot adapter.
     var resolved =
         resolveJson(
             """

@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.metagraph.snapshot;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
@@ -303,6 +304,7 @@ public class SnapshotHelper {
             .setTableBlobVersion(root.getDefinitionRef().getVersion())
             .setSnapshotBlobUri(entry.getSnapshotRef().getUri())
             .setSnapshotBlobVersion(entry.getSnapshotRef().getVersion())
+            .setColumnIdentityFingerprint(entry.getColumnIdentityFingerprint())
             // Read-schema fingerprint for the payload token; empty on pre-fingerprint manifest
             // entries (the token then falls back to snapshot_blob_version — correct, cold on
             // ingest).
@@ -333,7 +335,38 @@ public class SnapshotHelper {
       SnapshotRef ref,
       java.util.function.Supplier<String> supplier) {
 
-    return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, ref, supplier));
+    return schemaFor(cid, tbl, ref, "", supplier);
+  }
+
+  public SchemaResolution schemaFor(
+      String cid,
+      UserTableNode tbl,
+      SnapshotRef ref,
+      String snapshotBlobUri,
+      java.util.function.Supplier<String> supplier) {
+
+    Snapshot snapshot = snapshotForSchema(cid, tbl, ref, snapshotBlobUri);
+    String schemaJson =
+        snapshot == null || snapshot.getSchemaJson().isBlank()
+            ? supplier.get()
+            : snapshot.getSchemaJson();
+    ColumnIdentityMap identityMap =
+        snapshot != null && snapshot.hasColumnIdentityMap()
+            ? snapshot.getColumnIdentityMap()
+            : ColumnIdentityMap.getDefaultInstance();
+
+    return new SchemaResolution(tbl, schemaJson, identityMap);
+  }
+
+  private Snapshot snapshotForSchema(
+      String cid, UserTableNode tbl, SnapshotRef ref, String snapshotBlobUri) {
+    if (snapshotBlobUri != null && !snapshotBlobUri.isEmpty()) {
+      return pins.requirePinnedSnapshotBlob(snapshots.getByBlobUri(snapshotBlobUri), cid, tbl.id());
+    }
+    if (ref == null || ref.getWhichCase() == SnapshotRef.WhichCase.WHICH_NOT_SET) {
+      return null;
+    }
+    return resolveSnapshot(cid, tbl.id(), ref);
   }
 
   public String schemaJsonFor(
