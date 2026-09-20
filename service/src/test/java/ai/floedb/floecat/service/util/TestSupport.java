@@ -370,13 +370,30 @@ public final class TestSupport {
 
   public static ResourceId resolveTableId(
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
       String catalog,
       List<String> path,
       String name) {
-    var r =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder().setRef(fq(catalog, path, name)).build());
-    return r.getResourceId();
+    return resolveRelationId(relations, fq(catalog, path, name), ResourceKind.RK_TABLE);
+  }
+
+  public static ResourceId resolveRelationId(
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
+      NameRef ref,
+      ResourceKind expectedKind) {
+    var response =
+        relations.resolveRelations(
+            ResolveRelationsRequest.newBuilder()
+                .addReferences(RelationReference.newBuilder().addCandidates(ref))
+                .build());
+    if (response.getResultsCount() == 0 || !response.getResults(0).hasRelation()) {
+      throw Status.NOT_FOUND.withDescription("relation not found: " + ref).asRuntimeException();
+    }
+    Relation relation = response.getResults(0).getRelation();
+    if (relation.getResourceId().getKind() != expectedKind) {
+      throw new AssertionError("unexpected relation kind: " + relation.getResourceId().getKind());
+    }
+    return relation.getResourceId();
   }
 
   public static Table updateSchema(

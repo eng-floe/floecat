@@ -16,10 +16,10 @@
 
 package ai.floedb.floecat.service.catalog.impl;
 
-import ai.floedb.floecat.query.rpc.GetSystemObjectsRequest;
-import ai.floedb.floecat.query.rpc.GetSystemObjectsResponse;
+import ai.floedb.floecat.query.rpc.GetSqlObjectsRegistryRequest;
+import ai.floedb.floecat.query.rpc.GetSqlObjectsRegistryResponse;
+import ai.floedb.floecat.query.rpc.SqlCatalogService;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
-import ai.floedb.floecat.query.rpc.SystemObjectsService;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -39,12 +39,11 @@ import jakarta.inject.Inject;
 import java.util.List;
 
 /**
- * gRPC endpoint exposed to planners so they can fetch builtin metadata once per engine version.
- * Reads engine builtin catalogs from {@link SystemDefinitionRegistry} (plugin-based or empty
- * fallback).
+ * gRPC endpoint exposed to planners so they can fetch SQL metadata once per engine version. Reads
+ * engine builtin catalogs from {@link SystemDefinitionRegistry} (plugin-based or empty fallback).
  */
 @GrpcService
-public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemObjectsService {
+public class SqlCatalogServiceImpl extends BaseServiceImpl implements SqlCatalogService {
 
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -52,17 +51,18 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
   @Inject Observability observability;
 
   @Override
-  public Uni<GetSystemObjectsResponse> getSystemObjects(GetSystemObjectsRequest request) {
+  public Uni<GetSqlObjectsRegistryResponse> getSqlObjectsRegistry(
+      GetSqlObjectsRegistryRequest request) {
     return mapFailures(
         run(
             () -> {
-              PhaseDiagnostics diagnostics = diagnostics("get_system_objects");
+              PhaseDiagnostics diagnostics = diagnostics("get_sql_objects_registry");
               long startedNanos = System.nanoTime();
               String outcome = "completed";
               try {
                 var principalContext = diagnostics.time("principal_get", principal::get);
                 diagnostics.time(
-                    "authz", () -> authz.require(principalContext, "system-objects.read"));
+                    "authz", () -> authz.require(principalContext, "sql-objects.read"));
                 CatalogContext catalogContext = catalogContext();
                 EngineContext ctx = diagnostics.time("engine_context", catalogContext::engine);
                 diagnostics.put("engine_kind", ctx.engineKind());
@@ -79,9 +79,9 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
                     "builtin.engine_kind.required");
                 SystemObjectsRegistry registry =
                     diagnostics.time(
-                        "fetch_system_objects", () -> fetchSystemObjects(catalogContext));
-                GetSystemObjectsResponse response =
-                    GetSystemObjectsResponse.newBuilder().setRegistry(registry).build();
+                        "fetch_sql_objects_registry", () -> fetchSystemObjects(catalogContext));
+                GetSqlObjectsRegistryResponse response =
+                    GetSqlObjectsRegistryResponse.newBuilder().setRegistry(registry).build();
                 diagnostics.put("registry_bytes", registry.getSerializedSize());
                 diagnostics.put("response_bytes", response.getSerializedSize());
                 return response;
@@ -92,7 +92,7 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
               } finally {
                 diagnostics.put("outcome", outcome);
                 diagnostics.nanos("total", System.nanoTime() - startedNanos);
-                diagnostics.emit("floecat.get_system_objects.summary");
+                diagnostics.emit("floecat.get_sql_objects_registry.summary");
               }
             }),
         correlationId());

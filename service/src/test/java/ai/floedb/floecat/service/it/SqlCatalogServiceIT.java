@@ -20,9 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.query.rpc.GetSystemObjectsRequest;
-import ai.floedb.floecat.query.rpc.GetSystemObjectsResponse;
-import ai.floedb.floecat.query.rpc.SystemObjectsServiceGrpc;
+import ai.floedb.floecat.query.rpc.GetSqlObjectsRegistryRequest;
+import ai.floedb.floecat.query.rpc.GetSqlObjectsRegistryResponse;
+import ai.floedb.floecat.query.rpc.SqlCatalogServiceGrpc;
 import ai.floedb.floecat.service.util.TestSupport;
 import io.grpc.Metadata;
 import io.grpc.Status;
@@ -33,7 +33,7 @@ import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
-class SystemObjectsServiceIT {
+class SqlCatalogServiceIT {
 
   private static final Metadata.Key<String> ENGINE_VERSION_HEADER =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
@@ -42,13 +42,13 @@ class SystemObjectsServiceIT {
       Metadata.Key.of("x-engine-kind", Metadata.ASCII_STRING_MARSHALLER);
 
   @GrpcClient("floecat")
-  SystemObjectsServiceGrpc.SystemObjectsServiceBlockingStub builtins;
+  SqlCatalogServiceGrpc.SqlCatalogServiceBlockingStub builtins;
 
   @Test
   void returnsCatalogWhenVersionProvided() {
     var stub = withEngineHeaders(TestCatalogExtension.ENGINE_KIND, "16.0");
 
-    var resp = getSystemObjects(stub);
+    var resp = getSqlObjectsRegistry(stub);
 
     assertThat(resp.hasRegistry()).isTrue();
 
@@ -90,7 +90,7 @@ class SystemObjectsServiceIT {
     // service responds without error for this engine kind.  No assertions on specific object names:
     // the bundled pbtxt files are user-replaceable templates, so catalog content is not fixed.
     var stub = withEngineHeaders("example", "1.0");
-    var resp = getSystemObjects(stub);
+    var resp = getSqlObjectsRegistry(stub);
     assertThat(resp.hasRegistry()).isTrue();
   }
 
@@ -99,7 +99,9 @@ class SystemObjectsServiceIT {
     assertThatThrownBy(
             () ->
                 TestSupport.callWhenGrpcReady(
-                    () -> builtins.getSystemObjects(GetSystemObjectsRequest.newBuilder().build())))
+                    () ->
+                        builtins.getSqlObjectsRegistry(
+                            GetSqlObjectsRegistryRequest.newBuilder().build())))
         .isInstanceOfSatisfying(
             StatusRuntimeException.class,
             e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
@@ -109,7 +111,7 @@ class SystemObjectsServiceIT {
   void unknownEngineVersionReturnsOnlyRuleFreeObjects() {
     var stub = withEngineHeaders(TestCatalogExtension.ENGINE_KIND, "does-not-exist");
 
-    var resp = getSystemObjects(stub);
+    var resp = getSqlObjectsRegistry(stub);
     assertThat(resp.hasRegistry()).isTrue();
 
     var names =
@@ -131,13 +133,13 @@ class SystemObjectsServiceIT {
 
     var stub = builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
 
-    assertThatThrownBy(() -> getSystemObjects(stub))
+    assertThatThrownBy(() -> getSqlObjectsRegistry(stub))
         .isInstanceOfSatisfying(
             StatusRuntimeException.class,
             e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT));
   }
 
-  private SystemObjectsServiceGrpc.SystemObjectsServiceBlockingStub withEngineHeaders(
+  private SqlCatalogServiceGrpc.SqlCatalogServiceBlockingStub withEngineHeaders(
       String engineKind, String engineVersion) {
 
     var metadata = new Metadata();
@@ -147,10 +149,10 @@ class SystemObjectsServiceIT {
     return builtins.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
   }
 
-  private GetSystemObjectsResponse getSystemObjects(
-      SystemObjectsServiceGrpc.SystemObjectsServiceBlockingStub stub) {
+  private GetSqlObjectsRegistryResponse getSqlObjectsRegistry(
+      SqlCatalogServiceGrpc.SqlCatalogServiceBlockingStub stub) {
     return TestSupport.callWhenGrpcReady(
-        () -> stub.getSystemObjects(GetSystemObjectsRequest.getDefaultInstance()));
+        () -> stub.getSqlObjectsRegistry(GetSqlObjectsRegistryRequest.getDefaultInstance()));
   }
 
   /** Build a fully qualified name from NameRef.path + NameRef.name (ignores catalog). */

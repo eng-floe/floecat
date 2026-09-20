@@ -28,6 +28,8 @@ import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetLatestFinalizedSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotSchemaRequest;
+import ai.floedb.floecat.catalog.rpc.GetSnapshotSchemaResponse;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
 import ai.floedb.floecat.catalog.rpc.PartitionField;
@@ -46,6 +48,7 @@ import ai.floedb.floecat.common.rpc.SpecialSnapshot;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
@@ -88,6 +91,7 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   // a snapshot's stats generations, which pinned queries still read — is unit-assertable. Physical
   // reclamation is reference-aware CasBlobGc's job once no live pin holds the generation.
   @Inject StatsStore statsStore;
+  @Inject ObjectCache objects;
   @Inject TableRootWriter rootWriter;
 
   private static final Logger LOG = Logger.getLogger(SnapshotService.class);
@@ -887,5 +891,39 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
                 });
           }
         });
+  }
+
+  /**
+   * Selects the physical schema JSON for the requested snapshot (table-level or snapshot-level),
+   * then converts JSON to a logical schema through the shared object cache.
+   */
+  @Override
+  public Uni<GetSnapshotSchemaResponse> getSnapshotSchema(GetSnapshotSchemaRequest request) {
+    var L = LogHelper.start(LOG, "GetSnapshotSchema");
+
+    return mapFailures(
+            run(
+                () -> {
+                  var pc = principal.get();
+                  authz.require(pc, "table.read");
+
+                  var tableId = request.getTableId();
+                  ensureKind(tableId, ResourceKind.RK_TABLE, "table_id", correlationId());
+
+                  CatalogGraphView.SchemaResolution resolved =
+                      graphView.schemaFor(
+                          correlationId(),
+                          tableId,
+                          request.hasSnapshot() ? request.getSnapshot() : null);
+
+                  return GetSnapshotSchemaResponse.newBuilder()
+                      .setSchema(objects.mappedSchema(resolved.table(), resolved.schemaJson()))
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
   }
 }

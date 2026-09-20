@@ -52,7 +52,7 @@ class RolePermissionsTest {
           RolePermissions.CATALOG_OVERLAY_WRITE,
           RolePermissions.CATALOG_OVERLAY_RECONCILE,
           RolePermissions.CATALOG_OVERLAY_DELETE,
-          "system-objects.read",
+          "sql-objects.read",
           "account.delete");
   private static final List<String> INIT_ACCOUNT_PERMS =
       List.of(
@@ -87,7 +87,7 @@ class RolePermissionsTest {
           RolePermissions.CATALOG_INTEGRATION_USE,
           RolePermissions.CATALOG_OVERLAY_READ,
           RolePermissions.CATALOG_OVERLAY_RECONCILE,
-          "system-objects.read",
+          "sql-objects.read",
           RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL,
           RolePermissions.RECONCILE_EXECUTOR_CONTROL_INTERNAL);
 
@@ -140,12 +140,12 @@ class RolePermissionsTest {
   }
 
   @Test
-  void systemObjectsRoleGrantsSystemObjectsReadPermission() {
+  void sqlObjectsRoleGrantsSqlObjectsReadPermission() {
     var permissions =
-        RolePermissions.permissionsForRoles(List.of(RolePermissions.SYSTEM_OBJECTS_ROLE), false);
+        RolePermissions.permissionsForRoles(List.of(RolePermissions.SQL_OBJECTS_ROLE), false);
 
     assertThat(permissions)
-        .contains("system-objects.read")
+        .contains("sql-objects.read")
         .doesNotContain(
             RolePermissions.STORAGE_AUTHORITY_RESOLVE_INTERNAL,
             "catalog.write",
