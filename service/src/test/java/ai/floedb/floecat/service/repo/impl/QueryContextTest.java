@@ -135,9 +135,9 @@ class QueryContextTest {
     assertSame(expired, again);
   }
 
-  // Ensures QueryContext surfaces the pinned SnapshotPin for tables participating in the lease.
+  // Ensures QueryContext surfaces the canonical table pin for tables participating in the lease.
   @Test
-  void requireSnapshotPinReturnsPin() {
+  void requireTablePinReturnsCanonicalPin() {
     ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     var pc = pc(accountId, "alice", "p-lookup");
     ResourceId tableId = TestSupport.rid(accountId.getId(), "tbl-lookup", ResourceKind.RK_TABLE);
@@ -154,9 +154,9 @@ class QueryContextTest {
             1,
             ResourceId.newBuilder().setId("cat-it").build());
 
-    var pin = ctx.requireSnapshotPin(tableId, "corr-123");
+    var pin = ctx.requireTablePin(tableId, "corr-123");
     assertEquals(77, pin.getSnapshotId());
-    assertTrue(pin.hasTableId());
+    assertEquals(tableId, pin.getTableId());
   }
 
   @Test
@@ -182,9 +182,9 @@ class QueryContextTest {
     assertThrows(StatusRuntimeException.class, () -> ctx.requireTablePin(other, "corr-tp-missing"));
   }
 
-  // Ensures QueryContext rejects tables that were not pinned in the lease snapshot set.
+  // Ensures QueryContext rejects tables that were not pinned in the lease relation pin set.
   @Test
-  void requireSnapshotPinMissingTable() {
+  void requireTablePinMissingTable() {
     ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     var pc = pc(accountId, "alice", "p-missing");
     ResourceId pinned = TestSupport.rid(accountId.getId(), "tbl-a", ResourceKind.RK_TABLE);
@@ -205,7 +205,7 @@ class QueryContextTest {
 
     StatusRuntimeException err =
         assertThrows(
-            StatusRuntimeException.class, () -> ctx.requireSnapshotPin(other, "corr-missing"));
+            StatusRuntimeException.class, () -> ctx.requireTablePin(other, "corr-missing"));
     assertEquals(Status.Code.NOT_FOUND, err.getStatus().getCode());
   }
 
@@ -260,7 +260,7 @@ class QueryContextTest {
   }
 
   @Test
-  void requireSnapshotPinDoesNotMatchWhenAccountIsMissingOnOneSide() {
+  void requireTablePinDoesNotMatchWhenAccountIsMissingOnOneSide() {
     ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     var pc = pc(accountId, "alice", "p-account");
     ResourceId pinnedWithAccount =
@@ -285,7 +285,7 @@ class QueryContextTest {
     StatusRuntimeException err =
         assertThrows(
             StatusRuntimeException.class,
-            () -> ctx.requireSnapshotPin(lookupWithoutAccount, "corr-account"));
+            () -> ctx.requireTablePin(lookupWithoutAccount, "corr-account"));
     assertEquals(Status.Code.NOT_FOUND, err.getStatus().getCode());
   }
 }

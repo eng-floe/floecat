@@ -58,7 +58,7 @@ final class SnapshotPinResolver implements SnapshotPinLookup {
     }
     // Every pin resolves to a concrete snapshot at construction, so a present pin always carries
     // its snapshot id (0 is a real id, never a sentinel — absence is the empty Optional).
-    return ctx.findSnapshotPin(tableId, correlationId)
+    return ctx.findTablePin(tableId, correlationId)
         .map(p -> OptionalLong.of(p.getSnapshotId()))
         .orElseGet(OptionalLong::empty);
   }
@@ -108,7 +108,7 @@ final class SnapshotPinResolver implements SnapshotPinLookup {
     if (ctx == null) {
       return Optional.empty();
     }
-    return ctx.findSnapshotPin(tableId, correlationId)
+    return ctx.findTablePin(tableId, correlationId)
         .flatMap(pin -> snapshotScopedLookup.apply(pin.getSnapshotId()));
   }
 

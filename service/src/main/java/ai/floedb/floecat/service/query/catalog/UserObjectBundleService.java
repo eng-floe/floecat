@@ -45,6 +45,7 @@ import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
+import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
@@ -592,9 +593,7 @@ public class UserObjectBundleService {
           timings.addResolveNanos(System.nanoTime() - selectStageStartNs);
         }
       }
-      if (!toPin.isEmpty()) {
-        pinCommitter.accumulate(toPin, diagnostics, this::isCancelled);
-      }
+      isolatePinFailures(toPin);
     }
 
     private boolean isCancelled() {
@@ -675,15 +674,20 @@ public class UserObjectBundleService {
       if (item instanceof PendingFailure failure) {
         throw failure.failure();
       }
-      pending.add(item);
       if (item instanceof PendingFound found) {
-        timings.recordFound();
+        pending.add(found);
         toPin.add(found.relation());
+        if (found.isRequestedInput()) {
+          timings.recordFound();
+        }
         if (found.relation().node() instanceof ViewNode view && !view.baseRelations().isEmpty()) {
           eagerBaseQueue.addLast(new EagerBaseCursor(view));
           drainEagerBaseTables(toPin);
         }
-      } else if (item instanceof PendingResolved resolved
+      } else {
+        pending.add(item);
+      }
+      if (item instanceof PendingResolved resolved
           && resolved.resolution().getStatus() == ResolutionStatus.RESOLUTION_STATUS_NOT_FOUND) {
         timings.recordNotFound();
       }
@@ -746,12 +750,43 @@ public class UserObjectBundleService {
           // Base-table pins are already derived from the parent view candidate (including AS-OF
           // overrides). Avoid re-adding a synthetic TABLE_ID pin here, which would otherwise
           // resolve to CURRENT and can overwrite AS-OF pins in the same batch.
+          // The parent view pin already resolved and rooted this base table (including any
+          // AS-OF override), so do not resolve the synthetic relation a second time.
           pending.add(new PendingFound(-1, syntheticRelation));
         } finally {
           timings.addBaseInjectNanos(System.nanoTime() - resolveStartNs);
         }
       }
       return cursor.nextBaseIndex >= baseRelations.size();
+    }
+
+    private void isolatePinFailures(List<ResolvedRelation> toPin) {
+      if (toPin.isEmpty()) {
+        return;
+      }
+      List<QueryPinCommitter.RelationFailure> failures =
+          pinCommitter.accumulateIsolated(toPin, diagnostics, this::isCancelled);
+      if (failures.isEmpty()) {
+        return;
+      }
+      Map<ResolvedRelation, RuntimeException> failureByRelation = new java.util.IdentityHashMap<>();
+      for (QueryPinCommitter.RelationFailure failure : failures) {
+        failureByRelation.put(failure.relation(), failure.failure());
+      }
+      for (int i = 0; i < pending.size(); i++) {
+        PendingItem item = pending.get(i);
+        if (!(item instanceof PendingFound found)) {
+          continue;
+        }
+        RuntimeException failure = failureByRelation.get(found.relation());
+        if (failure == null) {
+          continue;
+        }
+        if (found.isRequestedInput()) {
+          timings.unrecordFound();
+        }
+        pending.set(i, relationFailure(found.inputIndex(), failure));
+      }
     }
 
     /** A requested input paired with its normalized candidates, ready to select against. */
@@ -796,6 +831,8 @@ public class UserObjectBundleService {
       throwIfCancelled(this::isCancelled);
       int inputIndex = planned.inputIndex();
       if (planned.failed()) {
+        // Candidate-shape validation is request validation, not a relation read failure. Keep it
+        // as a stream failure so malformed planner input is not silently downgraded to metadata.
         return new PendingFailure(inputIndex, planned.planningFailure());
       }
       try {
@@ -845,7 +882,7 @@ public class UserObjectBundleService {
                 .setFailure(failure)
                 .build());
       } catch (RuntimeException e) {
-        return new PendingFailure(inputIndex, e);
+        return relationOrPendingFailure(inputIndex, e, planned.normalized());
       }
       if (LOG.isTraceEnabled()) {
         LOG.tracef(
@@ -865,6 +902,51 @@ public class UserObjectBundleService {
               .setInputIndex(inputIndex)
               .setStatus(ResolutionStatus.RESOLUTION_STATUS_NOT_FOUND)
               .setFailure(failure)
+              .build());
+    }
+
+    private PendingItem relationOrPendingFailure(
+        int inputIndex, RuntimeException failure, List<QueryInput> attempted) {
+      if (!GrpcErrors.isRelationScoped(failure)) {
+        return new PendingFailure(inputIndex, failure);
+      }
+      return relationFailure(inputIndex, failure, attempted);
+    }
+
+    private PendingResolved relationFailure(int inputIndex, RuntimeException failure) {
+      return relationFailure(inputIndex, failure, List.of());
+    }
+
+    private PendingResolved relationFailure(
+        int inputIndex, RuntimeException failure, List<QueryInput> attempted) {
+      FloecatStatus status = FloecatStatus.fromThrowable(failure);
+      String code = "catalog_bundle.relation_failed";
+      String message = failure.getMessage();
+      if (status != null) {
+        if (!status.messageKey().isBlank()) {
+          code = status.messageKey();
+        }
+        if (!status.message().isBlank()) {
+          message = status.message();
+        }
+      }
+      if (message == null || message.isBlank()) {
+        message = failure.getClass().getSimpleName();
+      }
+      ResolutionFailure.Builder detail =
+          ResolutionFailure.newBuilder()
+              .setCode(code)
+              .setMessage(message)
+              .addAllAttempted(attempted);
+      if (status != null) {
+        detail.putDetails("grpc_code", status.canonicalCode().name());
+        detail.putAllDetails(status.params());
+      }
+      return new PendingResolved(
+          RelationResolution.newBuilder()
+              .setInputIndex(inputIndex)
+              .setStatus(ResolutionStatus.RESOLUTION_STATUS_ERROR)
+              .setFailure(detail)
               .build());
     }
 

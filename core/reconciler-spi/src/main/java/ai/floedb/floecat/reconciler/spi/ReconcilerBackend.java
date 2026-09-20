@@ -25,15 +25,12 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
-import com.google.protobuf.Timestamp;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -80,9 +77,6 @@ public interface ReconcilerBackend {
       ReconcileContext ctx, ResourceId tableId) {
     return Optional.empty();
   }
-
-  SnapshotPin snapshotPinFor(
-      ReconcileContext ctx, ResourceId tableId, SnapshotRef ref, Optional<Timestamp> asOf);
 
   Optional<Snapshot> fetchSnapshot(ReconcileContext ctx, ResourceId tableId, long snapshotId);
 

@@ -88,7 +88,6 @@ public class QueryInputMetadataAssembler {
                       engineContext.catalogContext()));
       diagnostics.put("resolved_inputs", resolution.resolved().size());
       RelationPinSet relationPinSet = resolution.relationPinSet();
-      SnapshotSet snapshotSet = resolution.snapshotSet();
       diagnostics.put("snapshot_pins", relationPinSet.getPinsCount());
       // The resolver already registered each resolved pin's blobs as a transient GC root at
       // construction (QueryContextStore.registerResolvingPinBlobs), so the blobs are protected
@@ -104,7 +103,12 @@ public class QueryInputMetadataAssembler {
               "resolve_obligations",
               () ->
                   obligations.resolveObligations(
-                      correlationId, snapshotSet.getPinsList(), diagnostics));
+                      correlationId,
+                      relationPinSet.getPinsList().stream()
+                          .filter(pin -> pin.hasTablePin())
+                          .map(pin -> pin.getTablePin())
+                          .toList(),
+                      diagnostics));
       diagnostics.put("obligations", obligationsResult.obligations().size());
       diagnostics.put("obligation_bytes", obligationsResult.bytes().length);
 

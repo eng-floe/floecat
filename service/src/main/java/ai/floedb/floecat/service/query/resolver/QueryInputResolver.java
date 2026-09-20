@@ -178,7 +178,7 @@ public class QueryInputResolver {
   /** Immutable container returned to callers. */
   public record ResolutionResult(
       List<ResourceId> resolved, RelationPinSet relationPinSet, byte[] asOfDefaultBytes) {
-    /** Projection for read-only consumers that still speak SnapshotPin. */
+    /** Projection for read-only consumers that still speak the legacy SnapshotSet wire shape. */
     public SnapshotSet snapshotSet() {
       return QueryPins.toSnapshotSet(relationPinSet);
     }
