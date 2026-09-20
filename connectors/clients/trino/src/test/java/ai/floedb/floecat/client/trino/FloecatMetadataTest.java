@@ -31,6 +31,7 @@ import ai.floedb.floecat.catalog.rpc.ListNamespacesResponse;
 import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.catalog.rpc.RelationListError;
 import ai.floedb.floecat.catalog.rpc.RelationListResult;
 import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveRelationResult;
@@ -119,6 +120,7 @@ class FloecatMetadataTest {
   private static volatile String tableSchemaJson = CURRENT_SCHEMA_JSON;
   private static volatile String upstreamUri = "s3://bucket/table";
   private static volatile String snapshotSchemaJson = SNAPSHOT_SCHEMA_JSON;
+  private static volatile boolean relationListError;
 
   private static ManagedChannel channel;
   private static Server server;
@@ -170,6 +172,15 @@ class FloecatMetadataTest {
     tableSchemaJson = CURRENT_SCHEMA_JSON;
     upstreamUri = "s3://bucket/table";
     snapshotSchemaJson = SNAPSHOT_SCHEMA_JSON;
+    relationListError = false;
+  }
+
+  @Test
+  void listTablesRejectsIncompleteRelationPages() {
+    relationListError = true;
+
+    assertThrows(
+        IllegalStateException.class, () -> metadata.listTables(null, Optional.empty()));
   }
 
   @Test
@@ -579,6 +590,19 @@ class FloecatMetadataTest {
     @Override
     public void listRelations(
         ListRelationsRequest request, StreamObserver<ListRelationsResponse> responseObserver) {
+      if (relationListError) {
+        responseObserver.onNext(
+            ListRelationsResponse.newBuilder()
+                .addResults(
+                    RelationListResult.newBuilder()
+                        .setError(
+                            RelationListError.newBuilder()
+                                .setName(NameRef.newBuilder().setName("broken")))
+                        .build())
+                .build());
+        responseObserver.onCompleted();
+        return;
+      }
       responseObserver.onNext(
           ListRelationsResponse.newBuilder()
               .addResults(RelationListResult.newBuilder().setRelation(relation()).build())

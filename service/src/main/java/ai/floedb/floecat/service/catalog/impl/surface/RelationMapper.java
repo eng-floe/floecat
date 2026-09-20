@@ -52,7 +52,12 @@ final class RelationMapper {
   Relation fromTable(Table table, boolean includeSchema, boolean includeStatus) {
     Origin origin = originOf(table.getResourceId());
     var builder =
-        common(table.getResourceId(), table.getDisplayName(), table.getPropertiesMap(), origin)
+        common(
+                table.getResourceId(),
+                table.getDisplayName(),
+                table.getPropertiesMap(),
+                origin,
+                nameOf(table))
             .setTable(tableDetails(table));
     if (includeSchema) {
       builder.setSchema(tableSchema(table));
@@ -63,13 +68,18 @@ final class RelationMapper {
     return builder.build();
   }
 
+  NameRef nameOf(Table table) {
+    return canonicalName(table.getResourceId(), table.getDisplayName());
+  }
+
   Relation fromView(View view, boolean includeSchema, boolean includeStatus) {
     var builder =
         common(
                 view.getResourceId(),
                 view.getDisplayName(),
                 view.getPropertiesMap(),
-                originOf(view.getResourceId()))
+                originOf(view.getResourceId()),
+                nameOf(view))
             .setView(viewDetails(view));
     if (includeSchema) {
       builder.setSchema(SchemaDescriptor.newBuilder().addAllColumns(view.getOutputColumnsList()));
@@ -80,12 +90,20 @@ final class RelationMapper {
     return builder.build();
   }
 
+  NameRef nameOf(View view) {
+    return canonicalName(view.getResourceId(), view.getDisplayName());
+  }
+
   /** Everything a relation carries regardless of kind. */
   private Relation.Builder common(
-      ResourceId id, String displayName, Map<String, String> properties, Origin origin) {
+      ResourceId id,
+      String displayName,
+      Map<String, String> properties,
+      Origin origin,
+      NameRef name) {
     return Relation.newBuilder()
         .setResourceId(id)
-        .setName(canonicalName(id, displayName))
+        .setName(name)
         .setDisplayName(displayName)
         .setOrigin(origin)
         .putAllProperties(properties);

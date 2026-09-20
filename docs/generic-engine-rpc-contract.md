@@ -93,6 +93,9 @@ for unpinned name resolution, and `QueryInput` candidates when requesting the pi
   successful relations.
 - Request, authorization, cancellation and backend failures still fail the whole RPC;
   `RelationListResult.error` is only for failures isolated to one relation.
+- An adapter that cannot represent partial catalog results must fail its own listing when it sees a
+  row error. An adapter with a warning-capable UX, such as the CLI, may continue only after showing
+  the affected names and preserving the continuation token.
 
 `ResolveRelationsRequest`
 - `references`: one entry per logical reference, each carrying the names to try in order — the same
@@ -155,6 +158,9 @@ types because those names may not have a Floecat logical-type equivalent.
   without changing the RPC.
 - `RelationServiceImpl` is the gRPC entrypoint for generic relation reads.
 - `SqlCatalogServiceImpl` is the gRPC entrypoint for SQL object registry reads.
+- Engine clients should use the shared `RelationResults` helper. Its `results` view preserves wire
+  order; `relations()` and `errors()` are convenience projections. Use the strict completion check
+  when the host API cannot return warnings or partial-list status.
 
 ## Pinned Behavior
 
