@@ -88,10 +88,16 @@ message DeleteCatalogResponse {
 
 // ----- Services -----
 
+// MIXED: ListCatalogs is engine discovery; GetCatalog and the mutation methods are management.
 service CatalogService {
+  // ENGINE. Catalog discovery; does not pin a snapshot.
   rpc ListCatalogs(ListCatalogsRequest) returns (ListCatalogsResponse);
+  // MANAGEMENT. Typed catalog metadata.
   rpc GetCatalog(GetCatalogRequest) returns (GetCatalogResponse);
+  // MANAGEMENT.
   rpc CreateCatalog(CreateCatalogRequest) returns (CreateCatalogResponse);
+  // MANAGEMENT.
   rpc UpdateCatalog(UpdateCatalogRequest) returns (UpdateCatalogResponse);
+  // MANAGEMENT.
   rpc DeleteCatalog(DeleteCatalogRequest) returns (DeleteCatalogResponse);
 }

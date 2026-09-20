@@ -128,6 +128,7 @@ message DeleteViewResponse {
 
 // ----- Services -----
 
+// MANAGEMENT. View CRUD and view-specific metadata.
 service ViewService {
   rpc ListViews(ListViewsRequest) returns (ListViewsResponse);
   rpc GetView(GetViewRequest) returns (GetViewResponse);

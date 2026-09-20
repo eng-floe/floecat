@@ -339,6 +339,7 @@ message ListTargetStatsResponse {
 
 // ---------- Services ----------
 
+// MANAGEMENT.
 service TableStatisticsService {
   rpc GetTargetStats(GetTargetStatsRequest) returns (GetTargetStatsResponse);
   rpc ListTargetStats(ListTargetStatsRequest) returns (ListTargetStatsResponse);

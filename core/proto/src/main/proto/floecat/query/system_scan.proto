@@ -103,6 +103,7 @@ message ScanSystemTableChunk {
 /**
  * Service that scans system-backed tables.
  */
+// ENGINE.
 service QuerySystemScanService {
   /**
    * ScanSystemTable returns a stream of scan results for a system table.

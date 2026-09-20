@@ -123,6 +123,7 @@ message DeleteTableResponse {
 
 // ----- Services -----
 
+// MANAGEMENT. Table CRUD and table-specific metadata.
 service TableService {
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
   rpc GetTable(GetTableRequest) returns (GetTableResponse);
