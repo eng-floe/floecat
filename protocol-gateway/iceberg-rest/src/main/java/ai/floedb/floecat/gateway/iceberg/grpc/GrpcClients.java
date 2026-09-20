@@ -19,7 +19,7 @@ package ai.floedb.floecat.gateway.iceberg.grpc;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.SchemaServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
@@ -44,8 +44,8 @@ public class GrpcClients implements AutoCloseable {
   private final TableServiceGrpc.TableServiceBlockingStub table;
   private final ViewServiceGrpc.ViewServiceBlockingStub view;
   private final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
-  private final SchemaServiceGrpc.SchemaServiceBlockingStub schema;
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
+  private final RelationServiceGrpc.RelationServiceBlockingStub relation;
   private final QueryServiceGrpc.QueryServiceBlockingStub query;
   private final QueryScanServiceGrpc.QueryScanServiceBlockingStub queryScan;
   private final QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub querySchema;
@@ -65,8 +65,8 @@ public class GrpcClients implements AutoCloseable {
     this.table = TableServiceGrpc.newBlockingStub(channel);
     this.view = ViewServiceGrpc.newBlockingStub(channel);
     this.snapshot = SnapshotServiceGrpc.newBlockingStub(channel);
-    this.schema = SchemaServiceGrpc.newBlockingStub(channel);
     this.directory = DirectoryServiceGrpc.newBlockingStub(channel);
+    this.relation = RelationServiceGrpc.newBlockingStub(channel);
     this.query = QueryServiceGrpc.newBlockingStub(channel);
     this.queryScan = QueryScanServiceGrpc.newBlockingStub(channel);
     this.querySchema = QuerySchemaServiceGrpc.newBlockingStub(channel);
@@ -96,12 +96,12 @@ public class GrpcClients implements AutoCloseable {
     return snapshot;
   }
 
-  public SchemaServiceGrpc.SchemaServiceBlockingStub schema() {
-    return schema;
-  }
-
   public DirectoryServiceGrpc.DirectoryServiceBlockingStub directory() {
     return directory;
+  }
+
+  public RelationServiceGrpc.RelationServiceBlockingStub relation() {
+    return relation;
   }
 
   public QueryServiceGrpc.QueryServiceBlockingStub query() {

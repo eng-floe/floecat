@@ -24,10 +24,12 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
-import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
+import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
+import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.catalog.rpc.RelationListResult;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
-import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.common.rpc.PageResponse;
@@ -49,6 +51,8 @@ class TableLifecycleServiceTest {
       mock(TableServiceGrpc.TableServiceBlockingStub.class);
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub =
       mock(DirectoryServiceGrpc.DirectoryServiceBlockingStub.class);
+  private final RelationServiceGrpc.RelationServiceBlockingStub relationStub =
+      mock(RelationServiceGrpc.RelationServiceBlockingStub.class);
 
   @BeforeEach
   void setUp() {
@@ -57,8 +61,10 @@ class TableLifecycleServiceTest {
     when(grpc.raw()).thenReturn(clients);
     when(clients.table()).thenReturn(tableStub);
     when(clients.directory()).thenReturn(directoryStub);
+    when(clients.relation()).thenReturn(relationStub);
     when(grpc.withHeaders(tableStub)).thenReturn(tableStub);
     when(grpc.withHeaders(directoryStub)).thenReturn(directoryStub);
+    when(grpc.withHeaders(relationStub)).thenReturn(relationStub);
   }
 
   @Test
@@ -72,8 +78,19 @@ class TableLifecycleServiceTest {
             .setResourceId(ResourceId.newBuilder().build())
             .build();
     var page = PageResponse.newBuilder().setNextPageToken("next-token").build();
-    when(tableStub.listTables(any()))
-        .thenReturn(ListTablesResponse.newBuilder().addTables(table).setPage(page).build());
+    when(relationStub.listRelations(any()))
+        .thenReturn(
+            ListRelationsResponse.newBuilder()
+                .addResults(
+                    RelationListResult.newBuilder()
+                        .setRelation(
+                            Relation.newBuilder()
+                                .setDisplayName(table.getDisplayName())
+                                .setResourceId(table.getResourceId())
+                                .build())
+                        .build())
+                .setPage(page)
+                .build());
 
     TableLifecycleService.ListTablesResult result = service.listTables("cat", "db", 50, "cursor");
 
@@ -83,9 +100,10 @@ class TableLifecycleServiceTest {
     assertEquals("orders", identifier.name());
     assertEquals("next-token", result.nextPageToken());
 
-    ArgumentCaptor<ListTablesRequest> captor = ArgumentCaptor.forClass(ListTablesRequest.class);
-    verify(tableStub).listTables(captor.capture());
-    ListTablesRequest sent = captor.getValue();
+    ArgumentCaptor<ListRelationsRequest> captor =
+        ArgumentCaptor.forClass(ListRelationsRequest.class);
+    verify(relationStub).listRelations(captor.capture());
+    ListRelationsRequest sent = captor.getValue();
     assertEquals(namespaceId, sent.getNamespaceId());
     assertEquals("cursor", sent.getPage().getPageToken());
     assertEquals(50, sent.getPage().getPageSize());
@@ -94,8 +112,18 @@ class TableLifecycleServiceTest {
   @Test
   void deleteTableResolvesIdentifiers() {
     ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
-    when(directoryStub.resolveTable(any()))
-        .thenReturn(ResolveTableResponse.newBuilder().setResourceId(tableId).build());
+    when(relationStub.resolveRelations(any()))
+        .thenReturn(
+            ai.floedb.floecat.catalog.rpc.ResolveRelationsResponse.newBuilder()
+                .addResults(
+                    ai.floedb.floecat.catalog.rpc.ResolveRelationResult.newBuilder()
+                        .setRelation(
+                            Relation.newBuilder()
+                                .setResourceId(tableId)
+                                .setDisplayName("orders")
+                                .setTable(ai.floedb.floecat.catalog.rpc.TableDetails.newBuilder())
+                                .build()))
+                .build());
 
     service.deleteTable("cat", "db", "orders");
 

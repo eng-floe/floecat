@@ -26,19 +26,24 @@ import ai.floedb.floecat.catalog.rpc.DeleteTableResponse;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
+import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
+import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.catalog.rpc.RelationListResult;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
-import ai.floedb.floecat.catalog.rpc.ResolveFQTablesRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveFQTablesResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationResult;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
 import io.grpc.inprocess.InProcessChannelBuilder;
@@ -69,8 +74,8 @@ class TableCliSupportTest {
   @Test
   void tablesListPrintsHeader() throws Exception {
     try (Harness h = new Harness()) {
-      h.directoryService.fqTablesToReturn.add(
-          ResolveFQTablesResponse.Entry.newBuilder()
+      h.relationService.relationsToReturn.add(
+          Relation.newBuilder()
               .setResourceId(ResourceId.newBuilder().setId(UUID_1).build())
               .setName(
                   ai.floedb.floecat.common.rpc.NameRef.newBuilder()
@@ -78,6 +83,7 @@ class TableCliSupportTest {
                       .addPath("ns")
                       .setName("my-table")
                       .build())
+              .setDisplayName("my-table")
               .build());
 
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
@@ -87,6 +93,7 @@ class TableCliSupportTest {
           new PrintStream(buf),
           h.tableStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID,
           id -> ResourceId.getDefaultInstance());
 
@@ -106,6 +113,7 @@ class TableCliSupportTest {
           new PrintStream(buf),
           h.tableStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID,
           id -> ResourceId.getDefaultInstance());
       assertTrue(buf.toString().contains("usage:"));
@@ -128,6 +136,7 @@ class TableCliSupportTest {
           new PrintStream(buf),
           h.tableStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID,
           id -> ResourceId.getDefaultInstance());
 
@@ -148,6 +157,7 @@ class TableCliSupportTest {
           new PrintStream(buf),
           h.tableStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID,
           id -> ResourceId.getDefaultInstance());
       assertTrue(buf.toString().contains("usage:"));
@@ -160,7 +170,7 @@ class TableCliSupportTest {
   void tableGetByUuidPrintsResult() throws Exception {
     try (Harness h = new Harness()) {
       h.tableService.tableToReturn = table(UUID_1, "my-table");
-      h.directoryService.resolvedTableId = ResourceId.newBuilder().setId(UUID_1).build();
+      h.relationService.resolvedRelationId = ResourceId.newBuilder().setId(UUID_1).build();
 
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
       TableCliSupport.handle(
@@ -169,6 +179,7 @@ class TableCliSupportTest {
           new PrintStream(buf),
           h.tableStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID,
           id -> ResourceId.getDefaultInstance());
 
@@ -187,6 +198,7 @@ class TableCliSupportTest {
           new PrintStream(buf),
           h.tableStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID,
           id -> ResourceId.getDefaultInstance());
       assertTrue(buf.toString().contains("usage:"));
@@ -205,6 +217,7 @@ class TableCliSupportTest {
           new PrintStream(buf),
           h.tableStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID,
           id -> ResourceId.getDefaultInstance());
 
@@ -224,6 +237,7 @@ class TableCliSupportTest {
           new PrintStream(buf),
           h.tableStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID,
           id -> ResourceId.getDefaultInstance());
       assertTrue(buf.toString().contains("usage:"));
@@ -242,6 +256,7 @@ class TableCliSupportTest {
           new PrintStream(buf),
           h.tableStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID,
           id -> ResourceId.getDefaultInstance());
       assertTrue(buf.toString().contains("unknown subcommand"));
@@ -254,7 +269,7 @@ class TableCliSupportTest {
   void describeTablePrintsTableDetail() throws Exception {
     try (Harness h = new Harness()) {
       h.tableService.tableToReturn = table(UUID_1, "described-table");
-      h.directoryService.resolvedTableId = ResourceId.newBuilder().setId(UUID_1).build();
+      h.relationService.resolvedRelationId = ResourceId.newBuilder().setId(UUID_1).build();
 
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
       TableCliSupport.handle(
@@ -263,6 +278,7 @@ class TableCliSupportTest {
           new PrintStream(buf),
           h.tableStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID,
           id -> ResourceId.getDefaultInstance());
 
@@ -276,7 +292,7 @@ class TableCliSupportTest {
   @Test
   void resolveTablePrintsId() throws Exception {
     try (Harness h = new Harness()) {
-      h.directoryService.resolvedTableId = ResourceId.newBuilder().setId(UUID_1).build();
+      h.relationService.resolvedRelationId = ResourceId.newBuilder().setId(UUID_1).build();
 
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
       TableCliSupport.handle(
@@ -285,6 +301,7 @@ class TableCliSupportTest {
           new PrintStream(buf),
           h.tableStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID,
           id -> ResourceId.getDefaultInstance());
 
@@ -300,23 +317,28 @@ class TableCliSupportTest {
     final ManagedChannel channel;
     final CapturingTableService tableService;
     final CapturingDirectoryService directoryService;
+    final CapturingRelationService relationService;
     final TableServiceGrpc.TableServiceBlockingStub tableStub;
     final DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub;
+    final RelationServiceGrpc.RelationServiceBlockingStub relationStub;
 
     Harness() throws Exception {
       String serverName = InProcessServerBuilder.generateName();
       this.tableService = new CapturingTableService();
       this.directoryService = new CapturingDirectoryService();
+      this.relationService = new CapturingRelationService();
       this.server =
           InProcessServerBuilder.forName(serverName)
               .directExecutor()
               .addService(tableService)
               .addService(directoryService)
+              .addService(relationService)
               .build()
               .start();
       this.channel = InProcessChannelBuilder.forName(serverName).directExecutor().build();
       this.tableStub = TableServiceGrpc.newBlockingStub(channel);
       this.directoryStub = DirectoryServiceGrpc.newBlockingStub(channel);
+      this.relationStub = RelationServiceGrpc.newBlockingStub(channel);
     }
 
     @Override
@@ -376,8 +398,6 @@ class TableCliSupportTest {
 
     ResourceId resolvedCatalogId = ResourceId.newBuilder().setId(UUID_1).build();
     ResourceId resolvedNamespaceId = ResourceId.newBuilder().setId(UUID_1).build();
-    ResourceId resolvedTableId = ResourceId.newBuilder().setId(UUID_1).build();
-    final List<ResolveFQTablesResponse.Entry> fqTablesToReturn = new ArrayList<>();
 
     @Override
     public void resolveCatalog(
@@ -395,20 +415,40 @@ class TableCliSupportTest {
           ResolveNamespaceResponse.newBuilder().setResourceId(resolvedNamespaceId).build());
       responseObserver.onCompleted();
     }
+  }
+
+  private static final class CapturingRelationService
+      extends RelationServiceGrpc.RelationServiceImplBase {
+    ResourceId resolvedRelationId =
+        ResourceId.newBuilder().setId(UUID_1).setKind(ResourceKind.RK_TABLE).build();
+    final List<Relation> relationsToReturn = new ArrayList<>();
 
     @Override
-    public void resolveTable(
-        ResolveTableRequest request, StreamObserver<ResolveTableResponse> responseObserver) {
+    public void listRelations(
+        ListRelationsRequest request, StreamObserver<ListRelationsResponse> responseObserver) {
       responseObserver.onNext(
-          ResolveTableResponse.newBuilder().setResourceId(resolvedTableId).build());
+          ListRelationsResponse.newBuilder()
+              .addAllResults(
+                  relationsToReturn.stream()
+                      .map(r -> RelationListResult.newBuilder().setRelation(r).build())
+                      .toList())
+              .build());
       responseObserver.onCompleted();
     }
 
     @Override
-    public void resolveFQTables(
-        ResolveFQTablesRequest request, StreamObserver<ResolveFQTablesResponse> responseObserver) {
+    public void resolveRelations(
+        ResolveRelationsRequest request,
+        StreamObserver<ResolveRelationsResponse> responseObserver) {
+      Relation relation =
+          Relation.newBuilder()
+              .setResourceId(resolvedRelationId.toBuilder().setKind(ResourceKind.RK_TABLE))
+              .setDisplayName("resolved-table")
+              .build();
       responseObserver.onNext(
-          ResolveFQTablesResponse.newBuilder().addAllTables(fqTablesToReturn).build());
+          ResolveRelationsResponse.newBuilder()
+              .addResults(ResolveRelationResult.newBuilder().setRelation(relation))
+              .build());
       responseObserver.onCompleted();
     }
   }

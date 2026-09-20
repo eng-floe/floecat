@@ -22,8 +22,8 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsResponse;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
@@ -64,11 +64,12 @@ final class ViewCliSupport {
       PrintStream out,
       ViewServiceGrpc.ViewServiceBlockingStub viewService,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
       Supplier<String> getCurrentAccountId) {
     if ("views".equals(command)) {
       viewsList(args, out, viewService, directory, getCurrentAccountId);
     } else {
-      viewCrud(args, out, viewService, directory, getCurrentAccountId);
+      viewCrud(args, out, viewService, directory, relations, getCurrentAccountId);
     }
   }
 
@@ -104,6 +105,7 @@ final class ViewCliSupport {
       PrintStream out,
       ViewServiceGrpc.ViewServiceBlockingStub viewService,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
       Supplier<String> getCurrentAccountId) {
     if (args.isEmpty()) {
       out.println("usage: view <create|get|update|delete> ...");
@@ -159,7 +161,7 @@ final class ViewCliSupport {
           out.println("usage: view get <id|catalog.ns[.ns...].name>");
           return;
         }
-        ResourceId viewId = resolveViewId(args.get(1), directory, getCurrentAccountId);
+        ResourceId viewId = resolveViewId(args.get(1), directory, relations, getCurrentAccountId);
         var resp = viewService.getView(GetViewRequest.newBuilder().setViewId(viewId).build());
         printView(resp.getView(), out);
       }
@@ -170,7 +172,7 @@ final class ViewCliSupport {
                   + " [--sql <text>] [--desc <text>] [--props k=v ...]");
           return;
         }
-        ResourceId viewId = resolveViewId(args.get(1), directory, getCurrentAccountId);
+        ResourceId viewId = resolveViewId(args.get(1), directory, relations, getCurrentAccountId);
         String display = Quotes.unquote(CliArgs.parseStringFlag(args, "--display", null));
         String ns = Quotes.unquote(CliArgs.parseStringFlag(args, "--namespace", null));
         String sql = Quotes.unquote(CliArgs.parseStringFlag(args, "--sql", null));
@@ -219,7 +221,7 @@ final class ViewCliSupport {
           out.println("usage: view delete <id|catalog.ns[.ns...].name>");
           return;
         }
-        ResourceId viewId = resolveViewId(args.get(1), directory, getCurrentAccountId);
+        ResourceId viewId = resolveViewId(args.get(1), directory, relations, getCurrentAccountId);
         viewService.deleteView(DeleteViewRequest.newBuilder().setViewId(viewId).build());
         out.println("ok");
       }
@@ -232,15 +234,14 @@ final class ViewCliSupport {
   static ResourceId resolveViewId(
       String tok,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
       Supplier<String> getCurrentAccountId) {
     String u = Quotes.unquote(tok == null ? "" : tok);
     if (CliUtils.looksLikeUuid(u)) {
       return rid(u, ResourceKind.RK_VIEW, getCurrentAccountId);
     }
     NameRef ref = NameRefUtil.nameRefForTable(tok);
-    return directory
-        .resolveView(ResolveViewRequest.newBuilder().setRef(ref).build())
-        .getResourceId();
+    return TableCliSupport.resolveRelationId(relations, ref, ResourceKind.RK_VIEW);
   }
 
   private static ResourceId rid(

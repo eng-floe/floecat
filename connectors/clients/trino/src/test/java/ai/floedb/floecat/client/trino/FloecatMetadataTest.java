@@ -26,23 +26,24 @@ import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
-import ai.floedb.floecat.catalog.rpc.GetTableRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesResponse;
+import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
+import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.catalog.rpc.RelationListResult;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationResult;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsResponse;
+import ai.floedb.floecat.catalog.rpc.TableDetails;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
-import ai.floedb.floecat.catalog.rpc.ResolveFQTablesRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveFQTablesResponse;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
-import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -127,7 +128,7 @@ class FloecatMetadataTest {
   static void startServer() throws Exception {
     var directory = new DirectoryStub();
     var namespace = new NamespaceStub();
-    var table = new TableStub();
+    var relations = new RelationStub();
     var snapshot = new SnapshotStub();
 
     String serverName = InProcessServerBuilder.generateName();
@@ -135,7 +136,7 @@ class FloecatMetadataTest {
         InProcessServerBuilder.forName(serverName)
             .addService(directory)
             .addService(namespace)
-            .addService(table)
+            .addService(relations)
             .addService(snapshot)
             .build()
             .start();
@@ -145,8 +146,8 @@ class FloecatMetadataTest {
     metadata =
         new FloecatMetadata(
             NamespaceServiceGrpc.newBlockingStub(channel),
-            TableServiceGrpc.newBlockingStub(channel),
             DirectoryServiceGrpc.newBlockingStub(channel),
+            RelationServiceGrpc.newBlockingStub(channel),
             SnapshotServiceGrpc.newBlockingStub(channel),
             new CatalogName("test"),
             CatalogHandle.fromId("test:normal:v1"),
@@ -169,6 +170,12 @@ class FloecatMetadataTest {
     tableSchemaJson = CURRENT_SCHEMA_JSON;
     upstreamUri = "s3://bucket/table";
     snapshotSchemaJson = SNAPSHOT_SCHEMA_JSON;
+  }
+
+  @Test
+  void listSchemaNamesIncludesNestedNamespaces() {
+    assertEquals(List.of("default", "default.nested"), metadata.listSchemaNames(null));
+    assertTrue(NamespaceStub.lastRequestWasRecursive);
   }
 
   @Test
@@ -522,59 +529,78 @@ class FloecatMetadataTest {
       responseObserver.onCompleted();
     }
 
-    @Override
-    public void resolveTable(
-        ResolveTableRequest request, StreamObserver<ResolveTableResponse> responseObserver) {
-      responseObserver.onNext(ResolveTableResponse.newBuilder().setResourceId(TABLE_ID).build());
-      responseObserver.onCompleted();
-    }
 
-    @Override
-    public void resolveFQTables(
-        ResolveFQTablesRequest request, StreamObserver<ResolveFQTablesResponse> responseObserver) {
-      NameRef ref = request.getPrefix();
-      var entry =
-          ResolveFQTablesResponse.Entry.newBuilder().setName(ref).setResourceId(TABLE_ID).build();
-      responseObserver.onNext(ResolveFQTablesResponse.newBuilder().addTables(entry).build());
-      responseObserver.onCompleted();
-    }
   }
 
   private static class NamespaceStub extends NamespaceServiceGrpc.NamespaceServiceImplBase {
+    static volatile boolean lastRequestWasRecursive;
+
     @Override
     public void listNamespaces(
         ListNamespacesRequest request, StreamObserver<ListNamespacesResponse> responseObserver) {
-      var ns =
-          Namespace.newBuilder()
-              .setDisplayName("default")
-              .setResourceId(
-                  ResourceId.newBuilder().setId("ns").setKind(ResourceKind.RK_NAMESPACE).build())
-              .build();
-      responseObserver.onNext(ListNamespacesResponse.newBuilder().addNamespaces(ns).build());
+      lastRequestWasRecursive = request.getRecursive();
+      var out = ListNamespacesResponse.newBuilder().addNamespaces(namespace("default"));
+      if (request.getRecursive()) {
+        out.addNamespaces(namespace("nested", "default"));
+      }
+      responseObserver.onNext(out.build());
       responseObserver.onCompleted();
+    }
+
+    private static Namespace namespace(String displayName, String... parents) {
+      return Namespace.newBuilder()
+          .setDisplayName(displayName)
+          .addAllParents(List.of(parents))
+          .setResourceId(
+              ResourceId.newBuilder()
+                  .setId("ns_" + displayName)
+                  .setKind(ResourceKind.RK_NAMESPACE)
+                  .build())
+          .build();
     }
   }
 
-  private static class TableStub extends TableServiceGrpc.TableServiceImplBase {
+  private static class RelationStub extends RelationServiceGrpc.RelationServiceImplBase {
     @Override
-    public void getTable(
-        GetTableRequest request, StreamObserver<GetTableResponse> responseObserver) {
-      var tableBuilder =
-          Table.newBuilder()
-              .setResourceId(TABLE_ID)
-              .setCatalogId(CATALOG_ID)
-              .setSchemaJson(tableSchemaJson);
+    public void resolveRelations(
+        ResolveRelationsRequest request,
+        StreamObserver<ResolveRelationsResponse> responseObserver) {
+      var out = ResolveRelationsResponse.newBuilder();
+      for (var reference : request.getReferencesList()) {
+        out.addResults(
+            ResolveRelationResult.newBuilder()
+                .setResolvedName(reference.getCandidates(0))
+                .setRelation(relation()));
+      }
+      responseObserver.onNext(out.build());
+      responseObserver.onCompleted();
+    }
+
+    @Override
+    public void listRelations(
+        ListRelationsRequest request, StreamObserver<ListRelationsResponse> responseObserver) {
+      responseObserver.onNext(
+          ListRelationsResponse.newBuilder()
+              .addResults(RelationListResult.newBuilder().setRelation(relation()).build())
+              .build());
+      responseObserver.onCompleted();
+    }
+
+    private static Relation relation() {
+      var details = TableDetails.newBuilder().setSchemaJson(tableSchemaJson);
       if (includeUpstream) {
-        var upstream =
+        details.setUpstream(
             UpstreamRef.newBuilder()
                 .setUri(upstreamUri)
                 .setFormat(TableFormat.TF_ICEBERG)
                 .setColumnIdAlgorithm(ColumnIdAlgorithm.CID_FIELD_ID)
-                .build();
-        tableBuilder.setUpstream(upstream);
+                .build());
       }
-      responseObserver.onNext(GetTableResponse.newBuilder().setTable(tableBuilder.build()).build());
-      responseObserver.onCompleted();
+      return Relation.newBuilder()
+          .setResourceId(TABLE_ID)
+          .setDisplayName("tbl")
+                    .setTable(details.build())
+          .build();
     }
   }
 
