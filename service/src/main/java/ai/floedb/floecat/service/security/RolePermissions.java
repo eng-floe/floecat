@@ -27,7 +27,11 @@ public final class RolePermissions {
   public static final String PLATFORM_ADMIN_ROLE = "platform-admin";
   public static final String INIT_ACCOUNT_ROLE = "init-account";
   public static final String DELETE_ACCOUNT_ROLE = "delete-account";
-  public static final String SYSTEM_OBJECTS_ROLE = "system-objects";
+  public static final String SQL_OBJECTS_ROLE = "sql-objects";
+
+  /** IdP alias for {@link #SQL_OBJECTS_ROLE}, granting the same permission. */
+  public static final String SYSTEM_OBJECTS_ROLE_ALIAS = "system-objects";
+
   public static final String RECONCILE_WORKER_ROLE = "reconcile-worker";
   public static final String STORAGE_AUTHORITY_RESOLVE_INTERNAL =
       "storage-authority.resolve-internal";
@@ -82,11 +86,11 @@ public final class RolePermissions {
           CATALOG_OVERLAY_WRITE,
           CATALOG_OVERLAY_RECONCILE,
           CATALOG_OVERLAY_DELETE,
-          "system-objects.read",
+          "sql-objects.read",
           "account.delete");
   private static final List<String> PLATFORM_PERMS =
       List.of("account.read", "account.write", "account.delete");
-  private static final List<String> SYSTEM_OBJECTS_PERMS = List.of("system-objects.read");
+  private static final List<String> SQL_OBJECTS_PERMS = List.of("sql-objects.read");
   private static final List<String> INIT_ACCOUNT_PERMS =
       List.of(
           "account.read",
@@ -118,7 +122,7 @@ public final class RolePermissions {
           CATALOG_INTEGRATION_USE,
           CATALOG_OVERLAY_READ,
           CATALOG_OVERLAY_RECONCILE,
-          "system-objects.read",
+          "sql-objects.read",
           STORAGE_AUTHORITY_RESOLVE_INTERNAL,
           RECONCILE_EXECUTOR_CONTROL_INTERNAL);
 
@@ -145,8 +149,9 @@ public final class RolePermissions {
         case "default":
           perms.addAll(READ_PERMS);
           break;
-        case SYSTEM_OBJECTS_ROLE:
-          perms.addAll(SYSTEM_OBJECTS_PERMS);
+        case SQL_OBJECTS_ROLE:
+        case SYSTEM_OBJECTS_ROLE_ALIAS:
+          perms.addAll(SQL_OBJECTS_PERMS);
           break;
         case INIT_ACCOUNT_ROLE:
           perms.addAll(INIT_ACCOUNT_PERMS);

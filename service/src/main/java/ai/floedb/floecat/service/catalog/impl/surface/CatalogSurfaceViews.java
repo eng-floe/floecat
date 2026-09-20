@@ -40,12 +40,14 @@ public final class CatalogSurfaceViews {
   private final ViewRepository viewRepo;
   private final CatalogGraphView graphView;
   private final CatalogSurfaceWritePolicy writePolicy;
+  private final CatalogContext context;
 
   public CatalogSurfaceViews(
       ViewRepository viewRepo, CatalogGraphView graphView, CatalogContext context) {
     this.viewRepo = Objects.requireNonNull(viewRepo, "view repository is required");
     this.graphView = graphView;
     this.writePolicy = new CatalogSurfaceWritePolicy(graphView, context);
+    this.context = context;
   }
 
   public ListViewsResponse listViews(ListViewsRequest request, String accountId, String corr) {
@@ -66,12 +68,20 @@ public final class CatalogSurfaceViews {
     return ListViewsResponse.newBuilder().addAllViews(result.items()).setPage(page).build();
   }
 
-  public GetViewResponse getView(GetViewRequest request, String corr) {
-    var viewId = request.getViewId();
-    ViewNode node = writePolicy.requireVisibleView(viewId, corr);
-    var view = viewFromGraphNodeOrRepo(node, viewId, corr);
+  /** The page source this namespace lists through, for callers paging views beside tables. */
+  CatalogSurfaceViewPageSource pageSource(NamespaceNode namespace, String accountId) {
+    return new CatalogSurfaceViewPageSource(
+        viewRepo, graphView, accountId, namespace, namespace.id(), context);
+  }
 
-    return GetViewResponse.newBuilder().setView(view).build();
+  /** The visible view, without the wire envelope, for in-process callers. */
+  public View byId(ResourceId viewId, String corr) {
+    ViewNode node = writePolicy.requireVisibleView(viewId, corr);
+    return viewFromGraphNodeOrRepo(node, viewId, corr);
+  }
+
+  public GetViewResponse getView(GetViewRequest request, String corr) {
+    return GetViewResponse.newBuilder().setView(byId(request.getViewId(), corr)).build();
   }
 
   private View viewFromGraphNodeOrRepo(ViewNode node, ResourceId viewId, String corr) {

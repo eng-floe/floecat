@@ -36,6 +36,17 @@ import org.eclipse.microprofile.config.ConfigProvider;
 
 public final class GrpcErrors {
 
+  /** Whether a gRPC failure can be isolated to one relation in a batch operation. */
+  public static boolean isRelationScoped(Throwable failure) {
+    if (!(failure instanceof StatusRuntimeException status)) {
+      return false;
+    }
+    return switch (status.getStatus().getCode()) {
+      case NOT_FOUND, PERMISSION_DENIED, INVALID_ARGUMENT, FAILED_PRECONDITION -> true;
+      default -> false;
+    };
+  }
+
   public static StatusRuntimeException aborted(
       String corrId, Map<String, String> params, Throwable t) {
     return build(io.grpc.Status.ABORTED, ErrorCode.MC_ABORT_RETRYABLE, corrId, params, null, t);

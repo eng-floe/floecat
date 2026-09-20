@@ -52,6 +52,9 @@ class ConcurrencyOCCIdempotencyIT {
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @GrpcClient("floecat")
+  RelationServiceGrpc.RelationServiceBlockingStub relations;
+
+  @GrpcClient("floecat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
 
   @GrpcClient("floecat")
@@ -274,11 +277,8 @@ class ConcurrencyOCCIdempotencyIT {
               .setName("idem_" + k)
               .build();
       try {
-        var resolved = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build());
-        assertEquals(
-            tid.getId(),
-            resolved.getResourceId().getId(),
-            "idempotent create must resolve to same id");
+        var resolved = TestSupport.resolveRelationId(relations, ref, ResourceKind.RK_TABLE);
+        assertEquals(tid.getId(), resolved.getId(), "idempotent create must resolve to same id");
       } catch (StatusRuntimeException e) {
         if (e.getStatus().getCode() != Status.Code.NOT_FOUND) {
           throw e;
