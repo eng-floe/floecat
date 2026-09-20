@@ -121,6 +121,7 @@ class FloecatMetadataTest {
   private static volatile String upstreamUri = "s3://bucket/table";
   private static volatile String snapshotSchemaJson = SNAPSHOT_SCHEMA_JSON;
   private static volatile boolean relationListError;
+  private static volatile boolean relationListWasRecursive;
 
   private static ManagedChannel channel;
   private static Server server;
@@ -173,6 +174,7 @@ class FloecatMetadataTest {
     upstreamUri = "s3://bucket/table";
     snapshotSchemaJson = SNAPSHOT_SCHEMA_JSON;
     relationListError = false;
+    relationListWasRecursive = false;
   }
 
   @Test
@@ -181,6 +183,13 @@ class FloecatMetadataTest {
 
     assertThrows(
         IllegalStateException.class, () -> metadata.listTables(null, Optional.empty()));
+  }
+
+  @Test
+  void listTablesAcrossCatalogsIncludesNestedNamespaces() {
+    metadata.listTables(null, Optional.empty());
+
+    assertTrue(relationListWasRecursive);
   }
 
   @Test
@@ -590,6 +599,7 @@ class FloecatMetadataTest {
     @Override
     public void listRelations(
         ListRelationsRequest request, StreamObserver<ListRelationsResponse> responseObserver) {
+      relationListWasRecursive = request.getRecursive();
       if (relationListError) {
         responseObserver.onNext(
             ListRelationsResponse.newBuilder()
@@ -622,8 +632,9 @@ class FloecatMetadataTest {
       }
       return Relation.newBuilder()
           .setResourceId(TABLE_ID)
+          .setName(NameRef.newBuilder().setCatalog("test").setName("tbl").addPath("default"))
           .setDisplayName("tbl")
-                    .setTable(details.build())
+          .setTable(details.build())
           .build();
     }
   }
