@@ -197,11 +197,7 @@ public class FloecatMetadata implements ConnectorMetadata {
           relationService.listRelations(
               request.setPage(PageRequest.newBuilder().setPageToken(token)).build());
       var page = RelationResults.read(response);
-      if (!page.errors().isEmpty()) {
-        LOG.warn(
-            "Skipping unreadable relation(s): "
-                + RelationResults.describeErrors(page.errors()));
-      }
+      RelationResults.requireComplete(page);
       for (Relation relation : page.relations()) {
         out.add(
             new SchemaTableName(schemaOf(relation, fallbackSchema), relation.getDisplayName()));

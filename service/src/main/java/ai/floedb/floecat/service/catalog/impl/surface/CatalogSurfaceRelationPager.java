@@ -60,38 +60,43 @@ final class CatalogSurfaceRelationPager {
     var repoExhausted = repoNext.isBlank();
     var sysNodes = source.systemNodes();
     sysCount = sysNodes.size();
+    List<SysItem<N>> sysItems = List.of();
 
-    if (repoExhausted && out.size() < want && sysCount > 0) {
-      record SysItem<N>(N node, String rel) {}
-
-      var sysItems =
+    if (repoExhausted && sysCount > 0) {
+      sysItems =
           sysNodes.stream()
               .map(node -> new SysItem<>(node, source.systemRelativeKey(node)))
               .filter(it -> it.rel() != null && !it.rel().isBlank())
               .sorted(Comparator.comparing(SysItem::rel))
               .toList();
 
-      for (var it : sysItems) {
-        if (!resumeAfterRel.isBlank() && it.rel().compareTo(resumeAfterRel) <= 0) {
-          continue;
+      if (out.size() < want) {
+        for (var it : sysItems) {
+          if (!resumeAfterRel.isBlank() && it.rel().compareTo(resumeAfterRel) <= 0) {
+            continue;
+          }
+          if (out.size() >= want) {
+            break;
+          }
+          out.add(source.mapSystemNode(it.node()));
+          lastEmittedRel = it.rel();
         }
-        if (out.size() >= want) {
-          break;
-        }
-        out.add(source.mapSystemNode(it.node()));
-        lastEmittedRel = it.rel();
       }
     }
 
     String nextToken = repoNext;
-    if (nextToken.isBlank() && out.size() == want && sysCount > 0) {
-      nextToken = CatalogSurfaceSupport.encodeToken(source.tokenPrefix(), lastEmittedRel);
+    String resume = lastEmittedRel.isBlank() ? resumeAfterRel : lastEmittedRel;
+    boolean hasMoreSystem = sysItems.stream().anyMatch(it -> it.rel().compareTo(resume) > 0);
+    if (nextToken.isBlank() && out.size() == want && hasMoreSystem) {
+      nextToken = CatalogSurfaceSupport.encodeToken(source.tokenPrefix(), resume);
     }
 
     int repoCount = source.namespace().origin() == GraphNodeOrigin.SYSTEM ? 0 : source.countRepo();
 
     return new Page<>(out, nextToken, repoCount + sysCount);
   }
+
+  private record SysItem<N>(N node, String rel) {}
 
   interface Source<P, N> {
     NamespaceNode namespace();

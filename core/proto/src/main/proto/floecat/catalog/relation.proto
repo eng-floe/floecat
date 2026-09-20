@@ -156,6 +156,7 @@ message RelationListResult {
 
 message RelationListError {
   ai.floedb.floecat.common.ResourceId relation_id = 1;
+  /** Fully qualified name when available; otherwise the relation's leaf name. */
   ai.floedb.floecat.common.NameRef name = 2;
   ai.floedb.floecat.common.Error error = 3;
 }

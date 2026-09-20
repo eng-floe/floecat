@@ -17,6 +17,7 @@
 package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -27,6 +28,7 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.catalog.rpc.RelationListError;
 import ai.floedb.floecat.catalog.rpc.RelationListResult;
 import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
@@ -107,6 +109,27 @@ class TableLifecycleServiceTest {
     assertEquals(namespaceId, sent.getNamespaceId());
     assertEquals("cursor", sent.getPage().getPageToken());
     assertEquals(50, sent.getPage().getPageSize());
+  }
+
+  @Test
+  void listTablesRejectsIncompleteRelationPages() {
+    ResourceId namespaceId = ResourceId.newBuilder().setId("cat:db").build();
+    when(directoryStub.resolveNamespace(any()))
+        .thenReturn(ResolveNamespaceResponse.newBuilder().setResourceId(namespaceId).build());
+    when(relationStub.listRelations(any()))
+        .thenReturn(
+            ListRelationsResponse.newBuilder()
+                .addResults(
+                    RelationListResult.newBuilder()
+                        .setError(
+                            RelationListError.newBuilder()
+                                .setName(
+                                    ai.floedb.floecat.common.rpc.NameRef.newBuilder()
+                                        .setName("broken")))
+                        .build())
+                .build());
+
+    assertThrows(IllegalStateException.class, () -> service.listTables("cat", "db", 50, "cursor"));
   }
 
   @Test
