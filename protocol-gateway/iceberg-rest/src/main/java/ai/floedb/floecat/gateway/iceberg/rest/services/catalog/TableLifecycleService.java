@@ -36,12 +36,9 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.List;
 import java.util.stream.Collectors;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TableLifecycleService {
-  private static final Logger LOG = Logger.getLogger(TableLifecycleService.class);
-
   @Inject GrpcWithHeaders grpc;
   @Inject GrpcServiceFacade tableClient;
 
@@ -72,9 +69,7 @@ public class TableLifecycleService {
       resp = ListRelationsResponse.getDefaultInstance();
     }
     var page = RelationResults.read(resp);
-    if (!page.errors().isEmpty()) {
-      LOG.warn("Skipping unreadable relation(s): " + RelationResults.describeErrors(page.errors()));
-    }
+    RelationResults.requireComplete(page);
     List<TableIdentifierDto> identifiers =
         page.relations().stream()
             .map(relation -> new TableIdentifierDto(namespacePath, relation.getDisplayName()))

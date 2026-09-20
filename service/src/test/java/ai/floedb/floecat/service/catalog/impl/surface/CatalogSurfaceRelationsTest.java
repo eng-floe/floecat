@@ -55,6 +55,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -164,6 +165,48 @@ class CatalogSurfaceRelationsTest {
     assertEquals(List.of("healthy"), names(second));
     assertTrue(second.getResults(0).hasRelation());
     assertTrue(second.getPage().getNextPageToken().isBlank());
+  }
+
+  @Test
+  void qualifiesRowErrorsInRecursiveListings() {
+    var child = namespace(List.of("public"), "nested");
+    graphView.addNode(child);
+    var broken = tableIn(child.id(), "broken");
+    tableRepo.add(broken);
+    graphView.bind(name("public", "nested", "broken"), broken.getResourceId());
+    graphView.failTableSchemaWith(
+        broken.getResourceId(),
+        new StatusRuntimeException(
+            io.grpc.Status.FAILED_PRECONDITION.withDescription("schema unavailable")));
+
+    var response =
+        list(
+            ListRelationsRequest.newBuilder()
+                .setNamespaceId(namespaceId)
+                .setRecursive(true)
+                .addKinds(ResourceKind.RK_TABLE)
+                .setIncludeSchema(true),
+            1);
+
+    assertTrue(response.getResults(0).hasError());
+    assertEquals(
+        List.of("public", "nested"), response.getResults(0).getError().getName().getPathList());
+    assertEquals("broken", response.getResults(0).getError().getName().getName());
+  }
+
+  @Test
+  void doesNotAdvertiseAnEmptyPageAfterTheLastSystemRelation() {
+    graphView.addRelation(namespaceId, systemTable("only_system"));
+
+    var response =
+        list(
+            ListRelationsRequest.newBuilder()
+                .setNamespaceId(namespaceId)
+                .addKinds(ResourceKind.RK_TABLE),
+            1);
+
+    assertEquals(List.of("only_system"), names(response));
+    assertTrue(response.getPage().getNextPageToken().isBlank());
   }
 
   @Test
@@ -771,13 +814,18 @@ class CatalogSurfaceRelationsTest {
     return NameRef.newBuilder().addPath(namespace).setName(name).build();
   }
 
+  private static NameRef name(String first, String second, String name) {
+    return NameRef.newBuilder().addPath(first).addPath(second).setName(name).build();
+  }
+
   private static ResourceId id(ResourceKind kind, String id) {
     return ResourceId.newBuilder().setAccountId(ACCOUNT_ID).setKind(kind).setId(id).build();
   }
 
   /** Keyset-paged over an in-memory list, matching the repository contract the pager relies on. */
   private static final class FakeTableRepository extends TableRepository {
-    private final List<Table> rows = new ArrayList<>();
+    private final RelationRows<Table> rows =
+        new RelationRows<>(table -> table.getNamespaceId().getId());
 
     FakeTableRepository() {
       super(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -795,21 +843,18 @@ class CatalogSurfaceRelationsTest {
         int limit,
         String cursor,
         StringBuilder next) {
-      return page(inNamespace(namespaceId), Table::getDisplayName, limit, cursor, next);
+      return page(rows.inNamespace(namespaceId), Table::getDisplayName, limit, cursor, next);
     }
 
     @Override
     public int count(String accountId, String catalogId, String namespaceId) {
-      return inNamespace(namespaceId).size();
-    }
-
-    private List<Table> inNamespace(String namespaceId) {
-      return rows.stream().filter(t -> t.getNamespaceId().getId().equals(namespaceId)).toList();
+      return rows.inNamespace(namespaceId).size();
     }
   }
 
   private static final class FakeViewRepository extends ViewRepository {
-    private final List<ai.floedb.floecat.catalog.rpc.View> rows = new ArrayList<>();
+    private final RelationRows<ai.floedb.floecat.catalog.rpc.View> rows =
+        new RelationRows<>(view -> view.getNamespaceId().getId());
 
     FakeViewRepository() {
       super(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -828,7 +873,7 @@ class CatalogSurfaceRelationsTest {
         String cursor,
         StringBuilder next) {
       return page(
-          inNamespace(namespaceId),
+          rows.inNamespace(namespaceId),
           ai.floedb.floecat.catalog.rpc.View::getDisplayName,
           limit,
           cursor,
@@ -837,11 +882,24 @@ class CatalogSurfaceRelationsTest {
 
     @Override
     public int count(String accountId, String catalogId, String namespaceId) {
-      return inNamespace(namespaceId).size();
+      return rows.inNamespace(namespaceId).size();
+    }
+  }
+
+  private static final class RelationRows<T> {
+    private final List<T> rows = new ArrayList<>();
+    private final Function<T, String> namespaceId;
+
+    private RelationRows(Function<T, String> namespaceId) {
+      this.namespaceId = namespaceId;
     }
 
-    private List<ai.floedb.floecat.catalog.rpc.View> inNamespace(String namespaceId) {
-      return rows.stream().filter(v -> v.getNamespaceId().getId().equals(namespaceId)).toList();
+    private void add(T row) {
+      rows.add(row);
+    }
+
+    private List<T> inNamespace(String id) {
+      return rows.stream().filter(row -> namespaceId.apply(row).equals(id)).toList();
     }
   }
 
@@ -870,6 +928,7 @@ class CatalogSurfaceRelationsTest {
 
     private final Map<ResourceId, RuntimeException> resolveFailures = new LinkedHashMap<>();
     private final Map<ResourceId, RuntimeException> tableNameFailures = new LinkedHashMap<>();
+    private final Map<ResourceId, RuntimeException> tableSchemaFailures = new LinkedHashMap<>();
 
     void bind(NameRef name, ResourceId id) {
       byName.put(NameRefUtil.lookupKey(name), id);
@@ -881,6 +940,10 @@ class CatalogSurfaceRelationsTest {
 
     void failTableNameWith(ResourceId id, RuntimeException failure) {
       tableNameFailures.put(id, failure);
+    }
+
+    void failTableSchemaWith(ResourceId id, RuntimeException failure) {
+      tableSchemaFailures.put(id, failure);
     }
 
     @Override
@@ -909,6 +972,15 @@ class CatalogSurfaceRelationsTest {
           .filter(entry -> entry.getValue().equals(id))
           .map(entry -> nameFromCanonical(entry.getKey()))
           .findFirst();
+    }
+
+    @Override
+    public List<SchemaColumn> tableSchema(ResourceId id, CatalogContext catalogContext) {
+      RuntimeException failure = tableSchemaFailures.get(id);
+      if (failure != null) {
+        throw failure;
+      }
+      return super.tableSchema(id, catalogContext);
     }
 
     @Override

@@ -42,12 +42,9 @@ import jakarta.inject.Inject;
 import jakarta.ws.rs.core.Response;
 import java.util.List;
 import java.util.stream.Collectors;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class ViewService {
-  private static final Logger LOG = Logger.getLogger(ViewService.class);
-
   @Inject GrpcServiceFacade viewClient;
   @Inject ViewMetadataService viewMetadataService;
   @Inject ViewSpecSupport viewSpecSupport;
@@ -65,9 +62,7 @@ public class ViewService {
 
     var resp = viewClient.listRelations(req.build());
     var page = RelationResults.read(resp);
-    if (!page.errors().isEmpty()) {
-      LOG.warn("Skipping unreadable relation(s): " + RelationResults.describeErrors(page.errors()));
-    }
+    RelationResults.requireComplete(page);
     List<TableIdentifierDto> identifiers =
         page.relations().stream()
             .map(

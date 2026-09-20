@@ -138,7 +138,7 @@ class CatalogSurfaceTablesTest {
             CORRELATION_ID);
 
     assertEquals(List.of("z_system"), names(systemPage.getTablesList()));
-    assertTrue(systemPage.getPage().getNextPageToken().startsWith("tbl:"));
+    assertTrue(systemPage.getPage().getNextPageToken().isBlank());
     verify(tableRepo).list(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq("repo-next"), any());
   }
 

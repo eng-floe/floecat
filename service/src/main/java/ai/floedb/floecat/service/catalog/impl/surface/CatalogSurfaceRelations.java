@@ -317,6 +317,7 @@ public final class CatalogSurfaceRelations {
           t -> mapper.fromTable(t, includeSchema, includeStatus),
           ai.floedb.floecat.catalog.rpc.Table::getResourceId,
           ai.floedb.floecat.catalog.rpc.Table::getDisplayName,
+          mapper::nameOf,
           corr);
     }
     var page =
@@ -328,6 +329,7 @@ public final class CatalogSurfaceRelations {
         v -> mapper.fromView(v, includeSchema, includeStatus),
         ai.floedb.floecat.catalog.rpc.View::getResourceId,
         ai.floedb.floecat.catalog.rpc.View::getDisplayName,
+        mapper::nameOf,
         corr);
   }
 
@@ -337,6 +339,7 @@ public final class CatalogSurfaceRelations {
       Function<T, Relation> relationMapper,
       Function<T, ResourceId> relationId,
       Function<T, String> displayName,
+      Function<T, NameRef> name,
       String corr) {
     var results = new ArrayList<RelationListResult>(source.size());
     for (var item : source) {
@@ -345,10 +348,15 @@ public final class CatalogSurfaceRelations {
             RelationListResult.newBuilder().setRelation(relationMapper.apply(item)).build());
       } catch (RuntimeException failure) {
         rethrowIfRequestScoped(failure);
+        NameRef errorName;
+        try {
+          errorName = name.apply(item);
+        } catch (RuntimeException ignored) {
+          errorName = NameRef.newBuilder().setName(displayName.apply(item)).build();
+        }
         results.add(
             RelationListResult.newBuilder()
-                .setError(
-                    toListError(relationId.apply(item), displayName.apply(item), failure, corr))
+                .setError(toListError(relationId.apply(item), errorName, failure, corr))
                 .build());
       }
     }
@@ -362,8 +370,7 @@ public final class CatalogSurfaceRelations {
   }
 
   private static RelationListError toListError(
-      ResourceId relationId, String displayName, RuntimeException failure, String corr) {
-    NameRef name = NameRef.newBuilder().setName(displayName).build();
+      ResourceId relationId, NameRef name, RuntimeException failure, String corr) {
     Error error;
     if (failure instanceof StatusRuntimeException status) {
       error = toError(name, status, corr);
@@ -371,7 +378,7 @@ public final class CatalogSurfaceRelations {
       error =
           Error.newBuilder()
               .setCode(ErrorCode.MC_INTERNAL)
-              .setMessage("relation metadata could not be hydrated: " + displayName)
+              .setMessage("relation metadata could not be hydrated: " + name.getName())
               .setCorrelationId(corr)
               .build();
     }

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.engine.catalog;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.Relation;
@@ -29,21 +30,45 @@ import org.junit.jupiter.api.Test;
 class RelationResultsTest {
 
   @Test
-  void readReturnsRelationsInWireOrderAndContinuation() {
+  void readPreservesOrderedUnionAndContinuation() {
     Relation first = Relation.newBuilder().setDisplayName("first").build();
     Relation second = Relation.newBuilder().setDisplayName("second").build();
+    RelationListResult error =
+        RelationListResult.newBuilder()
+            .setError(RelationListError.newBuilder().setName(NameRef.newBuilder().setName("bad")))
+            .build();
     ListRelationsResponse response =
         ListRelationsResponse.newBuilder()
             .addResults(RelationListResult.newBuilder().setRelation(first))
+            .addResults(error)
             .addResults(RelationListResult.newBuilder().setRelation(second))
             .setPage(
                 ai.floedb.floecat.common.rpc.PageResponse.newBuilder().setNextPageToken("next"))
             .build();
 
     var page = RelationResults.read(response);
+    assertThat(page.results())
+        .containsExactly(response.getResults(0), error, response.getResults(2));
     assertThat(page.relations()).containsExactly(first, second);
-    assertThat(page.errors()).isEmpty();
+    assertThat(page.errors()).containsExactly(error.getError());
     assertThat(page.nextPageToken()).isEqualTo("next");
+  }
+
+  @Test
+  void requireCompleteRejectsPartialPages() {
+    ListRelationsResponse response =
+        ListRelationsResponse.newBuilder()
+            .addResults(
+                RelationListResult.newBuilder()
+                    .setError(
+                        RelationListError.newBuilder()
+                            .setName(NameRef.newBuilder().setName("broken"))))
+            .build();
+
+    var page = RelationResults.read(response);
+    assertThatThrownBy(() -> RelationResults.requireComplete(page))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("broken");
   }
 
   @Test
@@ -65,5 +90,18 @@ class RelationResultsTest {
     assertThat(page.errors()).hasSize(1);
     assertThat(RelationResults.describeErrors(page.errors())).isEqualTo("broken: unreadable");
     assertThat(page.nextPageToken()).isEqualTo("next");
+  }
+
+  @Test
+  void readRejectsRowsWithoutAResult() {
+    ListRelationsResponse response =
+        ListRelationsResponse.newBuilder()
+            .addResults(RelationListResult.getDefaultInstance())
+            .build();
+
+    assertThatThrownBy(() -> RelationResults.read(response))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("row 0")
+        .hasMessageContaining("neither a relation nor an error");
   }
 }
