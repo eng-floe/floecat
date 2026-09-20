@@ -19,18 +19,19 @@ package ai.floedb.floecat.service.it.cost;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
-import ai.floedb.floecat.catalog.rpc.NameList;
+import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.ResolveFQTablesRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveFQViewsRequest;
+import ai.floedb.floecat.catalog.rpc.RelationReference;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.it.profiles.StoreCostProfile;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
@@ -77,7 +78,7 @@ class PointerListingStoreCostIT {
   ViewServiceGrpc.ViewServiceBlockingStub views;
 
   @GrpcClient("floecat")
-  DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
+  RelationServiceGrpc.RelationServiceBlockingStub relation;
 
   @Inject TestDataResetter resetter;
   @Inject AccountRepository accounts;
@@ -137,14 +138,15 @@ class PointerListingStoreCostIT {
           tables, catalogId, namespace.getResourceId(), name, "s3://bucket/" + name, "{}", "");
     }
 
-    NameRef prefix =
-        NameRef.newBuilder().setCatalog("pointer_table_listing").addPath("sales").build();
     meter.assertWiredAndLive();
-    assertEquals(List.of("alpha", "bravo", "charlie"), listTables(prefix));
+    assertEquals(List.of("alpha", "bravo", "charlie"), listTables(namespace.getResourceId()));
 
-    meter.measure(() -> assertEquals(List.of("alpha", "bravo", "charlie"), listTables(prefix)));
+    meter.measure(
+        () ->
+            assertEquals(
+                List.of("alpha", "bravo", "charlie"), listTables(namespace.getResourceId())));
 
-    System.out.println(meter.report("paged Directory ResolveFQTables"));
+    System.out.println(meter.report("paged RelationService ListRelations"));
     assertEquals(
         0, reads.plannerPointerRoundTrips(), "a warm Directory listing must remain in memory");
     assertEquals(
@@ -166,35 +168,29 @@ class PointerListingStoreCostIT {
       TestSupport.createView(views, catalogId, namespace.getResourceId(), name, "select 1", "");
     }
 
-    NameList names =
-        NameList.newBuilder()
-            .addNames(
-                NameRef.newBuilder()
-                    .setCatalog("pointer_view_listing")
-                    .addPath("sales")
-                    .setName("alpha"))
-            .addNames(
-                NameRef.newBuilder()
-                    .setCatalog("pointer_view_listing")
-                    .addPath("sales")
-                    .setName("bravo"))
+    var names =
+        ResolveRelationsRequest.newBuilder()
+            .addReferences(
+                RelationReference.newBuilder()
+                    .addCandidates(
+                        NameRef.newBuilder()
+                            .setCatalog("pointer_view_listing")
+                            .addPath("sales")
+                            .setName("alpha")))
+            .addReferences(
+                RelationReference.newBuilder()
+                    .addCandidates(
+                        NameRef.newBuilder()
+                            .setCatalog("pointer_view_listing")
+                            .addPath("sales")
+                            .setName("bravo")))
             .build();
     meter.assertWiredAndLive();
-    assertEquals(
-        2,
-        directory
-            .resolveFQViews(ResolveFQViewsRequest.newBuilder().setList(names).build())
-            .getViewsCount());
+    assertEquals(2, relation.resolveRelations(names).getResultsCount());
 
-    meter.measure(
-        () ->
-            assertEquals(
-                2,
-                directory
-                    .resolveFQViews(ResolveFQViewsRequest.newBuilder().setList(names).build())
-                    .getViewsCount()));
+    meter.measure(() -> assertEquals(2, relation.resolveRelations(names).getResultsCount()));
 
-    System.out.println(meter.report("Directory ResolveFQViews list"));
+    System.out.println(meter.report("RelationService ResolveRelations list"));
     assertEquals(
         0, reads.plannerPointerRoundTrips(), "a warm Directory resolve must remain in memory");
     assertEquals(
@@ -227,17 +223,21 @@ class PointerListingStoreCostIT {
     return names;
   }
 
-  private List<String> listTables(NameRef prefix) {
+  private List<String> listTables(ResourceId namespaceId) {
     List<String> names = new ArrayList<>();
     String token = "";
     do {
       var response =
-          directory.resolveFQTables(
-              ResolveFQTablesRequest.newBuilder()
-                  .setPrefix(prefix)
+          relation.listRelations(
+              ListRelationsRequest.newBuilder()
+                  .setNamespaceId(namespaceId)
+                  .addKinds(ResourceKind.RK_TABLE)
                   .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken(token).build())
                   .build());
-      response.getTablesList().stream().map(entry -> entry.getName().getName()).forEach(names::add);
+      response.getResultsList().stream()
+          .filter(result -> result.hasRelation())
+          .map(result -> result.getRelation().getDisplayName())
+          .forEach(names::add);
       token = response.getPage().getNextPageToken();
     } while (!token.isBlank());
     return names;
