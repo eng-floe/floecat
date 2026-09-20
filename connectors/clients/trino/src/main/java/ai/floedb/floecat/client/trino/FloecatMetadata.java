@@ -187,7 +187,7 @@ public class FloecatMetadata implements ConnectorMetadata {
       }
       request.setNamespaceId(namespace.get().id());
     } else {
-      request.setCatalogId(catalogId());
+      request.setCatalogId(catalogId()).setRecursive(true);
     }
 
     var out = new ArrayList<SchemaTableName>();
