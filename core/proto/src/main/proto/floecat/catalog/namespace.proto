@@ -98,10 +98,16 @@ message DeleteNamespaceResponse {
 
 // ----- Services -----
 
+// MIXED: ListNamespaces is engine discovery; GetNamespace and the mutation methods are management.
 service NamespaceService {
+  // ENGINE. Namespace discovery; does not pin a snapshot.
   rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
+  // MANAGEMENT. Typed namespace metadata.
   rpc GetNamespace(GetNamespaceRequest) returns (GetNamespaceResponse);
+  // MANAGEMENT.
   rpc CreateNamespace(CreateNamespaceRequest) returns (CreateNamespaceResponse);
+  // MANAGEMENT.
   rpc UpdateNamespace(UpdateNamespaceRequest) returns (UpdateNamespaceResponse);
+  // MANAGEMENT.
   rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteNamespaceResponse);
 }
