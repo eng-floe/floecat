@@ -162,9 +162,9 @@ Emitted by `ScanSystemTable`.
 | `outcome` | `completed`, `cancelled`, or `failed`. |
 | `total_ms` | End-to-end service time for the system scan. |
 
-### `floecat.get_system_objects.summary`
+### `floecat.get_sql_objects_registry.summary`
 
-Emitted by `GetSystemObjects`.
+Emitted by `GetSqlObjectsRegistry`.
 
 | Field | Meaning |
 |---|---|

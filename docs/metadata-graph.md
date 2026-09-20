@@ -104,11 +104,11 @@ per engine kind, materialises immutable relation nodes, and caches the result pe
 definitions using those rules so a planner that sets `x-engine-kind=postgres` and
 `x-engine-version=16.0` only sees builtin nodes that actually exist in that release. Callers that omit
 either header simply receive an empty builtin bundle (the catalog files stay untouched), and
-`GetSystemObjects` rejects the request until both headers are provided.
+`GetSqlObjectsRegistry` rejects the request until both headers are provided.
 
 Each `engine_specific` block may also attach arbitrary key/value `properties`. When the registry
 materialises a `(engine_kind, engine_version)` bundle it keeps only the rules that match the requested
-engine/version, so the filtered catalog (and `GetSystemObjects` response) contains exactly the
+engine/version, so the filtered catalog (and `GetSqlObjectsRegistry` response) contains exactly the
 entries that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in every rule;
 entries that omit it inherit the file’s engine kind. The registry materializes matching rules as
 immutable node hints under publisher-defined payload types (the `payload_type` field in the catalog
@@ -125,10 +125,10 @@ given `(engine_kind, engine_version)` pair, only the rules that match the natura
 boundaries are retained. The `BuiltinNodes` returned by `SystemNodeRegistry.nodesFor` therefore already
 represent the exact set applicable for that engine release. `SystemGraph` consumes those nodes to build
 a `_system` `GraphSnapshot` that `MetaGraph` exposes via `CatalogGraphView`, so pg_catalog-style system
-objects live alongside the user metadata when scanners run. `SystemObjectsServiceImpl` reuses the same
-`SystemNodeRegistry`/`SystemCatalogProtoMapper` pipeline to answer `GetSystemObjects()` calls without
-recomputing the catalog data, and because builtin catalogs are immutable per engine version the registry
-keeps them entirely in memory until FloeCAT restarts.
+objects live alongside the user metadata when scanners run. `SqlCatalogServiceImpl` reuses the same
+`SystemNodeRegistry`/`SystemCatalogProtoMapper` pipeline to answer `GetSqlObjectsRegistry()` calls
+without recomputing the catalog data, and because builtin catalogs are immutable per engine version
+the registry keeps them entirely in memory until FloeCAT restarts.
 
 ### Deterministic Hint Caching
 `HintCache` owns the only dynamic hint cache. Its key includes account, relation, exact engine
@@ -220,9 +220,9 @@ shares the same `QueryContext` as the other query RPCs and relies on `CatalogGra
 and view definitions without issuing a second RPC batch.
 Resolved tables/views also go through `QueryInputResolver` so their snapshot pins are merged into
 `QueryContext` before the response hits the planner—`QueryScanService.InitScan` can therefore find
-the same pins later in the lifecycle. Builtins remain behind `GetSystemObjects`; the `information_schema`/`pg_catalog`
-relations are materialized in the engine-specific overlays for `_system` scans but do not appear in the RPC
-response to avoid exposing synthetic tables twice.
+the same pins later in the lifecycle. Builtins remain behind `GetSqlObjectsRegistry`; the
+`information_schema`/`pg_catalog` relations are materialized in the engine-specific overlays for
+`_system` scans but do not appear in the RPC response to avoid exposing synthetic tables twice.
 Column decorations are surfaced per column via `RelationInfo.columns[*]` (`ColumnResult`), so a relation can
 still resolve as `FOUND` while individual columns report `COLUMN_STATUS_FAILED` with structured failure reasons.
 
