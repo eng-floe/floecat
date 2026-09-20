@@ -43,21 +43,18 @@ import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.GetViewResponse;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesResponse;
+import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsResponse;
-import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
-import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
-import ai.floedb.floecat.catalog.rpc.ListViewsRequest;
-import ai.floedb.floecat.catalog.rpc.ListViewsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
-import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
@@ -150,8 +147,8 @@ public class GrpcServiceFacade {
     return namespaceStub().updateNamespace(request);
   }
 
-  public ListTablesResponse listTables(ListTablesRequest request) {
-    return tableStub().listTables(request);
+  public ListRelationsResponse listRelations(ListRelationsRequest request) {
+    return relationStub().listRelations(request);
   }
 
   public GetTableResponse getTable(GetTableRequest request) {
@@ -164,10 +161,6 @@ public class GrpcServiceFacade {
 
   public DeleteTableResponse deleteTable(DeleteTableRequest request) {
     return tableStub().deleteTable(request);
-  }
-
-  public ListViewsResponse listViews(ListViewsRequest request) {
-    return viewStub().listViews(request);
   }
 
   public GetViewResponse getView(GetViewRequest request) {
@@ -311,12 +304,8 @@ public class GrpcServiceFacade {
     return directoryStub().resolveNamespace(request);
   }
 
-  public ResolveTableResponse resolveTable(ResolveTableRequest request) {
-    return directoryStub().resolveTable(request);
-  }
-
-  public ResolveViewResponse resolveView(ResolveViewRequest request) {
-    return directoryStub().resolveView(request);
+  public ResolveRelationsResponse resolveRelations(ResolveRelationsRequest request) {
+    return relationStub().resolveRelations(request);
   }
 
   public ResolveStorageAuthorityResponse vendStorageCredentials(
@@ -371,6 +360,10 @@ public class GrpcServiceFacade {
 
   private DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub() {
     return grpc.withHeaders(grpc.raw().directory());
+  }
+
+  private RelationServiceGrpc.RelationServiceBlockingStub relationStub() {
+    return grpc.withHeaders(grpc.raw().relation());
   }
 
   private StorageAuthoritiesGrpc.StorageAuthoritiesBlockingStub storageAuthorityStub() {

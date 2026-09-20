@@ -22,20 +22,24 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.GetRelationRequest;
+import ai.floedb.floecat.catalog.rpc.GetRelationResponse;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotResponse;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceResponse;
-import ai.floedb.floecat.catalog.rpc.LookupTableRequest;
-import ai.floedb.floecat.catalog.rpc.LookupTableResponse;
-import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
+import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationResult;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.CreateConnectorRequest;
@@ -360,7 +364,7 @@ class ConnectorCliSupportTest {
                       .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
                       .build())
               .build();
-      h.directoryService.tableDisplayName = "events";
+      h.relationService.tableDisplayName = "events";
       h.snapshotService.currentSnapshotId = 42L;
 
       ConnectorCliSupport.handle(
@@ -379,6 +383,7 @@ class ConnectorCliSupportTest {
           h.reconcileControlStub,
           h.snapshotStub,
           h.directoryStub,
+          h.relationStub,
           () -> "acct-1");
 
       StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
@@ -432,7 +437,7 @@ class ConnectorCliSupportTest {
                       .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
                       .build())
               .build();
-      h.directoryService.tableDisplayName = "events";
+      h.relationService.tableDisplayName = "events";
       h.snapshotService.currentSnapshotId = 42L;
 
       ConnectorCliSupport.handle(
@@ -453,6 +458,7 @@ class ConnectorCliSupportTest {
           h.reconcileControlStub,
           h.snapshotStub,
           h.directoryStub,
+          h.relationStub,
           () -> "acct-1");
 
       StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
@@ -472,7 +478,7 @@ class ConnectorCliSupportTest {
                       .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
                       .build())
               .build();
-      h.directoryService.tableDisplayName = "events";
+      h.relationService.tableDisplayName = "events";
 
       ConnectorCliSupport.handle(
           "connector",
@@ -490,6 +496,7 @@ class ConnectorCliSupportTest {
           h.reconcileControlStub,
           h.snapshotStub,
           h.directoryStub,
+          h.relationStub,
           () -> "acct-1");
 
       StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
@@ -519,6 +526,7 @@ class ConnectorCliSupportTest {
           h.reconcileControlStub,
           h.snapshotStub,
           h.directoryStub,
+          h.relationStub,
           () -> "acct-1");
 
       StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
@@ -541,7 +549,7 @@ class ConnectorCliSupportTest {
                       .setNamespace(NamespacePath.newBuilder().addSegments("ns").build())
                       .build())
               .build();
-      h.directoryService.tableDisplayName = "events";
+      h.relationService.tableDisplayName = "events";
       h.snapshotService.currentSnapshotId = 42L;
 
       ConnectorCliSupport.handle(
@@ -560,6 +568,7 @@ class ConnectorCliSupportTest {
           h.reconcileControlStub,
           h.snapshotStub,
           h.directoryStub,
+          h.relationStub,
           () -> "acct-1");
 
       StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
@@ -580,7 +589,7 @@ class ConnectorCliSupportTest {
                       .setCatalogId(ResourceId.newBuilder().setId("catalog-1").build())
                       .build())
               .build();
-      h.directoryService.resolvedViewId = "view-1";
+      h.relationService.resolvedViewId = "view-1";
 
       ConnectorCliSupport.handle(
           "connector",
@@ -600,6 +609,7 @@ class ConnectorCliSupportTest {
           h.connectorsStub,
           h.reconcileControlStub,
           h.directoryStub,
+          h.relationStub,
           () -> "acct-1");
 
       StartCaptureRequest request = h.reconcileControlService.lastStartCaptureRequest;
@@ -690,6 +700,7 @@ class ConnectorCliSupportTest {
           h.connectorsStub,
           h.reconcileControlStub,
           h.directoryStub,
+          h.relationStub,
           () -> "acct-1");
       assertTrue(buf.toString().contains("usage:"));
     }
@@ -1215,10 +1226,12 @@ class ConnectorCliSupportTest {
     final CapturingConnectorsService connectorsService;
     final CapturingReconcileControlService reconcileControlService;
     final CapturingDirectoryService directoryService;
+    final CapturingRelationService relationService;
     final CapturingSnapshotService snapshotService;
     final ConnectorsGrpc.ConnectorsBlockingStub connectorsStub;
     final ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControlStub;
     final DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub;
+    final RelationServiceGrpc.RelationServiceBlockingStub relationStub;
     final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotStub;
 
     Harness() throws Exception {
@@ -1226,6 +1239,7 @@ class ConnectorCliSupportTest {
       this.connectorsService = new CapturingConnectorsService();
       this.reconcileControlService = new CapturingReconcileControlService();
       this.directoryService = new CapturingDirectoryService();
+      this.relationService = new CapturingRelationService();
       this.snapshotService = new CapturingSnapshotService();
       this.server =
           InProcessServerBuilder.forName(serverName)
@@ -1233,6 +1247,7 @@ class ConnectorCliSupportTest {
               .addService(connectorsService)
               .addService(reconcileControlService)
               .addService(directoryService)
+              .addService(relationService)
               .addService(snapshotService)
               .build()
               .start();
@@ -1240,6 +1255,7 @@ class ConnectorCliSupportTest {
       this.connectorsStub = ConnectorsGrpc.newBlockingStub(channel);
       this.reconcileControlStub = ReconcileControlGrpc.newBlockingStub(channel);
       this.directoryStub = DirectoryServiceGrpc.newBlockingStub(channel);
+      this.relationStub = RelationServiceGrpc.newBlockingStub(channel);
       this.snapshotStub = SnapshotServiceGrpc.newBlockingStub(channel);
     }
 
@@ -1401,9 +1417,6 @@ class ConnectorCliSupportTest {
 
   private static final class CapturingDirectoryService
       extends DirectoryServiceGrpc.DirectoryServiceImplBase {
-    String tableDisplayName = "";
-    String resolvedViewId = "view-default";
-
     @Override
     public void lookupCatalog(
         LookupCatalogRequest request, StreamObserver<LookupCatalogResponse> responseObserver) {
@@ -1417,23 +1430,48 @@ class ConnectorCliSupportTest {
       responseObserver.onNext(LookupNamespaceResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }
+  }
+
+  private static final class CapturingRelationService
+      extends RelationServiceGrpc.RelationServiceImplBase {
+    String tableDisplayName = "";
+    String resolvedViewId = "view-default";
 
     @Override
-    public void lookupTable(
-        LookupTableRequest request, StreamObserver<LookupTableResponse> responseObserver) {
+    public void getRelation(
+        GetRelationRequest request, StreamObserver<GetRelationResponse> responseObserver) {
       responseObserver.onNext(
-          LookupTableResponse.newBuilder()
-              .setName(ai.floedb.floecat.common.rpc.NameRef.newBuilder().setName(tableDisplayName))
+          GetRelationResponse.newBuilder()
+              .setRelation(
+                  Relation.newBuilder()
+                      .setResourceId(
+                          ResourceId.newBuilder()
+                              .setId(request.getRelationId().getId())
+                              .setKind(ResourceKind.RK_TABLE)
+                              .build())
+                      .setDisplayName(tableDisplayName)
+                      .build())
               .build());
       responseObserver.onCompleted();
     }
 
     @Override
-    public void resolveView(
-        ResolveViewRequest request, StreamObserver<ResolveViewResponse> responseObserver) {
+    public void resolveRelations(
+        ResolveRelationsRequest request,
+        StreamObserver<ResolveRelationsResponse> responseObserver) {
       responseObserver.onNext(
-          ResolveViewResponse.newBuilder()
-              .setResourceId(ResourceId.newBuilder().setId(resolvedViewId).build())
+          ResolveRelationsResponse.newBuilder()
+              .addResults(
+                  ResolveRelationResult.newBuilder()
+                      .setRelation(
+                          Relation.newBuilder()
+                              .setResourceId(
+                                  ResourceId.newBuilder()
+                                      .setId(resolvedViewId)
+                                      .setKind(ResourceKind.RK_VIEW)
+                                      .build())
+                              .setDisplayName("resolved-view")
+                              .build()))
               .build());
       responseObserver.onCompleted();
     }

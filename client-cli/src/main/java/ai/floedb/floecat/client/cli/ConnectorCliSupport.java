@@ -20,10 +20,8 @@ import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.LookupNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.LookupTableRequest;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.FQNameParserUtil;
@@ -124,6 +122,7 @@ final class ConnectorCliSupport {
       ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
       Supplier<String> getCurrentAccountId) {
     if ("connectors".equals(command)) {
       printConnectorsHeader(out);
@@ -132,11 +131,60 @@ final class ConnectorCliSupport {
           pr -> connectors.listConnectors(ListConnectorsRequest.newBuilder().setPage(pr).build()),
           r -> r.getConnectorsList(),
           r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
-          rows -> printConnectorsRows(rows, out, directory));
+          rows -> printConnectorsRows(rows, out, directory, relations));
     } else {
       connectorCrud(
-          args, out, connectors, reconcileControl, snapshots, directory, getCurrentAccountId);
+          args,
+          out,
+          connectors,
+          reconcileControl,
+          snapshots,
+          directory,
+          relations,
+          getCurrentAccountId);
     }
+  }
+
+  static void handle(
+      String command,
+      List<String> args,
+      PrintStream out,
+      ConnectorsGrpc.ConnectorsBlockingStub connectors,
+      ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
+      SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      Supplier<String> getCurrentAccountId) {
+    handle(
+        command,
+        args,
+        out,
+        connectors,
+        reconcileControl,
+        snapshots,
+        directory,
+        null,
+        getCurrentAccountId);
+  }
+
+  static void handle(
+      String command,
+      List<String> args,
+      PrintStream out,
+      ConnectorsGrpc.ConnectorsBlockingStub connectors,
+      ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
+      Supplier<String> getCurrentAccountId) {
+    handle(
+        command,
+        args,
+        out,
+        connectors,
+        reconcileControl,
+        null,
+        directory,
+        relations,
+        getCurrentAccountId);
   }
 
   static void handle(
@@ -147,7 +195,16 @@ final class ConnectorCliSupport {
       ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
       Supplier<String> getCurrentAccountId) {
-    handle(command, args, out, connectors, reconcileControl, null, directory, getCurrentAccountId);
+    handle(
+        command,
+        args,
+        out,
+        connectors,
+        reconcileControl,
+        null,
+        directory,
+        null,
+        getCurrentAccountId);
   }
 
   // --- connector CRUD ---
@@ -159,6 +216,7 @@ final class ConnectorCliSupport {
       ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
       Supplier<String> getCurrentAccountId) {
     if (args.isEmpty()) {
       out.println(
@@ -185,7 +243,7 @@ final class ConnectorCliSupport {
                         .filter(c -> c.getKind() == kindFilter)
                         .toList(),
             r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
-            rows -> printConnectorsRows(rows, out, directory));
+            rows -> printConnectorsRows(rows, out, directory, relations));
       }
       case "get" -> {
         if (args.size() < 2) {
@@ -199,7 +257,7 @@ final class ConnectorCliSupport {
                         resolveConnectorId(
                             Quotes.unquote(args.get(1)), connectors, getCurrentAccountId))
                     .build());
-        printConnectors(List.of(resp.getConnector()), out, directory);
+        printConnectors(List.of(resp.getConnector()), out, directory, relations);
       }
       case "create" -> {
         if (args.size() < 6) {
@@ -289,7 +347,7 @@ final class ConnectorCliSupport {
         var resp =
             connectors.createConnector(
                 CreateConnectorRequest.newBuilder().setSpec(spec.build()).build());
-        printConnectors(List.of(resp.getConnector()), out, directory);
+        printConnectors(List.of(resp.getConnector()), out, directory, relations);
       }
       case "update" -> {
         if (args.size() < 2) {
@@ -446,7 +504,7 @@ final class ConnectorCliSupport {
         }
 
         var resp = connectors.updateConnector(updateConnectorBuilder.build());
-        printConnectors(List.of(resp.getConnector()), out, directory);
+        printConnectors(List.of(resp.getConnector()), out, directory, relations);
       }
       case "delete" -> {
         if (args.size() < 2) {
@@ -637,7 +695,8 @@ final class ConnectorCliSupport {
                   .getConnector(
                       GetConnectorRequest.newBuilder().setConnectorId(connectorId).build())
                   .getConnector();
-          addResolvedDestinationScope(scope, connector, destNs, destTable, destView, directory);
+          addResolvedDestinationScope(
+              scope, connector, destNs, destTable, destView, directory, relations);
         }
         if (mode == CaptureMode.CM_CAPTURE_ONLY
             && (!columns.isEmpty() || !snapshotToken.isBlank())) {
@@ -660,7 +719,8 @@ final class ConnectorCliSupport {
               currentSnapshot ? "current" : snapshotToken,
               columns,
               snapshots,
-              directory);
+              directory,
+              relations);
         } else {
           if (destView.isBlank() && scopeFlags != 1) {
             throw new IllegalArgumentException(
@@ -1147,9 +1207,10 @@ final class ConnectorCliSupport {
   private static void printConnectors(
       List<Connector> list,
       PrintStream out,
-      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations) {
     printConnectorsHeader(out);
-    printConnectorsRows(list, out, directory);
+    printConnectorsRows(list, out, directory, relations);
   }
 
   private static void printConnectorsHeader(PrintStream out) {
@@ -1182,7 +1243,8 @@ final class ConnectorCliSupport {
   private static void printConnectorsRows(
       List<Connector> list,
       PrintStream out,
-      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations) {
     for (var c : list) {
       String id = CliUtils.rid(c.getResourceId());
       String kind = c.getKind().name().replaceFirst("^CK_", "");
@@ -1255,12 +1317,16 @@ final class ConnectorCliSupport {
         }
 
         if (c.getDestination().hasTableId()) {
-          var tblResp =
-              directory.lookupTable(
-                  LookupTableRequest.newBuilder()
-                      .setResourceId(c.getDestination().getTableId())
-                      .build());
-          destTableDisplay = tblResp.getName().getName();
+          if (relations != null) {
+            destTableDisplay =
+                relations
+                    .getRelation(
+                        ai.floedb.floecat.catalog.rpc.GetRelationRequest.newBuilder()
+                            .setRelationId(c.getDestination().getTableId())
+                            .build())
+                    .getRelation()
+                    .getDisplayName();
+          }
         }
 
         if (destCatDisplay.isBlank() && c.getDestination().hasCatalogId()) {
@@ -1869,12 +1935,14 @@ final class ConnectorCliSupport {
       String snapshotToken,
       List<String> columns,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshots,
-      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations) {
     if (snapshots == null) {
       throw new IllegalStateException("snapshot service unavailable");
     }
     ResourceId tableId =
-        resolveScopedDestinationTableId(connector, destNs, destTable, columns, directory);
+        resolveScopedDestinationTableId(
+            connector, destNs, destTable, columns, directory, relations);
 
     long snapshotId = resolveSnapshotId(snapshotToken, tableId, snapshots);
     scope.addDestinationCaptureRequests(
@@ -1892,15 +1960,18 @@ final class ConnectorCliSupport {
       String destNs,
       String destTable,
       String destView,
-      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations) {
     if (!destTable.isBlank()) {
       ResourceId tableId =
-          resolveScopedDestinationTableId(connector, destNs, destTable, List.of(), directory);
+          resolveScopedDestinationTableId(
+              connector, destNs, destTable, List.of(), directory, relations);
       scope.setDestinationTableId(tableId.getId());
       return;
     }
     if (!destView.isBlank()) {
-      ResourceId viewId = resolveScopedDestinationViewId(connector, destNs, destView, directory);
+      ResourceId viewId =
+          resolveScopedDestinationViewId(connector, destNs, destView, directory, relations);
       scope.setDestinationViewId(viewId.getId());
       return;
     }
@@ -1915,10 +1986,13 @@ final class ConnectorCliSupport {
       String destNs,
       String destTable,
       List<String> columns,
-      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations) {
     DestinationTarget destination = connector.getDestination();
     String effectiveTable =
-        !destTable.isBlank() ? destTable : resolveDestinationTableDisplayName(connector, directory);
+        !destTable.isBlank()
+            ? destTable
+            : resolveDestinationTableDisplayName(connector, directory, relations);
     if (effectiveTable == null || effectiveTable.isBlank()) {
       throw new IllegalArgumentException(
           (!columns.isEmpty() ? "--columns" : "--snapshot")
@@ -1939,10 +2013,8 @@ final class ConnectorCliSupport {
               + " requires a resolvable destination table; pass --dest-ns and --dest-table if needed");
     }
     String fq = NameRefUtil.joinFqQuoted(catalog, namespacePath, effectiveTable);
-    return directory
-        .resolveTable(
-            ResolveTableRequest.newBuilder().setRef(NameRefUtil.nameRefForTable(fq)).build())
-        .getResourceId();
+    return TableCliSupport.resolveRelationId(
+        relations, NameRefUtil.nameRefForTable(fq), ResourceKind.RK_TABLE);
   }
 
   private static ResourceId resolveScopedDestinationNamespaceId(
@@ -1973,7 +2045,8 @@ final class ConnectorCliSupport {
       Connector connector,
       String destNs,
       String destView,
-      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations) {
     if (destView.isBlank()) {
       throw new IllegalArgumentException("--dest-view requires a view name");
     }
@@ -1987,10 +2060,8 @@ final class ConnectorCliSupport {
           "--dest-view requires a resolvable destination namespace; pass --dest-ns if needed");
     }
     String fq = NameRefUtil.joinFqQuoted(catalog, namespacePath, destView);
-    return directory
-        .resolveView(
-            ResolveViewRequest.newBuilder().setRef(NameRefUtil.nameRefForTable(fq)).build())
-        .getResourceId();
+    return TableCliSupport.resolveRelationId(
+        relations, NameRefUtil.nameRefForTable(fq), ResourceKind.RK_VIEW);
   }
 
   private static String resolveDestinationCatalogDisplayName(
@@ -2040,7 +2111,9 @@ final class ConnectorCliSupport {
   }
 
   private static String resolveDestinationTableDisplayName(
-      Connector connector, DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+      Connector connector,
+      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations) {
     if (connector == null || !connector.hasDestination()) {
       return "";
     }
@@ -2049,11 +2122,16 @@ final class ConnectorCliSupport {
       return destination.getTableDisplayName();
     }
     if (destination.hasTableId()) {
-      return directory
-          .lookupTable(
-              LookupTableRequest.newBuilder().setResourceId(destination.getTableId()).build())
-          .getName()
-          .getName();
+      if (relations == null) {
+        return "";
+      }
+      return relations
+          .getRelation(
+              ai.floedb.floecat.catalog.rpc.GetRelationRequest.newBuilder()
+                  .setRelationId(destination.getTableId())
+                  .build())
+          .getRelation()
+          .getDisplayName();
     }
     if (connector.hasSource()
         && connector.getSource().hasTable()

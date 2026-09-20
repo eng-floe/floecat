@@ -20,11 +20,13 @@ import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
+import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.catalog.rpc.RelationReference;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveFQTablesRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveFQTablesResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
@@ -40,6 +42,7 @@ import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.Precondition;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.engine.catalog.RelationResults;
 import com.google.protobuf.FieldMask;
 import java.io.PrintStream;
 import java.util.ArrayList;
@@ -76,14 +79,16 @@ final class TableCliSupport {
       PrintStream out,
       TableServiceGrpc.TableServiceBlockingStub tables,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
       Supplier<String> getCurrentAccountId,
       Function<String, ResourceId> resolveConnectorId) {
     switch (command) {
-      case "tables" -> tablesList(args, out, directory, getCurrentAccountId);
+      case "tables" -> tablesList(args, out, directory, relations, getCurrentAccountId);
       case "table" ->
-          tableCrud(args, out, tables, directory, getCurrentAccountId, resolveConnectorId);
-      case "resolve" -> tableResolve(args, out, directory, getCurrentAccountId);
-      case "describe" -> tableDescribe(args, out, tables, directory);
+          tableCrud(
+              args, out, tables, directory, relations, getCurrentAccountId, resolveConnectorId);
+      case "resolve" -> tableResolve(args, out, directory, relations, getCurrentAccountId);
+      case "describe" -> tableDescribe(args, out, tables, relations);
     }
   }
 
@@ -93,22 +98,46 @@ final class TableCliSupport {
       List<String> args,
       PrintStream out,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
       Supplier<String> getCurrentAccountId) {
     if (args.isEmpty()) {
       out.println("usage: tables <catalog.ns[.ns...][.prefix]>");
       return;
     }
     NameRef prefix = nameRefForTablePrefix(args.get(0));
-    ResolveFQTablesRequest.Builder rb =
-        ResolveFQTablesRequest.newBuilder()
-            .setPrefix(prefix)
+    NameRef namespaceRef =
+        NameRef.newBuilder()
+            .setCatalog(prefix.getCatalog())
+            .addAllPath(prefix.getPathList())
+            .build();
+    ResourceId namespaceId =
+        directory
+            .resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(namespaceRef).build())
+            .getResourceId();
+    ListRelationsRequest.Builder rb =
+        ListRelationsRequest.newBuilder()
+            .setNamespaceId(namespaceId)
+            .addKinds(ResourceKind.RK_TABLE)
             .setPage(PageRequest.newBuilder().setPageSize(DEFAULT_PAGE_SIZE).build());
 
     printResolvedTablesHeader(out);
     CliArgs.forEachPage(
         DEFAULT_PAGE_SIZE,
-        pr -> directory.resolveFQTables(rb.setPage(pr).build()),
-        ResolveFQTablesResponse::getTablesList,
+        pr -> relations.listRelations(rb.setPage(pr).build()),
+        r -> {
+          var page = RelationResults.read(r);
+          if (!page.errors().isEmpty()) {
+            out.println(
+                "warning: unreadable relation(s): "
+                    + RelationResults.describeErrors(page.errors()));
+          }
+          return page.relations().stream()
+              .filter(
+                  relation ->
+                      prefix.getName().isBlank()
+                          || relation.getDisplayName().startsWith(prefix.getName()))
+              .toList();
+        },
         r -> r.hasPage() ? r.getPage().getNextPageToken() : "",
         rows -> printResolvedTablesRows(rows, out));
   }
@@ -120,6 +149,7 @@ final class TableCliSupport {
       PrintStream out,
       TableServiceGrpc.TableServiceBlockingStub tables,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
       Supplier<String> getCurrentAccountId,
       Function<String, ResourceId> resolveConnectorId) {
     if (args.isEmpty()) {
@@ -197,7 +227,7 @@ final class TableCliSupport {
           out.println("usage: table get <id|catalog.ns[.ns...].table>");
           return;
         }
-        ResourceId tableId = resolveTableId(args.get(1), directory, getCurrentAccountId);
+        ResourceId tableId = resolveTableId(args.get(1), directory, relations, getCurrentAccountId);
         var resp = tables.getTable(GetTableRequest.newBuilder().setTableId(tableId).build());
         printTable(resp.getTable(), out);
       }
@@ -212,7 +242,7 @@ final class TableCliSupport {
           return;
         }
 
-        ResourceId tableId = resolveTableId(args.get(1), directory, getCurrentAccountId);
+        ResourceId tableId = resolveTableId(args.get(1), directory, relations, getCurrentAccountId);
 
         String catalogStr = Quotes.unquote(CliArgs.parseStringFlag(args, "--catalog", null));
         String nsStr = Quotes.unquote(CliArgs.parseStringFlag(args, "--namespace", null));
@@ -331,7 +361,7 @@ final class TableCliSupport {
           out.println("usage: table delete <id|catalog.ns[.ns...].table> [--etag <etag>]");
           return;
         }
-        ResourceId tableId = resolveTableId(args.get(1), directory, getCurrentAccountId);
+        ResourceId tableId = resolveTableId(args.get(1), directory, relations, getCurrentAccountId);
         var deleteBuilder = DeleteTableRequest.newBuilder().setTableId(tableId);
         Precondition precondition = CliArgs.preconditionFromEtag(args);
         if (precondition != null) {
@@ -350,6 +380,7 @@ final class TableCliSupport {
       List<String> args,
       PrintStream out,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
       Supplier<String> getCurrentAccountId) {
     if (args.size() < 2) {
       out.println("usage: resolve table|view|catalog|namespace <fq-or-name>");
@@ -361,23 +392,12 @@ final class TableCliSupport {
       case "table" ->
           out.println(
               "table id: "
-                  + CliUtils.rid(
-                      directory
-                          .resolveTable(
-                              ResolveTableRequest.newBuilder()
-                                  .setRef(NameRefUtil.nameRefForTable(s))
-                                  .build())
-                          .getResourceId()));
+                  + CliUtils.rid(resolveTableId(s, directory, relations, getCurrentAccountId)));
       case "view" ->
           out.println(
               "view id: "
                   + CliUtils.rid(
-                      directory
-                          .resolveView(
-                              ai.floedb.floecat.catalog.rpc.ResolveViewRequest.newBuilder()
-                                  .setRef(NameRefUtil.nameRefForTable(s))
-                                  .build())
-                          .getResourceId()));
+                      ViewCliSupport.resolveViewId(s, directory, relations, getCurrentAccountId)));
       case "namespace" ->
           out.println(
               "namespace id: "
@@ -409,16 +429,15 @@ final class TableCliSupport {
       List<String> args,
       PrintStream out,
       TableServiceGrpc.TableServiceBlockingStub tables,
-      DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
+      RelationServiceGrpc.RelationServiceBlockingStub relations) {
     if (args.size() < 2 || !"table".equals(args.get(0))) {
       out.println("usage: describe table <fq>");
       return;
     }
     String fq = args.get(1);
-    var r =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder().setRef(NameRefUtil.nameRefForTable(fq)).build());
-    var t = tables.getTable(GetTableRequest.newBuilder().setTableId(r.getResourceId()).build());
+    ResourceId tableId =
+        resolveRelationId(relations, NameRefUtil.nameRefForTable(fq), ResourceKind.RK_TABLE);
+    var t = tables.getTable(GetTableRequest.newBuilder().setTableId(tableId).build());
     printTable(t.getTable(), out);
   }
 
@@ -427,15 +446,14 @@ final class TableCliSupport {
   static ResourceId resolveTableId(
       String tok,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directory,
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
       Supplier<String> getCurrentAccountId) {
     String u = Quotes.unquote(tok == null ? "" : tok);
     if (CliUtils.looksLikeUuid(u)) {
       return rid(u, ResourceKind.RK_TABLE, getCurrentAccountId);
     }
     NameRef ref = NameRefUtil.nameRefForTable(tok);
-    return directory
-        .resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build())
-        .getResourceId();
+    return resolveRelationId(relations, ref, ResourceKind.RK_TABLE);
   }
 
   static NameRef nameRefForTablePrefix(String s) {
@@ -474,8 +492,7 @@ final class TableCliSupport {
 
   // --- output helpers ---
 
-  private static void printResolvedTables(
-      List<ResolveFQTablesResponse.Entry> entries, PrintStream out) {
+  private static void printResolvedTables(List<Relation> entries, PrintStream out) {
     printResolvedTablesHeader(out);
     printResolvedTablesRows(entries, out);
   }
@@ -484,15 +501,36 @@ final class TableCliSupport {
     out.printf("%-40s  %s%n", "TABLE_ID", "NAME");
   }
 
-  private static void printResolvedTablesRows(
-      List<ResolveFQTablesResponse.Entry> entries, PrintStream out) {
+  private static void printResolvedTablesRows(List<Relation> entries, PrintStream out) {
     for (var e : entries) {
       String catalog = e.getName().getCatalog();
       List<String> path = e.getName().getPathList();
-      String table = e.getName().getName();
+      String table = e.getDisplayName();
       String fq = NameRefUtil.joinFqQuoted(catalog, path, table);
       out.printf("%-40s  %s%n", CliUtils.rid(e.getResourceId()), fq);
     }
+  }
+
+  static ResourceId resolveRelationId(
+      RelationServiceGrpc.RelationServiceBlockingStub relations,
+      NameRef ref,
+      ResourceKind expectedKind) {
+    var response =
+        relations.resolveRelations(
+            ResolveRelationsRequest.newBuilder()
+                .addReferences(RelationReference.newBuilder().addCandidates(ref))
+                .build());
+    if (response.getResultsCount() == 0 || !response.getResults(0).hasRelation()) {
+      throw new IllegalArgumentException(
+          "No relation found: "
+              + NameRefUtil.joinFqQuoted(ref.getCatalog(), ref.getPathList(), ref.getName()));
+    }
+    Relation relation = response.getResults(0).getRelation();
+    if (relation.getResourceId().getKind() != expectedKind) {
+      throw new IllegalArgumentException(
+          "Expected " + expectedKind + " but found " + relation.getResourceId().getKind());
+    }
+    return relation.getResourceId();
   }
 
   static void printTable(Table t, PrintStream out) {

@@ -20,6 +20,7 @@ import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
@@ -76,6 +77,7 @@ public final class CliCommandExecutor {
   private final AccountServiceGrpc.AccountServiceBlockingStub accounts;
   private final CatalogServiceGrpc.CatalogServiceBlockingStub catalogs;
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
+  private final RelationServiceGrpc.RelationServiceBlockingStub relations;
   private final NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaces;
   private final TableServiceGrpc.TableServiceBlockingStub tables;
   private final ViewServiceGrpc.ViewServiceBlockingStub viewService;
@@ -101,6 +103,7 @@ public final class CliCommandExecutor {
     this.accounts = builder.accounts;
     this.catalogs = builder.catalogs;
     this.directory = builder.directory;
+    this.relations = builder.relations;
     this.namespaces = builder.namespaces;
     this.tables = builder.tables;
     this.viewService = builder.viewService;
@@ -147,6 +150,7 @@ public final class CliCommandExecutor {
         .accounts(AccountServiceGrpc.newBlockingStub(channel))
         .catalogs(CatalogServiceGrpc.newBlockingStub(channel))
         .directory(DirectoryServiceGrpc.newBlockingStub(channel))
+        .relations(RelationServiceGrpc.newBlockingStub(channel))
         .namespaces(NamespaceServiceGrpc.newBlockingStub(channel))
         .tables(TableServiceGrpc.newBlockingStub(channel))
         .viewService(ViewServiceGrpc.newBlockingStub(channel))
@@ -178,6 +182,7 @@ public final class CliCommandExecutor {
     private AccountServiceGrpc.AccountServiceBlockingStub accounts;
     private CatalogServiceGrpc.CatalogServiceBlockingStub catalogs;
     private DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
+    private RelationServiceGrpc.RelationServiceBlockingStub relations;
     private NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaces;
     private TableServiceGrpc.TableServiceBlockingStub tables;
     private ViewServiceGrpc.ViewServiceBlockingStub viewService;
@@ -217,6 +222,11 @@ public final class CliCommandExecutor {
 
     public Builder directory(DirectoryServiceGrpc.DirectoryServiceBlockingStub directory) {
       this.directory = directory;
+      return this;
+    }
+
+    public Builder relations(RelationServiceGrpc.RelationServiceBlockingStub relations) {
+      this.relations = relations;
       return this;
     }
 
@@ -336,6 +346,7 @@ public final class CliCommandExecutor {
       Objects.requireNonNull(accounts, "accounts");
       Objects.requireNonNull(catalogs, "catalogs");
       Objects.requireNonNull(directory, "directory");
+      Objects.requireNonNull(relations, "relations");
       Objects.requireNonNull(namespaces, "namespaces");
       Objects.requireNonNull(tables, "tables");
       Objects.requireNonNull(viewService, "viewService");
@@ -402,11 +413,12 @@ public final class CliCommandExecutor {
               out,
               tables,
               directory,
+              relations,
               getAccountId,
               tok -> ConnectorCliSupport.resolveConnectorId(tok, connectors, getAccountId));
       case "views", "view" ->
           ViewCliSupport.handle(
-              command, CliArgs.tail(tokens), out, viewService, directory, getAccountId);
+              command, CliArgs.tail(tokens), out, viewService, directory, relations, getAccountId);
       case "connectors", "connector" ->
           ConnectorCliSupport.handle(
               command,
@@ -416,6 +428,7 @@ public final class CliCommandExecutor {
               reconcileControl,
               snapshots,
               directory,
+              relations,
               getAccountId);
       case "integrations", "integration", "overlays", "overlay" ->
           IntegrationCliSupport.handle(
@@ -426,7 +439,7 @@ public final class CliCommandExecutor {
               CliArgs.tail(tokens),
               out,
               snapshots,
-              tok -> TableCliSupport.resolveTableId(tok, directory, getAccountId));
+              tok -> TableCliSupport.resolveTableId(tok, directory, relations, getAccountId));
       case "stats" ->
           StatsCliSupport.handle(
               "stats",
@@ -438,14 +451,14 @@ public final class CliCommandExecutor {
               tables,
               namespaces,
               reconcileControl,
-              tok -> TableCliSupport.resolveTableId(tok, directory, getAccountId));
+              tok -> TableCliSupport.resolveTableId(tok, directory, relations, getAccountId));
       case "constraints" ->
           ConstraintsCliSupport.handle(
               CliArgs.tail(tokens),
               out,
               constraintsService,
               snapshots,
-              tok -> TableCliSupport.resolveTableId(tok, directory, getAccountId),
+              tok -> TableCliSupport.resolveTableId(tok, directory, relations, getAccountId),
               msg -> CliUtils.printJson(msg, out));
       case "analyze" ->
           StatsCliSupport.handle(
@@ -458,7 +471,7 @@ public final class CliCommandExecutor {
               tables,
               namespaces,
               reconcileControl,
-              tok -> TableCliSupport.resolveTableId(tok, directory, getAccountId));
+              tok -> TableCliSupport.resolveTableId(tok, directory, relations, getAccountId));
       case "query" ->
           QueryCliSupport.handle(
               command,
