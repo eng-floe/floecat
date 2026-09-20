@@ -25,6 +25,7 @@ import "floecat/catalog/constraints.proto";
 import "floecat/common/common.proto";
 
 // ---------- Planner stats API (target stats fetch) ----------
+// ENGINE.
 service PlannerStatsService {
   /**
    * GetTargetStats returns stats for specific targets the planner decided it needs.

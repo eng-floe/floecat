@@ -145,6 +145,7 @@ message TransactionIntent {
   optional google.protobuf.Timestamp apply_error_at = 25;
 }
 
+// INTERNAL.
 service Transactions {
   rpc BeginTransaction(BeginTransactionRequest) returns (BeginTransactionResponse);
   rpc PrepareTransaction(PrepareTransactionRequest) returns (PrepareTransactionResponse);

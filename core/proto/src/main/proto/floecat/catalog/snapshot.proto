@@ -19,6 +19,7 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.catalog.rpc";
 
 import "floecat/common/common.proto";
+import "floecat/query/schema.proto";
 import "google/protobuf/timestamp.proto";
 import "floecat/catalog/partition.proto";
 import "google/protobuf/field_mask.proto";
@@ -98,6 +99,20 @@ message GetLatestFinalizedSnapshotResponse {
  * reports what queries actually see; a registered-but-unfinalized snapshot is never returned.
  * Absent when the table has no queryable snapshot yet.
  */
+/**
+ * Schema of one table as of one snapshot. The current logical schema comes from
+ * RelationService.GetRelation(include_schema=true); this answers the same question for a snapshot
+ * other than current.
+ */
+message GetSnapshotSchemaRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  ai.floedb.floecat.common.SnapshotRef snapshot = 2;
+}
+
+message GetSnapshotSchemaResponse {
+  ai.floedb.floecat.query.SchemaDescriptor schema = 1;
+}
+
 message GetCurrentSnapshotPointerRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
 }
@@ -150,6 +165,7 @@ message UpdateSnapshotResponse {
 
 // ----- Services -----
 
+// MANAGEMENT.
 service SnapshotService {
   rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
   rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
@@ -160,4 +176,5 @@ service SnapshotService {
   rpc CreateSnapshot(CreateSnapshotRequest) returns (CreateSnapshotResponse);
   rpc DeleteSnapshot(DeleteSnapshotRequest) returns (DeleteSnapshotResponse);
   rpc UpdateSnapshot(UpdateSnapshotRequest) returns (UpdateSnapshotResponse);
+  rpc GetSnapshotSchema(GetSnapshotSchemaRequest) returns (GetSnapshotSchemaResponse);
 }
