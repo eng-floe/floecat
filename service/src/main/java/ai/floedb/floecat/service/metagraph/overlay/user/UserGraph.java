@@ -63,6 +63,7 @@ public final class UserGraph {
   // ----------------------------------------------------------------------
 
   private final NodeLoader nodes;
+  private final CatalogRepository catalogs;
   private final NameResolver names;
   private final FullyQualifiedResolver fq;
   private final SnapshotHelper snapshots;
@@ -98,6 +99,7 @@ public final class UserGraph {
       SnapshotHelper snapshots,
       TableRootRepository tableRoots) {
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
+    this.catalogs = catalogRepo;
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.resolvedSnapshotReads = resolvedSnapshotReads;
@@ -245,6 +247,11 @@ public final class UserGraph {
    */
   public Optional<CatalogNode> catalog(ResourceId id) {
     return resolve(id).map(CatalogNode.class::cast);
+  }
+
+  /** Resolves a catalog display name from the pointer index without loading its blob. */
+  public Optional<String> catalogName(ResourceId id) {
+    return catalogs.getRefById(id).map(CatalogRepository.CatalogRef::name);
   }
 
   /**

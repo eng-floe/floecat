@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
+import ai.floedb.floecat.catalog.rpc.GetRelationRequest;
 import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.Queryability;
@@ -130,6 +131,40 @@ class CatalogSurfaceRelationsTest {
   }
 
   @Test
+  void identityListingLeavesKindSpecificDetailsAbsent() {
+    tableRepo.add(userTable("orders"));
+
+    var response =
+        list(
+            ListRelationsRequest.newBuilder()
+                .setNamespaceId(namespaceId)
+                .addKinds(ResourceKind.RK_TABLE),
+            10);
+
+    var relation = response.getResults(0).getRelation();
+    assertEquals(ResourceKind.RK_TABLE, relation.getResourceId().getKind());
+    assertFalse(relation.hasTable());
+    assertTrue(relation.getPropertiesMap().isEmpty());
+  }
+
+  @Test
+  void identityGetLeavesKindSpecificDetailsAbsent() {
+    var table = userTable("orders");
+    tableRepo.add(table);
+
+    var relation =
+        surface()
+            .getRelation(
+                GetRelationRequest.newBuilder().setRelationId(table.getResourceId()).build(),
+                CORRELATION_ID)
+            .getRelation();
+
+    assertEquals(ResourceKind.RK_TABLE, relation.getResourceId().getKind());
+    assertFalse(relation.hasTable());
+    assertTrue(relation.getPropertiesMap().isEmpty());
+  }
+
+  @Test
   void listReportsAnUnhydratedRelationWithoutDroppingHealthyRows() {
     var broken = userTable("broken");
     graphView.addRelationRef(
@@ -199,6 +234,24 @@ class CatalogSurfaceRelationsTest {
     assertEquals(
         List.of("public", "nested"), response.getResults(0).getError().getName().getPathList());
     assertEquals("broken", response.getResults(0).getError().getName().getName());
+  }
+
+  @Test
+  void doesNotTurnUnexpectedHydrationFailuresIntoRowErrors() {
+    var broken = userTable("broken");
+    tableRepo.add(broken);
+    graphView.failTableSchemaWith(
+        broken.getResourceId(), new IllegalStateException("mapper invariant broken"));
+
+    assertThrows(
+        IllegalStateException.class,
+        () ->
+            list(
+                ListRelationsRequest.newBuilder()
+                    .setNamespaceId(namespaceId)
+                    .addKinds(ResourceKind.RK_TABLE)
+                    .setIncludeSchema(true),
+                1));
   }
 
   @Test
@@ -389,6 +442,63 @@ class CatalogSurfaceRelationsTest {
                 .addKinds(ResourceKind.RK_TABLE),
             10);
     assertEquals(List.of("orders", "nested_orders"), names(everything));
+  }
+
+  @Test
+  void catalogScopeNormalizesPointerNamespacePaths() {
+    var child = namespace(List.of("public"), "nested");
+    graphView.addNode(child);
+    graphView.setPointerNamespaceRefs(
+        List.of(
+            new CatalogGraphView.NamespaceRef(namespaceId, "public", catalogId, List.of()),
+            new CatalogGraphView.NamespaceRef(child.id(), "nested", catalogId, List.of("public"))));
+    tableRepo.add(tableIn(namespaceId, "orders"));
+    tableRepo.add(tableIn(child.id(), "nested_orders"));
+
+    var topLevel =
+        list(
+            ListRelationsRequest.newBuilder()
+                .setCatalogId(catalogId)
+                .addKinds(ResourceKind.RK_TABLE),
+            10);
+    assertEquals(List.of("orders"), names(topLevel));
+
+    var recursive =
+        list(
+            ListRelationsRequest.newBuilder()
+                .setCatalogId(catalogId)
+                .setRecursive(true)
+                .addKinds(ResourceKind.RK_TABLE),
+            10);
+    assertEquals(List.of("orders", "nested_orders"), names(recursive));
+  }
+
+  @Test
+  void listedPointerNameResolvesBackByCatalogDisplayName() {
+    graphView.setPointerNamespaceRefs(
+        List.of(new CatalogGraphView.NamespaceRef(namespaceId, "public", catalogId, List.of())));
+    var table = tableIn(namespaceId, "orders");
+    tableRepo.add(table);
+
+    var listed =
+        list(
+                ListRelationsRequest.newBuilder()
+                    .setNamespaceId(namespaceId)
+                    .addKinds(ResourceKind.RK_TABLE),
+                1)
+            .getResults(0)
+            .getRelation();
+    assertEquals("cat", listed.getName().getCatalog());
+    graphView.bind(listed.getName(), table.getResourceId());
+
+    var resolved =
+        surface()
+            .resolveRelations(
+                ResolveRelationsRequest.newBuilder().addReferences(ref(listed.getName())).build(),
+                MAX_NAMES,
+                CORRELATION_ID);
+    assertTrue(resolved.getResults(0).hasRelation());
+    assertEquals(table.getResourceId(), resolved.getResults(0).getRelation().getResourceId());
   }
 
   @Test
@@ -1002,6 +1112,7 @@ class CatalogSurfaceRelationsTest {
     private final Map<String, ResourceId> byName = new LinkedHashMap<>();
     private final Map<ResourceId, List<CatalogGraphView.RelationRef>> relationRefs =
         new LinkedHashMap<>();
+    private List<CatalogGraphView.NamespaceRef> pointerNamespaceRefs = List.of();
 
     private final Map<ResourceId, RuntimeException> resolveFailures = new LinkedHashMap<>();
     private final Map<ResourceId, RuntimeException> tableSchemaFailures = new LinkedHashMap<>();
@@ -1012,6 +1123,10 @@ class CatalogSurfaceRelationsTest {
 
     void addRelationRef(ResourceId namespaceId, CatalogGraphView.RelationRef relationRef) {
       relationRefs.computeIfAbsent(namespaceId, ignored -> new ArrayList<>()).add(relationRef);
+    }
+
+    void setPointerNamespaceRefs(List<CatalogGraphView.NamespaceRef> refs) {
+      pointerNamespaceRefs = List.copyOf(refs);
     }
 
     List<CatalogGraphView.RelationRef> userRelationRefs(String namespaceId, ResourceKind kind) {
@@ -1049,6 +1164,27 @@ class CatalogSurfaceRelationsTest {
       var refs = new ArrayList<>(relationRefs.getOrDefault(namespaceId, List.of()));
       refs.addAll(super.listRelationRefs(catalogId, namespaceId, catalogContext));
       return refs;
+    }
+
+    @Override
+    public List<CatalogGraphView.NamespaceRef> listNamespaceRefs(
+        ResourceId catalogId, CatalogContext catalogContext) {
+      return pointerNamespaceRefs.isEmpty()
+          ? super.listNamespaceRefs(catalogId, catalogContext)
+          : pointerNamespaceRefs;
+    }
+
+    @Override
+    public Optional<CatalogGraphView.NamespaceRef> namespaceRef(
+        ResourceId namespaceId, CatalogContext catalogContext) {
+      return pointerNamespaceRefs.isEmpty()
+          ? super.namespaceRef(namespaceId, catalogContext)
+          : pointerNamespaceRefs.stream().filter(ref -> ref.id().equals(namespaceId)).findFirst();
+    }
+
+    @Override
+    public Optional<String> catalogName(ResourceId id, CatalogContext catalogContext) {
+      return Optional.of("cat");
     }
 
     void failResolveWith(ResourceId id, RuntimeException failure) {

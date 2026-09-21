@@ -228,13 +228,19 @@ public interface CatalogGraphView {
   Optional<CatalogNode> catalog(ResourceId id, CatalogContext catalogContext);
 
   /**
+   * Returns a catalog display name without requiring a catalog blob when the implementation can
+   * obtain it from pointer metadata. Generic listings use this to keep returned names resolvable.
+   */
+  default Optional<String> catalogName(ResourceId id, CatalogContext catalogContext) {
+    return catalog(id, catalogContext).map(CatalogNode::displayName);
+  }
+
+  /**
    * Resolve the schema for a snapshot-resolved query. {@code tableBlobUri} names the resolved table
    * snapshot blob and {@code snapshotBlobUri} the resolved snapshot blob, so both the table
    * metadata and the snapshot-sourced schema are read from those immutable blobs rather than the
-   * live pointers. A concurrent {@code ALTER} advances the current table pointer, and an in-place
-   * {@code UpdateSnapshot} can repoint the {@code (table, snapshot id)} pointer to a new snapshot
-   * blob after the pin was built; reading the pinned uris cannot drift to either. Empty uris read
-   * the current pointers.
+   * live pointers. Empty uris read the current pointers.
+   */
    */
   SchemaResolution schemaFor(
       String correlationId,
@@ -260,6 +266,7 @@ public interface CatalogGraphView {
 
   record SchemaResolution(UserTableNode table, String schemaJson) {}
 
+  /** A lightweight namespace identity; {@code pathSegments} contains parent names only. */
   record NamespaceRef(ResourceId id, String name, ResourceId catalogId, List<String> pathSegments) {
     public NamespaceRef(ResourceId id, String name) {
       this(id, name, null, List.of());

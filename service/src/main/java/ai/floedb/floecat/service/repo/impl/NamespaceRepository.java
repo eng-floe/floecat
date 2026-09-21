@@ -398,7 +398,11 @@ public class NamespaceRepository {
               .setKind(ResourceKind.RK_NAMESPACE)
               .build();
     }
-    return Optional.of(new NamespaceRef(rid, name, catalogResourceId, pathSegments));
+    List<String> parentPath =
+        !pathSegments.isEmpty() && pathSegments.get(pathSegments.size() - 1).equals(name)
+            ? pathSegments.subList(0, pathSegments.size() - 1)
+            : pathSegments;
+    return Optional.of(new NamespaceRef(rid, name, catalogResourceId, parentPath));
   }
 
   public MutationMeta metaFor(ResourceId namespaceResourceId) {
