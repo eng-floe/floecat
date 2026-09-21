@@ -140,7 +140,9 @@ class ColumnsScannerTest {
                 .setFieldId(1)
                 .setNullable(false)
                 .build()));
-    graphView.withNamespaceRef(namespaceId, "sales", catalogId, List.of("finance", "sales"));
+    graphView
+        .withNamespaceRef(namespaceId, "sales", catalogId, List.of("finance", "sales"))
+        .withRelationRef(namespaceId, tableId, "orders", ResourceKind.RK_TABLE);
     SystemObjectScanContext ctx =
         new SystemObjectScanContext(
             graphView, NameRef.getDefaultInstance(), catalogId, EngineContext.empty());

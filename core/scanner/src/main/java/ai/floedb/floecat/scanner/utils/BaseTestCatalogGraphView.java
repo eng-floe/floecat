@@ -18,6 +18,7 @@ package ai.floedb.floecat.scanner.utils;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.FunctionNode;
@@ -85,9 +86,43 @@ public abstract class BaseTestCatalogGraphView implements CatalogGraphView {
   }
 
   @Override
+  public List<CatalogGraphView.NamespaceRef> listNamespaceRefs(
+      ResourceId catalogId, CatalogContext catalogContext) {
+    return listNamespaces(catalogId, catalogContext).stream()
+        .map(
+            ns ->
+                new CatalogGraphView.NamespaceRef(
+                    ns.id(), ns.displayName(), ns.catalogId(), ns.pathSegments()))
+        .toList();
+  }
+
+  @Override
+  public Optional<CatalogGraphView.NamespaceRef> namespaceRef(
+      ResourceId namespaceId, CatalogContext catalogContext) {
+    return listNamespaceRefs(null, catalogContext).stream()
+        .filter(ref -> ref.id().equals(namespaceId))
+        .findFirst();
+  }
+
+  @Override
   public List<RelationNode> listRelationsInNamespace(
       ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
     return relationsByNamespace.getOrDefault(namespaceId, List.of());
+  }
+
+  @Override
+  public List<CatalogGraphView.RelationRef> listRelationRefs(
+      ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
+    return listRelationsInNamespace(catalogId, namespaceId, catalogContext).stream()
+        .map(
+            relation ->
+                new CatalogGraphView.RelationRef(
+                    relation.id(),
+                    relation.displayName(),
+                    relation.id().getKind() == ResourceKind.RK_VIEW
+                        ? ResourceKind.RK_VIEW
+                        : ResourceKind.RK_TABLE))
+        .toList();
   }
 
   @Override

@@ -17,16 +17,13 @@
 package ai.floedb.floecat.systemcatalog.informationschema;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Stream;
 
 final class NamespaceScanSupport {
   private NamespaceScanSupport() {}
@@ -44,28 +41,19 @@ final class NamespaceScanSupport {
         schemaColumnName == null
             ? null
             : request.constraints().values(schemaColumnName).orElse(null);
-    if (ctx.supportsLightweightRefs()) {
-      List<CatalogGraphView.NamespaceRef> refs;
-      if (schemaNames == null) {
-        refs = ctx.listNamespaceRefs();
-      } else if (canUseDirectNamespaceLookup(schemaNames)) {
-        refs = ctx.listNamespaceRefsByName(schemaNames);
-      } else {
-        refs =
-            ctx.listNamespaceRefs().stream()
-                .filter(ns -> schemaNames.contains(schemaName(ns)))
-                .toList();
-      }
-      return refs.stream()
-          .map(ns -> new NamespaceEntry(ns.id(), catalogIdFor(ctx, ns), schemaName(ns)))
-          .toList();
+    List<CatalogGraphView.NamespaceRef> refs;
+    if (schemaNames == null) {
+      refs = ctx.listNamespaceRefs();
+    } else if (canUseDirectNamespaceLookup(schemaNames)) {
+      refs = ctx.listNamespaceRefsByName(schemaNames);
+    } else {
+      refs =
+          ctx.listNamespaceRefs().stream()
+              .filter(ns -> schemaNames.contains(schemaName(ns)))
+              .toList();
     }
-    Stream<NamespaceNode> namespaces = ctx.listNamespaces().stream();
-    if (schemaNames != null) {
-      namespaces = namespaces.filter(ns -> schemaNames.contains(schemaName(ns)));
-    }
-    return namespaces
-        .map(ns -> new NamespaceEntry(ns.id(), ns.catalogId(), schemaName(ns)))
+    return refs.stream()
+        .map(ns -> new NamespaceEntry(ns.id(), catalogIdFor(ctx, ns), schemaName(ns)))
         .toList();
   }
 
@@ -99,19 +87,20 @@ final class NamespaceScanSupport {
         relationNameColumn == null
             ? null
             : request.constraints().values(relationNameColumn).orElse(null);
-    if (ctx.supportsLightweightRefs() && relationNames != null) {
-      return ctx.listRelationRefsByName(namespaceId, relationNames).stream()
-          .map(ref -> ctx.tryResolve(ref.id()))
-          .flatMap(Optional::stream)
-          .filter(RelationNode.class::isInstance)
-          .map(RelationNode.class::cast)
-          .toList();
-    }
-    Stream<RelationNode> relations = ctx.listRelations(namespaceId).stream();
+    List<RelationNode> relations =
+        (relationNames == null
+                ? ctx.listRelationRefs(namespaceId)
+                : ctx.listRelationRefsByName(namespaceId, relationNames))
+            .stream()
+                .map(ref -> ctx.tryResolve(ref.id()))
+                .flatMap(java.util.Optional::stream)
+                .filter(RelationNode.class::isInstance)
+                .map(RelationNode.class::cast)
+                .toList();
     if (relationNames != null) {
-      relations = relations.filter(rel -> relationNames.contains(rel.displayName()));
+      return relations.stream().filter(rel -> relationNames.contains(rel.displayName())).toList();
     }
-    return relations.toList();
+    return relations;
   }
 
   private static ResourceId catalogIdFor(
@@ -121,10 +110,6 @@ final class NamespaceScanSupport {
       return ctx.queryDefaultCatalogId();
     }
     return catalogId;
-  }
-
-  private static String schemaName(NamespaceNode namespace) {
-    return NameRefUtil.namespaceName(namespace.pathSegments(), namespace.displayName());
   }
 
   private static String schemaName(CatalogGraphView.NamespaceRef namespace) {
