@@ -94,6 +94,38 @@ final class RelationMapper {
     return canonicalName(view.getResourceId(), view.getDisplayName());
   }
 
+  /** Builds the identity/status-only form used by pointer-backed generic reads. */
+  Relation fromRef(
+      CatalogGraphView.RelationRef ref,
+      CatalogGraphView.NamespaceRef namespace,
+      boolean includeStatus) {
+    return fromRef(ref, namespaceName(namespace, ref.name()), includeStatus);
+  }
+
+  /** Builds the identity/status-only form while preserving the caller's resolved name. */
+  Relation fromRef(CatalogGraphView.RelationRef ref, NameRef name, boolean includeStatus) {
+    Origin origin = originOf(ref.id());
+    var builder = common(ref.id(), ref.name(), Map.of(), origin, name);
+    if (ref.kind() == ResourceKind.RK_VIEW) {
+      builder.setView(ViewDetails.getDefaultInstance());
+    } else {
+      builder.setTable(TableDetails.getDefaultInstance());
+    }
+    if (includeStatus) {
+      builder.setStatus(
+          ref.kind() == ResourceKind.RK_VIEW ? queryable() : tableStatus(ref.id(), origin));
+    }
+    return builder.build();
+  }
+
+  NameRef namespaceName(CatalogGraphView.NamespaceRef namespace, String relationName) {
+    var builder = NameRef.newBuilder().addAllPath(namespace.pathSegments()).setName(relationName);
+    if (namespace.name() != null && !namespace.name().isBlank()) {
+      builder.addPath(namespace.name());
+    }
+    return builder.build();
+  }
+
   /** Everything a relation carries regardless of kind. */
   private Relation.Builder common(
       ResourceId id,
