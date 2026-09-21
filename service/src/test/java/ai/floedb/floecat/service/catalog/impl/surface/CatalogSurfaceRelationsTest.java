@@ -20,12 +20,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.Queryability;
 import ai.floedb.floecat.catalog.rpc.RelationReference;
 import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
@@ -34,10 +36,12 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.scanner.utils.EnvironmentContext;
@@ -68,8 +72,8 @@ class CatalogSurfaceRelationsTest {
   private final ResourceId catalogId = id(ResourceKind.RK_CATALOG, "cat");
   private final ResourceId namespaceId = id(ResourceKind.RK_NAMESPACE, "ns");
   private final CountingGraphView graphView = new CountingGraphView();
-  private final FakeTableRepository tableRepo = new FakeTableRepository();
-  private final FakeViewRepository viewRepo = new FakeViewRepository();
+  private final FakeTableRepository tableRepo = new FakeTableRepository(graphView);
+  private final FakeViewRepository viewRepo = new FakeViewRepository(graphView);
   private final Map<ResourceId, Long> currentSnapshots = new LinkedHashMap<>();
 
   @BeforeEach
@@ -128,18 +132,20 @@ class CatalogSurfaceRelationsTest {
   @Test
   void listReportsAnUnhydratedRelationWithoutDroppingHealthyRows() {
     var broken = userTable("broken");
-    tableRepo.add(broken);
+    graphView.addRelationRef(
+        namespaceId,
+        new CatalogGraphView.RelationRef(
+            broken.getResourceId(), broken.getDisplayName(), ResourceKind.RK_TABLE));
+    graphView.addUserTableNode(broken);
     tableRepo.add(userTable("healthy"));
-    graphView.failTableNameWith(
-        broken.getResourceId(),
-        new StatusRuntimeException(io.grpc.Status.NOT_FOUND.withDescription("table removed")));
 
     var response =
         list(
             ListRelationsRequest.newBuilder()
                 .setNamespaceId(namespaceId)
                 .addKinds(ResourceKind.RK_TABLE)
-                .setIncludeTotal(true),
+                .setIncludeTotal(true)
+                .setIncludeSchema(true),
             1);
 
     assertTrue(names(response).isEmpty());
@@ -148,7 +154,7 @@ class CatalogSurfaceRelationsTest {
     var error = response.getResults(0).getError();
     assertEquals(broken.getResourceId(), error.getRelationId());
     assertEquals("broken", error.getName().getName());
-    assertEquals(ErrorCode.MC_INTERNAL, error.getError().getCode());
+    assertEquals(ErrorCode.MC_NOT_FOUND, error.getError().getCode());
     assertEquals(2, response.getPage().getTotalSize());
 
     var second =
@@ -157,6 +163,7 @@ class CatalogSurfaceRelationsTest {
                 .setNamespaceId(namespaceId)
                 .addKinds(ResourceKind.RK_TABLE)
                 .setIncludeTotal(true)
+                .setIncludeSchema(true)
                 .setPage(
                     PageRequest.newBuilder()
                         .setPageSize(1)
@@ -603,6 +610,7 @@ class CatalogSurfaceRelationsTest {
                 ResolveRelationsRequest.newBuilder()
                     .addReferences(ref(name("public", "ghost")))
                     .addReferences(ref(name("public", "orders")))
+                    .setIncludeSchema(true)
                     .build(),
                 MAX_NAMES,
                 CORRELATION_ID);
@@ -621,6 +629,7 @@ class CatalogSurfaceRelationsTest {
             .resolveRelations(
                 ResolveRelationsRequest.newBuilder()
                     .addReferences(ref(name("public", "ghost")))
+                    .setIncludeSchema(true)
                     .build(),
                 MAX_NAMES,
                 CORRELATION_ID);
@@ -641,7 +650,10 @@ class CatalogSurfaceRelationsTest {
         id, new StatusRuntimeException(io.grpc.Status.UNAVAILABLE.withDescription("store down")));
 
     var request =
-        ResolveRelationsRequest.newBuilder().addReferences(ref(name("public", "orders"))).build();
+        ResolveRelationsRequest.newBuilder()
+            .addReferences(ref(name("public", "orders")))
+            .setIncludeSchema(true)
+            .build();
 
     var thrown =
         assertThrows(
@@ -824,15 +836,29 @@ class CatalogSurfaceRelationsTest {
 
   /** Keyset-paged over an in-memory list, matching the repository contract the pager relies on. */
   private static final class FakeTableRepository extends TableRepository {
+    private final CountingGraphView graphView;
     private final RelationRows<Table> rows =
         new RelationRows<>(table -> table.getNamespaceId().getId());
 
-    FakeTableRepository() {
+    FakeTableRepository(CountingGraphView graphView) {
       super(new InMemoryPointerStore(), new InMemoryBlobStore());
+      this.graphView = graphView;
     }
 
     void add(Table table) {
       rows.add(table);
+      graphView.addUserTableNode(table);
+      graphView.addRelationRef(
+          table.getNamespaceId(),
+          new CatalogGraphView.RelationRef(
+              table.getResourceId(), table.getDisplayName(), ResourceKind.RK_TABLE));
+    }
+
+    @Override
+    public Optional<Table> getById(ResourceId tableResourceId) {
+      return rows.rows().stream()
+          .filter(table -> table.getResourceId().equals(tableResourceId))
+          .findFirst();
     }
 
     @Override
@@ -853,15 +879,28 @@ class CatalogSurfaceRelationsTest {
   }
 
   private static final class FakeViewRepository extends ViewRepository {
+    private final CountingGraphView graphView;
     private final RelationRows<ai.floedb.floecat.catalog.rpc.View> rows =
         new RelationRows<>(view -> view.getNamespaceId().getId());
 
-    FakeViewRepository() {
+    FakeViewRepository(CountingGraphView graphView) {
       super(new InMemoryPointerStore(), new InMemoryBlobStore());
+      this.graphView = graphView;
     }
 
     void add(ai.floedb.floecat.catalog.rpc.View view) {
       rows.add(view);
+      graphView.addRelationRef(
+          view.getNamespaceId(),
+          new CatalogGraphView.RelationRef(
+              view.getResourceId(), view.getDisplayName(), ResourceKind.RK_VIEW));
+    }
+
+    @Override
+    public Optional<ai.floedb.floecat.catalog.rpc.View> getById(ResourceId viewResourceId) {
+      return rows.rows().stream()
+          .filter(view -> view.getResourceId().equals(viewResourceId))
+          .findFirst();
     }
 
     @Override
@@ -898,6 +937,10 @@ class CatalogSurfaceRelationsTest {
       rows.add(row);
     }
 
+    private List<T> rows() {
+      return List.copyOf(rows);
+    }
+
     private List<T> inNamespace(String id) {
       return rows.stream().filter(row -> namespaceId.apply(row).equals(id)).toList();
     }
@@ -925,21 +968,51 @@ class CatalogSurfaceRelationsTest {
 
   private static final class CountingGraphView extends TestCatalogGraphView {
     private final Map<String, ResourceId> byName = new LinkedHashMap<>();
+    private final Map<ResourceId, List<CatalogGraphView.RelationRef>> relationRefs =
+        new LinkedHashMap<>();
 
     private final Map<ResourceId, RuntimeException> resolveFailures = new LinkedHashMap<>();
-    private final Map<ResourceId, RuntimeException> tableNameFailures = new LinkedHashMap<>();
     private final Map<ResourceId, RuntimeException> tableSchemaFailures = new LinkedHashMap<>();
 
     void bind(NameRef name, ResourceId id) {
       byName.put(NameRefUtil.lookupKey(name), id);
     }
 
-    void failResolveWith(ResourceId id, RuntimeException failure) {
-      resolveFailures.put(id, failure);
+    void addRelationRef(ResourceId namespaceId, CatalogGraphView.RelationRef relationRef) {
+      relationRefs.computeIfAbsent(namespaceId, ignored -> new ArrayList<>()).add(relationRef);
     }
 
-    void failTableNameWith(ResourceId id, RuntimeException failure) {
-      tableNameFailures.put(id, failure);
+    void addUserTableNode(Table table) {
+      addNode(
+          new UserTableNode(
+              table.getResourceId(),
+              "blob://test/v1/" + table.getResourceId().getId(),
+              table.getCatalogId(),
+              table.getNamespaceId(),
+              table.getDisplayName(),
+              TableFormat.TF_ICEBERG,
+              ColumnIdAlgorithm.CID_FIELD_ID,
+              "{}",
+              Map.of(),
+              List.of(),
+              Optional.empty(),
+              Optional.empty(),
+              Optional.empty(),
+              List.of(),
+              Map.of(),
+              Map.of()));
+    }
+
+    @Override
+    public List<CatalogGraphView.RelationRef> listRelationRefs(
+        ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
+      var refs = new ArrayList<>(relationRefs.getOrDefault(namespaceId, List.of()));
+      refs.addAll(super.listRelationRefs(catalogId, namespaceId, catalogContext));
+      return refs;
+    }
+
+    void failResolveWith(ResourceId id, RuntimeException failure) {
+      resolveFailures.put(id, failure);
     }
 
     void failTableSchemaWith(ResourceId id, RuntimeException failure) {
@@ -964,10 +1037,6 @@ class CatalogSurfaceRelationsTest {
 
     @Override
     public Optional<NameRef> tableName(ResourceId id, CatalogContext catalogContext) {
-      RuntimeException failure = tableNameFailures.get(id);
-      if (failure != null) {
-        throw failure;
-      }
       return byName.entrySet().stream()
           .filter(entry -> entry.getValue().equals(id))
           .map(entry -> nameFromCanonical(entry.getKey()))

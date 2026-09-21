@@ -35,8 +35,6 @@ import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.catalog.impl.surface.RelationScope.Segment;
@@ -51,20 +49,19 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
  * Kind-neutral read surface for engine adapters.
  *
- * <p>A listing walks the segments {@link RelationScope} produces, running the same {@link
- * CatalogSurfaceRelationPager} sources as {@code ListTables} and {@code ListViews} for each, so a
- * relation listing and a typed listing return the same rows under the same account scoping.
+ * <p>A listing walks lightweight graph-reference segments. Schema reads are explicit and use the
+ * existing typed table/view surfaces only when requested.
  */
 public final class CatalogSurfaceRelations {
 
@@ -112,7 +109,7 @@ public final class CatalogSurfaceRelations {
     }
 
     var results = new ArrayList<RelationListResult>(want);
-    int total = total(segments, accountId, request.getIncludeTotal(), cursor.total(), corr);
+    int total = total(segments, request.getIncludeTotal(), cursor.total());
     String innerToken = cursor.innerToken();
     String nextToken = "";
 
@@ -123,7 +120,6 @@ public final class CatalogSurfaceRelations {
       var page =
           pageSegment(
               segment,
-              accountId,
               want - results.size(),
               innerToken,
               request.getIncludeSchema(),
@@ -270,7 +266,14 @@ public final class CatalogSurfaceRelations {
       }
       result.setResolvedName(candidate);
       try {
-        return result.setRelation(relationById(id, includeSchema, includeStatus, corr)).build();
+        Relation relation =
+            includeSchema
+                ? relationById(id, true, includeStatus, corr)
+                : mapper.fromRef(
+                    new CatalogGraphView.RelationRef(id, candidate.getName(), id.getKind()),
+                    candidate,
+                    includeStatus);
+        return result.setRelation(relation).build();
       } catch (StatusRuntimeException failure) {
         if (!GrpcErrors.isRelationScoped(failure)) {
           throw failure;
@@ -296,71 +299,60 @@ public final class CatalogSurfaceRelations {
 
   private record Page(List<RelationListResult> results, String nextToken) {}
 
-  /** One segment's page of relations, mapped from its typed page source. */
+  /** One segment's page of relations, mapped from lightweight graph references. */
   private Page pageSegment(
       Segment segment,
-      String accountId,
       int want,
       String innerToken,
       boolean includeSchema,
       boolean includeStatus,
       String corr) {
-    NamespaceNode namespace = scope.node(segment, corr);
-    int limit = Math.max(1, want);
-    if (segment.kind() == ResourceKind.RK_TABLE) {
-      var page =
-          CatalogSurfaceRelationPager.list(
-              limit, innerToken, tables.pageSource(namespace, accountId), corr);
-      return mapItems(
-          page.items(),
-          page.nextToken(),
-          t -> mapper.fromTable(t, includeSchema, includeStatus),
-          ai.floedb.floecat.catalog.rpc.Table::getResourceId,
-          ai.floedb.floecat.catalog.rpc.Table::getDisplayName,
-          mapper::nameOf,
-          corr);
+    List<CatalogGraphView.RelationRef> refs = relationRefs(segment);
+    int start = 0;
+    while (start < refs.size() && !innerToken.isBlank()) {
+      if (relationKey(refs.get(start)).compareTo(innerToken) > 0) {
+        break;
+      }
+      start++;
     }
-    var page =
-        CatalogSurfaceRelationPager.list(
-            limit, innerToken, views.pageSource(namespace, accountId), corr);
-    return mapItems(
-        page.items(),
-        page.nextToken(),
-        v -> mapper.fromView(v, includeSchema, includeStatus),
-        ai.floedb.floecat.catalog.rpc.View::getResourceId,
-        ai.floedb.floecat.catalog.rpc.View::getDisplayName,
-        mapper::nameOf,
-        corr);
-  }
 
-  private <T> Page mapItems(
-      List<T> source,
-      String nextToken,
-      Function<T, Relation> relationMapper,
-      Function<T, ResourceId> relationId,
-      Function<T, String> displayName,
-      Function<T, NameRef> name,
-      String corr) {
-    var results = new ArrayList<RelationListResult>(source.size());
-    for (var item : source) {
+    int end = Math.min(refs.size(), start + Math.max(1, want));
+    var results = new ArrayList<RelationListResult>(end - start);
+    for (var ref : refs.subList(start, end)) {
+      NameRef name = mapper.namespaceName(segment.namespace(), ref.name());
       try {
-        results.add(
-            RelationListResult.newBuilder().setRelation(relationMapper.apply(item)).build());
+        Relation relation =
+            includeSchema
+                ? relationById(ref.id(), true, includeStatus, corr)
+                : mapper.fromRef(ref, name, includeStatus);
+        results.add(RelationListResult.newBuilder().setRelation(relation).build());
       } catch (RuntimeException failure) {
         rethrowIfRequestScoped(failure);
-        NameRef errorName;
-        try {
-          errorName = name.apply(item);
-        } catch (RuntimeException ignored) {
-          errorName = NameRef.newBuilder().setName(displayName.apply(item)).build();
-        }
         results.add(
             RelationListResult.newBuilder()
-                .setError(toListError(relationId.apply(item), errorName, failure, corr))
+                .setError(toListError(ref.id(), name, failure, corr))
                 .build());
       }
     }
+    String nextToken = end < refs.size() ? relationKey(refs.get(end - 1)) : "";
     return new Page(results, nextToken);
+  }
+
+  private List<CatalogGraphView.RelationRef> relationRefs(Segment segment) {
+    return graphView
+        .listRelationRefs(segment.namespace().catalogId(), segment.namespace().id(), context)
+        .stream()
+        .filter(ref -> ref.kind() == segment.kind())
+        .sorted(Comparator.comparing(CatalogSurfaceRelations::relationKey))
+        .toList();
+  }
+
+  private static String relationKey(CatalogGraphView.RelationRef ref) {
+    return CatalogSurfaceSupport.normalizeName(ref.name())
+        + "\0"
+        + ref.id().getAccountId()
+        + "\0"
+        + ref.id().getId();
   }
 
   private static void rethrowIfRequestScoped(RuntimeException failure) {
@@ -389,8 +381,7 @@ public final class CatalogSurfaceRelations {
         .build();
   }
 
-  private int total(
-      List<Segment> segments, String accountId, boolean requested, int carried, String corr) {
+  private int total(List<Segment> segments, boolean requested, int carried) {
     if (!requested) {
       return 0;
     }
@@ -399,20 +390,14 @@ public final class CatalogSurfaceRelations {
     }
     int total = 0;
     for (Segment segment : segments) {
-      total += countSegment(segment, accountId, corr);
+      total += countSegment(segment);
     }
     return total;
   }
 
   /** How many relations a segment holds, without building a page. */
-  private int countSegment(Segment segment, String accountId, String corr) {
-    NamespaceNode namespace = scope.node(segment, corr);
-    CatalogSurfaceRelationPager.Source<?, ?> source =
-        segment.kind() == ResourceKind.RK_TABLE
-            ? tables.pageSource(namespace, accountId)
-            : views.pageSource(namespace, accountId);
-    int repoCount = namespace.origin() == GraphNodeOrigin.SYSTEM ? 0 : source.countRepo();
-    return repoCount + source.systemNodes().size();
+  private int countSegment(Segment segment) {
+    return relationRefs(segment).size();
   }
 
   private static Error noCandidateResolved(RelationReference reference, String corr) {
@@ -422,7 +407,7 @@ public final class CatalogSurfaceRelations {
             .collect(Collectors.joining(", "));
     return Error.newBuilder()
         .setCode(ErrorCode.MC_NOT_FOUND)
-        .setMessage("no relation found for any candidate: " + tried)
+        .setMessage("relation not found for any candidate: " + tried)
         .setCorrelationId(corr)
         .build();
   }
