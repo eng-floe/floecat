@@ -82,6 +82,32 @@ class NamespaceRepositoryTest {
     assertEquals("core", fetched.getDisplayName());
   }
 
+  @Test
+  void listRefsExposeParentPathsOnly() {
+    String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
+    var catRid = rid(account, ResourceKind.RK_CATALOG);
+    catalogRepo.create(
+        Catalog.newBuilder().setResourceId(catRid).setDisplayName("examples").build());
+    namespaceRepo.create(namespaceAt(account, catRid, "public", List.of()));
+    namespaceRepo.create(namespaceAt(account, catRid, "nested", List.of("public")));
+
+    var refs = namespaceRepo.listRefs(account, catRid.getId());
+    assertEquals(
+        List.of(),
+        refs.stream()
+            .filter(ref -> ref.name().equals("public"))
+            .findFirst()
+            .orElseThrow()
+            .pathSegments());
+    assertEquals(
+        List.of("public"),
+        refs.stream()
+            .filter(ref -> ref.name().equals("nested"))
+            .findFirst()
+            .orElseThrow()
+            .pathSegments());
+  }
+
   /**
    * A namespace whose intermediate ancestors were never materialised still counts as a descendant.
    *
