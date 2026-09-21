@@ -73,7 +73,9 @@ for unpinned name resolution, and `QueryInput` candidates when requesting the pi
   a listing, so an adapter walking a hierarchy sets this.
 - `kinds`: filter over `RK_TABLE` and `RK_VIEW`; empty means both. Any other kind is rejected with
   `INVALID_ARGUMENT`.
-- `include_schema`: hydrates `Relation.schema`.
+- `include_schema`: hydrates current relation metadata, including `Relation.schema`, properties and
+  kind-specific details. When false, the relation is identity-only: details and properties are
+  absent, and `resource_id.kind` is the table/view discriminator.
 - `include_status`: populates `Relation.status`, at the cost of one current-snapshot read per
   relation.
 - `include_total`: populates `page.total_size`, at the cost of one count per namespace in scope on
@@ -105,7 +107,8 @@ for unpinned name resolution, and `QueryInput` candidates when requesting the pi
 - Matching folds case, so candidates never need case variants.
 - The total candidate count is bounded by `floecat.relation.resolve.max-names`. This is a bind-time
   batch, not an enumeration path; use `ListRelations` to walk a catalog.
-- `include_schema`: hydrates `Relation.schema` for resolved references.
+- `include_schema`: uses the same hydration semantics as `ListRelations`; without it, details and
+  properties are absent and callers classify the relation from `resource_id.kind`.
 - `include_status`: populates `Relation.status`.
 
 `ResolveRelationsResponse`
@@ -114,16 +117,23 @@ for unpinned name resolution, and `QueryInput` candidates when requesting the pi
 - A reference where no candidate resolves carries an `Error` in its result rather than failing the
   RPC, and so does a candidate that resolves but cannot be read for a reason that belongs to that
   relation. The `Error` is the one the failure carries, with its code, message key and params.
+- `MC_NOT_FOUND` is the only result error that means absence. Adapters may return their native
+  "not found" value for it. `MC_PERMISSION_DENIED`, `MC_INVALID_ARGUMENT`, `MC_INTERNAL` and all
+  other codes mean the relation was unreadable or the response was invalid; adapters must surface
+  or propagate them instead of treating the relation as missing. Core clients can use the shared
+  `RelationResults.requireResolved` helper so this distinction is the default behavior.
 - A failure that belongs to the request rather than a relation, such as an unavailable backend,
   fails the whole call. A broken backend is not reported as every relation being missing.
 
 `GetRelationRequest`
 - `relation_id`: `RK_TABLE` or `RK_VIEW`.
-- `include_schema`, `include_status`: as above.
+- `include_schema`, `include_status`: as above. An identity-only response never sets the details
+  oneof, so an empty `table` or `view` payload is not used to mean "not loaded".
 
 `Relation`
 - Common fields: `resource_id`, `name`, `display_name`, `origin`, `schema`, `status`, `properties`.
-- The kind is `resource_id.kind`; the `details` oneof carries the kind-specific payload.
+- The kind is always `resource_id.kind`; the `details` oneof carries the kind-specific payload only
+  when hydration was requested.
 - `origin` is `query.Origin`, the same builtin-vs-user distinction SQL objects use. Listings merge
   both kinds, so a client that treats them differently reads this rather than the name.
 - `name` is the fully qualified `NameRef`; `display_name` is the leaf.

@@ -84,6 +84,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.engine.catalog.RelationResults;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.ColumnSelectorCoverage;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
@@ -1278,11 +1279,28 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   @Override
   public Optional<ResourceId> lookupView(ReconcileContext ctx, NameRef view) {
+    return resolveRelationId(ctx, view, ResourceKind.RK_VIEW);
+  }
+
+  private Optional<ResourceId> resolveRelationId(
+      ReconcileContext ctx, NameRef reference, ResourceKind expectedKind) {
     try {
-      return Optional.of(
-          directory(ctx)
-              .resolveView(ResolveViewRequest.newBuilder().setRef(view).build())
-              .getResourceId());
+      var response =
+          relation(ctx)
+              .resolveRelations(
+                  ResolveRelationsRequest.newBuilder()
+                      .addReferences(RelationReference.newBuilder().addCandidates(reference))
+                      .build());
+      ResourceId resourceId;
+      try {
+        resourceId = RelationResults.requireResolved(response).getResourceId();
+      } catch (RelationResults.RelationResolutionException e) {
+        if (e.isNotFound()) {
+          return Optional.empty();
+        }
+        throw e;
+      }
+      return resourceId.getKind() == expectedKind ? Optional.of(resourceId) : Optional.empty();
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return Optional.empty();

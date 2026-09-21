@@ -34,8 +34,11 @@ import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.PageResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcClients;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
@@ -134,7 +137,8 @@ class TableLifecycleServiceTest {
 
   @Test
   void deleteTableResolvesIdentifiers() {
-    ResourceId tableId = ResourceId.newBuilder().setId("cat:db:orders").build();
+    ResourceId tableId =
+        ResourceId.newBuilder().setId("cat:db:orders").setKind(ResourceKind.RK_TABLE).build();
     when(relationStub.resolveRelations(any()))
         .thenReturn(
             ai.floedb.floecat.catalog.rpc.ResolveRelationsResponse.newBuilder()
@@ -154,5 +158,24 @@ class TableLifecycleServiceTest {
         ArgumentCaptor.forClass(DeleteTableRequest.class);
     verify(tableStub).deleteTable(deleteCaptor.capture());
     assertEquals(tableId, deleteCaptor.getValue().getTableId());
+  }
+
+  @Test
+  void deleteTablePropagatesInBandResolutionFailures() {
+    when(relationStub.resolveRelations(any()))
+        .thenReturn(
+            ai.floedb.floecat.catalog.rpc.ResolveRelationsResponse.newBuilder()
+                .addResults(
+                    ai.floedb.floecat.catalog.rpc.ResolveRelationResult.newBuilder()
+                        .setError(
+                            Error.newBuilder()
+                                .setCode(ErrorCode.MC_PERMISSION_DENIED)
+                                .setMessage("access denied"))
+                        .build())
+                .build());
+
+    assertThrows(
+        ai.floedb.floecat.engine.catalog.RelationResults.RelationResolutionException.class,
+        () -> service.deleteTable("cat", "db", "orders"));
   }
 }

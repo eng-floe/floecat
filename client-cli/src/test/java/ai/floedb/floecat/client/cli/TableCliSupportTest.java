@@ -17,6 +17,7 @@
 package ai.floedb.floecat.client.cli;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
@@ -42,6 +43,8 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateTableResponse;
+import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import io.grpc.ManagedChannel;
@@ -100,6 +103,33 @@ class TableCliSupportTest {
       String out = buf.toString();
       assertTrue(out.contains("TABLE_ID"), "expected header");
       assertTrue(out.contains(UUID_1), "expected table id");
+    }
+  }
+
+  @Test
+  void resolveSurfacesInBandResolutionFailures() throws Exception {
+    try (Harness h = new Harness()) {
+      h.relationService.resolveError =
+          Error.newBuilder()
+              .setCode(ErrorCode.MC_PERMISSION_DENIED)
+              .setMessage("access denied")
+              .build();
+
+      IllegalArgumentException failure =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  TableCliSupport.resolveRelationId(
+                      h.relationStub,
+                      ai.floedb.floecat.common.rpc.NameRef.newBuilder()
+                          .setCatalog("cat")
+                          .addPath("ns")
+                          .setName("blocked")
+                          .build(),
+                      ResourceKind.RK_TABLE));
+
+      assertTrue(failure.getMessage().contains("Unable to resolve relation"));
+      assertTrue(failure.getMessage().contains("MC_PERMISSION_DENIED"));
     }
   }
 
@@ -422,6 +452,7 @@ class TableCliSupportTest {
     ResourceId resolvedRelationId =
         ResourceId.newBuilder().setId(UUID_1).setKind(ResourceKind.RK_TABLE).build();
     final List<Relation> relationsToReturn = new ArrayList<>();
+    Error resolveError;
 
     @Override
     public void listRelations(
@@ -440,6 +471,14 @@ class TableCliSupportTest {
     public void resolveRelations(
         ResolveRelationsRequest request,
         StreamObserver<ResolveRelationsResponse> responseObserver) {
+      if (resolveError != null) {
+        responseObserver.onNext(
+            ResolveRelationsResponse.newBuilder()
+                .addResults(ResolveRelationResult.newBuilder().setError(resolveError).build())
+                .build());
+        responseObserver.onCompleted();
+        return;
+      }
       Relation relation =
           Relation.newBuilder()
               .setResourceId(resolvedRelationId.toBuilder().setKind(ResourceKind.RK_TABLE))
