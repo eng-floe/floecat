@@ -15,104 +15,104 @@
  */
 package ai.floedb.floecat.service.catalog.impl.surface;
 
-import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID;
 
-import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
+/** Shared page traversal for typed and kind-neutral relation listings. */
 final class CatalogSurfaceRelationPager {
 
   private CatalogSurfaceRelationPager() {}
 
-  static <P, N> Page<P> list(int want, String pageToken, Source<P, N> source, String corr) {
-
+  static Page listRefs(int want, String pageToken, RefSource source, String corr) {
     final boolean isServiceToken = pageToken != null && pageToken.startsWith(source.tokenPrefix());
     final String resumeAfterRel =
         isServiceToken
             ? CatalogSurfaceSupport.decodeToken(source.tokenPrefix(), pageToken, corr)
             : "";
-    String repoCursor = isServiceToken ? "" : pageToken;
+    final String repoCursor = isServiceToken ? "" : pageToken == null ? "" : pageToken;
 
-    var out = new ArrayList<P>(want);
-    String lastEmittedRel = "";
-
+    var out = new ArrayList<CatalogGraphView.RelationRef>(want);
     String repoNext = "";
-    if (source.namespace().origin() != GraphNodeOrigin.SYSTEM && !isServiceToken) {
+    if (source.hasUserRelations() && !isServiceToken) {
       var next = new StringBuilder();
-      final List<P> scanned;
+      final List<CatalogGraphView.RelationRef> scanned;
       try {
-        scanned = source.listRepo(want, repoCursor, next);
+        scanned = source.listUserRelations(want, repoCursor, next);
       } catch (IllegalArgumentException badToken) {
         throw GrpcErrors.invalidArgument(
             corr, PAGE_TOKEN_INVALID, Map.of("page_token", repoCursor));
       }
-
       out.addAll(scanned);
       repoNext = next.toString();
     }
 
-    int sysCount;
     var repoExhausted = repoNext.isBlank();
-    var sysNodes = source.systemNodes();
-    sysCount = sysNodes.size();
-    List<SysItem<N>> sysItems = List.of();
+    var systemRelations = systemRelations(source);
 
-    if (repoExhausted && sysCount > 0) {
-      sysItems =
-          sysNodes.stream()
-              .map(node -> new SysItem<>(node, source.systemRelativeKey(node)))
-              .filter(it -> it.rel() != null && !it.rel().isBlank())
-              .sorted(Comparator.comparing(SysItem::rel))
-              .toList();
-
-      if (out.size() < want) {
-        for (var it : sysItems) {
-          if (!resumeAfterRel.isBlank() && it.rel().compareTo(resumeAfterRel) <= 0) {
-            continue;
-          }
-          if (out.size() >= want) {
-            break;
-          }
-          out.add(source.mapSystemNode(it.node()));
-          lastEmittedRel = it.rel();
+    String lastEmittedRel = "";
+    if (repoExhausted && !systemRelations.isEmpty() && out.size() < want) {
+      for (var relation : systemRelations) {
+        String key = relationKey(relation);
+        if (!resumeAfterRel.isBlank() && key.compareTo(resumeAfterRel) <= 0) {
+          continue;
         }
+        if (out.size() >= want) {
+          break;
+        }
+        out.add(relation);
+        lastEmittedRel = key;
       }
     }
 
     String nextToken = repoNext;
     String resume = lastEmittedRel.isBlank() ? resumeAfterRel : lastEmittedRel;
-    boolean hasMoreSystem = sysItems.stream().anyMatch(it -> it.rel().compareTo(resume) > 0);
+    boolean hasMoreSystem =
+        systemRelations.stream().anyMatch(ref -> relationKey(ref).compareTo(resume) > 0);
     if (nextToken.isBlank() && out.size() == want && hasMoreSystem) {
       nextToken = CatalogSurfaceSupport.encodeToken(source.tokenPrefix(), resume);
     }
 
-    int repoCount = source.namespace().origin() == GraphNodeOrigin.SYSTEM ? 0 : source.countRepo();
-
-    return new Page<>(out, nextToken, repoCount + sysCount);
+    return new Page(out, nextToken);
   }
 
-  private record SysItem<N>(N node, String rel) {}
+  static int total(RefSource source) {
+    return (source.hasUserRelations() ? source.countUserRelations() : 0)
+        + systemRelations(source).size();
+  }
 
-  interface Source<P, N> {
-    NamespaceNode namespace();
+  private static List<CatalogGraphView.RelationRef> systemRelations(RefSource source) {
+    return source.systemRelations().stream()
+        .filter(ref -> ref != null && ref.name() != null && !ref.name().isBlank())
+        .sorted(Comparator.comparing(CatalogSurfaceRelationPager::relationKey))
+        .toList();
+  }
 
+  static String relationKey(CatalogGraphView.RelationRef ref) {
+    return CatalogSurfaceSupport.normalizeName(ref.name())
+        + "\0"
+        + ref.id().getAccountId()
+        + "\0"
+        + ref.id().getId();
+  }
+
+  interface RefSource {
     String tokenPrefix();
 
-    List<P> listRepo(int limit, String cursor, StringBuilder next);
+    boolean hasUserRelations();
 
-    int countRepo();
+    List<CatalogGraphView.RelationRef> listUserRelations(
+        int limit, String cursor, StringBuilder next);
 
-    List<N> systemNodes();
+    int countUserRelations();
 
-    String systemRelativeKey(N node);
-
-    P mapSystemNode(N node);
+    List<CatalogGraphView.RelationRef> systemRelations();
   }
 
-  record Page<P>(List<P> items, String nextToken, int totalSize) {}
+  record Page(List<CatalogGraphView.RelationRef> relations, String nextToken) {}
 }

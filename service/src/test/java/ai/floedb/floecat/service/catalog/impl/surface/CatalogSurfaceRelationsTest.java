@@ -873,8 +873,24 @@ class CatalogSurfaceRelationsTest {
     }
 
     @Override
+    public List<CatalogGraphView.RelationRef> listRefs(
+        String accountId,
+        String catalogId,
+        String namespaceId,
+        int limit,
+        String cursor,
+        StringBuilder next) {
+      return page(
+          graphView.userRelationRefs(namespaceId, ResourceKind.RK_TABLE),
+          CatalogGraphView.RelationRef::name,
+          limit,
+          cursor,
+          next);
+    }
+
+    @Override
     public int count(String accountId, String catalogId, String namespaceId) {
-      return rows.inNamespace(namespaceId).size();
+      return graphView.userRelationRefs(namespaceId, ResourceKind.RK_TABLE).size();
     }
   }
 
@@ -920,8 +936,24 @@ class CatalogSurfaceRelationsTest {
     }
 
     @Override
+    public List<CatalogGraphView.RelationRef> listRefs(
+        String accountId,
+        String catalogId,
+        String namespaceId,
+        int limit,
+        String cursor,
+        StringBuilder next) {
+      return page(
+          graphView.userRelationRefs(namespaceId, ResourceKind.RK_VIEW),
+          CatalogGraphView.RelationRef::name,
+          limit,
+          cursor,
+          next);
+    }
+
+    @Override
     public int count(String accountId, String catalogId, String namespaceId) {
-      return rows.inNamespace(namespaceId).size();
+      return graphView.userRelationRefs(namespaceId, ResourceKind.RK_VIEW).size();
     }
   }
 
@@ -980,6 +1012,14 @@ class CatalogSurfaceRelationsTest {
 
     void addRelationRef(ResourceId namespaceId, CatalogGraphView.RelationRef relationRef) {
       relationRefs.computeIfAbsent(namespaceId, ignored -> new ArrayList<>()).add(relationRef);
+    }
+
+    List<CatalogGraphView.RelationRef> userRelationRefs(String namespaceId, ResourceKind kind) {
+      return relationRefs.entrySet().stream()
+          .filter(entry -> entry.getKey().getId().equals(namespaceId))
+          .flatMap(entry -> entry.getValue().stream())
+          .filter(ref -> ref.kind() == kind)
+          .toList();
     }
 
     void addUserTableNode(Table table) {
