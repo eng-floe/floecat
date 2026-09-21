@@ -27,6 +27,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView.NamespaceRef;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -56,22 +57,24 @@ public final class CatalogSurfaceViews {
 
     var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
     final int want = Math.max(1, pageIn.limit);
-    var result =
-        CatalogSurfaceRelationPager.list(
-            want,
-            pageIn.token,
-            new CatalogSurfaceViewPageSource(
-                viewRepo, graphView, accountId, nsNode, namespaceId, writePolicy.context()),
-            corr);
+    var source =
+        new CatalogSurfaceViewPageSource(
+            viewRepo, graphView, accountId, nsNode, namespaceId, writePolicy.context());
+    var result = CatalogSurfaceRelationPager.listRefs(want, pageIn.token, source, corr);
 
-    var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
-    return ListViewsResponse.newBuilder().addAllViews(result.items()).setPage(page).build();
+    var views = result.relations().stream().map(ref -> source.hydrate(ref, corr)).toList();
+    var page = MutationOps.pageOut(result.nextToken(), CatalogSurfaceRelationPager.total(source));
+    return ListViewsResponse.newBuilder().addAllViews(views).setPage(page).build();
   }
 
   /** The page source this namespace lists through, for callers paging views beside tables. */
   CatalogSurfaceViewPageSource pageSource(NamespaceNode namespace, String accountId) {
     return new CatalogSurfaceViewPageSource(
         viewRepo, graphView, accountId, namespace, namespace.id(), context);
+  }
+
+  CatalogSurfaceViewPageSource pageSource(NamespaceRef namespace, String accountId) {
+    return new CatalogSurfaceViewPageSource(viewRepo, graphView, accountId, namespace, context);
   }
 
   /** The visible view, without the wire envelope, for in-process callers. */

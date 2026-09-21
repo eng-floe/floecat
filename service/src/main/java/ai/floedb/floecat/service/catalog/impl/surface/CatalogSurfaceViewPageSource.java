@@ -17,24 +17,29 @@ package ai.floedb.floecat.service.catalog.impl.surface;
 
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
+import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey;
+import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import java.util.List;
+import java.util.Map;
 
-final class CatalogSurfaceViewPageSource
-    implements CatalogSurfaceRelationPager.Source<View, ViewNode> {
+final class CatalogSurfaceViewPageSource implements CatalogSurfaceRelationPager.RefSource {
 
   static final String TOKEN_PREFIX = "view:";
 
   private final ViewRepository repo;
   private final CatalogGraphView graphView;
   private final String accountId;
-  private final NamespaceNode namespace;
   private final ResourceId namespaceId;
   private final ResourceId catalogId;
+  private final boolean userNamespace;
   private final CatalogContext context;
 
   CatalogSurfaceViewPageSource(
@@ -47,15 +52,25 @@ final class CatalogSurfaceViewPageSource
     this.repo = repo;
     this.graphView = graphView;
     this.accountId = accountId;
-    this.namespace = namespace;
     this.namespaceId = namespaceId;
     this.catalogId = namespace.catalogId();
+    this.userNamespace = namespace.origin() != GraphNodeOrigin.SYSTEM;
     this.context = context;
   }
 
-  @Override
-  public NamespaceNode namespace() {
-    return namespace;
+  CatalogSurfaceViewPageSource(
+      ViewRepository repo,
+      CatalogGraphView graphView,
+      String accountId,
+      CatalogGraphView.NamespaceRef namespace,
+      CatalogContext context) {
+    this.repo = repo;
+    this.graphView = graphView;
+    this.accountId = accountId;
+    this.namespaceId = namespace.id();
+    this.catalogId = namespace.catalogId();
+    this.userNamespace = !SystemResourceIdGenerator.isSystemId(namespace.id());
+    this.context = context;
   }
 
   @Override
@@ -64,44 +79,51 @@ final class CatalogSurfaceViewPageSource
   }
 
   @Override
-  public List<View> listRepo(int limit, String cursor, StringBuilder next) {
-    return repo
-        .list(accountId, catalogId.getId(), namespaceId.getId(), limit, cursor, next)
-        .stream()
-        .map(CatalogSurfaceViews::withUpgradedOutputColumns)
-        .toList();
+  public boolean hasUserRelations() {
+    return userNamespace;
   }
 
   @Override
-  public int countRepo() {
+  public List<CatalogGraphView.RelationRef> listUserRelations(
+      int limit, String cursor, StringBuilder next) {
+    return repo.listRefs(accountId, catalogId.getId(), namespaceId.getId(), limit, cursor, next);
+  }
+
+  @Override
+  public int countUserRelations() {
     return repo.count(accountId, catalogId.getId(), namespaceId.getId());
   }
 
   @Override
-  public List<ViewNode> systemNodes() {
+  public List<CatalogGraphView.RelationRef> systemRelations() {
     return graphView.listSystemRelationsInNamespace(catalogId, namespaceId, context).stream()
         .filter(ViewNode.class::isInstance)
         .map(ViewNode.class::cast)
+        .map(
+            node ->
+                new CatalogGraphView.RelationRef(
+                    node.id(), node.displayName(), ResourceKind.RK_VIEW))
         .toList();
   }
 
-  @Override
-  public String systemRelativeKey(ViewNode node) {
-    if (node == null) {
-      return "";
+  View hydrate(CatalogGraphView.RelationRef ref, String corr) {
+    var resolved = graphView.resolve(ref.id(), context);
+    if (SystemResourceIdGenerator.isSystemId(ref.id())
+        || resolved.map(node -> node.origin() == GraphNodeOrigin.SYSTEM).orElse(false)) {
+      return resolved
+          .filter(ViewNode.class::isInstance)
+          .map(ViewNode.class::cast)
+          .map(
+              node ->
+                  CatalogSurfaceViews.viewFromSystemNode(node).toBuilder()
+                      .setCatalogId(catalogId)
+                      .build())
+          .orElseThrow(
+              () -> GrpcErrors.notFound(corr, MessageKey.VIEW, Map.of("id", ref.id().getId())));
     }
-    var name = node.displayName();
-    if (name == null) {
-      name = "";
-    }
-    return CatalogSurfaceSupport.normalizeName(name);
-  }
-
-  @Override
-  public View mapSystemNode(ViewNode node) {
-    // Rewrite to the requested (user-facing) catalog so system views listed through the Catalog
-    // Surface report the same catalog id as sibling tables (the "symlink" model), rather than the
-    // raw system node's catalog id.
-    return CatalogSurfaceViews.viewFromSystemNode(node).toBuilder().setCatalogId(catalogId).build();
+    return repo.getById(ref.id())
+        .map(CatalogSurfaceViews::withUpgradedOutputColumns)
+        .orElseThrow(
+            () -> GrpcErrors.notFound(corr, MessageKey.VIEW, Map.of("id", ref.id().getId())));
   }
 }

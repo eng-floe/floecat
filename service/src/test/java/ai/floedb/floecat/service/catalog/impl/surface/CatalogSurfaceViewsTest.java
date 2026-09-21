@@ -40,6 +40,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
@@ -84,13 +85,14 @@ class CatalogSurfaceViewsTest {
   @Test
   void listViewsKeepsRepoPhaseBeforeSystemPhase() {
     View userView = view("orders_view");
-    when(viewRepo.list(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq(""), any()))
+    when(viewRepo.listRefs(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq(""), any()))
         .thenAnswer(
             invocation -> {
               StringBuilder nextOut = invocation.getArgument(5);
               nextOut.append("repo-next");
-              return List.of(userView);
+              return List.of(ref(userView));
             });
+    when(viewRepo.getById(userView.getResourceId())).thenReturn(Optional.of(userView));
     when(viewRepo.count(ACCOUNT_ID, "cat", "ns")).thenReturn(1);
     graphView.addRelation(namespaceId, viewNode("z_system", GraphNodeOrigin.SYSTEM));
     graphView.addRelation(namespaceId, viewNode("a_system", GraphNodeOrigin.SYSTEM));
@@ -108,7 +110,7 @@ class CatalogSurfaceViewsTest {
     assertEquals("repo-next", firstPage.getPage().getNextPageToken());
     assertEquals(3, firstPage.getPage().getTotalSize());
 
-    when(viewRepo.list(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq("repo-next"), any()))
+    when(viewRepo.listRefs(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq("repo-next"), any()))
         .thenAnswer(
             invocation -> {
               StringBuilder nextOut = invocation.getArgument(5);
@@ -144,7 +146,7 @@ class CatalogSurfaceViewsTest {
 
     assertEquals(List.of("z_system"), names(systemPage.getViewsList()));
     assertTrue(systemPage.getPage().getNextPageToken().isBlank());
-    verify(viewRepo).list(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq("repo-next"), any());
+    verify(viewRepo).listRefs(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq("repo-next"), any());
   }
 
   @Test
@@ -170,7 +172,7 @@ class CatalogSurfaceViewsTest {
             Map.<Long, Map<EngineHintKey, EngineHint>>of(),
             Map.<EngineHintKey, EngineHint>of());
     graphView.addRelation(namespaceId, systemView);
-    when(viewRepo.list(eq(ACCOUNT_ID), eq("cat"), eq("ns"), anyInt(), anyString(), any()))
+    when(viewRepo.listRefs(eq(ACCOUNT_ID), eq("cat"), eq("ns"), anyInt(), anyString(), any()))
         .thenAnswer(invocation -> List.of());
     when(viewRepo.count(ACCOUNT_ID, "cat", "ns")).thenReturn(0);
 
@@ -220,6 +222,11 @@ class CatalogSurfaceViewsTest {
 
   private static List<String> names(List<View> views) {
     return views.stream().map(View::getDisplayName).toList();
+  }
+
+  private static CatalogGraphView.RelationRef ref(View view) {
+    return new CatalogGraphView.RelationRef(
+        view.getResourceId(), view.getDisplayName(), ResourceKind.RK_VIEW);
   }
 
   private View view(String displayName) {

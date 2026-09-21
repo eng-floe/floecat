@@ -49,7 +49,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -109,7 +108,7 @@ public final class CatalogSurfaceRelations {
     }
 
     var results = new ArrayList<RelationListResult>(want);
-    int total = total(segments, request.getIncludeTotal(), cursor.total());
+    int total = total(segments, request.getIncludeTotal(), cursor.total(), accountId);
     String innerToken = cursor.innerToken();
     String nextToken = "";
 
@@ -120,6 +119,7 @@ public final class CatalogSurfaceRelations {
       var page =
           pageSegment(
               segment,
+              accountId,
               want - results.size(),
               innerToken,
               request.getIncludeSchema(),
@@ -302,23 +302,16 @@ public final class CatalogSurfaceRelations {
   /** One segment's page of relations, mapped from lightweight graph references. */
   private Page pageSegment(
       Segment segment,
+      String accountId,
       int want,
       String innerToken,
       boolean includeSchema,
       boolean includeStatus,
       String corr) {
-    List<CatalogGraphView.RelationRef> refs = relationRefs(segment);
-    int start = 0;
-    while (start < refs.size() && !innerToken.isBlank()) {
-      if (relationKey(refs.get(start)).compareTo(innerToken) > 0) {
-        break;
-      }
-      start++;
-    }
-
-    int end = Math.min(refs.size(), start + Math.max(1, want));
-    var results = new ArrayList<RelationListResult>(end - start);
-    for (var ref : refs.subList(start, end)) {
+    CatalogSurfaceRelationPager.RefSource source = refSource(segment, accountId);
+    var page = CatalogSurfaceRelationPager.listRefs(want, innerToken, source, corr);
+    var results = new ArrayList<RelationListResult>(page.relations().size());
+    for (var ref : page.relations()) {
       NameRef name = mapper.namespaceName(segment.namespace(), ref.name());
       try {
         Relation relation =
@@ -334,25 +327,15 @@ public final class CatalogSurfaceRelations {
                 .build());
       }
     }
-    String nextToken = end < refs.size() ? relationKey(refs.get(end - 1)) : "";
-    return new Page(results, nextToken);
+    return new Page(results, page.nextToken());
   }
 
-  private List<CatalogGraphView.RelationRef> relationRefs(Segment segment) {
-    return graphView
-        .listRelationRefs(segment.namespace().catalogId(), segment.namespace().id(), context)
-        .stream()
-        .filter(ref -> ref.kind() == segment.kind())
-        .sorted(Comparator.comparing(CatalogSurfaceRelations::relationKey))
-        .toList();
-  }
-
-  private static String relationKey(CatalogGraphView.RelationRef ref) {
-    return CatalogSurfaceSupport.normalizeName(ref.name())
-        + "\0"
-        + ref.id().getAccountId()
-        + "\0"
-        + ref.id().getId();
+  private CatalogSurfaceRelationPager.RefSource refSource(Segment segment, String accountId) {
+    return switch (segment.kind()) {
+      case RK_TABLE -> tables.pageSource(segment.namespace(), accountId);
+      case RK_VIEW -> views.pageSource(segment.namespace(), accountId);
+      default -> throw GrpcErrors.invalidArgument("", KIND, Map.of("field", "kinds"));
+    };
   }
 
   private static void rethrowIfRequestScoped(RuntimeException failure) {
@@ -381,7 +364,7 @@ public final class CatalogSurfaceRelations {
         .build();
   }
 
-  private int total(List<Segment> segments, boolean requested, int carried) {
+  private int total(List<Segment> segments, boolean requested, int carried, String accountId) {
     if (!requested) {
       return 0;
     }
@@ -390,14 +373,9 @@ public final class CatalogSurfaceRelations {
     }
     int total = 0;
     for (Segment segment : segments) {
-      total += countSegment(segment);
+      total += CatalogSurfaceRelationPager.total(refSource(segment, accountId));
     }
     return total;
-  }
-
-  /** How many relations a segment holds, without building a page. */
-  private int countSegment(Segment segment) {
-    return relationRefs(segment).size();
   }
 
   private static Error noCandidateResolved(RelationReference reference, String corr) {
