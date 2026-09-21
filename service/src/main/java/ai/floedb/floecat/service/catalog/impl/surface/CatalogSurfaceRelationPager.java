@@ -17,6 +17,8 @@ package ai.floedb.floecat.service.catalog.impl.surface;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID;
 
+import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import java.util.ArrayList;
@@ -112,6 +114,13 @@ final class CatalogSurfaceRelationPager {
     int countUserRelations();
 
     List<CatalogGraphView.RelationRef> systemRelations();
+
+    Relation hydrateRelation(
+        CatalogGraphView.RelationRef ref,
+        NameRef name,
+        boolean includeStatus,
+        String corr,
+        RelationMapper mapper);
   }
 
   record Page(List<CatalogGraphView.RelationRef> relations, String nextToken) {}

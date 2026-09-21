@@ -49,6 +49,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -108,6 +109,7 @@ public final class CatalogSurfaceRelations {
     }
 
     var results = new ArrayList<RelationListResult>(want);
+    var catalogNames = new HashMap<ResourceId, String>();
     int total = total(segments, request.getIncludeTotal(), cursor.total(), accountId);
     String innerToken = cursor.innerToken();
     String nextToken = "";
@@ -120,6 +122,9 @@ public final class CatalogSurfaceRelations {
           pageSegment(
               segment,
               accountId,
+              catalogNames.computeIfAbsent(
+                  segment.namespace().catalogId(),
+                  id -> graphView.catalogName(id, context).orElse("")),
               want - results.size(),
               innerToken,
               request.getIncludeSchema(),
@@ -303,6 +308,7 @@ public final class CatalogSurfaceRelations {
   private Page pageSegment(
       Segment segment,
       String accountId,
+      String catalogName,
       int want,
       String innerToken,
       boolean includeSchema,
@@ -312,15 +318,17 @@ public final class CatalogSurfaceRelations {
     var page = CatalogSurfaceRelationPager.listRefs(want, innerToken, source, corr);
     var results = new ArrayList<RelationListResult>(page.relations().size());
     for (var ref : page.relations()) {
-      NameRef name = mapper.namespaceName(segment.namespace(), ref.name());
+      NameRef name = mapper.namespaceName(segment.namespace(), ref.name(), catalogName);
       try {
         Relation relation =
             includeSchema
-                ? relationById(ref.id(), true, includeStatus, corr)
+                ? source.hydrateRelation(ref, name, includeStatus, corr, mapper)
                 : mapper.fromRef(ref, name, includeStatus);
         results.add(RelationListResult.newBuilder().setRelation(relation).build());
-      } catch (RuntimeException failure) {
-        rethrowIfRequestScoped(failure);
+      } catch (StatusRuntimeException failure) {
+        if (!GrpcErrors.isRelationScoped(failure)) {
+          throw failure;
+        }
         results.add(
             RelationListResult.newBuilder()
                 .setError(toListError(ref.id(), name, failure, corr))
@@ -338,25 +346,9 @@ public final class CatalogSurfaceRelations {
     };
   }
 
-  private static void rethrowIfRequestScoped(RuntimeException failure) {
-    if (failure instanceof StatusRuntimeException status && !GrpcErrors.isRelationScoped(status)) {
-      throw status;
-    }
-  }
-
   private static RelationListError toListError(
-      ResourceId relationId, NameRef name, RuntimeException failure, String corr) {
-    Error error;
-    if (failure instanceof StatusRuntimeException status) {
-      error = toError(name, status, corr);
-    } else {
-      error =
-          Error.newBuilder()
-              .setCode(ErrorCode.MC_INTERNAL)
-              .setMessage("relation metadata could not be hydrated: " + name.getName())
-              .setCorrelationId(corr)
-              .build();
-    }
+      ResourceId relationId, NameRef name, StatusRuntimeException failure, String corr) {
+    Error error = toError(name, failure, corr);
     return RelationListError.newBuilder()
         .setRelationId(relationId)
         .setName(name)

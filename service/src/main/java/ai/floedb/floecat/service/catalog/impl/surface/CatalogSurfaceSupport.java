@@ -26,6 +26,8 @@ import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.common.PageTokens;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import java.text.Normalizer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 final class CatalogSurfaceSupport {
@@ -87,6 +89,20 @@ final class CatalogSurfaceSupport {
     String t = Normalizer.normalize(in.trim(), Normalizer.Form.NFKC);
     t = t.replaceAll("\\s+", " ");
     return t;
+  }
+
+  /** Returns the namespace path in the canonical parent-plus-leaf form. */
+  static List<String> namespacePath(CatalogGraphView.NamespaceRef namespace) {
+    var path = new ArrayList<>(namespace.pathSegments());
+    if (namespace.name() != null && !namespace.name().isBlank()) {
+      path.add(namespace.name());
+    }
+    return List.copyOf(path);
+  }
+
+  static List<String> namespaceParentPath(CatalogGraphView.NamespaceRef namespace) {
+    List<String> path = namespacePath(namespace);
+    return path.isEmpty() ? path : path.subList(0, path.size() - 1);
   }
 
   static String encodeToken(String prefix, String resumeAfterRel) {

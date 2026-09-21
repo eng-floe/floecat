@@ -21,8 +21,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
 import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.RelationListResult;
 import ai.floedb.floecat.catalog.rpc.RelationReference;
 import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
@@ -160,6 +162,61 @@ class PointerListingStoreCostIT {
   }
 
   @Test
+  void hydratedRelationListingCostIsExplicit() {
+    ResourceId catalogId =
+        TestSupport.createCatalog(catalogs, "hydrated_relation_listing", "").getResourceId();
+    var namespace = TestSupport.createNamespace(namespaces, catalogId, "sales", List.of(), "");
+    String schemaJson =
+        """
+        {"type":"struct","schema-id":0,"fields":[{"id":1,"name":"id","required":false,"type":"long"}]}
+        """
+            .trim();
+    for (String name : List.of("alpha", "bravo", "charlie")) {
+      TestSupport.createTable(
+          tables,
+          catalogId,
+          namespace.getResourceId(),
+          name,
+          "s3://bucket/" + name,
+          schemaJson,
+          "");
+    }
+
+    meter.assertWiredAndLive();
+    meter.measure(
+        () ->
+            assertEquals(
+                List.of("alpha", "bravo", "charlie"), listTables(namespace.getResourceId(), true)));
+    int genericReads = reads.blobObjectGets();
+
+    meter.measure(
+        () ->
+            assertEquals(
+                List.of("alpha", "bravo", "charlie"), listTypedTables(namespace.getResourceId())));
+    int typedReads = reads.blobObjectGets();
+
+    assertEquals(
+        typedReads,
+        genericReads,
+        "generic hydrated listing must reuse the typed page source hydration cost");
+  }
+
+  @Test
+  void genericAndTypedTableListingsHaveTheSameRows() {
+    ResourceId catalogId =
+        TestSupport.createCatalog(catalogs, "listing_parity", "").getResourceId();
+    var namespace = TestSupport.createNamespace(namespaces, catalogId, "sales", List.of(), "");
+    for (String name : List.of("alpha", "bravo", "charlie")) {
+      TestSupport.createTable(
+          tables, catalogId, namespace.getResourceId(), name, "s3://bucket/" + name, "{}", "");
+    }
+
+    assertEquals(
+        listRelationRows(namespace.getResourceId()),
+        listTypedRelationRows("listing_parity", namespace));
+  }
+
+  @Test
   void directoryViewListResolutionUsesOnlyPointerMetadata() {
     ResourceId catalogId =
         TestSupport.createCatalog(catalogs, "pointer_view_listing", "").getResourceId();
@@ -224,7 +281,50 @@ class PointerListingStoreCostIT {
   }
 
   private List<String> listTables(ResourceId namespaceId) {
+    return listTables(namespaceId, false);
+  }
+
+  private List<String> listTables(ResourceId namespaceId, boolean includeSchema) {
     List<String> names = new ArrayList<>();
+    String token = "";
+    do {
+      var response =
+          relation.listRelations(
+              ListRelationsRequest.newBuilder()
+                  .setNamespaceId(namespaceId)
+                  .addKinds(ResourceKind.RK_TABLE)
+                  .setIncludeSchema(includeSchema)
+                  .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken(token).build())
+                  .build());
+      response.getResultsList().stream()
+          .filter(result -> result.hasRelation())
+          .map(result -> result.getRelation().getDisplayName())
+          .forEach(names::add);
+      token = response.getPage().getNextPageToken();
+    } while (!token.isBlank());
+    return names;
+  }
+
+  private List<String> listTypedTables(ResourceId namespaceId) {
+    List<String> names = new ArrayList<>();
+    String token = "";
+    do {
+      var response =
+          tables.listTables(
+              ListTablesRequest.newBuilder()
+                  .setNamespaceId(namespaceId)
+                  .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken(token).build())
+                  .build());
+      response.getTablesList().stream()
+          .map(ai.floedb.floecat.catalog.rpc.Table::getDisplayName)
+          .forEach(names::add);
+      token = response.getPage().getNextPageToken();
+    } while (!token.isBlank());
+    return names;
+  }
+
+  private List<ListingRow> listRelationRows(ResourceId namespaceId) {
+    List<ListingRow> rows = new ArrayList<>();
     String token = "";
     do {
       var response =
@@ -236,10 +336,43 @@ class PointerListingStoreCostIT {
                   .build());
       response.getResultsList().stream()
           .filter(result -> result.hasRelation())
-          .map(result -> result.getRelation().getDisplayName())
-          .forEach(names::add);
+          .map(RelationListResult::getRelation)
+          .map(
+              value ->
+                  new ListingRow(
+                      value.getResourceId(), value.getResourceId().getKind(), value.getName()))
+          .forEach(rows::add);
       token = response.getPage().getNextPageToken();
     } while (!token.isBlank());
-    return names;
+    return rows;
   }
+
+  private List<ListingRow> listTypedRelationRows(String catalogName, Namespace namespace) {
+    List<ListingRow> rows = new ArrayList<>();
+    String token = "";
+    do {
+      var response =
+          tables.listTables(
+              ListTablesRequest.newBuilder()
+                  .setNamespaceId(namespace.getResourceId())
+                  .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken(token).build())
+                  .build());
+      response.getTablesList().stream()
+          .map(
+              value ->
+                  new ListingRow(
+                      value.getResourceId(),
+                      value.getResourceId().getKind(),
+                      NameRef.newBuilder()
+                          .setCatalog(catalogName)
+                          .addPath(namespace.getDisplayName())
+                          .setName(value.getDisplayName())
+                          .build()))
+          .forEach(rows::add);
+      token = response.getPage().getNextPageToken();
+    } while (!token.isBlank());
+    return rows;
+  }
+
+  private record ListingRow(ResourceId resourceId, ResourceKind kind, NameRef name) {}
 }

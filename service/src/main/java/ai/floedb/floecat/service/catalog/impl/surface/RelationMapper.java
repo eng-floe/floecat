@@ -50,16 +50,20 @@ final class RelationMapper {
   }
 
   Relation fromTable(Table table, boolean includeSchema, boolean includeStatus) {
+    return fromTable(table, nameOf(table), includeSchema, includeStatus);
+  }
+
+  Relation fromTable(Table table, NameRef name, boolean includeSchema, boolean includeStatus) {
     Origin origin = originOf(table.getResourceId());
     var builder =
         common(
-                table.getResourceId(),
-                table.getDisplayName(),
-                table.getPropertiesMap(),
-                origin,
-                nameOf(table))
-            .setTable(tableDetails(table));
+            table.getResourceId(),
+            table.getDisplayName(),
+            includeSchema ? table.getPropertiesMap() : Map.of(),
+            origin,
+            name);
     if (includeSchema) {
+      builder.setTable(tableDetails(table));
       builder.setSchema(tableSchema(table));
     }
     if (includeStatus) {
@@ -73,15 +77,19 @@ final class RelationMapper {
   }
 
   Relation fromView(View view, boolean includeSchema, boolean includeStatus) {
+    return fromView(view, nameOf(view), includeSchema, includeStatus);
+  }
+
+  Relation fromView(View view, NameRef name, boolean includeSchema, boolean includeStatus) {
     var builder =
         common(
-                view.getResourceId(),
-                view.getDisplayName(),
-                view.getPropertiesMap(),
-                originOf(view.getResourceId()),
-                nameOf(view))
-            .setView(viewDetails(view));
+            view.getResourceId(),
+            view.getDisplayName(),
+            includeSchema ? view.getPropertiesMap() : Map.of(),
+            originOf(view.getResourceId()),
+            name);
     if (includeSchema) {
+      builder.setView(viewDetails(view));
       builder.setSchema(SchemaDescriptor.newBuilder().addAllColumns(view.getOutputColumnsList()));
     }
     if (includeStatus) {
@@ -106,11 +114,6 @@ final class RelationMapper {
   Relation fromRef(CatalogGraphView.RelationRef ref, NameRef name, boolean includeStatus) {
     Origin origin = originOf(ref.id());
     var builder = common(ref.id(), ref.name(), Map.of(), origin, name);
-    if (ref.kind() == ResourceKind.RK_VIEW) {
-      builder.setView(ViewDetails.getDefaultInstance());
-    } else {
-      builder.setTable(TableDetails.getDefaultInstance());
-    }
     if (includeStatus) {
       builder.setStatus(
           ref.kind() == ResourceKind.RK_VIEW ? queryable() : tableStatus(ref.id(), origin));
@@ -119,9 +122,22 @@ final class RelationMapper {
   }
 
   NameRef namespaceName(CatalogGraphView.NamespaceRef namespace, String relationName) {
-    var builder = NameRef.newBuilder().addAllPath(namespace.pathSegments()).setName(relationName);
-    if (namespace.name() != null && !namespace.name().isBlank()) {
-      builder.addPath(namespace.name());
+    return namespaceName(
+        namespace,
+        relationName,
+        namespace.catalogId() == null
+            ? ""
+            : graphView.catalogName(namespace.catalogId(), context).orElse(""));
+  }
+
+  NameRef namespaceName(
+      CatalogGraphView.NamespaceRef namespace, String relationName, String catalogName) {
+    var builder =
+        NameRef.newBuilder()
+            .addAllPath(CatalogSurfaceSupport.namespacePath(namespace))
+            .setName(relationName);
+    if (catalogName != null && !catalogName.isBlank()) {
+      builder.setCatalog(catalogName);
     }
     return builder.build();
   }

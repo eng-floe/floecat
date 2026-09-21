@@ -642,6 +642,13 @@ public final class MetaGraph implements CatalogGraphView {
     return systemGraph.catalog(id, ctx);
   }
 
+  @Override
+  public Optional<String> catalogName(ResourceId id, CatalogContext ctx) {
+    return userGraph
+        .catalogName(id)
+        .or(() -> systemGraph.catalog(id, ctx).map(CatalogNode::displayName));
+  }
+
   /**
    * Gets the schema resolution for a table at a specific snapshot.
    *

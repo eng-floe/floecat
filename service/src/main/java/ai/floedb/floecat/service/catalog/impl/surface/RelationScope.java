@@ -133,7 +133,9 @@ public final class RelationScope {
       return sortedByKey(
           request.getRecursive()
               ? all
-              : all.stream().filter(ns -> ns.pathSegments().isEmpty()).toList());
+              : all.stream()
+                  .filter(ns -> CatalogSurfaceSupport.namespaceParentPath(ns).isEmpty())
+                  .toList());
     }
 
     CatalogGraphView.NamespaceRef rootRef =
@@ -150,11 +152,12 @@ public final class RelationScope {
       return List.of(rootRef);
     }
 
-    List<String> rootPath = append(rootRef.pathSegments(), rootRef.name());
+    List<String> rootPath = CatalogSurfaceSupport.namespacePath(rootRef);
     var subtree = new ArrayList<CatalogGraphView.NamespaceRef>();
     subtree.add(rootRef);
     for (var candidate : graphView.listNamespaceRefs(rootRef.catalogId(), context)) {
-      if (isDescendant(candidate.pathSegments(), rootPath)) {
+      if (!candidate.id().equals(rootRef.id())
+          && isDescendant(CatalogSurfaceSupport.namespacePath(candidate), rootPath)) {
         subtree.add(candidate);
       }
     }
@@ -168,13 +171,7 @@ public final class RelationScope {
 
   private static String namespaceKey(CatalogGraphView.NamespaceRef namespace) {
     return String.join(
-        String.valueOf(KEY_SEPARATOR), append(namespace.pathSegments(), namespace.name()));
-  }
-
-  private static List<String> append(List<String> path, String leaf) {
-    var out = new ArrayList<>(path == null ? List.<String>of() : path);
-    out.add(leaf == null ? "" : leaf);
-    return out;
+        String.valueOf(KEY_SEPARATOR), CatalogSurfaceSupport.namespacePath(namespace));
   }
 
   private static boolean isDescendant(List<String> candidatePath, List<String> rootPath) {

@@ -15,7 +15,9 @@
  */
 package ai.floedb.floecat.service.catalog.impl.surface;
 
+import ai.floedb.floecat.catalog.rpc.Relation;
 import ai.floedb.floecat.catalog.rpc.View;
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
@@ -125,5 +127,15 @@ final class CatalogSurfaceViewPageSource implements CatalogSurfaceRelationPager.
         .map(CatalogSurfaceViews::withUpgradedOutputColumns)
         .orElseThrow(
             () -> GrpcErrors.notFound(corr, MessageKey.VIEW, Map.of("id", ref.id().getId())));
+  }
+
+  @Override
+  public Relation hydrateRelation(
+      CatalogGraphView.RelationRef ref,
+      NameRef name,
+      boolean includeStatus,
+      String corr,
+      RelationMapper mapper) {
+    return mapper.fromView(hydrate(ref, corr), name, true, includeStatus);
   }
 }
