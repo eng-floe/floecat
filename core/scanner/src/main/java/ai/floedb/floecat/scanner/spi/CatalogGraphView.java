@@ -80,25 +80,16 @@ public interface CatalogGraphView {
   }
 
   /**
-   * Whether this graph view can enumerate lightweight refs without materializing full graph nodes.
-   *
-   * <p>Default implementations below are correct but derive refs from full objects, so callers that
-   * need a true no-hydration path should check this before relying on refs for performance.
+   * Lists namespace refs for callers that only need topology metadata. Implementations should use a
+   * pointer path when available.
    */
-  default boolean supportsLightweightRefs() {
-    return false;
-  }
+  List<NamespaceRef> listNamespaceRefs(ResourceId catalogId, CatalogContext catalogContext);
 
   /**
-   * Lists namespace refs for callers that only need topology metadata. Implementations should use a
-   * cache-backed pointer path when available; the default derives refs from full namespace nodes.
+   * Resolves a namespace's lightweight topology ref without materializing its namespace node.
+   * Implementations must provide this for namespace-scoped listings.
    */
-  default List<NamespaceRef> listNamespaceRefs(
-      ResourceId catalogId, CatalogContext catalogContext) {
-    return listNamespaces(catalogId, catalogContext).stream()
-        .map(ns -> new NamespaceRef(ns.id(), ns.displayName(), ns.catalogId(), ns.pathSegments()))
-        .toList();
-  }
+  Optional<NamespaceRef> namespaceRef(ResourceId namespaceId, CatalogContext catalogContext);
 
   /** Lists namespace refs whose rendered information_schema names match the supplied set. */
   default List<NamespaceRef> listNamespaceRefsByName(
@@ -113,22 +104,10 @@ public interface CatalogGraphView {
 
   /**
    * Lists relation refs for callers that only need relation name/id/kind. Implementations should
-   * use a cache-backed pointer path when available; the default derives refs from full relation
-   * nodes.
+   * use a pointer path when available.
    */
-  default List<RelationRef> listRelationRefs(
-      ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
-    return listRelationsInNamespace(catalogId, namespaceId, catalogContext).stream()
-        .map(
-            rel -> {
-              ResourceKind kind =
-                  rel.id().getKind() == ResourceKind.RK_VIEW
-                      ? ResourceKind.RK_VIEW
-                      : ResourceKind.RK_TABLE;
-              return new RelationRef(rel.id(), rel.displayName(), kind);
-            })
-        .toList();
-  }
+  List<RelationRef> listRelationRefs(
+      ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext);
 
   /** Lists matching relation refs using the selected catalog context. */
   default List<RelationRef> listRelationRefsByName(
