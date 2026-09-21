@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.query.catalog.testsupport;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.EngineHint;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
@@ -189,9 +190,51 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
+    public List<CatalogGraphView.NamespaceRef> listNamespaceRefs(
+        ResourceId catalogId, CatalogContext context) {
+      return nodes.values().stream()
+          .filter(NamespaceNode.class::isInstance)
+          .map(NamespaceNode.class::cast)
+          .map(
+              namespace ->
+                  new CatalogGraphView.NamespaceRef(
+                      namespace.id(),
+                      namespace.displayName(),
+                      namespace.catalogId(),
+                      namespace.pathSegments()))
+          .toList();
+    }
+
+    @Override
+    public Optional<CatalogGraphView.NamespaceRef> namespaceRef(
+        ResourceId namespaceId, CatalogContext context) {
+      return listNamespaceRefs(null, context).stream()
+          .filter(ref -> ref.id().equals(namespaceId))
+          .findFirst();
+    }
+
+    @Override
     public List<RelationNode> listRelationsInNamespace(
         ResourceId catalogId, ResourceId namespaceId, CatalogContext context) {
       throw unsupported();
+    }
+
+    @Override
+    public List<CatalogGraphView.RelationRef> listRelationRefs(
+        ResourceId catalogId, ResourceId namespaceId, CatalogContext context) {
+      return nodes.values().stream()
+          .filter(RelationNode.class::isInstance)
+          .map(RelationNode.class::cast)
+          .filter(relation -> namespaceId.equals(relation.namespaceId()))
+          .map(
+              relation ->
+                  new CatalogGraphView.RelationRef(
+                      relation.id(),
+                      relation.displayName(),
+                      relation.id().getKind() == ResourceKind.RK_VIEW
+                          ? ResourceKind.RK_VIEW
+                          : ResourceKind.RK_TABLE))
+          .toList();
     }
 
     @Override

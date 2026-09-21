@@ -538,6 +538,18 @@ public final class UserGraph {
     return names.listNamespaceRefsByName(catalogId, selectedNames);
   }
 
+  /** Resolves a namespace ref from the pointer indexes without loading its namespace blob. */
+  public Optional<CatalogGraphView.NamespaceRef> namespaceRef(ResourceId namespaceId) {
+    if (namespaceId == null) {
+      return Optional.empty();
+    }
+    return listAllCatalogIds(namespaceId.getAccountId()).stream()
+        .map(catalogId -> names.listNamespaceRefs(catalogId))
+        .flatMap(List::stream)
+        .filter(ref -> ref.id().equals(namespaceId))
+        .findFirst();
+  }
+
   public List<CatalogGraphView.RelationRef> listRelationRefs(
       ResourceId catalogId, ResourceId namespaceId) {
     return names.listRelationRefs(catalogId, namespaceId);

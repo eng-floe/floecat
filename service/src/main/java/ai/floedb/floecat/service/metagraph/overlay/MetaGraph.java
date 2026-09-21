@@ -896,11 +896,6 @@ public final class MetaGraph implements CatalogGraphView {
   // ---- Lightweight pointer-backed ref listing ----
 
   @Override
-  public boolean supportsLightweightRefs() {
-    return true;
-  }
-
-  @Override
   public List<CatalogGraphView.NamespaceRef> listNamespaceRefs(
       ResourceId catalogId, CatalogContext ctx) {
     List<NamespaceNode> sysNs = systemGraph.listNamespaces(catalogId, ctx);
@@ -916,6 +911,21 @@ public final class MetaGraph implements CatalogGraphView {
     }
     result.addAll(userNs);
     return result;
+  }
+
+  @Override
+  public Optional<CatalogGraphView.NamespaceRef> namespaceRef(
+      ResourceId namespaceId, CatalogContext ctx) {
+    Optional<CatalogGraphView.NamespaceRef> system =
+        systemGraph
+            .resolve(namespaceId, ctx)
+            .filter(NamespaceNode.class::isInstance)
+            .map(NamespaceNode.class::cast)
+            .map(
+                ns ->
+                    new CatalogGraphView.NamespaceRef(
+                        ns.id(), ns.displayName(), ns.catalogId(), ns.pathSegments()));
+    return system.or(() -> userGraph.namespaceRef(namespaceId));
   }
 
   @Override

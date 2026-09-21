@@ -387,6 +387,15 @@ public final class TestSupport {
                 .addReferences(RelationReference.newBuilder().addCandidates(ref))
                 .build());
     if (response.getResultsCount() == 0 || !response.getResults(0).hasRelation()) {
+      if (response.getResultsCount() > 0 && response.getResults(0).hasError()) {
+        var error = response.getResults(0).getError();
+        throw StatusProto.toStatusRuntimeException(
+            com.google.rpc.Status.newBuilder()
+                .setCode(Status.Code.NOT_FOUND.value())
+                .setMessage(error.getMessage())
+                .addDetails(Any.pack(error))
+                .build());
+      }
       throw Status.NOT_FOUND.withDescription("relation not found: " + ref).asRuntimeException();
     }
     Relation relation = response.getResults(0).getRelation();

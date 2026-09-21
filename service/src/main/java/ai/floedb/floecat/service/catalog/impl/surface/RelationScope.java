@@ -21,7 +21,6 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -125,11 +124,6 @@ public final class RelationScope {
     return GrpcErrors.invalidArgument(corr, PAGE_TOKEN_INVALID, Map.of("page_token", key));
   }
 
-  /** Hydrates the full node for a segment a page reads. */
-  NamespaceNode node(Segment segment, String corr) {
-    return writePolicy.requireVisibleNamespace(segment.namespace().id(), corr);
-  }
-
   private List<CatalogGraphView.NamespaceRef> namespaces(
       ListRelationsRequest request, String corr) {
     if (request.hasCatalogId()) {
@@ -142,18 +136,24 @@ public final class RelationScope {
               : all.stream().filter(ns -> ns.pathSegments().isEmpty()).toList());
     }
 
-    NamespaceNode root = writePolicy.requireVisibleNamespace(request.getNamespaceId(), corr);
-    var rootRef =
-        new CatalogGraphView.NamespaceRef(
-            root.id(), root.displayName(), root.catalogId(), root.pathSegments());
+    CatalogGraphView.NamespaceRef rootRef =
+        graphView
+            .namespaceRef(request.getNamespaceId(), context)
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        corr,
+                        ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey
+                            .NAMESPACE,
+                        Map.of("id", request.getNamespaceId().getId())));
     if (!request.getRecursive()) {
       return List.of(rootRef);
     }
 
-    List<String> rootPath = append(root.pathSegments(), root.displayName());
+    List<String> rootPath = append(rootRef.pathSegments(), rootRef.name());
     var subtree = new ArrayList<CatalogGraphView.NamespaceRef>();
     subtree.add(rootRef);
-    for (var candidate : graphView.listNamespaceRefs(root.catalogId(), context)) {
+    for (var candidate : graphView.listNamespaceRefs(rootRef.catalogId(), context)) {
       if (isDescendant(candidate.pathSegments(), rootPath)) {
         subtree.add(candidate);
       }
