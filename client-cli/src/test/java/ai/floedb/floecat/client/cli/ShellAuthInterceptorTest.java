@@ -21,7 +21,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
@@ -71,6 +74,7 @@ class ShellAuthInterceptorTest {
             .addService(new StorageAuthorityService())
             .addService(new IntegrationService())
             .addService(new OverlayService())
+            .addService(new RelationService())
             .build()
             .start();
     ManagedChannel channel = InProcessChannelBuilder.forName(serverName).directExecutor().build();
@@ -84,6 +88,7 @@ class ShellAuthInterceptorTest {
       shell.namespaces = NamespaceServiceGrpc.newBlockingStub(channel);
       shell.tables = TableServiceGrpc.newBlockingStub(channel);
       shell.directory = DirectoryServiceGrpc.newBlockingStub(channel);
+      shell.relations = RelationServiceGrpc.newBlockingStub(channel);
       shell.statistics = TableStatisticsServiceGrpc.newBlockingStub(channel);
       shell.indexes = TableIndexServiceGrpc.newBlockingStub(channel);
       shell.constraintsService = TableConstraintsServiceGrpc.newBlockingStub(channel);
@@ -115,6 +120,10 @@ class ShellAuthInterceptorTest {
 
       observedSession.set(null);
       shell.overlays.listCatalogOverlays(ListCatalogOverlaysRequest.getDefaultInstance());
+      assertEquals("session-123", observedSession.get());
+
+      observedSession.set(null);
+      shell.relations.listRelations(ListRelationsRequest.getDefaultInstance());
       assertEquals("session-123", observedSession.get());
     } finally {
       channel.shutdownNow();
@@ -165,6 +174,15 @@ class ShellAuthInterceptorTest {
         ListCatalogOverlaysRequest request,
         StreamObserver<ListCatalogOverlaysResponse> responseObserver) {
       responseObserver.onNext(ListCatalogOverlaysResponse.getDefaultInstance());
+      responseObserver.onCompleted();
+    }
+  }
+
+  private static final class RelationService extends RelationServiceGrpc.RelationServiceImplBase {
+    @Override
+    public void listRelations(
+        ListRelationsRequest request, StreamObserver<ListRelationsResponse> responseObserver) {
+      responseObserver.onNext(ListRelationsResponse.getDefaultInstance());
       responseObserver.onCompleted();
     }
   }
