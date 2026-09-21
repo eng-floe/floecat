@@ -118,6 +118,11 @@ message ListRelationsRequest {
   /** Also lists namespaces below the scope. */
   bool recursive = 3;
 
+  /**
+   * Hydrates current relation metadata, including the logical schema, properties and kind-specific
+   * details. When false, the relation is identity-only: details and properties are absent, while
+   * `resource_id.kind` remains the authoritative table/view discriminator.
+   */
   bool include_schema = 4;
 
   /** Populates `Relation.status`. Costs one current-snapshot read per relation. */
@@ -184,6 +189,7 @@ message ResolveRelationsRequest {
    */
   repeated RelationReference references = 4;
 
+  /** Same hydration semantics as `ListRelationsRequest.include_schema`. */
   bool include_schema = 2;
   bool include_status = 3;
 }
@@ -197,6 +203,11 @@ message ResolveRelationResult {
 
   oneof result {
     Relation relation = 2;
+    /**
+     * Per-reference failure. MC_NOT_FOUND means no candidate resolved; every other code means a
+     * candidate was found or evaluated but its relation could not be read. Clients must not map
+     * those failures to absence. Request-scoped failures fail the whole RPC instead.
+     */
     ai.floedb.floecat.common.Error error = 3;
   }
 }
@@ -208,6 +219,7 @@ message ResolveRelationsResponse {
 
 message GetRelationRequest {
   ai.floedb.floecat.common.ResourceId relation_id = 1;
+  /** Same hydration semantics as `ListRelationsRequest.include_schema`. */
   bool include_schema = 2;
   bool include_status = 3;
 }

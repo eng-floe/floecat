@@ -520,12 +520,17 @@ final class TableCliSupport {
             ResolveRelationsRequest.newBuilder()
                 .addReferences(RelationReference.newBuilder().addCandidates(ref))
                 .build());
-    if (response.getResultsCount() == 0 || !response.getResults(0).hasRelation()) {
+    Relation relation;
+    try {
+      relation = RelationResults.requireResolved(response);
+    } catch (RelationResults.RelationResolutionException e) {
+      String name = NameRefUtil.joinFqQuoted(ref.getCatalog(), ref.getPathList(), ref.getName());
+      if (e.isNotFound()) {
+        throw new IllegalArgumentException("No relation found: " + name, e);
+      }
       throw new IllegalArgumentException(
-          "No relation found: "
-              + NameRefUtil.joinFqQuoted(ref.getCatalog(), ref.getPathList(), ref.getName()));
+          "Unable to resolve relation " + name + ": " + e.getMessage(), e);
     }
-    Relation relation = response.getResults(0).getRelation();
     if (relation.getResourceId().getKind() != expectedKind) {
       throw new IllegalArgumentException(
           "Expected " + expectedKind + " but found " + relation.getResourceId().getKind());

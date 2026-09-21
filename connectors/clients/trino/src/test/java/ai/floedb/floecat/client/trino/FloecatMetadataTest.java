@@ -47,9 +47,12 @@ import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
+import ai.floedb.floecat.engine.catalog.RelationResults;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
 import io.grpc.inprocess.InProcessChannelBuilder;
@@ -122,6 +125,8 @@ class FloecatMetadataTest {
   private static volatile String snapshotSchemaJson = SNAPSHOT_SCHEMA_JSON;
   private static volatile boolean relationListError;
   private static volatile boolean relationListWasRecursive;
+  private static volatile boolean resolveIncludesSchema;
+  private static volatile Error resolveError;
 
   private static ManagedChannel channel;
   private static Server server;
@@ -175,6 +180,8 @@ class FloecatMetadataTest {
     snapshotSchemaJson = SNAPSHOT_SCHEMA_JSON;
     relationListError = false;
     relationListWasRecursive = false;
+    resolveIncludesSchema = false;
+    resolveError = null;
   }
 
   @Test
@@ -231,6 +238,7 @@ class FloecatMetadataTest {
 
     assertEquals(CURRENT_SCHEMA_JSON, handle.getSchemaJson());
     assertNull(handle.getSnapshotId());
+    assertTrue(resolveIncludesSchema);
   }
 
   @Test
@@ -246,6 +254,32 @@ class FloecatMetadataTest {
         () ->
             metadata.getTableHandle(
                 session, new SchemaTableName("demo", "tbl"), Optional.empty(), Optional.empty()));
+  }
+
+  @Test
+  void propagatesInBandResolutionFailuresInsteadOfReturningNotFound() {
+    resolveError =
+        Error.newBuilder()
+            .setCode(ErrorCode.MC_PERMISSION_DENIED)
+            .setMessage("access denied")
+            .build();
+
+    RelationResults.RelationResolutionException failure =
+        assertThrows(
+            RelationResults.RelationResolutionException.class,
+            () ->
+                metadata.getTableHandle(
+                    new TestingSession(
+                        Map.of(
+                            FloecatSessionProperties.SNAPSHOT_ID,
+                            -1L,
+                            FloecatSessionProperties.AS_OF_EPOCH_MILLIS,
+                            -1L)),
+                    new SchemaTableName("demo", "tbl"),
+                    Optional.empty(),
+                    Optional.empty()));
+
+    assertTrue(failure.getMessage().contains("MC_PERMISSION_DENIED"));
   }
 
   @Test
@@ -585,12 +619,16 @@ class FloecatMetadataTest {
     public void resolveRelations(
         ResolveRelationsRequest request,
         StreamObserver<ResolveRelationsResponse> responseObserver) {
+      resolveIncludesSchema = request.getIncludeSchema();
       var out = ResolveRelationsResponse.newBuilder();
       for (var reference : request.getReferencesList()) {
-        out.addResults(
-            ResolveRelationResult.newBuilder()
-                .setResolvedName(reference.getCandidates(0))
-                .setRelation(relation()));
+        var result = ResolveRelationResult.newBuilder();
+        if (resolveError != null) {
+          result.setError(resolveError);
+        } else {
+          result.setResolvedName(reference.getCandidates(0)).setRelation(relation());
+        }
+        out.addResults(result);
       }
       responseObserver.onNext(out.build());
       responseObserver.onCompleted();

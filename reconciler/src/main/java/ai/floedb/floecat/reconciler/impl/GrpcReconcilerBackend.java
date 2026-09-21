@@ -85,6 +85,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.engine.catalog.RelationResults;
 import ai.floedb.floecat.reconciler.spi.ColumnSelectorCoverage;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -1251,10 +1252,15 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                   ResolveRelationsRequest.newBuilder()
                       .addReferences(RelationReference.newBuilder().addCandidates(reference))
                       .build());
-      if (response.getResultsCount() == 0 || !response.getResults(0).hasRelation()) {
-        return Optional.empty();
+      ResourceId resourceId;
+      try {
+        resourceId = RelationResults.requireResolved(response).getResourceId();
+      } catch (RelationResults.RelationResolutionException e) {
+        if (e.isNotFound()) {
+          return Optional.empty();
+        }
+        throw e;
       }
-      ResourceId resourceId = response.getResults(0).getRelation().getResourceId();
       return resourceId.getKind() == expectedKind ? Optional.of(resourceId) : Optional.empty();
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {

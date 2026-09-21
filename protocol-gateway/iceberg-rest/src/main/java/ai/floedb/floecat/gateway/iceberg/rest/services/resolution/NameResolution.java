@@ -23,6 +23,8 @@ import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.engine.catalog.RelationResults;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import io.grpc.Status;
@@ -66,7 +68,9 @@ public final class NameResolution {
         NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(tableName).build();
     var response = resolveRelation(client, ref);
     return requireId(
-        response != null && response.hasTable() ? response.getResourceId() : null,
+        response != null && response.getResourceId().getKind() == ResourceKind.RK_TABLE
+            ? response.getResourceId()
+            : null,
         "table",
         catalogName,
         path,
@@ -84,7 +88,9 @@ public final class NameResolution {
         NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(viewName).build();
     var response = resolveRelation(client, ref);
     return requireId(
-        response != null && response.hasView() ? response.getResourceId() : null,
+        response != null && response.getResourceId().getKind() == ResourceKind.RK_VIEW
+            ? response.getResourceId()
+            : null,
         "view",
         catalogName,
         path,
@@ -97,11 +103,17 @@ public final class NameResolution {
             ResolveRelationsRequest.newBuilder()
                 .addReferences(RelationReference.newBuilder().addCandidates(ref))
                 .build());
-    if (response == null || response.getResultsCount() == 0) {
+    if (response == null) {
       return null;
     }
-    var result = response.getResults(0);
-    return result.hasRelation() ? result.getRelation() : null;
+    try {
+      return RelationResults.requireResolved(response);
+    } catch (RelationResults.RelationResolutionException e) {
+      if (e.isNotFound()) {
+        return null;
+      }
+      throw e;
+    }
   }
 
   private static ResourceId requireId(

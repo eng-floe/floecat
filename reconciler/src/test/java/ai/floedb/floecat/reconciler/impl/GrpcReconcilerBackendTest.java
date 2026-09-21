@@ -70,6 +70,8 @@ import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.catalog.rpc.View;
 import ai.floedb.floecat.catalog.rpc.ViewSpec;
+import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
@@ -82,6 +84,7 @@ import ai.floedb.floecat.connector.rpc.GetConnectorResponse;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.engine.catalog.RelationResults;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.TableSpecDescriptor;
@@ -602,6 +605,40 @@ class GrpcReconcilerBackendTest {
             NameRef.newBuilder().setCatalog("cat").addPath("ns").setName("missing").build());
 
     assertThat(resolved).isEmpty();
+  }
+
+  @Test
+  void lookupTablePropagatesInBandResolutionFailures() {
+    GrpcReconcilerBackend backend =
+        new GrpcReconcilerBackend(
+            Optional.<String>empty(), Optional.<String>empty(), Optional.<Duration>empty());
+    backend.directory =
+        mock(ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc.DirectoryServiceBlockingStub.class);
+    backend.relation = mock(RelationServiceGrpc.RelationServiceBlockingStub.class);
+    when(backend.relation.withInterceptors(any())).thenReturn(backend.relation);
+    when(backend.relation.resolveRelations(any()))
+        .thenReturn(
+            ResolveRelationsResponse.newBuilder()
+                .addResults(
+                    ResolveRelationResult.newBuilder()
+                        .setError(
+                            Error.newBuilder()
+                                .setCode(ErrorCode.MC_PERMISSION_DENIED)
+                                .setMessage("access denied"))
+                        .build())
+                .build());
+
+    assertThatThrownBy(
+            () ->
+                backend.lookupTable(
+                    reconcileContext(),
+                    NameRef.newBuilder()
+                        .setCatalog("cat")
+                        .addPath("ns")
+                        .setName("blocked")
+                        .build()))
+        .isInstanceOf(RelationResults.RelationResolutionException.class)
+        .hasMessage("MC_PERMISSION_DENIED: access denied");
   }
 
   @Test

@@ -23,7 +23,10 @@ import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.Relation;
 import ai.floedb.floecat.catalog.rpc.RelationListError;
 import ai.floedb.floecat.catalog.rpc.RelationListResult;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationResult;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsResponse;
 import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.NameRef;
 import org.junit.jupiter.api.Test;
 
@@ -103,5 +106,52 @@ class RelationResultsTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("row 0")
         .hasMessageContaining("neither a relation nor an error");
+  }
+
+  @Test
+  void requireResolvedTreatsAnEmptyResponseAsNotFound() {
+    assertThatThrownBy(
+            () -> RelationResults.requireResolved(ResolveRelationsResponse.getDefaultInstance()))
+        .isInstanceOf(RelationResults.RelationResolutionException.class)
+        .satisfies(
+            failure ->
+                assertThat(((RelationResults.RelationResolutionException) failure).isNotFound())
+                    .isTrue());
+  }
+
+  @Test
+  void requireResolvedPreservesInBandFailures() {
+    ResolveRelationsResponse response =
+        ResolveRelationsResponse.newBuilder()
+            .addResults(
+                ResolveRelationResult.newBuilder()
+                    .setError(
+                        Error.newBuilder()
+                            .setCode(ErrorCode.MC_PERMISSION_DENIED)
+                            .setMessage("access denied"))
+                    .build())
+            .build();
+
+    assertThatThrownBy(() -> RelationResults.requireResolved(response))
+        .isInstanceOf(RelationResults.RelationResolutionException.class)
+        .hasMessage("MC_PERMISSION_DENIED: access denied")
+        .satisfies(
+            failure -> {
+              var resolution = (RelationResults.RelationResolutionException) failure;
+              assertThat(resolution.isNotFound()).isFalse();
+              assertThat(resolution.error().getCode()).isEqualTo(ErrorCode.MC_PERMISSION_DENIED);
+            });
+  }
+
+  @Test
+  void requireResolvedRejectsMalformedResultAsInternal() {
+    ResolveRelationsResponse response =
+        ResolveRelationsResponse.newBuilder()
+            .addResults(ResolveRelationResult.getDefaultInstance())
+            .build();
+
+    assertThatThrownBy(() -> RelationResults.requireResolved(response))
+        .isInstanceOf(RelationResults.RelationResolutionException.class)
+        .hasMessage("MC_INTERNAL: resolve response contained an empty result");
   }
 }

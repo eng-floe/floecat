@@ -20,6 +20,10 @@ import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.Relation;
 import ai.floedb.floecat.catalog.rpc.RelationListError;
 import ai.floedb.floecat.catalog.rpc.RelationListResult;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationResult;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsResponse;
+import ai.floedb.floecat.common.rpc.Error;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -51,6 +55,37 @@ public final class RelationResults {
       throw new IllegalStateException(
           "relation listing is incomplete: " + describeErrors(page.errors()));
     }
+  }
+
+  /**
+   * Returns the first resolved relation, preserving the distinction between absence and failure. A
+   * missing result is the legacy no-match case; an in-band error is never treated as absence.
+   */
+  public static Relation requireResolved(ResolveRelationsResponse response) {
+    Objects.requireNonNull(response, "response");
+    if (response.getResultsCount() == 0) {
+      throw new RelationResolutionException(notFoundError());
+    }
+
+    ResolveRelationResult result = response.getResults(0);
+    if (result.hasRelation()) {
+      return result.getRelation();
+    }
+    if (result.hasError()) {
+      throw new RelationResolutionException(result.getError());
+    }
+    throw new RelationResolutionException(
+        Error.newBuilder()
+            .setCode(ErrorCode.MC_INTERNAL)
+            .setMessage("resolve response contained an empty result")
+            .build());
+  }
+
+  private static Error notFoundError() {
+    return Error.newBuilder()
+        .setCode(ErrorCode.MC_NOT_FOUND)
+        .setMessage("relation not found")
+        .build();
   }
 
   private static String describe(RelationListError error) {
@@ -87,6 +122,30 @@ public final class RelationResults {
           .filter(RelationListResult::hasError)
           .map(RelationListResult::getError)
           .toList();
+    }
+  }
+
+  /** Structured failure returned by {@link #requireResolved(ResolveRelationsResponse)}. */
+  public static final class RelationResolutionException extends RuntimeException {
+    private final Error error;
+
+    private RelationResolutionException(Error error) {
+      super(format(error));
+      this.error = Objects.requireNonNull(error, "error");
+    }
+
+    public Error error() {
+      return error;
+    }
+
+    public boolean isNotFound() {
+      return error.getCode() == ErrorCode.MC_NOT_FOUND;
+    }
+
+    private static String format(Error error) {
+      String message =
+          error.getMessage().isBlank() ? "relation resolution failed" : error.getMessage();
+      return error.getCode().name() + ": " + message;
     }
   }
 }
