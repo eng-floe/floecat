@@ -28,6 +28,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView.NamespaceRef;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -58,22 +59,24 @@ public final class CatalogSurfaceTables {
     var namespaceId = request.getNamespaceId();
     NamespaceNode nsNode = writePolicy.requireVisibleNamespace(namespaceId, corr);
 
-    var result =
-        CatalogSurfaceRelationPager.list(
-            want,
-            pageIn.token,
-            new CatalogSurfaceTablePageSource(
-                tableRepo, graphView, accountId, nsNode, namespaceId, writePolicy.context()),
-            corr);
+    var source =
+        new CatalogSurfaceTablePageSource(
+            tableRepo, graphView, accountId, nsNode, namespaceId, writePolicy.context());
+    var result = CatalogSurfaceRelationPager.listRefs(want, pageIn.token, source, corr);
 
-    var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
-    return ListTablesResponse.newBuilder().addAllTables(result.items()).setPage(page).build();
+    var tables = result.relations().stream().map(ref -> source.hydrate(ref, corr)).toList();
+    var page = MutationOps.pageOut(result.nextToken(), CatalogSurfaceRelationPager.total(source));
+    return ListTablesResponse.newBuilder().addAllTables(tables).setPage(page).build();
   }
 
   /** The page source this namespace lists through, for callers paging tables beside views. */
   CatalogSurfaceTablePageSource pageSource(NamespaceNode namespace, String accountId) {
     return new CatalogSurfaceTablePageSource(
         tableRepo, graphView, accountId, namespace, namespace.id(), context);
+  }
+
+  CatalogSurfaceTablePageSource pageSource(NamespaceRef namespace, String accountId) {
+    return new CatalogSurfaceTablePageSource(tableRepo, graphView, accountId, namespace, context);
   }
 
   /** The visible table, without the wire envelope, for in-process callers. */

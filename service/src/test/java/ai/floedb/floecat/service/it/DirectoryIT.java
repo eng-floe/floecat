@@ -25,6 +25,7 @@ import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetRelationRequest;
 import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.RelationReference;
 import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
@@ -39,6 +40,7 @@ import ai.floedb.floecat.service.util.TestSupport;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -159,5 +161,48 @@ class DirectoryIT {
             .getResults(0);
     assertFalse(result.hasRelation());
     assertTrue(result.hasError());
+  }
+
+  @Test
+  void typedAndGenericTableListingsShareRowsAndOrder() {
+    Catalog cat = TestSupport.createCatalog(catalog, "listing_parity", "");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "");
+    for (String name : List.of("alpha", "bravo", "charlie")) {
+      TestSupport.createTable(
+          table, cat.getResourceId(), ns.getResourceId(), name, "s3://" + name, "{}", "");
+    }
+
+    var typed = new ArrayList<String>();
+    String typedToken = "";
+    do {
+      var response =
+          table.listTables(
+              ListTablesRequest.newBuilder()
+                  .setNamespaceId(ns.getResourceId())
+                  .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken(typedToken))
+                  .build());
+      typed.addAll(response.getTablesList().stream().map(t -> t.getDisplayName()).toList());
+      typedToken = response.getPage().getNextPageToken();
+    } while (!typedToken.isBlank());
+
+    var generic = new ArrayList<String>();
+    String genericToken = "";
+    do {
+      var response =
+          relation.listRelations(
+              ListRelationsRequest.newBuilder()
+                  .setNamespaceId(ns.getResourceId())
+                  .addKinds(ResourceKind.RK_TABLE)
+                  .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken(genericToken))
+                  .build());
+      generic.addAll(
+          response.getResultsList().stream()
+              .filter(result -> result.hasRelation())
+              .map(result -> result.getRelation().getDisplayName())
+              .toList());
+      genericToken = response.getPage().getNextPageToken();
+    } while (!genericToken.isBlank());
+
+    assertEquals(typed, generic);
   }
 }
