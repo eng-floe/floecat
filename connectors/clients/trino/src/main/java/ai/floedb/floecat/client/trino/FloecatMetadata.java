@@ -221,13 +221,18 @@ public class FloecatMetadata implements ConnectorMetadata {
         relationService.resolveRelations(
             ResolveRelationsRequest.newBuilder()
                 .addReferences(RelationReference.newBuilder().addCandidates(nameRef))
+                .setIncludeSchema(true)
                 .build());
 
-    if (resolved.getResultsCount() == 0 || !resolved.getResults(0).hasRelation()) {
-      return null;
+    Relation relation;
+    try {
+      relation = RelationResults.requireResolved(resolved);
+    } catch (RelationResults.RelationResolutionException e) {
+      if (e.isNotFound()) {
+        return null;
+      }
+      throw e;
     }
-
-    Relation relation = resolved.getResults(0).getRelation();
     if (relation.getResourceId().getKind() != ResourceKind.RK_TABLE || !relation.hasTable()) {
       return null;
     }
