@@ -1,0 +1,3256 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reference and operational guides for Floecat">
+      
+      
+      
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/builtin-catalog/">
+      
+      
+        <link rel="prev" href="../types/">
+      
+      
+        <link rel="next" href="../proto/">
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>Builtin Catalog Architecture - Floecat Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#builtin-catalog-architecture" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Floecat Documentation" class="md-header__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Floecat Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Builtin Catalog Architecture
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Floecat Documentation" class="md-nav__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Floecat Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Documentation Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Contributing to Docs
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../style-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docs Style Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docker Local Stack
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Service Runtime
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Caching
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Operations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting-errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    APIs and Clients
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            APIs and Clients
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-access/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    API Access
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../client-cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Client CLI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    CLI Reference
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../iceberg-rest-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg REST Gateway
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../arrow-flight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Arrow Flight
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Catalog and Metadata
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Catalog and Metadata
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-integration-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integration Architecture and Delivery Plan
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-integrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integrations and Overlays
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-access-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Access SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metadata-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Metadata Graph
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Objects
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans-grpc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans gRPC
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconciler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Reconciler
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../transactions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Transactions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-common/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector Common
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-iceberg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-delta/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Delta Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extension-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Example Catalog Extension
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Types and Builtins
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Types and Builtins
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Types
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Builtin Catalog Architecture
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Builtin Catalog Architecture
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Design Principles
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Architecture
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#builtin-loading-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      Builtin-loading details
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Builtin-loading details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#composition-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      Composition contract
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#system-table-backend-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      System table backend contract
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#engine-specific-hint-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      Engine-specific hint contract
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#provider-implementations" class="md-nav__link">
+    <span class="md-ellipsis">
+      Provider Implementations
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hint-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      Hint Lifecycle
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      Core Components
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Core Components">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enginespecific-proto" class="md-nav__link">
+    <span class="md-ellipsis">
+      EngineSpecific (Proto)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#systemcatalogprovider-spi" class="md-nav__link">
+    <span class="md-ellipsis">
+      SystemCatalogProvider (SPI)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#enginecontext-header-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      EngineContext &amp; header semantics
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#caching-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Caching Architecture
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Plugin Architecture
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Plugin Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enginecatalogprovider-and-catalogenvironmentprovider-spi" class="md-nav__link">
+    <span class="md-ellipsis">
+      EngineCatalogProvider and CatalogEnvironmentProvider (SPI)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reference-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reference Implementation
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#serviceloader-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      ServiceLoader Registration
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      Data Flow
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Data Flow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#request-flow-planner-floecat" class="md-nav__link">
+    <span class="md-ellipsis">
+      Request Flow (Planner → Floecat)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#systemnoderegistry-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      SystemNodeRegistry Caching
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#version-matching" class="md-nav__link">
+    <span class="md-ellipsis">
+      Version Matching
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scalability-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      Scalability &amp; Performance
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Scalability &amp; Performance">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#catalog-size-considerations" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog Size Considerations
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#layer-1-engine-kind-cache-pg-scale-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      Layer 1 (Engine-Kind Cache) – PG-Scale Performance
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#layer-2-version-specific-cache-pg-scale-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      Layer 2 (Version-Specific Cache) – PG-Scale Performance
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#proto-conversion-grpc-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      Proto Conversion &amp; gRPC Response
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#memory-scaling-typical-deployment" class="md-nav__link">
+    <span class="md-ellipsis">
+      Memory Scaling (Typical Deployment)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#thread-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      Thread Safety
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scalability-assessment" class="md-nav__link">
+    <span class="md-ellipsis">
+      Scalability Assessment
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proto-extensions-advanced" class="md-nav__link">
+    <span class="md-ellipsis">
+      Proto Extensions (Advanced)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Validation
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#creating-a-new-plugin" class="md-nav__link">
+    <span class="md-ellipsis">
+      Creating a New Plugin
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Creating a New Plugin">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-1-implement-enginecatalogprovider" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 1: Implement EngineCatalogProvider
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-2-register-with-serviceloader" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 2: Register with ServiceLoader
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-3-define-proto-extensions-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 3: Define Proto Extensions (Optional)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-4-ship-with-service-module" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 4: Ship with Service Module
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Testing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#plugin-side-validation-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      Plugin-Side Validation Tests
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#core-engine-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      Core Engine Tests
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-plugin-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      Running Plugin Tests
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#key-validation-points" class="md-nav__link">
+    <span class="md-ellipsis">
+      Key Validation Points
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#future-enhancements" class="md-nav__link">
+    <span class="md-ellipsis">
+      Future Enhancements
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../proto/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Protobuf and RPC Contracts
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../statistics-engine-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Statistics Engine SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Storage and Security
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Storage and Security
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Layout
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-aws/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage AWS
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Memory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../secrets-manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Secrets Manager
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    External Authentication
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fixed-roles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Fixed Roles
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Observability
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Observability
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Logging Directory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/demo-grafana/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Grafana Demo
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Design Principles
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Architecture
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#builtin-loading-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      Builtin-loading details
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Builtin-loading details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#composition-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      Composition contract
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#system-table-backend-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      System table backend contract
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#engine-specific-hint-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      Engine-specific hint contract
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#provider-implementations" class="md-nav__link">
+    <span class="md-ellipsis">
+      Provider Implementations
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hint-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      Hint Lifecycle
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-components" class="md-nav__link">
+    <span class="md-ellipsis">
+      Core Components
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Core Components">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enginespecific-proto" class="md-nav__link">
+    <span class="md-ellipsis">
+      EngineSpecific (Proto)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#systemcatalogprovider-spi" class="md-nav__link">
+    <span class="md-ellipsis">
+      SystemCatalogProvider (SPI)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#enginecontext-header-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      EngineContext &amp; header semantics
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#caching-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Caching Architecture
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Plugin Architecture
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Plugin Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enginecatalogprovider-and-catalogenvironmentprovider-spi" class="md-nav__link">
+    <span class="md-ellipsis">
+      EngineCatalogProvider and CatalogEnvironmentProvider (SPI)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reference-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reference Implementation
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#serviceloader-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      ServiceLoader Registration
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#data-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      Data Flow
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Data Flow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#request-flow-planner-floecat" class="md-nav__link">
+    <span class="md-ellipsis">
+      Request Flow (Planner → Floecat)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#systemnoderegistry-caching" class="md-nav__link">
+    <span class="md-ellipsis">
+      SystemNodeRegistry Caching
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#version-matching" class="md-nav__link">
+    <span class="md-ellipsis">
+      Version Matching
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scalability-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      Scalability &amp; Performance
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Scalability &amp; Performance">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#catalog-size-considerations" class="md-nav__link">
+    <span class="md-ellipsis">
+      Catalog Size Considerations
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#layer-1-engine-kind-cache-pg-scale-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      Layer 1 (Engine-Kind Cache) – PG-Scale Performance
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#layer-2-version-specific-cache-pg-scale-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      Layer 2 (Version-Specific Cache) – PG-Scale Performance
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#proto-conversion-grpc-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      Proto Conversion &amp; gRPC Response
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#memory-scaling-typical-deployment" class="md-nav__link">
+    <span class="md-ellipsis">
+      Memory Scaling (Typical Deployment)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#thread-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      Thread Safety
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scalability-assessment" class="md-nav__link">
+    <span class="md-ellipsis">
+      Scalability Assessment
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proto-extensions-advanced" class="md-nav__link">
+    <span class="md-ellipsis">
+      Proto Extensions (Advanced)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Validation
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#creating-a-new-plugin" class="md-nav__link">
+    <span class="md-ellipsis">
+      Creating a New Plugin
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Creating a New Plugin">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#step-1-implement-enginecatalogprovider" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 1: Implement EngineCatalogProvider
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-2-register-with-serviceloader" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 2: Register with ServiceLoader
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-3-define-proto-extensions-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 3: Define Proto Extensions (Optional)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#step-4-ship-with-service-module" class="md-nav__link">
+    <span class="md-ellipsis">
+      Step 4: Ship with Service Module
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Testing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#plugin-side-validation-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      Plugin-Side Validation Tests
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#core-engine-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      Core Engine Tests
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-plugin-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      Running Plugin Tests
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#key-validation-points" class="md-nav__link">
+    <span class="md-ellipsis">
+      Key Validation Points
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#future-enhancements" class="md-nav__link">
+    <span class="md-ellipsis">
+      Future Enhancements
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/eng-floe/floecat/edit/mr-generic-engine-rpc-surface/docs/builtin-catalog.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="builtin-catalog-architecture">Builtin Catalog Architecture<a class="headerlink" href="#builtin-catalog-architecture" title="Permanent link">&para;</a></h1>
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>Floecat's builtin catalog system provides engine-specific metadata (functions, operators, types, casts, collations, aggregates) and environment-owned system relations to query planners. A catalog request selects both an environment and an engine, so the two sources can be composed without making either one part of the other.</p>
+<p>The architecture is <strong>provider-based</strong>: an engine provider supplies engine capabilities and
+engine-owned relations, while an environment provider supplies environment-owned relations.
+Either provider may obtain metadata from static PBtxt or from a live runtime; live providers do
+not need to duplicate changing engine metadata in PBtxt.</p>
+<h2 id="design-principles">Design Principles<a class="headerlink" href="#design-principles" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Engine-Agnostic Core</strong> – The core proto (<code>engine_specific.proto</code>) defines only the envelope; engines plug in without modifying the core.</li>
+<li><strong>ServiceLoader Discovery</strong> – Plugins are discovered automatically via Java's <code>ServiceLoader</code> mechanism at runtime.</li>
+<li><strong>Proto Extensions</strong> – Plugins define proto extensions on the core <code>EngineSpecific</code> message to allow rich PBtxt files while preserving core simplicity.</li>
+<li><strong>Versioned Metadata</strong> – Each plugin defines metadata per engine version; the planner can request version-specific capabilities.</li>
+</ol>
+<h2 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code>┌──────────────┐
+│ Planner      │
+│ (environment,│
+│  engine)     │
+└──────┬───────┘
+       │ gRPC GetSqlObjectsRegistry
+       ▼
+┌────────────────────────────────────────────────────────────┐
+│ SqlCatalogServiceImpl (service)                        │
+│ - validates headers + correlation id                        │
+│ - calls SystemNodeRegistry.nodesFor(CatalogContext)          │
+│ - maps SystemCatalogData → SystemObjectsRegistry via              │
+│   SystemCatalogProtoMapper                                    │
+└──────┬──────────────────────────────────────────────────────┘
+       │
+       ▼
+┌────────────────────────────────────────────────────────────┐
+│ SystemNodeRegistry (core/catalog)                           │
+│ - caches BuiltinNodes per complete CatalogContext           │
+│ - filters SystemCatalogData with EngineSpecificMatcher       │
+│ - materialises GraphNodes + SystemTable/Table/View defs     │
+└──────┬──────────────────────────────────────────────────────┘
+       │
+       ▼
+┌────────────────────────────────────────────────────────────┐
+│ SystemDefinitionRegistry                                    │
+│ - caches SystemEngineCatalog per complete CatalogContext    │
+│ - hands off to SystemCatalogProvider                        │
+└──────┬──────────────────────────────────────────────────────┘
+       │
+       ▼
+┌────────────────────────────────────────────────────────────┐
+│ ServiceLoaderSystemCatalogProvider                          │
+│ - discovers engine and environment providers                │
+│ - loads the selected engine&#39;s static catalog, if any        │
+│ - leaves live provider composition to SystemNodeRegistry    │
+└──────┬──────────────────────────────────────────────────────┘
+       │
+   ┌───┴───┬───────────────────────┐
+   │Plugin │InformationSchema      │
+   │Catalog│Provider → scanners     │
+   └───────┴───────────────────────┘
+       │
+       ▼
+┌────────────────────────────────────────────────────────────┐
+│ SystemCatalogData + SystemEngineCatalog (immutable snapshot)│
+└────────────────────────────────────────────────────────────┘
+</code></pre></div>
+<h3 id="builtin-loading-details">Builtin-loading details<a class="headerlink" href="#builtin-loading-details" title="Permanent link">&para;</a></h3>
+<p>Builtins live on the classpath under <code>builtins/&lt;engineKind&gt;/</code>. Each engine directory contains a lexically-ordered <code>_index.txt</code> file plus one or more <code>.pbtxt</code> fragments:</p>
+<div class="highlight"><pre><span></span><code>builtins/
+  floecat_internal/
+    _index.txt
+    00_system_relations.pbtxt
+  floedb/
+    _index.txt
+    00_registry.pbtxt
+    10_types.pbtxt
+    …
+</code></pre></div>
+<p>The <code>_index.txt</code> file lists fragments in the order they should be merged. Lines that are blank or start with <code>#</code> are ignored. Each fragment is a proto-text encoding of <code>SystemObjectsRegistry</code> (see <a href="https://github.com/eng-floe/floecat/blob/main/core/proto/src/main/proto/floecat/query/system_objects_registry.proto"><code>system_objects_registry.proto</code></a>). During startup Floecat parses each fragment into a <code>SystemObjectsRegistry.Builder</code> and applies them sequentially via <code>SystemObjectsRegistryMerger</code>, which merges builder→builder to avoid extra allocations. The merged result is then rewritten by <code>SystemCatalogProtoMapper</code> and cached as <code>SystemCatalogData</code>. This static layout is optional for dynamic providers: an engine or environment provider may return live definitions directly from its SPI.</p>
+<p>The loader resolves the selected engine and environment independently. The registry composes only the selected providers; <code>floecat_internal</code> is not added as a hidden base layer. Providers contribute to one logical catalog, and the registry validates ownership and identity while composing it.</p>
+<h4 id="composition-contract">Composition contract<a class="headerlink" href="#composition-contract" title="Permanent link">&para;</a></h4>
+<ol>
+<li>An explicitly selected engine contributes its static catalog.</li>
+<li>The selected engine provider can contribute live definitions for the complete <code>CatalogContext</code>. Engine-owned tables use <code>TABLE_BACKEND_KIND_ENGINE</code>.</li>
+<li>The selected environment provider contributes environment-owned relations for the complete catalog context. Environment tables use <code>TABLE_BACKEND_KIND_FLOECAT</code> or <code>TABLE_BACKEND_KIND_STORAGE</code>.</li>
+<li><code>floecat_internal</code> contributes only when explicitly selected. A request boundary may turn a completely absent selection into that explicit selection for compatibility.</li>
+<li>Every canonical identity has one definition in the materialized catalog. Structurally identical duplicates are deduplicated. Incompatible duplicates fail; no provider silently overrides another provider.</li>
+</ol>
+<p>When no environment is selected, the request uses the empty environment context. An engine selection never derives an environment selection.</p>
+<p>The system catalog identity is the name of the one logical system catalog produced by the merge. It
+is not a precedence rule: it does not allow one provider to replace another provider's object. The
+selected engine kind names that catalog when present; otherwise the selected environment kind names
+it. At an external request boundary, <code>CatalogContext.forRequest(...)</code> converts a request with neither
+axis selected into the explicit <code>floecat_internal</code> context. <code>CatalogContext.empty()</code> is the neutral
+unselected context used inside the model and tests; it does not implicitly load <code>floecat_internal</code>.</p>
+<p>For example, <code>environment=env_a, engine=engine_b</code> produces one catalog named <code>engine_b</code>. The engine
+provider contributes engine-owned objects such as <code>pg_type</code> and <code>pg_proc</code>; the environment provider
+can contribute distinct environment-owned relations such as <code>sys.*</code>. If both providers define the same canonical object,
+identical definitions are deduplicated and incompatible definitions fail with provenance.</p>
+<h3 id="system-table-backend-contract">System table backend contract<a class="headerlink" href="#system-table-backend-contract" title="Permanent link">&para;</a></h3>
+<p><code>SystemTableDef</code> records a <code>TableBackendKind</code> (proto <code>TABLE_BACKEND_KIND_*</code>) plus backend-specific metadata:<br />
+| Backend | Description | Required field | Scanner policy |
+| --- | --- | --- | --- |
+| <code>FLOECAT</code> | Rows produced by Floecat scanners (information_schema, system tables, plugin metadata tables). | <code>scannerId</code> (non-blank) | <code>SystemScannerResolver</code> accepts only <code>FloeCatSystemTableNode</code> instances, so only FLOECAT tables can be scanned through <code>SystemScannerResolver</code>. |
+| <code>ENGINE</code> | Rows produced directly by the selected engine. | - | Not resolved through <code>SystemScannerResolver</code>; execution is delegated to the engine. |
+| <code>STORAGE</code> | Tables whose rows are supplied by storage or Flight. | <code>storagePath</code>, <code>storageEndpointKey</code>, or <code>flightEndpoint</code> | Not resolved through <code>SystemScannerResolver</code>; execution is delegated to the storage path or endpoint. |</p>
+<p><code>SystemTableDef</code> throws at construction time when the required backend-specific value is missing, guaranteeing the graph never exposes partially-specified tables.</p>
+<h3 id="engine-specific-hint-contract">Engine-specific hint contract<a class="headerlink" href="#engine-specific-hint-contract" title="Permanent link">&para;</a></h3>
+<p>Every <code>EngineSpecificRule</code> with a <code>payloadType</code> is mapped to a metagraph <code>EngineHint</code> whose key is <code>(engineKind, engineVersion, payloadType)</code> and whose value contains the payload bytes plus properties. The <code>EngineHintsMapper</code> replaces null payloads with an empty byte array to avoid NPEs, and it throws <code>IllegalStateException</code> if two rules share the same <code>(engineKind, engineVersion, payloadType)</code> triple. Column-level hints are grouped per column name; duplicate column names are already rejected by <code>SystemTableDef</code> so the per-column maps stay one-to-one with the schema. These hints drive scanner/table metadata, so when you add engine-specific definitions ensure each <code>EngineSpecificRule</code> has a unique payload type per engine/version.</p>
+<p><code>ServiceLoaderSystemCatalogProvider</code> discovers engine providers and environment providers separately. It loads optional static catalog data from the selected engine provider; <code>SystemDefinitionRegistry</code> caches that result by the complete <code>CatalogContext</code>. <code>SystemNodeRegistry</code> composes the static engine data, live engine definitions, and live environment definitions, validating ownership and conflicts along the way. The resulting <code>BuiltinNodes</code> are exposed through <code>SystemGraph</code> and <code>CatalogGraphView</code> for metadata resolution and scanning. That merged <code>_system</code> view (load + scan) is documented in <a href="../system-objects/">System objects</a>.</p>
+<h3 id="provider-implementations">Provider Implementations<a class="headerlink" href="#provider-implementations" title="Permanent link">&para;</a></h3>
+<p>Providers implement one of the two specialized SPIs:</p>
+<ol>
+<li><strong><code>EngineCatalogProvider</code></strong> – A stable engine identifier, optional static catalog data, and/or
+   live engine definitions and scanners. Dynamic engines can leave <code>loadSystemCatalog()</code> empty.</li>
+<li><strong><code>CatalogEnvironmentProvider</code></strong> – A stable environment identifier plus environment-owned
+   definitions and scanners. Its methods receive the complete <code>CatalogContext</code>, including the
+   selected engine.</li>
+<li><strong>Discovery</strong> – Register the relevant SPI with <code>ServiceLoader</code> for automatic runtime discovery.</li>
+</ol>
+<p>See <code>extensions/example/</code> for a static engine-provider reference implementation. A dynamic engine
+provider only needs to implement the context-aware definition/scanner methods and does not need one
+PBtxt file per engine function or relation.</p>
+<h3 id="hint-lifecycle">Hint Lifecycle<a class="headerlink" href="#hint-lifecycle" title="Permanent link">&para;</a></h3>
+<p><code>EngineCatalogProvider</code> extends <code>SystemObjectScannerProvider</code>, so every plugin can also
+serve system-table definitions and scanners. Plugins that persist engine hints (metadata attached
+to catalog objects at runtime) can control when those hints are invalidated by implementing
+<code>decideHintClear</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="k">default</span><span class="w"> </span><span class="n">HintClearDecision</span><span class="w"> </span><span class="nf">decideHintClear</span><span class="p">(</span><span class="n">EngineContext</span><span class="w"> </span><span class="n">ctx</span><span class="p">,</span><span class="w"> </span><span class="n">HintClearContext</span><span class="w"> </span><span class="n">context</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="n">HintClearDecision</span><span class="p">.</span><span class="na">dropAll</span><span class="p">();</span><span class="w">   </span><span class="c1">// safe default: clear everything on any schema change</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><code>HintClearContext</code> carries what changed: <code>resourceId</code>, field <code>mask</code>, and before/after <code>Table</code>/<code>View</code>
+snapshots. <code>HintClearDecision</code> controls what to clear:</p>
+<ul>
+<li><code>HintClearDecision.dropAll()</code> — clears all relation and column hints (safe default for simple plugins)</li>
+<li>Fine-grained constructor — clears only specific <code>payloadType</code> sets or individual column IDs, for
+  plugins that want to avoid unnecessary hint recomputation on unrelated schema changes</li>
+</ul>
+<p><code>SystemNodeRegistry</code> automatically materializes each object's matching <code>engine_specific</code> rules as
+<code>EngineHint</code> entries keyed by <code>(engineKind, engineVersion, payloadType)</code>. Plugins that rely solely
+on <code>properties</code>-based metadata in their <code>.pbtxt</code> files get immutable system hints without a second
+provider or cache path. <code>decideHintClear</code> applies only to legacy property-backed user hints during
+migration.</p>
+<h2 id="core-components">Core Components<a class="headerlink" href="#core-components" title="Permanent link">&para;</a></h2>
+<h3 id="enginespecific-proto">EngineSpecific (Proto)<a class="headerlink" href="#enginespecific-proto" title="Permanent link">&para;</a></h3>
+<p>The core envelope in <code>proto/src/main/proto/floecat/query/engine_specific.proto</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">message</span><span class="w"> </span><span class="nc">EngineSpecific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="na">engine_kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10</span><span class="p">;</span><span class="w">       </span><span class="c1">// &quot;postgres&quot;, ...</span>
+<span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="na">min_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">11</span><span class="p">;</span><span class="w">       </span><span class="c1">// min engine version (inclusive)</span>
+<span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="na">max_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">12</span><span class="p">;</span><span class="w">       </span><span class="c1">// max engine version (inclusive)</span>
+<span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="na">payload_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">20</span><span class="p">;</span><span class="w">      </span><span class="c1">// e.g., &quot;floe.function+proto&quot;</span>
+<span class="w">  </span><span class="kt">bytes</span><span class="w"> </span><span class="na">payload</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">21</span><span class="p">;</span><span class="w">            </span><span class="c1">// Opaque binary data</span>
+<span class="w">  </span><span class="n">map</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span><span class="kt">string</span><span class="p">&gt;</span><span class="w"> </span><span class="na">properties</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span>
+
+<span class="w">  </span><span class="c1">// Reserve extension numbers for plugins</span>
+<span class="w">  </span><span class="k">extensions</span><span class="w"> </span><span class="mi">1000</span><span class="w"> </span><span class="k">to</span><span class="w"> </span><span class="mi">2000</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><strong>Key Design</strong>: The message is engine-agnostic. Extensions (defined by plugins) are allowed in range 1000–2000 to support rich PBtxt files during parsing.</p>
+<h3 id="systemcatalogprovider-spi">SystemCatalogProvider (SPI)<a class="headerlink" href="#systemcatalogprovider-spi" title="Permanent link">&para;</a></h3>
+<p>Interface for loading catalogs:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">SystemCatalogProvider</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">SystemEngineCatalog</span><span class="w"> </span><span class="nf">load</span><span class="p">(</span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">ctx</span><span class="p">);</span>
+<span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">engineKinds</span><span class="p">();</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><strong>Implementations</strong>:
+- <strong>ServiceLoaderSystemCatalogProvider</strong> – Discovers plugin catalogs via ServiceLoader, exposes the list of available engine kinds, and returns the raw <code>SystemCatalogData</code> for the normalized kind. It does not merge provider definitions—the merged view is computed later in <code>SystemNodeRegistry</code>—so the kind-level fingerprint stays stable.
+- <strong>StaticSystemCatalogProvider</strong> – For tests; allows programmatic registration</p>
+<h3 id="enginecontext-header-semantics">EngineContext &amp; header semantics<a class="headerlink" href="#enginecontext-header-semantics" title="Permanent link">&para;</a></h3>
+<p>Every provider receives a complete <code>CatalogContext</code> containing an environment and an engine. Requests
+carry the two axes independently in <code>x-environment-kind</code> / <code>x-environment-version</code> and
+<code>x-engine-kind</code> / <code>x-engine-version</code>; the resolved call context propagates both together across
+internal RPCs and worker hops. The engine context selects capability providers and the environment
+context selects environment-owned relation providers. <code>SystemNodeRegistry</code> applies both axes
+independently, so a live environment can be paired with any engine without copying the engine's
+types or functions into environment definitions.</p>
+<h3 id="caching-architecture">Caching Architecture<a class="headerlink" href="#caching-architecture" title="Permanent link">&para;</a></h3>
+<p>Builtins are cached at every stage of the pipeline:</p>
+<div class="highlight"><pre><span></span><code>┌──────────────────────────────────┐
+│ SystemDefinitionRegistry         │
+│ key = (environmentKind,          │
+│        environmentVersion,       │
+│        engineKind, engineVersion)│
+│ value = SystemEngineCatalog       │
+│ (raw SystemCatalogData snapshot)  │
+└──────────────────────────────────┘
+                │
+┌──────────────────────────────────┐
+│ SystemNodeRegistry               │
+│ key = (environmentKind,           │
+│        environmentVersion,        │
+│        engineKind, engineVersion) │
+│ value = BuiltinNodes (GraphNodes +│
+│         merged SystemCatalogData │
+│         and overlays)             │
+└──────────────────────────────────┘
+                │
+┌──────────────────────────────────┐
+│ SystemGraph snapshot cache       │
+│ key = complete CatalogContext     │
+│ value = GraphSnapshot (namespace →│
+│         relations + lookup map)   │
+└──────────────────────────────────┘
+</code></pre></div>
+<ol>
+<li>
+<p><strong>SystemDefinitionRegistry</strong> – caches the immutable <code>SystemEngineCatalog</code> produced by the <code>SystemCatalogProvider</code> under the normalized environment/engine tuple. Static engine catalogs remain separate from live environment contributions. Tests can reset this cache via <code>clear()</code>.</p>
+</li>
+<li>
+<p><strong>SystemNodeRegistry</strong> – filters the cached catalog through <code>EngineSpecificMatcher</code> (per <code>min_version</code>, <code>max_version</code> rules) and composes static/live engine contributions with live environment contributions. The resulting <code>BuiltinNodes</code> record keeps copies of the filtered and merged <code>SystemCatalogData</code> (functions, types, casts, tables, etc.), so the same snapshot serves both the catalog service and the system graph. <code>VersionKey</code> is the normalized <code>(environmentKind, environmentVersion, engineKind, engineVersion)</code> tuple stored in a <code>ConcurrentHashMap</code>. Identical definitions are deduplicated; conflicting definitions fail rather than using stage order as precedence.
+   Canonical names remain fully qualified for identity and namespace mapping, while node display labels are materialized separately (functions/operators/types/collations/aggregates default to leaf names unless a provider overrides them).
+   Catalog validation is enforced at load time: providers fail fast on <code>Severity.ERROR</code> issues. The default namespace-scope policy currently requires known namespaces for <code>function/type/table/view</code> and leaves <code>operator/cast/collation/aggregate</code> relaxed unless a stricter policy is selected.</p>
+</li>
+<li>
+<p><strong>SystemGraph snapshot cache</strong> – <code>SystemGraph</code> consumes <code>BuiltinNodes</code> to build a <code>GraphSnapshot</code> that buckets namespace→relations, indexes every <code>GraphNode</code> by <code>ResourceId</code>, and keeps <code>_system</code> catalog metadata ready for <code>CatalogGraphView</code>. Snapshots are stored in a synchronized <code>LinkedHashMap</code> configured by <code>floecat.system.graph.snapshot-cache-size</code> (defaults to 16) and evict the oldest entry when the cache is full.</p>
+</li>
+</ol>
+<p><code>SqlCatalogServiceImpl</code> itself stays cache-less: it simply fetches the prebuilt <code>BuiltinNodes</code>, hands the embedded <code>SystemCatalogData</code> to <code>SystemCatalogProtoMapper.toProto()</code>, and responds. Because all heavy work (parsing, filtering, node construction, snapshotting) happens before the gRPC layer, repeated requests hit the cache in &lt;1ms.</p>
+<h2 id="plugin-architecture">Plugin Architecture<a class="headerlink" href="#plugin-architecture" title="Permanent link">&para;</a></h2>
+<h3 id="enginecatalogprovider-and-catalogenvironmentprovider-spi">EngineCatalogProvider and CatalogEnvironmentProvider (SPI)<a class="headerlink" href="#enginecatalogprovider-and-catalogenvironmentprovider-spi" title="Permanent link">&para;</a></h3>
+<p>Engine providers implement the engine SPI:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">EngineCatalogProvider</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">String</span><span class="w"> </span><span class="nf">engineKind</span><span class="p">();</span>
+<span class="w">  </span><span class="k">default</span><span class="w"> </span><span class="n">SystemCatalogData</span><span class="w"> </span><span class="nf">loadSystemCatalog</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">SystemCatalogData</span><span class="p">.</span><span class="na">empty</span><span class="p">();</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">SystemObjectDef</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">definitions</span><span class="p">(</span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+<span class="w">  </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">SystemObjectScanner</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">provide</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">scannerId</span><span class="p">,</span><span class="w"> </span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Environment providers implement the environment SPI:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">CatalogEnvironmentProvider</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">String</span><span class="w"> </span><span class="nf">environmentKind</span><span class="p">();</span>
+<span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">SystemObjectDef</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">definitions</span><span class="p">(</span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+<span class="w">  </span><span class="kt">boolean</span><span class="w"> </span><span class="nf">supports</span><span class="p">(</span><span class="n">NameRef</span><span class="w"> </span><span class="n">name</span><span class="p">,</span><span class="w"> </span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+<span class="w">  </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">SystemObjectScanner</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">provide</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">scannerId</span><span class="p">,</span><span class="w"> </span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>The actual interfaces also provide default hooks for validation, type mapping, and provider
+selection. The important distinction is ownership: engine relations use <code>TABLE_BACKEND_KIND_ENGINE</code>;
+environment relations use <code>TABLE_BACKEND_KIND_FLOECAT</code> or <code>TABLE_BACKEND_KIND_STORAGE</code>.</p>
+<h3 id="reference-implementation">Reference Implementation<a class="headerlink" href="#reference-implementation" title="Permanent link">&para;</a></h3>
+<p>The bundled <code>extensions/example/</code> module (<code>ExampleCatalogExtension</code>) is the canonical static
+engine-provider reference. It loads <code>.pbtxt</code> files from either a configured filesystem directory
+or from classpath resources under <code>builtins/&lt;engine-kind&gt;/</code>, reading fragment order from <code>_index.txt</code>.
+An engine with live metadata can instead leave <code>loadSystemCatalog()</code> empty and implement the
+context-aware definition methods. It does not need one PBtxt file per engine function or relation.</p>
+<p>Each fragment independently defines the repeated field(s) it needs; the loader appends them in
+order to a single <code>SystemObjectsRegistry.Builder</code>.</p>
+<p>Resource layout:</p>
+<div class="highlight"><pre><span></span><code>resources/
+  builtins/
+    &lt;engine-kind&gt;/
+      _index.txt             # lists fragments in merge order
+      00_registry.pbtxt
+      10_types.pbtxt
+      20_functions.pbtxt
+      30_operators.pbtxt
+      40_casts.pbtxt
+      50_collations.pbtxt
+      60_aggregates.pbtxt
+</code></pre></div>
+<h3 id="serviceloader-registration">ServiceLoader Registration<a class="headerlink" href="#serviceloader-registration" title="Permanent link">&para;</a></h3>
+<p>Each plugin registers itself in <code>META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider</code>:</p>
+<div class="highlight"><pre><span></span><code>com.example.MyEngineCatalogProvider
+</code></pre></div>
+<h2 id="data-flow">Data Flow<a class="headerlink" href="#data-flow" title="Permanent link">&para;</a></h2>
+<h3 id="request-flow-planner-floecat">Request Flow (Planner → Floecat)<a class="headerlink" href="#request-flow-planner-floecat" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>Planner</strong> sends <code>GetSqlObjectsRegistryRequest</code> with the selected catalog context:</li>
+<li><code>x-environment-kind: "env_a"</code></li>
+<li><code>x-environment-version: "1.0"</code></li>
+<li><code>x-engine-kind: "engine_b"</code></li>
+<li><code>x-engine-version: "1.0"</code>
+   The request boundary converts these headers into one <code>CatalogContext</code>. If both axes are absent,
+   it uses <code>CatalogContext.forRequest(...)</code> to select <code>floecat_internal</code>. <code>CatalogContext.empty()</code>
+   is reserved for neutral internal/test contexts and is not the request-defaulting function.</li>
+<li><strong>SqlCatalogServiceImpl</strong> validates the request and calls <code>SystemNodeRegistry.nodesFor(CatalogContext)</code>.</li>
+<li><strong>SystemNodeRegistry</strong> looks up the complete <code>(environmentKind, environmentVersion, engineKind, engineVersion)</code> context in its cache, and, on a miss, asks <code>SystemDefinitionRegistry</code> for the engine catalog data.</li>
+<li><strong>SystemDefinitionRegistry</strong> delegates to <code>ServiceLoaderSystemCatalogProvider</code> when it needs to load the engine's static catalog snapshot.</li>
+<li><strong>SystemNodeRegistry</strong> composes static engine data, live engine definitions, and live environment definitions. It caches the result per complete <code>CatalogContext</code>.</li>
+<li><strong>SystemNodeRegistry</strong> filters the catalog by version (<code>EngineSpecificMatcher</code>), applies engine-specific rules, and materialises <code>BuiltinNodes</code> (graph nodes + filtered <code>SystemCatalogData</code>). The <code>BuiltinNodes</code> instance is cached for future requests for the same context.</li>
+<li><strong>SqlCatalogServiceImpl</strong> receives the cached <code>BuiltinNodes</code>, hands its embedded <code>SystemCatalogData</code> to <code>SystemCatalogProtoMapper.toProto()</code>, and streams the <code>GetSqlObjectsRegistryResponse</code> back to the planner.</li>
+<li><strong>SystemGraph</strong> reuses the same <code>BuiltinNodes</code> to build <code>_system</code> catalog snapshots (namespace buckets, relation map, <code>SystemTableNode</code>s) that <code>MetaGraph</code> exposes as <code>CatalogGraphView</code>/<code>SystemObjectGraphView</code> for system object scanning.</li>
+<li>The scanner-visible system relations (information_schema, pg_catalog, etc.) are seeded from the shared provider and merged into the selected catalog context for <code>_system</code> scans. They are <strong>not</strong> emitted by <code>GetSqlObjectsRegistry</code>, which only returns engine-visible SQL objects produced by plugins/providers.</li>
+</ol>
+<h3 id="systemnoderegistry-caching">SystemNodeRegistry Caching<a class="headerlink" href="#systemnoderegistry-caching" title="Permanent link">&para;</a></h3>
+<p>All caches are case-normalized and thread-safe:
+* <code>SystemDefinitionRegistry</code> keeps one <code>SystemEngineCatalog</code> per normalized catalog context in a <code>ConcurrentHashMap</code>. The engine's static catalog may be reused across versions internally, but the public cache key remains the complete context so environment/engine composition cannot collide.
+* <code>SystemNodeRegistry</code> caches <code>BuiltinNodes</code> per normalized <code>(environmentKind, environmentVersion, engineKind, engineVersion)</code> via <code>ConcurrentHashMap.computeIfAbsent</code>. The result stores stable <code>ResourceId</code>s (via <code>SystemNodeRegistry.resourceId</code>) and a copy of the filtered and merged <code>SystemCatalogData</code>.
+  <code>SystemNodeRegistry.resourceId</code> derives a deterministic UUID (catalog kind + resource kind + object signature) instead of concatenating readable <code>catalog:suffix</code> strings, so every owner of a system node should call the helper rather than inventing their own IDs.
+* <code>SystemGraph</code> keeps a synchronized, access-ordered <code>LinkedHashMap</code> of <code>GraphSnapshot</code>s per complete catalog context. Each snapshot already groups namespace relations and indexes every <code>GraphNode</code> so that <code>_system</code> list/lookups take constant time.</p>
+<h2 id="version-matching">Version Matching<a class="headerlink" href="#version-matching" title="Permanent link">&para;</a></h2>
+<p>Each rule in the builtin catalog carries <code>min_version</code> and <code>max_version</code> constraints:</p>
+<div class="highlight"><pre><span></span><code><span class="n">EngineSpecific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">min_version</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;9.5&quot;</span>
+<span class="w">  </span><span class="n">max_version</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;13.0&quot;</span>
+<span class="w">  </span><span class="c1">// ...</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>The planner can filter or match rules based on the requested version. The versioning semantics are engine-defined; plugins document their version scheme in their documentation.</p>
+<p>The actual predicate is implemented by <code>EngineSpecificMatcher.matches(rules, engineKind, engineVersion)</code>, which is used by <code>SystemNodeRegistry</code> to compute exactly which objects survive the version filter.</p>
+<h2 id="scalability-performance">Scalability &amp; Performance<a class="headerlink" href="#scalability-performance" title="Permanent link">&para;</a></h2>
+<h3 id="catalog-size-considerations">Catalog Size Considerations<a class="headerlink" href="#catalog-size-considerations" title="Permanent link">&para;</a></h3>
+<p>PostgreSQL has a massive builtin catalog:
+- <strong>Functions</strong>: ~6,000+ builtin functions
+- <strong>Operators</strong>: ~1,000+
+- <strong>Types</strong>: ~200+
+- <strong>Casts</strong>: ~500+
+- <strong>Aggregates</strong>: ~100+
+- <strong>Total</strong>: ~8,000-10,000 objects per major PG version</p>
+<p>A PG-scale engine catalog inherits this scale. The system is <strong>designed to handle this</strong>:</p>
+<h3 id="layer-1-engine-kind-cache-pg-scale-performance">Layer 1 (Engine-Kind Cache) – PG-Scale Performance<a class="headerlink" href="#layer-1-engine-kind-cache-pg-scale-performance" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Small Catalog (example extension)</th>
+<th>PG-Scale (Postgres)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Raw catalog size</strong></td>
+<td>~100 objects</td>
+<td>~8,000-10,000 objects</td>
+</tr>
+<tr>
+<td><strong>Parsed JAR size</strong></td>
+<td>~20-50KB</td>
+<td>~2-5MB</td>
+</tr>
+<tr>
+<td><strong>Parse time (first load)</strong></td>
+<td>~10ms</td>
+<td>~100-200ms</td>
+</tr>
+<tr>
+<td><strong>In-memory size</strong></td>
+<td>~1-2MB</td>
+<td>~20-50MB</td>
+</tr>
+<tr>
+<td><strong>Layer 1 hit (repeated)</strong></td>
+<td>&lt;0.1ms</td>
+<td>&lt;0.1ms</td>
+</tr>
+</tbody>
+</table>
+<p>PG-scale catalogs load once and stay cached for service lifetime; subsequent access is instant.</p>
+<h3 id="layer-2-version-specific-cache-pg-scale-performance">Layer 2 (Version-Specific Cache) – PG-Scale Performance<a class="headerlink" href="#layer-2-version-specific-cache-pg-scale-performance" title="Permanent link">&para;</a></h3>
+<p>When planner requests a version, Layer 2 filters Layer 1's full catalog:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Small Catalog</th>
+<th>PG-Scale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Filtering cost</strong></td>
+<td>~5-10ms per new version</td>
+<td>~50-100ms per new version</td>
+</tr>
+<tr>
+<td><strong>Filtered result</strong></td>
+<td>~30-50% of raw</td>
+<td>~30-50% of raw</td>
+</tr>
+<tr>
+<td><strong>Node construction</strong></td>
+<td>~5ms</td>
+<td>~50ms</td>
+</tr>
+<tr>
+<td><strong>In-memory (per version)</strong></td>
+<td>~500KB-2MB</td>
+<td>~10-30MB</td>
+</tr>
+<tr>
+<td><strong>Layer 2 hit (repeated)</strong></td>
+<td>&lt;0.1ms</td>
+<td>&lt;0.1ms</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Critical point</strong>: Filtering is done <strong>once per version</strong>, then memoized. All subsequent requests for PG 13.0 hit Layer 2 cache instantly.</p>
+<h3 id="proto-conversion-grpc-response">Proto Conversion &amp; gRPC Response<a class="headerlink" href="#proto-conversion-grpc-response" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Time</th>
+<th>Size</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Layer 2 cache hit + proto conversion</td>
+<td>~1-2ms</td>
+<td>~500KB-5MB per response</td>
+</tr>
+<tr>
+<td>Full PG catalog wire format</td>
+<td>~50-100ms (first ever)</td>
+<td>~5-20MB compressed</td>
+</tr>
+<tr>
+<td>Subsequent PG requests</td>
+<td>~2ms (Layer 2 cache + proto)</td>
+<td>Same size</td>
+</tr>
+</tbody>
+</table>
+<h3 id="memory-scaling-typical-deployment">Memory Scaling (Typical Deployment)<a class="headerlink" href="#memory-scaling-typical-deployment" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code>3 engines × (1 raw catalog + 5 versions average):
+  Example:       2MB (raw) + 2MB×5 (versions)      = 12MB
+  Postgres:     40MB (raw) + 25MB×5 (versions)    = 165MB
+  Trino:        30MB (raw) + 20MB×5 (versions)    = 130MB
+  ──────────────────────────────────────────────────────
+  Total:                                           ~307MB
+
+This is acceptable for a service with 8GB+ heap. Typical Floecat deployments
+allocate 16GB+ to handle metadata graph + execution plans.
+</code></pre></div>
+<h3 id="thread-safety">Thread Safety<a class="headerlink" href="#thread-safety" title="Permanent link">&para;</a></h3>
+<p>Both Layer 1 and Layer 2 use <code>ConcurrentHashMap</code> with atomic <code>computeIfAbsent()</code>, ensuring:
+- No duplicate plugin loads if multiple threads request same engine concurrently
+- No duplicate filtering if multiple threads request same version concurrently
+- Safe concurrent reads after cache population
+- <strong>PG-scale benefit</strong>: With 8,000+ objects, preventing duplicate parses saves 100-200ms per redundant load</p>
+<h3 id="scalability-assessment">Scalability Assessment<a class="headerlink" href="#scalability-assessment" title="Permanent link">&para;</a></h3>
+<p><strong>PG-scale catalogs scale well</strong> if:
+- Planner requests stable set of engine versions (typical: 3-5 versions per engine)
+- Service runs for hours/days (cache warm)
+- Metadata graph + other components can absorb 300-500MB memory overhead</p>
+<p><strong>Potential bottlenecks</strong> at extreme scales:
+- <strong>Many versions per engine</strong> (&gt; 15 versions): Layer 2 cache grows; implement LRU if needed
+- <strong>Many engines</strong> (&gt; 10 engines): ~500MB+ memory; consider partitioning
+- <strong>Very large .pbtxt files</strong> (&gt; 10MB): Parsing could timeout; consider compression or lazy loading</p>
+<p><strong>Recommendation</strong>: For PG-scale engines, pre-warm cache by loading all expected versions at service startup rather than lazy-loading on first planner request.</p>
+<h2 id="proto-extensions-advanced">Proto Extensions (Advanced)<a class="headerlink" href="#proto-extensions-advanced" title="Permanent link">&para;</a></h2>
+<p>Plugins can define proto extensions on <code>EngineSpecific</code> to support rich PBtxt syntax. The Floe plugin defines:</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// my_engine.proto — define in your own plugin proto</span>
+<span class="kd">extend</span><span class="w"> </span><span class="nc">ai</span><span class="o">.</span><span class="n">floedb.floecat.query.EngineSpecific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">MyFunctionSpecific</span><span class="w">  </span><span class="na">my_function</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="mi">1001</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyOperatorSpecific</span><span class="w">  </span><span class="na">my_operator</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="mi">1002</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyCastSpecific</span><span class="w">      </span><span class="na">my_cast</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">1003</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyTypeSpecific</span><span class="w">      </span><span class="na">my_type</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">1004</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyAggregateSpecific</span><span class="w"> </span><span class="na">my_aggregate</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1005</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyCollationSpecific</span><span class="w"> </span><span class="na">my_collation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1006</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><strong>Important</strong>: Extensions use range 1000–2000 reserved in the core proto. Plugins must coordinate to avoid collisions (e.g., Postgres uses 1100–1199, Trino uses 1200–1299, etc.).</p>
+<h2 id="validation">Validation<a class="headerlink" href="#validation" title="Permanent link">&para;</a></h2>
+<p>The <code>SystemCatalogValidator</code> validates loaded catalogs:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">validate</span><span class="p">(</span><span class="n">SystemCatalogData</span><span class="w"> </span><span class="n">catalog</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">...</span><span class="w"> </span><span class="p">}</span>
+</code></pre></div>
+<p>Checks include:
+- Types defined before use
+- Function/operator argument types exist
+- Cast source/target types exist
+- No duplicate names
+- Required fields present</p>
+<p>Validation errors are logged; invalid catalogs are still returned (planner must handle gracefully).</p>
+<h2 id="creating-a-new-plugin">Creating a New Plugin<a class="headerlink" href="#creating-a-new-plugin" title="Permanent link">&para;</a></h2>
+<h3 id="step-1-implement-enginecatalogprovider">Step 1: Implement EngineCatalogProvider<a class="headerlink" href="#step-1-implement-enginecatalogprovider" title="Permanent link">&para;</a></h3>
+<p><code>EngineCatalogProvider</code> lives in <code>ai.floedb.floecat.systemcatalog.spi</code> and already extends <code>SystemObjectScannerProvider</code>, so every plugin can also supply system table definitions and scanners without extra wiring.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">MyEngineCatalogExtension</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">EngineCatalogProvider</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nd">@Override</span>
+<span class="w">  </span><span class="kd">public</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="nf">engineKind</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="s">&quot;my-engine&quot;</span><span class="p">;</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="nd">@Override</span>
+<span class="w">  </span><span class="kd">public</span><span class="w"> </span><span class="n">SystemCatalogData</span><span class="w"> </span><span class="nf">loadSystemCatalog</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// Load and parse your catalog</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">SystemCatalogData</span><span class="p">(...);</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="c1">// Implement SystemObjectScannerProvider methods if you expose new rows.</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="step-2-register-with-serviceloader">Step 2: Register with ServiceLoader<a class="headerlink" href="#step-2-register-with-serviceloader" title="Permanent link">&para;</a></h3>
+<p>Create <code>resources/META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider</code>:</p>
+<div class="highlight"><pre><span></span><code>com.example.MyEngineCatalogExtension
+</code></pre></div>
+<h3 id="step-3-define-proto-extensions-optional">Step 3: Define Proto Extensions (Optional)<a class="headerlink" href="#step-3-define-proto-extensions-optional" title="Permanent link">&para;</a></h3>
+<p>If using PBtxt with custom fields, define proto extensions:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="s">&quot;query/engine_specific.proto&quot;</span><span class="p">;</span>
+
+<span class="kd">message</span><span class="w"> </span><span class="nc">MyEngineFunction</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span>
+
+<span class="kd">extend</span><span class="w"> </span><span class="nc">ai</span><span class="o">.</span><span class="n">floedb.floecat.query.EngineSpecific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">MyEngineFunction</span><span class="w"> </span><span class="na">my_function</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1100</span><span class="p">;</span><span class="w">  </span><span class="c1">// Use allocated range for your engine</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="step-4-ship-with-service-module">Step 4: Ship with Service Module<a class="headerlink" href="#step-4-ship-with-service-module" title="Permanent link">&para;</a></h3>
+<p>Add the plugin JAR as a runtime dependency of the service module so it's available at startup.</p>
+<h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
+<h3 id="plugin-side-validation-tests">Plugin-Side Validation Tests<a class="headerlink" href="#plugin-side-validation-tests" title="Permanent link">&para;</a></h3>
+<p>Each plugin should validate its <code>.pbtxt</code> files using the <code>SystemCatalogValidator</code>:</p>
+<p><strong>Example: CatalogExtensionTest</strong></p>
+<div class="highlight"><pre><span></span><code><span class="kd">class</span> <span class="nc">CatalogExtensionTest</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nd">@Test</span>
+<span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="nf">extensionLoadsAndValidates</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="n">extension</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ExampleCatalogExtension</span><span class="p">();</span>
+
+<span class="w">    </span><span class="c1">// Load the catalog (`_index.txt` + fragments)</span>
+<span class="w">    </span><span class="n">SystemCatalogData</span><span class="w"> </span><span class="n">catalog</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">extension</span><span class="p">.</span><span class="na">loadSystemCatalog</span><span class="p">();</span>
+
+<span class="w">    </span><span class="c1">// Validate structural integrity</span>
+<span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="n">errors</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">SystemCatalogValidator</span><span class="p">.</span><span class="na">validate</span><span class="p">(</span><span class="n">catalog</span><span class="p">);</span>
+<span class="w">    </span><span class="k">assert</span><span class="w"> </span><span class="n">errors</span><span class="p">.</span><span class="na">isEmpty</span><span class="p">()</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="s">&quot;catalog must pass validation, got: &quot;</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">errors</span><span class="p">;</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="nd">@Test</span>
+<span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="nf">catalogDataPreservesEngineSpecificRules</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="n">extension</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ExampleCatalogExtension</span><span class="p">();</span>
+<span class="w">    </span><span class="n">SystemCatalogData</span><span class="w"> </span><span class="n">catalog</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">extension</span><span class="p">.</span><span class="na">loadSystemCatalog</span><span class="p">();</span>
+
+<span class="w">    </span><span class="c1">// Ensure engine-specific rules have non-blank payloadType</span>
+<span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="n">functionsWithRules</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">catalog</span><span class="p">.</span><span class="na">functions</span><span class="p">().</span><span class="na">stream</span><span class="p">()</span>
+<span class="w">        </span><span class="p">.</span><span class="na">filter</span><span class="p">(</span><span class="n">f</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="o">!</span><span class="n">f</span><span class="p">.</span><span class="na">engineSpecific</span><span class="p">().</span><span class="na">isEmpty</span><span class="p">())</span>
+<span class="w">        </span><span class="p">.</span><span class="na">toList</span><span class="p">();</span>
+
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">var</span><span class="w"> </span><span class="n">func</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">functionsWithRules</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">var</span><span class="w"> </span><span class="n">rule</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">func</span><span class="p">.</span><span class="na">engineSpecific</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="k">assert</span><span class="w"> </span><span class="o">!</span><span class="n">rule</span><span class="p">.</span><span class="na">payloadType</span><span class="p">().</span><span class="na">isBlank</span><span class="p">()</span><span class="w"> </span><span class="p">:</span>
+<span class="w">            </span><span class="s">&quot;engine_specific rules must have a non-blank payload_type&quot;</span><span class="p">;</span>
+<span class="w">      </span><span class="p">}</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+
+<span class="w">  </span><span class="nd">@Test</span>
+<span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="nf">missingResourceFileThrows</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="n">extension</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">TestExtensionWithMissingResource</span><span class="p">();</span>
+
+<span class="w">    </span><span class="k">try</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="n">extension</span><span class="p">.</span><span class="na">loadSystemCatalog</span><span class="p">();</span>
+<span class="w">      </span><span class="k">assert</span><span class="w"> </span><span class="kc">false</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Expected IllegalStateException&quot;</span><span class="p">;</span>
+<span class="w">    </span><span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="n">IllegalStateException</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="k">assert</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="na">getMessage</span><span class="p">().</span><span class="na">contains</span><span class="p">(</span><span class="s">&quot;Builtin file not found&quot;</span><span class="p">);</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><strong>What this validates:</strong>
+- <code>.pbtxt</code> file parses without errors
+- All objects (functions, types, operators, etc.) pass structural validation
+- Engine-specific rules have a non-blank <code>payload_type</code> (required by the validator)
+- Resource files are present and readable
+- Invalid/malformed <code>.pbtxt</code> syntax fails fast</p>
+<h3 id="core-engine-tests">Core Engine Tests<a class="headerlink" href="#core-engine-tests" title="Permanent link">&para;</a></h3>
+<p><strong>SqlCatalogServiceIT</strong> – Full gRPC flow:
+- Valid engine selectors return full catalog
+- Version filtering returns only version-matched objects
+- Missing selectors trigger INVALID_ARGUMENT errors</p>
+<p><strong>SystemNodeRegistryTest</strong> – Version-specific filtering:
+- Filters catalog by engine kind and version
+- Constructs ResourceIds correctly
+- Caches results per version tuple</p>
+<p><strong>SystemCatalogValidatorTest</strong> – Structural validation:
+- Duplicate names detected
+- Type references exist
+- Required fields present</p>
+<h3 id="running-plugin-tests">Running Plugin Tests<a class="headerlink" href="#running-plugin-tests" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Run plugin-side tests (validates .pbtxt files + parsing)</span>
+mvn<span class="w"> </span>-pl<span class="w"> </span>extensions/plugins/floedb<span class="w"> </span><span class="nb">test</span>
+
+<span class="c1"># Run core engine tests</span>
+mvn<span class="w"> </span>-pl<span class="w"> </span>service<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>SqlCatalogServiceIT
+mvn<span class="w"> </span>-pl<span class="w"> </span>core/catalog<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>SystemNodeRegistryTest
+mvn<span class="w"> </span>-pl<span class="w"> </span>core/catalog<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>SystemCatalogValidator*
+
+<span class="c1"># All builtin/service catalogs</span>
+mvn<span class="w"> </span>-pl<span class="w"> </span>service,extensions/floedb,core/catalog<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span><span class="s2">&quot;Builtin*,System*&quot;</span>
+</code></pre></div>
+<h3 id="key-validation-points">Key Validation Points<a class="headerlink" href="#key-validation-points" title="Permanent link">&para;</a></h3>
+<p>When adding a new plugin or modifying .pbtxt files:</p>
+<table>
+<thead>
+<tr>
+<th>What to Test</th>
+<th>How</th>
+<th>Tool</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.pbtxt</code> parses</td>
+<td>No TextFormat errors</td>
+<td>FloeBuiltinExtensionTest.loads</td>
+</tr>
+<tr>
+<td>No duplicate types</td>
+<td>Catalog validator</td>
+<td>SystemCatalogValidatorTest</td>
+</tr>
+<tr>
+<td>Functions reference known types</td>
+<td>Type resolution</td>
+<td>SystemCatalogValidatorTest</td>
+</tr>
+<tr>
+<td>Operators have valid types</td>
+<td>Type resolution</td>
+<td>SystemCatalogValidatorTest</td>
+</tr>
+<tr>
+<td>Casts reference valid types</td>
+<td>Type resolution</td>
+<td>SystemCatalogValidatorTest</td>
+</tr>
+<tr>
+<td>Engine-specific fields rewritten</td>
+<td>Payload bytes present</td>
+<td>FloeBuiltinExtensionTest.preservesRules</td>
+</tr>
+<tr>
+<td>ServiceLoader discovers plugin</td>
+<td>SqlCatalogServiceIT</td>
+<td>Dynamic runtime discovery</td>
+</tr>
+<tr>
+<td>Version filtering works</td>
+<td>Version matching logic</td>
+<td>SystemNodeRegistryTest</td>
+</tr>
+</tbody>
+</table>
+<h2 id="future-enhancements">Future Enhancements<a class="headerlink" href="#future-enhancements" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Dynamic Reload</strong> – Hot-reload plugins without restarting service</li>
+<li><strong>Compression</strong> – Compress payload bytes for large catalogs</li>
+<li><strong>Pre-warming</strong> – Load all expected versions at startup for PG-scale catalogs</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tracking", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+        <script src="../assets/javascripts/docs-navigation.js"></script>
+      
+    
+  </body>
+</html>

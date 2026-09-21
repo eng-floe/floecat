@@ -1,0 +1,1987 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Reference and operational guides for Floecat">
+      
+      
+      
+        <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/generic-engine-rpc-contract/">
+      
+      
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.14">
+    
+    
+      
+        <title>Generic Engine RPC Contract - Floecat Documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.342714a4.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#generic-engine-rpc-contract" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Floecat Documentation" class="md-header__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Floecat Documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Generic Engine RPC Contract
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="brown" data-md-color-accent="cyan"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Floecat Documentation" class="md-nav__button md-logo" aria-label="Floecat Documentation" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Floecat Documentation
+  </label>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Documentation Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Contributing to Docs
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../style-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docs Style Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Docker Local Stack
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../service/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Service Runtime
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../caching/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Caching
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Operations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting-errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    APIs and Clients
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            APIs and Clients
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api-access/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    API Access
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../client-cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Client CLI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    CLI Reference
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../iceberg-rest-gateway/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg REST Gateway
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../arrow-flight/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Arrow Flight
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Catalog and Metadata
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Catalog and Metadata
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-integration-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integration Architecture and Delivery Plan
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-integrations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Integrations and Overlays
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../catalog-access-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Catalog Access SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metadata-graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Metadata Graph
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-objects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Objects
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../system-scans-grpc/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    System Scans gRPC
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconciler/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Reconciler
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rust-remote-capture-executor/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Rust Remote Capture Executor
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../transactions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Transactions
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-common/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector Common
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-iceberg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Iceberg Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-delta/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Delta Connector
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../connectors-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Connector SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extension-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Example Catalog Extension
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Types and Builtins
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Types and Builtins
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Types
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../builtin-catalog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Builtin Catalog Architecture
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../proto/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Protobuf and RPC Contracts
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../statistics-engine-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Statistics Engine SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Storage and Security
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Storage and Security
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Layout
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-spi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-aws/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage AWS
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Storage Memory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../secrets-manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Secrets Manager
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    External Authentication
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../fixed-roles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Fixed Roles
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    Observability
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Observability
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../log/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Logging Directory
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Overview
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Telemetry Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/demo-grafana/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Grafana Demo
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#generic-engine-needs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Generic Engine Needs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#engine-surface-and-management-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      Engine Surface And Management Surface
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#adapter-recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      Adapter Recipe
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relation-rpcs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Relation RPCs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#code-hooks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Code Hooks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pinned-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Pinned Behavior
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-pin-projections" class="md-nav__link">
+    <span class="md-ellipsis">
+      Legacy Pin Projections
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/eng-floe/floecat/edit/mr-generic-engine-rpc-surface/docs/generic-engine-rpc-contract.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="generic-engine-rpc-contract">Generic Engine RPC Contract<a class="headerlink" href="#generic-engine-rpc-contract" title="Permanent link">&para;</a></h1>
+<p>The external catalog surface an engine adapter binds against. Relation reads are kind-neutral, so a
+client lists, resolves, and describes tables and views without choosing between them first.
+Mutation stays resource-specific because table and view specs differ.</p>
+<h2 id="generic-engine-needs">Generic Engine Needs<a class="headerlink" href="#generic-engine-needs" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Engine need</th>
+<th>Floecat endpoint</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>List catalogs</td>
+<td><code>CatalogService.ListCatalogs</code></td>
+<td></td>
+</tr>
+<tr>
+<td>List schemas/namespaces</td>
+<td><code>NamespaceService.ListNamespaces</code></td>
+<td></td>
+</tr>
+<tr>
+<td>List tables and views together</td>
+<td><code>RelationService.ListRelations</code></td>
+<td>Metadata/topology only by default. Does not require a queryable snapshot.</td>
+</tr>
+<tr>
+<td>Resolve a table or view by name</td>
+<td><code>RelationService.ResolveRelations</code></td>
+<td>Batch, one result per logical reference, with search-path candidates tried in order.</td>
+</tr>
+<tr>
+<td>Describe a table or view by id</td>
+<td><code>RelationService.GetRelation</code></td>
+<td>Set <code>include_schema</code> when the caller needs columns.</td>
+</tr>
+<tr>
+<td>Pin query inputs / snapshot-aware schema</td>
+<td><code>QuerySchemaService.DescribeInputs</code>, <code>UserObjectsService.GetUserObjects</code></td>
+<td>Query-context APIs. Pinned/current/as-of behavior belongs here.</td>
+</tr>
+<tr>
+<td>Create/update/delete tables</td>
+<td><code>TableService</code></td>
+<td></td>
+</tr>
+<tr>
+<td>Create/update/delete views</td>
+<td><code>ViewService</code></td>
+<td></td>
+</tr>
+<tr>
+<td>Fetch functions/types/operators/casts/collations/aggregates</td>
+<td><code>SqlCatalogService.GetSqlObjectsRegistry</code></td>
+<td>Serves the <code>SystemObjectsRegistry</code> envelope.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="engine-surface-and-management-surface">Engine Surface And Management Surface<a class="headerlink" href="#engine-surface-and-management-surface" title="Permanent link">&para;</a></h2>
+<p><code>RelationService</code>, <code>SqlCatalogService</code>, <code>CatalogService.ListCatalogs</code> and
+<code>NamespaceService.ListNamespaces</code> are the engine surface. An adapter binds against these and needs
+nothing else to browse, resolve and describe.</p>
+<p><code>CatalogService.GetCatalog</code>, catalog mutations, <code>NamespaceService.GetNamespace</code>, namespace
+mutations, <code>TableService</code>, <code>ViewService</code>, <code>DirectoryService</code>, <code>SnapshotService</code>,
+<code>TableStatisticsService</code>, <code>TableIndexService</code> and <code>TableConstraintsService</code> are the management
+surface. They carry
+per-resource fields an engine does not bind against — creation timestamps, descriptions, catalog
+and namespace ids, write specs — and the CLI and control plane use them. <code>Relation</code> does not carry
+those fields, which is why the two surfaces stay separate rather than one folding into the other.
+In particular, <code>TableService.ListTables/GetTable</code> and <code>ViewService.ListViews/GetView</code> remain
+management APIs for callers that need the typed resource records; engine adapters use
+<code>RelationService.ListRelations/GetRelation</code> instead. The CLI's typed view listing is deliberate
+because it prints management metadata such as <code>created_at</code>.</p>
+<p><code>SnapshotService.GetSnapshotSchema</code> answers the schema of one table as of one snapshot. Generic
+relation callers use <code>RelationService.GetRelation(include_schema=true)</code> for the current schema, and
+query planners use <code>QuerySchemaService.DescribeInputs</code> or <code>UserObjectsService.GetUserObjects</code> when
+pinned snapshot behavior is required.</p>
+<h2 id="adapter-recipe">Adapter Recipe<a class="headerlink" href="#adapter-recipe" title="Permanent link">&para;</a></h2>
+<p>For catalog browsing and name binding, an engine adapter can use this sequence:</p>
+<ol>
+<li>Call <code>CatalogService.ListCatalogs</code>.</li>
+<li>Call <code>NamespaceService.ListNamespaces</code> for the selected catalog or namespace. Walk pages until
+   the opaque token is empty; set <code>recursive</code> when the engine wants the whole namespace tree.</li>
+<li>Call <code>RelationService.ListRelations</code> for a namespace or catalog. Leave <code>include_schema</code>,
+   <code>include_status</code>, and <code>include_total</code> off unless the engine needs those costs. Consume
+   <code>ListRelationsResponse.results</code> in order; each entry is either a relation or a row-level error.</li>
+<li>Call <code>RelationService.ResolveRelations</code> when binding ordered name candidates from a search path,
+   or <code>RelationService.GetRelation</code> when the resource id is already known.</li>
+<li>Start the query lifecycle and use <code>QuerySchemaService.DescribeInputs</code> or
+   <code>UserObjectsService.GetUserObjects</code> only when planning requires pinned snapshot state.</li>
+</ol>
+<p><code>ResolveRelations</code> and <code>GetUserObjects</code> intentionally accept different candidate shapes. The former
+is a catalog bind: send one <code>RelationReference</code> per logical input and put ordered <code>NameRef</code>
+candidates in its <code>candidates</code> field. The latter is a query bind: send one <code>QueryInput</code> per logical
+input to <code>GetUserObjectsRequest.tables</code>; its candidates can carry ids, names, and snapshot
+overrides, and successful inputs become pinned. The <code>tables</code> field is historical naming for relation
+inputs, not a requirement that the engine support tables only. In short: use <code>NameRef</code> candidates
+for unpinned name resolution, and <code>QueryInput</code> candidates when requesting the pinned planner bundle.</p>
+<h2 id="relation-rpcs">Relation RPCs<a class="headerlink" href="#relation-rpcs" title="Permanent link">&para;</a></h2>
+<p><code>ListRelationsRequest</code>
+- <code>namespace_id</code> or <code>catalog_id</code>: the scope, exactly as on <code>ListNamespacesRequest</code>. A catalog scope
+  starts at its top-level namespaces.
+- <code>recursive</code>: also lists namespaces below the scope. Nested namespaces are otherwise invisible to
+  a listing, so an adapter walking a hierarchy sets this.
+- <code>kinds</code>: filter over <code>RK_TABLE</code> and <code>RK_VIEW</code>; empty means both. Any other kind is rejected with
+  <code>INVALID_ARGUMENT</code>.
+- <code>include_schema</code>: hydrates current relation metadata, including <code>Relation.schema</code>, properties and
+  kind-specific details. When false, the relation is identity-only: details and properties are
+  absent, and <code>resource_id.kind</code> is the table/view discriminator.
+- <code>include_status</code>: populates <code>Relation.status</code>, at the cost of one current-snapshot read per
+  relation.
+- <code>include_total</code>: populates <code>page.total_size</code>, at the cost of one count per namespace in scope on
+  the first page. The three <code>include_*</code> flags are the things that cost; none is on by default.
+- <code>page</code>: ordinary <code>PageRequest</code>. Namespaces page in qualified-path order, tables before views
+  within each. The token is opaque and bound to the account, scope, recursive flag, kind filter,
+  response flags, and listing semantics that minted it; replaying it under a different request
+  scope is rejected. It keysets on the namespace path, so a namespace removed between pages does
+  not void it, and carries the total so only the first page counts.</p>
+<p><code>ListRelationsResponse</code>
+- <code>results</code> is the canonical ordered page. It contains one entry for every discovered relation, in
+  source order; each entry is either a hydrated relation or a row-level error. Errors identify the
+  relation and carry the structured <code>Error</code>, so clients cannot silently turn a partial page into a
+  complete catalog.
+- Errors consume page space, so a client must advance the opaque page token even when a page has no
+  successful relations.
+- Request, authorization, cancellation and backend failures still fail the whole RPC;
+  <code>RelationListResult.error</code> is only for failures isolated to one relation.
+- An adapter that cannot represent partial catalog results must fail its own listing when it sees a
+  row error. An adapter with a warning-capable UX, such as the CLI, may continue only after showing
+  the affected names and preserving the continuation token.</p>
+<p><code>ResolveRelationsRequest</code>
+- <code>references</code>: one entry per logical reference, each carrying the names to try in order — the same
+  shape <code>query.TableReferenceCandidate</code> uses for planning. A caller expands its search path into
+  candidates instead of sending the cross product of names and namespaces and re-applying
+  precedence to the results, so the batch stays one entry per SQL table reference.
+- Matching folds case, so candidates never need case variants.
+- The total candidate count is bounded by <code>floecat.relation.resolve.max-names</code>. This is a bind-time
+  batch, not an enumeration path; use <code>ListRelations</code> to walk a catalog.
+- <code>include_schema</code>: uses the same hydration semantics as <code>ListRelations</code>; without it, details and
+  properties are absent and callers classify the relation from <code>resource_id.kind</code>.
+- <code>include_status</code>: populates <code>Relation.status</code>.</p>
+<p><code>ResolveRelationsResponse</code>
+- One <code>ResolveRelationResult</code> per reference, in request order.
+- <code>resolved_name</code> is the candidate that won; the first candidate that resolves wins.
+- A reference where no candidate resolves carries an <code>Error</code> in its result rather than failing the
+  RPC, and so does a candidate that resolves but cannot be read for a reason that belongs to that
+  relation. The <code>Error</code> is the one the failure carries, with its code, message key and params.
+- <code>MC_NOT_FOUND</code> is the only result error that means absence. Adapters may return their native
+  "not found" value for it. <code>MC_PERMISSION_DENIED</code>, <code>MC_INVALID_ARGUMENT</code>, <code>MC_INTERNAL</code> and all
+  other codes mean the relation was unreadable or the response was invalid; adapters must surface
+  or propagate them instead of treating the relation as missing. Core clients can use the shared
+  <code>RelationResults.requireResolved</code> helper so this distinction is the default behavior.
+- A failure that belongs to the request rather than a relation, such as an unavailable backend,
+  fails the whole call. A broken backend is not reported as every relation being missing.</p>
+<p><code>GetRelationRequest</code>
+- <code>relation_id</code>: <code>RK_TABLE</code> or <code>RK_VIEW</code>.
+- <code>include_schema</code>, <code>include_status</code>: as above. An identity-only response never sets the details
+  oneof, so an empty <code>table</code> or <code>view</code> payload is not used to mean "not loaded".</p>
+<p><code>Relation</code>
+- Common fields: <code>resource_id</code>, <code>name</code>, <code>display_name</code>, <code>origin</code>, <code>schema</code>, <code>status</code>, <code>properties</code>.
+- The kind is always <code>resource_id.kind</code>; the <code>details</code> oneof carries the kind-specific payload only
+  when hydration was requested.
+- <code>origin</code> is <code>query.Origin</code>, the same builtin-vs-user distinction SQL objects use. Listings merge
+  both kinds, so a client that treats them differently reads this rather than the name.
+- <code>name</code> is the fully qualified <code>NameRef</code>; <code>display_name</code> is the leaf.
+- <code>table</code> details carry <code>UpstreamRef</code> (format and partition keys live on it) and <code>schema_json</code>.
+- <code>view</code> details carry <code>ViewSqlDefinition</code>, base relation names and the creation search path.</p>
+<p><code>GetUserObjects</code> returns canonical recursive <code>types.LogicalType</code> values in <code>ColumnInfo</code>. The SQL
+object registry keeps <code>NameRef</code> type symbols for engine-defined functions, operators, and builtin
+types because those names may not have a Floecat logical-type equivalent.</p>
+<p><code>RelationStatus.queryability</code>
+- <code>Q_QUERYABLE</code> for system relations and for views, which have no relation-local snapshot of their
+  own. This does not assert that every base relation of a view is currently pinnable; the query
+  path evaluates dependency readiness.
+- For a user table, <code>Q_QUERYABLE</code> with <code>current_snapshot_id</code> once it has a committed current
+  snapshot, otherwise <code>Q_NOT_QUERYABLE_NO_SNAPSHOT</code>. That pointer read reports the committed
+  selection and does not pin.
+- <code>Q_UNSPECIFIED</code> means the request did not ask; <code>Q_UNKNOWN</code> means it asked and <code>reason</code> says why
+  the answer is undecidable.</p>
+<h2 id="code-hooks">Code Hooks<a class="headerlink" href="#code-hooks" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Protos: <code>core/proto/src/main/proto/floecat/catalog/relation.proto</code> and
+  <code>core/proto/src/main/proto/floecat/query/sql_catalog.proto</code>. The whole surface is mapped by
+  audience in <code>core/proto/README.md</code>.</li>
+<li><code>CatalogGraphView.resolveNames(...)</code> is the graph-level hook behind relation resolution.</li>
+<li><code>CatalogSurfaceRelations</code> drives <code>CatalogSurfaceRelationPager</code> over the same table and view page
+  sources the typed listings use, so both return the same rows under the same account scoping.</li>
+<li>Recursive and catalog-wide relation listing currently obtains the namespace references eagerly
+  from the graph view before walking relation pages. This is an internal scalability trade-off,
+  not a client contract requirement; a paged namespace-reference SPI can be introduced later
+  without changing the RPC.</li>
+<li><code>RelationServiceImpl</code> is the gRPC entrypoint for generic relation reads.</li>
+<li><code>SqlCatalogServiceImpl</code> is the gRPC entrypoint for SQL object registry reads.</li>
+<li>Engine clients should use the shared <code>RelationResults</code> helper. Its <code>results</code> view preserves wire
+  order; <code>relations()</code> and <code>errors()</code> are convenience projections. Use the strict completion check
+  when the host API cannot return warnings or partial-list status.</li>
+</ul>
+<h2 id="pinned-behavior">Pinned Behavior<a class="headerlink" href="#pinned-behavior" title="Permanent link">&para;</a></h2>
+<p>Listing and relation resolution do not pin snapshots and do not require a queryable snapshot. They
+answer catalog topology questions.</p>
+<p>Pinning is query-context specific:
+- <code>QuerySchemaService.DescribeInputs</code> resolves schemas under the active query context.
+- <code>UserObjectsService.GetUserObjects</code> streams planner bundles with relation, schema, stats, and
+  constraint data.
+- <code>CatalogGraphView.tablePinFor(...)</code> is the lower-level graph hook for table pins.</p>
+<p><code>GetUserObjects</code> keeps query-level failures as stream failures: an unknown or inactive query,
+authorization failure, cancellation, malformed request, or unavailable backend cannot produce a
+usable planning result. A relation-scoped pin, schema, or decoration failure is emitted as that
+input's <code>RelationResolution.ERROR</code>; other inputs in the same bundle continue and successful pins
+are committed together. This is the planning equivalent of <code>ResolveRelations</code>' per-reference
+errors, while preserving the snapshot pin as the unit of consistency for every successful input.</p>
+<p>The separation keeps generic catalog browsing cheap and confines the snapshot contract to the
+planner path.</p>
+<h2 id="legacy-pin-projections">Legacy Pin Projections<a class="headerlink" href="#legacy-pin-projections" title="Permanent link">&para;</a></h2>
+<p><code>query.pinning.RelationPinSet</code> and <code>TablePin</code> are the canonical server-side query pin model.
+<code>query.lifecycle.SnapshotPin</code> and <code>SnapshotSet</code> remain narrow wire projections for the legacy query
+descriptor and lifecycle payloads. They are populated from canonical pins and do not define the
+generic engine read contract; obligations, schema resolution, statistics lookup, and reconciliation
+use canonical pins directly.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      <script id="__config" type="application/json">{"base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "navigation.tracking", "search.suggest", "search.highlight", "content.code.copy", "content.action.edit"], "search": "../assets/javascripts/workers/search.d50fe291.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.13a4f30d.min.js"></script>
+      
+        <script src="../assets/javascripts/docs-navigation.js"></script>
+      
+    
+  </body>
+</html>
