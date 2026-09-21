@@ -922,6 +922,7 @@ public class Shell implements Runnable {
     namespaces = namespaces.withInterceptors(authInterceptor);
     tables = tables.withInterceptors(authInterceptor);
     directory = directory.withInterceptors(authInterceptor);
+    relations = relations.withInterceptors(authInterceptor);
     statistics = statistics.withInterceptors(authInterceptor);
     indexes = indexes.withInterceptors(authInterceptor);
     constraintsService = constraintsService.withInterceptors(authInterceptor);
