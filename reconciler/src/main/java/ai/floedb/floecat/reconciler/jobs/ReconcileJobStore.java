@@ -411,34 +411,9 @@ public interface ReconcileJobStore {
     return childJobsPage(accountId, parentJobId, Integer.MAX_VALUE, "").jobs;
   }
 
-  default List<ReconcileJob> jobTree(String accountId, String rootJobId) {
-    if (rootJobId == null || rootJobId.isBlank()) {
-      return List.of();
-    }
-    ReconcileJob root = get(accountId, rootJobId).orElse(null);
-    if (root == null) {
-      return List.of();
-    }
-    List<ReconcileJob> out = new java.util.ArrayList<>();
-    java.util.ArrayDeque<String> pendingParents = new java.util.ArrayDeque<>();
-    out.add(root);
-    pendingParents.add(rootJobId);
-    while (!pendingParents.isEmpty()) {
-      String parentJobId = pendingParents.removeFirst();
-      String nextToken = "";
-      do {
-        ReconcileJobPage page = childJobsPage(accountId, parentJobId, 200, nextToken);
-        if (page == null || page.jobs == null || page.jobs.isEmpty()) {
-          break;
-        }
-        for (ReconcileJob child : page.jobs) {
-          out.add(child);
-          pendingParents.addLast(child.jobId);
-        }
-        nextToken = page.nextPageToken;
-      } while (nextToken != null && !nextToken.isBlank());
-    }
-    return out;
+  default ReconcileJobPage childTreeJobsPage(
+      String accountId, String parentJobId, int pageSize, String pageToken) {
+    return childJobsPage(accountId, parentJobId, pageSize, pageToken);
   }
 
   QueueStats queueStats();

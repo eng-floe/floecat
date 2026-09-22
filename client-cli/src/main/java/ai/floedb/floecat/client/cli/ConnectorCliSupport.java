@@ -60,7 +60,6 @@ import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
-import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsResponse;
 import ai.floedb.floecat.reconciler.rpc.JobState;
@@ -80,6 +79,7 @@ import com.google.protobuf.Timestamp;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -715,13 +715,20 @@ final class ConnectorCliSupport {
                 getCurrentAccountId,
                 out);
           } else {
-            var jobs = getReconcileJobTree(childJobId, reconcileControl);
-            if (jobs.isEmpty()) {
+            var jobs = streamReconcileJobTree(childJobId, reconcileControl);
+            if (!jobs.hasNext()) {
               out.println("no reconcile jobs");
               return;
             }
-            CliUtils.printJson(
-                GetReconcileJobTreeResponse.newBuilder().addAllJobs(jobs).build(), out);
+            try {
+              JsonArrayWriter writer = new JsonArrayWriter("jobs", out);
+              while (jobs.hasNext()) {
+                writer.write(jobs.next());
+              }
+              writer.finish();
+            } catch (InvalidProtocolBufferException e) {
+              throw new IllegalArgumentException("failed to render protobuf as json", e);
+            }
           }
         } else {
           if (childJobId.isBlank()) {
@@ -734,7 +741,8 @@ final class ConnectorCliSupport {
                 getCurrentAccountId,
                 out);
           } else {
-            var jobs = getReconcileJobTree(childJobId, reconcileControl);
+            var jobs =
+                collectReconcileJobTree(streamReconcileJobTree(childJobId, reconcileControl));
             if (jobs.isEmpty()) {
               out.println("no reconcile jobs");
               return;
@@ -1005,11 +1013,17 @@ final class ConnectorCliSupport {
     }
   }
 
-  private static List<GetReconcileJobResponse> getReconcileJobTree(
+  private static Iterator<GetReconcileJobResponse> streamReconcileJobTree(
       String rootJobId, ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl) {
-    return reconcileControl
-        .getReconcileJobTree(GetReconcileJobTreeRequest.newBuilder().setJobId(rootJobId).build())
-        .getJobsList();
+    return reconcileControl.getReconcileJobTree(
+        GetReconcileJobTreeRequest.newBuilder().setJobId(rootJobId).build());
+  }
+
+  private static List<GetReconcileJobResponse> collectReconcileJobTree(
+      Iterator<GetReconcileJobResponse> streamedJobs) {
+    List<GetReconcileJobResponse> jobs = new ArrayList<>();
+    streamedJobs.forEachRemaining(jobs::add);
+    return jobs;
   }
 
   private static ResourceId rid(
@@ -1463,12 +1477,16 @@ final class ConnectorCliSupport {
 
     void write(List<? extends MessageOrBuilder> jobs) throws InvalidProtocolBufferException {
       for (MessageOrBuilder job : jobs) {
-        if (!first) {
-          out.print(",");
-        }
-        out.print(CliUtils.jsonPrinter().print(job));
-        first = false;
+        write(job);
       }
+    }
+
+    void write(MessageOrBuilder job) throws InvalidProtocolBufferException {
+      if (!first) {
+        out.print(",");
+      }
+      out.print(CliUtils.jsonPrinter().print(job));
+      first = false;
     }
 
     void finish() {

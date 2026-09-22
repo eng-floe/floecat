@@ -743,43 +743,39 @@ class ConnectorCliSupportTest {
   void connectorJobsChildPrintsRecursiveTree() throws Exception {
     try (Harness h = new Harness()) {
       h.reconcileControlService.getJobTreeResponse =
-          ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeResponse.newBuilder()
-              .addJobs(
-                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
-                      .setJobId("job-plan-1")
-                      .setConnectorId(CONNECTOR_UUID)
-                      .setKind(ReconcileJobKind.RJK_PLAN_CONNECTOR)
-                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING)
-                      .build())
-              .addJobs(
-                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
-                      .setJobId("job-table-1")
-                      .setConnectorId(CONNECTOR_UUID)
-                      .setKind(ReconcileJobKind.RJK_PLAN_TABLE)
-                      .setParentJobId("job-plan-1")
-                      .setExecutorId("remote-executor-a")
-                      .setTablesScanned(1)
-                      .setTablesChanged(1)
-                      .setTableTask(
-                          ReconcileTableTask.newBuilder()
-                              .setSourceNamespace("sales")
-                              .setSourceTable("orders")
-                              .setDestinationTableDisplayName("orders_curated")
-                              .build())
-                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_QUEUED)
-                      .build())
-              .addJobs(
-                  ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
-                      .setJobId("job-snapshot-1")
-                      .setConnectorId(CONNECTOR_UUID)
-                      .setKind(ReconcileJobKind.RJK_PLAN_SNAPSHOT)
-                      .setParentJobId("job-table-1")
-                      .setExecutorId("remote-snapshot-worker")
-                      .setSnapshotsProcessed(2)
-                      .setStatsProcessed(65)
-                      .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_SUCCEEDED)
-                      .build())
-              .build();
+          List.of(
+              ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                  .setJobId("job-plan-1")
+                  .setConnectorId(CONNECTOR_UUID)
+                  .setKind(ReconcileJobKind.RJK_PLAN_CONNECTOR)
+                  .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_RUNNING)
+                  .build(),
+              ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                  .setJobId("job-table-1")
+                  .setConnectorId(CONNECTOR_UUID)
+                  .setKind(ReconcileJobKind.RJK_PLAN_TABLE)
+                  .setParentJobId("job-plan-1")
+                  .setExecutorId("remote-executor-a")
+                  .setTablesScanned(1)
+                  .setTablesChanged(1)
+                  .setTableTask(
+                      ReconcileTableTask.newBuilder()
+                          .setSourceNamespace("sales")
+                          .setSourceTable("orders")
+                          .setDestinationTableDisplayName("orders_curated")
+                          .build())
+                  .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_QUEUED)
+                  .build(),
+              ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.newBuilder()
+                  .setJobId("job-snapshot-1")
+                  .setConnectorId(CONNECTOR_UUID)
+                  .setKind(ReconcileJobKind.RJK_PLAN_SNAPSHOT)
+                  .setParentJobId("job-table-1")
+                  .setExecutorId("remote-snapshot-worker")
+                  .setSnapshotsProcessed(2)
+                  .setStatsProcessed(65)
+                  .setState(ai.floedb.floecat.reconciler.rpc.JobState.JS_SUCCEEDED)
+                  .build());
 
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
       ConnectorCliSupport.handle(
@@ -1321,8 +1317,7 @@ class ConnectorCliSupportTest {
     CancelReconcileJobRequest lastCancelRequest;
     ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse getJobResponse =
         ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse.getDefaultInstance();
-    ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeResponse getJobTreeResponse =
-        ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeResponse.getDefaultInstance();
+    List<ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse> getJobTreeResponse = List.of();
     ListReconcileJobsResponse listJobsResponse = ListReconcileJobsResponse.getDefaultInstance();
     List<ListReconcileJobsResponse> listJobsPages = List.of();
     ListReconcileJobsRequest lastListJobsRequest;
@@ -1348,10 +1343,9 @@ class ConnectorCliSupportTest {
     @Override
     public void getReconcileJobTree(
         ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest request,
-        StreamObserver<ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeResponse>
-            responseObserver) {
+        StreamObserver<ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse> responseObserver) {
       getReconcileJobTreeCalls.incrementAndGet();
-      responseObserver.onNext(getJobTreeResponse);
+      getJobTreeResponse.forEach(responseObserver::onNext);
       responseObserver.onCompleted();
     }
 

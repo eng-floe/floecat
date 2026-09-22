@@ -24,6 +24,10 @@ public enum ReconcileJobKind {
   FINALIZE_SNAPSHOT_CAPTURE,
   EXEC_FILE_GROUP;
 
+  public boolean isParentCapable() {
+    return this == PLAN_CONNECTOR || this == PLAN_TABLE || this == PLAN_SNAPSHOT;
+  }
+
   public static ReconcileJobKind fromString(String value) {
     if (value == null || value.isBlank()) {
       return PLAN_CONNECTOR;
