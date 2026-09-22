@@ -357,7 +357,8 @@ class IcebergConnectorIssuesTest {
             "iceberg",
             "format_upgrade_smoke",
             ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.full(true));
+            FloecatConnector.SnapshotEnumerationOptions.full(true))
+        .toList();
 
     assertEquals(1, snapshots.size());
     assertEquals(0, snapshots.get(0).schemaId());
@@ -453,7 +454,8 @@ class IcebergConnectorIssuesTest {
                           .setId("test-table")
                           .setKind(ResourceKind.RK_TABLE)
                           .build(),
-                      FloecatConnector.SnapshotEnumerationOptions.full(true)));
+                      FloecatConnector.SnapshotEnumerationOptions.full(true))
+                  .toList());
 
       assertNotNull(snapshots);
       assertFalse(snapshots.isEmpty(), "expected snapshots from tpcds_sfone fixture");
@@ -511,7 +513,8 @@ class IcebergConnectorIssuesTest {
                           .setId("test-table")
                           .setKind(ResourceKind.RK_TABLE)
                           .build(),
-                      FloecatConnector.SnapshotEnumerationOptions.full(true)));
+                      FloecatConnector.SnapshotEnumerationOptions.full(true))
+                  .toList());
 
       assertNotNull(snapshots);
       assertFalse(snapshots.isEmpty(), "expected snapshots from base table location");
@@ -550,7 +553,6 @@ class IcebergConnectorIssuesTest {
                   "trino_test",
                   tableId,
                   FloecatConnector.SnapshotEnumerationOptions.full(true))
-              .stream()
               .max(
                   java.util.Comparator.comparingLong(
                       FloecatConnector.SnapshotBundle::sequenceNumber))

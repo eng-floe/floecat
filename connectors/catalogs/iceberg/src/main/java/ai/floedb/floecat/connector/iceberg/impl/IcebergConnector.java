@@ -63,6 +63,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Stream;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
@@ -266,7 +267,7 @@ public abstract class IcebergConnector implements FloecatConnector {
   }
 
   @Override
-  public List<SnapshotBundle> enumerateSnapshots(
+  public Stream<SnapshotBundle> enumerateSnapshots(
       String namespaceFq,
       String tableName,
       ResourceId destinationTableId,
@@ -290,8 +291,11 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
     String currentMetadataLocation = currentMetadataLocation(table);
 
-    List<SnapshotBundle> out = new ArrayList<>();
-    for (Snapshot snapshot : snapshots) {
+    return snapshots.stream().map(snapshot -> snapshotBundle(table, currentMetadataLocation, snapshot));
+  }
+
+  private SnapshotBundle snapshotBundle(
+      Table table, String currentMetadataLocation, Snapshot snapshot) {
       long snapshotId = snapshot.snapshotId();
       long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : -1L;
       long createdMs = snapshot.timestampMillis();
@@ -318,20 +322,17 @@ public abstract class IcebergConnector implements FloecatConnector {
           && table.currentSnapshot().snapshotId() == snapshotId) {
         metadataLocation = currentMetadataLocation;
       }
-      out.add(
-          new SnapshotBundle(
-              snapshotId,
-              parentId,
-              createdMs,
-              schemaJson,
-              toPartitionSpecInfo(table, snapshot),
-              sequenceNumber,
-              manifestList,
-              summary,
-              schemaId,
-              metadataLocation));
-    }
-    return out;
+      return new SnapshotBundle(
+          snapshotId,
+          parentId,
+          createdMs,
+          schemaJson,
+          toPartitionSpecInfo(table, snapshot),
+          sequenceNumber,
+          manifestList,
+          summary,
+          schemaId,
+          metadataLocation);
   }
 
   @Override

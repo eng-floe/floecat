@@ -20,6 +20,10 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import java.util.List;
 
 interface RemotePlannerWorkerClient {
+  default int planTableChunkMaxCount() {
+    return 8;
+  }
+
   record PlanViewSubmitResult(boolean accepted, long viewsChanged) {}
 
   StandalonePlanConnectorPayload getPlanConnectorInput(RemoteLeasedJob lease);
@@ -36,9 +40,15 @@ interface RemotePlannerWorkerClient {
 
   StandalonePlanTablePayload getPlanTableInput(RemoteLeasedJob lease);
 
+  boolean submitPlanTableChunk(
+      RemoteLeasedJob lease,
+      int chunkIndex,
+      List<PlannedSnapshotJob> snapshotJobs,
+      int chunkCount);
+
   boolean submitPlanTableSuccess(
       RemoteLeasedJob lease,
-      List<PlannedSnapshotJob> snapshotJobs,
+      int chunkCount,
       long tablesScanned,
       long tablesChanged,
       long errors,

@@ -138,7 +138,7 @@ public final class DummyConnector implements FloecatConnector {
   }
 
   @Override
-  public List<SnapshotBundle> enumerateSnapshots(
+  public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
       String namespace,
       String table,
       ResourceId destinationTableId,
@@ -146,7 +146,7 @@ public final class DummyConnector implements FloecatConnector {
     long snapshotId = 42L;
     long createdAt = 1_700_000_000_000L;
     String schemaJson = describe(namespace, table).schemaJson();
-    return List.of(
+    return java.util.stream.Stream.of(
         new SnapshotBundle(
             snapshotId, 0L, createdAt, schemaJson, null, 0L, null, Map.of(), 0, null));
   }

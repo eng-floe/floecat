@@ -65,12 +65,12 @@ class FloecatConnectorDefaultChainTest {
     }
 
     @Override
-    public List<SnapshotBundle> enumerateSnapshots(
+    public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
         String namespaceFq,
         String tableName,
         ResourceId destinationTableId,
         SnapshotEnumerationOptions options) {
-      return List.of();
+      return java.util.stream.Stream.of();
     }
 
     @Override

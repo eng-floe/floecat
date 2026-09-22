@@ -32,6 +32,7 @@ import io.delta.kernel.Snapshot.ChecksumWriteMode;
 import io.delta.kernel.Table;
 import io.delta.kernel.TransactionBuilder;
 import io.delta.kernel.data.ColumnVector;
+import io.delta.kernel.defaults.engine.DefaultEngine;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.exceptions.CheckpointAlreadyExistsException;
 import io.delta.kernel.exceptions.KernelException;
@@ -46,6 +47,9 @@ import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.utils.FileStatus;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -53,8 +57,11 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class DeltaConnectorTest {
+  @TempDir Path tempDir;
+
   private static final String TEST_SCHEMA_JSON =
       """
       {
@@ -144,7 +151,7 @@ class DeltaConnectorTest {
             "ns",
             "tbl",
             ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(3L, 5L)));
+            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(3L, 5L))).toList();
 
     List<Long> snapshotIds =
         bundles.stream()
@@ -166,7 +173,7 @@ class DeltaConnectorTest {
             "ns",
             "tbl",
             ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(0L, 1L)));
+            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(0L, 1L))).toList();
 
     assertEquals(
         List.of(0L, 1L),
@@ -253,7 +260,7 @@ class DeltaConnectorTest {
             "ns",
             "tbl",
             ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(1L, 4L)));
+            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(1L, 4L))).toList();
 
     List<Long> snapshotIds =
         bundles.stream()
@@ -266,6 +273,71 @@ class DeltaConnectorTest {
             .map(FloecatConnector.SnapshotBundle::upstreamCreatedAtMs)
             .collect(Collectors.toList());
     assertEquals(List.of(0L, 2000L, 3000L, 5000L), timestamps);
+  }
+
+  @Test
+  void enumerateAllSnapshotsWalksRealDeltaCommitsInVersionOrder() throws Exception {
+    Path tablePath = tempDir.resolve("bucket/delta-table");
+    Path logPath = Files.createDirectories(tablePath.resolve("_delta_log"));
+    String schemaV1 =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\","
+            + "\"nullable\":false,\"metadata\":{}}]}";
+    String schemaV2 =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\","
+            + "\"nullable\":false,\"metadata\":{}},{\"name\":\"name\",\"type\":\"string\","
+            + "\"nullable\":true,\"metadata\":{}}]}";
+    writeDeltaCommit(
+        logPath,
+        0,
+        "{\"protocol\":{\"minReaderVersion\":1,\"minWriterVersion\":2}}",
+        metadataAction(schemaV1));
+    writeDeltaCommit(logPath, 1, metadataAction(schemaV2));
+    writeDeltaCommit(logPath, 2, "{\"commitInfo\":{\"timestamp\":3000,\"operation\":\"WRITE\"}}");
+
+    Engine engine = DefaultEngine.create(new LocalFileSystemClient(tempDir));
+    String location = "s3://bucket/delta-table";
+    TestDeltaConnector connector =
+        new TestDeltaConnector(Table.forPath(engine, location), engine, location);
+
+    List<FloecatConnector.SnapshotBundle> bundles;
+    try (var snapshots =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.full(true))) {
+      bundles = snapshots.toList();
+    }
+
+    assertEquals(List.of(0L, 1L, 2L), bundles.stream().map(b -> b.snapshotId()).toList());
+    assertEquals(List.of(-1L, 0L, 1L), bundles.stream().map(b -> b.parentId()).toList());
+    assertTrue(bundles.get(0).schemaJson().contains("\"name\": \"id\""));
+    assertEquals(schemaV2, bundles.get(1).schemaJson());
+    assertEquals(schemaV2, bundles.get(2).schemaJson());
+
+    try (var snapshots =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(0L, 1L)))) {
+      assertEquals(List.of(2L), snapshots.map(b -> b.snapshotId()).toList());
+    }
+  }
+
+  private static void writeDeltaCommit(Path logPath, long version, String... actions)
+      throws IOException {
+    Files.writeString(
+        logPath.resolve("%020d.json".formatted(version)),
+        String.join("\n", actions) + "\n",
+        StandardCharsets.UTF_8);
+  }
+
+  private static String metadataAction(String schemaJson) {
+    return "{\"metaData\":{\"id\":\"test-table\",\"format\":{\"provider\":\"parquet\","
+        + "\"options\":{}},\"schemaString\":\""
+        + schemaJson.replace("\\", "\\\\").replace("\"", "\\\"")
+        + "\",\"partitionColumns\":[],\"configuration\":{},\"createdTime\":1000}}";
   }
 
   @Test
@@ -290,7 +362,7 @@ class DeltaConnectorTest {
             "ns",
             "tbl",
             ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of()));
+            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of())).toList();
 
     List<Long> snapshotIds =
         bundles.stream()
@@ -313,7 +385,7 @@ class DeltaConnectorTest {
                 "ns",
                 "tbl",
                 ResourceId.getDefaultInstance(),
-                FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(2L))));
+                FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(2L))).toList());
   }
 
   @Test
@@ -787,9 +859,17 @@ class DeltaConnectorTest {
       this.table = table;
     }
 
+    TestDeltaConnector(Table table, Engine engine, String storageLocation) {
+      super("delta-test", engine, path -> null, false, 0.0d, 0L, null);
+      this.table = table;
+      this.storageLocation = storageLocation;
+    }
+
+    private String storageLocation = "ignored";
+
     @Override
     protected String storageLocation(String namespaceFq, String tableName) {
-      return "ignored";
+      return storageLocation;
     }
 
     @Override

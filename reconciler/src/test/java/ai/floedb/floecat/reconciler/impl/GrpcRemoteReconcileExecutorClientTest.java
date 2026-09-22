@@ -791,8 +791,11 @@ class GrpcRemoteReconcileExecutorClientTest {
               ReconcileScope.empty(), ReconcileSnapshotTask.of("table-1", i, "db", "events")));
     }
 
-    assertThat(client.submitPlanTableSuccess(remoteLease(), snapshotJobs, 1L, 1L, 0L, 9L, 0L))
+    assertThat(client.submitPlanTableChunk(remoteLease(), 0, snapshotJobs.subList(0, 8), 2))
         .isTrue();
+    assertThat(client.submitPlanTableChunk(remoteLease(), 1, snapshotJobs.subList(8, 9), 2))
+        .isTrue();
+    assertThat(client.submitPlanTableSuccess(remoteLease(), 2, 1L, 1L, 0L, 9L, 0L)).isTrue();
 
     ArgumentCaptor<SubmitLeasedPlanTableResultRequest> firstChunkCaptor =
         ArgumentCaptor.forClass(SubmitLeasedPlanTableResultRequest.class);

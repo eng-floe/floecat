@@ -19,6 +19,7 @@ package ai.floedb.floecat.reconciler.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -134,14 +135,34 @@ class RemoteDefaultReconcileExecutorTest {
             eq("job-metadata-capture"),
             eq("lease-job-metadata-capture"),
             any(),
+            any(),
             any()))
-        .thenReturn(
-            new QueuedReconcileWorkerSupport.TableExecutionResult(
-                ReconcileExecutor.ExecutionResult.success(1, 1, 0, 2, 0, "ok"),
-                List.of("table-1"),
-                List.of(1454930L, 1454933L)));
+        .thenAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              java.util.function.Consumer<QueuedReconcileWorkerSupport.SnapshotEmission> sink =
+                  invocation.getArgument(11);
+              ResourceId tableId =
+                  ResourceId.newBuilder()
+                      .setAccountId("acct-a")
+                      .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE)
+                      .setId("table-1")
+                      .build();
+              for (long snapshotId = 1454930L; snapshotId < 1454938L; snapshotId++) {
+                sink.accept(new QueuedReconcileWorkerSupport.SnapshotEmission(
+                    tableId, "ns", "table", snapshotBundle(snapshotId)));
+              }
+              verify(workerClient)
+                  .submitPlanTableChunk(eq(remoteLease), eq(0), any(), anyInt());
+              sink.accept(new QueuedReconcileWorkerSupport.SnapshotEmission(
+                  tableId, "ns", "table", snapshotBundle(1454938L)));
+              return new QueuedReconcileWorkerSupport.TableExecutionResult(
+                  ReconcileExecutor.ExecutionResult.success(1, 1, 0, 9, 0, "ok"),
+                  List.of("table-1"));
+            });
+    when(workerClient.submitPlanTableChunk(any(), anyInt(), any(), anyInt())).thenReturn(true);
     when(workerClient.submitPlanTableSuccess(
-            any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
+            any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
         .thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -152,18 +173,20 @@ class RemoteDefaultReconcileExecutorTest {
     assertTrue(result.ok());
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<PlannedSnapshotJob>> jobsCaptor = ArgumentCaptor.forClass(List.class);
-    verify(workerClient)
-        .submitPlanTableSuccess(
+    verify(workerClient, org.mockito.Mockito.times(2))
+        .submitPlanTableChunk(
             eq(remoteLease),
+            anyInt(),
             jobsCaptor.capture(),
-            anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong(),
-            anyLong());
+            anyInt());
     assertEquals(
-        List.of(1454930L, 1454933L),
-        jobsCaptor.getValue().stream().map(job -> job.snapshotTask().snapshotId()).toList());
+        java.util.stream.LongStream.rangeClosed(1454930L, 1454938L).boxed().toList(),
+        jobsCaptor.getAllValues().stream()
+            .flatMap(List::stream)
+            .map(job -> job.snapshotTask().snapshotId())
+            .toList());
+    verify(workerClient)
+        .submitPlanTableSuccess(eq(remoteLease), eq(2), anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
   }
 
   @Test
@@ -195,6 +218,7 @@ class RemoteDefaultReconcileExecutorTest {
             eq("job-1"),
             eq("lease-job-1"),
             any(),
+            any(),
             any()))
         .thenReturn(
             new QueuedReconcileWorkerSupport.TableExecutionResult(
@@ -211,13 +235,14 @@ class RemoteDefaultReconcileExecutorTest {
             eq("job-2"),
             eq("lease-job-2"),
             any(),
+            any(),
             any()))
         .thenReturn(
             new QueuedReconcileWorkerSupport.TableExecutionResult(
                 ReconcileExecutor.ExecutionResult.successHandled(1, 0, 0, 0, 0, 0, 0, "ok"),
                 List.of()));
     when(workerClient.submitPlanTableSuccess(
-            any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
+            any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
         .thenReturn(true);
 
     assertTrue(
@@ -245,6 +270,7 @@ class RemoteDefaultReconcileExecutorTest {
             eq("job-1"),
             eq("lease-job-1"),
             any(),
+            any(),
             any());
     verify(queuedWorkerSupport)
         .executePlannedTable(
@@ -257,6 +283,7 @@ class RemoteDefaultReconcileExecutorTest {
             eq("Bearer worker-token-acct-b"),
             eq("job-2"),
             eq("lease-job-2"),
+            any(),
             any(),
             any());
   }
@@ -284,12 +311,13 @@ class RemoteDefaultReconcileExecutorTest {
             eq("job-precondition"),
             eq("lease-job-precondition"),
             any(),
+            any(),
             any()))
         .thenReturn(
             new QueuedReconcileWorkerSupport.TableExecutionResult(
                 ReconcileExecutor.ExecutionResult.success(1, 0, 0, 0, 0, "ok"), List.of()));
     when(workerClient.submitPlanTableSuccess(
-            any(), any(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
+            any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
         .thenThrow(new RemoteLeasePreconditionFailedException("submitPlanTableSuccess", null));
     AtomicBoolean completionStarted = new AtomicBoolean(false);
 
@@ -416,5 +444,19 @@ class RemoteDefaultReconcileExecutorTest {
         .setKind(ResourceKind.RK_CONNECTOR)
         .setId("connector-1")
         .build();
+  }
+
+  private static FloecatConnector.SnapshotBundle snapshotBundle(long snapshotId) {
+    return new FloecatConnector.SnapshotBundle(
+        snapshotId,
+        snapshotId - 1L,
+        snapshotId,
+        "schema",
+        null,
+        0L,
+        null,
+        Map.of(),
+        0,
+        null);
   }
 }

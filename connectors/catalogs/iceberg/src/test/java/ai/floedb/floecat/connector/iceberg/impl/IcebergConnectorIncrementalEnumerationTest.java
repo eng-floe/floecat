@@ -172,7 +172,8 @@ class IcebergConnectorIncrementalEnumerationTest {
                 "iceberg",
                 "duckdb_mutation_smoke",
                 ResourceId.getDefaultInstance(),
-                FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of())));
+                FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of()))
+                .toList());
   }
 
   private static Snapshot snapshot(

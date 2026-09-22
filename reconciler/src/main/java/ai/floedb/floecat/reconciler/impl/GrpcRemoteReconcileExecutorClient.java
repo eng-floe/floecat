@@ -623,18 +623,14 @@ class GrpcRemoteReconcileExecutorClient
         fromProtoTableTask(input.getTableTask()));
   }
 
-  public boolean submitPlanTableSuccess(
+  public boolean submitPlanTableChunk(
       RemoteLeasedJob lease,
+      int chunkIndex,
       List<PlannedSnapshotJob> snapshotJobs,
-      long tablesScanned,
-      long tablesChanged,
-      long errors,
-      long snapshotsProcessed,
-      long statsProcessed) {
+      int chunkCount) {
     List<ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob> protoSnapshotJobs =
         new ArrayList<>();
-    for (PlannedSnapshotJob snapshotJob :
-        snapshotJobs == null ? List.<PlannedSnapshotJob>of() : snapshotJobs) {
+    for (PlannedSnapshotJob snapshotJob : snapshotJobs) {
       if (snapshotJob == null || snapshotJob.snapshotTask() == null) {
         continue;
       }
@@ -644,39 +640,43 @@ class GrpcRemoteReconcileExecutorClient
               .setSnapshotTask(toProtoSnapshotTask(snapshotJob.snapshotTask()))
               .build());
     }
-    List<List<ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob>> chunks =
-        chunksBySerializedSizeAndCount(
-            protoSnapshotJobs, PLAN_CHILD_JOB_CHUNK_TARGET_BYTES, planTableChildJobChunkMaxCount);
+    SubmitLeasedPlanTableResultRequest request =
+        SubmitLeasedPlanTableResultRequest.newBuilder()
+            .setJobId(lease.lease().jobId)
+            .setLeaseEpoch(lease.lease().leaseEpoch)
+            .setChunk(
+                SubmitLeasedPlanTableResultRequest.Chunk.newBuilder()
+                    .setChunkIndex(chunkIndex)
+                    .addAllSnapshotJobs(protoSnapshotJobs)
+                    .build())
+            .build();
     try {
-      for (int chunkIndex = 0; chunkIndex < chunks.size(); chunkIndex++) {
-        int submittedChunkIndex = chunkIndex;
-        List<ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob> chunk =
-            chunks.get(chunkIndex);
-        SubmitLeasedPlanTableResultRequest request =
-            SubmitLeasedPlanTableResultRequest.newBuilder()
-                .setJobId(lease.lease().jobId)
-                .setLeaseEpoch(lease.lease().leaseEpoch)
-                .setChunk(
-                    SubmitLeasedPlanTableResultRequest.Chunk.newBuilder()
-                        .setChunkIndex(submittedChunkIndex)
-                        .addAllSnapshotJobs(chunk)
-                        .build())
-                .build();
-        boolean accepted =
-            invokePlannerMutationOnce(
-                "submitLeasedPlanTableResult",
-                "PLAN_TABLE",
-                "chunk-" + (submittedChunkIndex + 1) + "-of-" + chunks.size(),
-                lease,
-                request,
-                stub -> stub.submitLeasedPlanTableResult(request).getAccepted());
-        if (!accepted) {
-          return false;
-        }
-      }
+      return invokePlannerMutationOnce(
+          "submitLeasedPlanTableResult",
+          "PLAN_TABLE",
+          "chunk-" + (chunkIndex + 1) + "-of-" + chunkCount,
+          lease,
+          request,
+          stub -> stub.submitLeasedPlanTableResult(request).getAccepted());
     } catch (RuntimeException error) {
       throw leasePreconditionOrOriginal("submitLeasedPlanTableResult", error);
     }
+  }
+
+  @Override
+  public int planTableChunkMaxCount() {
+    return planTableChildJobChunkMaxCount;
+  }
+
+  @Override
+  public boolean submitPlanTableSuccess(
+      RemoteLeasedJob lease,
+      int chunkCount,
+      long tablesScanned,
+      long tablesChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
     SubmitLeasedPlanTableResultRequest.Success.Builder success =
         SubmitLeasedPlanTableResultRequest.Success.newBuilder()
             .setTablesScanned(tablesScanned)
@@ -684,7 +684,7 @@ class GrpcRemoteReconcileExecutorClient
             .setErrors(errors)
             .setSnapshotsProcessed(snapshotsProcessed)
             .setStatsProcessed(statsProcessed)
-            .setChunkCount(chunks.size());
+            .setChunkCount(chunkCount);
     SubmitLeasedPlanTableResultRequest request =
         SubmitLeasedPlanTableResultRequest.newBuilder()
             .setJobId(lease.lease().jobId)

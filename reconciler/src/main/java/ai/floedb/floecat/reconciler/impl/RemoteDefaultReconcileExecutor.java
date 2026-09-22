@@ -131,6 +131,11 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             .setCorrelationId("reconciler-job-" + lease.jobId)
             .build();
 
+    int snapshotChunkMaxCount = Math.max(1, workerClient.planTableChunkMaxCount());
+    int[] submittedSnapshotChunks = {0};
+    long[] lastSnapshotId = {Long.MIN_VALUE};
+    List<PlannedSnapshotJob> pendingSnapshotJobs =
+        new java.util.ArrayList<>(snapshotChunkMaxCount);
     QueuedReconcileWorkerSupport.TableExecutionResult tableExecution =
         queuedWorkerSupport.executePlannedTable(
             principal,
@@ -143,7 +148,39 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             lease.jobId,
             lease.leaseEpoch,
             context.shouldStop(),
-            progressListener);
+            progressListener,
+            emission -> {
+              if (payload.captureMode() == ReconcilerService.CaptureMode.METADATA_ONLY) {
+                return;
+              }
+              FloecatConnector.SnapshotBundle bundle = emission.bundle();
+              if (bundle == null
+                  || bundle.snapshotId() < 0L
+                  || bundle.snapshotId() == lastSnapshotId[0]) {
+                return;
+              }
+              lastSnapshotId[0] = bundle.snapshotId();
+              ReconcileSnapshotTask snapshotTask =
+                  ReconcileSnapshotTask.of(
+                          emission.tableId().getId(),
+                          bundle.snapshotId(),
+                          emission.sourceNamespace(),
+                          emission.sourceTable())
+                      .withContentState(
+                          sourceRevision(bundle, bundle.snapshotId()),
+                          metadataFingerprint(bundle, bundle.snapshotId()),
+                          ReconcileSnapshotContentState.coverage(
+                              payload.captureMode(), payload.scope()));
+              pendingSnapshotJobs.add(new PlannedSnapshotJob(payload.scope(), snapshotTask));
+              if (pendingSnapshotJobs.size() == snapshotChunkMaxCount) {
+                int chunkIndex = submittedSnapshotChunks[0]++;
+                if (!workerClient.submitPlanTableChunk(
+                    remoteLease, chunkIndex, List.copyOf(pendingSnapshotJobs), 0)) {
+                  throw plannerSubmissionRejected();
+                }
+                pendingSnapshotJobs.clear();
+              }
+            });
     ExecutionResult result = tableExecution.result();
 
     if (result.cancelled) {
@@ -177,7 +214,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         accepted =
             workerClient.submitPlanTableSuccess(
                 remoteLease,
-                List.of(),
+                0,
                 result.tablesScanned,
                 result.tablesChanged,
                 result.errors,
@@ -200,69 +237,22 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           result.message);
     }
 
-    List<ReconcileSnapshotTask> snapshotTasks;
-    try {
-      snapshotTasks = snapshotTasksForSuccessfulPlan(payload, tableExecution);
-    } catch (Exception e) {
-      Exception classified =
-          e instanceof ReconcileFailureException failure
-              ? failure
-              : ReconcileFailureClassifier.normalize(e);
-      ExecutionResult.FailureKind failureKind = failureKindOf(classified);
-      ExecutionResult.RetryDisposition retryDisposition = retryDispositionOf(classified);
-      ExecutionResult.RetryClass retryClass = retryClassOf(classified);
-      ReconcileTableTask task =
-          payload.tableTask() == null ? ReconcileTableTask.empty() : payload.tableTask();
-      LOG.warnf(
-          classified,
-          "PLAN_TABLE snapshot planning failed jobId=%s connectorId=%s tableId=%s source=%s.%s"
-              + " captureMode=%s fullRescan=%s failureKind=%s retryDisposition=%s retryClass=%s"
-              + " message=%s rootCause=%s",
-          lease.jobId,
-          connectorId,
-          task.destinationTableId(),
-          task.sourceNamespace(),
-          task.sourceTable(),
-          payload.captureMode(),
-          payload.fullRescan(),
-          failureKind,
-          retryDisposition,
-          retryClass,
-          blankToEmpty(classified.getMessage()),
-          rootCauseMessage(classified));
-      try {
-        workerClient.submitPlanTableFailure(
-            remoteLease,
-            failureKind,
-            retryDisposition,
-            retryClass,
-            blankToEmpty(classified.getMessage()));
-      } catch (RemoteLeasePreconditionFailedException leaseRejected) {
-        return leaseNoLongerValid(context, lease, connectorId, result);
+    if (!pendingSnapshotJobs.isEmpty()) {
+      int chunkIndex = submittedSnapshotChunks[0]++;
+      if (!workerClient.submitPlanTableChunk(
+          remoteLease, chunkIndex, List.copyOf(pendingSnapshotJobs), 0)) {
+        throw plannerSubmissionRejected();
       }
-      return ExecutionResult.failure(
-          result.tablesScanned,
-          result.tablesChanged,
-          result.viewsScanned,
-          result.viewsChanged,
-          1,
-          result.snapshotsProcessed,
-          result.statsProcessed,
-          failureKind,
-          retryDisposition,
-          retryClass,
-          blankToEmpty(classified.getMessage()),
-          classified);
+      pendingSnapshotJobs.clear();
     }
-    List<PlannedSnapshotJob> snapshotJobs =
-        snapshotTasks.stream().map(task -> new PlannedSnapshotJob(payload.scope(), task)).toList();
+    int chunkCount = submittedSnapshotChunks[0];
     context.beforeHandledCompletion().run();
     boolean accepted;
     try {
       accepted =
           workerClient.submitPlanTableSuccess(
               remoteLease,
-              snapshotJobs,
+              chunkCount,
               result.tablesScanned,
               result.tablesChanged,
               result.errors,
@@ -382,44 +372,6 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         new IllegalStateException("planner result submission rejected"));
   }
 
-  private List<ReconcileSnapshotTask> snapshotTasksForSuccessfulPlan(
-      StandalonePlanTablePayload payload,
-      QueuedReconcileWorkerSupport.TableExecutionResult tableExecution) {
-    ReconcileTableTask task =
-        resolvedTableTaskForSnapshotPlanning(payload.tableTask(), tableExecution.matchedTableIds());
-    if (task.isEmpty()
-        || task.destinationTableId() == null
-        || task.destinationTableId().isBlank()) {
-      return List.of();
-    }
-    Map<Long, FloecatConnector.SnapshotBundle> bundles =
-        tableExecution.captureSnapshotBundles().stream()
-            .collect(
-                java.util.stream.Collectors.toMap(
-                    FloecatConnector.SnapshotBundle::snapshotId,
-                    bundle -> bundle,
-                    (left, right) -> right,
-                    java.util.LinkedHashMap::new));
-    return tableExecution.captureSnapshotIds().stream()
-        .filter(snapshotId -> snapshotId != null && snapshotId >= 0L)
-        .map(
-            snapshotId -> {
-              FloecatConnector.SnapshotBundle bundle = bundles.get(snapshotId);
-              String sourceRevision = sourceRevision(bundle, snapshotId);
-              String metadataFingerprint = metadataFingerprint(bundle, snapshotId);
-              List<String> coverage =
-                  ReconcileSnapshotContentState.coverage(payload.captureMode(), payload.scope());
-              return ReconcileSnapshotTask.of(
-                      task.destinationTableId(),
-                      snapshotId,
-                      task.sourceNamespace(),
-                      task.sourceTable())
-                  .withContentState(sourceRevision, metadataFingerprint, coverage);
-            })
-        .distinct()
-        .toList();
-  }
-
   static String sourceRevision(FloecatConnector.SnapshotBundle bundle, long snapshotId) {
     if (bundle == null) {
       return "";
@@ -455,74 +407,8 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
     return reconcileWorkerAuthProvider.authorizationHeader(accountId).orElse(null);
   }
 
-  private static String rootCauseMessage(Throwable error) {
-    Throwable root = rootCause(error);
-    if (root == null) {
-      return "";
-    }
-    String message = root.getMessage();
-    return message == null || message.isBlank() ? root.getClass().getSimpleName() : message;
-  }
-
-  private static Throwable rootCause(Throwable error) {
-    var seen = new java.util.HashSet<Throwable>();
-    Throwable cur = error;
-    Throwable last = null;
-    while (cur != null && !seen.contains(cur)) {
-      seen.add(cur);
-      last = cur;
-      cur = cur.getCause();
-    }
-    return last;
-  }
-
   private static String blankToEmpty(String value) {
     return value == null ? "" : value;
   }
 
-  private static ExecutionResult.FailureKind failureKindOf(Throwable error) {
-    return error instanceof ReconcileFailureException failure
-        ? failure.failureKind()
-        : ExecutionResult.FailureKind.INTERNAL;
-  }
-
-  private static ExecutionResult.RetryDisposition retryDispositionOf(Throwable error) {
-    return error instanceof ReconcileFailureException failure
-        ? failure.retryDisposition()
-        : ExecutionResult.RetryDisposition.RETRYABLE;
-  }
-
-  private static ExecutionResult.RetryClass retryClassOf(Throwable error) {
-    return error instanceof ReconcileFailureException failure
-        ? failure.retryClass()
-        : ExecutionResult.RetryClass.TRANSIENT_ERROR;
-  }
-
-  private static ReconcileTableTask resolvedTableTaskForSnapshotPlanning(
-      ReconcileTableTask original, List<String> matchedTableIds) {
-    ReconcileTableTask task = original == null ? ReconcileTableTask.empty() : original;
-    if (task.isEmpty()) {
-      return task;
-    }
-    if (task.destinationTableId() != null && !task.destinationTableId().isBlank()) {
-      return task;
-    }
-    if (matchedTableIds == null || matchedTableIds.isEmpty()) {
-      return task;
-    }
-    String resolvedTableId = matchedTableIds.getFirst();
-    return task.discoveryMode()
-        ? ReconcileTableTask.discovery(
-            task.sourceNamespace(),
-            task.sourceTable(),
-            task.destinationNamespaceId(),
-            resolvedTableId,
-            task.destinationTableDisplayName())
-        : ReconcileTableTask.of(
-            task.sourceNamespace(),
-            task.sourceTable(),
-            task.destinationNamespaceId(),
-            resolvedTableId,
-            task.destinationTableDisplayName());
-  }
 }

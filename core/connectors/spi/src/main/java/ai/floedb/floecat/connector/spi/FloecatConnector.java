@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Stream;
 import java.util.stream.Collectors;
 
 public interface FloecatConnector extends Closeable {
@@ -108,17 +109,18 @@ public interface FloecatConnector extends Closeable {
 
   TableDescriptor describe(String namespaceFq, String tableName);
 
-  List<SnapshotBundle> enumerateSnapshots(
+  /**
+   * Enumerates eligible snapshots in source history order.
+   *
+   * <p>The caller consumes and closes the stream before closing the connector. Implementations
+   * should produce bundles lazily so planning can persist downstream work without retaining the
+   * complete snapshot history.
+   */
+  Stream<SnapshotBundle> enumerateSnapshots(
       String namespaceFq,
       String tableName,
       ResourceId destinationTableId,
       SnapshotEnumerationOptions options);
-
-  default List<SnapshotBundle> enumerateSnapshots(
-      String namespaceFq, String tableName, ResourceId destinationTableId, boolean fullRescan) {
-    return enumerateSnapshots(
-        namespaceFq, tableName, destinationTableId, SnapshotEnumerationOptions.full(fullRescan));
-  }
 
   /**
    * Plans table-scoped reconcile work for this connector.
