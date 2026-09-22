@@ -38,7 +38,10 @@ class ConsistentReadRulesTest {
    * these two files -- the locking and registry side, and the scan that fills an image.
    */
   private static final Set<String> AUTHORITATIVE_INDEX_SOURCES =
-      Set.of("repo/cache/PlanningPointerIndex.java", "repo/cache/PlannerPartitionLoad.java");
+      Set.of(
+          "repo/cache/PlanningPointerIndex.java",
+          "repo/cache/PlannerPartitionLoad.java",
+          "repo/cache/DurablePointerReads.java");
 
   private static final List<String> CONSISTENCY_METHODS =
       List.of(

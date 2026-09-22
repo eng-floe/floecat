@@ -157,6 +157,36 @@ class KeysPlannerFamilyTest {
             Keys.accountRootPrefix(ACCOUNT) + "tables/tbl/snapshots/current");
   }
 
+  /**
+   * A listing served from the index returns only what the index holds, so a prefix may be served
+   * from it only when every key beneath it is also planner state. Otherwise the listing silently
+   * drops rows -- and a caller sweeping a prefix to find references would not see them all.
+   *
+   * <p>Child and relation markers are the one exception, and they predate this: they live under a
+   * planner family, classify operational, and are not listable resources. Excluded by name rather
+   * than by widening the rule, so a new offender of any other shape still fails here.
+   */
+  @Test
+  void aPrefixServedFromTheIndexHoldsOnlyPlannerKeysBeneathIt() {
+    List<String> all = everyAccountScopedKey();
+    List<String> offenders = new ArrayList<>();
+    for (String prefix : all) {
+      if (!prefix.endsWith("/") || Keys.pointerNamespace(prefix) != Keys.PointerNamespace.PLANNER) {
+        continue;
+      }
+      for (String key : all) {
+        if (key.equals(prefix) || !key.startsWith(prefix)) {
+          continue;
+        }
+        if (Keys.pointerNamespace(key) != Keys.PointerNamespace.PLANNER
+            && !Keys.isIdempotencyOrMarkerKey(key)) {
+          offenders.add(prefix + "   serves   " + key);
+        }
+      }
+    }
+    assertThat(offenders).as("prefixes the index would answer incompletely").isEmpty();
+  }
+
   @Test
   void anUnclassifiedFamilyStaysOnDurableStorage() {
     // The whole point of the allowlist: a family nobody classified must not become resident heap.
@@ -181,8 +211,13 @@ class KeysPlannerFamilyTest {
     assertThat(Keys.pointerNamespace(Keys.catalogPointerById(ACCOUNT, "c")))
         .isEqualTo(Keys.PointerNamespace.PLANNER);
     assertThat(Keys.pointerNamespace(Keys.accountRootPrefix(ACCOUNT)))
-        .as("the account root prefix covers the planner subtree")
-        .isEqualTo(Keys.PointerNamespace.PLANNER);
+        .as(
+            "the account root spans operational families, so a listing of it cannot come from"
+                + " the index")
+        .isEqualTo(Keys.PointerNamespace.OPERATIONAL);
+    assertThat(Keys.prefixTouchesPlannerKeys(Keys.accountRootPrefix(ACCOUNT)))
+        .as("but an account-wide delete still has to be ordered against the index")
+        .isTrue();
     assertThat(Keys.pointerNamespace(Keys.tablePointerByIdPrefix(ACCOUNT)))
         .as("the table identity listing is how SHOW TABLES is served")
         .isEqualTo(Keys.PointerNamespace.PLANNER);

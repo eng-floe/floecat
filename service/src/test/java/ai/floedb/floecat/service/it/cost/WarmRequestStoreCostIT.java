@@ -280,7 +280,9 @@ class WarmRequestStoreCostIT {
    * table-scoped pointer reads on the warm path; the remaining read is the request-level account
    * metadata lookup.
    */
-  private static final Cost KV = new Cost("KV round trips", 0, 1, t -> t.reads.pointerRoundTrips());
+  // 1n: the query pin path probes each table's stats generation lifecycle, and per-snapshot
+  // pointers are not resident, so that probe costs one KV round trip per table.
+  private static final Cost KV = new Cost("KV round trips", 1, 1, t -> t.reads.pointerRoundTrips());
 
   /**
    * The two live retention reads per table, measured per fetch with their callers.

@@ -364,11 +364,13 @@ class KeysTest {
   }
 
   @Test
-  void theAccountRootPrefixIsPlanner() {
-    // The partition loader pages this prefix, so it has to classify as planner state; the load
-    // then filters each row. Untested until now, and the whole index rests on it.
+  void theAccountRootPrefixIsNotServedFromTheIndex() {
+    // The loader pages the planner families, not this prefix, so the index does not hold every
+    // key beneath the account root and a listing of it must come from durable KV. A mutation on it
+    // is still ordered against the index, which is the separate, broader predicate.
     assertEquals(
-        Keys.PointerNamespace.PLANNER, Keys.pointerNamespace(Keys.accountRootPrefix("acct")));
+        Keys.PointerNamespace.OPERATIONAL, Keys.pointerNamespace(Keys.accountRootPrefix("acct")));
+    assertTrue(Keys.prefixTouchesPlannerKeys(Keys.accountRootPrefix("acct")));
     assertEquals(Keys.PointerNamespace.UNKNOWN, Keys.pointerNamespace(Keys.accountRootPrefix()));
   }
 

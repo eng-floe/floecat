@@ -27,6 +27,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -61,6 +62,7 @@ class CasBlobGcTest {
     when(queryContextStore.referencedPinBlobUris()).thenReturn(Set.of());
     gc = new CasBlobGc();
     gc.pointerStore = pointers;
+    gc.durablePointers = new DurablePointerReads(pointers);
     gc.blobStore = blobs;
     gc.queryContextStore = queryContextStore;
     gc.tableRootRepo = new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
@@ -476,6 +478,7 @@ class CasBlobGcTest {
             return result;
           }
         };
+    gc.durablePointers = new DurablePointerReads(gc.pointerStore);
 
     gc.runForAccount(ACCOUNT_ID, deadline);
     assertEquals(java.util.Optional.of(ACCOUNT_ID), gc.continuationAccountId());
@@ -815,6 +818,7 @@ class CasBlobGcTest {
 
     CasBlobGc restarted = new CasBlobGc();
     restarted.pointerStore = pointers;
+    restarted.durablePointers = new DurablePointerReads(pointers);
     restarted.blobStore = blobs;
     restarted.queryContextStore = queryContextStore;
     restarted.tableRootRepo =
@@ -873,6 +877,7 @@ class CasBlobGcTest {
           }
         };
     conservative.pointerStore = pointers;
+    conservative.durablePointers = new DurablePointerReads(pointers);
     conservative.blobStore = blobs;
     conservative.queryContextStore = queryContextStore;
     conservative.tableRootRepo =
@@ -935,6 +940,7 @@ class CasBlobGcTest {
           }
         };
     capacityLimited.pointerStore = pointers;
+    capacityLimited.durablePointers = new DurablePointerReads(pointers);
     capacityLimited.blobStore = blobs;
     capacityLimited.queryContextStore = queryContextStore;
     capacityLimited.tableRootRepo =
@@ -1029,6 +1035,7 @@ class CasBlobGcTest {
 
     CasBlobGc recreated = new CasBlobGc();
     recreated.pointerStore = pointers;
+    recreated.durablePointers = new DurablePointerReads(pointers);
     recreated.blobStore = blobs;
     recreated.queryContextStore = queryContextStore;
     recreated.tableRootRepo =
@@ -1127,6 +1134,7 @@ class CasBlobGcTest {
             return super.get(key);
           }
         };
+    gc.durablePointers = new DurablePointerReads(gc.pointerStore);
     when(queryContextStore.referencedPinBlobUris())
         .thenAnswer(inv -> remarkStarted.get() ? Set.of(fileStatsBlob) : Set.of());
 
@@ -1202,6 +1210,7 @@ class CasBlobGcTest {
             return super.listPointersByPrefix(prefix, limit, pageToken, nextTokenOut);
           }
         };
+    gc.durablePointers = new DurablePointerReads(gc.pointerStore);
     gc.statsRepository =
         new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs) {
           @Override
@@ -1358,6 +1367,8 @@ class CasBlobGcTest {
     blobs.put(active, "active".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
     putPointer(pointerKey, active);
     gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(pointerKey));
+    gc.durablePointers =
+        new DurablePointerReads(new ScanHidingPointerStore(pointers, Set.of(pointerKey)));
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
@@ -1554,6 +1565,7 @@ class CasBlobGcTest {
           }
         };
     gc.pointerStore = racingPointers;
+    gc.durablePointers = new DurablePointerReads(racingPointers);
     blobs.put(blobA, "a".getBytes(StandardCharsets.UTF_8), "text/plain");
     blobs.put(blobB, "b".getBytes(StandardCharsets.UTF_8), "text/plain");
     racingPointers.compareAndSet(
@@ -2508,10 +2520,13 @@ class CasBlobGcTest {
       return delegate.get(key);
     }
 
-    /** A decorator, so the delegate's consistent read -- this one only hides scans. */
+    /**
+     * Routed through {@link #get} so a subclass hiding a key hides it from both reads. The
+     * reachability probes take the consistent path.
+     */
     @Override
     public java.util.Optional<Pointer> getConsistent(String key) {
-      return delegate.getConsistent(key);
+      return get(key);
     }
 
     @Override
@@ -2592,6 +2607,7 @@ class CasBlobGcTest {
             return super.get(key);
           }
         };
+    gc.durablePointers = new DurablePointerReads(gc.pointerStore);
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
@@ -2600,6 +2616,40 @@ class CasBlobGcTest {
     assertFalse(
         result.poisoned(),
         "a rescue keeps the blob but does NOT poison — the recheck protects each delete");
+  }
+
+  @Test
+  void keepsAnOrphanedTablesRootWhenTheIndexDoesNotKnowTheTable() {
+    // This sweep finds tables by listing blob prefixes, so it asks about tables the catalog has no
+    // identity row for. The planner index is authoritative only over the tables that row names, so
+    // for an orphan it answers absent -- and an absent root here reads as "nothing referenced".
+    // Reachability must therefore come from the store, never the index.
+    String rootPointerKey = Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID);
+    String rootBlobUri = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-orphan-root");
+    blobs.put(
+        rootBlobUri,
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setTableId(tableRid())
+            .build()
+            .toByteArray(),
+        "application/octet-stream");
+    putPointer(rootPointerKey, rootBlobUri);
+
+    // Stands in for a complete index that never loaded this table: it answers absent, always.
+    gc.pointerStore =
+        new ScanHidingPointerStore(pointers, Set.of(rootPointerKey)) {
+          @Override
+          public java.util.Optional<Pointer> get(String key) {
+            return rootPointerKey.equals(key) ? java.util.Optional.empty() : super.get(key);
+          }
+        };
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(rootBlobUri).isPresent(),
+        "an orphaned table's root blob must survive a sweep the index cannot see it in");
+    assertFalse(result.poisoned());
   }
 
   @Test
@@ -2628,6 +2678,7 @@ class CasBlobGcTest {
             return super.get(key);
           }
         };
+    gc.durablePointers = new DurablePointerReads(gc.pointerStore);
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
@@ -2676,6 +2727,7 @@ class CasBlobGcTest {
             return super.get(key);
           }
         };
+    gc.durablePointers = new DurablePointerReads(gc.pointerStore);
 
     // An unrelated, genuinely-unreferenced orphan LATER in the same pass's key order: a rescue
     // must NOT poison/abort the sweep, so this real garbage is still collected in the same tick.
@@ -2728,6 +2780,7 @@ class CasBlobGcTest {
             return super.get(key);
           }
         };
+    gc.durablePointers = new DurablePointerReads(gc.pointerStore);
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
@@ -2754,6 +2807,9 @@ class CasBlobGcTest {
     putPointer(constraintsPtr, constraintsBlob);
     // Both pointers invisible to prefix scans (the deep visibility race), alive on get().
     gc.pointerStore = new ScanHidingPointerStore(pointers, Set.of(tablePtr, constraintsPtr));
+    gc.durablePointers =
+        new DurablePointerReads(
+            new ScanHidingPointerStore(pointers, Set.of(tablePtr, constraintsPtr)));
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
@@ -2798,6 +2854,7 @@ class CasBlobGcTest {
             return page;
           }
         };
+    gc.durablePointers = new DurablePointerReads(gc.pointerStore);
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
@@ -2852,6 +2909,7 @@ class CasBlobGcTest {
             return observed;
           }
         };
+    gc.durablePointers = new DurablePointerReads(gc.pointerStore);
 
     var result = gc.runForAccount(ACCOUNT_ID);
 

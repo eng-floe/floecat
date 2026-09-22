@@ -23,6 +23,7 @@ import ai.floedb.floecat.cache.CacheFamily;
 import ai.floedb.floecat.cache.DiskBlobCache;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.impl.RelationHintsRepository;
@@ -59,6 +60,16 @@ public class MetadataCaches {
     return new IndexedPointerStore(raw, index);
   }
 
+  /**
+   * The durable read seam, composed here because this is the one place that may select the raw
+   * view. Injected by readers whose emptiness is load-bearing over objects the index never loaded.
+   */
+  @Produces
+  @Singleton
+  public DurablePointerReads durablePointerReads(@RawPointerStore PointerStore raw) {
+    return new DurablePointerReads(raw);
+  }
+
   /** Callers do not select a cached or durable view; the indexed store makes that decision. */
   @Produces
   @Singleton
@@ -74,11 +85,11 @@ public class MetadataCaches {
       Instance<PlanningPointerIndex.Ownership> configuredOwnership,
       @ConfigProperty(name = "floecat.planner.pointer-index.enabled", defaultValue = "true")
           boolean enabled,
-      @ConfigProperty(name = "floecat.planner.pointer-index.max-heap-share", defaultValue = "0.25")
+      @ConfigProperty(name = "floecat.planner.pointer-index.max-heap-share", defaultValue = "0.10")
           double maxHeapShare,
       @ConfigProperty(
               name = "floecat.planner.pointer-index.max-total-heap-share",
-              defaultValue = "0.4")
+              defaultValue = "0.15")
           double maxTotalHeapShare,
       @ConfigProperty(name = "floecat.planner.pointer-index.warm-concurrency", defaultValue = "2")
           int warmConcurrency) {

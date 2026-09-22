@@ -252,6 +252,30 @@ class PointerIndexGateAndBudgetTest {
     assertThat(index.completePartitionCount()).as("the load still completes").isEqualTo(1);
   }
 
+  /**
+   * The image covers the tables the identity listing named. A table with no by-id row but a live
+   * subtree is not one of them, so the index answers absent -- correctly, since the catalog holds
+   * no identity for it. Any caller for whom that absence is load-bearing, such as the blob sweep
+   * deciding what to delete, reads the store instead.
+   */
+  @Test
+  void aTableWithNoIdentityRowIsOutsideTheImage() {
+    InMemoryPointerStore durable = new InMemoryPointerStore();
+    String orphanRoot = Keys.tableRootByTable(ACCOUNT, "orphan");
+    durable.compareAndSet(orphanRoot, 0, pointer(orphanRoot, "s3://root/orphan"));
+    String named = Keys.tablePointerById(ACCOUNT, "named");
+    durable.compareAndSet(named, 0, pointer(named, "s3://table/named"));
+
+    PlanningPointerIndex index = index(durable, PlanningPointerIndex.Policy.UNLIMITED);
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+    store.get(named);
+
+    assertThat(index.completePartitionCount()).isEqualTo(1);
+    assertThat(index.entryCount()).as("only rows the identity listing reached").isEqualTo(1);
+    assertThat(durable.getConsistent(orphanRoot)).as("the row is in the store").isPresent();
+    assertThat(store.get(orphanRoot)).as("and outside the image").isEmpty();
+  }
+
   /** Records which prefixes a load actually asks the store for. */
   private static final class ScanCountingStore extends InMemoryPointerStore {
     private final List<String> prefixScans = new ArrayList<>();

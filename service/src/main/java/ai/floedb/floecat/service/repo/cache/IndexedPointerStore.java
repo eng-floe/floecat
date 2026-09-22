@@ -48,12 +48,12 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public Optional<Pointer> get(String key) {
-    return index.enabled() ? index.get(key) : durable.get(key);
+    return index.enabled() ? index.get(key) : durable.getConsistent(key);
   }
 
   @Override
   public Map<String, Pointer> getBatch(List<String> keys) {
-    return index.enabled() ? index.getBatch(keys) : durable.getBatch(keys);
+    return index.enabled() ? index.getBatch(keys) : durable.getBatchConsistent(keys);
   }
 
   @Override
@@ -71,7 +71,7 @@ public class IndexedPointerStore implements PointerStore {
       String prefix, int limit, String token, StringBuilder next) {
     return index.enabled()
         ? index.list(prefix, limit, token, next)
-        : durable.listPointersByPrefix(prefix, limit, token, next);
+        : durable.listPointersByPrefixConsistent(prefix, limit, token, next);
   }
 
   @Override
@@ -84,7 +84,7 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public int countByPrefix(String prefix) {
-    return index.enabled() ? index.count(prefix) : durable.countByPrefix(prefix);
+    return index.enabled() ? index.count(prefix) : durable.countByPrefixConsistent(prefix);
   }
 
   @Override

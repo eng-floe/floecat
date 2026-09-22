@@ -46,8 +46,8 @@ import java.util.function.Supplier;
 public final class PlanningPointerIndex {
   private static final int PAGE_SIZE = 1_000;
   private static final long LOAD_RETRY_PAUSE_NANOS = Duration.ofSeconds(5).toNanos();
-  // A refusal is not a hiccup: the account did not fit and will not fit on a retry a few seconds
-  // later. Reusing the store-error pause would re-run a full account scan every five seconds.
+  // A refusal is not a hiccup. An account over the budget stays over it until a durable sweep
+  // reclaims rows, so the store-error pause would re-run a full account scan every five seconds.
   private static final long SIZE_REFUSAL_PAUSE_NANOS = Duration.ofMinutes(10).toNanos();
   // Each refusal costs a scan up to the budget, and nothing the index does makes the account
   // smaller -- only a durable sweep will. Back off rather than pay that every ten minutes forever.
@@ -396,7 +396,9 @@ public final class PlanningPointerIndex {
           return mutateAllLocked(durableMutation, publish);
         }
       }
-      String partitionKey = isPlanningPrefix(prefix) ? partitionFor(prefix) : null;
+      // The permissive predicate on purpose: a prefix the index cannot ANSWER may still contain
+      // keys it holds, and the write lock is what orders this delete against a concurrent load.
+      String partitionKey = Keys.prefixTouchesPlannerKeys(prefix) ? partitionFor(prefix) : null;
       List<Partition> locked =
           partitionKey == null ? List.of() : lockPartitionsForListing(List.of(partitionKey));
       try {
@@ -718,10 +720,9 @@ public final class PlanningPointerIndex {
         refused = !loaded;
       }
     } catch (Error fatal) {
-      // An OutOfMemoryError here is this load, not the store. Arm the pause on the way out or the
-      // next read schedules the identical scan, and the process never recovers enough heap to
-      // answer anything. The budget should make this unreachable; it is the backstop for when the
-      // budget is set too high to help.
+      // An OutOfMemoryError here is this load, not the store. The pause is armed on the way out;
+      // without it the next read schedules the identical scan and the process never recovers
+      // enough heap to answer anything.
       partition.loadRetryNotBeforeNanos = System.nanoTime() + LOAD_RETRY_PAUSE_NANOS;
       throw fatal;
     } catch (RuntimeException loadFailure) {
@@ -951,6 +952,11 @@ public final class PlanningPointerIndex {
       loadLocked(name, partition);
     } catch (RuntimeException ignored) {
       partition.loadRetryNotBeforeNanos = System.nanoTime() + LOAD_RETRY_PAUSE_NANOS;
+    } catch (Error fatal) {
+      // Same reason as the background warm: an OutOfMemoryError here is this load, and without the
+      // pause the next mutation re-runs the identical scan under this same write lock.
+      partition.loadRetryNotBeforeNanos = System.nanoTime() + LOAD_RETRY_PAUSE_NANOS;
+      throw fatal;
     }
   }
 

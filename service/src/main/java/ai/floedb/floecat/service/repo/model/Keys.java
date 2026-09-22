@@ -71,9 +71,9 @@ public final class Keys {
   /**
    * Account-scoped families the planner index may hold, and the only ones its load reads.
    *
-   * <p>An allowlist on purpose. Under a denylist a family nobody classified became resident heap by
-   * default, which is how the index came to hold every stats generation ever written. A family
-   * missing from this list is answered from durable KV: slower, never wrong.
+   * <p>An allowlist on purpose: a family missing from it is answered from durable KV, which is
+   * slower and never wrong. A denylist gives the opposite default, where an unclassified family is
+   * resident heap.
    */
   private static final Set<String> PLANNER_FAMILIES =
       Set.of(
@@ -239,10 +239,11 @@ public final class Keys {
     // missing from listings while the parent prefix is still served from it.
     String[] segments = remainder.substring(slash + 1).split("/", -1);
     if (segments.length == 1) {
-      // The account root prefix, which covers the whole planner subtree, is the empty segment. Any
-      // other lone segment names no family -- the deletion marker is the only one -- so it stays
-      // durable, where a resource named "deleting" nested under a family remains planner state.
-      return segments[0].isEmpty() ? PointerNamespace.PLANNER : PointerNamespace.OPERATIONAL;
+      // Including the account root prefix itself, the empty segment. This classification answers
+      // what may be READ from the index, and a listing is only answerable there when the index
+      // holds every key beneath the prefix. The account root spans operational families too, so a
+      // listing of it has to come from durable KV or it would silently drop rows.
+      return PointerNamespace.OPERATIONAL;
     }
     if (!PLANNER_FAMILIES.contains(segments[0]) || isMarkerSegments(segments)) {
       return PointerNamespace.OPERATIONAL;
@@ -269,6 +270,25 @@ public final class Keys {
             family ->
                 "tables".equals(family) ? tablePointerByIdPrefix(accountId) : root + family + "/")
         .toList();
+  }
+
+  /**
+   * Whether a mutation on this prefix can touch planner keys, and so must be ordered against the
+   * index even when the prefix itself is not readable from it.
+   *
+   * <p>Broader than {@link #pointerNamespace}, which answers whether a READ may be served from the
+   * index and so needs complete coverage. This answers whether a WRITE must take the partition lock
+   * and maintain the index, and one planner key beneath the prefix is enough to require that.
+   */
+  public static boolean prefixTouchesPlannerKeys(String prefix) {
+    String[] segments = accountKeySegments(prefix);
+    if (segments == null) {
+      return false;
+    }
+    if (segments.length == 1 && segments[0].isEmpty()) {
+      return true; // the account root spans every family, planner ones included
+    }
+    return PLANNER_FAMILIES.contains(segments[0]);
   }
 
   /**
