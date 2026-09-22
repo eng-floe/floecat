@@ -180,12 +180,10 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
                   new PlannedSnapshotJob(payload.scope(), snapshotTask);
               int snapshotJobBytes =
                   Math.max(
-                      1,
-                      workerClient.estimatedPlanTableChunkItemBytes(remoteLease, snapshotJob));
+                      1, workerClient.estimatedPlanTableChunkItemBytes(remoteLease, snapshotJob));
               if (!pendingSnapshotJobs.isEmpty()
                   && (pendingSnapshotJobs.size() >= snapshotChunkMaxCount
-                      || pendingSnapshotBytes[0] + snapshotJobBytes
-                          > snapshotChunkTargetBytes)) {
+                      || pendingSnapshotBytes[0] + snapshotJobBytes > snapshotChunkTargetBytes)) {
                 int chunkIndex = submittedSnapshotChunks[0]++;
                 if (!workerClient.submitPlanTableChunk(
                     remoteLease, chunkIndex, List.copyOf(pendingSnapshotJobs))) {
@@ -477,5 +475,4 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
   private static String blankToEmpty(String value) {
     return value == null ? "" : value;
   }
-
 }

@@ -54,5 +54,4 @@ class ReconcilerServiceInternalsTest {
     assertThat(options.targetSnapshotIds()).containsExactlyInAnyOrder(42L, 91L);
     assertThat(options.selectionSnapshotIds()).isEmpty();
   }
-
 }

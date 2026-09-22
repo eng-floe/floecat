@@ -291,48 +291,49 @@ public abstract class IcebergConnector implements FloecatConnector {
     }
     String currentMetadataLocation = currentMetadataLocation(table);
 
-    return snapshots.stream().map(snapshot -> snapshotBundle(table, currentMetadataLocation, snapshot));
+    return snapshots.stream()
+        .map(snapshot -> snapshotBundle(table, currentMetadataLocation, snapshot));
   }
 
   private SnapshotBundle snapshotBundle(
       Table table, String currentMetadataLocation, Snapshot snapshot) {
-      long snapshotId = snapshot.snapshotId();
-      long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : -1L;
-      long createdMs = snapshot.timestampMillis();
+    long snapshotId = snapshot.snapshotId();
+    long parentId = snapshot.parentId() != null ? snapshot.parentId().longValue() : -1L;
+    long createdMs = snapshot.timestampMillis();
 
-      Schema schema = schemaForSnapshot(table, snapshot);
-      int schemaId = schema.schemaId();
-      String schemaJson = SchemaParser.toJson(schema);
+    Schema schema = schemaForSnapshot(table, snapshot);
+    int schemaId = schema.schemaId();
+    String schemaJson = SchemaParser.toJson(schema);
 
-      Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
-      Map<String, String> summaryWithOperation =
-          summary.isEmpty() ? new LinkedHashMap<>() : new LinkedHashMap<>(summary);
-      String operation = snapshot.operation();
-      if (operation != null && !operation.isBlank()) {
-        summaryWithOperation.putIfAbsent("operation", operation);
-      }
-      summary = summaryWithOperation.isEmpty() ? Map.of() : Map.copyOf(summaryWithOperation);
-      String manifestList = snapshot.manifestListLocation();
-      long sequenceNumber = snapshot.sequenceNumber();
+    Map<String, String> summary = snapshot.summary() == null ? Map.of() : snapshot.summary();
+    Map<String, String> summaryWithOperation =
+        summary.isEmpty() ? new LinkedHashMap<>() : new LinkedHashMap<>(summary);
+    String operation = snapshot.operation();
+    if (operation != null && !operation.isBlank()) {
+      summaryWithOperation.putIfAbsent("operation", operation);
+    }
+    summary = summaryWithOperation.isEmpty() ? Map.of() : Map.copyOf(summaryWithOperation);
+    String manifestList = snapshot.manifestListLocation();
+    long sequenceNumber = snapshot.sequenceNumber();
 
-      String metadataLocation = null;
-      if (currentMetadataLocation != null
-          && !currentMetadataLocation.isBlank()
-          && table.currentSnapshot() != null
-          && table.currentSnapshot().snapshotId() == snapshotId) {
-        metadataLocation = currentMetadataLocation;
-      }
-      return new SnapshotBundle(
-          snapshotId,
-          parentId,
-          createdMs,
-          schemaJson,
-          toPartitionSpecInfo(table, snapshot),
-          sequenceNumber,
-          manifestList,
-          summary,
-          schemaId,
-          metadataLocation);
+    String metadataLocation = null;
+    if (currentMetadataLocation != null
+        && !currentMetadataLocation.isBlank()
+        && table.currentSnapshot() != null
+        && table.currentSnapshot().snapshotId() == snapshotId) {
+      metadataLocation = currentMetadataLocation;
+    }
+    return new SnapshotBundle(
+        snapshotId,
+        parentId,
+        createdMs,
+        schemaJson,
+        toPartitionSpecInfo(table, snapshot),
+        sequenceNumber,
+        manifestList,
+        summary,
+        schemaId,
+        metadataLocation);
   }
 
   @Override

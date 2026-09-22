@@ -1463,8 +1463,7 @@ class QueuedReconcileWorkerSupport {
               return;
             }
             if (!includeCoreMetadata
-                && (knownSnapshotIds == null
-                    || !knownSnapshotIds.contains(bundle.snapshotId()))) {
+                && (knownSnapshotIds == null || !knownSnapshotIds.contains(bundle.snapshotId()))) {
               skipped[0]++;
               return;
             }

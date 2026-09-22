@@ -59,8 +59,8 @@ import io.delta.kernel.internal.actions.AddFile;
 import io.delta.kernel.internal.actions.DeletionVectorDescriptor;
 import io.delta.kernel.internal.actions.Metadata;
 import io.delta.kernel.internal.fs.Path;
-import io.delta.kernel.internal.util.FileNames;
 import io.delta.kernel.internal.types.DataTypeJsonSerDe;
+import io.delta.kernel.internal.util.FileNames;
 import io.delta.kernel.types.ArrayType;
 import io.delta.kernel.types.BooleanType;
 import io.delta.kernel.types.ByteType;
@@ -89,8 +89,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.Spliterators;
-import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
@@ -100,6 +98,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 import org.apache.parquet.io.InputFile;
 import org.jboss.logging.Logger;
 
@@ -239,7 +239,8 @@ abstract class DeltaConnector implements FloecatConnector {
       if (startVersion > latestVersion) {
         return Stream.empty();
       }
-      baselineResult = SnapshotLoadResult.snapshot(table.getSnapshotAsOfVersion(engine, startVersion));
+      baselineResult =
+          SnapshotLoadResult.snapshot(table.getSnapshotAsOfVersion(engine, startVersion));
     }
     Snapshot baselineSnapshot = baselineResult.snapshot();
     if (!(baselineSnapshot instanceof SnapshotImpl baselineSnapshotImpl)) {
@@ -325,7 +326,8 @@ abstract class DeltaConnector implements FloecatConnector {
                   }
                 }
               } catch (Exception e) {
-                throw new RuntimeException("Failed to enumerate Delta commit version " + version, e);
+                throw new RuntimeException(
+                    "Failed to enumerate Delta commit version " + version, e);
               }
               if (!fullRescan && knownSnapshotIds.contains(version)) {
                 continue;

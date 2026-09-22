@@ -151,13 +151,14 @@ class RemoteDefaultReconcileExecutorTest {
                       .setId("table-1")
                       .build();
               for (long snapshotId = 1454930L; snapshotId < 1454938L; snapshotId++) {
-                sink.accept(new QueuedReconcileWorkerSupport.SnapshotEmission(
-                    tableId, "ns", "table", snapshotBundle(snapshotId)));
+                sink.accept(
+                    new QueuedReconcileWorkerSupport.SnapshotEmission(
+                        tableId, "ns", "table", snapshotBundle(snapshotId)));
               }
-              verify(workerClient)
-                  .submitPlanTableChunk(eq(remoteLease), eq(0), any());
-              sink.accept(new QueuedReconcileWorkerSupport.SnapshotEmission(
-                  tableId, "ns", "table", snapshotBundle(1454938L)));
+              verify(workerClient).submitPlanTableChunk(eq(remoteLease), eq(0), any());
+              sink.accept(
+                  new QueuedReconcileWorkerSupport.SnapshotEmission(
+                      tableId, "ns", "table", snapshotBundle(1454938L)));
               return new QueuedReconcileWorkerSupport.TableExecutionResult(
                   ReconcileExecutor.ExecutionResult.success(1, 1, 0, 9, 0, "ok"),
                   List.of("table-1"));
@@ -176,10 +177,7 @@ class RemoteDefaultReconcileExecutorTest {
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<PlannedSnapshotJob>> jobsCaptor = ArgumentCaptor.forClass(List.class);
     verify(workerClient, org.mockito.Mockito.times(2))
-        .submitPlanTableChunk(
-            eq(remoteLease),
-            anyInt(),
-            jobsCaptor.capture());
+        .submitPlanTableChunk(eq(remoteLease), anyInt(), jobsCaptor.capture());
     assertEquals(
         java.util.stream.LongStream.rangeClosed(1454930L, 1454938L).boxed().toList(),
         jobsCaptor.getAllValues().stream()
@@ -187,7 +185,8 @@ class RemoteDefaultReconcileExecutorTest {
             .map(job -> job.snapshotTask().snapshotId())
             .toList());
     verify(workerClient)
-        .submitPlanTableSuccess(eq(remoteLease), eq(2), anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
+        .submitPlanTableSuccess(
+            eq(remoteLease), eq(2), anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
   }
 
   @Test
@@ -245,7 +244,8 @@ class RemoteDefaultReconcileExecutorTest {
         .submitPlanTableChunk(eq(remoteLease), anyInt(), jobsCaptor.capture());
     assertEquals(List.of(1, 1, 1), jobsCaptor.getAllValues().stream().map(List::size).toList());
     verify(workerClient)
-        .submitPlanTableSuccess(eq(remoteLease), eq(3), anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
+        .submitPlanTableSuccess(
+            eq(remoteLease), eq(3), anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
   }
 
   @Test
@@ -266,7 +266,8 @@ class RemoteDefaultReconcileExecutorTest {
             any(), any(), eq(false), any(), any(), any(), any(), any(), any(), any(), any(), any()))
         .thenReturn(
             new QueuedReconcileWorkerSupport.TableExecutionResult(
-                ReconcileExecutor.ExecutionResult.failure(0, 0, 1, 0, 0, failure.getMessage(), failure),
+                ReconcileExecutor.ExecutionResult.failure(
+                    0, 0, 1, 0, 0, failure.getMessage(), failure),
                 List.of()));
 
     ReconcileExecutor.ExecutionResult result =
@@ -286,7 +287,8 @@ class RemoteDefaultReconcileExecutorTest {
         new RemoteDefaultReconcileExecutor(
             queuedWorkerSupport, workerClient, accountId -> java.util.Optional.empty(), true);
     ReconcileJobStore.LeasedJob lease =
-        tableLease("job-chunk-uncertain", "acct-a", ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+        tableLease(
+            "job-chunk-uncertain", "acct-a", ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
     RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
     when(workerClient.getPlanTableInput(remoteLease))
         .thenReturn(planTablePayload(lease, connectorId("acct-a")));
@@ -584,15 +586,6 @@ class RemoteDefaultReconcileExecutorTest {
 
   private static FloecatConnector.SnapshotBundle snapshotBundle(long snapshotId) {
     return new FloecatConnector.SnapshotBundle(
-        snapshotId,
-        snapshotId - 1L,
-        snapshotId,
-        "schema",
-        null,
-        0L,
-        null,
-        Map.of(),
-        0,
-        null);
+        snapshotId, snapshotId - 1L, snapshotId, "schema", null, 0L, null, Map.of(), 0, null);
   }
 }

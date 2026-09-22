@@ -168,11 +168,12 @@ class IcebergConnectorIncrementalEnumerationTest {
     assertThrows(
         ConnectorNotReadyException.class,
         () ->
-            connector.enumerateSnapshots(
-                "iceberg",
-                "duckdb_mutation_smoke",
-                ResourceId.getDefaultInstance(),
-                FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of()))
+            connector
+                .enumerateSnapshots(
+                    "iceberg",
+                    "duckdb_mutation_smoke",
+                    ResourceId.getDefaultInstance(),
+                    FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of()))
                 .toList());
   }
 

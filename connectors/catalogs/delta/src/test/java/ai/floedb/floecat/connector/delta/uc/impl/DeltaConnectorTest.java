@@ -147,11 +147,13 @@ class DeltaConnectorTest {
     TestDeltaConnector connector = new TestDeltaConnector(table);
 
     List<FloecatConnector.SnapshotBundle> bundles =
-        connector.enumerateSnapshots(
-            "ns",
-            "tbl",
-            ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(3L, 5L))).toList();
+        connector
+            .enumerateSnapshots(
+                "ns",
+                "tbl",
+                ResourceId.getDefaultInstance(),
+                FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(3L, 5L)))
+            .toList();
 
     List<Long> snapshotIds =
         bundles.stream()
@@ -169,11 +171,13 @@ class DeltaConnectorTest {
         new TestDeltaConnector(new StubTable(versionOne, Map.of(0L, versionZero, 1L, versionOne)));
 
     List<FloecatConnector.SnapshotBundle> bundles =
-        connector.enumerateSnapshots(
-            "ns",
-            "tbl",
-            ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(0L, 1L))).toList();
+        connector
+            .enumerateSnapshots(
+                "ns",
+                "tbl",
+                ResourceId.getDefaultInstance(),
+                FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(0L, 1L)))
+            .toList();
 
     assertEquals(
         List.of(0L, 1L),
@@ -256,11 +260,13 @@ class DeltaConnectorTest {
     TestDeltaConnector connector = new TestDeltaConnector(table);
 
     List<FloecatConnector.SnapshotBundle> bundles =
-        connector.enumerateSnapshots(
-            "ns",
-            "tbl",
-            ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(1L, 4L))).toList();
+        connector
+            .enumerateSnapshots(
+                "ns",
+                "tbl",
+                ResourceId.getDefaultInstance(),
+                FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(1L, 4L)))
+            .toList();
 
     List<Long> snapshotIds =
         bundles.stream()
@@ -329,8 +335,7 @@ class DeltaConnectorTest {
             "ns",
             "tbl",
             ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.incremental(
-                Set.of(), Set.of(0L)))) {
+            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(), Set.of(0L)))) {
       assertEquals(List.of(0L), snapshots.map(b -> b.snapshotId()).toList());
     }
   }
@@ -368,11 +373,13 @@ class DeltaConnectorTest {
     TestDeltaConnector connector = new TestDeltaConnector(table);
 
     List<FloecatConnector.SnapshotBundle> bundles =
-        connector.enumerateSnapshots(
-            "ns",
-            "tbl",
-            ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of())).toList();
+        connector
+            .enumerateSnapshots(
+                "ns",
+                "tbl",
+                ResourceId.getDefaultInstance(),
+                FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of()))
+            .toList();
 
     List<Long> snapshotIds =
         bundles.stream()
@@ -391,11 +398,13 @@ class DeltaConnectorTest {
     assertThrows(
         IllegalStateException.class,
         () ->
-            connector.enumerateSnapshots(
-                "ns",
-                "tbl",
-                ResourceId.getDefaultInstance(),
-                FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(2L))).toList());
+            connector
+                .enumerateSnapshots(
+                    "ns",
+                    "tbl",
+                    ResourceId.getDefaultInstance(),
+                    FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(2L)))
+                .toList());
   }
 
   @Test
