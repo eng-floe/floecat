@@ -61,7 +61,7 @@ public final class SchemaIdentityReconciler {
   /** Starts a new identity generation without allowing the canonical ID counter to regress. */
   public static Result reset(
       ResolvedSchema schema, long sourceVersion, IdentityMode mode, long previousHighWaterMark) {
-    validateHighWaterMark(previousHighWaterMark);
+    CanonicalColumnId.checkAllocatedRange(previousHighWaterMark);
     return reconcileInternal(schema, sourceVersion, mode, Optional.empty(), previousHighWaterMark);
   }
 
@@ -102,7 +102,7 @@ public final class SchemaIdentityReconciler {
     Objects.requireNonNull(schema, "schema");
     Objects.requireNonNull(mode, "mode");
     Objects.requireNonNull(previous, "previous");
-    validateHighWaterMark(initialHighWaterMark);
+    CanonicalColumnId.checkAllocatedRange(initialHighWaterMark);
     if (sourceVersion < 0) {
       throw new IllegalArgumentException("Source version must be non-negative");
     }
@@ -166,22 +166,15 @@ public final class SchemaIdentityReconciler {
     }
   }
 
-  private static void validateHighWaterMark(long highWaterMark) {
-    if (highWaterMark < 0L || highWaterMark > CanonicalColumnId.MAX_ALLOCATED_ID) {
-      throw new IllegalArgumentException(
-          "High-water mark must be in the allocated canonical ID space");
-    }
-  }
-
   static String fingerprint(IdentityMode mode, List<SchemaIdentityEntry> entries) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
       updateString(digest, mode.name());
       entries.stream()
-          .sorted(Comparator.comparing(entry -> structuredPath(entry.path())))
+          .sorted(Comparator.comparing(entry -> entry.path().stableKey()))
           .forEach(
               entry -> {
-                updateString(digest, structuredPath(entry.path()));
+                updateString(digest, entry.path().stableKey());
                 digest.update(ByteBuffer.allocate(Long.BYTES).putLong(entry.canonicalId()).array());
               });
       return "sha256:" + HexFormat.of().formatHex(digest.digest());
@@ -200,16 +193,6 @@ public final class SchemaIdentityReconciler {
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 is unavailable", e);
     }
-  }
-
-  public static String structuredPath(ColumnPath path) {
-    StringBuilder out = new StringBuilder();
-    for (ColumnPath.Element element : path.elements()) {
-      out.append(element.kind().stableCode()).append(':');
-      String name = element.name() == null ? "" : element.name();
-      out.append(name.length()).append(':').append(name).append(';');
-    }
-    return out.toString();
   }
 
   private static void updateString(MessageDigest digest, String value) {

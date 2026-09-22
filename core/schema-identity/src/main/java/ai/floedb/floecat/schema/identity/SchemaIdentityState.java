@@ -44,10 +44,7 @@ public final class SchemaIdentityState {
     if (sourceVersion < 0) {
       throw new IllegalArgumentException("Source version must be non-negative");
     }
-    if (highWaterMark < 0 || highWaterMark > CanonicalColumnId.MAX_ALLOCATED_ID) {
-      throw new IllegalArgumentException(
-          "High-water mark must be in the allocated canonical ID space");
-    }
+    CanonicalColumnId.checkAllocatedRange(highWaterMark);
     this.sourceVersion = sourceVersion;
     this.highWaterMark = highWaterMark;
     this.mode = Objects.requireNonNull(mode, "mode");

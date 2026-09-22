@@ -42,7 +42,7 @@ message Snapshot {
   // Authoritative column identities for this source schema version. The fingerprint binds schema,
   // capture, and reuse consumers to the exact same mapping.
   ColumnIdentityMap column_identity_map = 14;
-  string column_identity_fingerprint = 15;
+  reserved 15;
 }
 
 enum ColumnIdentityMode {
@@ -165,7 +165,7 @@ message SnapshotSpec {
   // messages on the same numbering keeps the spec/snapshot field mapping readable.
   reserved 13;
   ColumnIdentityMap column_identity_map = 14;
-  string column_identity_fingerprint = 15;
+  reserved 15;
 }
 
 message CreateSnapshotRequest {

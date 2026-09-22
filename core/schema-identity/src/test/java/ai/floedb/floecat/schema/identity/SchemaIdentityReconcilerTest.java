@@ -365,13 +365,6 @@ class SchemaIdentityReconcilerTest {
   }
 
   @Test
-  void structuredPathEncodingUsesStableNodeKindCodes() {
-    ColumnPath path = ColumnPath.ROOT.field("a").arrayElement().mapKey().mapValue();
-
-    assertThat(SchemaIdentityReconciler.structuredPath(path)).isEqualTo("1:1:a;2:0:;3:0:;4:0:;");
-  }
-
-  @Test
   void restoreRejectsDuplicateCanonicalIds() {
     List<SchemaIdentityEntry> entries =
         List.of(

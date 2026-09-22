@@ -32,6 +32,13 @@ final class CanonicalColumnId {
 
   private CanonicalColumnId() {}
 
+  static void checkAllocatedRange(long highWaterMark) {
+    if (highWaterMark < 0L || highWaterMark > MAX_ALLOCATED_ID) {
+      throw new IllegalArgumentException(
+          "High-water mark must be in the allocated canonical ID space");
+    }
+  }
+
   static long nativeFieldId(SchemaNode node) {
     OptionalInt nativeId = node.nativeFieldId();
     if (nativeId.isEmpty() || nativeId.getAsInt() <= 0) {
