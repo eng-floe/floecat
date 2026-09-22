@@ -28,7 +28,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Optional;
-import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentNavigableMap;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -92,6 +91,7 @@ public final class PlanningPointerIndex {
   private final Ownership ownership;
   private final Executor warmExecutor;
   private final WarmObserver warmObserver;
+  private final PlannerPartitionLoad loader;
   private final ConcurrentHashMap<String, Partition> partitions = new ConcurrentHashMap<>();
 
   public PlanningPointerIndex(PointerStore durable) {
@@ -114,6 +114,7 @@ public final class PlanningPointerIndex {
   PlanningPointerIndex(
       PointerStore durable, Ownership ownership, Executor warmExecutor, WarmObserver warmObserver) {
     this.durable = java.util.Objects.requireNonNull(durable, "durable");
+    this.loader = new PlannerPartitionLoad(durable);
     this.ownership = java.util.Objects.requireNonNull(ownership, "ownership");
     this.warmExecutor = java.util.Objects.requireNonNull(warmExecutor, "warmExecutor");
     this.warmObserver = java.util.Objects.requireNonNull(warmObserver, "warmObserver");
@@ -172,7 +173,7 @@ public final class PlanningPointerIndex {
     // partition, so a batch containing one must use the durable path for every key.
     if (keys.stream().anyMatch(key -> !isPlanningKey(key))) return durableBatch(keys);
     List<String> partitionsToRead =
-        keys.stream().map(this::partitionFor).distinct().sorted().toList();
+        keys.stream().map(PlanningPointerIndex::partitionFor).distinct().sorted().toList();
     // A batch is one logical read. If any planner partition is not ready or not owned, use the
     // durable store for the whole operation instead of mixing an index snapshot with KV results.
     List<Ownership.Permit> permits = acquire(partitionsToRead, Ownership.Access.READ, false);
@@ -397,7 +398,7 @@ public final class PlanningPointerIndex {
     if (keys == null) return List.of();
     if (keys.contains(Keys.accountRootPrefix())) return List.of(GLOBAL);
     return keys.stream()
-        .map(this::partitionFor)
+        .map(PlanningPointerIndex::partitionFor)
         .filter(partition -> partition != null && !GLOBAL.equals(partition))
         .distinct()
         .sorted()
@@ -699,25 +700,13 @@ public final class PlanningPointerIndex {
     return partition;
   }
 
+  /**
+   * Applies a freshly built image under the partition write lock. Building it is {@link
+   * PlannerPartitionLoad}'s job; what stays here is the part that needs the lock and the registry.
+   */
   private void loadLocked(String partitionKey, Partition partition) {
-    TreeMap<String, Pointer> loaded = new TreeMap<>();
-    for (String prefix : loadPrefixes(partitionKey)) {
-      String token = "";
-      do {
-        StringBuilder next = new StringBuilder();
-        for (Pointer pointer :
-            durable.listPointersByPrefixConsistent(prefix, PAGE_SIZE, token, next)) {
-          if (partitionKey.equals(partitionFor(pointer.getKey()))
-              && isPlanningKey(pointer.getKey())) loaded.put(pointer.getKey(), pointer);
-        }
-        String newToken = next.toString();
-        if (!newToken.isBlank() && newToken.equals(token))
-          throw new IllegalStateException("stagnant pointer index token");
-        token = newToken;
-      } while (!token.isBlank());
-    }
     partition.entries.clear();
-    partition.entries.putAll(loaded);
+    partition.entries.putAll(loader.load(partitionKey));
     partition.readiness = Readiness.COMPLETE;
   }
 
@@ -843,7 +832,7 @@ public final class PlanningPointerIndex {
     }
   }
 
-  private boolean isPlanningKey(String key) {
+  static boolean isPlanningKey(String key) {
     String partition = partitionFor(key);
     return key != null
         && partition != null
@@ -851,7 +840,7 @@ public final class PlanningPointerIndex {
         && Keys.pointerNamespace(key) == Keys.PointerNamespace.PLANNER;
   }
 
-  private boolean isPlanningPrefix(String prefix) {
+  private static boolean isPlanningPrefix(String prefix) {
     String partition = partitionFor(prefix);
     return prefix != null
         && partition != null
@@ -859,7 +848,7 @@ public final class PlanningPointerIndex {
         && Keys.pointerNamespace(prefix) == Keys.PointerNamespace.PLANNER;
   }
 
-  private String partitionFor(String key) {
+  static String partitionFor(String key) {
     if (key == null || !key.startsWith(Keys.accountRootPrefix())) return null;
     String remainder = key.substring(Keys.accountRootPrefix().length());
     int slash = remainder.indexOf('/');
@@ -869,10 +858,10 @@ public final class PlanningPointerIndex {
     return Keys.decodeSegment(encodedAccount);
   }
 
-  private static List<String> loadPrefixes(String partition) {
+  static List<String> loadPrefixes(String partition) {
     if (GLOBAL.equals(partition))
       return List.of(Keys.accountPointerByIdPrefix(), Keys.accountPointerByNamePrefix());
-    return List.of(Keys.accountRootPrefix(partition));
+    return Keys.plannerFamilyPrefixes(partition);
   }
 
   private static boolean isAccountRoot(String prefix) {
