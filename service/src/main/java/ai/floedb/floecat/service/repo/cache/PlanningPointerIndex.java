@@ -35,15 +35,25 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /** The authoritative in-memory index for planner-visible pointer state. */
 public final class PlanningPointerIndex {
   private static final int PAGE_SIZE = 1_000;
   private static final long LOAD_RETRY_PAUSE_NANOS = Duration.ofSeconds(5).toNanos();
+  // A refusal is not a hiccup: the account did not fit and will not fit on a retry a few seconds
+  // later. Reusing the store-error pause would re-run a full account scan every five seconds.
+  private static final long SIZE_REFUSAL_PAUSE_NANOS = Duration.ofMinutes(10).toNanos();
+  // Each refusal costs a scan up to the budget, and nothing the index does makes the account
+  // smaller -- only a durable sweep will. Back off rather than pay that every ten minutes forever.
+  private static final int MAX_REFUSAL_BACKOFF_DOUBLINGS = 5;
+  // Two keys per table; kept under the store's batch-get ceiling.
+  private static final int PER_TABLE_BATCH_KEYS = 100;
   private static final String GLOBAL = "<account-directory>";
 
   enum Readiness {
@@ -76,6 +86,25 @@ public final class PlanningPointerIndex {
     Optional<Permit> acquire(String accountId, Access access);
   }
 
+  /**
+   * The index's sizing and on/off policy, fixed for the life of the process exactly as the object
+   * and hint caches fix theirs. Nothing flips at runtime, so a partition's readiness is the only
+   * thing a reader has to reason about.
+   */
+  public record Policy(boolean enabled, long maxBytesPerAccount, long maxBytesTotal) {
+    public static final Policy UNLIMITED = new Policy(true, Long.MAX_VALUE, Long.MAX_VALUE);
+
+    public Policy {
+      if (maxBytesPerAccount <= 0 || maxBytesTotal < maxBytesPerAccount) {
+        throw new IllegalArgumentException(
+            "maxBytesPerAccount must be positive and no larger than maxBytesTotal, but were "
+                + maxBytesPerAccount
+                + " and "
+                + maxBytesTotal);
+      }
+    }
+  }
+
   /** Receives low-cardinality observations for background partition warming. */
   public interface WarmObserver {
     WarmObserver NONE = new WarmObserver() {};
@@ -85,13 +114,22 @@ public final class PlanningPointerIndex {
     default void completed(String accountId, Duration duration) {}
 
     default void failed(String accountId, Duration duration, Throwable failure) {}
+
+    /** The account crossed the byte budget, so it stays on durable KV. Not a failure. */
+    default void refused(String accountId, Duration duration) {}
   }
 
   private final PointerStore durable;
   private final Ownership ownership;
   private final Executor warmExecutor;
   private final WarmObserver warmObserver;
+  private final Policy policy;
+  // Admission accounting only: set when a load completes and cleared when a partition is dropped.
+  // Mutations after a load are not tracked, so this drifts by the difference between a replaced
+  // pointer and its replacement -- small next to a budget, and never a reason to admit an account.
+  private final AtomicLong residentBytes = new AtomicLong();
   private final PlannerPartitionLoad loader;
+
   private final ConcurrentHashMap<String, Partition> partitions = new ConcurrentHashMap<>();
 
   public PlanningPointerIndex(PointerStore durable) {
@@ -113,8 +151,18 @@ public final class PlanningPointerIndex {
 
   PlanningPointerIndex(
       PointerStore durable, Ownership ownership, Executor warmExecutor, WarmObserver warmObserver) {
+    this(durable, ownership, warmExecutor, warmObserver, Policy.UNLIMITED);
+  }
+
+  public PlanningPointerIndex(
+      PointerStore durable,
+      Ownership ownership,
+      Executor warmExecutor,
+      WarmObserver warmObserver,
+      Policy policy) {
+    this.policy = java.util.Objects.requireNonNull(policy, "policy");
+    this.loader = new PlannerPartitionLoad(durable, policy);
     this.durable = java.util.Objects.requireNonNull(durable, "durable");
-    this.loader = new PlannerPartitionLoad(durable);
     this.ownership = java.util.Objects.requireNonNull(ownership, "ownership");
     this.warmExecutor = java.util.Objects.requireNonNull(warmExecutor, "warmExecutor");
     this.warmObserver = java.util.Objects.requireNonNull(warmObserver, "warmObserver");
@@ -499,6 +547,7 @@ public final class PlanningPointerIndex {
         }
       }
       partitions.clear();
+      residentBytes.set(0);
       return;
     }
     String partitionKey = partitionFor(prefix);
@@ -509,7 +558,16 @@ public final class PlanningPointerIndex {
           .keySet()
           .removeIf(key -> key.startsWith(prefix) && !java.util.Objects.equals(key, excludedKey));
     }
-    if (isAccountRoot(prefix)) partitions.remove(accountPartition(prefix));
+    if (isAccountRoot(prefix)) {
+      // Not forget(): this runs under the partition write lock, and forget() takes the registry
+      // monitor. Account-wide mutations take the monitor first and the write locks second, so
+      // reversing that order here is a deadlock. Drop the entry and release its bytes directly.
+      Partition removed = partitions.remove(accountPartition(prefix));
+      if (removed != null) {
+        residentBytes.addAndGet(-removed.residentBytes);
+        removed.residentBytes = 0;
+      }
+    }
   }
 
   Readiness readiness(String accountId) {
@@ -531,21 +589,42 @@ public final class PlanningPointerIndex {
   }
 
   public long completePartitionCount() {
-    return partitions.values().stream()
-        .filter(partition -> partition.readiness == Readiness.COMPLETE)
-        .count();
+    return countPartitions(partition -> partition.readiness == Readiness.COMPLETE);
   }
 
   public long loadingPartitionCount() {
-    return partitions.values().stream()
-        .filter(partition -> partition.readiness == Readiness.LOADING)
-        .count();
+    return countPartitions(
+        partition -> partition.readiness == Readiness.LOADING && !partition.refusedForSize);
+  }
+
+  /** Estimated heap admitted across every resident account, as weighed when each was loaded. */
+  public long residentBytes() {
+    return residentBytes.get();
+  }
+
+  /** Accounts left on durable KV because they did not fit the per-account or total budget. */
+  public long refusedPartitionCount() {
+    return countPartitions(partition -> partition.refusedForSize);
+  }
+
+  private long countPartitions(Predicate<Partition> predicate) {
+    return partitions.values().stream().filter(predicate).count();
+  }
+
+  /**
+   * Whether planner reads and listings may be answered from the index. When false the index never
+   * loads, so no partition is ever complete and every read falls back to durable KV -- the path a
+   * loading partition already takes.
+   */
+  public boolean enabled() {
+    return policy.enabled();
   }
 
   /** Clears local planner state after a test fixture or administrative wipe changed durable KV. */
   public void clear() {
     synchronized (partitions) {
       partitions.clear();
+      residentBytes.set(0);
     }
   }
 
@@ -555,7 +634,7 @@ public final class PlanningPointerIndex {
    * account cold forever.
    */
   public void warm(String accountId) {
-    if (accountId == null || accountId.isBlank()) return;
+    if (!policy.enabled() || accountId == null || accountId.isBlank()) return;
     Partition partition;
     synchronized (partitions) {
       partition = partitions.computeIfAbsent(accountId, ignored -> new Partition());
@@ -594,6 +673,8 @@ public final class PlanningPointerIndex {
       removed = partitions.remove(accountId);
     }
     if (removed != null) {
+      residentBytes.addAndGet(-removed.residentBytes);
+      removed.residentBytes = 0;
       removed.lock.writeLock().lock();
       try {
         removed.entries.clear();
@@ -610,7 +691,7 @@ public final class PlanningPointerIndex {
     // but reporting a start for a warm that will not attempt anything leaves an observation with
     // no completion behind it -- reads keep scheduling these, so the gap grows for as long as the
     // store stays unwell and looks like warms that never finished.
-    if (loadPaused(partition)) {
+    if (!policy.enabled() || loadPaused(partition)) {
       partition.warmScheduled.set(false);
       return;
     }
@@ -622,6 +703,7 @@ public final class PlanningPointerIndex {
     long startNanos = System.nanoTime();
     warmObserver.started(partitionKey);
     boolean loaded = false;
+    boolean refused = false;
     Throwable failure = null;
     partition.lock.writeLock().lock();
     try {
@@ -632,9 +714,16 @@ public final class PlanningPointerIndex {
       // with no completion behind it -- the very gap the early check exists to close. At worst
       // one attempt gets through and re-arms the pause when it fails.
       if (partitions.get(partitionKey) == partition && partition.readiness != Readiness.COMPLETE) {
-        loadLocked(partitionKey, partition);
-        loaded = true;
+        loaded = loadLocked(partitionKey, partition);
+        refused = !loaded;
       }
+    } catch (Error fatal) {
+      // An OutOfMemoryError here is this load, not the store. Arm the pause on the way out or the
+      // next read schedules the identical scan, and the process never recovers enough heap to
+      // answer anything. The budget should make this unreachable; it is the backstop for when the
+      // budget is set too high to help.
+      partition.loadRetryNotBeforeNanos = System.nanoTime() + LOAD_RETRY_PAUSE_NANOS;
+      throw fatal;
     } catch (RuntimeException loadFailure) {
       // A failed load is not a partial index. Keep it LOADING; a later read or mutation retries,
       // once the pause has passed -- reads reach here too, and reads are the common case.
@@ -647,6 +736,7 @@ public final class PlanningPointerIndex {
     }
     Duration duration = Duration.ofNanos(System.nanoTime() - startNanos);
     if (loaded) warmObserver.completed(partitionKey, duration);
+    else if (refused) warmObserver.refused(partitionKey, duration);
     else if (failure != null) warmObserver.failed(partitionKey, duration, failure);
   }
 
@@ -701,13 +791,34 @@ public final class PlanningPointerIndex {
   }
 
   /**
+   * Builds one account's image under the partition write lock. Returns false when the scan crossed
+   * the byte budget, leaving the partition LOADING: reads keep answering from durable KV, and the
+   * pause set here stops a refused account from re-scanning on every read that misses it.
+   *
+   * <p>The staging map is what makes a failure leave no partial index behind, and the budget is
+   * checked as it fills, so a refusal costs the budget rather than the account.
+   */
+  /**
    * Applies a freshly built image under the partition write lock. Building it is {@link
    * PlannerPartitionLoad}'s job; what stays here is the part that needs the lock and the registry.
    */
-  private void loadLocked(String partitionKey, Partition partition) {
+  private boolean loadLocked(String partitionKey, Partition partition) {
+    PlannerPartitionLoad.Result result =
+        loader.load(partitionKey, () -> residentBytes.get() - partition.residentBytes);
+    if (result.refusedForSize()) {
+      partition.refusedForSize = true;
+      partition.loadRetryNotBeforeNanos =
+          System.nanoTime() + refusalPauseNanos(partition.consecutiveRefusals++);
+      return false;
+    }
     partition.entries.clear();
-    partition.entries.putAll(loader.load(partitionKey));
+    partition.entries.putAll(result.entries());
+    residentBytes.addAndGet(result.bytes() - partition.residentBytes);
+    partition.residentBytes = result.bytes();
+    partition.refusedForSize = false;
+    partition.consecutiveRefusals = 0;
     partition.readiness = Readiness.COMPLETE;
+    return true;
   }
 
   private List<Partition> lockPartitionsForMutation(Collection<String> keys) {
@@ -809,13 +920,24 @@ public final class PlanningPointerIndex {
     }
   }
 
+  /**
+   * How long to wait before re-reading an account that did not fit. Separated from the partition it
+   * is applied to so the schedule can be asserted without a clock.
+   */
+  static long refusalPauseNanos(int consecutiveRefusals) {
+    int doublings = Math.min(Math.max(consecutiveRefusals, 0), MAX_REFUSAL_BACKOFF_DOUBLINGS);
+    return SIZE_REFUSAL_PAUSE_NANOS << doublings;
+  }
+
   /** nanoTime's origin is unspecified and may be negative, so compare differences, never values. */
   private static boolean loadPaused(Partition partition) {
     return System.nanoTime() - partition.loadRetryNotBeforeNanos < 0;
   }
 
   private void ensureLoadedWhileLocked(String name, Partition partition) {
-    if (partition.readiness == Readiness.COMPLETE || partitions.get(name) != partition) {
+    if (!policy.enabled()
+        || partition.readiness == Readiness.COMPLETE
+        || partitions.get(name) != partition) {
       return;
     }
     // A failed load leaves the caller's mutation valid, so the cheap thing is to carry on and
@@ -858,6 +980,11 @@ public final class PlanningPointerIndex {
     return Keys.decodeSegment(encodedAccount);
   }
 
+  /**
+   * Scanning the account root would read every operational row only to discard it. These prefixes
+   * come from the same allowlist as {@link Keys#pointerNamespace}, so they cover exactly what the
+   * index may admit -- a narrower list would answer authoritative absence for rows it never read.
+   */
   static List<String> loadPrefixes(String partition) {
     if (GLOBAL.equals(partition))
       return List.of(Keys.accountPointerByIdPrefix(), Keys.accountPointerByNamePrefix());
@@ -881,6 +1008,11 @@ public final class PlanningPointerIndex {
     private final ConcurrentNavigableMap<String, Pointer> entries = new ConcurrentSkipListMap<>();
     private final ConcurrentHashMap<String, KeyLock> keyLocks = new ConcurrentHashMap<>();
     private final AtomicBoolean warmScheduled = new AtomicBoolean();
+    // Why this partition is not COMPLETE, which readiness deliberately does not say: readiness
+    // answers whether absence is authoritative, and a refusal answers neither differently.
+    private volatile boolean refusedForSize;
+    private volatile int consecutiveRefusals;
+    private volatile long residentBytes;
     private volatile Readiness readiness = Readiness.LOADING;
     private volatile long loadRetryNotBeforeNanos = System.nanoTime();
   }

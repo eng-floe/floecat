@@ -29,7 +29,7 @@ identity; they do not replace a value in an existing key.
 
 | Discipline | Implementation | What it holds | Freshness contract |
 |------------|----------------|---------------|--------------------|
-| Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | All planner pointer records for an account, including current roots, names, snapshots, constraints, stats and hint-resource pointers | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter. |
+| Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | Account addressing state: names, identities, and each table's `root/current` and `snapshots/current`. Rows keyed by snapshot -- snapshot history, constraints, stats generations, index artifacts -- are durable-only, because a table commits far faster than its schema changes, including current roots, names, snapshots, constraints, stats and hint-resource pointers | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter. |
 | Objects | `ObjectCache` | Decoded relation metadata, mapped schemas, constraints, immutable generation-scoped snapshot facts and target-stat records | Entries are keyed by immutable content or generation identity. A live/newest stats read is read-through and is never retained. Account eviction removes every object entry for that account. |
 | Blobs | `DiskBlobCache` behind `BlobCacheAccess` | Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe | Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mmap content stays pinned until its scoped read closes. The disk budget and kill switch are `floecat.cache.blob.disk.*`; it is independent of the heap budget. |
 | Per-query state | `QueryContextStore` and per-query memos | `QueryContext` (pins, snapshot set, expansion map) keyed by query ID | Scoped to one query lease; consistency comes from pinning, not freshness. |
@@ -115,7 +115,8 @@ Only implemented in-memory families appear in `CacheFamily`; the disk blob cache
 physical-volume budget and lifecycle-shaped interface. It reuses the cache telemetry vocabulary
 where useful but does not pretend that files and heap entries share one budget.
 
-Pointer planning state is not budgeted by the generic memory-cache contract. The index is the
+Pointer planning state is not budgeted by the generic memory-cache contract; it has its own
+per-account cap, and refuses an account rather than evicting part of one. The index is the
 account's current in-memory representation and must stay complete; if it cannot be loaded, the
 durable adapter remains the answer until the next load attempt. Callers do not select a cached or
 authoritative view: every service path receives `IndexedPointerStore`, which chooses the in-memory
@@ -136,7 +137,8 @@ corruption and sweep signals because those are file-lifecycle events rather than
 | How full is it? | `floecat_core_cache_weighted_size_bytes` against `..._max_weight_bytes` |
 | How many entries? | `floecat_core_cache_entries` |
 | Is the budget too small? | `floecat_core_cache_evictions` and `..._evicted_weight_bytes` |
-| Are pointer indexes ready? | `floecat.service.planning.pointer.partitions`, tagged `result=loading|complete` |
+| Are pointer indexes ready? | `floecat.service.planning.pointer.partitions`, tagged `result=loading|complete|refused` |
+| Is an account too big to hold? | the same series tagged `result=refused`; refusals are logged with `account_id` |
 | How is pointer warming behaving? | `floecat.service.planning.pointer.warm.*`; failures are also logged with `account_id` |
 | Which pointer entries are resident? | `floecat.service.planning.pointer.entries` |
 
@@ -149,14 +151,22 @@ Warm-up metrics are intentionally aggregate: account IDs are not metric labels. 
 also emits a structured log containing the account ID, elapsed time, and exception, so an operator
 can identify the affected account without creating one time series per account.
 
-Nothing expires in the pointer index. The eviction series count only capacity-driven removals in
-the memory-cache families; explicit deletes and prefix sweeps are not included. A non-zero
+Nothing expires in the pointer index: an account is admitted whole or not at all. An account is refused during the
+load, and answered from durable KV, when it exceeds either `max-heap-share` on its own or
+`max-total-heap-share` beside the accounts already resident -- a per-account cap alone is unbounded
+in the number of accounts. A refusal shows up as `result=refused` rather than as an account that
+never finishes warming, and backs off on each consecutive refusal: nothing the index does makes the
+account smaller, so only a durable sweep will change the answer. The eviction series count only
+capacity-driven removals in the memory-cache families; explicit deletes and prefix sweeps are not included. A non-zero
 eviction rate therefore directly signals size pressure. The weight alongside the count
 distinguishes many small evictions from a few large ones.
 
-There is no independent pointer-cache switch. Pointer reads always go through `IndexedPointerStore`;
-the durable adapter is used automatically while an account index is loading and for operational
-keys. This keeps the read and mutation path identical in tests and production.
+`floecat.planner.pointer-index.enabled` takes the index out of the read path without a rollback. It
+is fixed for the life of the process, exactly as `floecat.cache.object.enabled` is. While it is off
+the index never loads, so no partition is ever complete, reads and listings go straight to durable
+KV, and mutations still run through `IndexedPointerStore` and keep the partition and key locks that
+order a publish against a load. Otherwise the durable adapter is used automatically while an
+account index is loading and for operational keys.
 
 ## Deliberately live reads
 These reads bypass every cache because their result is a detector, not content:

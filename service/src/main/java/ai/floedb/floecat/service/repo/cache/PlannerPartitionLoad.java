@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.cache;
 
+import ai.floedb.floecat.cache.CacheWeights;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -23,9 +24,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.NavigableMap;
 import java.util.TreeMap;
+import java.util.function.LongSupplier;
 
 /**
- * Builds one account's planner image from durable storage.
+ * Builds one account's planner image from durable storage, within a byte budget.
  *
  * <p>Two phases, because the planner keys under a table are not a prefix: the table id sits above
  * {@code root/current} and {@code snapshots/current}, so scanning to reach them would mean reading
@@ -33,7 +35,7 @@ import java.util.TreeMap;
  * The scan therefore covers the prefix families, and the per-table keys are fetched by id.
  *
  * <p>Returns an image rather than filling a partition: the caller holds the locks and owns the
- * registry, and a failure part way through must leave no partial state behind.
+ * registry, and a refusal must leave no partial state behind.
  */
 final class PlannerPartitionLoad {
   private static final int PAGE_SIZE = 1_000;
@@ -41,13 +43,29 @@ final class PlannerPartitionLoad {
   private static final int PER_TABLE_BATCH_KEYS = 100;
 
   private final PointerStore durable;
+  private final PlanningPointerIndex.Policy policy;
 
-  PlannerPartitionLoad(PointerStore durable) {
+  PlannerPartitionLoad(PointerStore durable, PlanningPointerIndex.Policy policy) {
     this.durable = durable;
+    this.policy = policy;
   }
 
-  NavigableMap<String, Pointer> load(String partitionKey) {
-    TreeMap<String, Pointer> loaded = new TreeMap<>();
+  /**
+   * The image, or a refusal. {@code entries} is empty on a refusal, so a caller that ignores the
+   * flag still cannot publish a partial account.
+   */
+  record Result(NavigableMap<String, Pointer> entries, long bytes, boolean refusedForSize) {
+    static Result refused() {
+      return new Result(new TreeMap<>(), 0, true);
+    }
+  }
+
+  /**
+   * @param otherAccountBytes what every other resident account holds, read as the scan proceeds so
+   *     a load completing alongside this one tightens the budget rather than being missed.
+   */
+  Result load(String partitionKey, LongSupplier otherAccountBytes) {
+    Admission admission = new Admission(otherAccountBytes);
     List<String> tableIds = new ArrayList<>();
     String tablesById = Keys.tablePointerByIdPrefix(partitionKey);
 
@@ -62,7 +80,9 @@ final class PlannerPartitionLoad {
               || !PlanningPointerIndex.isPlanningKey(key)) {
             continue;
           }
-          loaded.put(key, pointer);
+          if (!admission.admit(pointer)) {
+            return Result.refused();
+          }
           if (key.startsWith(tablesById)) {
             // Only a bare id. A blank one would make Keys reject the per-table key and fail every
             // retry identically, so one malformed row would disable the account for good.
@@ -80,12 +100,13 @@ final class PlannerPartitionLoad {
       } while (!token.isBlank());
     }
 
-    loadPerTableKeys(partitionKey, tableIds, loaded);
-    return loaded;
+    return admitPerTableKeys(partitionKey, tableIds, admission)
+        ? new Result(admission.loaded, admission.bytes, false)
+        : Result.refused();
   }
 
-  private void loadPerTableKeys(
-      String partitionKey, List<String> tableIds, TreeMap<String, Pointer> loaded) {
+  private boolean admitPerTableKeys(
+      String partitionKey, List<String> tableIds, Admission admission) {
     List<String> batch = new ArrayList<>(PER_TABLE_BATCH_KEYS);
     for (int i = 0; i < tableIds.size(); i++) {
       batch.addAll(Keys.plannerTableKeys(partitionKey, tableIds.get(i)));
@@ -94,11 +115,38 @@ final class PlannerPartitionLoad {
         continue;
       }
       for (Pointer pointer : durable.getBatchConsistent(batch).values()) {
-        if (PlanningPointerIndex.isPlanningKey(pointer.getKey())) {
-          loaded.put(pointer.getKey(), pointer);
+        if (PlanningPointerIndex.isPlanningKey(pointer.getKey()) && !admission.admit(pointer)) {
+          return false;
         }
       }
       batch.clear();
+    }
+    return true;
+  }
+
+  /**
+   * The image as it fills, and the budget it fills against. Weighing on the way in means a refusal
+   * costs the budget rather than the account.
+   */
+  private final class Admission {
+    private final TreeMap<String, Pointer> loaded = new TreeMap<>();
+    private final LongSupplier otherAccountBytes;
+    private long bytes;
+
+    Admission(LongSupplier otherAccountBytes) {
+      this.otherAccountBytes = otherAccountBytes;
+    }
+
+    boolean admit(Pointer pointer) {
+      bytes += CacheWeights.entry(pointer, 2L * pointer.getKey().length());
+      // One account must fit its own cap, and must still fit beside the accounts already resident:
+      // a per-account cap alone is unbounded in the number of accounts.
+      if (bytes > policy.maxBytesPerAccount()
+          || otherAccountBytes.getAsLong() + bytes > policy.maxBytesTotal()) {
+        return false;
+      }
+      loaded.put(pointer.getKey(), pointer);
+      return true;
     }
   }
 }

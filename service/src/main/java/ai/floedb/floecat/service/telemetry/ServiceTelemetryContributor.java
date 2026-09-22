@@ -120,6 +120,12 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "Number of planner pointer entries resident in the authoritative in-memory index.");
     add(
         defs,
+        ServiceMetrics.PlanningPointer.BYTES,
+        planningPointerRequired,
+        planningPointerRequired,
+        "Heap the planner pointer index admitted across resident accounts, as weighed on load.");
+    add(
+        defs,
         ServiceMetrics.PlanningPointer.WARM_STARTS,
         planningPointerRequired,
         planningPointerRequired,
