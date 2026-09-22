@@ -39,8 +39,9 @@ import java.util.function.LongSupplier;
  */
 final class PlannerPartitionLoad {
   private static final int PAGE_SIZE = 1_000;
-  // Two keys per table, kept under the store's batch-get ceiling.
-  private static final int PER_TABLE_BATCH_KEYS = 100;
+  // How much a batch materialises before the budget weighs it, and how many reads the store
+  // chunks it into. The store handles its own ceiling.
+  private static final int PER_TABLE_BATCH_KEYS = 1_000;
 
   private final PointerStore durable;
   private final PlanningPointerIndex.Policy policy;
