@@ -24,6 +24,15 @@ interface RemotePlannerWorkerClient {
     return 8;
   }
 
+  default int planTableChunkTargetBytes() {
+    return 128 * 1024;
+  }
+
+  default int estimatedPlanTableChunkItemBytes(
+      RemoteLeasedJob lease, PlannedSnapshotJob snapshotJob) {
+    return 1;
+  }
+
   record PlanViewSubmitResult(boolean accepted, long viewsChanged) {}
 
   StandalonePlanConnectorPayload getPlanConnectorInput(RemoteLeasedJob lease);
@@ -41,10 +50,7 @@ interface RemotePlannerWorkerClient {
   StandalonePlanTablePayload getPlanTableInput(RemoteLeasedJob lease);
 
   boolean submitPlanTableChunk(
-      RemoteLeasedJob lease,
-      int chunkIndex,
-      List<PlannedSnapshotJob> snapshotJobs,
-      int chunkCount);
+      RemoteLeasedJob lease, int chunkIndex, List<PlannedSnapshotJob> snapshotJobs);
 
   boolean submitPlanTableSuccess(
       RemoteLeasedJob lease,

@@ -27,7 +27,9 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -131,11 +133,15 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             .setCorrelationId("reconciler-job-" + lease.jobId)
             .build();
 
-    int snapshotChunkMaxCount = Math.max(1, workerClient.planTableChunkMaxCount());
+    int configuredChunkMaxCount = workerClient.planTableChunkMaxCount();
+    int snapshotChunkMaxCount = configuredChunkMaxCount > 0 ? configuredChunkMaxCount : 8;
+    int configuredChunkTargetBytes = workerClient.planTableChunkTargetBytes();
+    int snapshotChunkTargetBytes =
+        configuredChunkTargetBytes > 0 ? configuredChunkTargetBytes : 128 * 1024;
     int[] submittedSnapshotChunks = {0};
-    long[] lastSnapshotId = {Long.MIN_VALUE};
-    List<PlannedSnapshotJob> pendingSnapshotJobs =
-        new java.util.ArrayList<>(snapshotChunkMaxCount);
+    int[] pendingSnapshotBytes = {0};
+    Set<Long> emittedSnapshotIds = new HashSet<>();
+    List<PlannedSnapshotJob> pendingSnapshotJobs = new ArrayList<>(snapshotChunkMaxCount);
     QueuedReconcileWorkerSupport.TableExecutionResult tableExecution =
         queuedWorkerSupport.executePlannedTable(
             principal,
@@ -156,10 +162,9 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
               FloecatConnector.SnapshotBundle bundle = emission.bundle();
               if (bundle == null
                   || bundle.snapshotId() < 0L
-                  || bundle.snapshotId() == lastSnapshotId[0]) {
+                  || !emittedSnapshotIds.add(bundle.snapshotId())) {
                 return;
               }
-              lastSnapshotId[0] = bundle.snapshotId();
               ReconcileSnapshotTask snapshotTask =
                   ReconcileSnapshotTask.of(
                           emission.tableId().getId(),
@@ -171,14 +176,35 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
                           metadataFingerprint(bundle, bundle.snapshotId()),
                           ReconcileSnapshotContentState.coverage(
                               payload.captureMode(), payload.scope()));
-              pendingSnapshotJobs.add(new PlannedSnapshotJob(payload.scope(), snapshotTask));
-              if (pendingSnapshotJobs.size() == snapshotChunkMaxCount) {
+              PlannedSnapshotJob snapshotJob =
+                  new PlannedSnapshotJob(payload.scope(), snapshotTask);
+              int snapshotJobBytes =
+                  Math.max(
+                      1,
+                      workerClient.estimatedPlanTableChunkItemBytes(remoteLease, snapshotJob));
+              if (!pendingSnapshotJobs.isEmpty()
+                  && (pendingSnapshotJobs.size() >= snapshotChunkMaxCount
+                      || pendingSnapshotBytes[0] + snapshotJobBytes
+                          > snapshotChunkTargetBytes)) {
                 int chunkIndex = submittedSnapshotChunks[0]++;
                 if (!workerClient.submitPlanTableChunk(
-                    remoteLease, chunkIndex, List.copyOf(pendingSnapshotJobs), 0)) {
+                    remoteLease, chunkIndex, List.copyOf(pendingSnapshotJobs))) {
                   throw plannerSubmissionRejected();
                 }
                 pendingSnapshotJobs.clear();
+                pendingSnapshotBytes[0] = 0;
+              }
+              pendingSnapshotJobs.add(snapshotJob);
+              pendingSnapshotBytes[0] += snapshotJobBytes;
+              if (pendingSnapshotJobs.size() >= snapshotChunkMaxCount
+                  || pendingSnapshotBytes[0] >= snapshotChunkTargetBytes) {
+                int chunkIndex = submittedSnapshotChunks[0]++;
+                if (!workerClient.submitPlanTableChunk(
+                    remoteLease, chunkIndex, List.copyOf(pendingSnapshotJobs))) {
+                  throw plannerSubmissionRejected();
+                }
+                pendingSnapshotJobs.clear();
+                pendingSnapshotBytes[0] = 0;
               }
             });
     ExecutionResult result = tableExecution.result();
@@ -187,14 +213,34 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
       return result;
     }
     if (result.error != null) {
+      if (result.error instanceof RemoteLeasePreconditionFailedException) {
+        return leaseNoLongerValid(context, lease, connectorId, result);
+      }
+      if (result.retryClass == ExecutionResult.RetryClass.STATE_UNCERTAIN) {
+        if (result.error instanceof RuntimeException runtimeException) {
+          throw runtimeException;
+        }
+        throw new RuntimeException(result.error);
+      }
+      ReconcileTableTask task =
+          payload.tableTask() == null ? ReconcileTableTask.empty() : payload.tableTask();
       LOG.warnf(
           result.error,
-          "PLAN_TABLE execution failed jobId=%s connectorId=%s failureKind=%s retryDisposition=%s message=%s",
+          "PLAN_TABLE execution failed jobId=%s connectorId=%s tableId=%s source=%s.%s"
+              + " captureMode=%s fullRescan=%s failureKind=%s retryDisposition=%s retryClass=%s"
+              + " message=%s rootCause=%s",
           lease.jobId,
           connectorId,
+          task.destinationTableId(),
+          task.sourceNamespace(),
+          task.sourceTable(),
+          payload.captureMode(),
+          payload.fullRescan(),
           result.failureKind,
           result.retryDisposition,
-          result.message);
+          result.retryClass,
+          result.message,
+          rootCauseMessage(result.error));
       try {
         workerClient.submitPlanTableFailure(
             remoteLease,
@@ -240,7 +286,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
     if (!pendingSnapshotJobs.isEmpty()) {
       int chunkIndex = submittedSnapshotChunks[0]++;
       if (!workerClient.submitPlanTableChunk(
-          remoteLease, chunkIndex, List.copyOf(pendingSnapshotJobs), 0)) {
+          remoteLease, chunkIndex, List.copyOf(pendingSnapshotJobs))) {
         throw plannerSubmissionRejected();
       }
       pendingSnapshotJobs.clear();
@@ -370,6 +416,27 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         ExecutionResult.RetryClass.STATE_UNCERTAIN,
         "standalone planner result submission was rejected",
         new IllegalStateException("planner result submission rejected"));
+  }
+
+  private static String rootCauseMessage(Throwable error) {
+    Throwable root = rootCause(error);
+    if (root == null) {
+      return "";
+    }
+    String message = root.getMessage();
+    return message == null || message.isBlank() ? root.getClass().getSimpleName() : message;
+  }
+
+  private static Throwable rootCause(Throwable error) {
+    var seen = new HashSet<Throwable>();
+    Throwable current = error;
+    Throwable last = null;
+    while (current != null && !seen.contains(current)) {
+      seen.add(current);
+      last = current;
+      current = current.getCause();
+    }
+    return last;
   }
 
   static String sourceRevision(FloecatConnector.SnapshotBundle bundle, long snapshotId) {

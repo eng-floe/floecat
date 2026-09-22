@@ -624,10 +624,7 @@ class GrpcRemoteReconcileExecutorClient
   }
 
   public boolean submitPlanTableChunk(
-      RemoteLeasedJob lease,
-      int chunkIndex,
-      List<PlannedSnapshotJob> snapshotJobs,
-      int chunkCount) {
+      RemoteLeasedJob lease, int chunkIndex, List<PlannedSnapshotJob> snapshotJobs) {
     List<ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob> protoSnapshotJobs =
         new ArrayList<>();
     for (PlannedSnapshotJob snapshotJob : snapshotJobs) {
@@ -654,7 +651,7 @@ class GrpcRemoteReconcileExecutorClient
       return invokePlannerMutationOnce(
           "submitLeasedPlanTableResult",
           "PLAN_TABLE",
-          "chunk-" + (chunkIndex + 1) + "-of-" + chunkCount,
+          "chunk-" + (chunkIndex + 1),
           lease,
           request,
           stub -> stub.submitLeasedPlanTableResult(request).getAccepted());
@@ -666,6 +663,24 @@ class GrpcRemoteReconcileExecutorClient
   @Override
   public int planTableChunkMaxCount() {
     return planTableChildJobChunkMaxCount;
+  }
+
+  @Override
+  public int planTableChunkTargetBytes() {
+    return PLAN_CHILD_JOB_CHUNK_TARGET_BYTES;
+  }
+
+  @Override
+  public int estimatedPlanTableChunkItemBytes(
+      RemoteLeasedJob lease, PlannedSnapshotJob snapshotJob) {
+    if (snapshotJob == null || snapshotJob.snapshotTask() == null) {
+      return 0;
+    }
+    return estimatedChunkItemBytes(
+        ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob.newBuilder()
+            .setScope(toProtoScope(snapshotJob.scope(), lease.lease()))
+            .setSnapshotTask(toProtoSnapshotTask(snapshotJob.snapshotTask()))
+            .build());
   }
 
   @Override

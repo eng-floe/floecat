@@ -323,6 +323,16 @@ class DeltaConnectorTest {
             FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(0L, 1L)))) {
       assertEquals(List.of(2L), snapshots.map(b -> b.snapshotId()).toList());
     }
+
+    try (var snapshots =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.incremental(
+                Set.of(), Set.of(0L)))) {
+      assertEquals(List.of(0L), snapshots.map(b -> b.snapshotId()).toList());
+    }
   }
 
   private static void writeDeltaCommit(Path logPath, long version, String... actions)

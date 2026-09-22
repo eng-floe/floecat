@@ -1136,7 +1136,8 @@ class QueuedReconcileWorkerSupport {
     // Capture modes still require a policy even though durable content state now decides
     // completeness.
     ReconcilerService.effectiveCapturePolicy(scope, captureMode);
-    Set<Long> enumerationKnownSnapshotIds = knownSnapshotIds;
+    Set<Long> enumerationKnownSnapshotIds =
+        captureMode == CaptureMode.METADATA_ONLY ? knownSnapshotIds : Set.of();
     Set<Long> enumerationTargetSnapshotIds =
         captureOnly
             ? ReconcilerService.captureOnlyEnumerationTargetSnapshotIds(
@@ -1696,6 +1697,7 @@ class QueuedReconcileWorkerSupport {
           result.statsProcessed,
           failureKindOf(result.error),
           retryDispositionOf(result.error),
+          retryClassOf(result.error),
           result.message(),
           result.error);
     }
@@ -1722,6 +1724,13 @@ class QueuedReconcileWorkerSupport {
       return failure.retryDisposition();
     }
     return ExecutionResult.RetryDisposition.RETRYABLE;
+  }
+
+  private static ExecutionResult.RetryClass retryClassOf(Exception error) {
+    if (error instanceof ReconcileFailureException failure) {
+      return failure.retryClass();
+    }
+    return ExecutionResult.RetryClass.TRANSIENT_ERROR;
   }
 
   Optional<Snapshot> buildSnapshot(
@@ -2219,6 +2228,10 @@ class QueuedReconcileWorkerSupport {
     }
   }
 
+  /**
+   * Enumeration results are retained only for the local batch path. When an emission consumer is
+   * present, each bundle is delivered immediately and both retained lists are empty.
+   */
   private record MetadataPassOutcome(
       IngestCounts ingestCounts,
       boolean tableChanged,

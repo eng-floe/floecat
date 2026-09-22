@@ -1302,7 +1302,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                     ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
     var result =
         reconcileTableTask(
-            tableId, true, scope, ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+            tableId, false, scope, ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
 
     assertThat(result.ok()).isTrue();
     assertThat(result.degraded()).isFalse();

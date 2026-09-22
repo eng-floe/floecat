@@ -178,7 +178,9 @@ abstract class DeltaConnector implements FloecatConnector {
 
     FloecatConnector.SnapshotSelectionKind selectionKind =
         options == null ? FloecatConnector.SnapshotSelectionKind.ALL : options.selectionKind();
-    if (table instanceof TableImpl && selectionKind == FloecatConnector.SnapshotSelectionKind.ALL) {
+    if (table instanceof TableImpl
+        && selectionKind == FloecatConnector.SnapshotSelectionKind.ALL
+        && targetSnapshotIds.isEmpty()) {
       return enumerateDeltaCommits(
           storageLocation,
           table,
