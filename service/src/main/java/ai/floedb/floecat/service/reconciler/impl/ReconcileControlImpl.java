@@ -47,6 +47,7 @@ import ai.floedb.floecat.reconciler.rpc.GetFinalizedSnapshotStatusResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
+import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeResponse;
 import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcilerSettingsResponse;
 import ai.floedb.floecat.reconciler.rpc.JobState;
@@ -79,7 +80,6 @@ import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
-import io.smallrye.mutiny.subscription.MultiEmitter;
 import jakarta.inject.Inject;
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -89,6 +89,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -281,32 +283,73 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
   }
 
   @Override
-  public Multi<GetReconcileJobResponse> getReconcileJobTree(GetReconcileJobTreeRequest request) {
+  public Uni<GetReconcileJobTreeResponse> getReconcileJobTree(GetReconcileJobTreeRequest request) {
     var L = LogHelper.start(LOG, "GetReconcileJobTree");
+    String correlationId = correlationId();
+    return mapFailures(
+            run(
+                () -> {
+                  try {
+                    var principalContext = principalProvider.get();
+                    authz.require(principalContext, "connector.manage");
+                    var response = GetReconcileJobTreeResponse.newBuilder();
+                    visitReconcileJobTree(
+                        principalContext.getAccountId(),
+                        requireReconcileJobTreeRoot(
+                            principalContext.getAccountId(), request.getJobId(), correlationId),
+                        () -> false,
+                        job ->
+                            response.addJobs(
+                                toResponse(principalContext.getAccountId(), job, false)));
+                    observeReconcileRequestCounter(
+                        ServiceMetrics.Reconcile.GET_JOB,
+                        "get_reconcile_job_tree",
+                        "success",
+                        null);
+                    return response.build();
+                  } catch (RuntimeException e) {
+                    observeReconcileRequestCounter(
+                        ServiceMetrics.Reconcile.GET_JOB,
+                        "get_reconcile_job_tree",
+                        "error",
+                        normalizeReason(e));
+                    throw e;
+                  }
+                }),
+            correlationId)
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  @Override
+  public Multi<GetReconcileJobResponse> streamReconcileJobTree(GetReconcileJobTreeRequest request) {
+    var L = LogHelper.start(LOG, "StreamReconcileJobTree");
     return this.<GetReconcileJobResponse>runStreamEmitter(
             (callCtx, emitter) -> {
               var principalContext = callCtx.principalContext();
               var correlationId = callCtx.effectiveCorrelationId();
               try {
                 authz.require(principalContext, "connector.manage");
-                ReconcileJobStore.ReconcileJob root =
-                    jobs.get(principalContext.getAccountId(), request.getJobId())
-                        .orElseThrow(
-                            () ->
-                                GrpcErrors.notFound(
-                                    correlationId,
-                                    GeneratedErrorMessages.MessageKey.JOB,
-                                    Map.of("id", request.getJobId())));
-                emitReconcileJobTree(principalContext.getAccountId(), root, emitter);
+                visitReconcileJobTree(
+                    principalContext.getAccountId(),
+                    requireReconcileJobTreeRoot(
+                        principalContext.getAccountId(), request.getJobId(), correlationId),
+                    emitter::isCancelled,
+                    job -> emitter.emit(toResponse(principalContext.getAccountId(), job, false)));
                 if (!emitter.isCancelled()) {
                   observeReconcileRequestCounter(
-                      ServiceMetrics.Reconcile.GET_JOB, "get_reconcile_job_tree", "success", null);
+                      ServiceMetrics.Reconcile.GET_JOB,
+                      "stream_reconcile_job_tree",
+                      "success",
+                      null);
                   emitter.complete();
                 }
               } catch (RuntimeException e) {
                 observeReconcileRequestCounter(
                     ServiceMetrics.Reconcile.GET_JOB,
-                    "get_reconcile_job_tree",
+                    "stream_reconcile_job_tree",
                     "error",
                     normalizeReason(e));
                 if (!emitter.isCancelled()) {
@@ -320,18 +363,28 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
         .invoke(L::ok);
   }
 
-  private void emitReconcileJobTree(
+  private ReconcileJobStore.ReconcileJob requireReconcileJobTreeRoot(
+      String accountId, String jobId, String correlationId) {
+    return jobs.get(accountId, jobId)
+        .orElseThrow(
+            () ->
+                GrpcErrors.notFound(
+                    correlationId, GeneratedErrorMessages.MessageKey.JOB, Map.of("id", jobId)));
+  }
+
+  private void visitReconcileJobTree(
       String accountId,
       ReconcileJobStore.ReconcileJob root,
-      MultiEmitter<? super GetReconcileJobResponse> emitter) {
+      BooleanSupplier cancelled,
+      Consumer<ReconcileJobStore.ReconcileJob> visitor) {
     final int childPageSize = 200;
     ArrayDeque<String> pendingParents = new ArrayDeque<>();
-    emitter.emit(toResponse(accountId, root, false));
+    visitor.accept(root);
     if (supportsChildAggregation(root.jobKind)) {
       pendingParents.addLast(root.jobId);
     }
 
-    while (!pendingParents.isEmpty() && !emitter.isCancelled()) {
+    while (!pendingParents.isEmpty() && !cancelled.getAsBoolean()) {
       String parentJobId = pendingParents.removeFirst();
       String pageToken = "";
       do {
@@ -352,11 +405,11 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
             throw new IllegalStateException(
                 "child job traversal returned a null job for parent " + parentJobId);
           }
-          emitter.emit(toResponse(accountId, child, false));
+          visitor.accept(child);
           if (supportsChildAggregation(child.jobKind)) {
             pendingParents.addLast(child.jobId);
           }
-          if (emitter.isCancelled()) {
+          if (cancelled.getAsBoolean()) {
             return;
           }
         }
@@ -366,7 +419,7 @@ public class ReconcileControlImpl extends BaseServiceImpl implements ReconcileCo
                   + parentJobId);
         }
         pageToken = nextPageToken;
-      } while (!pageToken.isBlank() && !emitter.isCancelled());
+      } while (!pageToken.isBlank() && !cancelled.getAsBoolean());
     }
   }
 

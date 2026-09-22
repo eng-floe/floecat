@@ -1278,6 +1278,13 @@ message GetReconcileJobTreeRequest {
   string job_id = 1;
 }
 
+// Legacy unary job-tree response. New clients should use StreamReconcileJobTree so large trees are
+// not constrained by the maximum unary gRPC message size.
+message GetReconcileJobTreeResponse {
+  option deprecated = true;
+  repeated GetReconcileJobResponse jobs = 1;
+}
+
 message GetFinalizedSnapshotStatusRequest {
   ai.floedb.floecat.common.ResourceId table_id = 1;
   uint64 snapshot_id = 2;
@@ -1357,9 +1364,14 @@ service ReconcileControl {
   rpc StartCapture(StartCaptureRequest) returns (StartCaptureResponse);
   // Returns one reconcile job by id.
   rpc GetReconcileJob(GetReconcileJobRequest) returns (GetReconcileJobResponse);
+  // Returns one reconcile job plus all descendants. Retained for existing downstream clients; new
+  // clients should use StreamReconcileJobTree.
+  rpc GetReconcileJobTree(GetReconcileJobTreeRequest) returns (GetReconcileJobTreeResponse) {
+    option deprecated = true;
+  }
   // Streams one reconcile job followed by all descendants. Each job is a separate gRPC message so
   // large reconcile trees do not exceed unary response limits.
-  rpc GetReconcileJobTree(GetReconcileJobTreeRequest) returns (stream GetReconcileJobResponse);
+  rpc StreamReconcileJobTree(GetReconcileJobTreeRequest) returns (stream GetReconcileJobResponse);
   // Lists reconcile jobs visible to the caller.
   rpc ListReconcileJobs(ListReconcileJobsRequest) returns (ListReconcileJobsResponse);
   // Returns finalization state for one snapshot.

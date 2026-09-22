@@ -1026,6 +1026,26 @@ class ReconcileControlImplTest {
   }
 
   @Test
+  void getReconcileJobTreeRetainsTheLegacyUnaryContract() {
+    var root = job("plan-1", "JS_RUNNING", 1, 0, 0, "");
+    var leaf = fileGroupChildJob("group-1", "JS_QUEUED", "plan-1", "group-1");
+    when(service.jobs.get("acct", "plan-1")).thenReturn(Optional.of(root));
+    when(service.jobs.childTreeJobsPage("acct", "plan-1", 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(leaf), ""));
+
+    var response =
+        service
+            .getReconcileJobTree(GetReconcileJobTreeRequest.newBuilder().setJobId("plan-1").build())
+            .await()
+            .indefinitely();
+
+    assertEquals(2, response.getJobsCount());
+    assertEquals("plan-1", response.getJobs(0).getJobId());
+    assertEquals("group-1", response.getJobs(1).getJobId());
+    verify(service.jobs, never()).childTreeJobsPage("acct", "group-1", 200, "");
+  }
+
+  @Test
   void getReconcileJobTreeFailsOnNonAdvancingContinuationToken() {
     var root = job("plan-1", "JS_RUNNING", 1, 0, 0, "");
     var leaf = fileGroupChildJob("group-1", "JS_QUEUED", "plan-1", "group-1");
@@ -1051,7 +1071,7 @@ class ReconcileControlImplTest {
     return ResolvedCallContexts.callWith(
         callContext,
         () ->
-            service.getReconcileJobTree(
+            service.streamReconcileJobTree(
                 GetReconcileJobTreeRequest.newBuilder().setJobId(jobId).build()));
   }
 

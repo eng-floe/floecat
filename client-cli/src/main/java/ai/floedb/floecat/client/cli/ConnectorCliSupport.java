@@ -1015,7 +1015,7 @@ final class ConnectorCliSupport {
 
   private static Iterator<GetReconcileJobResponse> streamReconcileJobTree(
       String rootJobId, ReconcileControlGrpc.ReconcileControlBlockingStub reconcileControl) {
-    return reconcileControl.getReconcileJobTree(
+    return reconcileControl.streamReconcileJobTree(
         GetReconcileJobTreeRequest.newBuilder().setJobId(rootJobId).build());
   }
 

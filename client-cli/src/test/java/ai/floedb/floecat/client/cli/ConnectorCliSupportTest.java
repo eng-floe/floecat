@@ -788,7 +788,7 @@ class ConnectorCliSupportTest {
           () -> "acct-1");
 
       assertEquals(0, h.reconcileControlService.listReconcileJobsCalls.get());
-      assertEquals(1, h.reconcileControlService.getReconcileJobTreeCalls.get());
+      assertEquals(1, h.reconcileControlService.streamReconcileJobTreeCalls.get());
       assertTrue(buf.toString().contains("JOB_TREE"));
       assertTrue(buf.toString().contains("INDEXES"));
       assertTrue(buf.toString().contains("job-plan-1"));
@@ -1308,7 +1308,7 @@ class ConnectorCliSupportTest {
 
     final AtomicInteger startCaptureCalls = new AtomicInteger();
     final AtomicInteger getReconcileJobCalls = new AtomicInteger();
-    final AtomicInteger getReconcileJobTreeCalls = new AtomicInteger();
+    final AtomicInteger streamReconcileJobTreeCalls = new AtomicInteger();
     final AtomicInteger listReconcileJobsCalls = new AtomicInteger();
     final AtomicInteger cancelReconcileJobCalls = new AtomicInteger();
     final AtomicInteger getReconcilerSettingsCalls = new AtomicInteger();
@@ -1341,10 +1341,10 @@ class ConnectorCliSupportTest {
     }
 
     @Override
-    public void getReconcileJobTree(
+    public void streamReconcileJobTree(
         ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest request,
         StreamObserver<ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse> responseObserver) {
-      getReconcileJobTreeCalls.incrementAndGet();
+      streamReconcileJobTreeCalls.incrementAndGet();
       getJobTreeResponse.forEach(responseObserver::onNext);
       responseObserver.onCompleted();
     }
