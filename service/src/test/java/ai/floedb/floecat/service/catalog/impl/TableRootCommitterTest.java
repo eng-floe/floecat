@@ -228,6 +228,8 @@ class TableRootCommitterTest {
     when(failing.update(any(), anyLong()))
         .thenThrow(new BaseResourceRepository.NotFoundException("pointer gone"));
     var failingCommitter = new TableRootCommitter(failing, new TableBlobReachabilityGuard());
+    failingCommitter.commitBackoffBaseMs = 1L;
+    failingCommitter.commitBackoffMaxMs = 1L;
 
     assertThrows(
         TableRootCommitter.CommitFailedException.class,
@@ -247,6 +249,8 @@ class TableRootCommitterTest {
         .thenReturn(Optional.of(TableRoot.newBuilder().setTableId(TABLE).build()));
     when(contended.update(any(), anyLong())).thenReturn(false); // never wins
     var contendedCommitter = new TableRootCommitter(contended, new TableBlobReachabilityGuard());
+    contendedCommitter.commitBackoffBaseMs = 1L;
+    contendedCommitter.commitBackoffMaxMs = 1L;
 
     assertThrows(
         TableRootCommitter.CommitFailedException.class,
@@ -257,12 +261,59 @@ class TableRootCommitterTest {
   }
 
   @Test
+  @Timeout(10)
+  void remoteCasLossReleasesTheLocalTableLockDuringBackoff() throws Exception {
+    var contended = mock(TableRootRepository.class);
+    when(contended.metaForSafeConsistent(TABLE))
+        .thenReturn(
+            MutationMeta.newBuilder().setPointerVersion(3L).setBlobUri("s3://t/root.pb").build());
+    when(contended.getByBlobUriLive("s3://t/root.pb"))
+        .thenReturn(Optional.of(TableRoot.newBuilder().setTableId(TABLE).build()));
+    var firstCasLost = new CountDownLatch(1);
+    var updates = new AtomicInteger();
+    when(contended.update(any(), anyLong()))
+        .thenAnswer(
+            ignored -> {
+              if (updates.getAndIncrement() == 0) {
+                firstCasLost.countDown();
+                return false;
+              }
+              return true;
+            });
+    var contendedCommitter = new TableRootCommitter(contended, new TableBlobReachabilityGuard());
+    contendedCommitter.commitBackoffBaseMs = 5_000L;
+    contendedCommitter.commitBackoffMaxMs = 5_000L;
+    var pool = Executors.newFixedThreadPool(2);
+    Future<Optional<TableRoot>> first =
+        pool.submit(
+            () ->
+                contendedCommitter.commit(
+                    TABLE,
+                    current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
+    try {
+      assertTrue(firstCasLost.await(1, TimeUnit.SECONDS));
+      Future<Optional<TableRoot>> second =
+          pool.submit(
+              () ->
+                  contendedCommitter.commit(
+                      TABLE,
+                      current ->
+                          current.orElseThrow().toBuilder().setCurrentSnapshotId(2L).build()));
+
+      assertEquals(2L, second.get(1, TimeUnit.SECONDS).orElseThrow().getCurrentSnapshotId());
+    } finally {
+      first.cancel(true);
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
   @Timeout(30)
   void concurrentRegistrationsFinalizesAndDdlConvergeToOneLineage() throws Exception {
     // The PRD's convergence acceptance, at the unit level with REAL threads: concurrent snapshot
     // registrations, per-snapshot finalizes, and DDL on ONE table must merge with no lost
-    // mutation. Callers retry on CommitFailedException — the documented contract ("the caller
-    // retries; mutators re-derive from committed state, so retries converge").
+    // mutation. The commit funnel serializes same-table attempts in this process, while its CAS
+    // retry loop handles contention from other service instances.
     final int writers = 6;
     final int perWriter = 4;
     var pool = Executors.newFixedThreadPool(writers + 1);
@@ -276,7 +327,8 @@ class TableRootCommitterTest {
             start.await();
             for (int i = 0; i < perWriter; i++) {
               long sid = wi * 100L + i;
-              commitWithRetry(
+              committer.commit(
+                  TABLE,
                   TableRootMutations.upsertSnapshot(
                       roots,
                       TABLE,
@@ -290,7 +342,8 @@ class TableRootCommitterTest {
                       false));
               // No /snapshots/current in this unit harness: null exercises the ordering-rule
               // fallback, so currency still converges on the newest across concurrent finalizes.
-              commitWithRetry(
+              committer.commit(
+                  TABLE,
                   TableRootMutations.setStatsGeneration(
                       roots, TABLE, sid, ref("s3://t/stats/" + sid + "/gen.pb"), null));
             }
@@ -301,8 +354,8 @@ class TableRootCommitterTest {
         () -> {
           start.await();
           for (int i = 0; i < 8; i++) {
-            commitWithRetry(
-                TableRootMutations.setDefinition(TABLE, ref("s3://t/def-" + i + ".pb")));
+            committer.commit(
+                TABLE, TableRootMutations.setDefinition(TABLE, ref("s3://t/def-" + i + ".pb")));
           }
           return null;
         });
@@ -340,18 +393,5 @@ class TableRootCommitterTest {
     assertTrue(
         root.getDefinitionRef().getUri().startsWith("s3://t/def-"),
         "the definition converged on one of the DDL writes");
-  }
-
-  private void commitWithRetry(TableRootCommitter.RootMutator mutator) {
-    for (int attempt = 0; ; attempt++) {
-      try {
-        committer.commit(TABLE, mutator);
-        return;
-      } catch (TableRootCommitter.CommitFailedException e) {
-        if (attempt >= 50) {
-          throw e;
-        }
-      }
-    }
   }
 }
