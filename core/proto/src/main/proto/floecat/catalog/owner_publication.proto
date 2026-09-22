@@ -1,0 +1,84 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+
+syntax = "proto3";
+package ai.floedb.floecat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.catalog.rpc";
+
+import "floecat/common/common.proto";
+import "floecat/catalog/snapshot.proto";
+
+message OwnerPublicationManifestRef {
+  string account_id = 1;
+  string table_id = 2;
+  int64 snapshot_id = 3;
+  string manifest_uri = 4;
+  uint64 manifest_bytes = 5;
+  bytes manifest_sha256 = 6;
+  uint32 stats_record_count = 7;
+  uint32 index_artifact_count = 8;
+}
+
+message BeginOwnerPublicationRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  string owner_id = 3;
+  reserved 4;
+  string owner_generation_id = 5;
+  bool publish_file_stats = 6;
+  bool publish_indexes = 7;
+}
+
+message BeginOwnerPublicationResponse {
+  // Stable capability derived from the complete Owner assignment identity. Complete rejects a
+  // capability for which Begin did not durably reserve a generation.
+  string publication_id = 1;
+  string generation_id = 2;
+  // Executors derive a stable per-work subdirectory below this prefix and write mandatory
+  // planner-statistics partials plus optional file stats and index-wrapper artifacts there.
+  // Managed sidecar payloads use an index-sidecars/ child; an index wrapper may instead reference
+  // an externally configured sidecar URI.
+  string executor_object_prefix = 3;
+  // Owner writes each table/column aggregate as a separate object below this prefix.
+  string owner_object_prefix = 4;
+  // Owner writes the reference-only publication manifest below this prefix.
+  string manifest_object_prefix = 5;
+  // Physical Floecat blob-store root and non-secret client settings. Object prefixes above are
+  // blob-store keys relative to this URI. Authentication is supplied by the service workload.
+  string artifact_storage_uri_root = 6;
+  map<string, string> artifact_storage_properties = 7;
+}
+
+message CompleteOwnerPublicationRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  string publication_id = 3;
+  // The only data-plane descriptor carried over gRPC. Floecat reads this small metadata object,
+  // registers its existing artifacts, and atomically activates the stats/index generations.
+  OwnerPublicationManifestRef manifest = 4;
+  // Snapshot metadata published in the same fenced pointer transaction as the statistics and
+  // index generations. The snapshot may not be visible before this call commits.
+  SnapshotSpec snapshot = 5;
+  // Repeated from Begin so Floecat can bind Complete to the authenticated caller and re-derive
+  // the deterministic publication capability without retaining mutable reservation state.
+  string owner_id = 6;
+  string owner_generation_id = 7;
+}
+
+message CompleteOwnerPublicationResponse {
+  uint64 aggregate_stats_published = 1;
+  uint64 file_stats_published = 2;
+  uint64 index_artifacts_published = 3;
+  bool activated = 4;
+}
+
+service OwnerPublicationService {
+  rpc BeginOwnerPublication(BeginOwnerPublicationRequest)
+      returns (BeginOwnerPublicationResponse);
+  rpc CompleteOwnerPublication(CompleteOwnerPublicationRequest)
+      returns (CompleteOwnerPublicationResponse);
+}
