@@ -1511,9 +1511,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       builder.setMetadataLocation(snapshot.getMetadataLocation());
     }
     if (snapshot.hasColumnIdentityMap()) {
-      builder
-          .setColumnIdentityMap(snapshot.getColumnIdentityMap())
-          .setColumnIdentityFingerprint(snapshot.getColumnIdentityFingerprint());
+      builder.setColumnIdentityMap(snapshot.getColumnIdentityMap());
     }
     return builder.build();
   }
@@ -1545,7 +1543,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       mask.addPaths("metadata_location");
     }
     if (spec.hasColumnIdentityMap()) {
-      mask.addPaths("column_identity_map").addPaths("column_identity_fingerprint");
+      mask.addPaths("column_identity_map");
     }
     return mask.build();
   }

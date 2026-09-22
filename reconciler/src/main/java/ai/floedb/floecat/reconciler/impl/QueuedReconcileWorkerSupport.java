@@ -1731,15 +1731,11 @@ class QueuedReconcileWorkerSupport {
         && !bundle
             .columnIdentityMap()
             .equals(ai.floedb.floecat.catalog.rpc.ColumnIdentityMap.getDefaultInstance())) {
-      builder
-          .setColumnIdentityMap(bundle.columnIdentityMap())
-          .setColumnIdentityFingerprint(bundle.columnIdentityMap().getFingerprint());
+      builder.setColumnIdentityMap(bundle.columnIdentityMap());
     } else if (connector instanceof CanonicalIdentityConnector
         && existing != null
         && existing.hasColumnIdentityMap()) {
-      builder
-          .setColumnIdentityMap(existing.getColumnIdentityMap())
-          .setColumnIdentityFingerprint(existing.getColumnIdentityFingerprint());
+      builder.setColumnIdentityMap(existing.getColumnIdentityMap());
     }
     if (hasParentSnapshotId) {
       builder.setParentSnapshotId(parentSnapshotId);

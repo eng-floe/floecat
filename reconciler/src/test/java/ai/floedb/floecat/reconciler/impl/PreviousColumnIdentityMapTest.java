@@ -103,7 +103,6 @@ class PreviousColumnIdentityMapTest {
     return Snapshot.newBuilder()
         .setSnapshotId(snapshotId)
         .setColumnIdentityMap(map)
-        .setColumnIdentityFingerprint(fingerprint)
         .build();
   }
 }

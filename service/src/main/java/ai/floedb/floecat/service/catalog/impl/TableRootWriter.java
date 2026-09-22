@@ -142,7 +142,10 @@ public class TableRootWriter {
             .setSnapshotRef(snapshotRef)
             .setSchemaFingerprint(
                 ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(candidate))
-            .setColumnIdentityFingerprint(candidate.getColumnIdentityFingerprint());
+            .setColumnIdentityFingerprint(
+                candidate.hasColumnIdentityMap()
+                    ? candidate.getColumnIdentityMap().getFingerprint()
+                    : "");
     if (candidate.hasUpstreamCreatedAt()) {
       entry.setUpstreamCreatedAt(candidate.getUpstreamCreatedAt());
     }
@@ -399,7 +402,8 @@ public class TableRootWriter {
               }
               builder.setSchemaFingerprint(
                   ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(s));
-              builder.setColumnIdentityFingerprint(s.getColumnIdentityFingerprint());
+              builder.setColumnIdentityFingerprint(
+                  s.hasColumnIdentityMap() ? s.getColumnIdentityMap().getFingerprint() : "");
               ai.floedb.floecat.service.repo.impl.SnapshotManifests.applyReuseGenerationRef(
                   builder, s);
             });
