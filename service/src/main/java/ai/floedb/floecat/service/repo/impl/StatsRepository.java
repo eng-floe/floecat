@@ -331,6 +331,34 @@ public class StatsRepository implements StatsStore {
   }
 
   @Override
+  public boolean statsGenerationExists(ResourceId tableId, long snapshotId, String generationId) {
+    // A reservation that is being reclaimed is not a reservation a caller can still publish into:
+    // report only the live lifecycle states, so a DELETING/DELETED generation id fails the
+    // caller's "was this begun" gate instead of passing it and aborting deeper in the flow.
+    String lifecycleState =
+        generationLifecycleState(tableId, snapshotId, requireGenerationId(generationId));
+    return GENERATION_WRITING.equals(lifecycleState)
+        || GENERATION_PUBLISHING.equals(lifecycleState)
+        || GENERATION_PUBLISHED.equals(lifecycleState);
+  }
+
+  @Override
+  public void prepareStatsGenerationManifest(
+      ResourceId tableId, long snapshotId, String generationId) {
+    String effectiveGenerationId = requireGenerationId(generationId);
+    String lifecycleState = generationLifecycleState(tableId, snapshotId, effectiveGenerationId);
+    if (GENERATION_PUBLISHING.equals(lifecycleState)
+        || GENERATION_PUBLISHED.equals(lifecycleState)) {
+      return;
+    }
+    ensureWritableGeneration(tableId, snapshotId, effectiveGenerationId);
+    String manifestBlobUri =
+        Keys.snapshotTargetStatsManifestBlobUri(
+            tableId.getAccountId(), tableId.getId(), snapshotId, effectiveGenerationId);
+    targetStatsStorage.putManifestBlob(manifestBlobUri, StringValue.of(effectiveGenerationId));
+  }
+
+  @Override
   public void replaceTargetStatsInGeneration(
       ResourceId tableId,
       long snapshotId,
@@ -593,6 +621,32 @@ public class StatsRepository implements StatsStore {
       return false;
     }
     markGenerationPublished(tableId, snapshotId, effectiveGenerationId);
+    return true;
+  }
+
+  @Override
+  public boolean validatePreparedStatsGenerationRetry(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsStore.PrewrittenTargetStatsReference> finalReferences) {
+    String effectiveGenerationId = requireGenerationId(generationId);
+    String lifecycleState = generationLifecycleState(tableId, snapshotId, effectiveGenerationId);
+    if (lifecycleState.isBlank() || GENERATION_WRITING.equals(lifecycleState)) {
+      return false;
+    }
+    if (!GENERATION_PUBLISHING.equals(lifecycleState)
+        && !GENERATION_PUBLISHED.equals(lifecycleState)) {
+      throw new BaseResourceRepository.AbortRetryableException(
+          "prepared target stats generation cannot resume: "
+              + effectiveGenerationId
+              + " state="
+              + lifecycleState);
+    }
+    List<PrewrittenStatsWrite> finalWrites =
+        prewrittenStatsWrites(tableId, snapshotId, effectiveGenerationId, finalReferences);
+    ensurePublicationIntent(tableId, snapshotId, effectiveGenerationId, finalWrites, false);
+    targetStatsStorage.verifyExactReferences(finalWrites);
     return true;
   }
 

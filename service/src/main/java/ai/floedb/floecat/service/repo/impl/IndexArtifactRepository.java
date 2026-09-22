@@ -429,7 +429,44 @@ public class IndexArtifactRepository {
               requiredBlobPrefix,
               requiredManagedSidecarPrefix,
               inheritedSidecarGenerations,
-              references);
+              references,
+              true);
+          return null;
+        });
+  }
+
+  /**
+   * Registers references produced by the authenticated Owner without reading any wrapper, bundle,
+   * or sidecar payload. Owner publication is intentionally a reference-only control-plane
+   * operation: the authenticated Owner is the artifact-content trust boundary, including for
+   * managed sidecars.
+   *
+   * <p>What this checks is exactly what can be checked from the reference itself: the target
+   * identity, that the URI lies under the generation prefix, and that the URI is the
+   * content-addressed path its declared target and digest imply. It does NOT confirm the object
+   * exists, that its bytes hash to the declared digest, or that the record inside names this table
+   * and snapshot — the trusted path accepts all of that on the Owner's word, and a lie surfaces as
+   * a read-path failure rather than a rejected publication. Counts and activation fencing are
+   * enforced by the caller and by {@link #prepareGenerationActivation}.
+   */
+  public void registerTrustedOwnerIndexArtifactReferencesInGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      String requiredBlobPrefix,
+      List<PrewrittenIndexArtifactReference> references) {
+    reachabilityGuard.publishing(
+        tableId,
+        () -> {
+          registerPrewrittenIndexArtifactReferencesInGenerationGuarded(
+              tableId,
+              snapshotId,
+              generationId,
+              requiredBlobPrefix,
+              null,
+              Set.of(),
+              references,
+              false);
           return null;
         });
   }
@@ -441,7 +478,8 @@ public class IndexArtifactRepository {
       String requiredBlobPrefix,
       String requiredManagedSidecarPrefix,
       Set<Keys.GenerationKey> inheritedSidecarGenerations,
-      List<PrewrittenIndexArtifactReference> references) {
+      List<PrewrittenIndexArtifactReference> references,
+      boolean validatePayloads) {
     if (requiredBlobPrefix == null || requiredBlobPrefix.isBlank()) {
       throw new IllegalArgumentException("requiredBlobPrefix is required");
     }
@@ -495,12 +533,14 @@ public class IndexArtifactRepository {
             "duplicate prewritten index artifact reference has different content");
       }
     }
-    validatePrewrittenManagedSidecars(
-        tableId,
-        snapshotId,
-        requiredManagedSidecarPrefix,
-        allowedInheritedGenerations,
-        unique.values());
+    if (validatePayloads) {
+      validatePrewrittenPayloads(
+          tableId,
+          snapshotId,
+          requiredManagedSidecarPrefix,
+          allowedInheritedGenerations,
+          unique.values());
+    }
     registerWrites(tableId, new ArrayList<>(unique.values()));
   }
 
@@ -647,7 +687,12 @@ public class IndexArtifactRepository {
         || !tableId.getAccountId().equals(manifest.getAccountId())
         || !tableId.getId().equals(manifest.getTableId())
         || snapshotId != manifest.getSnapshotId()
-        || !generationId.get().equals("full-rescan-" + manifest.getParentJobId())
+        || !generationId
+            .get()
+            .equals(
+                manifest.getPublicationGenerationId().isBlank()
+                    ? "full-rescan-" + manifest.getParentJobId()
+                    : manifest.getPublicationGenerationId())
         || !manifest
             .getCapturePolicy()
             .getOutputsList()
@@ -947,7 +992,13 @@ public class IndexArtifactRepository {
     }
   }
 
-  private void validatePrewrittenManagedSidecars(
+  /**
+   * Reads every referenced wrapper or bundle and validates it against the reference: payload
+   * present, content address matches the bytes, record parses, record belongs to this table and
+   * snapshot, bundles carry a record for each referenced target, and managed sidecars live in an
+   * allowed generation.
+   */
+  private void validatePrewrittenPayloads(
       ResourceId tableId,
       long snapshotId,
       String requiredManagedSidecarPrefix,

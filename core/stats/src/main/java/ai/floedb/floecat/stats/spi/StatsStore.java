@@ -293,6 +293,20 @@ public interface StatsStore {
   }
 
   /**
+   * Returns whether Begin durably reserved this generation and the reservation is still live. A
+   * generation being reclaimed reports {@code false}: its id can never be published again.
+   */
+  default boolean statsGenerationExists(ResourceId tableId, long snapshotId, String generationId) {
+    return false;
+  }
+
+  /** Writes the small Floecat-owned generation manifest required before pointer activation. */
+  default void prepareStatsGenerationManifest(
+      ResourceId tableId, long snapshotId, String generationId) {
+    throw new UnsupportedOperationException("unpublished stats generations are not supported");
+  }
+
+  /**
    * Registers immutable target-stats objects that a fenced worker already wrote.
    *
    * <p>The implementation creates generation-scoped target mappings without rewriting the blob
@@ -343,6 +357,20 @@ public interface StatsStore {
       StatsGenerationPredecessor predecessor,
       PublicationFence publicationFence) {
     throw new UnsupportedOperationException("prepared stats generation publish is not supported");
+  }
+
+  /**
+   * Validates the immutable reference set when resuming a prepared publication.
+   *
+   * @return {@code true} when publication has already started and the supplied references exactly
+   *     match its durable intent; {@code false} while the generation is still writable
+   */
+  default boolean validatePreparedStatsGenerationRetry(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<PrewrittenTargetStatsReference> finalReferences) {
+    return false;
   }
 
   default StatsGenerationPredecessor prepareStatsGenerationForPublication(
