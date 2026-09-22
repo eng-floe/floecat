@@ -198,10 +198,15 @@ public final class PlanningPointerIndex {
         }
       }
       try {
+        Map<String, Partition> lockedByName = new LinkedHashMap<>();
+        for (int i = 0; i < partitionsToRead.size(); i++) {
+          lockedByName.put(partitionsToRead.get(i), locked.get(i));
+        }
         Map<String, Pointer> result = new LinkedHashMap<>();
         for (String key : new java.util.LinkedHashSet<>(keys)) {
-          Partition partition = partitions.get(partitionFor(key));
-          Pointer value = partition.entries.get(key);
+          // Through the partitions this batch locked, never the registry: a partition can be
+          // removed from the registry while this batch still holds its lock.
+          Pointer value = lockedByName.get(partitionFor(key)).entries.get(key);
           if (value != null) result.put(key, value);
         }
         return Map.copyOf(result);
@@ -360,7 +365,13 @@ public final class PlanningPointerIndex {
   private <T> T mutateKeysLocked(
       Collection<String> keys, Supplier<T> durableMutation, Consumer<T> publish) {
     List<Partition> partitionsLocked = lockPartitionsForMutation(keys);
-    List<HeldKeyLock> keyLocks = lockKeys(keys, partitionsLocked);
+    List<HeldKeyLock> keyLocks;
+    try {
+      keyLocks = lockKeys(keys, partitionsLocked);
+    } catch (RuntimeException | Error failure) {
+      unlockReadPartitions(partitionsLocked);
+      throw failure;
+    }
     try {
       T result = durableMutation.get();
       publish.accept(result);
@@ -748,19 +759,25 @@ public final class PlanningPointerIndex {
       if (isPlanningKey(key)) keyNames.add(key);
     }
     List<HeldKeyLock> locked = new ArrayList<>();
-    for (String key : keyNames) {
-      Partition partition = partitions.get(partitionFor(key));
-      if (partition == null || !lockedPartitions.contains(partition)) continue;
-      KeyLock keyLock =
-          partition.keyLocks.compute(
-              key,
-              (ignored, current) -> {
-                if (current == null) current = new KeyLock();
-                current.references++;
-                return current;
-              });
-      keyLock.lock.lock();
-      locked.add(new HeldKeyLock(partition, key, keyLock));
+    try {
+      for (String key : keyNames) {
+        Partition partition = partitions.get(partitionFor(key));
+        if (partition == null || !lockedPartitions.contains(partition)) continue;
+        KeyLock keyLock =
+            partition.keyLocks.compute(
+                key,
+                (ignored, current) -> {
+                  if (current == null) current = new KeyLock();
+                  current.references++;
+                  return current;
+                });
+        keyLock.lock.lock();
+        locked.add(new HeldKeyLock(partition, key, keyLock));
+      }
+    } catch (RuntimeException | Error failure) {
+      // Partway through, the caller never receives the list and so can never release it.
+      unlockKeys(locked);
+      throw failure;
     }
     return locked;
   }
