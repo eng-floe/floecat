@@ -57,6 +57,13 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
+  void defaultLeaseHeartbeatScalesWithShortLease() {
+    assertEquals(30_000L, RemoteReconcileExecutorPoller.defaultLeaseHeartbeatMs(120_000L));
+    assertEquals(90_000L, RemoteReconcileExecutorPoller.defaultLeaseHeartbeatMs(600_000L));
+    assertEquals(1_000L, RemoteReconcileExecutorPoller.defaultLeaseHeartbeatMs(3_000L));
+  }
+
+  @Test
   void pollOnceLeasesAndExecutesRemoteJob() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
     CountDownLatch completed = new CountDownLatch(1);
