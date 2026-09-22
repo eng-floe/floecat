@@ -1523,42 +1523,6 @@ class QueuedReconcileWorkerSupport {
     return backend.putSnapshotConstraints(ctx, tableId, snapshotId, constraints.get());
   }
 
-  private List<FloecatConnector.SnapshotBundle> filterBundlesForSnapshotScope(
-      List<FloecatConnector.SnapshotBundle> bundles,
-      Set<Long> targetSnapshotIds,
-      ProgressListener progress) {
-    if (bundles == null
-        || bundles.isEmpty()
-        || targetSnapshotIds == null
-        || targetSnapshotIds.isEmpty()) {
-      return bundles == null ? List.of() : bundles;
-    }
-    List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(bundles.size());
-    int skipped = 0;
-    for (FloecatConnector.SnapshotBundle bundle : bundles) {
-      if (bundle == null) {
-        continue;
-      }
-      if (!targetSnapshotIds.contains(bundle.snapshotId())) {
-        skipped++;
-        continue;
-      }
-      filtered.add(bundle);
-    }
-    if (skipped > 0) {
-      progress.onProgress(
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          "Reconcile skipped " + skipped + " snapshots outside explicit snapshot scope");
-    }
-    return filtered;
-  }
-
   private static List<ViewSqlDefinition> toCatalogSqlDefinitions(
       FloecatConnector.ViewDescriptor view) {
     return view.sqlDefinitions().stream()
@@ -1812,48 +1776,6 @@ class QueuedReconcileWorkerSupport {
         candidate.toBuilder()
             .setIngestedAt(Timestamps.fromMillis(ctx.now().toEpochMilli()))
             .build());
-  }
-
-  static List<FloecatConnector.SnapshotBundle> filterBundlesForMode(
-      List<FloecatConnector.SnapshotBundle> bundles,
-      boolean includeCoreMetadata,
-      Set<Long> existingSnapshotIds,
-      ProgressListener progress) {
-    if (bundles == null || bundles.isEmpty()) {
-      return bundles == null ? List.of() : bundles;
-    }
-    if (includeCoreMetadata) {
-      return bundles;
-    }
-    if (existingSnapshotIds == null || existingSnapshotIds.isEmpty()) {
-      return List.of();
-    }
-
-    List<FloecatConnector.SnapshotBundle> filtered = new ArrayList<>(bundles.size());
-    int skipped = 0;
-    for (FloecatConnector.SnapshotBundle bundle : bundles) {
-      if (bundle == null) {
-        continue;
-      }
-      long snapshotId = bundle.snapshotId();
-      if (snapshotId < 0 || !existingSnapshotIds.contains(snapshotId)) {
-        skipped++;
-        continue;
-      }
-      filtered.add(bundle);
-    }
-    if (skipped > 0) {
-      progress.onProgress(
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          "Capture-only reconcile skipped " + skipped + " snapshots without local metadata");
-    }
-    return filtered;
   }
 
   private static <T> void applyField(

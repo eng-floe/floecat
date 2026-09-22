@@ -2083,39 +2083,6 @@ class GrpcRemoteReconcileExecutorClient
     }
   }
 
-  private static <T extends MessageLite> List<List<T>> chunksBySerializedSize(
-      List<T> items, int targetBytes) {
-    return chunksBySerializedSizeAndCount(items, targetBytes, Integer.MAX_VALUE);
-  }
-
-  private static <T extends MessageLite> List<List<T>> chunksBySerializedSizeAndCount(
-      List<T> items, int targetBytes, int maxCount) {
-    List<List<T>> out = new ArrayList<>();
-    List<T> current = new ArrayList<>();
-    int currentBytes = 0;
-    int effectiveTargetBytes = Math.max(1, targetBytes);
-    int effectiveMaxCount = Math.max(1, maxCount);
-    for (T item : items == null ? List.<T>of() : items) {
-      if (item == null) {
-        continue;
-      }
-      int itemBytes = estimatedChunkItemBytes(item);
-      if (!current.isEmpty()
-          && (currentBytes + itemBytes > effectiveTargetBytes
-              || current.size() >= effectiveMaxCount)) {
-        out.add(List.copyOf(current));
-        current = new ArrayList<>();
-        currentBytes = 0;
-      }
-      current.add(item);
-      currentBytes += itemBytes;
-    }
-    if (!current.isEmpty()) {
-      out.add(List.copyOf(current));
-    }
-    return List.copyOf(out);
-  }
-
   private static int estimatedChunkItemBytes(MessageLite message) {
     return Math.max(1, message.getSerializedSize()) + 32;
   }

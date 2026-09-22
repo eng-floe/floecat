@@ -182,12 +182,7 @@ abstract class DeltaConnector implements FloecatConnector {
         && selectionKind == FloecatConnector.SnapshotSelectionKind.ALL
         && targetSnapshotIds.isEmpty()) {
       return enumerateDeltaCommits(
-          storageLocation,
-          table,
-          latestVersion,
-          fullRescan,
-          knownSnapshotIds,
-          targetSnapshotIds);
+          storageLocation, table, latestVersion, fullRescan, knownSnapshotIds);
     }
 
     List<Long> versions =
@@ -226,22 +221,12 @@ abstract class DeltaConnector implements FloecatConnector {
       Table table,
       long latestVersion,
       boolean fullRescan,
-      Set<Long> knownSnapshotIds,
-      Set<Long> targetSnapshotIds) {
+      Set<Long> knownSnapshotIds) {
     long startVersion = 0L;
     if (!fullRescan && knownSnapshotIds != null && !knownSnapshotIds.isEmpty()) {
       while (startVersion <= latestVersion && knownSnapshotIds.contains(startVersion)) {
         startVersion++;
       }
-    }
-    if (targetSnapshotIds != null && !targetSnapshotIds.isEmpty()) {
-      long minimumVersion = startVersion;
-      startVersion =
-          targetSnapshotIds.stream()
-              .filter(java.util.Objects::nonNull)
-              .filter(version -> version >= minimumVersion && version <= latestVersion)
-              .min(Long::compareTo)
-              .orElse(latestVersion + 1L);
     }
     if (startVersion > latestVersion) {
       return Stream.empty();
@@ -262,11 +247,7 @@ abstract class DeltaConnector implements FloecatConnector {
     }
     long baselineVersion = startVersion;
     Metadata baselineMetadata = baselineSnapshotImpl.getMetadata();
-    boolean includeBaseline =
-        (fullRescan || !knownSnapshotIds.contains(baselineVersion))
-            && (targetSnapshotIds == null
-                || targetSnapshotIds.isEmpty()
-                || targetSnapshotIds.contains(baselineVersion));
+    boolean includeBaseline = fullRescan || !knownSnapshotIds.contains(baselineVersion);
     Stream<SnapshotBundle> baseline =
         includeBaseline
             ? Stream.of(buildSnapshotBundle(storageLocation, baselineVersion, baselineSnapshot))
@@ -346,10 +327,7 @@ abstract class DeltaConnector implements FloecatConnector {
               } catch (Exception e) {
                 throw new RuntimeException("Failed to enumerate Delta commit version " + version, e);
               }
-              if ((!fullRescan && knownSnapshotIds.contains(version))
-                  || (targetSnapshotIds != null
-                      && !targetSnapshotIds.isEmpty()
-                      && !targetSnapshotIds.contains(version))) {
+              if (!fullRescan && knownSnapshotIds.contains(version)) {
                 continue;
               }
               return buildSnapshotBundle(version, timestamp, metadata);
