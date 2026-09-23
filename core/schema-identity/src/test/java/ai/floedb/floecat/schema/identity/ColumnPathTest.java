@@ -39,4 +39,11 @@ class ColumnPathTest {
     assertThat(path.display()).isEqualTo("orders[].attributes{}");
     assertThat(path.last().kind()).isEqualTo(NodeKind.MAP_VALUE);
   }
+
+  @Test
+  void stableKeyUsesStableNodeKindCodesAndLengthPrefixedNames() {
+    ColumnPath path = ColumnPath.ROOT.field("a").arrayElement().mapKey().mapValue();
+
+    assertThat(path.stableKey()).isEqualTo("1:1:a;2:0:;3:0:;4:0:;");
+  }
 }

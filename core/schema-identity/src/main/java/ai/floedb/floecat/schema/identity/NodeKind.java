@@ -18,8 +18,29 @@ package ai.floedb.floecat.schema.identity;
 
 /** A named schema field or one of the implicit nodes inside a collection. */
 public enum NodeKind {
-  FIELD,
-  ARRAY_ELEMENT,
-  MAP_KEY,
-  MAP_VALUE
+  FIELD(1, 0),
+  ARRAY_ELEMENT(2, 1),
+  MAP_KEY(3, 2),
+  MAP_VALUE(4, 3);
+
+  private final int stableCode;
+  private final int collectionSuffixDigit;
+
+  NodeKind(int stableCode, int collectionSuffixDigit) {
+    this.stableCode = stableCode;
+    this.collectionSuffixDigit = collectionSuffixDigit;
+  }
+
+  /** Stable persisted code that is independent of enum declaration order. */
+  public int stableCode() {
+    return stableCode;
+  }
+
+  /** Base-4 digit used when deriving the identity of a collection interior. */
+  int collectionSuffixDigit() {
+    if (this == FIELD) {
+      throw new IllegalStateException("A field is not a collection interior");
+    }
+    return collectionSuffixDigit;
+  }
 }
