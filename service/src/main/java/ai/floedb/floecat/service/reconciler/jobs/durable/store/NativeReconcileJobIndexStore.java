@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredJobDefinition;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -54,6 +55,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
   private int casMax;
   private BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved;
   private TriConsumer<StoredReconcileJob, StoredReconcileJob, String> logStateTransition;
+  private Function<StoredReconcileJob, StoredReconcileJobListSummary> rootSummaryProjector;
 
   public void bind(
       ReconcileJobIndexBackend jobIndexBackend,
@@ -68,6 +70,12 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     this.casMax = casMax;
     this.assertImmutableJobIdentityPreserved = assertImmutableJobIdentityPreserved;
     this.logStateTransition = logStateTransition;
+  }
+
+  @Override
+  public void bindRootSummaryProjector(
+      Function<StoredReconcileJob, StoredReconcileJobListSummary> rootSummaryProjector) {
+    this.rootSummaryProjector = rootSummaryProjector;
   }
 
   public Optional<CanonicalEnvelope> loadByAnyAccount(String jobId) {
@@ -536,6 +544,17 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       CanonicalPointerSnapshot currentSnapshot,
       StoredReconcileJob previous,
       StoredReconcileJob current) {
+    StoredReconcileJobListSummary rootSummary =
+        rootSummaryProjector == null ? null : rootSummaryProjector.apply(current);
+    return buildJobIndexWriteBatch(currentSnapshot, previous, current, rootSummary);
+  }
+
+  @Override
+  public JobIndexWriteBatch buildJobIndexWriteBatch(
+      CanonicalPointerSnapshot currentSnapshot,
+      StoredReconcileJob previous,
+      StoredReconcileJob current,
+      StoredReconcileJobListSummary rootSummary) {
     String canonicalPointerKey = currentSnapshot.canonicalPointerKey();
     List<JobIndexWriteOp> ops = new ArrayList<>();
     ops.add(
@@ -545,6 +564,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
             payloadStore.encodeInlineJobState(current),
             PointerReferenceKind.PRK_INLINE_JSON,
             cleanupManifest(current)));
+    appendRootSummaryUpserts(ops, current, rootSummary, currentSnapshot.version() + 1L);
 
     appendReferenceTransition(
         ops,
@@ -617,6 +637,29 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       return JobIndexWriteBatch.empty();
     }
     return buildJobDeleteBatch(currentSnapshot, ReconcileJobIndexCleanupManifest.EMPTY);
+  }
+
+  @Override
+  public boolean repairRootSummary(
+      CanonicalPointerSnapshot canonicalSnapshot,
+      StoredReconcileJob canonicalRecord,
+      StoredReconcileJobListSummary rootSummary) {
+    if (canonicalSnapshot == null || canonicalRecord == null || rootSummary == null) {
+      return false;
+    }
+    List<JobIndexWriteOp> summaryWrites = new ArrayList<>();
+    appendRootSummaryUpserts(
+        summaryWrites, canonicalRecord, rootSummary, canonicalSnapshot.version());
+    if (summaryWrites.isEmpty()) {
+      return true;
+    }
+    List<JobIndexWriteOp> writes = new ArrayList<>(summaryWrites.size() + 1);
+    writes.add(
+        new JobIndexCheck(
+            canonicalSnapshot.canonicalPointerKey(), canonicalSnapshot.version(), false));
+    writes.addAll(summaryWrites);
+    return compareAndSetBatchWithPointerOps(
+        new JobIndexWriteBatch(List.copyOf(writes), ReadyQueueMutation.empty()), List.of());
   }
 
   @Override
@@ -1201,7 +1244,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     java.util.LinkedHashSet<String> pointerKeys = new java.util.LinkedHashSet<>();
     pointerKeys.add(Keys.reconcileJobProjectionPointer(record.accountId, record.jobId));
     if (blank(record.parentJobId)) {
-      String sortableJobToken = rootSummarySortableJobToken(record.createdAtMs, record.jobId);
+      String sortableJobToken = Keys.reconcileJobSortableToken(record.createdAtMs, record.jobId);
       pointerKeys.add(
           Keys.reconcileRootJobSummaryByAccountPointer(record.accountId, sortableJobToken));
       if (!blank(record.connectorId)) {
@@ -1211,12 +1254,6 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
       }
     }
     return List.copyOf(pointerKeys);
-  }
-
-  private static String rootSummarySortableJobToken(long createdAtMs, String jobId) {
-    long created = Math.max(0L, createdAtMs);
-    long reversedCreated = Long.MAX_VALUE - created;
-    return String.format("%019d-%s", reversedCreated, jobId);
   }
 
   private List<String> indexPointerKeysForCleanup(StoredReconcileJob record) {
@@ -1341,6 +1378,11 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
             payloadStore.encodeInlineJobState(insert.record()),
             PointerReferenceKind.PRK_INLINE_JSON,
             cleanupManifest(insert)));
+    appendRootSummaryUpserts(
+        ops,
+        insert.record(),
+        rootSummaryProjector == null ? null : rootSummaryProjector.apply(insert.record()),
+        1L);
     ops.add(
         new JobIndexUpsert(
             insert.lookupKey(), 0L, insert.canonicalKey(), PointerReferenceKind.PRK_POINTER_KEY));
@@ -1372,6 +1414,50 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
                             readyKey, insert.canonicalKey(), PointerReferenceKind.PRK_POINTER_KEY))
                 .toList(),
             List.of()));
+  }
+
+  private void appendRootSummaryUpserts(
+      List<JobIndexWriteOp> ops,
+      StoredReconcileJob record,
+      StoredReconcileJobListSummary summary,
+      long canonicalVersion) {
+    if (record == null
+        || summary == null
+        || !blank(record.parentJobId)
+        || blank(summary.accountId())
+        || blank(summary.jobId())) {
+      return;
+    }
+    String encodedSummary = payloadStore.encodeInlineJobListSummary(summary);
+    String sortableJobToken =
+        Keys.reconcileJobSortableToken(summary.createdAtMs(), summary.jobId());
+    appendRootSummaryUpsert(
+        ops,
+        Keys.reconcileRootJobSummaryByAccountPointer(summary.accountId(), sortableJobToken),
+        encodedSummary,
+        canonicalVersion);
+    if (!blank(summary.connectorId())) {
+      appendRootSummaryUpsert(
+          ops,
+          Keys.reconcileRootJobSummaryByConnectorPointer(
+              summary.accountId(), summary.connectorId(), sortableJobToken),
+          encodedSummary,
+          canonicalVersion);
+    }
+  }
+
+  private void appendRootSummaryUpsert(
+      List<JobIndexWriteOp> ops, String pointerKey, String encodedSummary, long canonicalVersion) {
+    JobIndexEntrySnapshot current = jobIndexBackend.loadIndexEntry(pointerKey).orElse(null);
+    if (current != null && encodedSummary.equals(current.blobUri())) {
+      return;
+    }
+    ops.add(
+        new JobIndexUnconditionalUpsert(
+            pointerKey,
+            Math.max(1L, canonicalVersion),
+            encodedSummary,
+            PointerReferenceKind.PRK_INLINE_JSON));
   }
 
   private List<JobIndexWriteBatch> prependInsertBatch(
@@ -1603,24 +1689,7 @@ public class NativeReconcileJobIndexStore implements ReconcileJobIndexStore {
     // bound to keep backend semantics aligned.
     int count =
         2 * (batch.readyMutation().upserts().size() + batch.readyMutation().deletes().size());
-    for (JobIndexWriteOp write : batch.writes()) {
-      count += physicalWriteItemCount(write);
-    }
-    return count;
-  }
-
-  private static int physicalWriteItemCount(JobIndexWriteOp write) {
-    String pointerKey = null;
-    if (write instanceof JobIndexUpsert upsert) {
-      pointerKey = upsert.pointerKey();
-    } else if (write instanceof JobIndexDelete delete) {
-      pointerKey = delete.pointerKey();
-    } else if (write instanceof JobIndexCheck check) {
-      pointerKey = check.pointerKey();
-    } else if (write instanceof JobIndexCheckAbsent check) {
-      pointerKey = check.pointerKey();
-    }
-    return 1;
+    return count + batch.writes().size();
   }
 
   private List<QueuedJobInsert> remainingInserts(

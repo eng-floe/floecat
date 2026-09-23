@@ -1471,6 +1471,12 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/reconcile/jobs/projections/by-id/";
   }
 
+  public static String reconcileJobSortableToken(long createdAtMs, String jobId) {
+    String jid = req("job_id", jobId);
+    long reversedCreated = Long.MAX_VALUE - Math.max(0L, createdAtMs);
+    return String.format("%019d-%s", reversedCreated, jid);
+  }
+
   public static String reconcileRootJobSummaryByAccountPointer(
       String accountId, String sortableJobToken) {
     String tid = req("account_id", accountId);

@@ -29,18 +29,15 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.service.repo.model.PointerReferences;
-import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 
 @ApplicationScoped
 public class ReconcileJobRootSummaryStore {
-  private static final int CAS_MAX = 8;
-
   public record StoredSummaryPage(
       List<StoredReconcileJobListSummary> summaries, String nextPageToken) {}
 
@@ -50,38 +47,6 @@ public class ReconcileJobRootSummaryStore {
   public void bind(PointerStore pointerStore, ReconcilePayloadStore payloadStore) {
     this.pointerStore = pointerStore;
     this.payloadStore = payloadStore;
-  }
-
-  public void upsert(StoredReconcileJobListSummary summary) {
-    if (summary == null || blank(summary.accountId()) || blank(summary.jobId())) {
-      return;
-    }
-    upsertPointer(
-        Keys.reconcileRootJobSummaryByAccountPointer(
-            summary.accountId(), sortableJobToken(summary.createdAtMs(), summary.jobId())),
-        summary);
-    if (!blank(summary.connectorId())) {
-      upsertPointer(
-          Keys.reconcileRootJobSummaryByConnectorPointer(
-              summary.accountId(),
-              summary.connectorId(),
-              sortableJobToken(summary.createdAtMs(), summary.jobId())),
-          summary);
-    }
-  }
-
-  public void delete(String accountId, String connectorId, long createdAtMs, String jobId) {
-    if (blank(accountId) || blank(jobId)) {
-      return;
-    }
-    pointerStore.delete(
-        Keys.reconcileRootJobSummaryByAccountPointer(
-            accountId, sortableJobToken(createdAtMs, jobId)));
-    if (!blank(connectorId)) {
-      pointerStore.delete(
-          Keys.reconcileRootJobSummaryByConnectorPointer(
-              accountId, connectorId, sortableJobToken(createdAtMs, jobId)));
-    }
   }
 
   public ReconcileJobPage list(
@@ -96,6 +61,17 @@ public class ReconcileJobRootSummaryStore {
 
   public StoredSummaryPage listSummaries(
       String accountId, int pageSize, String pageToken, String connectorId, Set<String> states) {
+    return listSummaries(
+        accountId, pageSize, pageToken, connectorId, states, UnaryOperator.identity());
+  }
+
+  public StoredSummaryPage listSummaries(
+      String accountId,
+      int pageSize,
+      String pageToken,
+      String connectorId,
+      Set<String> states,
+      UnaryOperator<StoredReconcileJobListSummary> repair) {
     int limit = Math.max(1, pageSize);
     List<StoredReconcileJobListSummary> out = new ArrayList<>(limit);
     String token = pageToken == null ? "" : pageToken;
@@ -109,6 +85,10 @@ public class ReconcileJobRootSummaryStore {
       for (Pointer pointer : pointers) {
         StoredReconcileJobListSummary summary =
             payloadStore.readInlineJobListSummary(pointer.getBlobUri()).orElse(null);
+        if (summary == null) {
+          continue;
+        }
+        summary = repair == null ? summary : repair.apply(summary);
         if (summary == null) {
           continue;
         }
@@ -130,34 +110,10 @@ public class ReconcileJobRootSummaryStore {
     }
   }
 
-  private void upsertPointer(String key, StoredReconcileJobListSummary summary) {
-    String blobUri = payloadStore.encodeInlineJobListSummary(summary);
-    for (int i = 0; i < CAS_MAX; i++) {
-      Pointer current = pointerStore.get(key).orElse(null);
-      long expectedVersion = current == null ? 0L : current.getVersion();
-      if (current != null && blobUri.equals(current.getBlobUri())) {
-        return;
-      }
-      Pointer next = PointerReferences.inlineJsonPointer(key, blobUri, expectedVersion + 1L);
-      if (AccountDeletionFence.compareAndSet(
-          pointerStore, summary.accountId(), key, expectedVersion, next)) {
-        return;
-      }
-    }
-    throw new IllegalStateException(
-        "Failed to upsert reconcile root summary for job " + summary.jobId());
-  }
-
   private String prefixFor(String accountId, String connectorId) {
     return blank(connectorId)
         ? Keys.reconcileRootJobSummaryByAccountPointerPrefix(accountId)
         : Keys.reconcileRootJobSummaryByConnectorPointerPrefix(accountId, connectorId);
-  }
-
-  private static String sortableJobToken(long createdAtMs, String jobId) {
-    long created = Math.max(0L, createdAtMs);
-    long reversedCreated = Long.MAX_VALUE - created;
-    return String.format("%019d-%s", reversedCreated, jobId);
   }
 
   public static ReconcileJob toPublicJob(StoredReconcileJobListSummary summary) {

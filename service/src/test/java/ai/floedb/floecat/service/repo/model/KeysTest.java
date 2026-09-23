@@ -26,6 +26,12 @@ import org.junit.jupiter.api.Test;
 class KeysTest {
 
   @Test
+  void reconcileJobSortableTokenOrdersNewestFirstAndClampsNegativeTimestamps() {
+    assertEquals("9223372036854775807-job-1", Keys.reconcileJobSortableToken(-1L, "job-1"));
+    assertEquals("9223372036854775684-job-2", Keys.reconcileJobSortableToken(123L, "job-2"));
+  }
+
+  @Test
   void catalogOverlayDependenciesAndFencesUsePathSafeEncoding() {
     assertEquals(
         "/accounts/acct%20id/catalog-overlays/by-catalog/catalog%2Fid/overlay%2Fid",

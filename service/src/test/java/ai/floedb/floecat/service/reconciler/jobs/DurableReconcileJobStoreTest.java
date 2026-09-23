@@ -2221,6 +2221,183 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void rootCanonicalAndBothSummariesRemainUnchangedWhenTransactionFails() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    MemoryReconcileJobIndexBackend delegateBackend = new MemoryReconcileJobIndexBackend();
+    delegateBackend.bind(pointerStore);
+    FailingCompareAndSetBatchBackend failingBackend =
+        new FailingCompareAndSetBatchBackend(delegateBackend);
+    store = newIsolatedInMemoryStore(pointerStore, new InMemoryBlobStore(), failingBackend);
+
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    StoredReconcileJob canonicalBefore =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    StoredReconcileJobListSummary accountBefore = rootSummary(ACCOUNT_ID, "", jobId);
+    StoredReconcileJobListSummary connectorBefore = rootSummary(ACCOUNT_ID, CONNECTOR_ID, jobId);
+
+    failingBackend.throwOnArmedCall(1);
+    InvocationTargetException failure =
+        assertThrows(
+            InvocationTargetException.class,
+            () ->
+                invokePrivateMethod(
+                    store,
+                    "mutateByJobIdReturningRecord",
+                    new Class<?>[] {String.class, UnaryOperator.class},
+                    jobId,
+                    (UnaryOperator<StoredReconcileJob>)
+                        current -> {
+                          current.state = "JS_FAILED";
+                          current.message = "injected failure";
+                          current.finishedAtMs = 123L;
+                          return current;
+                        }));
+    assertTrue(failure.getCause() instanceof IllegalStateException);
+
+    StoredReconcileJob canonicalAfter =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId));
+    assertEquals(canonicalBefore.state, canonicalAfter.state);
+    assertEquals(canonicalBefore.message, canonicalAfter.message);
+    assertEquals(accountBefore, rootSummary(ACCOUNT_ID, "", jobId));
+    assertEquals(connectorBefore, rootSummary(ACCOUNT_ID, CONNECTOR_ID, jobId));
+  }
+
+  @Test
+  void staleCanonicalRetryCannotOverwriteNewerRootSummary() {
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
+    var staleSnapshot = store.jobIndexStore.loadCanonicalSnapshot(canonicalKey).orElseThrow();
+    StoredReconcileJob stalePrevious = store.jobIndexStore.readRecord(staleSnapshot).orElseThrow();
+    StoredReconcileJob staleNext = store.jobIndexStore.cloneStoredRecord(stalePrevious);
+    staleNext.state = "JS_RUNNING";
+    staleNext.message = "stale";
+    var staleBatch =
+        store.jobIndexStore.buildJobIndexWriteBatch(staleSnapshot, stalePrevious, staleNext);
+
+    store.cancel(ACCOUNT_ID, jobId, "newer cancellation");
+    assertFalse(store.jobIndexBackend.compareAndSetBatch(staleBatch));
+
+    assertRootSummaryState(jobId, "JS_CANCELLED");
+  }
+
+  @Test
+  void rootSummaryPublicationHandlesMissingConnectorAndExcludesChildren() {
+    String accountOnlyJobId =
+        store.enqueue(
+            ACCOUNT_ID, "", false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty());
+    assertEquals(accountOnlyJobId, rootSummary(ACCOUNT_ID, "", accountOnlyJobId).jobId());
+
+    String rootJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String childJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            rootJobId,
+            "");
+
+    assertTrue(
+        rootSummaryStore().listSummaries(ACCOUNT_ID, 20, "", "", Set.of()).summaries().stream()
+            .noneMatch(summary -> childJobId.equals(summary.jobId())));
+    assertTrue(
+        rootSummaryStore()
+            .listSummaries(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of())
+            .summaries()
+            .stream()
+            .noneMatch(summary -> childJobId.equals(summary.jobId())));
+  }
+
+  @Test
+  void stateFilteredRootListingRepairsRunningSummaryFromFailedCanonical() {
+    String jobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    var lease = leaseJob(jobId);
+    store.markRunning(jobId, lease.leaseEpoch, 100L, "executor");
+    store.markFailedTerminal(jobId, lease.leaseEpoch, 200L, "failed", 1L, 2L, 3L, 4L, 5L, 6L, 7L);
+
+    StoredReconcileJobListSummary failed = rootSummary(ACCOUNT_ID, CONNECTOR_ID, jobId);
+    overwriteRootSummary(summaryWithState(failed, "JS_RUNNING", "Leased", 0L));
+
+    ReconcileJob repaired =
+        store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of("JS_FAILED")).jobs.stream()
+            .filter(job -> jobId.equals(job.jobId))
+            .findFirst()
+            .orElseThrow();
+
+    assertEquals("JS_FAILED", repaired.state);
+    assertEquals("JS_FAILED", rootSummary(ACCOUNT_ID, "", jobId).state());
+    assertEquals("JS_FAILED", rootSummary(ACCOUNT_ID, CONNECTOR_ID, jobId).state());
+    assertEquals(rootSummary(ACCOUNT_ID, "", jobId), rootSummary(ACCOUNT_ID, CONNECTOR_ID, jobId));
+  }
+
+  @Test
+  void rootSummariesTrackRunningSuccessCancellationAndLeaseExpiry() {
+    String succeededJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    assertRootSummaryState(succeededJobId, "JS_QUEUED");
+    var succeededLease = leaseJob(succeededJobId);
+    assertRootSummaryState(succeededJobId, "JS_RUNNING");
+    store.markSucceeded(succeededJobId, succeededLease.leaseEpoch, 200L, 2L, 1L, 4L, 3L, 5L, 6L);
+    assertRootSummaryState(succeededJobId, "JS_SUCCEEDED");
+
+    String cancelledJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    store.cancel(ACCOUNT_ID, cancelledJobId, "cancelled");
+    assertRootSummaryState(cancelledJobId, "JS_CANCELLED");
+
+    configureRetryPolicy(1, 100L, 100L);
+    configureLeaseRenewGraceMs(0L);
+    String expiredJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    leaseJob(expiredJobId);
+    reclaimExpiredLease(expiredJobId);
+    assertRootSummaryState(expiredJobId, "JS_FAILED");
+  }
+
+  @Test
   void terminalChildCommitAtomicallyQueuesDirtyParentProjection() {
     String connectorJobId =
         store.enqueue(
@@ -2459,6 +2636,13 @@ class DurableReconcileJobStoreTest {
     assertEquals(3L, rootSummary.tablesScanned);
     assertEquals(10L, rootSummary.snapshotsProcessed);
     assertTrue(rootSummary.finishedAtMs > 0L);
+
+    StoredReconcileJobListSummary accountSummary = rootSummary(ACCOUNT_ID, "", connectorJobId);
+    StoredReconcileJobListSummary connectorSummary =
+        rootSummary(ACCOUNT_ID, CONNECTOR_ID, connectorJobId);
+    assertEquals(accountSummary, connectorSummary);
+    assertEquals(3L, accountSummary.tablesScanned());
+    assertEquals(10L, accountSummary.snapshotsProcessed());
     assertTrue(store.get(ACCOUNT_ID, tableJobId).isPresent());
   }
 
@@ -2602,38 +2786,37 @@ class DurableReconcileJobStoreTest {
             .filter(summary -> connectorJobId.equals(summary.jobId()))
             .findFirst()
             .orElseThrow();
-    rootSummaryStore()
-        .upsert(
-            new StoredReconcileJobListSummary(
-                cancelledSummary.accountId(),
-                cancelledSummary.jobId(),
-                cancelledSummary.connectorId(),
-                "JS_CANCELLING",
-                "Cancelled",
-                cancelledSummary.startedAtMs(),
-                0L,
-                cancelledSummary.tablesScanned(),
-                cancelledSummary.tablesChanged(),
-                cancelledSummary.viewsScanned(),
-                cancelledSummary.viewsChanged(),
-                cancelledSummary.errors(),
-                cancelledSummary.fullRescan(),
-                cancelledSummary.captureMode(),
-                cancelledSummary.snapshotsProcessed(),
-                cancelledSummary.statsProcessed(),
-                cancelledSummary.indexesProcessed(),
-                cancelledSummary.executorId(),
-                cancelledSummary.executionClass(),
-                cancelledSummary.executionLane(),
-                cancelledSummary.executionAttributes(),
-                cancelledSummary.jobKind(),
-                cancelledSummary.plannedFileGroups(),
-                cancelledSummary.plannedFiles(),
-                cancelledSummary.completedFileGroups(),
-                cancelledSummary.failedFileGroups(),
-                cancelledSummary.completedFiles(),
-                cancelledSummary.failedFiles(),
-                cancelledSummary.createdAtMs()));
+    overwriteRootSummary(
+        new StoredReconcileJobListSummary(
+            cancelledSummary.accountId(),
+            cancelledSummary.jobId(),
+            cancelledSummary.connectorId(),
+            "JS_CANCELLING",
+            "Cancelled",
+            cancelledSummary.startedAtMs(),
+            0L,
+            cancelledSummary.tablesScanned(),
+            cancelledSummary.tablesChanged(),
+            cancelledSummary.viewsScanned(),
+            cancelledSummary.viewsChanged(),
+            cancelledSummary.errors(),
+            cancelledSummary.fullRescan(),
+            cancelledSummary.captureMode(),
+            cancelledSummary.snapshotsProcessed(),
+            cancelledSummary.statsProcessed(),
+            cancelledSummary.indexesProcessed(),
+            cancelledSummary.executorId(),
+            cancelledSummary.executionClass(),
+            cancelledSummary.executionLane(),
+            cancelledSummary.executionAttributes(),
+            cancelledSummary.jobKind(),
+            cancelledSummary.plannedFileGroups(),
+            cancelledSummary.plannedFiles(),
+            cancelledSummary.completedFileGroups(),
+            cancelledSummary.failedFileGroups(),
+            cancelledSummary.completedFiles(),
+            cancelledSummary.failedFiles(),
+            cancelledSummary.createdAtMs()));
 
     ReconcileJob rootSummary =
         store.listRootJobs(ACCOUNT_ID, 20, "", CONNECTOR_ID, Set.of()).jobs.stream()
@@ -7879,6 +8062,81 @@ class DurableReconcileJobStoreTest {
   private ReconcileJobRootSummaryStore rootSummaryStore() {
     return (ReconcileJobRootSummaryStore)
         assertDoesNotThrow(() -> invokePrivateMethod(store, "rootSummaries", new Class<?>[] {}));
+  }
+
+  private StoredReconcileJobListSummary rootSummary(
+      String accountId, String connectorId, String jobId) {
+    return rootSummaryStore()
+        .listSummaries(accountId, 100, "", connectorId, Set.of())
+        .summaries()
+        .stream()
+        .filter(summary -> jobId.equals(summary.jobId()))
+        .findFirst()
+        .orElseThrow();
+  }
+
+  private void overwriteRootSummary(StoredReconcileJobListSummary summary) {
+    String sortableJobToken =
+        Keys.reconcileJobSortableToken(summary.createdAtMs(), summary.jobId());
+    String encoded = store.payloadStore.encodeInlineJobListSummary(summary);
+    List<String> keys = new ArrayList<>();
+    keys.add(Keys.reconcileRootJobSummaryByAccountPointer(summary.accountId(), sortableJobToken));
+    if (summary.connectorId() != null && !summary.connectorId().isBlank()) {
+      keys.add(
+          Keys.reconcileRootJobSummaryByConnectorPointer(
+              summary.accountId(), summary.connectorId(), sortableJobToken));
+    }
+    for (String key : keys) {
+      Pointer current = store.pointerStore.get(key).orElseThrow();
+      assertTrue(
+          store.pointerStore.compareAndSet(
+              key,
+              current.getVersion(),
+              PointerReferences.inlineJsonPointer(key, encoded, current.getVersion() + 1L)));
+    }
+  }
+
+  private void assertRootSummaryState(String jobId, String expectedState) {
+    StoredReconcileJobListSummary account = rootSummary(ACCOUNT_ID, "", jobId);
+    StoredReconcileJobListSummary connector = rootSummary(ACCOUNT_ID, CONNECTOR_ID, jobId);
+    assertEquals(expectedState, account.state());
+    assertEquals(account, connector);
+    assertEquals(
+        expectedState, readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, jobId)).state);
+  }
+
+  private static StoredReconcileJobListSummary summaryWithState(
+      StoredReconcileJobListSummary summary, String state, String message, long finishedAtMs) {
+    return new StoredReconcileJobListSummary(
+        summary.accountId(),
+        summary.jobId(),
+        summary.connectorId(),
+        state,
+        message,
+        summary.startedAtMs(),
+        finishedAtMs,
+        summary.tablesScanned(),
+        summary.tablesChanged(),
+        summary.viewsScanned(),
+        summary.viewsChanged(),
+        summary.errors(),
+        summary.fullRescan(),
+        summary.captureMode(),
+        summary.snapshotsProcessed(),
+        summary.statsProcessed(),
+        summary.indexesProcessed(),
+        summary.executorId(),
+        summary.executionClass(),
+        summary.executionLane(),
+        summary.executionAttributes(),
+        summary.jobKind(),
+        summary.plannedFileGroups(),
+        summary.plannedFiles(),
+        summary.completedFileGroups(),
+        summary.failedFileGroups(),
+        summary.completedFiles(),
+        summary.failedFiles(),
+        summary.createdAtMs());
   }
 
   private void markDirtyParent(String accountId, String parentJobId) {
