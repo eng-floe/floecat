@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
@@ -26,6 +27,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
 
@@ -48,18 +50,35 @@ final class JavaConnectorFileGroupCaptureAdapter {
     Set<String> realizedStatsSelectors = new java.util.TreeSet<>();
     List<TargetStatsRecord> partialAggregates = List.of();
     throwIfCancellationRequested(request);
-    FloecatConnector.FileGroupCaptureResult captured =
-        source.capturePlannedFileGroup(
-            request.sourceNamespace(),
-            request.sourceTable(),
-            request.tableId(),
-            request.snapshotId(),
-            new java.util.LinkedHashSet<>(request.plannedFilePaths()),
-            request.statsColumns(),
-            request.indexColumns(),
-            request.requestedStatsTargetKinds(),
-            request.capturePageIndex(),
-            request.columnSelectorPolicy());
+    FloecatConnector.FileGroupCaptureResult captured;
+    if (source instanceof CanonicalIdentityConnector canonical) {
+      captured =
+          canonical.capturePlannedFileGroup(
+              request.sourceNamespace(),
+              request.sourceTable(),
+              request.tableId(),
+              request.snapshotId(),
+              new java.util.LinkedHashSet<>(request.plannedFilePaths()),
+              request.statsColumns(),
+              request.indexColumns(),
+              request.requestedStatsTargetKinds(),
+              request.capturePageIndex(),
+              request.columnSelectorPolicy(),
+              request.columnIdentityMap());
+    } else {
+      captured =
+          source.capturePlannedFileGroup(
+              request.sourceNamespace(),
+              request.sourceTable(),
+              request.tableId(),
+              request.snapshotId(),
+              new java.util.LinkedHashSet<>(request.plannedFilePaths()),
+              request.statsColumns(),
+              request.indexColumns(),
+              request.requestedStatsTargetKinds(),
+              request.capturePageIndex(),
+              request.columnSelectorPolicy());
+    }
     List<TargetStatsRecord> capturedFileStats =
         uniqueFileStats(captured.statsRecords(), publishedFileTargets);
     realizedStatsSelectors.addAll(captured.realizedStatsSelectors());
@@ -67,16 +86,7 @@ final class JavaConnectorFileGroupCaptureAdapter {
         request.capturePageIndex()
             ? captured.pageIndexSelectionComplete()
                 ? captured.pageIndexEntries()
-                : source
-                    .selectPageIndexEntries(
-                        request.sourceNamespace(),
-                        request.sourceTable(),
-                        request.snapshotId(),
-                        request.indexColumns(),
-                        request.columnSelectorPolicy(),
-                        new java.util.LinkedHashSet<>(request.plannedFilePaths()),
-                        captured.pageIndexEntries(),
-                        captured.pageIndexRowGroups())
+                : selectPageIndexEntries(source, request, captured)
                     .orElseGet(
                         () ->
                             filterPageIndexEntries(
@@ -129,6 +139,33 @@ final class JavaConnectorFileGroupCaptureAdapter {
     }
     return CaptureEngineResult.of(
         partialAggregates, List.of(), List.of(), List.copyOf(realizedStatsSelectors));
+  }
+
+  private static Optional<List<FloecatConnector.ParquetPageIndexEntry>> selectPageIndexEntries(
+      FloecatConnector source,
+      CaptureEngineRequest request,
+      FloecatConnector.FileGroupCaptureResult captured) {
+    if (source instanceof CanonicalIdentityConnector canonical) {
+      return canonical.selectPageIndexEntries(
+          request.sourceNamespace(),
+          request.sourceTable(),
+          request.snapshotId(),
+          request.indexColumns(),
+          request.columnSelectorPolicy(),
+          new java.util.LinkedHashSet<>(request.plannedFilePaths()),
+          captured.pageIndexEntries(),
+          captured.pageIndexRowGroups(),
+          request.columnIdentityMap());
+    }
+    return source.selectPageIndexEntries(
+        request.sourceNamespace(),
+        request.sourceTable(),
+        request.snapshotId(),
+        request.indexColumns(),
+        request.columnSelectorPolicy(),
+        new java.util.LinkedHashSet<>(request.plannedFilePaths()),
+        captured.pageIndexEntries(),
+        captured.pageIndexRowGroups());
   }
 
   private static void throwIfCancellationRequested(CaptureEngineRequest request) {

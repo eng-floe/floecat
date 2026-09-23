@@ -23,6 +23,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -67,12 +68,20 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
             null,
             Map.of("new-key", "new-val"),
             0,
-            "s3://bucket/new.metadata.json");
+            "s3://bucket/new.metadata.json",
+            ColumnIdentityMap.getDefaultInstance());
 
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.<String>empty());
     Snapshot result =
-        queuedWorkerSupport().buildSnapshot(ctx, tableId, bundle, existing).orElseThrow();
+        queuedWorkerSupport()
+            .buildSnapshot(
+                ctx,
+                tableId,
+                org.mockito.Mockito.mock(ai.floedb.floecat.connector.spi.FloecatConnector.class),
+                bundle,
+                existing)
+            .orElseThrow();
 
     assertThat(result.getManifestList()).isEqualTo(existing.getManifestList());
     assertThat(result.getSchemaJson()).isEqualTo(existing.getSchemaJson());
@@ -86,11 +95,29 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
     var bundle =
         new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-            1L, 0L, Instant.now().toEpochMilli(), "{}", null, 0L, null, Map.of(), 0, null);
+            1L,
+            0L,
+            Instant.now().toEpochMilli(),
+            "{}",
+            null,
+            0L,
+            null,
+            Map.of(),
+            0,
+            null,
+            ColumnIdentityMap.getDefaultInstance());
     ReconcileContext ctx =
         new ReconcileContext("ctx", principal, "svc-test", Instant.now(), Optional.empty());
 
-    Snapshot result = queuedWorkerSupport().buildSnapshot(ctx, tableId, bundle, null).orElseThrow();
+    Snapshot result =
+        queuedWorkerSupport()
+            .buildSnapshot(
+                ctx,
+                tableId,
+                org.mockito.Mockito.mock(ai.floedb.floecat.connector.spi.FloecatConnector.class),
+                bundle,
+                null)
+            .orElseThrow();
 
     assertThat(result.hasParentSnapshotId()).isTrue();
     assertThat(result.getParentSnapshotId()).isZero();
@@ -101,11 +128,41 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
+                10L,
+                0L,
+                1L,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()),
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null),
+                11L,
+                10L,
+                2L,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()),
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, null));
+                12L,
+                11L,
+                3L,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         QueuedReconcileWorkerSupport.filterBundlesForMode(
@@ -121,9 +178,29 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
+                10L,
+                0L,
+                1L,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()),
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null));
+                11L,
+                10L,
+                2L,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         QueuedReconcileWorkerSupport.filterBundlesForMode(
@@ -139,11 +216,41 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
         List.of(
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
+                10L,
+                0L,
+                1L,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()),
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null),
+                11L,
+                10L,
+                2L,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()),
             new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, null));
+                12L,
+                11L,
+                3L,
+                "",
+                null,
+                0L,
+                null,
+                Map.of(),
+                0,
+                null,
+                ColumnIdentityMap.getDefaultInstance()));
 
     List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
         QueuedReconcileWorkerSupport.filterBundlesForMode(

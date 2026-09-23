@@ -175,7 +175,8 @@ public final class DummyConnector implements FloecatConnector {
               c.name,
               c.name, // physical path for nested refs in tests (dot-separated)
               c.ordinal, // stable 1-based ordinal for PATH_ORDINAL algorithms
-              c.colId // fieldId for Iceberg-style schemas
+              c.colId, // fieldId for Iceberg-style schemas
+              0L // no authoritative canonical identity map
               );
 
       cstats.add(
@@ -201,7 +202,8 @@ public final class DummyConnector implements FloecatConnector {
                     c.name,
                     c.name, // physical path for nested refs in tests (dot-separated)
                     c.ordinal, // stable 1-based ordinal for PATH_ORDINAL algorithms
-                    c.colId // fieldId for Iceberg-style schemas
+                    c.colId, // fieldId for Iceberg-style schemas
+                    0L // no authoritative canonical identity map
                     );
 
             cols.add(

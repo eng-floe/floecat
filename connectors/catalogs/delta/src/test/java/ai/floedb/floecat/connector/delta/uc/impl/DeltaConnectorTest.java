@@ -21,10 +21,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotSelectionKind;
 import io.delta.kernel.Operation;
 import io.delta.kernel.ScanBuilder;
 import io.delta.kernel.Snapshot;
@@ -300,6 +302,53 @@ class DeltaConnectorTest {
   }
 
   @Test
+  void dataOnlyTargetUsesSparseHistoryAndStampsIdentity() {
+    StructType schema = new StructType().add("id", LongType.LONG, false);
+    Snapshot previousSnapshot = snapshot(10L, 10_000L, schema);
+    Snapshot latest = snapshot(1_000_000L, 20_000L, schema);
+    ColumnIdentityMap previous =
+        DeltaCanonicalIdentity.reset(previousSnapshot, 10L, ColumnIdentityMap.getDefaultInstance())
+            .identityMap();
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(1_000_000L, latest)));
+    connector.setMetadataHistory(DeltaConnector.MetadataHistory.complete(List.of()));
+
+    List<FloecatConnector.SnapshotBundle> bundles =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            new FloecatConnector.SnapshotEnumerationOptions(
+                false,
+                Set.of(10L),
+                Set.of(1_000_000L),
+                SnapshotSelectionKind.EXPLICIT,
+                Set.of(1_000_000L),
+                0,
+                previous));
+
+    assertEquals(1, connector.metadataHistoryCalls);
+    assertEquals(1, bundles.size());
+    ColumnIdentityMap stamped = bundles.getFirst().columnIdentityMap();
+    assertEquals(1_000_000L, stamped.getSourceVersion());
+    assertEquals(previous.getFingerprint(), stamped.getFingerprint());
+    assertFalse(previous.getStateChecksum().equals(stamped.getStateChecksum()));
+  }
+
+  @Test
+  void identityHistoryWalkIsBoundedBeforeReadingTheLog() {
+    Snapshot latest = snapshot(1L, 1L);
+    TestDeltaConnector connector =
+        new TestDeltaConnector(new StubTable(latest, Map.of(1L, latest)));
+
+    DeltaConnector.MetadataHistory history =
+        connector.readProductionMetadataVersions(0L, DeltaConnector.MAX_IDENTITY_HISTORY_COMMITS);
+
+    assertFalse(history.complete());
+    assertEquals("history-bound-exceeded", history.reason());
+  }
+
+  @Test
   void enumerateSnapshotsRequiresSnapshotMetadataSchemaJson() {
     Snapshot latest = snapshot(2L, 2000L);
     Table table = new StubTable(latest, Map.of(2L, latest));
@@ -446,7 +495,8 @@ class DeltaConnectorTest {
                 7L,
                 Set.of("#" + stableColumnId),
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
-                List.of(entry))
+                List.of(entry),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
 
     assertEquals(1, selected.size());
@@ -461,7 +511,8 @@ class DeltaConnectorTest {
                 7L,
                 Set.of(),
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
-                List.of(entry))
+                List.of(entry),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
     assertEquals(
         Set.of("#" + stableColumnId, "id"), selectedByDefault.getFirst().selectorAliases());
@@ -514,7 +565,8 @@ class DeltaConnectorTest {
                 List.of(
                     pageIndexEntry(oldFile, "id"),
                     pageIndexEntry(newFile, "id"),
-                    pageIndexEntry(newFile, "added")))
+                    pageIndexEntry(newFile, "added")),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
 
     assertEquals(
@@ -540,7 +592,8 @@ class DeltaConnectorTest {
                 8L,
                 Set.of("#" + addedColumnId),
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
-                List.of(pageIndexEntry(oldFile, "id")))
+                List.of(pageIndexEntry(oldFile, "id")),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
     assertEquals(1, schemaOnlyAddition.size());
     assertEquals("added", schemaOnlyAddition.getFirst().columnName());
@@ -556,7 +609,8 @@ class DeltaConnectorTest {
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
                 Set.of(oldFile),
                 List.of(),
-                List.of(new FloecatConnector.ParquetRowGroup(oldFile, 0, 17)))
+                List.of(new FloecatConnector.ParquetRowGroup(oldFile, 0, 17)),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
     assertEquals(1, noDecodedColumns.size());
     assertEquals(17, noDecodedColumns.getFirst().rowCount());
@@ -603,7 +657,8 @@ class DeltaConnectorTest {
                 9L,
                 Set.of("logical_id"),
                 FloecatConnector.ColumnSelectorPolicy.defaults(),
-                List.of(physicalEntry))
+                List.of(physicalEntry),
+                ColumnIdentityMap.getDefaultInstance())
             .orElseThrow();
 
     assertEquals(1, selected.size());
@@ -749,7 +804,17 @@ class DeltaConnectorTest {
   private static FloecatConnector.SnapshotBundle snapshotBundle(
       long snapshotId, String schemaJson) {
     return new FloecatConnector.SnapshotBundle(
-        snapshotId, 0L, 0L, schemaJson, null, 0L, null, Map.of(), 0, null);
+        snapshotId,
+        0L,
+        0L,
+        schemaJson,
+        null,
+        0L,
+        null,
+        Map.of(),
+        0,
+        null,
+        ColumnIdentityMap.getDefaultInstance());
   }
 
   private static FloecatConnector.ParquetPageIndexEntry pageIndexEntry(
@@ -781,6 +846,8 @@ class DeltaConnectorTest {
     private String snapshotSchemaJson = TEST_SCHEMA_JSON;
     private Map<String, String> fallbackTableProperties = Map.of();
     private final AtomicBoolean fallbackCalled = new AtomicBoolean(false);
+    private MetadataHistory metadataHistory;
+    private int metadataHistoryCalls;
 
     TestDeltaConnector(Table table) {
       super("delta-test", null, path -> null, false, 0.0d, 0L, null);
@@ -795,6 +862,15 @@ class DeltaConnectorTest {
     @Override
     protected Table loadTable(String storageLocation) {
       return table;
+    }
+
+    @Override
+    protected MetadataHistory metadataVersions(
+        String storageLocation, long firstVersion, long lastVersion) {
+      metadataHistoryCalls++;
+      return metadataHistory == null
+          ? MetadataHistory.complete(List.of(lastVersion))
+          : metadataHistory;
     }
 
     @Override
@@ -830,6 +906,14 @@ class DeltaConnectorTest {
 
     void setSnapshotSchemaJson(String snapshotSchemaJson) {
       this.snapshotSchemaJson = snapshotSchemaJson;
+    }
+
+    void setMetadataHistory(MetadataHistory metadataHistory) {
+      this.metadataHistory = metadataHistory;
+    }
+
+    MetadataHistory readProductionMetadataVersions(long firstVersion, long lastVersion) {
+      return super.metadataVersions("ignored", firstVersion, lastVersion);
     }
   }
 

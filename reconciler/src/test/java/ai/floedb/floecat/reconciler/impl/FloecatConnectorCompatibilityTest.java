@@ -16,11 +16,14 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -40,9 +43,53 @@ class FloecatConnectorCompatibilityTest {
             10L, 0L, 0L, "", null, 0L, null, java.util.Map.of(), 0, null);
     Optional<?> fromBundle = connector.snapshotConstraints("ns", "tbl", tableId, bundle);
     assertTrue(fromBundle.isEmpty());
+    assertEquals(ColumnIdentityMap.getDefaultInstance(), bundle.columnIdentityMap());
+
+    FloecatConnector.SnapshotEnumerationOptions options =
+        new FloecatConnector.SnapshotEnumerationOptions(
+            false,
+            Set.of(9L),
+            Set.of(10L),
+            FloecatConnector.SnapshotSelectionKind.CURRENT,
+            Set.of(),
+            0);
+    assertEquals(ColumnIdentityMap.getDefaultInstance(), options.previousColumnIdentityMap());
+  }
+
+  @Test
+  void legacyConnectorReconcilesThroughTheLegacyCaptureMethod() {
+    LegacyConnector connector = new LegacyConnector();
+    ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("tbl").build();
+    CaptureEngineRequest request =
+        new CaptureEngineRequest(
+            ai.floedb.floecat.connector.rpc.Connector.getDefaultInstance(),
+            "ns",
+            "tbl",
+            tableId,
+            10L,
+            "plan",
+            "group",
+            List.of("s3://bucket/file.parquet"),
+            Set.of(),
+            Set.of(),
+            FloecatConnector.ColumnSelectorPolicy.defaults(),
+            Set.of(),
+            false,
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            Optional.empty(),
+            () -> false,
+            ColumnIdentityMap.newBuilder().setFingerprint("must-not-be-supplied").build());
+
+    new JavaConnectorFileGroupCaptureAdapter()
+        .capture(connector, request, (fileStats, pageIndexes) -> {});
+
+    assertTrue(connector.legacyCaptureCalled);
   }
 
   private static final class LegacyConnector implements FloecatConnector {
+    private boolean legacyCaptureCalled;
 
     @Override
     public String id() {
@@ -101,6 +148,7 @@ class FloecatConnectorCompatibilityTest {
         Set<StatsTargetKind> includeTargetKinds,
         boolean captureIndexes,
         ColumnSelectorPolicy columnSelectorPolicy) {
+      legacyCaptureCalled = true;
       return FileGroupCaptureResult.empty();
     }
 

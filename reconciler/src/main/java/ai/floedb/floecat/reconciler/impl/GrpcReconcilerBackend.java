@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.CreateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.CreateSnapshotRequest;
 import ai.floedb.floecat.catalog.rpc.CreateTableRequest;
@@ -78,6 +79,7 @@ import ai.floedb.floecat.connector.rpc.ConnectorSpec;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.spi.AuthResolutionContext;
+import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
@@ -636,7 +638,8 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
                       ctx.authorizationToken(),
                       ctx.executionJobId(),
                       ctx.executionLeaseEpoch(),
-                      () -> false),
+                      () -> false,
+                      ColumnIdentityMap.getDefaultInstance()),
                   (completedFileStats, completedPageIndexEntries) -> {
                     fileStats.addAll(completedFileStats);
                     pageIndexEntries.addAll(completedPageIndexEntries);
@@ -676,17 +679,36 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
         ctx,
         tableId,
         Optional.<FloecatConnector.DirectSnapshotStatsCapture>empty(),
-        (source, sourceCtx) ->
-            source.captureSnapshotTargetStatsDirect(
+        (source, sourceCtx) -> {
+          FloecatConnector.ColumnSelectorPolicy selectors =
+              columnSelectorPolicy == null
+                  ? FloecatConnector.ColumnSelectorPolicy.defaults()
+                  : columnSelectorPolicy;
+          Set<String> columns = includeColumns == null ? Set.of() : Set.copyOf(includeColumns);
+          Set<FloecatConnector.StatsTargetKind> kinds =
+              includeTargetKinds == null ? Set.of() : Set.copyOf(includeTargetKinds);
+          if (source instanceof CanonicalIdentityConnector canonical) {
+            return canonical.captureSnapshotTargetStatsDirect(
                 sourceCtx.sourceNamespace(),
                 sourceCtx.sourceTable(),
                 tableId,
                 snapshotId,
-                includeColumns == null ? Set.of() : Set.copyOf(includeColumns),
-                includeTargetKinds == null ? Set.of() : Set.copyOf(includeTargetKinds),
-                columnSelectorPolicy == null
-                    ? FloecatConnector.ColumnSelectorPolicy.defaults()
-                    : columnSelectorPolicy));
+                columns,
+                kinds,
+                selectors,
+                fetchSnapshot(ctx, tableId, snapshotId)
+                    .map(Snapshot::getColumnIdentityMap)
+                    .orElse(ColumnIdentityMap.getDefaultInstance()));
+          }
+          return source.captureSnapshotTargetStatsDirect(
+              sourceCtx.sourceNamespace(),
+              sourceCtx.sourceTable(),
+              tableId,
+              snapshotId,
+              columns,
+              kinds,
+              selectors);
+        });
   }
 
   private boolean hasAnyCapturedStats(ReconcileContext ctx, ResourceId tableId, long snapshotId) {
@@ -1488,6 +1510,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (snapshot.hasMetadataLocation() && !snapshot.getMetadataLocation().isBlank()) {
       builder.setMetadataLocation(snapshot.getMetadataLocation());
     }
+    if (snapshot.hasColumnIdentityMap()) {
+      builder.setColumnIdentityMap(snapshot.getColumnIdentityMap());
+    }
     return builder.build();
   }
 
@@ -1516,6 +1541,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     }
     if (spec.hasMetadataLocation()) {
       mask.addPaths("metadata_location");
+    }
+    if (spec.hasColumnIdentityMap()) {
+      mask.addPaths("column_identity_map");
     }
     return mask.build();
   }

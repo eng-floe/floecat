@@ -26,6 +26,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.FileColumnStats;
 import ai.floedb.floecat.catalog.rpc.FileContent;
 import ai.floedb.floecat.catalog.rpc.FileStatsTarget;
@@ -38,6 +39,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
+import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineRequest;
@@ -106,14 +108,15 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     assertThat(engine.supports(missingPlannedFiles)).isFalse();
   }
 
   @Test
   void captureDeclinesRequestsOutsideAdvertisedFileGroupContract() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -137,19 +140,20 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     assertThat(engine.capture(request, (fileStats, pageIndexEntries) -> {})).isEmpty();
     verify(connector, never())
         .capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any());
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any(), any());
     verify(connector, never())
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
   }
 
   @Test
   void capturePassesAuthorizationTokenToStorageResolver() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -175,7 +179,7 @@ class JavaConnectorCaptureEngineTest {
         .thenReturn(
             new ServerSideStorageConfigResolver.ResolvedConnectorConfig(resolvedConfig, () -> {}));
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any(), any()))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(), List.of()));
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
@@ -198,7 +202,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.of("worker-token"),
             Optional.of("job-1"),
             Optional.of("lease-1"),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     assertThat(engine.capture(request, (fileStats, pageIndexEntries) -> {})).isPresent();
     verify(storageResolver)
@@ -214,7 +219,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureNormalizesTypedAwsAuthFailuresToTerminal() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -238,7 +243,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     S3Exception expiredToken =
         (S3Exception)
@@ -249,7 +255,7 @@ class JavaConnectorCaptureEngineTest {
                     AwsErrorDetails.builder().serviceName("S3").errorCode("ExpiredToken").build())
                 .build();
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any(), any()))
         .thenThrow(expiredToken);
 
     assertThatThrownBy(() -> engine.capture(request, (fileStats, pageIndexEntries) -> {}))
@@ -265,7 +271,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void capturePublishesFileStatsAndReturnsOnlyAggregatePartials() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -314,7 +320,8 @@ class JavaConnectorCaptureEngineTest {
                     FloecatConnector.StatsTargetKind.COLUMN,
                     FloecatConnector.StatsTargetKind.FILE)),
             eq(false),
-            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
+            eq(ColumnIdentityMap.getDefaultInstance())))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(fileRecord), List.of()));
 
     CaptureEngineRequest request =
@@ -339,7 +346,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     var outputs = new CapturedFileOutputs();
     var result = engine.capture(request, outputs::accept);
@@ -360,12 +368,12 @@ class JavaConnectorCaptureEngineTest {
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(connector)
         .capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any());
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any(), any());
   }
 
   @Test
   void captureUsesOnlyFileGroupStatsForFileOnlyRequests() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -398,7 +406,8 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of()),
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
             eq(false),
-            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
+            eq(ColumnIdentityMap.getDefaultInstance())))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(fileRecord), List.of()));
 
     CaptureEngineRequest request =
@@ -420,7 +429,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     var outputs = new CapturedFileOutputs();
     var result = engine.capture(request, outputs::accept);
@@ -432,12 +442,12 @@ class JavaConnectorCaptureEngineTest {
         .captureSnapshotTargetStats(any(), any(), any(), anyLong(), any(), any());
     verify(connector)
         .capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any());
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any(), any());
   }
 
   @Test
   void capturePreservesThetaSketchNdvInFileStats() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -455,7 +465,8 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of()),
             eq(Set.of(FloecatConnector.StatsTargetKind.COLUMN)),
             eq(false),
-            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
+            eq(ColumnIdentityMap.getDefaultInstance())))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(
@@ -482,7 +493,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     var outputs = new CapturedFileOutputs();
     var result = engine.capture(request, outputs::accept);
@@ -506,13 +518,13 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureStopsAfterTheSingleGroupCaptureWhenCancellationIsRequested() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
     AtomicBoolean shouldStop = new AtomicBoolean();
 
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any(), any()))
         .thenAnswer(
             ignored -> {
               shouldStop.set(true);
@@ -538,7 +550,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            shouldStop::get);
+            shouldStop::get,
+            ColumnIdentityMap.getDefaultInstance());
 
     assertThatThrownBy(() -> engine.capture(request, (fileStats, pageIndexEntries) -> {}))
         .isInstanceOf(CancellationException.class)
@@ -554,12 +567,13 @@ class JavaConnectorCaptureEngineTest {
             any(),
             any(),
             anyBoolean(),
+            any(),
             any());
   }
 
   @Test
   void captureKeepsStatsAndPageIndexSelectorsSeparate() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -592,7 +606,8 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of("index_only")),
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
             eq(true),
-            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
+            eq(ColumnIdentityMap.getDefaultInstance())))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(fileRecord),
@@ -657,7 +672,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     var outputs = new CapturedFileOutputs();
     var result = engine.capture(request, outputs::accept);
@@ -673,7 +689,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureResolvesStableIndexSelectorBeforeFilteringPhysicalPageEntries() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -682,7 +698,7 @@ class JavaConnectorCaptureEngineTest {
     var selectedEntry =
         pageIndexEntry(plannedFile, "customer_id").withSelectorAliases(Set.of("#1", "customer_id"));
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any(), any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(),
@@ -699,7 +715,8 @@ class JavaConnectorCaptureEngineTest {
             List.of(
                 pageIndexEntry(plannedFile, "customer_id"),
                 pageIndexEntry(plannedFile, "unrequested")),
-            List.of()))
+            List.of(),
+            ColumnIdentityMap.getDefaultInstance()))
         .thenReturn(Optional.of(List.of(selectedEntry)));
     CaptureEngineRequest request =
         new CaptureEngineRequest(
@@ -720,7 +737,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     var outputs = new CapturedFileOutputs();
     engine.capture(request, outputs::accept);
@@ -734,7 +752,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureDoesNotApplyDefaultsWhenExplicitIndexSelectorsResolveToNoEntries() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -742,7 +760,7 @@ class JavaConnectorCaptureEngineTest {
     String plannedFile = "s3://bucket/path/file-1.parquet";
     var availableEntry = pageIndexEntry(plannedFile, "customer_id");
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any(), any()))
         .thenReturn(FloecatConnector.FileGroupCaptureResult.of(List.of(), List.of(availableEntry)));
     when(connector.selectPageIndexEntries(
             "db",
@@ -752,7 +770,8 @@ class JavaConnectorCaptureEngineTest {
             FloecatConnector.ColumnSelectorPolicy.defaults(),
             Set.of(plannedFile),
             List.of(availableEntry),
-            List.of()))
+            List.of(),
+            ColumnIdentityMap.getDefaultInstance()))
         .thenReturn(Optional.of(List.of()));
     CaptureEngineRequest request =
         new CaptureEngineRequest(
@@ -773,7 +792,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     var outputs = new CapturedFileOutputs();
     engine.capture(request, outputs::accept);
@@ -783,7 +803,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureUsesConnectorPreselectedPageIndexesWithoutASecondMetadataLookup() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -791,7 +811,7 @@ class JavaConnectorCaptureEngineTest {
     String plannedFile = "s3://bucket/path/file-1.parquet";
     var selectedEntry = pageIndexEntry(plannedFile, "customer_id");
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any(), any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.ofSelectedPageIndexes(
                 List.of(), List.of(selectedEntry), List.of(), List.of()));
@@ -814,26 +834,27 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     var outputs = new CapturedFileOutputs();
     engine.capture(request, outputs::accept);
 
     assertThat(outputs.pageIndexEntries).containsExactly(selectedEntry);
     verify(connector, never())
-        .selectPageIndexEntries(any(), any(), anyLong(), any(), any(), any(), any(), any());
+        .selectPageIndexEntries(any(), any(), anyLong(), any(), any(), any(), any(), any(), any());
   }
 
   @Test
   void captureResolvesDefaultFirstNPageIndexSelectors() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     String plannedFile = "s3://bucket/path/file-1.parquet";
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any(), any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(),
@@ -861,7 +882,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     var outputs = new CapturedFileOutputs();
     engine.capture(request, outputs::accept);
@@ -873,14 +895,14 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureProducesNoPageIndexCoverageForExplicitOnlyWithoutSelectors() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
     ResourceId tableId = ResourceId.newBuilder().setAccountId("acct").setId("table-1").build();
     String plannedFile = "s3://bucket/path/file-1.parquet";
     when(connector.capturePlannedFileGroup(
-            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any()))
+            any(), any(), any(), anyLong(), any(), any(), any(), any(), anyBoolean(), any(), any()))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(), List.of(pageIndexEntry(plannedFile, "first"))));
@@ -904,7 +926,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     var outputs = new CapturedFileOutputs();
     engine.capture(request, outputs::accept);
@@ -1002,7 +1025,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void captureReturnsAllFileStatsWithoutRollingUpColumns() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -1082,7 +1105,8 @@ class JavaConnectorCaptureEngineTest {
                     FloecatConnector.StatsTargetKind.COLUMN,
                     FloecatConnector.StatsTargetKind.FILE)),
             eq(false),
-            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
+            eq(ColumnIdentityMap.getDefaultInstance())))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(fileRecordOne, fileRecordTwo), List.of()));
@@ -1109,7 +1133,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     var outputs = new CapturedFileOutputs();
     var result = engine.capture(request, outputs::accept);
@@ -1129,7 +1154,7 @@ class JavaConnectorCaptureEngineTest {
 
   @Test
   void capturePreservesAttachedIcebergDeleteFileStats() {
-    FloecatConnector connector = Mockito.mock(FloecatConnector.class);
+    CanonicalIdentityConnector connector = Mockito.mock(CanonicalIdentityConnector.class);
     JavaConnectorCaptureEngine engine = new JavaConnectorCaptureEngine();
     engine.connectorOpener = ignored -> connector;
 
@@ -1152,7 +1177,8 @@ class JavaConnectorCaptureEngineTest {
             eq(Set.of()),
             eq(Set.of(FloecatConnector.StatsTargetKind.FILE)),
             eq(false),
-            eq(FloecatConnector.ColumnSelectorPolicy.defaults())))
+            eq(FloecatConnector.ColumnSelectorPolicy.defaults()),
+            eq(ColumnIdentityMap.getDefaultInstance())))
         .thenReturn(
             FloecatConnector.FileGroupCaptureResult.of(
                 List.of(dataRecord, deleteRecord), List.of()));
@@ -1175,7 +1201,8 @@ class JavaConnectorCaptureEngineTest {
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            () -> false);
+            () -> false,
+            ColumnIdentityMap.getDefaultInstance());
 
     var outputs = new CapturedFileOutputs();
     engine.capture(request, outputs::accept);
