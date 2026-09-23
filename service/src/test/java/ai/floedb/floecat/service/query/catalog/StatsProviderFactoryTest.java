@@ -823,10 +823,7 @@ class StatsProviderFactoryTest {
   }
 
   private static QueryContext queryContextWithPin(
-      String queryId,
-      long snapshotId,
-      PinKind pinKind,
-      String columnIdentityFingerprint) {
+      String queryId, long snapshotId, PinKind pinKind, String columnIdentityFingerprint) {
     PrincipalContext principal =
         PrincipalContext.newBuilder()
             .setAccountId(TABLE.getAccountId())

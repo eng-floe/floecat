@@ -110,10 +110,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     String base = "{\"type\":\"struct\",\"fields\":[]}";
     String withIdentity =
         ColumnIdentityExecutionSchema.attach(
-            base,
-            ColumnIdentityMap.newBuilder()
-                .setFingerprint("sha256:identity")
-                .build());
+            base, ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build());
 
     assertTrue(
         RemoteSnapshotPlanningReconcileExecutor.schemasEquivalent(
@@ -402,9 +399,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
     String executionSchemaJson =
         ColumnIdentityExecutionSchema.attach(
             "{\n  \"fields\": [],\n  \"type\": \"struct\"\n}",
-            ColumnIdentityMap.newBuilder()
-                .setFingerprint("sha256:identity")
-                .build());
+            ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build());
     ColumnIdentityMap identityMap =
         ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build();
 

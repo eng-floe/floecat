@@ -802,8 +802,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
         return resolved == null
             ? List.of()
             : objects
-                .mappedSchema(
-                    resolved.table(), resolved.schemaJson(), resolved.columnIdentityMap())
+                .mappedSchema(resolved.table(), resolved.schemaJson(), resolved.columnIdentityMap())
                 .getColumnsList();
       }
       return objects.mappedSchema(ut, ut.schemaJson()).getColumnsList();

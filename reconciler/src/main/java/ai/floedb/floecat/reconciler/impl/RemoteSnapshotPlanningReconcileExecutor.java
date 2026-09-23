@@ -698,8 +698,7 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
 
   static boolean identityFingerprintsEquivalent(
       ColumnIdentityMap baseIdentityMap, String targetExecutionSchema) {
-    String baseFingerprint =
-        baseIdentityMap == null ? "" : baseIdentityMap.getFingerprint();
+    String baseFingerprint = baseIdentityMap == null ? "" : baseIdentityMap.getFingerprint();
     try {
       return baseFingerprint.equals(
           ColumnIdentityExecutionSchema.identityMap(targetExecutionSchema).getFingerprint());

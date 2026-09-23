@@ -107,9 +107,7 @@ public final class ObjectCache {
 
   /** The two small ingest-shaped values relation assembly needs from table-level statistics. */
   public record SnapshotFacts(
-      OptionalLong rowCount,
-      OptionalLong totalSizeBytes,
-      String columnIdentityFingerprint)
+      OptionalLong rowCount, OptionalLong totalSizeBytes, String columnIdentityFingerprint)
       implements WeightedValue {
     public SnapshotFacts {
       Objects.requireNonNull(rowCount, "rowCount");
@@ -146,9 +144,7 @@ public final class ObjectCache {
         schemaJson == null || schemaJson.isBlank() ? table.schemaJson() : schemaJson;
     String identity =
         Hashing.sha256Hex(
-            schemaIdentity(table, effectiveSchema)
-                + '\0'
-                + columnIdentityMap.getFingerprint());
+            schemaIdentity(table, effectiveSchema) + '\0' + columnIdentityMap.getFingerprint());
     Key key = new Key(table.id().getAccountId(), Kind.SCHEMA, identity);
     return get(
         key,
@@ -196,8 +192,7 @@ public final class ObjectCache {
               schemaJson == null || schemaJson.isBlank()
                   ? resolved.table().schemaJson()
                   : schemaJson;
-          return schemaMapper.map(
-              resolved.table(), effectiveSchema, resolved.columnIdentityMap());
+          return schemaMapper.map(resolved.table(), effectiveSchema, resolved.columnIdentityMap());
         });
   }
 
