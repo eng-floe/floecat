@@ -34,10 +34,15 @@ import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.concurrent.UninterruptibleBlocker;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
+import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
+import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
+import ai.floedb.floecat.telemetry.TestObservability;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
@@ -236,6 +241,91 @@ public class QueryInputResolverTest {
         () -> false);
 
     assertEquals(List.of(callerThread, callerThread), threadConfinedGraph.planningThreads());
+  }
+
+  @Test
+  void pinDuringProcessDrainIsRefusedWithNotAssigned() {
+    var assignment =
+        AccountAssignment.managedForTesting(
+            "m", "m/inc", new InMemoryPointerStore(), new TestObservability());
+    assignment.beginProcessDrain();
+    var fenced =
+        new QueryInputResolver(metadataGraph, null, RepositoryReads.directPolicy(), assignment);
+    ResourceId table = ownedRid("acct-x", "T");
+
+    assertThrows(
+        PlanningPointerIndex.Ownership.NotOwnedException.class,
+        () ->
+            fenced.resolveInputs(
+                "cid",
+                List.of(QueryInput.newBuilder().setTableId(table).build()),
+                Optional.empty(),
+                Optional.empty()));
+
+    assertEquals(0L, assignment.status("acct-x").activeResolutions());
+    assertTrue(metadataGraph.pinCalls().isEmpty());
+  }
+
+  /**
+   * A cancelled resolution releases its resolution permits with the call, and the abandoned sibling
+   * that is still pinning cannot take a new one afterwards, so the account can drain.
+   */
+  @Test
+  void permitAccountingReachesZeroAfterAbandonedFanOutSiblings() throws Exception {
+    var assignment =
+        AccountAssignment.managedForTesting(
+            "m", "m/inc", new InMemoryPointerStore(), new TestObservability());
+    var blockingGraph = new NonInterruptiblePinGraph("SLOW");
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var fenced =
+        new QueryInputResolver(blockingGraph, store, RepositoryReads.directPolicy(), assignment);
+    AtomicBoolean cancelled = new AtomicBoolean();
+
+    CompletableFuture<Throwable> resolution =
+        CompletableFuture.supplyAsync(
+            () -> {
+              try {
+                fenced.resolveInputs(
+                    "q-abandoned",
+                    "cid",
+                    List.of(
+                        QueryInput.newBuilder().setTableId(ownedRid("acct-x", "SLOW")).build(),
+                        QueryInput.newBuilder().setTableId(ownedRid("acct-x", "FAST")).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    new SnapshotPinMemo(),
+                    null,
+                    cancelled::get);
+                return null;
+              } catch (Throwable failure) {
+                return failure;
+              }
+            });
+
+    assertTrue(blockingGraph.slowPinStarted.await(1, TimeUnit.SECONDS));
+    assertEquals(1L, assignment.status("acct-x").activeResolutions());
+    cancelled.set(true);
+    try {
+      assertTrue(
+          resolution.get(1, TimeUnit.SECONDS)
+              instanceof java.util.concurrent.CancellationException);
+      assertEquals(0L, assignment.status("acct-x").activeResolutions());
+    } finally {
+      blockingGraph.allowSlowPin.countDown();
+    }
+    assertTrue(blockingGraph.slowPinCompleted.await(1, TimeUnit.SECONDS));
+
+    assertEquals(0L, assignment.status("acct-x").activeResolutions());
+    var drained = assignment.beginProcessDrain();
+    assertTrue(drained.processDraining());
+  }
+
+  private static ResourceId ownedRid(String accountId, String id) {
+    return ResourceId.newBuilder()
+        .setAccountId(accountId)
+        .setId(id)
+        .setKind(ResourceKind.RK_TABLE)
+        .build();
   }
 
   /** A late non-interruptible lookup cannot register a root after cancellation cleanup. */

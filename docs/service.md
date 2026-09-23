@@ -324,6 +324,37 @@ currently reports `DeleteRef.all_deletes=true`; finer-grain delete references wi
 applicability logic is defined. The lease data (snapshots, expansion map, obligations) is returned to
 the caller inside the `QueryDescriptor`.
 
+### Account Lifecycle
+`AccountScope` is the question — may this process mutate, resolve pins for, or collect this
+account? — asked by every caller that needs to know. The default policy is process-local:
+`standalone` serves every account, `managed` serves every account routed to this process until the
+runtime starts drain, and `none` refuses account-scoped work.
+
+Managed Floe deployments get account exclusivity from routing plus the Kubernetes lifecycle
+contract: a replacement process is not meant to serve traffic for an account until the old process
+has drained or exited. Floecat therefore does not write ownership records, recover assignments from
+KV, or fence every durable write. The local `preStop` drain is the mechanism Floecat exposes to the
+runtime: once drain starts, new pin resolutions, mutations and GC permits are refused, while
+already-admitted work is counted until its permit is released.
+
+The extension point remains inside OSS Floecat. Deployments that need leases, durable fences or a
+coordinator can bind their own implementation of `AccountScope` or
+`PlanningPointerIndex.Ownership` without changing query, cache, mutation or GC call sites.
+
+Pointer GC needs no fence of its own: every delete it makes is a pointer CAS through the fenced
+store. CAS blob GC deletes objects the store cannot condition, so it revalidates its permit before
+each delete.
+
+`wait=true` waits for the drain: `400` if `timeoutMs` is malformed or negative, and then nothing
+drains; otherwise `200` once active mutations and resolutions are zero, or `202` at the timeout,
+with `timeoutMs` clamped to one hour. Without `wait=true` a `POST` starts the drain and returns at
+once, and a `GET` only reports. `wait` is read as a boolean, so `?wait=TRUE` drains while `?wait=1`
+reports; only `GET` and `POST` are routed at all. Draining is irreversible for the life of the process and the endpoint authenticates
+no one: the `preStop` hook is a kubelet `httpGet` arriving from the node address, which no in-process
+check can tell from any other caller, so restricting access is the deployment's job — a mesh
+authorization policy or equivalent. The shutdown observer applies the same drain when the hook never
+arrived.
+
 ### Builtin Catalog Service
 `SystemObjectsLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the
 configured location, caches them by engine kind, and exposes them through
@@ -401,6 +432,10 @@ Notable `application.properties` keys:
 | `floecat.query.metadata-io.max-concurrency` | Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use `64`; present malformed, blank, or out-of-range values fail startup. |
 | `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for GetUserObjects. Defaults to `8`. |
 | `floecat.catalog.bundle.max_parallel_stats_warms` | Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to `16`; clamped to `>= 1`. |
+| `floecat.account-assignment.mode` | `standalone` (default), `managed`, or `none`; see Account Assignment. |
+| `floecat.account-assignment.member-id` | Stable process identity across restarts; required in `managed` (`FLOECAT_MEMBER_ID`). |
+| `floecat.account-assignment.self-check-interval` | Background fence self-check period in `managed` (`PT10S`). |
+| `floecat.account-assignment.drain-timeout-ms` | Default wait of `/internal/drain?wait=true` and of the shutdown drain (`110000`). |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |

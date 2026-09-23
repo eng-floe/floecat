@@ -23,7 +23,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
@@ -31,18 +30,6 @@ import org.junit.jupiter.api.Test;
 class ConsistentReadRulesTest {
   private static final Path SERVICE_SOURCES =
       Path.of("src/main/java/ai/floedb/floecat/service").toAbsolutePath();
-
-  /**
-   * The planner index is the one place that must choose consistency explicitly: it builds the
-   * authoritative image, so every row it admits has to be a settled read. Its load is split across
-   * these two files -- the locking and registry side, and the scan that fills an image.
-   */
-  private static final Set<String> AUTHORITATIVE_INDEX_SOURCES =
-      Set.of(
-          "repo/cache/PlanningPointerIndex.java",
-          "repo/cache/PlannerPartitionLoad.java",
-          "repo/cache/DurablePointerReads.java");
-
   private static final List<String> CONSISTENCY_METHODS =
       List.of(
           ".getConsistent(",
@@ -57,7 +44,7 @@ class ConsistentReadRulesTest {
     for (Path file : scanned) {
       String relative = SERVICE_SOURCES.relativize(file).toString();
       String source = Files.readString(file).replaceAll("\\s+", "");
-      if (!AUTHORITATIVE_INDEX_SOURCES.contains(relative)
+      if (!relative.equals("repo/cache/PlanningPointerIndex.java")
           && !source.contains("implementsPointerStore")
           && CONSISTENCY_METHODS.stream().anyMatch(source::contains)) {
         offenders.add(SERVICE_SOURCES.relativize(file).toString());
