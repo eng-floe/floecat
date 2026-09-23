@@ -3710,7 +3710,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         effectiveRoot = next;
       }
       requestParentCancellationCleanupIfNeeded(effectiveRoot);
-      return cleanupAbandonedFullRescanStatsGenerationIfTerminal(effectiveRoot);
+      return completeCancellationCleanup(effectiveRoot);
     }
     StoredReconcileJob next = jobIndexStore().cloneStoredRecord(root);
     next.state = "JS_CANCELLED";
@@ -3731,7 +3731,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     markDirtyParentForRecord(next);
     upsertRootSummaryForRecord(next);
     requestParentCancellationCleanupIfNeeded(next);
-    return cleanupAbandonedFullRescanStatsGenerationIfTerminal(next);
+    return completeCancellationCleanup(next);
+  }
+
+  private boolean completeCancellationCleanup(StoredReconcileJob root) {
+    boolean complete = cleanupAbandonedFullRescanStatsGenerationIfTerminal(root);
+    if (complete) {
+      // Cancellation-state projections are intentionally skipped. Wake the actual ancestor once
+      // descendant cleanup is complete so it can observe this terminal child.
+      requestProjectionRefresh(root.accountId, root.parentJobId);
+    }
+    return complete;
   }
 
   private void requestParentCancellationCleanupIfNeeded(StoredReconcileJob child) {

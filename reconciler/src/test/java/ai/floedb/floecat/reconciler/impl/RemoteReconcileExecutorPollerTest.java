@@ -64,6 +64,25 @@ class RemoteReconcileExecutorPollerTest {
   }
 
   @Test
+  void unconfirmedLeaseStopMustNotBecomeJobCancellation() {
+    ReconcileExecutor.ExecutionResult cancelled =
+        ReconcileExecutor.ExecutionResult.cancelled(0, 0, 0, 0, 0, 0, 0, "Cancelled");
+
+    assertTrue(
+        RemoteReconcileExecutorPoller.shouldAbandonUnconfirmedCancellation(
+            cancelled, false, false, true, false));
+    assertTrue(
+        RemoteReconcileExecutorPoller.shouldAbandonUnconfirmedCancellation(
+            cancelled, false, true, false, false));
+    assertTrue(
+        RemoteReconcileExecutorPoller.shouldAbandonUnconfirmedCancellation(
+            cancelled, false, false, false, true));
+    assertTrue(
+        !RemoteReconcileExecutorPoller.shouldAbandonUnconfirmedCancellation(
+            cancelled, true, false, true, false));
+  }
+
+  @Test
   void pollOnceLeasesAndExecutesRemoteJob() throws Exception {
     RemoteReconcileExecutorClient client = mock(RemoteReconcileExecutorClient.class);
     CountDownLatch completed = new CountDownLatch(1);

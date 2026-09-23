@@ -806,6 +806,17 @@ public class RemoteReconcileExecutorPoller {
             Math.max(0L, System.currentTimeMillis() - started));
         return;
       }
+      if (shouldAbandonUnconfirmedCancellation(
+          result,
+          cancellationRequested.get(),
+          leaseInvalid.get(),
+          leaseStateUncertain.get(),
+          interrupted.get())) {
+        LOG.warnf(
+            "Remote reconcile execution stopped without a confirmed cancellation for job %s executor=%s; leaving lease for retry",
+            lease.jobId, executor.id());
+        return;
+      }
       if (!leaseStillCompletable(
           remoteLease,
           lease,
@@ -900,6 +911,18 @@ public class RemoteReconcileExecutorPoller {
       shutdownHeartbeatExecutor(heartbeatExecutor);
       Thread.interrupted();
     }
+  }
+
+  static boolean shouldAbandonUnconfirmedCancellation(
+      ReconcileExecutor.ExecutionResult result,
+      boolean cancellationRequested,
+      boolean leaseInvalid,
+      boolean leaseStateUncertain,
+      boolean interrupted) {
+    return result != null
+        && result.cancelled
+        && !cancellationRequested
+        && (leaseInvalid || leaseStateUncertain || interrupted);
   }
 
   private boolean leaseStillCompletable(

@@ -2565,6 +2565,88 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void completedChildCancellationCleanupRefreshesWaitingAncestor() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_WAITING";
+                      current.message = "Waiting on child work";
+                      current.startedAtMs = Math.max(current.startedAtMs, 50L);
+                      current.finishedAtMs = 0L;
+                      current.childrenFinalized = true;
+                      current.expectedDirectChildren = 1L;
+                      current.readyPointerKey = null;
+                      current.nextAttemptAtMs = 0L;
+                      return current;
+                    }));
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_CANCELLED";
+                      current.message = "Cancelled";
+                      current.startedAtMs = Math.max(current.startedAtMs, 60L);
+                      current.finishedAtMs = 100L;
+                      current.childrenFinalized = true;
+                      current.readyPointerKey = null;
+                      current.nextAttemptAtMs = 0L;
+                      return current;
+                    }));
+
+    store.pointerStore.delete(dirtyParentKey(ACCOUNT_ID, connectorJobId));
+    StoredReconcileJob table =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
+    assertEquals(
+        true,
+        assertDoesNotThrow(
+            () ->
+                invokePrivateMethod(
+                    store,
+                    "updateCancellationRootAfterDirectChildren",
+                    new Class<?>[] {StoredReconcileJob.class, boolean.class, long.class},
+                    table,
+                    true,
+                    200L)));
+
+    assertTrue(store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, connectorJobId)).isPresent());
+
+    runProjectionMaintenance();
+
+    assertEquals("JS_CANCELLED", store.getLeaseView(connectorJobId).orElseThrow().state);
+  }
+
+  @Test
   void listRootJobsRepairsStaleCancellingSummaryWhenCanonicalRootIsCancelled() {
     String connectorJobId =
         store.enqueue(
