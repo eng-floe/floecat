@@ -23,6 +23,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 public final class Keys {
   public static final int ACCOUNT_DELETION_FENCE_SHARDS = 64;
@@ -66,6 +67,10 @@ public final class Keys {
   public static final String SEG_STATS = "/stats/";
   public static final String SEG_IDEMPOTENCY = "/idempotency/";
   public static final String SEG_MARKERS = "/markers/";
+
+  /** Families that live directly under the account and are never planner state. */
+  private static final Set<String> OPERATIONAL_FAMILIES =
+      Set.of("transactions", "idempotency", "reconcile", "gc", "root-resyncs");
 
   public static final String SEG_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP =
       "/catalog-integration-credential-cleanup/";
@@ -162,20 +167,50 @@ public final class Keys {
     return "/accounts/";
   }
 
-  public static boolean isReservedAccountDirectorySegment(String segment) {
-    return "by-id".equals(segment) || "by-name".equals(segment);
+  /** The durable pointer namespace used by the planner store seam. */
+  public enum PointerNamespace {
+    PLANNER,
+    OPERATIONAL,
+    ACCOUNT_DIRECTORY,
+    UNKNOWN
+  }
+
+  /**
+   * Classifies account pointers once, at the key boundary. New account-scoped planner keys are
+   * included by default; only explicitly operational work queues and fences stay on the durable
+   * adapter.
+   */
+  public static PointerNamespace pointerNamespace(String key) {
+    if (key == null || !key.startsWith(accountRootPrefix())) {
+      return PointerNamespace.UNKNOWN;
+    }
+    String remainder = key.substring(accountRootPrefix().length());
+    int slash = remainder.indexOf('/');
+    String account = slash < 0 ? remainder : remainder.substring(0, slash);
+    if (account.isBlank()) return PointerNamespace.UNKNOWN;
+    if (isReservedAccountDirectorySegment(account)) return PointerNamespace.ACCOUNT_DIRECTORY;
+    if (slash < 0) return PointerNamespace.PLANNER;
+    // Anchor on position, never on a substring anywhere in the key. Caller-supplied strings
+    // occupy segments too -- a nested namespace path joins display names mid-key -- and one
+    // that happened to read "gc" would be classified operational, refused by the index and
+    // missing from listings while the parent prefix is still served from it.
+    String[] segments = remainder.substring(slash + 1).split("/", -1);
+    if (segments.length == 1) {
+      // The account deletion marker, and only it: a resource named "deleting" is planner state.
+      return "deleting".equals(segments[0])
+          ? PointerNamespace.OPERATIONAL
+          : PointerNamespace.PLANNER;
+    }
+    if (OPERATIONAL_FAMILIES.contains(segments[0]) || isMarkerSegments(segments)) {
+      return PointerNamespace.OPERATIONAL;
+    }
+    return PointerNamespace.PLANNER;
   }
 
   /** Whether the key is an idempotency record or a child/relation marker. */
   public static boolean isIdempotencyOrMarkerKey(String key) {
     String[] segments = accountKeySegments(key);
     return segments != null && ("idempotency".equals(segments[0]) || isMarkerSegments(segments));
-  }
-
-  /** Whether the key is a child or relation marker under a catalog or namespace. */
-  public static boolean isMarkerKey(String key) {
-    String[] segments = accountKeySegments(key);
-    return segments != null && isMarkerSegments(segments);
   }
 
   /** The only markers are catalogs/<id>/markers/<leaf> and namespaces/<id>/markers/<leaf>. */
@@ -192,6 +227,10 @@ public final class Keys {
     int slash = remainder.indexOf('/');
     if (slash < 0) return null;
     return remainder.substring(slash + 1).split("/", -1);
+  }
+
+  public static boolean isReservedAccountDirectorySegment(String segment) {
+    return "by-id".equals(segment) || "by-name".equals(segment);
   }
 
   public static String accountRootPrefix(String accountId) {
