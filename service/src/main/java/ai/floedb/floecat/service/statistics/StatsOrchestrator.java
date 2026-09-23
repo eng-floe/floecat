@@ -257,7 +257,8 @@ public class StatsOrchestrator {
   private static ObjectCache.SnapshotFacts snapshotFacts(TargetStatsRecord record) {
     return new ObjectCache.SnapshotFacts(
         OptionalLong.of(record.getTable().getRowCount()),
-        OptionalLong.of(record.getTable().getTotalSizeBytes()));
+        OptionalLong.of(record.getTable().getTotalSizeBytes()),
+        record.getColumnIdentityFingerprint());
   }
 
   /** Bounded sync capture, then async-enqueue fallback, for a store miss. */

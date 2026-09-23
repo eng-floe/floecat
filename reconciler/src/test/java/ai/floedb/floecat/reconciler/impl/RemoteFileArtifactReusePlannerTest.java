@@ -10,6 +10,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileExecutionPlan;
 import java.util.List;
@@ -237,6 +239,104 @@ class RemoteFileArtifactReusePlannerTest {
   }
 
   @Test
+  void rejectsStatsAndPageIndexesAcrossIdentityFingerprintChange() {
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+            PATH, 123L, "{}", null, "PARQUET", 0, List.of(), "delta-data-v1");
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.FILE_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    String priorSchema =
+        ColumnIdentityExecutionSchema.attach(
+            "{\"type\":\"struct\"}", identityMap("sha256:prior-generation"));
+    String currentSchema =
+        ColumnIdentityExecutionSchema.attach(
+            "{\"type\":\"struct\"}", identityMap("sha256:current-generation"));
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(
+                ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                    .setTargetStorageId("reuse-bundle:prior-generation")
+                    .setPayloadUri("s3://bucket/prior-generation.pb")
+                    .setPayloadBytes(100L)
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32])))
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath(PATH)
+                    .setSourceFingerprint(FileArtifactReuse.sourceFingerprint(plan, priorSchema))
+                    .setStatsCaptureSignature(FileArtifactReuse.statsCaptureSignature(policy))
+                    .addRealizedStatsSelectors("#1"))
+            .addIndexArtifacts(
+                ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
+                    .setFilePath(PATH)
+                    .setSourceFingerprint(FileArtifactReuse.indexSourceFingerprint(plan))
+                    .setIndexCaptureSignature(
+                        FileArtifactReuse.indexCaptureSignature(policy, priorSchema))
+                    .addRealizedIndexSelectors("#1"))
+            .build();
+
+    ReconcileFileExecutionPlan enriched =
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                currentSchema, List.of(plan), policy, false, List.of(bundle))
+            .getFirst();
+
+    assertFalse(enriched.reusesFileStats());
+    assertFalse(enriched.reusesIndexArtifact());
+  }
+
+  @Test
+  void reusesStatsAndPageIndexesAcrossIdentityStateChange() {
+    ReconcileFileExecutionPlan plan =
+        ReconcileFileExecutionPlan.of(
+            PATH, 123L, "{}", null, "PARQUET", 0, List.of(), "delta-data-v1");
+    ReconcileCapturePolicy policy =
+        ReconcileCapturePolicy.of(
+            List.of(new ReconcileCapturePolicy.Column("#1", true, true)),
+            Set.of(
+                ReconcileCapturePolicy.Output.FILE_STATS,
+                ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX));
+    String priorSchema =
+        ColumnIdentityExecutionSchema.attach(
+            "{\"type\":\"struct\"}", identityMap("sha256:identity", 1L, "sha256:state-1"));
+    String currentSchema =
+        ColumnIdentityExecutionSchema.attach(
+            "{\"type\":\"struct\"}", identityMap("sha256:identity", 2L, "sha256:state-2"));
+    var bundle =
+        ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundleReference.newBuilder()
+            .setArtifact(
+                ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor.newBuilder()
+                    .setTargetStorageId("reuse-bundle:prior-version")
+                    .setPayloadUri("s3://bucket/prior-version.pb")
+                    .setPayloadBytes(100L)
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(new byte[32])))
+            .addFileStats(
+                ai.floedb.floecat.reconciler.rpc.ReusableStatsArtifactMetadata.newBuilder()
+                    .setFilePath(PATH)
+                    .setSourceFingerprint(FileArtifactReuse.sourceFingerprint(plan, priorSchema))
+                    .setStatsCaptureSignature(FileArtifactReuse.statsCaptureSignature(policy))
+                    .addRealizedStatsSelectors("#1"))
+            .addIndexArtifacts(
+                ai.floedb.floecat.reconciler.rpc.ReusableIndexArtifactMetadata.newBuilder()
+                    .setFilePath(PATH)
+                    .setSourceFingerprint(FileArtifactReuse.indexSourceFingerprint(plan))
+                    .setIndexCaptureSignature(
+                        FileArtifactReuse.indexCaptureSignature(policy, priorSchema))
+                    .addRealizedIndexSelectors("#1"))
+            .build();
+
+    ReconcileFileExecutionPlan enriched =
+        RemoteFileArtifactReusePlanner.enrichFromBundles(
+                currentSchema, List.of(plan), policy, false, List.of(bundle))
+            .getFirst();
+
+    assertTrue(enriched.reusesFileStats());
+    assertTrue(enriched.reusesIndexArtifact());
+  }
+
+  @Test
   void changedOrRemovedDeleteContextDoesNotReuseFileStats() {
     ReconcileCapturePolicy policy =
         ReconcileCapturePolicy.of(List.of(), Set.of(ReconcileCapturePolicy.Output.FILE_STATS));
@@ -366,6 +466,22 @@ class RemoteFileArtifactReusePlannerTest {
                 .setIndexCaptureSignature(
                     FileArtifactReuse.indexCaptureSignature(policy, executionSchemaJson))
                 .addAllRealizedIndexSelectors(List.of(realizedSelectors)))
+        .build();
+  }
+
+  private static ColumnIdentityMap identityMap(String fingerprint) {
+    return identityMap(fingerprint, 1L, "sha256:state");
+  }
+
+  private static ColumnIdentityMap identityMap(
+      String fingerprint, long sourceVersion, String stateChecksum) {
+    return ColumnIdentityMap.newBuilder()
+        .setFormatVersion(1)
+        .setSourceVersion(sourceVersion)
+        .setHighWaterMark(2L)
+        .setMode(ColumnIdentityMode.COLUMN_IDENTITY_MODE_STRUCTURED_PATH)
+        .setFingerprint(fingerprint)
+        .setStateChecksum(stateChecksum)
         .build();
   }
 

@@ -70,7 +70,8 @@ public class SchemaServiceImpl extends BaseServiceImpl implements SchemaService 
                           request.hasSnapshot() ? request.getSnapshot() : null);
 
                   SchemaDescriptor desc =
-                      objects.mappedSchema(resolved.table(), resolved.schemaJson());
+                      objects.mappedSchema(
+                          resolved.table(), resolved.schemaJson(), resolved.columnIdentityMap());
 
                   return GetSchemaResponse.newBuilder().setSchema(desc).build();
                 }),

@@ -23,6 +23,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdAlgorithm;
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -32,7 +33,10 @@ import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.connector.spi.CanonicalIdentityConnector;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
+import ai.floedb.floecat.connector.spi.ConnectorFormat;
+import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
 import java.time.Instant;
@@ -43,6 +47,33 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBase {
+
+  @Test
+  void connectorCapabilitySelectsDeltaIdentityAlgorithm() {
+    FloecatConnector.TableDescriptor descriptor =
+        new FloecatConnector.TableDescriptor(
+            "ns",
+            "tbl",
+            "s3://table",
+            "{}",
+            List.of(),
+            ColumnIdAlgorithm.CID_PATH_ORDINAL,
+            Map.of());
+    FloecatConnector legacy = mock(FloecatConnector.class);
+    when(legacy.format()).thenReturn(ConnectorFormat.CF_DELTA);
+    CanonicalIdentityConnector canonical = mock(CanonicalIdentityConnector.class);
+    when(canonical.format()).thenReturn(ConnectorFormat.CF_DELTA);
+
+    assertThat(
+            QueuedReconcileWorkerSupport.withConnectorColumnIdentityCapability(legacy, descriptor)
+                .columnIdAlgorithm())
+        .isEqualTo(ColumnIdAlgorithm.CID_PATH_ORDINAL);
+    assertThat(
+            QueuedReconcileWorkerSupport.withConnectorColumnIdentityCapability(
+                    canonical, descriptor)
+                .columnIdAlgorithm())
+        .isEqualTo(ColumnIdAlgorithm.CID_CANONICAL_MAP);
+  }
 
   @Test
   void buildSnapshotRetainsExistingDataWhenBundleOmitsFields() {

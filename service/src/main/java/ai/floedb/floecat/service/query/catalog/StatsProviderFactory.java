@@ -288,6 +288,10 @@ public final class StatsProviderFactory {
                 request,
                 pinResolver.pinnedStatsGenerationRef(tableId),
                 allowUnpinnedLatestSnapshotFallback || pinResolver.currentSnapshotIsPinned(tableId))
+            .filter(
+                facts ->
+                    hasExpectedColumnIdentity(
+                        tableId, snapshotId, facts.columnIdentityFingerprint()))
             .map(
                 facts ->
                     new TableStatsViewImpl(
@@ -318,6 +322,10 @@ public final class StatsProviderFactory {
         return result
             .stats()
             .filter(TargetStatsRecord::hasScalar)
+            .filter(
+                record ->
+                    hasExpectedColumnIdentity(
+                        tableId, snapshotId, record.getColumnIdentityFingerprint()))
             .map(CachedStatsProvider::toColumnStatsView);
       } catch (RuntimeException e) {
         LOG.debugf(
@@ -328,6 +336,23 @@ public final class StatsProviderFactory {
             snapshotId);
         return Optional.empty();
       }
+    }
+
+    private boolean hasExpectedColumnIdentity(
+        ResourceId tableId, long snapshotId, String actualFingerprint) {
+      Optional<String> expectedFingerprint =
+          allowUnpinnedLatestSnapshotFallback && snapshotRepository != null
+              ? snapshotRepository
+                  .getById(tableId, snapshotId)
+                  .map(
+                      snapshot ->
+                          snapshot.hasColumnIdentityMap()
+                              ? snapshot.getColumnIdentityMap().getFingerprint()
+                              : "")
+              : pinResolver.pinnedColumnIdentityFingerprint(tableId);
+      return expectedFingerprint
+          .filter(fingerprint -> fingerprint.equals(actualFingerprint))
+          .isPresent();
     }
 
     private String connectorTypeFor(ResourceId tableId) {

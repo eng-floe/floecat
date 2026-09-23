@@ -74,6 +74,7 @@ public final class FileGroupTargetStatsRollup {
     if (captured == null || captured.isEmpty()) {
       return List.of();
     }
+    identityFingerprint(captured);
 
     List<TargetStatsRecord> fileRecords =
         captured.stream().filter(TargetStatsRecord::hasFile).toList();
@@ -140,6 +141,7 @@ public final class FileGroupTargetStatsRollup {
     if (partials == null || partials.isEmpty()) {
       return List.of();
     }
+    identityFingerprint(partials);
     LinkedHashMap<String, TargetStatsRecord> merged = new LinkedHashMap<>();
     if (requestedKinds.contains(FloecatConnector.StatsTargetKind.TABLE)) {
       TargetStatsRecord tableRecord = aggregateTableFromPartials(tableId, snapshotId, partials);
@@ -184,7 +186,13 @@ public final class FileGroupTargetStatsRollup {
     }
 
     return buildTableRecord(
-        tableId, snapshotId, rowCount, dataFileCount, sizeBytes, metadata.finish());
+        tableId,
+        snapshotId,
+        rowCount,
+        dataFileCount,
+        sizeBytes,
+        metadata.finish(),
+        identityFingerprint(fileRecords));
   }
 
   private static List<TargetStatsRecord> aggregateColumns(
@@ -230,7 +238,13 @@ public final class FileGroupTargetStatsRollup {
       return null;
     }
     return buildTableRecord(
-        tableId, snapshotId, rowCount, dataFileCount, sizeBytes, metadata.finish());
+        tableId,
+        snapshotId,
+        rowCount,
+        dataFileCount,
+        sizeBytes,
+        metadata.finish(),
+        identityFingerprint(partials));
   }
 
   private static List<TargetStatsRecord> aggregateColumnsFromPartials(
@@ -257,7 +271,8 @@ public final class FileGroupTargetStatsRollup {
       long rowCount,
       long dataFileCount,
       long sizeBytes,
-      StatsMetadata metadata) {
+      StatsMetadata metadata,
+      String columnIdentityFingerprint) {
     TargetStatsRecord.Builder builder =
         TargetStatsRecords.tableRecord(
             tableId,
@@ -272,6 +287,7 @@ public final class FileGroupTargetStatsRollup {
     if (metadata != null) {
       builder.setMetadata(metadata);
     }
+    builder.setColumnIdentityFingerprint(columnIdentityFingerprint);
     return builder.build();
   }
 
@@ -290,6 +306,7 @@ public final class FileGroupTargetStatsRollup {
       if (metadata != null) {
         builder.setMetadata(metadata);
       }
+      builder.setColumnIdentityFingerprint(entry.getValue().columnIdentityFingerprint());
       out.add(builder.build());
     }
     return List.copyOf(out);
@@ -299,6 +316,22 @@ public final class FileGroupTargetStatsRollup {
     return file != null
         && (file.getFileContent() == FileContent.FC_POSITION_DELETES
             || file.getFileContent() == FileContent.FC_EQUALITY_DELETES);
+  }
+
+  /** Requires every contributing record to carry one compatible column identity fingerprint. */
+  private static String identityFingerprint(List<TargetStatsRecord> records) {
+    String fingerprint = null;
+    for (TargetStatsRecord record : records) {
+      if (record == null) {
+        continue;
+      }
+      if (fingerprint == null) {
+        fingerprint = record.getColumnIdentityFingerprint();
+      } else if (!fingerprint.equals(record.getColumnIdentityFingerprint())) {
+        throw new IllegalArgumentException("Cannot roll up incompatible column identity mappings");
+      }
+    }
+    return fingerprint == null ? "" : fingerprint;
   }
 
   private static long saturatedNonnegativeAdd(long left, long right) {
@@ -372,6 +405,8 @@ public final class FileGroupTargetStatsRollup {
     private final MetadataAccumulator metadata = new MetadataAccumulator();
     private String displayName = "";
     private String logicalType = "";
+    private String columnIdentityFingerprint = "";
+    private boolean columnIdentityFingerprintSeen;
 
     /** Total sources folded into this column (files or partials), sketch-bearing or not. */
     private int contributors = 0;
@@ -418,6 +453,15 @@ public final class FileGroupTargetStatsRollup {
       // second contributor voids that claim for good.
       soleSource = contributors == 1 ? scalar : null;
       metadata.add(source);
+      if (source != null) {
+        if (!columnIdentityFingerprintSeen) {
+          columnIdentityFingerprint = source.getColumnIdentityFingerprint();
+          columnIdentityFingerprintSeen = true;
+        } else if (!columnIdentityFingerprint.equals(source.getColumnIdentityFingerprint())) {
+          throw new IllegalArgumentException(
+              "Cannot roll up incompatible column identity mappings");
+        }
+      }
       if (scalar.getDisplayName() != null
           && !scalar.getDisplayName().isBlank()
           && displayName.isBlank()) {
@@ -495,6 +539,10 @@ public final class FileGroupTargetStatsRollup {
         builder.putProperties(WIDTH_WEIGHT_ROWS_PROPERTY, Long.toString(totalRowsForWidth));
       }
       return builder.build();
+    }
+
+    String columnIdentityFingerprint() {
+      return columnIdentityFingerprint;
     }
 
     private void mergeNdv(ScalarStats scalar) {
