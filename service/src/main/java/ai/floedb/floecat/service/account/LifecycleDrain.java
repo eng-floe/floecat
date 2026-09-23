@@ -13,7 +13,7 @@ package ai.floedb.floecat.service.account;
  * runtime-specific implementation, but the query, cache, mutation, and GC code only observes the
  * admission and GC permits exposed by {@link AccountScope}.
  */
-public interface LifecycleDrain extends AssignmentControl {
+public interface LifecycleDrain extends LifecycleControl {
   /** Fallback used by plain unit-test instances created without CDI. */
   LifecycleDrain ALWAYS_SERVING =
       new LifecycleDrain() {

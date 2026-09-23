@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Optional;
 
 /** Process lifecycle status used by the local drain endpoint. */
-public interface AssignmentControl {
+public interface LifecycleControl {
 
   /** Begins the irreversible process drain used by a deployment lifecycle hook. */
   Status beginProcessDrain();

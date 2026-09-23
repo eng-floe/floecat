@@ -28,7 +28,7 @@ class AccountAssignmentTest {
   @Test
   void managedModeAdmitsWorkUntilProcessDrainStarts() {
     AccountAssignment assignment =
-        AccountAssignment.managedForTesting(AccountAssignment.PartitionHooks.NONE);
+        AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE);
 
     try (var mutation = assignment.admitMutation(ACCOUNT);
         var resolution = assignment.admitResolution(ACCOUNT);
@@ -47,10 +47,10 @@ class AccountAssignmentTest {
   @Test
   void processDrainRejectsNewWorkAndRevokesGcPermits() {
     AccountAssignment assignment =
-        AccountAssignment.managedForTesting(AccountAssignment.PartitionHooks.NONE);
+        AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE);
     AccountScope.GcPermit gc = assignment.tryAcquireGc(ACCOUNT).orElseThrow();
 
-    AssignmentControl.Status drained = assignment.beginProcessDrain();
+    LifecycleControl.Status drained = assignment.beginProcessDrain();
 
     assertThat(drained.processDraining()).isTrue();
     assertThat(gc.valid()).isFalse();
@@ -64,7 +64,7 @@ class AccountAssignmentTest {
   @Test
   void standaloneModeIgnoresDrainPolicy() {
     AccountAssignment assignment =
-        AccountAssignment.standaloneForTesting(AccountAssignment.PartitionHooks.NONE);
+        AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE);
 
     assertThat(assignment.tryAcquireGc(ACCOUNT)).isPresent();
     assertThat(assignment.acquire(ACCOUNT, PlanningPointerIndex.Ownership.Access.WRITE))

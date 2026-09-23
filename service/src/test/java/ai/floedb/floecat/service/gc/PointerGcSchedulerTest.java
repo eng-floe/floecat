@@ -43,8 +43,7 @@ class PointerGcSchedulerTest {
     RecordingPointerGc gc = new RecordingPointerGc();
     TestObservability observability = new TestObservability();
     AccountAssignment assignment =
-        AccountAssignment.managedForTesting(
-            "m", "m/inc", new InMemoryPointerStore(), observability);
+        AccountAssignment.forTesting("m", "m/inc", new InMemoryPointerStore(), observability);
     PointerGcScheduler scheduler = new PointerGcScheduler();
     scheduler.accounts = () -> accounts;
     scheduler.pointerGc = () -> gc;
@@ -76,8 +75,7 @@ class PointerGcSchedulerTest {
     PointerGcScheduler scheduler = new PointerGcScheduler();
     scheduler.accounts = () -> accounts;
     scheduler.pointerGc = () -> gc;
-    scheduler.assignment =
-        AccountAssignment.standaloneForTesting(new InMemoryPointerStore(), observability);
+    scheduler.assignment = AccountAssignment.forTesting(new InMemoryPointerStore(), observability);
     scheduler.observability = observability;
     scheduler.initMeters();
 

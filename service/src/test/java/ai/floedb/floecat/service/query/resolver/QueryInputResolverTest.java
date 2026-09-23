@@ -246,7 +246,7 @@ public class QueryInputResolverTest {
   @Test
   void pinDuringProcessDrainIsRefusedWithNotAssigned() {
     var assignment =
-        AccountAssignment.managedForTesting(
+        AccountAssignment.forTesting(
             "m", "m/inc", new InMemoryPointerStore(), new TestObservability());
     assignment.beginProcessDrain();
     var fenced =
@@ -273,7 +273,7 @@ public class QueryInputResolverTest {
   @Test
   void permitAccountingReachesZeroAfterAbandonedFanOutSiblings() throws Exception {
     var assignment =
-        AccountAssignment.managedForTesting(
+        AccountAssignment.forTesting(
             "m", "m/inc", new InMemoryPointerStore(), new TestObservability());
     var blockingGraph = new NonInterruptiblePinGraph("SLOW");
     var store = org.mockito.Mockito.mock(QueryContextStore.class);

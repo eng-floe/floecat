@@ -84,20 +84,15 @@ public class AccountAssignment
     this.incarnation = UUID.randomUUID().toString();
   }
 
-  public static AccountAssignment standaloneForTesting(PartitionHooks ignored) {
-    return new AccountAssignment("standalone-test");
+  public static AccountAssignment forTesting(PartitionHooks ignored) {
+    return new AccountAssignment("test");
   }
 
-  public static AccountAssignment standaloneForTesting(
-      Object ignoredStore, Object ignoredObservability) {
-    return new AccountAssignment("standalone-test");
+  public static AccountAssignment forTesting(Object ignoredStore, Object ignoredObservability) {
+    return new AccountAssignment("test");
   }
 
-  public static AccountAssignment managedForTesting(PartitionHooks ignored) {
-    return new AccountAssignment("managed-test");
-  }
-
-  public static AccountAssignment managedForTesting(
+  public static AccountAssignment forTesting(
       String memberId,
       String ignoredIncarnation,
       Object ignoredStore,
@@ -173,7 +168,7 @@ public class AccountAssignment
   }
 
   @Override
-  public Status status() {
+  public LifecycleControl.Status status() {
     List<AccountStatus> statuses = new ArrayList<>();
     for (var entry : accounts.entrySet()) {
       statuses.add(status(entry.getKey(), entry.getValue()));
