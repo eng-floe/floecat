@@ -70,6 +70,13 @@ public final class ServiceMetrics {
             "count",
             CONTRACT,
             "service");
+    public static final MetricId BYTES =
+        new MetricId(
+            "floecat.service.planning.pointer.bytes",
+            MetricType.GAUGE,
+            "bytes",
+            CONTRACT,
+            "service");
     public static final MetricId WARM_STARTS =
         new MetricId(
             "floecat.service.planning.pointer.warm.starts.total",

@@ -25,6 +25,7 @@ import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -107,6 +108,18 @@ public class CasBlobGc {
 
   @Inject BlobStore blobStore;
   @Inject PointerStore pointerStore;
+
+  /**
+   * Reachability probes read here, never through the index.
+   *
+   * <p>The index is authoritative over the tables the catalog knows about -- those with an identity
+   * row. This sweep discovers candidates by listing blob prefixes, deliberately looking outside
+   * that view for garbage, so it asks about tables the index was never told existed. For those the
+   * index correctly answers absent, and an absent root here reads as "nothing referenced" and
+   * deletes live blobs. Emptiness is load-bearing on this path, so it must come from the store.
+   */
+  @Inject DurablePointerReads durablePointers;
+
   @Inject QueryContextStore queryContextStore;
   @Inject TableRootRepository tableRootRepo;
   @Inject StatsRepository statsRepository;
@@ -804,12 +817,15 @@ public class CasBlobGc {
           pass.tableWalkFailures[0] = 0;
         }
         ReferenceIndex tableReferenced = pass.tableReferenced;
-        var tablePointer = pointerStore.get(Keys.tablePointerById(accountId, tableId)).orElse(null);
+        var tablePointer =
+            durablePointers.get(Keys.tablePointerById(accountId, tableId)).orElse(null);
         if (tablePointer != null && !tablePointer.getBlobUri().isBlank()) {
           tableReferenced.add(normalizeKey(tablePointer.getBlobUri()));
         }
         var currentSnapshotPointer =
-            pointerStore.get(Keys.currentSnapshotPointerByTable(accountId, tableId)).orElse(null);
+            durablePointers
+                .get(Keys.currentSnapshotPointerByTable(accountId, tableId))
+                .orElse(null);
         if (currentSnapshotPointer != null && !currentSnapshotPointer.getBlobUri().isBlank()) {
           tableReferenced.add(normalizeKey(currentSnapshotPointer.getBlobUri()));
           pointersScanned++;
@@ -838,7 +854,7 @@ public class CasBlobGc {
         // references is protected even when the live active pointer has already moved past it (the
         // finalize's pointer flip and root commit are not atomic). Superseded root chains no live
         // pin references are unreferenced and swept below.
-        var rootPtr = pointerStore.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
+        var rootPtr = durablePointers.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
         if (rootPtr != null && !rootPtr.getBlobUri().isBlank()) {
           pointersScanned++;
           storageEstimate.observe(rootPtr);
@@ -2425,7 +2441,7 @@ public class CasBlobGc {
 
   /** Whether the given owner pointer currently references exactly this normalized blob key. */
   private boolean ownedBy(String ownerPointerKey, String normalizedKey) {
-    var owner = pointerStore.get(ownerPointerKey).orElse(null);
+    var owner = durablePointers.get(ownerPointerKey).orElse(null);
     return owner != null && normalizedKey.equals(normalizeKey(owner.getBlobUri()));
   }
 
@@ -2445,7 +2461,7 @@ public class CasBlobGc {
    */
   private boolean remarkTable(
       String accountId, String tableId, ReferenceIndex fresh, int pageSize) {
-    var rootPtr = pointerStore.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
+    var rootPtr = durablePointers.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
     if (rootPtr != null && !rootPtr.getBlobUri().isBlank()) {
       if (!rootTableRootChain(rootPtr.getBlobUri(), fresh)) {
         return false;

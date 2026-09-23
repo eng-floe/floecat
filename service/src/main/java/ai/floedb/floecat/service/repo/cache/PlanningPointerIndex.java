@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.cache;
 
+import ai.floedb.floecat.cache.CacheWeights;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
@@ -28,7 +29,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Optional;
-import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentNavigableMap;
 import java.util.concurrent.ConcurrentSkipListMap;
@@ -36,15 +36,25 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /** The authoritative in-memory index for planner-visible pointer state. */
 public final class PlanningPointerIndex {
   private static final int PAGE_SIZE = 1_000;
   private static final long LOAD_RETRY_PAUSE_NANOS = Duration.ofSeconds(5).toNanos();
+  // A refusal is not a hiccup. An account over the budget stays over it until a durable sweep
+  // reclaims rows, so the store-error pause would re-run a full account scan every five seconds.
+  private static final long SIZE_REFUSAL_PAUSE_NANOS = Duration.ofMinutes(10).toNanos();
+  // Each refusal costs a scan up to the budget, and nothing the index does makes the account
+  // smaller -- only a durable sweep will. Back off rather than pay that every ten minutes forever.
+  private static final int MAX_REFUSAL_BACKOFF_DOUBLINGS = 5;
+  // Two keys per table; kept under the store's batch-get ceiling.
+  private static final int PER_TABLE_BATCH_KEYS = 100;
   private static final String GLOBAL = "<account-directory>";
 
   enum Readiness {
@@ -77,6 +87,25 @@ public final class PlanningPointerIndex {
     Optional<Permit> acquire(String accountId, Access access);
   }
 
+  /**
+   * The index's sizing and on/off policy, fixed for the life of the process exactly as the object
+   * and hint caches fix theirs. Nothing flips at runtime, so a partition's readiness is the only
+   * thing a reader has to reason about.
+   */
+  public record Policy(boolean enabled, long maxBytesPerAccount, long maxBytesTotal) {
+    public static final Policy UNLIMITED = new Policy(true, Long.MAX_VALUE, Long.MAX_VALUE);
+
+    public Policy {
+      if (maxBytesPerAccount <= 0 || maxBytesTotal < maxBytesPerAccount) {
+        throw new IllegalArgumentException(
+            "maxBytesPerAccount must be positive and no larger than maxBytesTotal, but were "
+                + maxBytesPerAccount
+                + " and "
+                + maxBytesTotal);
+      }
+    }
+  }
+
   /** Receives low-cardinality observations for background partition warming. */
   public interface WarmObserver {
     WarmObserver NONE = new WarmObserver() {};
@@ -86,12 +115,22 @@ public final class PlanningPointerIndex {
     default void completed(String accountId, Duration duration) {}
 
     default void failed(String accountId, Duration duration, Throwable failure) {}
+
+    /** The account crossed the byte budget, so it stays on durable KV. Not a failure. */
+    default void refused(String accountId, Duration duration) {}
   }
 
   private final PointerStore durable;
   private final Ownership ownership;
   private final Executor warmExecutor;
   private final WarmObserver warmObserver;
+  private final Policy policy;
+  // Admission accounting: updated when a load completes and when resident mutations publish.
+  // An account stays whole or drops back to durable KV; the index never evicts individual entries.
+  private final AtomicLong residentBytes = new AtomicLong();
+  private final Object admissionLock = new Object();
+  private final PlannerPartitionLoad loader;
+
   private final ConcurrentHashMap<String, Partition> partitions = new ConcurrentHashMap<>();
 
   public PlanningPointerIndex(PointerStore durable) {
@@ -113,6 +152,17 @@ public final class PlanningPointerIndex {
 
   PlanningPointerIndex(
       PointerStore durable, Ownership ownership, Executor warmExecutor, WarmObserver warmObserver) {
+    this(durable, ownership, warmExecutor, warmObserver, Policy.UNLIMITED);
+  }
+
+  public PlanningPointerIndex(
+      PointerStore durable,
+      Ownership ownership,
+      Executor warmExecutor,
+      WarmObserver warmObserver,
+      Policy policy) {
+    this.policy = java.util.Objects.requireNonNull(policy, "policy");
+    this.loader = new PlannerPartitionLoad(durable, policy);
     this.durable = java.util.Objects.requireNonNull(durable, "durable");
     this.ownership = java.util.Objects.requireNonNull(ownership, "ownership");
     this.warmExecutor = java.util.Objects.requireNonNull(warmExecutor, "warmExecutor");
@@ -172,7 +222,7 @@ public final class PlanningPointerIndex {
     // partition, so a batch containing one must use the durable path for every key.
     if (keys.stream().anyMatch(key -> !isPlanningKey(key))) return durableBatch(keys);
     List<String> partitionsToRead =
-        keys.stream().map(this::partitionFor).distinct().sorted().toList();
+        keys.stream().map(PlanningPointerIndex::partitionFor).distinct().sorted().toList();
     // A batch is one logical read. If any planner partition is not ready or not owned, use the
     // durable store for the whole operation instead of mixing an index snapshot with KV results.
     List<Ownership.Permit> permits = acquire(partitionsToRead, Ownership.Access.READ, false);
@@ -198,10 +248,15 @@ public final class PlanningPointerIndex {
         }
       }
       try {
+        Map<String, Partition> lockedByName = new LinkedHashMap<>();
+        for (int i = 0; i < partitionsToRead.size(); i++) {
+          lockedByName.put(partitionsToRead.get(i), locked.get(i));
+        }
         Map<String, Pointer> result = new LinkedHashMap<>();
         for (String key : new java.util.LinkedHashSet<>(keys)) {
-          Partition partition = partitions.get(partitionFor(key));
-          Pointer value = partition.entries.get(key);
+          // Through the partitions this batch locked, never the registry: a partition can be
+          // removed from the registry while this batch still holds its lock.
+          Pointer value = lockedByName.get(partitionFor(key)).entries.get(key);
           if (value != null) result.put(key, value);
         }
         return Map.copyOf(result);
@@ -229,7 +284,7 @@ public final class PlanningPointerIndex {
   private List<Pointer> lookupPrefix(
       String prefix, int limit, String token, StringBuilder nextToken) {
     String partitionKey = partitionFor(prefix);
-    if (partitionKey == null || !isPlanningPrefix(prefix))
+    if (partitionKey == null || !PlannerPointerShape.isResidentListPrefix(prefix))
       return durableList(prefix, limit, token, nextToken);
     if (token != null && !token.isBlank() && !token.startsWith("index:"))
       return durableList(prefix, limit, token, nextToken);
@@ -283,7 +338,8 @@ public final class PlanningPointerIndex {
 
   private int countPrefix(String prefix) {
     String partitionKey = partitionFor(prefix);
-    if (partitionKey == null || !isPlanningPrefix(prefix)) return durableCount(prefix);
+    if (partitionKey == null || !PlannerPointerShape.isResidentListPrefix(prefix))
+      return durableCount(prefix);
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
     if (permit.isEmpty()) return durableCount(prefix);
     try {
@@ -342,7 +398,12 @@ public final class PlanningPointerIndex {
           return mutateAllLocked(durableMutation, publish);
         }
       }
-      String partitionKey = isPlanningPrefix(prefix) ? partitionFor(prefix) : null;
+      // The permissive predicate on purpose: a prefix the index cannot ANSWER may still contain
+      // keys it holds, and the write lock is what orders this delete against a concurrent load.
+      String partitionKey =
+          PlannerPointerShape.mutationPrefixTouchesResidentKeys(prefix)
+              ? partitionFor(prefix)
+              : null;
       List<Partition> locked =
           partitionKey == null ? List.of() : lockPartitionsForListing(List.of(partitionKey));
       try {
@@ -360,7 +421,13 @@ public final class PlanningPointerIndex {
   private <T> T mutateKeysLocked(
       Collection<String> keys, Supplier<T> durableMutation, Consumer<T> publish) {
     List<Partition> partitionsLocked = lockPartitionsForMutation(keys);
-    List<HeldKeyLock> keyLocks = lockKeys(keys, partitionsLocked);
+    List<HeldKeyLock> keyLocks;
+    try {
+      keyLocks = lockKeys(keys, partitionsLocked);
+    } catch (RuntimeException | Error failure) {
+      unlockReadPartitions(partitionsLocked);
+      throw failure;
+    }
     try {
       T result = durableMutation.get();
       publish.accept(result);
@@ -386,7 +453,19 @@ public final class PlanningPointerIndex {
     if (keys == null) return List.of();
     if (keys.contains(Keys.accountRootPrefix())) return List.of(GLOBAL);
     return keys.stream()
-        .map(this::partitionFor)
+        .map(PlanningPointerIndex::partitionFor)
+        .filter(partition -> partition != null && !GLOBAL.equals(partition))
+        .distinct()
+        .sorted()
+        .toList();
+  }
+
+  private List<String> residentAccountPartitions(Collection<String> keys) {
+    if (keys == null) return List.of();
+    if (keys.contains(Keys.accountRootPrefix())) return List.of(GLOBAL);
+    return keys.stream()
+        .filter(PlannerPointerShape::isResidentKey)
+        .map(PlanningPointerIndex::partitionFor)
         .filter(partition -> partition != null && !GLOBAL.equals(partition))
         .distinct()
         .sorted()
@@ -458,16 +537,44 @@ public final class PlanningPointerIndex {
 
   void publish(String key, Pointer value) {
     if (!isPlanningKey(key)) return;
-    Partition partition = partitions.get(partitionFor(key));
-    if (partition != null && partition.readiness == Readiness.COMPLETE)
+    String partitionKey = partitionFor(key);
+    Partition partition = partitions.get(partitionKey);
+    if (partition == null || partition.readiness != Readiness.COMPLETE) return;
+    synchronized (admissionLock) {
+      if (partition.readiness != Readiness.COMPLETE || partitions.get(partitionKey) != partition) {
+        return;
+      }
+      Pointer previous = partition.entries.get(key);
+      long previousBytes = previous == null ? 0 : pointerWeight(previous);
+      long nextPartitionBytes = partition.residentBytes - previousBytes + pointerWeight(value);
+      long nextResidentBytes = residentBytes.get() - partition.residentBytes + nextPartitionBytes;
+      if (nextPartitionBytes > policy.maxBytesPerAccount()
+          || nextResidentBytes > policy.maxBytesTotal()) {
+        demoteForSize(partitionKey, partition);
+        return;
+      }
       partition.entries.put(key, value);
+      partition.residentBytes = nextPartitionBytes;
+      residentBytes.set(nextResidentBytes);
+    }
   }
 
   void remove(String key) {
     if (!isPlanningKey(key)) return;
-    Partition partition = partitions.get(partitionFor(key));
-    if (partition != null && partition.readiness == Readiness.COMPLETE)
-      partition.entries.remove(key);
+    String partitionKey = partitionFor(key);
+    Partition partition = partitions.get(partitionKey);
+    if (partition == null || partition.readiness != Readiness.COMPLETE) return;
+    synchronized (admissionLock) {
+      if (partition.readiness != Readiness.COMPLETE || partitions.get(partitionKey) != partition) {
+        return;
+      }
+      Pointer removed = partition.entries.remove(key);
+      if (removed != null) {
+        long removedBytes = pointerWeight(removed);
+        partition.residentBytes -= removedBytes;
+        residentBytes.addAndGet(-removedBytes);
+      }
+    }
   }
 
   void refresh(String key, Optional<Pointer> value) {
@@ -477,14 +584,14 @@ public final class PlanningPointerIndex {
 
   void removePrefix(String prefix, String excludedKey) {
     if (Keys.accountRootPrefix().equals(prefix)) {
-      for (Partition partition : partitions.values()) {
-        if (partition.readiness == Readiness.COMPLETE) {
-          partition
-              .entries
-              .keySet()
-              .removeIf(
-                  key -> key.startsWith(prefix) && !java.util.Objects.equals(key, excludedKey));
+      synchronized (admissionLock) {
+        for (Partition partition : partitions.values()) {
+          if (partition.readiness == Readiness.COMPLETE) {
+            removeMatching(partition, prefix, excludedKey);
+          }
+          partition.residentBytes = 0;
         }
+        residentBytes.set(0);
       }
       partitions.clear();
       return;
@@ -492,12 +599,23 @@ public final class PlanningPointerIndex {
     String partitionKey = partitionFor(prefix);
     Partition partition = partitionKey == null ? null : partitions.get(partitionKey);
     if (partition != null && partition.readiness == Readiness.COMPLETE) {
-      partition
-          .entries
-          .keySet()
-          .removeIf(key -> key.startsWith(prefix) && !java.util.Objects.equals(key, excludedKey));
+      synchronized (admissionLock) {
+        if (partition.readiness == Readiness.COMPLETE
+            && partitions.get(partitionKey) == partition) {
+          removeMatching(partition, prefix, excludedKey);
+        }
+      }
     }
-    if (isAccountRoot(prefix)) partitions.remove(accountPartition(prefix));
+    if (isAccountRoot(prefix)) {
+      // Not forget(): this runs under the partition write lock, and forget() takes the registry
+      // monitor. Account-wide mutations take the monitor first and the write locks second, so
+      // reversing that order here is a deadlock. Drop the entry and release its bytes directly.
+      Partition removed = partitions.remove(accountPartition(prefix));
+      if (removed != null) {
+        releaseResidentBytes(removed.residentBytes);
+        removed.residentBytes = 0;
+      }
+    }
   }
 
   Readiness readiness(String accountId) {
@@ -519,21 +637,60 @@ public final class PlanningPointerIndex {
   }
 
   public long completePartitionCount() {
-    return partitions.values().stream()
-        .filter(partition -> partition.readiness == Readiness.COMPLETE)
-        .count();
+    return countPartitions(partition -> partition.readiness == Readiness.COMPLETE);
   }
 
   public long loadingPartitionCount() {
-    return partitions.values().stream()
-        .filter(partition -> partition.readiness == Readiness.LOADING)
-        .count();
+    return countPartitions(
+        partition -> partition.readiness == Readiness.LOADING && !partition.refusedForSize);
+  }
+
+  /** Estimated heap admitted across every resident account, as weighed when each was loaded. */
+  public long residentBytes() {
+    return residentBytes.get();
+  }
+
+  /** Accounts left on durable KV because they did not fit the per-account or total budget. */
+  public long refusedPartitionCount() {
+    return countPartitions(partition -> partition.refusedForSize);
+  }
+
+  private long countPartitions(Predicate<Partition> predicate) {
+    return partitions.values().stream().filter(predicate).count();
+  }
+
+  /**
+   * Whether planner reads and listings may be answered from the index. When false the index never
+   * loads, so no partition is ever complete and every read falls back to durable KV -- the path a
+   * loading partition already takes.
+   */
+  public boolean enabled() {
+    return policy.enabled();
   }
 
   /** Clears local planner state after a test fixture or administrative wipe changed durable KV. */
   public void clear() {
+    List<Partition> locked;
     synchronized (partitions) {
+      locked = new ArrayList<>(partitions.values());
+      for (Partition partition : locked) {
+        partition.lock.writeLock().lock();
+      }
       partitions.clear();
+    }
+    try {
+      synchronized (admissionLock) {
+        residentBytes.set(0);
+        for (Partition partition : locked) {
+          partition.entries.clear();
+          partition.keyLocks.clear();
+          partition.residentBytes = 0;
+          partition.readiness = Readiness.LOADING;
+          partition.warmScheduled.set(false);
+        }
+      }
+    } finally {
+      unlockWritePartitions(locked);
     }
   }
 
@@ -543,7 +700,7 @@ public final class PlanningPointerIndex {
    * account cold forever.
    */
   public void warm(String accountId) {
-    if (accountId == null || accountId.isBlank()) return;
+    if (!policy.enabled() || accountId == null || accountId.isBlank()) return;
     Partition partition;
     synchronized (partitions) {
       partition = partitions.computeIfAbsent(accountId, ignored -> new Partition());
@@ -584,9 +741,14 @@ public final class PlanningPointerIndex {
     if (removed != null) {
       removed.lock.writeLock().lock();
       try {
-        removed.entries.clear();
-        removed.keyLocks.clear();
-        removed.readiness = Readiness.LOADING;
+        synchronized (admissionLock) {
+          residentBytes.addAndGet(-removed.residentBytes);
+          removed.residentBytes = 0;
+          removed.entries.clear();
+          removed.keyLocks.clear();
+          removed.readiness = Readiness.LOADING;
+          removed.warmScheduled.set(false);
+        }
       } finally {
         removed.lock.writeLock().unlock();
       }
@@ -598,7 +760,7 @@ public final class PlanningPointerIndex {
     // but reporting a start for a warm that will not attempt anything leaves an observation with
     // no completion behind it -- reads keep scheduling these, so the gap grows for as long as the
     // store stays unwell and looks like warms that never finished.
-    if (loadPaused(partition)) {
+    if (!policy.enabled() || loadPaused(partition)) {
       partition.warmScheduled.set(false);
       return;
     }
@@ -610,6 +772,7 @@ public final class PlanningPointerIndex {
     long startNanos = System.nanoTime();
     warmObserver.started(partitionKey);
     boolean loaded = false;
+    boolean refused = false;
     Throwable failure = null;
     partition.lock.writeLock().lock();
     try {
@@ -620,9 +783,15 @@ public final class PlanningPointerIndex {
       // with no completion behind it -- the very gap the early check exists to close. At worst
       // one attempt gets through and re-arms the pause when it fails.
       if (partitions.get(partitionKey) == partition && partition.readiness != Readiness.COMPLETE) {
-        loadLocked(partitionKey, partition);
-        loaded = true;
+        loaded = loadLocked(partitionKey, partition);
+        refused = !loaded;
       }
+    } catch (Error fatal) {
+      // An OutOfMemoryError here is this load, not the store. The pause is armed on the way out;
+      // without it the next read schedules the identical scan and the process never recovers
+      // enough heap to answer anything.
+      partition.loadRetryNotBeforeNanos = System.nanoTime() + LOAD_RETRY_PAUSE_NANOS;
+      throw fatal;
     } catch (RuntimeException loadFailure) {
       // A failed load is not a partial index. Keep it LOADING; a later read or mutation retries,
       // once the pause has passed -- reads reach here too, and reads are the common case.
@@ -635,6 +804,7 @@ public final class PlanningPointerIndex {
     }
     Duration duration = Duration.ofNanos(System.nanoTime() - startNanos);
     if (loaded) warmObserver.completed(partitionKey, duration);
+    else if (refused) warmObserver.refused(partitionKey, duration);
     else if (failure != null) warmObserver.failed(partitionKey, duration, failure);
   }
 
@@ -661,7 +831,7 @@ public final class PlanningPointerIndex {
     }
   }
 
-  private static void unlockKeys(List<HeldKeyLock> locks) {
+  private void unlockKeys(List<HeldKeyLock> locks) {
     for (int i = locks.size() - 1; i >= 0; i--) {
       HeldKeyLock held = locks.get(i);
       held.keyLock().lock.unlock();
@@ -674,6 +844,7 @@ public final class PlanningPointerIndex {
                 current.references--;
                 return current.references == 0 ? null : current;
               });
+      detachDemotedPartitionIfUnused(held.partitionKey(), held.partition());
     }
   }
 
@@ -688,30 +859,81 @@ public final class PlanningPointerIndex {
     return partition;
   }
 
-  private void loadLocked(String partitionKey, Partition partition) {
-    TreeMap<String, Pointer> loaded = new TreeMap<>();
-    for (String prefix : loadPrefixes(partitionKey)) {
-      String token = "";
-      do {
-        StringBuilder next = new StringBuilder();
-        for (Pointer pointer :
-            durable.listPointersByPrefixConsistent(prefix, PAGE_SIZE, token, next)) {
-          if (partitionKey.equals(partitionFor(pointer.getKey()))
-              && isPlanningKey(pointer.getKey())) loaded.put(pointer.getKey(), pointer);
-        }
-        String newToken = next.toString();
-        if (!newToken.isBlank() && newToken.equals(token))
-          throw new IllegalStateException("stagnant pointer index token");
-        token = newToken;
-      } while (!token.isBlank());
+  /**
+   * Applies a freshly built image under the partition write lock. Building it is {@link
+   * PlannerPartitionLoad}'s job; what stays here is the part that needs the lock and the registry.
+   */
+  private boolean loadLocked(String partitionKey, Partition partition) {
+    PlannerPartitionLoad.Result result = loader.load(partitionKey);
+    if (result.refusedForSize()) {
+      refuseForSize(partition);
+      return false;
     }
-    partition.entries.clear();
-    partition.entries.putAll(loaded);
+    synchronized (admissionLock) {
+      if (partitions.get(partitionKey) != partition) {
+        return false;
+      }
+      long nextResidentBytes = residentBytes.get() - partition.residentBytes + result.bytes();
+      if (nextResidentBytes > policy.maxBytesTotal()) {
+        refuseForSize(partition);
+        return false;
+      }
+      partition.entries.clear();
+      partition.entries.putAll(result.entries());
+      residentBytes.set(nextResidentBytes);
+      partition.residentBytes = result.bytes();
+    }
+    partition.refusedForSize = false;
+    partition.consecutiveRefusals = 0;
     partition.readiness = Readiness.COMPLETE;
+    return true;
+  }
+
+  private void refuseForSize(Partition partition) {
+    partition.refusedForSize = true;
+    partition.loadRetryNotBeforeNanos =
+        System.nanoTime() + refusalPauseNanos(partition.consecutiveRefusals++);
+  }
+
+  private void demoteForSize(String partitionKey, Partition partition) {
+    residentBytes.addAndGet(-partition.residentBytes);
+    partition.residentBytes = 0;
+    partition.demotedForSize = true;
+    partition.readiness = Readiness.LOADING;
+    partition.warmScheduled.set(false);
+    refuseForSize(partition);
+    detachDemotedPartitionIfUnused(partitionKey, partition);
+  }
+
+  /**
+   * Retires a demoted partition once nothing holds one of its key locks, by replacing the registry
+   * entry with an empty refused one.
+   *
+   * <p>The retired partition keeps its contents. Clearing them would need the write lock, which the
+   * caller cannot take while holding the read side, and a reader that passed {@link
+   * #readyPartition} before the demotion would then read an emptied image and report an absence
+   * that is authoritative. Replacing the registry entry is what makes the partition unreachable;
+   * the image goes with it when the last holder lets go.
+   */
+  private void detachDemotedPartitionIfUnused(String partitionKey, Partition partition) {
+    if (!partition.demotedForSize || !partition.keyLocks.isEmpty()) return;
+    synchronized (admissionLock) {
+      if (!partition.demotedForSize || !partition.keyLocks.isEmpty()) return;
+      Partition refused = new Partition();
+      refused.refusedForSize = true;
+      refused.consecutiveRefusals = partition.consecutiveRefusals;
+      refused.loadRetryNotBeforeNanos = partition.loadRetryNotBeforeNanos;
+      boolean retired =
+          partitions.replace(partitionKey, partition, refused)
+              || partitions.get(partitionKey) != partition;
+      if (retired) {
+        partition.demotedForSize = false;
+      }
+    }
   }
 
   private List<Partition> lockPartitionsForMutation(Collection<String> keys) {
-    java.util.Set<String> names = new java.util.TreeSet<>(accountPartitions(keys));
+    java.util.Set<String> names = new java.util.TreeSet<>(residentAccountPartitions(keys));
     Map<String, Partition> partitionsByName = new LinkedHashMap<>();
     // Resolve the whole partition set before taking any partition lock. Account-wide mutations
     // hold the registry monitor while they acquire write locks; never reacquire that monitor while
@@ -745,22 +967,28 @@ public final class PlanningPointerIndex {
     if (keys == null || keys.isEmpty()) return List.of();
     java.util.Set<String> keyNames = new java.util.TreeSet<>();
     for (String key : keys) {
-      if (isPlanningKey(key)) keyNames.add(key);
+      if (PlannerPointerShape.isResidentKey(key)) keyNames.add(key);
     }
     List<HeldKeyLock> locked = new ArrayList<>();
-    for (String key : keyNames) {
-      Partition partition = partitions.get(partitionFor(key));
-      if (partition == null || !lockedPartitions.contains(partition)) continue;
-      KeyLock keyLock =
-          partition.keyLocks.compute(
-              key,
-              (ignored, current) -> {
-                if (current == null) current = new KeyLock();
-                current.references++;
-                return current;
-              });
-      keyLock.lock.lock();
-      locked.add(new HeldKeyLock(partition, key, keyLock));
+    try {
+      for (String key : keyNames) {
+        Partition partition = partitions.get(partitionFor(key));
+        if (partition == null || !lockedPartitions.contains(partition)) continue;
+        KeyLock keyLock =
+            partition.keyLocks.compute(
+                key,
+                (ignored, current) -> {
+                  if (current == null) current = new KeyLock();
+                  current.references++;
+                  return current;
+                });
+        keyLock.lock.lock();
+        locked.add(new HeldKeyLock(partition, partitionFor(key), key, keyLock));
+      }
+    } catch (RuntimeException | Error failure) {
+      // Partway through, the caller never receives the list and so can never release it.
+      unlockKeys(locked);
+      throw failure;
     }
     return locked;
   }
@@ -803,13 +1031,24 @@ public final class PlanningPointerIndex {
     }
   }
 
+  /**
+   * How long to wait before re-reading an account that did not fit. Separated from the partition it
+   * is applied to so the schedule can be asserted without a clock.
+   */
+  static long refusalPauseNanos(int consecutiveRefusals) {
+    int doublings = Math.min(Math.max(consecutiveRefusals, 0), MAX_REFUSAL_BACKOFF_DOUBLINGS);
+    return SIZE_REFUSAL_PAUSE_NANOS << doublings;
+  }
+
   /** nanoTime's origin is unspecified and may be negative, so compare differences, never values. */
   private static boolean loadPaused(Partition partition) {
     return System.nanoTime() - partition.loadRetryNotBeforeNanos < 0;
   }
 
   private void ensureLoadedWhileLocked(String name, Partition partition) {
-    if (partition.readiness == Readiness.COMPLETE || partitions.get(name) != partition) {
+    if (!policy.enabled()
+        || partition.readiness == Readiness.COMPLETE
+        || partitions.get(name) != partition) {
       return;
     }
     // A failed load leaves the caller's mutation valid, so the cheap thing is to carry on and
@@ -823,39 +1062,24 @@ public final class PlanningPointerIndex {
       loadLocked(name, partition);
     } catch (RuntimeException ignored) {
       partition.loadRetryNotBeforeNanos = System.nanoTime() + LOAD_RETRY_PAUSE_NANOS;
+    } catch (Error fatal) {
+      // Same reason as the background warm: an OutOfMemoryError here is this load, and without the
+      // pause the next mutation re-runs the identical scan under this same write lock.
+      partition.loadRetryNotBeforeNanos = System.nanoTime() + LOAD_RETRY_PAUSE_NANOS;
+      throw fatal;
     }
   }
 
-  private boolean isPlanningKey(String key) {
-    String partition = partitionFor(key);
-    return key != null
-        && partition != null
-        && !GLOBAL.equals(partition)
-        && Keys.pointerNamespace(key) == Keys.PointerNamespace.PLANNER;
+  static boolean isPlanningKey(String key) {
+    return PlannerPointerShape.isResidentKey(key);
   }
 
-  private boolean isPlanningPrefix(String prefix) {
-    String partition = partitionFor(prefix);
-    return prefix != null
-        && partition != null
-        && !GLOBAL.equals(partition)
-        && Keys.pointerNamespace(prefix) == Keys.PointerNamespace.PLANNER;
+  static String partitionFor(String key) {
+    return PlannerPointerShape.partitionFor(key);
   }
 
-  private String partitionFor(String key) {
-    if (key == null || !key.startsWith(Keys.accountRootPrefix())) return null;
-    String remainder = key.substring(Keys.accountRootPrefix().length());
-    int slash = remainder.indexOf('/');
-    String encodedAccount = slash < 0 ? remainder : remainder.substring(0, slash);
-    if (encodedAccount.isBlank()) return null;
-    if (Keys.isReservedAccountDirectorySegment(encodedAccount)) return GLOBAL;
-    return Keys.decodeSegment(encodedAccount);
-  }
-
-  private static List<String> loadPrefixes(String partition) {
-    if (GLOBAL.equals(partition))
-      return List.of(Keys.accountPointerByIdPrefix(), Keys.accountPointerByNamePrefix());
-    return List.of(Keys.accountRootPrefix(partition));
+  static List<String> loadPrefixes(String partition) {
+    return PlannerPointerShape.loadPrefixes(partition);
   }
 
   private static boolean isAccountRoot(String prefix) {
@@ -870,11 +1094,49 @@ public final class PlanningPointerIndex {
     return Keys.decodeSegment(encoded);
   }
 
+  private void releaseResidentBytes(long bytes) {
+    synchronized (admissionLock) {
+      residentBytes.addAndGet(-bytes);
+    }
+  }
+
+  /**
+   * What one entry charges against the budget. One definition, because the load weighs a pointer on
+   * the way in and every later mutation weighs it again on the way out: two expressions that only
+   * happened to agree would let residentBytes drift by their difference on every publish.
+   */
+  static long pointerWeight(Pointer pointer) {
+    return CacheWeights.entry(pointer, 2L * pointer.getKey().length());
+  }
+
+  private void removeMatching(Partition partition, String prefix, String excludedKey) {
+    long removedBytes = 0;
+    for (Map.Entry<String, Pointer> entry : partition.entries.tailMap(prefix, true).entrySet()) {
+      String key = entry.getKey();
+      if (!key.startsWith(prefix)) break;
+      if (java.util.Objects.equals(key, excludedKey)) continue;
+      Pointer removed = partition.entries.remove(key);
+      if (removed != null) {
+        removedBytes += pointerWeight(removed);
+      }
+    }
+    if (removedBytes != 0) {
+      partition.residentBytes -= removedBytes;
+      residentBytes.addAndGet(-removedBytes);
+    }
+  }
+
   private static final class Partition {
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final ConcurrentNavigableMap<String, Pointer> entries = new ConcurrentSkipListMap<>();
     private final ConcurrentHashMap<String, KeyLock> keyLocks = new ConcurrentHashMap<>();
     private final AtomicBoolean warmScheduled = new AtomicBoolean();
+    // Why this partition is not COMPLETE, which readiness deliberately does not say: readiness
+    // answers whether absence is authoritative, and a refusal answers neither differently.
+    private volatile boolean refusedForSize;
+    private volatile boolean demotedForSize;
+    private volatile int consecutiveRefusals;
+    private volatile long residentBytes;
     private volatile Readiness readiness = Readiness.LOADING;
     private volatile long loadRetryNotBeforeNanos = System.nanoTime();
   }
@@ -884,5 +1146,6 @@ public final class PlanningPointerIndex {
     private int references;
   }
 
-  private record HeldKeyLock(Partition partition, String key, KeyLock keyLock) {}
+  private record HeldKeyLock(
+      Partition partition, String partitionKey, String key, KeyLock keyLock) {}
 }

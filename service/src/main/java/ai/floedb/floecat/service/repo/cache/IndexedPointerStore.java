@@ -26,6 +26,12 @@ import java.util.Optional;
 /**
  * One PointerStore seam: planner reads use the complete index, operational reads use durable KV.
  *
+ * <p>When the index is disabled, reads go straight to durable KV while mutations keep running
+ * through it, so they keep the partition and key locks that order a publish against a load. Routing
+ * the reads is an optimisation rather than a correctness boundary: a disabled index never loads, so
+ * every partition stays incomplete and the index would fall through to the same durable call
+ * anyway. Skipping it saves the ownership check and the partition lookup on every read.
+ *
  * <p>The owner contract is a precondition: one Floecat instance owns an account at a time, and a
  * handoff stops the old instance's mutations before the new instance loads the partition. This lets
  * the in-memory index and durable KV be one state machine rather than two independently expiring
@@ -42,49 +48,55 @@ public class IndexedPointerStore implements PointerStore {
 
   @Override
   public Optional<Pointer> get(String key) {
-    return index.get(key);
+    return index.enabled() ? index.get(key) : durable.getConsistent(key);
   }
 
   @Override
   public Map<String, Pointer> getBatch(List<String> keys) {
-    return index.getBatch(keys);
+    return index.enabled() ? index.getBatch(keys) : durable.getBatchConsistent(keys);
   }
 
   @Override
   public Optional<Pointer> getConsistent(String key) {
-    return index.getConsistent(key);
+    return index.enabled() ? index.getConsistent(key) : durable.getConsistent(key);
   }
 
   @Override
   public Map<String, Pointer> getBatchConsistent(List<String> keys) {
-    return index.getBatchConsistent(keys);
+    return index.enabled() ? index.getBatchConsistent(keys) : durable.getBatchConsistent(keys);
   }
 
   @Override
   public List<Pointer> listPointersByPrefix(
       String prefix, int limit, String token, StringBuilder next) {
-    return index.list(prefix, limit, token, next);
+    return index.enabled()
+        ? index.list(prefix, limit, token, next)
+        : durable.listPointersByPrefixConsistent(prefix, limit, token, next);
   }
 
   @Override
   public List<Pointer> listPointersByPrefixConsistent(
       String prefix, int limit, String token, StringBuilder next) {
-    return index.listConsistent(prefix, limit, token, next);
+    return index.enabled()
+        ? index.listConsistent(prefix, limit, token, next)
+        : durable.listPointersByPrefixConsistent(prefix, limit, token, next);
   }
 
   @Override
   public int countByPrefix(String prefix) {
-    return index.count(prefix);
+    return index.enabled() ? index.count(prefix) : durable.countByPrefixConsistent(prefix);
   }
 
   @Override
   public int countByPrefixConsistent(String prefix) {
-    return index.countConsistent(prefix);
+    return index.enabled()
+        ? index.countConsistent(prefix)
+        : durable.countByPrefixConsistent(prefix);
   }
 
   @Override
   public String pageTokenAfterKey(String key) {
-    return index.pageTokenAfterKey(key);
+    return index.enabled() ? index.pageTokenAfterKey(key) : durable.pageTokenAfterKey(key);
   }
 
   @Override
