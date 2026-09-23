@@ -172,6 +172,12 @@ public final class Keys {
     return segments != null && ("idempotency".equals(segments[0]) || isMarkerSegments(segments));
   }
 
+  /** Whether the key is a child or relation marker under a catalog or namespace. */
+  public static boolean isMarkerKey(String key) {
+    String[] segments = accountKeySegments(key);
+    return segments != null && isMarkerSegments(segments);
+  }
+
   /** The only markers are catalogs/<id>/markers/<leaf> and namespaces/<id>/markers/<leaf>. */
   private static boolean isMarkerSegments(String[] segments) {
     return segments.length > 3

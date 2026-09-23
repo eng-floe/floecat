@@ -238,18 +238,13 @@ class PointerIndexGateAndBudgetTest {
   }
 
   /**
-   * A mutation whose account is demoted under it runs to completion, and the next mutation on the
-   * same key waits rather than racing it.
-   *
-   * <p>What holds the second one back here is the partition lock: a demoted partition is no longer
-   * complete, so the next mutation reloads it and blocks on the write lock. That makes this blind
-   * to whether the key locks themselves survived the demotion -- a demotion that cleared them still
-   * passes. Per-key exclusion stops being observable once a partition is demoted, because publishes
-   * into one are no-ops; it matters only if such a partition were ever completed again, which
-   * retiring it in favour of a fresh one is what prevents.
+   * A demotion that lands while a mutation holds its key locks leaves the image alone and retires
+   * the partition once the holder lets go. Emptying it in place would strand those locks: the
+   * holder's release finds no entry to decrement, and the next acquirer builds a second lock for
+   * the same key.
    */
   @Test
-  void aMutationOutlivingItsAccountsDemotionStillSerialisesTheNext() throws Exception {
+  void aDemotionUnderAHeldKeyLockRetiresThePartitionRatherThanEmptyingIt() throws Exception {
     InMemoryPointerStore durable = new InMemoryPointerStore();
     seedAccount(durable, ACCOUNT, 1);
     String key = Keys.tablePointerById(ACCOUNT, "t0");
@@ -260,6 +255,8 @@ class PointerIndexGateAndBudgetTest {
     PlanningPointerIndex index =
         index(durable, new PlanningPointerIndex.Policy(true, loadedBytes + 1, loadedBytes + 1));
     new IndexedPointerStore(durable, index).get(key);
+    long loadedEntries = index.entryCount();
+    assertThat(loadedEntries).isPositive();
 
     CountDownLatch demoted = new CountDownLatch(1);
     CountDownLatch releaseFirstMutation = new CountDownLatch(1);
@@ -280,6 +277,10 @@ class PointerIndexGateAndBudgetTest {
                         await(releaseFirstMutation);
                       }));
       assertThat(demoted.await(1, TimeUnit.SECONDS)).isTrue();
+      assertThat(index.completePartitionCount()).as("the account is demoted").isZero();
+      assertThat(index.entryCount())
+          .as("the image survives the demotion while a key lock is held")
+          .isEqualTo(loadedEntries);
 
       var second =
           executor.submit(
@@ -299,6 +300,9 @@ class PointerIndexGateAndBudgetTest {
       first.get(1, TimeUnit.SECONDS);
       second.get(1, TimeUnit.SECONDS);
       assertThat(secondMutationEntered.await(1, TimeUnit.SECONDS)).isTrue();
+      assertThat(index.entryCount())
+          .as("and is retired with the partition once the holder lets go")
+          .isZero();
     } finally {
       releaseFirstMutation.countDown();
       executor.shutdownNow();

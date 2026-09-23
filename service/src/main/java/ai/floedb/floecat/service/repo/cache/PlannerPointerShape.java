@@ -112,11 +112,6 @@ final class PlannerPointerShape {
     return Keys.decodeSegment(encodedAccount);
   }
 
-  static boolean isIdempotencyOrMarkerKey(String key) {
-    String[] segments = accountKeySegments(key);
-    return segments != null && ("idempotency".equals(segments[0]) || isMarkerSegments(segments));
-  }
-
   private static Namespace residentNamespace(String key, boolean listPrefix) {
     if (key == null || !key.startsWith(Keys.accountRootPrefix())) {
       return Namespace.UNKNOWN;
@@ -132,7 +127,7 @@ final class PlannerPointerShape {
     if (segments.length == 1) {
       return Namespace.DURABLE_ONLY;
     }
-    if (!RESIDENT_FAMILIES.contains(segments[0]) || isMarkerSegments(segments)) {
+    if (!RESIDENT_FAMILIES.contains(segments[0]) || Keys.isMarkerKey(key)) {
       return Namespace.DURABLE_ONLY;
     }
     if ("tables".equals(segments[0]) && !isResidentTableKey(segments, listPrefix)) {
@@ -166,12 +161,6 @@ final class PlannerPointerShape {
       return segments.length <= 3 || "current".equals(segments[3]) || segments[3].isEmpty();
     }
     return false;
-  }
-
-  private static boolean isMarkerSegments(String[] segments) {
-    return segments.length > 3
-        && ("catalogs".equals(segments[0]) || "namespaces".equals(segments[0]))
-        && "markers".equals(segments[2]);
   }
 
   private static String[] accountKeySegments(String key) {
