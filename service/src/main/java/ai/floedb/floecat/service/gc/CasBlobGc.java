@@ -24,6 +24,7 @@ import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
@@ -128,6 +129,7 @@ public class CasBlobGc {
   private static final String SCAN_COMPLETE = "\u0000";
   private PassContinuation continuation;
   private long activeDeadlineMs = Long.MAX_VALUE;
+  private AccountScope.GcPermit activePermit;
 
   private static final class DeferredPageState {
     private final String prefix;
@@ -388,7 +390,7 @@ public class CasBlobGc {
   }
 
   public Result runForAccount(String accountId) {
-    return runForAccount(accountId, Long.MAX_VALUE);
+    return runForAccount(accountId, Long.MAX_VALUE, null);
   }
 
   ReferenceIndex newReferenceIndex(long capacity, double falsePositiveRate, long seed) {
@@ -396,6 +398,12 @@ public class CasBlobGc {
   }
 
   public synchronized Result runForAccount(String accountId, long deadlineMs) {
+    return runForAccount(accountId, deadlineMs, null);
+  }
+
+  public synchronized Result runForAccount(
+      String accountId, long deadlineMs, AccountScope.GcPermit permit) {
+    activePermit = permit;
     if (continuation != null && !continuation.accountId.equals(accountId)) {
       // Only one local mark epoch is retained, which gives the process a hard memory bound. The
       // scheduler prioritizes this account on the next tick; callers reaching another account in
@@ -437,6 +445,13 @@ public class CasBlobGc {
       }
     } finally {
       activeDeadlineMs = Long.MAX_VALUE;
+      activePermit = null;
+    }
+  }
+
+  private void requirePermit() {
+    if (activePermit != null) {
+      activePermit.requireValid();
     }
   }
 
@@ -1379,6 +1394,7 @@ public class CasBlobGc {
         // Serialize only the irreversible version-targeted delete. Holding the table lock for the
         // whole candidate page can otherwise stall commits and query-pin registration for nearly
         // the entire GC tick.
+        requirePermit();
         var guarded =
             reachabilityGuard.deleteIfUnchanged(
                 state.remarkProof, () -> blobStore.delete(candidate.key(), candidate.versionId()));
@@ -2375,6 +2391,7 @@ public class CasBlobGc {
           // and
           // the act name the same immutable object and the pointer stays resolvable in every
           // interleaving.
+          requirePermit();
           if (blobStore.delete(key, versionId)) {
             progress.deleted++;
             // Defensive post-delete corruption detector. The sweep only reaches here on a

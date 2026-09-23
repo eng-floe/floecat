@@ -23,6 +23,7 @@ import ai.floedb.floecat.cache.CacheFamily;
 import ai.floedb.floecat.cache.DiskBlobCache;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.impl.RelationHintsRepository;
@@ -40,6 +41,8 @@ import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.LongSupplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -49,13 +52,22 @@ import org.jboss.logging.Logger;
 public class MetadataCaches {
   private static final Logger LOG = Logger.getLogger(MetadataCaches.class);
 
-  /** The indexed store updates complete local partitions after successful durable mutations. */
   @Produces
   @Singleton
   @CachedPointerStore
   public PointerStore cachedPointerStore(
       @RawPointerStore PointerStore raw, PlanningPointerIndex index) {
     return new IndexedPointerStore(raw, index);
+  }
+
+  /**
+   * The durable read seam, composed here because this is the one place that may select the raw
+   * view. Injected by readers whose emptiness is load-bearing over objects the index never loaded.
+   */
+  @Produces
+  @Singleton
+  public DurablePointerReads durablePointerReads(@RawPointerStore PointerStore raw) {
+    return new DurablePointerReads(raw);
   }
 
   /** Callers do not select a cached or durable view; the indexed store makes that decision. */
@@ -70,47 +82,56 @@ public class MetadataCaches {
   public PlanningPointerIndex pointers(
       @RawPointerStore PointerStore raw,
       Observability observability,
-      Instance<PlanningPointerIndex.Ownership> configuredOwnership) {
+      Instance<PlanningPointerIndex.Ownership> configuredOwnership,
+      @ConfigProperty(name = "floecat.planner.pointer-index.enabled", defaultValue = "true")
+          boolean enabled,
+      @ConfigProperty(name = "floecat.planner.pointer-index.max-heap-share", defaultValue = "0.10")
+          double maxHeapShare,
+      @ConfigProperty(
+              name = "floecat.planner.pointer-index.max-total-heap-share",
+              defaultValue = "0.15")
+          double maxTotalHeapShare,
+      @ConfigProperty(name = "floecat.planner.pointer-index.warm-concurrency", defaultValue = "2")
+          int warmConcurrency) {
+    if (!(maxHeapShare > 0.0) || maxHeapShare > 1.0) {
+      throw new IllegalArgumentException(
+          "floecat.planner.pointer-index.max-heap-share must be in (0, 1], but was "
+              + maxHeapShare);
+    }
+    if (!(maxTotalHeapShare >= maxHeapShare) || maxTotalHeapShare > 1.0) {
+      // A total below the per-account cap would refuse the first account that reached its own
+      // cap, which reads as the per-account setting being ignored.
+      throw new IllegalArgumentException(
+          "floecat.planner.pointer-index.max-total-heap-share must be in [max-heap-share, 1], but"
+              + " was "
+              + maxTotalHeapShare);
+    }
     PlanningPointerIndex.Ownership ownership =
         configuredOwnership.isUnsatisfied()
             ? PlanningPointerIndex.Ownership.ALWAYS_OWNED
             : configuredOwnership.get();
     Tag[] baseTags =
         new Tag[] {Tag.of(TagKey.COMPONENT, "service"), Tag.of(TagKey.OPERATION, "metadata-index")};
+    long maxHeapBytes = Runtime.getRuntime().maxMemory();
+    long maxBytesPerAccount = (long) (maxHeapBytes * maxHeapShare);
+    long maxBytesTotal = (long) (maxHeapBytes * maxTotalHeapShare);
+    // Bounded on purpose: warms are whole-account scans, and the common pool would start one per
+    // core the moment several accounts go cold together.
+    ExecutorService warmExecutor =
+        Executors.newFixedThreadPool(
+            Math.max(1, warmConcurrency),
+            runnable -> {
+              Thread thread = new Thread(runnable, "planner-pointer-warm");
+              thread.setDaemon(true);
+              return thread;
+            });
     PlanningPointerIndex index =
         new PlanningPointerIndex(
             raw,
             ownership,
-            new PlanningPointerIndex.WarmObserver() {
-              @Override
-              public void started(String accountId) {
-                observability.counter(ServiceMetrics.PlanningPointer.WARM_STARTS, 1, baseTags);
-              }
-
-              @Override
-              public void completed(String accountId, Duration duration) {
-                observability.timer(
-                    ServiceMetrics.PlanningPointer.WARM_LATENCY,
-                    duration,
-                    append(baseTags, Tag.of(TagKey.RESULT, "success")));
-              }
-
-              @Override
-              public void failed(String accountId, Duration duration, Throwable failure) {
-                Tag[] tags =
-                    append(
-                        baseTags,
-                        Tag.of(TagKey.RESULT, "error"),
-                        Tag.of(TagKey.EXCEPTION, failure.getClass().getSimpleName()));
-                observability.timer(ServiceMetrics.PlanningPointer.WARM_LATENCY, duration, tags);
-                observability.counter(ServiceMetrics.PlanningPointer.WARM_ERRORS, 1, tags);
-                LOG.warnf(
-                    failure,
-                    "planner_pointer_warm_failed account_id=%s duration=%s",
-                    accountId,
-                    duration);
-              }
-            });
+            warmExecutor,
+            new PlanningPointerWarmTelemetry(observability, baseTags, maxBytesPerAccount),
+            new PlanningPointerIndex.Policy(enabled, maxBytesPerAccount, maxBytesTotal));
     observability.gauge(
         ServiceMetrics.PlanningPointer.ENTRIES,
         index::entryCount,
@@ -126,6 +147,16 @@ public class MetadataCaches {
         index::completePartitionCount,
         "Planner pointer partitions complete",
         append(baseTags, Tag.of(TagKey.RESULT, "complete")));
+    observability.gauge(
+        ServiceMetrics.PlanningPointer.BYTES,
+        index::residentBytes,
+        "Planner pointer heap admitted across resident accounts",
+        baseTags);
+    observability.gauge(
+        ServiceMetrics.PlanningPointer.PARTITIONS,
+        index::refusedPartitionCount,
+        "Planner pointer partitions refused for size",
+        append(baseTags, Tag.of(TagKey.RESULT, "refused")));
     return index;
   }
 
