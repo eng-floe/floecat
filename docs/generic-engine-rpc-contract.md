@@ -104,7 +104,9 @@ for unpinned name resolution, and `QueryInput` candidates when requesting the pi
   shape `query.TableReferenceCandidate` uses for planning. A caller expands its search path into
   candidates instead of sending the cross product of names and namespaces and re-applying
   precedence to the results, so the batch stays one entry per SQL table reference.
-- Matching folds case, so candidates never need case variants.
+- Matching is exact, for a builtin relation as much as a user one, so `orders` and `ORDERS`
+  are different names and only the stored spelling resolves. A caller that accepts either
+  spelling folds case itself and sends the folded name.
 - The total candidate count is bounded by `floecat.relation.resolve.max-names`. This is a bind-time
   batch, not an enumeration path; use `ListRelations` to walk a catalog.
 - `include_schema`: uses the same hydration semantics as `ListRelations`; without it, details and
