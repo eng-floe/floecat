@@ -78,7 +78,7 @@ import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 public abstract class BaseServiceImpl {
-  @Inject LifecycleDrain lifecycleDrain;
+  @Inject LifecycleDrain lifecycleDrain = LifecycleDrain.ALWAYS_SERVING;
   @Inject PrincipalProvider principal;
 
   protected final Clock clock = Clock.systemUTC();
@@ -114,6 +114,11 @@ public abstract class BaseServiceImpl {
    */
   protected <T> Uni<T> run(Supplier<T> body) {
     LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
+    return run(body, lifecyclePermit, true);
+  }
+
+  private <T> Uni<T> run(
+      Supplier<T> body, LifecycleDrain.Permit lifecyclePermit, boolean closeOnTermination) {
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     // Read the resolved call context at method entry — before any executor hop — and carry it by
     // reference into the body. The captured io.grpc.Context alone is unreliable across the hop
@@ -125,7 +130,9 @@ public abstract class BaseServiceImpl {
             emitter -> {
               RequestCancellation cancellation = new RequestCancellation(grpcCtx);
               emitter.onTermination(cancellation::terminate);
-              emitter.onTermination(lifecyclePermit::close);
+              if (closeOnTermination) {
+                emitter.onTermination(lifecyclePermit::close);
+              }
               try {
                 T result =
                     grpcCtx.call(
@@ -247,7 +254,8 @@ public abstract class BaseServiceImpl {
   }
 
   protected <T> Uni<T> runWithRetry(Supplier<T> body) {
-    return run(body)
+    LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
+    return run(body, lifecyclePermit, false)
         .onFailure(
             t ->
                 t instanceof BaseResourceRepository.AbortRetryableException
@@ -255,7 +263,9 @@ public abstract class BaseServiceImpl {
         .retry()
         .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
         .withJitter(JITTER)
-        .atMost(RETRIES);
+        .atMost(RETRIES)
+        .onTermination()
+        .invoke(lifecyclePermit::close);
   }
 
   protected <T> Uni<T> mapFailures(Uni<T> u, String corrId) {
@@ -269,6 +279,10 @@ public abstract class BaseServiceImpl {
       }
       return GrpcErrors.build(
           sre.getStatus(), errorCodeForStatus(sre.getStatus()), corrId, null, null, t);
+    }
+
+    if (t instanceof LifecycleDrain.DrainingException) {
+      return GrpcErrors.unavailable(corrId, null, Map.of(), t);
     }
 
     if (t instanceof BaseResourceRepository.SystemObjectImmutableException) {
