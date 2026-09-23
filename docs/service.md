@@ -326,9 +326,8 @@ the caller inside the `QueryDescriptor`.
 
 ### Account Lifecycle
 `AccountScope` is the question — may this process mutate, resolve pins for, or collect this
-account? — asked by every caller that needs to know. The default policy is process-local:
-`standalone` serves every account, `managed` serves every account routed to this process until the
-runtime starts drain, and `none` refuses account-scoped work.
+account? — asked by every caller that needs to know. The default policy is process-local and serves
+every account until the lifecycle drain begins.
 
 Managed Floe deployments get account exclusivity from routing plus the Kubernetes lifecycle
 contract: a replacement process is not meant to serve traffic for an account until the old process
@@ -337,13 +336,13 @@ KV, or fence every durable write. The local `preStop` drain is the mechanism Flo
 runtime: once drain starts, new pin resolutions, mutations and GC permits are refused, while
 already-admitted work is counted until its permit is released.
 
-The extension point remains inside OSS Floecat. Deployments that need leases, durable fences or a
-coordinator can bind their own implementation of `AccountScope` or
-`PlanningPointerIndex.Ownership` without changing query, cache, mutation or GC call sites.
+The extension points remain inside OSS Floecat. Deployments that need a different admission policy
+can bind their own `LifecycleDrain`, `AccountScope`, or `PlanningPointerIndex.Ownership` without
+changing query, cache, mutation or GC call sites.
 
-Pointer GC needs no fence of its own: every delete it makes is a pointer CAS through the fenced
-store. CAS blob GC deletes objects the store cannot condition, so it revalidates its permit before
-each delete.
+Pointer GC needs no separate lifecycle fence: every delete it makes is a pointer CAS through the
+durable store. Its account GC permit is revalidated before each page and before every destructive
+CAS, so a lifecycle drain interrupts an in-progress sweep. CAS blob GC uses the same permit rule.
 
 `wait=true` waits for the drain: `400` if `timeoutMs` is malformed or negative, and then nothing
 drains; otherwise `200` once active mutations and resolutions are zero, or `202` at the timeout,
@@ -432,10 +431,7 @@ Notable `application.properties` keys:
 | `floecat.query.metadata-io.max-concurrency` | Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use `64`; present malformed, blank, or out-of-range values fail startup. |
 | `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for GetUserObjects. Defaults to `8`. |
 | `floecat.catalog.bundle.max_parallel_stats_warms` | Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to `16`; clamped to `>= 1`. |
-| `floecat.account-assignment.mode` | `standalone` (default), `managed`, or `none`; see Account Assignment. |
-| `floecat.account-assignment.member-id` | Stable process identity across restarts; required in `managed` (`FLOECAT_MEMBER_ID`). |
-| `floecat.account-assignment.self-check-interval` | Background fence self-check period in `managed` (`PT10S`). |
-| `floecat.account-assignment.drain-timeout-ms` | Default wait of `/internal/drain?wait=true` and of the shutdown drain (`110000`). |
+| `floecat.lifecycle-drain.timeout-ms` | Default wait of `/internal/drain?wait=true` and of the shutdown drain (`110000`). |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |

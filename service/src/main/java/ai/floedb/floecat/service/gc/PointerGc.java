@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -40,6 +41,7 @@ public class PointerGc {
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
+  private final ThreadLocal<AccountScope.GcPermit> activePermit = new ThreadLocal<>();
 
   public record Result(int scanned, int deleted, int missingBlobs, int staleSecondaries) {}
 
@@ -97,6 +99,19 @@ public class PointerGc {
   }
 
   public Result runForAccount(String accountId, long deadlineMs) {
+    return runForAccount(accountId, deadlineMs, null);
+  }
+
+  public Result runForAccount(String accountId, long deadlineMs, AccountScope.GcPermit permit) {
+    activePermit.set(permit);
+    try {
+      return runForAccountInternal(accountId, deadlineMs);
+    } finally {
+      activePermit.remove();
+    }
+  }
+
+  private Result runForAccountInternal(String accountId, long deadlineMs) {
     int pageSize =
         ConfigProvider.getConfig()
             .getOptionalValue("floecat.gc.pointer.page-size", Integer.class)
@@ -353,6 +368,7 @@ public class PointerGc {
     int staleSecondaries = 0;
 
     while (System.currentTimeMillis() < deadlineMs) {
+      requirePermit();
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       if (pointers.isEmpty()) {
@@ -360,6 +376,7 @@ public class PointerGc {
       }
 
       for (Pointer p : pointers) {
+        requirePermit();
         if (System.currentTimeMillis() >= deadlineMs) {
           break;
         }
@@ -376,6 +393,7 @@ public class PointerGc {
         }
         String blobUri = p.getBlobUri();
         if (blobUri == null || blobUri.isBlank()) {
+          requirePermit();
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             deleted++;
           }
@@ -405,6 +423,7 @@ public class PointerGc {
 
         if (!exists) {
           missingBlobs++;
+          requirePermit();
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             deleted++;
           }
@@ -419,6 +438,7 @@ public class PointerGc {
         Optional<Pointer> canonical = pointerStore.get(canonicalKey);
         if (canonical.isEmpty() || !blobUri.equals(canonical.get().getBlobUri())) {
           staleSecondaries++;
+          requirePermit();
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             deleted++;
           }
@@ -432,6 +452,13 @@ public class PointerGc {
     }
 
     return new Result(scanned, deleted, missingBlobs, staleSecondaries);
+  }
+
+  private void requirePermit() {
+    AccountScope.GcPermit permit = activePermit.get();
+    if (permit != null) {
+      permit.requireValid();
+    }
   }
 
   private void collectIds(String prefix, int pageSize, List<String> out) {
