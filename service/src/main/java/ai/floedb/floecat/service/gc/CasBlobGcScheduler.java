@@ -210,11 +210,13 @@ public class CasBlobGcScheduler {
         String accountId = account.getResourceId().getId();
         CasBlobGc.Result result;
         try {
-          var permit = accountScope.tryAcquireGc(accountId);
-          if (permit.isEmpty()) {
+          var acquired = accountScope.tryAcquireGc(accountId);
+          if (acquired.isEmpty()) {
             continue;
           }
-          result = gc.runForAccount(accountId, deadline, permit.orElseThrow());
+          try (var permit = acquired.get()) {
+            result = gc.runForAccount(accountId, deadline, permit);
+          }
         } catch (AccountScope.GcPermitRevokedException revoked) {
           gc.abandonContinuation();
           continue;
