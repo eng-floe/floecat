@@ -27,6 +27,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorConfigMapper;
 import ai.floedb.floecat.reconciler.impl.ReconcileLeaseGrpcStatus;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -587,6 +588,7 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
     if (!request.hasExecutionBinding() || !request.getExecutionBinding().hasReconcileLease()) {
       return null;
     }
+    ReconcileJobQueue.requireEnabled();
     String jobId = trimToNull(request.getExecutionBinding().getReconcileLease().getJobId());
     String leaseEpoch =
         trimToNull(request.getExecutionBinding().getReconcileLease().getLeaseEpoch());

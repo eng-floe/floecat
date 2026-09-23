@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.rpc.Status;
@@ -152,6 +153,32 @@ class BaseServiceImplTest {
         service.map(new IdempotencyInProgressException("pending"), CORRELATION_ID);
 
     assertEquals(io.grpc.Status.Code.ABORTED, mapped.getStatus().getCode());
+  }
+
+  @Test
+  void disabledReconcileQueueMapsToContractedFailedPrecondition() {
+    TestServiceImpl service = new TestServiceImpl();
+
+    StatusRuntimeException mapped =
+        service.map(new ReconcileJobQueue.DisabledException(), CORRELATION_ID);
+
+    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, mapped.getStatus().getCode());
+    Status statusProto = StatusProto.fromThrowable(mapped);
+    Error err =
+        statusProto.getDetailsList().stream()
+            .filter(any -> any.is(Error.class))
+            .findFirst()
+            .map(
+                any -> {
+                  try {
+                    return any.unpack(Error.class);
+                  } catch (InvalidProtocolBufferException e) {
+                    throw new AssertionError("failed to unpack Error detail", e);
+                  }
+                })
+            .orElseThrow();
+    assertEquals(CORRELATION_ID, err.getCorrelationId());
+    assertEquals(ErrorCode.MC_PRECONDITION_FAILED, err.getCode());
   }
 
   private static final class TestServiceImpl extends BaseServiceImpl {
