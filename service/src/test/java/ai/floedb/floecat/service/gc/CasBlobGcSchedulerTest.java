@@ -65,7 +65,8 @@ class CasBlobGcSchedulerTest {
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
-    scheduler.assignment = AccountAssignment.forTesting(new InMemoryPointerStore(), observability);
+    scheduler.accountScope =
+        AccountAssignment.forTesting(new InMemoryPointerStore(), observability);
     StorageUsageMetrics storageUsageMetrics = new StorageUsageMetrics(observability);
     scheduler.storageUsageMetrics = () -> storageUsageMetrics;
     scheduler.initMeters();
@@ -102,7 +103,7 @@ class CasBlobGcSchedulerTest {
     scheduler.accounts = () -> accounts;
     scheduler.casBlobGc = () -> gc;
     scheduler.observability = new TestObservability();
-    scheduler.assignment =
+    scheduler.accountScope =
         AccountAssignment.forTesting(new InMemoryPointerStore(), scheduler.observability);
     scheduler.storageUsageMetrics = () -> storageUsageMetrics;
     scheduler.initMeters();
@@ -132,7 +133,7 @@ class CasBlobGcSchedulerTest {
     scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
     AccountAssignment assignment =
         AccountAssignment.forTesting("m", "m/inc", new InMemoryPointerStore(), observability);
-    scheduler.assignment = assignment;
+    scheduler.accountScope = assignment;
     scheduler.initMeters();
 
     System.setProperty("floecat.gc.cas.enabled", "true");
@@ -161,7 +162,7 @@ class CasBlobGcSchedulerTest {
     scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
     AccountAssignment assignment =
         AccountAssignment.forTesting("m", "m/inc", new InMemoryPointerStore(), observability);
-    scheduler.assignment = assignment;
+    scheduler.accountScope = assignment;
     scheduler.initMeters();
 
     System.setProperty("floecat.gc.cas.enabled", "true");
@@ -191,7 +192,8 @@ class CasBlobGcSchedulerTest {
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
-    scheduler.assignment = AccountAssignment.forTesting(new InMemoryPointerStore(), observability);
+    scheduler.accountScope =
+        AccountAssignment.forTesting(new InMemoryPointerStore(), observability);
     scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
     scheduler.initMeters();
 
@@ -221,7 +223,8 @@ class CasBlobGcSchedulerTest {
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
-    scheduler.assignment = AccountAssignment.forTesting(new InMemoryPointerStore(), observability);
+    scheduler.accountScope =
+        AccountAssignment.forTesting(new InMemoryPointerStore(), observability);
     scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
     scheduler.initMeters();
 
@@ -260,7 +263,8 @@ class CasBlobGcSchedulerTest {
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
-    scheduler.assignment = AccountAssignment.forTesting(new InMemoryPointerStore(), observability);
+    scheduler.accountScope =
+        AccountAssignment.forTesting(new InMemoryPointerStore(), observability);
     scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
     scheduler.initMeters();
 
