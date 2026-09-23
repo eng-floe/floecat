@@ -179,6 +179,10 @@ public class AccountAssignment
       statuses.add(status(entry.getKey(), entry.getValue()));
     }
     statuses.sort(Comparator.comparing(AccountStatus::accountId));
+    long rpcCount;
+    synchronized (this) {
+      rpcCount = activeRpcs;
+    }
     return new Status(
         memberId,
         incarnation,
@@ -187,7 +191,7 @@ public class AccountAssignment
         false,
         processDraining,
         List.copyOf(statuses),
-        activeRpcs);
+        rpcCount);
   }
 
   @Override
@@ -228,7 +232,14 @@ public class AccountAssignment
   /** Stops admitting pins, mutations and GC. Irreversible for the life of the process. */
   public Status beginProcessDrain() {
     processDraining = true;
-    accounts.values().forEach(state -> state.generation++);
+    accounts
+        .values()
+        .forEach(
+            state -> {
+              synchronized (state) {
+                state.generation++;
+              }
+            });
     return status();
   }
 

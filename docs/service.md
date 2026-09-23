@@ -343,10 +343,12 @@ changing query, cache, mutation or GC call sites.
 Pointer GC needs no separate lifecycle fence: every delete it makes is a pointer CAS through the
 durable store. Its account GC permit is revalidated before each page and before every destructive
 CAS, so a lifecycle drain interrupts an in-progress sweep. CAS blob GC uses the same permit rule.
+Transaction-intent cleanup is separate administrative housekeeping and is not part of the
+query-object/cache GC drain accounting.
 
 `wait=true` waits for the drain: `400` if `timeoutMs` is malformed or negative, and then nothing
-drains; otherwise `200` once active mutations and resolutions are zero, or `202` at the timeout,
-with `timeoutMs` clamped to one hour. Without `wait=true` a `POST` starts the drain and returns at
+drains; otherwise `200` once active RPCs, mutations, resolutions and GC are zero, or `202` at the
+requested timeout. Without `wait=true` a `POST` starts the drain and returns at
 once, and a `GET` only reports. `wait` is read as a boolean, so `?wait=TRUE` drains while `?wait=1`
 reports; only `GET` and `POST` are routed at all. Draining is irreversible for the life of the process and the endpoint authenticates
 no one: the `preStop` hook is a kubelet `httpGet` arriving from the node address, which no in-process
