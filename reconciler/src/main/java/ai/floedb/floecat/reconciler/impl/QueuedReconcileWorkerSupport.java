@@ -1136,8 +1136,10 @@ class QueuedReconcileWorkerSupport {
     // Capture modes still require a policy even though durable content state now decides
     // completeness.
     ReconcilerService.effectiveCapturePolicy(scope, captureMode);
-    Set<Long> enumerationKnownSnapshotIds =
-        captureMode == CaptureMode.METADATA_ONLY ? knownSnapshotIds : Set.of();
+    // Existing snapshot ids do not prove that every metadata component was ingested. For example,
+    // snapshot publication can succeed before constraint ingestion fails. Re-enumerate known
+    // snapshots so a retry can repair that partial result.
+    Set<Long> enumerationKnownSnapshotIds = Set.of();
     Set<Long> enumerationTargetSnapshotIds =
         captureOnly
             ? ReconcilerService.captureOnlyEnumerationTargetSnapshotIds(

@@ -1105,7 +1105,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
-  void reconcileWritesSnapshotConstraintsViaStatsPathWhenProvidedByConnector() {
+  void incrementalMetadataReexaminesKnownSnapshotToRepairConstraints() {
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId("acct")
@@ -1301,8 +1301,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                     ReconcileCapturePolicy.Output.COLUMN_STATS,
                     ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
     var result =
-        reconcileTableTask(
-            tableId, false, scope, ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+        reconcileTableTask(tableId, false, scope, ReconcilerService.CaptureMode.METADATA_ONLY);
 
     assertThat(result.ok()).isTrue();
     assertThat(result.degraded()).isFalse();

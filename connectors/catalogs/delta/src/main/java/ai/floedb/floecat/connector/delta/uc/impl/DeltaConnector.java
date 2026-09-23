@@ -232,17 +232,13 @@ abstract class DeltaConnector implements FloecatConnector {
       return Stream.empty();
     }
 
-    SnapshotLoadResult baselineResult =
-        loadSnapshotAsOfVersion(table, startVersion, storageLocation, 0L);
-    if (baselineResult.snapshot() == null) {
-      startVersion = baselineResult.earliestAvailableVersion();
-      if (startVersion > latestVersion) {
-        return Stream.empty();
-      }
-      baselineResult =
-          SnapshotLoadResult.snapshot(table.getSnapshotAsOfVersion(engine, startVersion));
+    SnapshotBaseline baselineLoad =
+        loadSnapshotBaseline(table, startVersion, latestVersion, storageLocation);
+    if (baselineLoad == null) {
+      return Stream.empty();
     }
-    Snapshot baselineSnapshot = baselineResult.snapshot();
+    startVersion = baselineLoad.version();
+    Snapshot baselineSnapshot = baselineLoad.snapshot();
     if (!(baselineSnapshot instanceof SnapshotImpl baselineSnapshotImpl)) {
       throw new IllegalStateException("Delta snapshot metadata is required");
     }
@@ -1570,6 +1566,27 @@ abstract class DeltaConnector implements FloecatConnector {
     }
   }
 
+  SnapshotBaseline loadSnapshotBaseline(
+      Table table, long startVersion, long latestVersion, String storageLocation) {
+    long candidateVersion = startVersion;
+    while (candidateVersion <= latestVersion) {
+      SnapshotLoadResult result =
+          loadSnapshotAsOfVersion(table, candidateVersion, storageLocation, candidateVersion);
+      if (result.snapshot() != null) {
+        return new SnapshotBaseline(candidateVersion, result.snapshot());
+      }
+      long nextVersion = result.earliestAvailableVersion();
+      if (nextVersion <= candidateVersion) {
+        throw new IllegalStateException(
+            "Delta snapshot version "
+                + candidateVersion
+                + " is unavailable while establishing the retained-history baseline");
+      }
+      candidateVersion = nextVersion;
+    }
+    return null;
+  }
+
   static OptionalLongMatch parseEarliestAvailableVersion(Throwable error) {
     if (error == null || error.getMessage() == null) {
       return OptionalLongMatch.empty();
@@ -1638,6 +1655,8 @@ abstract class DeltaConnector implements FloecatConnector {
       return earliestAvailableVersion;
     }
   }
+
+  record SnapshotBaseline(long version, Snapshot snapshot) {}
 
   static List<ConstraintDefinition> mapDeltaConstraints(StructType schema, String schemaJson) {
     return mapDeltaConstraints(schema, Map.of(), schemaJson);

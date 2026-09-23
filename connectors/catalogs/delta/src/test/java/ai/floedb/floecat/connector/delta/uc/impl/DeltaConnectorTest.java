@@ -389,6 +389,26 @@ class DeltaConnectorTest {
   }
 
   @Test
+  void baselineLoadHandlesRetentionAdvancingAgainAfterTheInitialSkip() {
+    Snapshot latest = snapshot(107805L, 107805000L);
+    Snapshot expectedBaseline = snapshot(107801L, 107801000L);
+    Table table =
+        new StubTable(
+            latest,
+            Map.of(107801L, expectedBaseline, 107805L, latest),
+            Map.of(
+                0L, truncatedHistory(107800L),
+                107800L, truncatedHistory(107801L)));
+    TestDeltaConnector connector = new TestDeltaConnector(table);
+
+    DeltaConnector.SnapshotBaseline baseline =
+        connector.loadSnapshotBaseline(table, 0L, 107805L, "s3://bucket/table");
+
+    assertEquals(107801L, baseline.version());
+    assertEquals(expectedBaseline, baseline.snapshot());
+  }
+
+  @Test
   void enumerateSnapshotsRequiresSnapshotMetadataSchemaJson() {
     Snapshot latest = snapshot(2L, 2000L);
     Table table = new StubTable(latest, Map.of(2L, latest));
@@ -1029,9 +1049,15 @@ class DeltaConnectorTest {
   }
 
   private static KernelException truncatedHistory() {
+    return truncatedHistory(107800L);
+  }
+
+  private static KernelException truncatedHistory(long earliestAvailableVersion) {
     return new KernelException(
         "s3://bucket/table: Cannot load table version 0 as the transaction log has been truncated"
             + " due to manual deletion or the log/checkpoint retention policy. The earliest"
-            + " available version is 107800.");
+            + " available version is "
+            + earliestAvailableVersion
+            + ".");
   }
 }
