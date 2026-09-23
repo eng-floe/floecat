@@ -1864,7 +1864,7 @@ identity; they do not replace a value in an existing key.</p>
 <tr>
 <td>Pointers</td>
 <td><code>PlanningPointerIndex</code> behind <code>IndexedPointerStore</code></td>
-<td>Account addressing state: names, identities, and each table's <code>root/current</code> and <code>snapshots/current</code>. Rows keyed by snapshot -- snapshot history, constraints, stats generations, index artifacts -- are durable-only, because a table commits far faster than its schema changes, including current roots, names, snapshots, constraints, stats and hint-resource pointers</td>
+<td>Account addressing state: names, identities, and each table's <code>root/current</code> and <code>snapshots/current</code>. Rows keyed by snapshot -- snapshot history, constraints, stats generations, index artifacts -- are durable-only, because a table can commit snapshots far faster than its schema or addressing state changes.</td>
 <td>Not a cache. A partition is either <code>LOADING</code> or <code>COMPLETE</code>. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter.</td>
 </tr>
 <tr>
@@ -1951,7 +1951,7 @@ sizing harness use the same arithmetic.</p>
 </tr>
 <tr>
 <td><code>CacheFamily</code></td>
-<td>The independently budgeted in-memory families that use this module. Pointer planning state is not a <code>MemoryCache</code> family: it is a complete index with no eviction budget. <code>OBJECT</code> is decoded metadata and <code>HINT</code> is decoded engine-specific metadata. Disk blob caching has its own volume budget.</td>
+<td>The independently budgeted in-memory families that use this module. Pointer planning state is not a <code>MemoryCache</code> family: it is a complete index with a separate admission budget and no entry eviction. <code>OBJECT</code> is decoded metadata and <code>HINT</code> is decoded engine-specific metadata. Disk blob caching has its own volume budget.</td>
 </tr>
 <tr>
 <td><code>CacheBudget</code> / <code>CacheBudgetResolver</code></td>
@@ -1982,7 +1982,7 @@ budget of zero.</p>
 physical-volume budget and lifecycle-shaped interface. It reuses the cache telemetry vocabulary
 where useful but does not pretend that files and heap entries share one budget.</p>
 <p>Pointer planning state is not budgeted by the generic memory-cache contract; it has its own
-per-account cap, and refuses an account rather than evicting part of one. The index is the
+per-account and total caps, and refuses an account rather than evicting part of one. The index is the
 account's current in-memory representation and must stay complete; if it cannot be loaded, the
 durable adapter remains the answer until the next load attempt. Callers do not select a cached or
 authoritative view: every service path receives <code>IndexedPointerStore</code>, which chooses the in-memory
