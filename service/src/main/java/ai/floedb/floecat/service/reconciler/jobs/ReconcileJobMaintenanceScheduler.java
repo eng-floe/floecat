@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.jobs;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.service.gc.ReconcileJobGcScheduler;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -34,6 +35,9 @@ public class ReconcileJobMaintenanceScheduler {
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = ReconcileJobGcScheduler.DisabledOrStopping.class)
   void tick() {
+    if (!ReconcileJobQueue.isEnabled()) {
+      return;
+    }
     var config = ConfigProvider.getConfig();
     boolean enabled =
         config

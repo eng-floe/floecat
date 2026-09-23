@@ -17,6 +17,7 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -122,7 +123,7 @@ public class RemoteReconcileExecutorPoller {
             config
                 .getOptionalValue("reconciler.empty-poll-backoff-max-ms", Long.class)
                 .orElse(DEFAULT_EMPTY_POLL_BACKOFF_MAX_MS));
-    if (maxParallelism <= 0 || !workerMode.runsWorkers()) {
+    if (!ReconcileJobQueue.isEnabled() || maxParallelism <= 0 || !workerMode.runsWorkers()) {
       maxParallelism = 0;
       return;
     }
@@ -169,7 +170,8 @@ public class RemoteReconcileExecutorPoller {
   }
 
   private void requestDrain() {
-    if (!workerMode.runsWorkers()
+    if (!ReconcileJobQueue.isEnabled()
+        || !workerMode.runsWorkers()
         || maxParallelism <= 0
         || executorRegistry.orderedExecutors().isEmpty()) {
       return;

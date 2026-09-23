@@ -39,6 +39,7 @@ import ai.floedb.floecat.gateway.iceberg.rest.common.InMemoryS3FileIO;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestDeltaFixtures;
 import ai.floedb.floecat.gateway.iceberg.rest.common.TestS3Fixtures;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
@@ -995,9 +996,10 @@ public class SeedRunner {
       ResourceId connectorId,
       String tableName,
       List<String> destinationNamespace) {
-    if (!seedSyncEnabled) {
+    if (!seedSyncEnabled || !ReconcileJobQueue.isEnabled()) {
       LOG.infov(
-          "Skipping seed sync for fixture table {0} (floecat.seed.sync.enabled=false)", tableName);
+          "Skipping seed sync for fixture table {0} (seed sync or reconcile job queue disabled)",
+          tableName);
       return;
     }
     var namespace =

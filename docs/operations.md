@@ -217,6 +217,7 @@ correctness.
 Key reconciler mode flags live in `service/src/main/resources/application.properties`:
 
 ```properties
+floecat.reconciler.job-queue.enabled
 floecat.reconciler.worker.mode
 floecat.reconciler.worker-affinity
 reconciler.max-parallelism
@@ -238,6 +239,15 @@ floecat.reconciler.oidc.connect-timeout
 floecat.reconciler.auto.execution-class
 floecat.reconciler.execution-lane
 ```
+
+`floecat.reconciler.job-queue.enabled=false` is the emergency admission and execution kill switch.
+Set it with `FLOECAT_RECONCILER_JOB_QUEUE_ENABLED=false` and restart every control-plane and
+executor instance. Disabled instances do not admit captures, run scheduled queue work, or serve
+executor protocol calls. Existing jobs remain persisted; `Get`/`List` job inspection, finalized
+snapshot status, cancellation, reconciler settings, and account-deletion cleanup remain available.
+Async stats capture returns an uncapturable `queue_disabled` result and synchronous stats capture
+returns `FAILED`. Re-enable the setting and restart to resume eligible persisted jobs. Queue
+maintenance and reconcile-job GC are paused while the switch is disabled.
 
 Recommended split deployment:
 

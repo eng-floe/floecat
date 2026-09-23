@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.cache.ObjectCache;
@@ -640,6 +641,12 @@ public class StatsOrchestrator {
       return List.of();
     }
     StatsCaptureRequest first = groupedRequests.getFirst().request();
+    if (!ReconcileJobQueue.isEnabled()) {
+      LOG.debugf(
+          "Skipping async stats enqueue because reconcile job queue is disabled table=%s requests=%d",
+          first.tableId(), groupedRequests.size());
+      return recordAsyncSkipGroup(groupedRequests, "queue_disabled", null);
+    }
     try {
       Optional<Table> table = tableRepository.getById(first.tableId());
       if (table.isEmpty()) {
@@ -770,9 +777,11 @@ public class StatsOrchestrator {
 
   private StatsCaptureBatchItemResult recordAsyncSkip(
       StatsCaptureRequest request, String reason, String message) {
-    LOG.warnf(
-        "%s table=%s snapshot=%d reason=%s",
-        message, request.tableId(), request.snapshotId(), reason);
+    if (message != null) {
+      LOG.warnf(
+          "%s table=%s snapshot=%d reason=%s",
+          message, request.tableId(), request.snapshotId(), reason);
+    }
     incrementCounter(
         ServiceMetrics.Stats.BATCH_GROUPS_TOTAL,
         1,
