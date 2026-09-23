@@ -162,11 +162,13 @@ public class TransactionGcScheduler {
                         return;
                       }
                       try {
-                        var res = gc.runForAccount(accountId, deadline, permit.orElseThrow());
-                        accountCounter.increment();
-                        txScannedCounter.increment(res.scanned());
-                        txDeletedCounter.increment(res.deleted());
-                        intentsDeletedCounter.increment(res.intentsDeleted());
+                        try (var admitted = permit.get()) {
+                          var res = gc.runForAccount(accountId, deadline, admitted);
+                          accountCounter.increment();
+                          txScannedCounter.increment(res.scanned());
+                          txDeletedCounter.increment(res.deleted());
+                          intentsDeletedCounter.increment(res.intentsDeleted());
+                        }
                       } catch (RuntimeException e) {
                         // Isolate each account: one account's fault must not cancel the rest of the
                         // tick, or a single bad account would starve every other account's cleanup.

@@ -408,6 +408,7 @@ public class CasBlobGc {
       // Only one local mark epoch is retained, which gives the process a hard memory bound. The
       // scheduler prioritizes this account on the next tick; callers reaching another account in
       // the same tick receive a safe pending result without replacing the incomplete mark.
+      activePermit = null;
       return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false, true);
     }
     activeDeadlineMs = deadlineMs;
