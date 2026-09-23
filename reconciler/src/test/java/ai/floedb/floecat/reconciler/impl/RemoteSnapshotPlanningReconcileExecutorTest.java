@@ -127,6 +127,26 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
   }
 
   @Test
+  void appendOnlyIdentityComparisonRequiresStableCanonicalIdentity() {
+    String schema = "{\"type\":\"struct\",\"fields\":[]}";
+    ColumnIdentityMap identity =
+        ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build();
+
+    assertTrue(
+        RemoteSnapshotPlanningReconcileExecutor.identityFingerprintsEquivalent(
+            ColumnIdentityMap.getDefaultInstance(), schema));
+    assertTrue(
+        RemoteSnapshotPlanningReconcileExecutor.identityFingerprintsEquivalent(
+            identity, ColumnIdentityExecutionSchema.attach(schema, identity)));
+    assertFalse(
+        RemoteSnapshotPlanningReconcileExecutor.identityFingerprintsEquivalent(
+            identity,
+            ColumnIdentityExecutionSchema.attach(
+                schema,
+                ColumnIdentityMap.newBuilder().setFingerprint("sha256:different").build())));
+  }
+
+  @Test
   void reuseManifestIdentityRequiresAccountAndConnector() {
     SnapshotCaptureManifest valid =
         SnapshotCaptureManifest.newBuilder()
@@ -385,6 +405,8 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
             ColumnIdentityMap.newBuilder()
                 .setFingerprint("sha256:identity")
                 .build());
+    ColumnIdentityMap identityMap =
+        ColumnIdentityMap.newBuilder().setFingerprint("sha256:identity").build();
 
     ReconcileFileExecutionPlan priorPlan =
         ReconcileFileExecutionPlan.of(
@@ -450,6 +472,7 @@ class RemoteSnapshotPlanningReconcileExecutorTest {
                     .setTableId(tableId())
                     .setSnapshotId(baseSnapshotId)
                     .setSchemaJson(baseSchemaJson)
+                    .setColumnIdentityMap(identityMap)
                     .setReuseManifestRef(
                         SnapshotReuseManifestRef.newBuilder()
                             .setFormatVersion(1)

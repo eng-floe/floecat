@@ -85,9 +85,28 @@ final class ColumnIdentityExecutionSchema {
     if (!(parsed instanceof ObjectNode schema)) {
       return parsed;
     }
-    ObjectNode logicalSchema = schema.deepCopy();
-    logicalSchema.remove(MAP_FIELD);
-    logicalSchema.remove(FINGERPRINT_FIELD);
-    return logicalSchema;
+    schema.remove(MAP_FIELD);
+    schema.remove(FINGERPRINT_FIELD);
+    return schema;
+  }
+
+  /** Removes version-specific identity state while retaining the stable identity fingerprint. */
+  static String artifactReuseSchema(String executionSchemaJson) {
+    if (executionSchemaJson == null || executionSchemaJson.isBlank()) {
+      return executionSchemaJson == null ? "" : executionSchemaJson;
+    }
+    if (!executionSchemaJson.contains(MAP_FIELD)) {
+      return executionSchemaJson;
+    }
+    try {
+      JsonNode parsed = MAPPER.readTree(executionSchemaJson);
+      if (!(parsed instanceof ObjectNode schema) || !schema.has(MAP_FIELD)) {
+        return executionSchemaJson;
+      }
+      schema.remove(MAP_FIELD);
+      return MAPPER.writeValueAsString(schema);
+    } catch (JsonProcessingException error) {
+      return executionSchemaJson;
+    }
   }
 }

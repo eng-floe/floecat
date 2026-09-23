@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.reconciler.impl;
 
+import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
@@ -606,6 +607,14 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
           task.tableId(), task.snapshotId(), historical.snapshot().getSnapshotId());
       return Optional.empty();
     }
+    if (!identityFingerprintsEquivalent(
+        historical.snapshot().getColumnIdentityMap(), delta.executionSchemaJson())) {
+      LOG.infof(
+          "Append-only delta rejected for column identity change tableId=%s snapshotId=%d"
+              + " baseSnapshotId=%d",
+          task.tableId(), task.snapshotId(), historical.snapshot().getSnapshotId());
+      return Optional.empty();
+    }
 
     LinkedHashMap<String, FloecatConnector.SnapshotFileEntry> additions = new LinkedHashMap<>();
     for (FloecatConnector.SnapshotFileEntry file : delta.addedDataFiles()) {
@@ -683,6 +692,18 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
           && parsedTarget.isObject()
           && parsedBase.equals(parsedTarget);
     } catch (JsonProcessingException error) {
+      return false;
+    }
+  }
+
+  static boolean identityFingerprintsEquivalent(
+      ColumnIdentityMap baseIdentityMap, String targetExecutionSchema) {
+    String baseFingerprint =
+        baseIdentityMap == null ? "" : baseIdentityMap.getFingerprint();
+    try {
+      return baseFingerprint.equals(
+          ColumnIdentityExecutionSchema.identityMap(targetExecutionSchema).getFingerprint());
+    } catch (IllegalArgumentException error) {
       return false;
     }
   }

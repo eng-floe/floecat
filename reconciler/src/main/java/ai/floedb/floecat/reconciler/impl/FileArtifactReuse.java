@@ -51,7 +51,7 @@ public final class FileArtifactReuse {
     digest.add(plan.contentIdentity());
     digest.add(plan.partitionDataJson());
     digest.add(plan.partitionSpecId());
-    digest.add(executionSchemaJson);
+    digest.add(ColumnIdentityExecutionSchema.artifactReuseSchema(executionSchemaJson));
     ReconcileFileExecutionPlan.DeltaDeletionVector dv = plan.deletionVector();
     digest.add(dv != null);
     if (dv != null) {
@@ -162,7 +162,7 @@ public final class FileArtifactReuse {
         });
     if (!stats && effective.requestsIndexes()) {
       digest.add("execution-schema");
-      digest.add(executionSchemaJson);
+      digest.add(ColumnIdentityExecutionSchema.artifactReuseSchema(executionSchemaJson));
     }
     return digest.finish();
   }
