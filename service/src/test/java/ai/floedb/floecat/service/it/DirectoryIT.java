@@ -31,6 +31,7 @@ import ai.floedb.floecat.catalog.rpc.RelationReference;
 import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -94,6 +95,54 @@ class DirectoryIT {
             .getRef();
     assertEquals(cat.getDisplayName(), namespaceRef.getCatalog());
     assertEquals("core", namespaceRef.getName());
+  }
+
+  @Test
+  void relationNamesAreMatchedExactly() {
+    Catalog cat = TestSupport.createCatalog(catalog, "relation_case", "");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "");
+    TestSupport.createTable(
+        table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://orders", "{}", "");
+
+    // One policy: a relation is keyed by its exact stored name, so another spelling is a different
+    // name and resolves to nothing. This holds for a builtin as much as for a user relation.
+    NameRef shoutedUser =
+        NameRef.newBuilder()
+            .setCatalog(cat.getDisplayName())
+            .addPath("core")
+            .setName("ORDERS")
+            .build();
+    NameRef shoutedBuiltin =
+        NameRef.newBuilder()
+            .setCatalog(cat.getDisplayName())
+            .addPath("INFORMATION_SCHEMA")
+            .setName("TABLES")
+            .build();
+    NameRef storedBuiltin =
+        NameRef.newBuilder()
+            .setCatalog(cat.getDisplayName())
+            .addPath("information_schema")
+            .setName("tables")
+            .build();
+
+    var response =
+        relation.resolveRelations(
+            ResolveRelationsRequest.newBuilder()
+                .addReferences(RelationReference.newBuilder().addCandidates(shoutedUser))
+                .addReferences(RelationReference.newBuilder().addCandidates(shoutedBuiltin))
+                .addReferences(RelationReference.newBuilder().addCandidates(storedBuiltin))
+                .build());
+
+    assertTrue(response.getResults(0).hasError());
+    assertEquals(ErrorCode.MC_NOT_FOUND, response.getResults(0).getError().getCode());
+
+    assertTrue(response.getResults(1).hasError());
+    assertEquals(ErrorCode.MC_NOT_FOUND, response.getResults(1).getError().getCode());
+
+    // Positive control: the stored spelling resolves, so the two misses above are about case and
+    // not about the builtin being absent from this catalog.
+    assertTrue(response.getResults(2).hasRelation());
+    assertEquals("tables", response.getResults(2).getResolvedName().getName());
   }
 
   @Test
