@@ -620,6 +620,70 @@ class IndexArtifactRepositoryTest {
   }
 
   @Test
+  void selectedExternalIndexRecordRequiresNoManagedGeneration() {
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
+    String filePath = "s3://bucket/file.parquet";
+    IndexArtifactRecord record = indexRecord(714L, filePath);
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(714L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    Set<Keys.GenerationKey> generations =
+        repository.inheritedManagedSidecarGenerations(
+            TABLE_ID,
+            List.of(
+                new ReusableArtifactBundleSelection(
+                    "reuse-bundle:prior-group",
+                    bundleUri,
+                    bundle.length,
+                    digest,
+                    List.of(),
+                    List.of(filePath))));
+
+    assertThat(generations).isEmpty();
+  }
+
+  @Test
+  void selectedBundleRejectsAMissingExternalIndexRecord() {
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
+    IndexArtifactRecord record = indexRecord(714L, "s3://bucket/present.parquet");
+    byte[] bundle =
+        ReusableArtifactBundlePayload.newBuilder()
+            .setFormatVersion(1)
+            .addIndexArtifacts(record)
+            .build()
+            .toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(bundle));
+    String bundleUri =
+        workerStatsPrefix(714L) + "reuse-bundles/" + Hashing.sha256Hex(bundle) + ".pb";
+    blobs.put(bundleUri, bundle, "application/x-protobuf");
+
+    assertThatThrownBy(
+            () ->
+                repository.inheritedManagedSidecarGenerations(
+                    TABLE_ID,
+                    List.of(
+                        new ReusableArtifactBundleSelection(
+                            "reuse-bundle:prior-group",
+                            bundleUri,
+                            bundle.length,
+                            digest,
+                            List.of(),
+                            List.of("s3://bucket/missing.parquet")))))
+        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
+        .hasMessageContaining("missing selected records");
+  }
+
+  @Test
   void selectedBundleRejectsASidecarGenerationOwnedByAnotherTable() {
     InMemoryBlobStore blobs = new InMemoryBlobStore();
     IndexArtifactRepository repository = createRepository(new InMemoryPointerStore(), blobs);
