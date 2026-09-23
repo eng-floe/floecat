@@ -24,7 +24,7 @@ class FloecatDrainEndpointTest {
   @Test
   void getWithoutWaitOnlyReportsStatus() {
     AccountAssignment assignment =
-        AccountAssignment.managedForTesting(AccountAssignment.PartitionHooks.NONE);
+        AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE);
     FloecatDrainEndpoint endpoint = endpoint(assignment);
 
     FloecatDrainEndpoint.Response response =
@@ -38,7 +38,7 @@ class FloecatDrainEndpointTest {
   @Test
   void waitStartsDrainAndReturnsDrainedStatus() {
     AccountAssignment assignment =
-        AccountAssignment.managedForTesting(AccountAssignment.PartitionHooks.NONE);
+        AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE);
     FloecatDrainEndpoint endpoint = endpoint(assignment);
 
     FloecatDrainEndpoint.Response response =
@@ -53,7 +53,7 @@ class FloecatDrainEndpointTest {
   @Test
   void badTimeoutDoesNotStartDrain() {
     AccountAssignment assignment =
-        AccountAssignment.managedForTesting(AccountAssignment.PartitionHooks.NONE);
+        AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE);
     FloecatDrainEndpoint endpoint = endpoint(assignment);
 
     FloecatDrainEndpoint.Response response =

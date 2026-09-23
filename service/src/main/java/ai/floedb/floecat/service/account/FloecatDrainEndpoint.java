@@ -124,9 +124,9 @@ public class FloecatDrainEndpoint {
     return Math.max(0L, timeoutMs);
   }
 
-  private AssignmentControl.Status awaitDrained(long timeoutMs) {
+  private LifecycleControl.Status awaitDrained(long timeoutMs) {
     long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
-    AssignmentControl.Status status = drain.status();
+    LifecycleControl.Status status = drain.status();
     while (!status.drained() && System.nanoTime() - deadline < 0) {
       try {
         Thread.sleep(POLL_MILLIS);
@@ -144,13 +144,13 @@ public class FloecatDrainEndpoint {
     return status;
   }
 
-  private static Response respond(AssignmentControl.Status status) {
+  private static Response respond(LifecycleControl.Status status) {
     long serving = 0;
     long draining = 0;
-    for (AssignmentControl.AccountStatus account : status.accounts()) {
-      if (account.mode() == AssignmentControl.AccountMode.SERVING) {
+    for (LifecycleControl.AccountStatus account : status.accounts()) {
+      if (account.mode() == LifecycleControl.AccountMode.SERVING) {
         serving++;
-      } else if (account.mode() == AssignmentControl.AccountMode.DRAINING) {
+      } else if (account.mode() == LifecycleControl.AccountMode.DRAINING) {
         draining++;
       }
     }

@@ -342,9 +342,11 @@ changing query, cache, mutation or GC call sites.
 
 Pointer GC needs no separate lifecycle fence: every delete it makes is a pointer CAS through the
 durable store. Its account GC permit is revalidated before each page and before every destructive
-CAS, so a lifecycle drain interrupts an in-progress sweep. CAS blob GC uses the same permit rule.
-Transaction-intent cleanup is separate administrative housekeeping and is not part of the
-query-object/cache GC drain accounting.
+CAS, so a lifecycle drain interrupts an in-progress sweep. CAS blob GC and transaction-intent
+cleanup use the same account permit rule. Transaction GC reclaims only transaction records,
+intents, and their temporary blobs; pointer/blob GC reclaims catalog objects and CAS data. They are
+different collectors over different key families, but all account-scoped collectors participate in
+the same lifecycle drain accounting.
 
 `wait=true` waits for the drain: `400` if `timeoutMs` is malformed or negative, and then nothing
 drains; otherwise `200` once active RPCs, mutations, resolutions and GC are zero, or `202` at the

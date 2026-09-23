@@ -92,7 +92,7 @@ class AccountServiceImplTest {
     service.objects = ObjectCache.forTesting();
     service.hints = mock(HintCache.class);
     service.blobs = mock(BlobCacheAccess.class);
-    service.assignment = AccountAssignment.standaloneForTesting(pointers, new TestObservability());
+    service.assignment = AccountAssignment.forTesting(pointers, new TestObservability());
     installBasePrincipal(service, service.principal);
     when(service.principal.get())
         .thenReturn(
@@ -493,7 +493,7 @@ class AccountServiceImplTest {
   @Test
   void managedDeletionInstallsTheDeletionFence() {
     AccountAssignment managed =
-        AccountAssignment.managedForTesting("m", "m/inc", pointers, new TestObservability());
+        AccountAssignment.forTesting("m", "m/inc", pointers, new TestObservability());
     service.assignment = managed;
     service.pointerStore = pointers;
     MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
@@ -527,7 +527,7 @@ class AccountServiceImplTest {
   @Test
   void managedDeletionDuringProcessDrainIsRefusedAsNotAssigned() {
     AccountAssignment managed =
-        AccountAssignment.managedForTesting("m", "m/inc", pointers, new TestObservability());
+        AccountAssignment.forTesting("m", "m/inc", pointers, new TestObservability());
     service.assignment = managed;
     managed.beginProcessDrain();
     MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
@@ -554,7 +554,7 @@ class AccountServiceImplTest {
   @Test
   void managedUpdateDuringProcessDrainIsRefusedAsNotAssigned() {
     AccountAssignment managed =
-        AccountAssignment.managedForTesting("m", "m/inc", pointers, new TestObservability());
+        AccountAssignment.forTesting("m", "m/inc", pointers, new TestObservability());
     service.assignment = managed;
     managed.beginProcessDrain();
 
