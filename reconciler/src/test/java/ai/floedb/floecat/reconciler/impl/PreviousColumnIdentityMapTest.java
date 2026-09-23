@@ -100,9 +100,6 @@ class PreviousColumnIdentityMapTest {
             .setMode(ColumnIdentityMode.COLUMN_IDENTITY_MODE_STRUCTURED_PATH)
             .setFingerprint(fingerprint)
             .build();
-    return Snapshot.newBuilder()
-        .setSnapshotId(snapshotId)
-        .setColumnIdentityMap(map)
-        .build();
+    return Snapshot.newBuilder().setSnapshotId(snapshotId).setColumnIdentityMap(map).build();
   }
 }
