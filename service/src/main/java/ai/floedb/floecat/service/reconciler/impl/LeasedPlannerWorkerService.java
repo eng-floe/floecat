@@ -100,6 +100,9 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
 
   record PlanViewPersistResult(boolean accepted, long viewsChanged) {}
 
+  record PlanFailurePersistResult(
+      boolean accepted, ReconcileJobStore.CompletionKind completionKind) {}
+
   record PlanSnapshotPayload(
       String jobId,
       String leaseEpoch,
@@ -238,8 +241,8 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_CONNECTOR);
-    return persistPlanFailure(
-        jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
+    return persistPlanFailure(jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message)
+        .accepted();
   }
 
   public PlanTablePayload resolvePlanTable(
@@ -404,7 +407,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
     }
   }
 
-  public boolean persistPlanTableFailure(
+  public PlanFailurePersistResult persistPlanTableFailure(
       PrincipalContext principalContext,
       String jobId,
       String leaseEpoch,
@@ -478,8 +481,8 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_VIEW);
-    return persistPlanFailure(
-        jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
+    return persistPlanFailure(jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message)
+        .accepted();
   }
 
   public PlanSnapshotPayload resolvePlanSnapshot(
@@ -981,7 +984,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
     return snapshotTask.withIndexPredecessor(leasedSnapshotTask.indexPredecessor());
   }
 
-  public boolean persistPlanSnapshotFailure(
+  public PlanFailurePersistResult persistPlanSnapshotFailure(
       PrincipalContext principalContext,
       String jobId,
       String leaseEpoch,
@@ -1319,7 +1322,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         .orElse(false);
   }
 
-  private boolean persistPlanFailure(
+  private PlanFailurePersistResult persistPlanFailure(
       String jobId,
       String leaseEpoch,
       ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind failureKind,
@@ -1327,69 +1330,44 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
           retryDisposition,
       ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    long finishedAtMs = System.currentTimeMillis();
+    ReconcileJobStore.CompletionKind completionKind =
+        completionKindForFailure(failureKind, retryDisposition, retryClass);
+    boolean accepted =
+        jobs.applyLeaseOutcome(
+            jobId,
+            leaseEpoch,
+            completionKind,
+            System.currentTimeMillis(),
+            message,
+            0L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L,
+            0L);
+    return new PlanFailurePersistResult(accepted, completionKind);
+  }
+
+  private static ReconcileJobStore.CompletionKind completionKindForFailure(
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+          retryDisposition,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass retryClass) {
     if (isObsoleteFailureKind(failureKind)) {
-      return jobs.applyLeaseOutcome(
-          jobId,
-          leaseEpoch,
-          ReconcileJobStore.CompletionKind.CANCELLED,
-          finishedAtMs,
-          message,
-          0L,
-          0L,
-          0L,
-          0L,
-          1L,
-          0L,
-          0L);
+      return ReconcileJobStore.CompletionKind.CANCELLED;
     }
     if (retryDisposition
         == ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
             .TERMINAL) {
-      return jobs.applyLeaseOutcome(
-          jobId,
-          leaseEpoch,
-          ReconcileJobStore.CompletionKind.FAILED_TERMINAL,
-          finishedAtMs,
-          message,
-          0L,
-          0L,
-          0L,
-          0L,
-          1L,
-          0L,
-          0L);
+      return ReconcileJobStore.CompletionKind.FAILED_TERMINAL;
     }
     if (retryClass
         == ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
             .DEPENDENCY_NOT_READY) {
-      return jobs.applyLeaseOutcome(
-          jobId,
-          leaseEpoch,
-          ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY,
-          finishedAtMs,
-          message,
-          0L,
-          0L,
-          0L,
-          0L,
-          1L,
-          0L,
-          0L);
+      return ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY;
     }
-    return jobs.applyLeaseOutcome(
-        jobId,
-        leaseEpoch,
-        ReconcileJobStore.CompletionKind.FAILED_RETRYABLE,
-        finishedAtMs,
-        message,
-        0L,
-        0L,
-        0L,
-        0L,
-        1L,
-        0L,
-        0L);
+    return ReconcileJobStore.CompletionKind.FAILED_RETRYABLE;
   }
 
   private static boolean isObsoleteFailureKind(

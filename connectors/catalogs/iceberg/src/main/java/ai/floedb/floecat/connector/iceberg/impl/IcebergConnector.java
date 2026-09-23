@@ -62,8 +62,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.Spliterator;
+import java.util.Spliterators;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
@@ -266,6 +270,10 @@ public abstract class IcebergConnector implements FloecatConnector {
         Map.copyOf(properties));
   }
 
+  /**
+   * The returned stream must be fully consumed: incremental observability validation may report a
+   * {@link ConnectorNotReadyException} only when the stream reaches its end.
+   */
   @Override
   public Stream<SnapshotBundle> enumerateSnapshots(
       String namespaceFq,
@@ -276,7 +284,7 @@ public abstract class IcebergConnector implements FloecatConnector {
     boolean fullRescan = options == null || options.fullRescan();
     Set<Long> knownSnapshotIds = options == null ? Set.of() : options.knownSnapshotIds();
     Set<Long> targetSnapshotIds = options == null ? Set.of() : options.targetSnapshotIds();
-    List<Snapshot> snapshots =
+    Stream<Snapshot> snapshots =
         snapshotsToEnumerate(
             table,
             fullRescan,
@@ -285,14 +293,12 @@ public abstract class IcebergConnector implements FloecatConnector {
             options == null ? FloecatConnector.SnapshotSelectionKind.ALL : options.selectionKind(),
             options == null ? Set.of() : options.selectionSnapshotIds(),
             options == null ? 0 : options.latestN());
-    if (shouldRetryEmptyIncrementalEnumeration(table, fullRescan, knownSnapshotIds, snapshots)) {
-      throw new ConnectorNotReadyException(
-          "Current snapshot for " + namespaceFq + "." + tableName + " is not fully observable yet");
-    }
+    snapshots =
+        requireObservableIncrementalEnumeration(
+            table, namespaceFq, tableName, fullRescan, knownSnapshotIds, snapshots);
     String currentMetadataLocation = currentMetadataLocation(table);
 
-    return snapshots.stream()
-        .map(snapshot -> snapshotBundle(table, currentMetadataLocation, snapshot));
+    return snapshots.map(snapshot -> snapshotBundle(table, currentMetadataLocation, snapshot));
   }
 
   private SnapshotBundle snapshotBundle(
@@ -1129,7 +1135,7 @@ public abstract class IcebergConnector implements FloecatConnector {
     return List.copyOf(deduped.values());
   }
 
-  private List<Snapshot> snapshotsToEnumerate(
+  private Stream<Snapshot> snapshotsToEnumerate(
       Table table,
       boolean fullRescan,
       Set<Long> knownSnapshotIds,
@@ -1137,70 +1143,97 @@ public abstract class IcebergConnector implements FloecatConnector {
       FloecatConnector.SnapshotSelectionKind selectionKind,
       Set<Long> selectionSnapshotIds,
       int latestN) {
-    List<Snapshot> eligible = new ArrayList<>();
-    for (Snapshot snapshot : table.snapshots()) {
-      if (snapshot == null) {
-        continue;
-      }
-      if (selectionKind == FloecatConnector.SnapshotSelectionKind.EXPLICIT
-          && (selectionSnapshotIds == null
-              || selectionSnapshotIds.isEmpty()
-              || !selectionSnapshotIds.contains(snapshot.snapshotId()))) {
-        continue;
-      }
-      if (targetSnapshotIds != null
-          && !targetSnapshotIds.isEmpty()
-          && !targetSnapshotIds.contains(snapshot.snapshotId())) {
-        continue;
-      }
-      eligible.add(snapshot);
-    }
-    eligible.sort(
-        Comparator.comparingLong((Snapshot snapshot) -> Math.max(0L, snapshot.sequenceNumber()))
-            .thenComparingLong(Snapshot::timestampMillis)
-            .thenComparingLong(Snapshot::snapshotId));
-    if (selectionKind == FloecatConnector.SnapshotSelectionKind.CURRENT) {
-      Snapshot current = table.currentSnapshot();
-      if (current == null) {
-        return List.of();
-      }
-      eligible =
-          eligible.stream()
-              .filter(snapshot -> snapshot.snapshotId() == current.snapshotId())
-              .toList();
-    } else if (selectionKind == FloecatConnector.SnapshotSelectionKind.LATEST_N) {
+    // Snapshot ids are random identifiers, and downstream planning is order-independent. Preserve
+    // metadata iteration order so ALL remains lazy; LATEST_N uses sequence and commit time.
+    Stream<Snapshot> source =
+        selectionKind == FloecatConnector.SnapshotSelectionKind.CURRENT
+            ? Stream.ofNullable(table.currentSnapshot())
+            : StreamSupport.stream(table.snapshots().spliterator(), false);
+    Stream<Snapshot> eligible =
+        source
+            .filter(Objects::nonNull)
+            .filter(
+                snapshot ->
+                    selectionKind != FloecatConnector.SnapshotSelectionKind.EXPLICIT
+                        || (selectionSnapshotIds != null
+                            && !selectionSnapshotIds.isEmpty()
+                            && selectionSnapshotIds.contains(snapshot.snapshotId())))
+            .filter(
+                snapshot ->
+                    targetSnapshotIds == null
+                        || targetSnapshotIds.isEmpty()
+                        || targetSnapshotIds.contains(snapshot.snapshotId()));
+    if (selectionKind == FloecatConnector.SnapshotSelectionKind.LATEST_N) {
       int keep = Math.max(0, latestN);
-      if (keep == 0 || eligible.isEmpty()) {
-        return List.of();
+      if (keep == 0) {
+        return Stream.empty();
       }
-      int from = Math.max(0, eligible.size() - keep);
-      eligible = List.copyOf(eligible.subList(from, eligible.size()));
+      Comparator<Snapshot> recency =
+          Comparator.comparingLong((Snapshot snapshot) -> Math.max(0L, snapshot.sequenceNumber()))
+              .thenComparingLong(Snapshot::timestampMillis);
+      PriorityQueue<Snapshot> latest = new PriorityQueue<>(keep, recency);
+      eligible.forEach(
+          snapshot -> {
+            if (latest.size() < keep) {
+              latest.add(snapshot);
+            } else if (recency.compare(snapshot, latest.element()) > 0) {
+              latest.remove();
+              latest.add(snapshot);
+            }
+          });
+      eligible = latest.stream().sorted(recency);
     }
     if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
       return eligible;
     }
-    List<Snapshot> incremental = new ArrayList<>();
-    for (Snapshot snapshot : eligible) {
-      if (knownSnapshotIds.contains(snapshot.snapshotId())) {
-        continue;
-      }
-      incremental.add(snapshot);
-    }
-    return incremental;
+    return eligible.filter(snapshot -> !knownSnapshotIds.contains(snapshot.snapshotId()));
   }
 
-  private static boolean shouldRetryEmptyIncrementalEnumeration(
-      Table table, boolean fullRescan, Set<Long> knownSnapshotIds, List<Snapshot> snapshots) {
-    if (fullRescan) {
-      return false;
+  private static Stream<Snapshot> requireObservableIncrementalEnumeration(
+      Table table,
+      String namespaceFq,
+      String tableName,
+      boolean fullRescan,
+      Set<Long> knownSnapshotIds,
+      Stream<Snapshot> snapshots) {
+    if (fullRescan
+        || (knownSnapshotIds != null && !knownSnapshotIds.isEmpty())
+        || table == null
+        || table.currentSnapshot() == null) {
+      return snapshots;
     }
-    if (knownSnapshotIds != null && !knownSnapshotIds.isEmpty()) {
-      return false;
-    }
-    if (snapshots != null && !snapshots.isEmpty()) {
-      return false;
-    }
-    return table != null && table.currentSnapshot() != null;
+    Spliterator<Snapshot> source = snapshots.spliterator();
+    Spliterator<Snapshot> checked =
+        new Spliterators.AbstractSpliterator<>(source.estimateSize(), source.characteristics()) {
+          private boolean emitted;
+          private boolean exhausted;
+
+          @Override
+          public boolean tryAdvance(java.util.function.Consumer<? super Snapshot> action) {
+            if (exhausted) {
+              return false;
+            }
+            boolean advanced =
+                source.tryAdvance(
+                    snapshot -> {
+                      emitted = true;
+                      action.accept(snapshot);
+                    });
+            if (!advanced) {
+              exhausted = true;
+              if (!emitted) {
+                throw new ConnectorNotReadyException(
+                    "Current snapshot for "
+                        + namespaceFq
+                        + "."
+                        + tableName
+                        + " is not fully observable yet");
+              }
+            }
+            return advanced;
+          }
+        };
+    return StreamSupport.stream(checked, false).onClose(snapshots::close);
   }
 
   protected boolean isSingleTableMode() {

@@ -46,6 +46,7 @@ import ai.floedb.floecat.stats.identity.StatsTargetScopeCodec;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -1632,7 +1633,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
 
     assertThat(result.ok()).isTrue();
     assertThat(backend.capturedKnownSnapshotIds).isEmpty();
-    assertThat(result.captureSnapshotIds()).containsExactly(42L, 43L);
+    assertThat(result.emittedSnapshotIds()).containsExactly(42L, 43L);
     assertThat(backend.indexCompletenessCalls).isZero();
   }
 
@@ -3443,6 +3444,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       String bearerToken,
       java.util.function.BooleanSupplier cancelRequested,
       ReconcileExecutor.ProgressListener progress) {
+    List<Long> emittedSnapshotIds = new ArrayList<>();
     var tableExecution =
         queuedWorkerSupport()
             .executePlannedTable(
@@ -3456,7 +3458,8 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 "test-job",
                 "test-lease",
                 cancelRequested,
-                progress);
+                progress,
+                emission -> emittedSnapshotIds.add(emission.bundle().snapshotId()));
     var execution = tableExecution.result();
     return new TestResult(
         execution.cancelled,
@@ -3468,7 +3471,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         execution.snapshotsProcessed,
         execution.statsProcessed,
         execution.error,
-        tableExecution.captureSnapshotIds());
+        List.copyOf(emittedSnapshotIds));
   }
 
   private record TestResult(
@@ -3481,7 +3484,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       long snapshotsProcessed,
       long statsProcessed,
       Exception error,
-      List<Long> captureSnapshotIds) {
+      List<Long> emittedSnapshotIds) {
     private long changed() {
       return tablesChanged + viewsChanged;
     }

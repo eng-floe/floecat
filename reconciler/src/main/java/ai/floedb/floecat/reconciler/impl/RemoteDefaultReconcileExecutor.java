@@ -138,10 +138,10 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
     int configuredChunkTargetBytes = workerClient.planTableChunkTargetBytes();
     int snapshotChunkTargetBytes =
         configuredChunkTargetBytes > 0 ? configuredChunkTargetBytes : 128 * 1024;
-    int[] submittedSnapshotChunks = {0};
-    int[] pendingSnapshotBytes = {0};
+    PlanTableChunkBuffer snapshotChunks =
+        new PlanTableChunkBuffer(
+            workerClient, remoteLease, snapshotChunkMaxCount, snapshotChunkTargetBytes);
     Set<Long> emittedSnapshotIds = new HashSet<>();
-    List<PlannedSnapshotJob> pendingSnapshotJobs = new ArrayList<>(snapshotChunkMaxCount);
     QueuedReconcileWorkerSupport.TableExecutionResult tableExecution =
         queuedWorkerSupport.executePlannedTable(
             principal,
@@ -178,32 +178,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
                               payload.captureMode(), payload.scope()));
               PlannedSnapshotJob snapshotJob =
                   new PlannedSnapshotJob(payload.scope(), snapshotTask);
-              int snapshotJobBytes =
-                  Math.max(
-                      1, workerClient.estimatedPlanTableChunkItemBytes(remoteLease, snapshotJob));
-              if (!pendingSnapshotJobs.isEmpty()
-                  && (pendingSnapshotJobs.size() >= snapshotChunkMaxCount
-                      || pendingSnapshotBytes[0] + snapshotJobBytes > snapshotChunkTargetBytes)) {
-                int chunkIndex = submittedSnapshotChunks[0]++;
-                if (!workerClient.submitPlanTableChunk(
-                    remoteLease, chunkIndex, List.copyOf(pendingSnapshotJobs))) {
-                  throw plannerSubmissionRejected();
-                }
-                pendingSnapshotJobs.clear();
-                pendingSnapshotBytes[0] = 0;
-              }
-              pendingSnapshotJobs.add(snapshotJob);
-              pendingSnapshotBytes[0] += snapshotJobBytes;
-              if (pendingSnapshotJobs.size() >= snapshotChunkMaxCount
-                  || pendingSnapshotBytes[0] >= snapshotChunkTargetBytes) {
-                int chunkIndex = submittedSnapshotChunks[0]++;
-                if (!workerClient.submitPlanTableChunk(
-                    remoteLease, chunkIndex, List.copyOf(pendingSnapshotJobs))) {
-                  throw plannerSubmissionRejected();
-                }
-                pendingSnapshotJobs.clear();
-                pendingSnapshotBytes[0] = 0;
-              }
+              snapshotChunks.add(snapshotJob);
             });
     ExecutionResult result = tableExecution.result();
 
@@ -281,15 +256,8 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           result.message);
     }
 
-    if (!pendingSnapshotJobs.isEmpty()) {
-      int chunkIndex = submittedSnapshotChunks[0]++;
-      if (!workerClient.submitPlanTableChunk(
-          remoteLease, chunkIndex, List.copyOf(pendingSnapshotJobs))) {
-        throw plannerSubmissionRejected();
-      }
-      pendingSnapshotJobs.clear();
-    }
-    int chunkCount = submittedSnapshotChunks[0];
+    snapshotChunks.flush();
+    int chunkCount = snapshotChunks.submittedChunkCount();
     context.beforeHandledCompletion().run();
     boolean accepted;
     try {
@@ -414,6 +382,58 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         ExecutionResult.RetryClass.STATE_UNCERTAIN,
         "standalone planner result submission was rejected",
         new IllegalStateException("planner result submission rejected"));
+  }
+
+  private static final class PlanTableChunkBuffer {
+    private final RemotePlannerWorkerClient workerClient;
+    private final RemoteLeasedJob remoteLease;
+    private final int maxCount;
+    private final int targetBytes;
+    private final List<PlannedSnapshotJob> pending;
+    private int pendingBytes;
+    private int submittedChunkCount;
+
+    private PlanTableChunkBuffer(
+        RemotePlannerWorkerClient workerClient,
+        RemoteLeasedJob remoteLease,
+        int maxCount,
+        int targetBytes) {
+      this.workerClient = workerClient;
+      this.remoteLease = remoteLease;
+      this.maxCount = maxCount;
+      this.targetBytes = targetBytes;
+      this.pending = new ArrayList<>(maxCount);
+    }
+
+    private void add(PlannedSnapshotJob snapshotJob) {
+      int snapshotJobBytes =
+          Math.max(1, workerClient.estimatedPlanTableChunkItemBytes(remoteLease, snapshotJob));
+      if (!pending.isEmpty() && pendingBytes + snapshotJobBytes > targetBytes) {
+        flush();
+      }
+      pending.add(snapshotJob);
+      pendingBytes += snapshotJobBytes;
+      if (pending.size() >= maxCount || pendingBytes >= targetBytes) {
+        flush();
+      }
+    }
+
+    private void flush() {
+      if (pending.isEmpty()) {
+        return;
+      }
+      if (!workerClient.submitPlanTableChunk(
+          remoteLease, submittedChunkCount, List.copyOf(pending))) {
+        throw plannerSubmissionRejected();
+      }
+      submittedChunkCount++;
+      pending.clear();
+      pendingBytes = 0;
+    }
+
+    private int submittedChunkCount() {
+      return submittedChunkCount;
+    }
   }
 
   private static String rootCauseMessage(Throwable error) {

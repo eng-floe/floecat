@@ -909,7 +909,7 @@ class LeasedPlannerWorkerServiceTest {
             anyLong()))
         .thenReturn(true);
 
-    boolean accepted =
+    var result =
         service.persistPlanTableFailure(
             principal,
             "job-2",
@@ -922,7 +922,9 @@ class LeasedPlannerWorkerServiceTest {
                 .DEPENDENCY_NOT_READY,
             "waiting");
 
-    assertTrue(accepted);
+    assertTrue(result.accepted());
+    assertEquals(
+        ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY, result.completionKind());
     verify(jobs)
         .applyLeaseOutcome(
             eq("job-2"),
@@ -959,7 +961,7 @@ class LeasedPlannerWorkerServiceTest {
             anyLong()))
         .thenReturn(true);
 
-    boolean accepted =
+    var result =
         service.persistPlanTableFailure(
             principal,
             "job-2b",
@@ -972,7 +974,8 @@ class LeasedPlannerWorkerServiceTest {
                 .TRANSIENT_ERROR,
             "getConnector failed: connector-1");
 
-    assertTrue(accepted);
+    assertTrue(result.accepted());
+    assertEquals(ReconcileJobStore.CompletionKind.CANCELLED, result.completionKind());
     verify(jobs)
         .applyLeaseOutcome(
             eq("job-2b"),
@@ -1009,7 +1012,7 @@ class LeasedPlannerWorkerServiceTest {
             anyLong()))
         .thenReturn(false);
 
-    boolean accepted =
+    var result =
         service.persistPlanTableFailure(
             principal,
             "job-2c",
@@ -1022,7 +1025,8 @@ class LeasedPlannerWorkerServiceTest {
                 .TRANSIENT_ERROR,
             "getConnector failed: connector-1");
 
-    assertTrue(!accepted);
+    assertTrue(!result.accepted());
+    assertEquals(ReconcileJobStore.CompletionKind.CANCELLED, result.completionKind());
   }
 
   @Test
@@ -1045,7 +1049,7 @@ class LeasedPlannerWorkerServiceTest {
             anyLong()))
         .thenReturn(true);
 
-    boolean accepted =
+    var result =
         service.persistPlanSnapshotFailure(
             principal,
             "job-3",
@@ -1058,7 +1062,8 @@ class LeasedPlannerWorkerServiceTest {
                 .TRANSIENT_ERROR,
             "retry");
 
-    assertTrue(accepted);
+    assertTrue(result.accepted());
+    assertEquals(ReconcileJobStore.CompletionKind.FAILED_RETRYABLE, result.completionKind());
     verify(jobs)
         .applyLeaseOutcome(
             eq("job-3"),

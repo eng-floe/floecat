@@ -160,8 +160,7 @@ class RemoteDefaultReconcileExecutorTest {
                   new QueuedReconcileWorkerSupport.SnapshotEmission(
                       tableId, "ns", "table", snapshotBundle(1454938L)));
               return new QueuedReconcileWorkerSupport.TableExecutionResult(
-                  ReconcileExecutor.ExecutionResult.success(1, 1, 0, 9, 0, "ok"),
-                  List.of("table-1"));
+                  ReconcileExecutor.ExecutionResult.success(1, 1, 0, 9, 0, "ok"));
             });
     when(workerClient.submitPlanTableChunk(any(), anyInt(), any())).thenReturn(true);
     when(workerClient.submitPlanTableSuccess(
@@ -227,8 +226,7 @@ class RemoteDefaultReconcileExecutorTest {
                         tableId, "ns", "table", snapshotBundle(snapshotId)));
               }
               return new QueuedReconcileWorkerSupport.TableExecutionResult(
-                  ReconcileExecutor.ExecutionResult.success(1, 1, 0, 3, 0, "ok"),
-                  List.of("table-1"));
+                  ReconcileExecutor.ExecutionResult.success(1, 1, 0, 3, 0, "ok"));
             });
 
     assertTrue(
@@ -267,8 +265,7 @@ class RemoteDefaultReconcileExecutorTest {
         .thenReturn(
             new QueuedReconcileWorkerSupport.TableExecutionResult(
                 ReconcileExecutor.ExecutionResult.failure(
-                    0, 0, 1, 0, 0, failure.getMessage(), failure),
-                List.of()));
+                    0, 0, 1, 0, 0, failure.getMessage(), failure)));
 
     ReconcileExecutor.ExecutionResult result =
         executor.execute(
@@ -315,8 +312,7 @@ class RemoteDefaultReconcileExecutorTest {
                     failure.retryDisposition(),
                     failure.retryClass(),
                     failure.getMessage(),
-                    failure),
-                List.of()));
+                    failure)));
 
     assertThrows(
         ReconcileFailureException.class,
@@ -325,6 +321,69 @@ class RemoteDefaultReconcileExecutorTest {
                 new ReconcileExecutor.ExecutionContext(
                     lease, () -> false, (a, b, c, d, e, f, g, h) -> {})));
     verify(workerClient, never()).submitPlanTableFailure(any(), any(), any(), any(), any());
+  }
+
+  @Test
+  void executeTableReportsFailureAfterSubmittingSnapshotChunks() {
+    QueuedReconcileWorkerSupport queuedWorkerSupport = mock(QueuedReconcileWorkerSupport.class);
+    RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
+    var executor =
+        new RemoteDefaultReconcileExecutor(
+            queuedWorkerSupport, workerClient, accountId -> java.util.Optional.empty(), true);
+    ReconcileJobStore.LeasedJob lease =
+        tableLease(
+            "job-partial-plan", "acct-a", ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
+    when(workerClient.getPlanTableInput(remoteLease))
+        .thenReturn(planTablePayload(lease, connectorId("acct-a")));
+    when(workerClient.submitPlanTableChunk(any(), anyInt(), any())).thenReturn(true);
+    when(workerClient.submitPlanTableFailure(any(), any(), any(), any(), any())).thenReturn(true);
+    when(queuedWorkerSupport.executePlannedTable(
+            any(), any(), eq(false), any(), any(), any(), any(), any(), any(), any(), any(), any()))
+        .thenAnswer(
+            invocation -> {
+              @SuppressWarnings("unchecked")
+              java.util.function.Consumer<QueuedReconcileWorkerSupport.SnapshotEmission> sink =
+                  invocation.getArgument(11);
+              ResourceId tableId =
+                  ResourceId.newBuilder()
+                      .setAccountId("acct-a")
+                      .setKind(ResourceKind.RK_TABLE)
+                      .setId("table-1")
+                      .build();
+              for (long snapshotId = 1L; snapshotId <= 8L; snapshotId++) {
+                sink.accept(
+                    new QueuedReconcileWorkerSupport.SnapshotEmission(
+                        tableId, "ns", "table", snapshotBundle(snapshotId)));
+              }
+              return new QueuedReconcileWorkerSupport.TableExecutionResult(
+                  ReconcileExecutor.ExecutionResult.failure(
+                      1,
+                      1,
+                      0,
+                      8,
+                      0,
+                      ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
+                      ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
+                      ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR,
+                      "constraint ingestion failed",
+                      new IllegalStateException("constraint ingestion failed")));
+            });
+
+    ReconcileExecutor.ExecutionResult result =
+        executor.execute(
+            new ReconcileExecutor.ExecutionContext(
+                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
+
+    assertTrue(!result.ok());
+    verify(workerClient).submitPlanTableChunk(eq(remoteLease), eq(0), any());
+    verify(workerClient)
+        .submitPlanTableFailure(
+            eq(remoteLease),
+            eq(ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL),
+            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL),
+            eq(ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR),
+            eq("constraint ingestion failed"));
   }
 
   @Test
@@ -360,8 +419,7 @@ class RemoteDefaultReconcileExecutorTest {
             any()))
         .thenReturn(
             new QueuedReconcileWorkerSupport.TableExecutionResult(
-                ReconcileExecutor.ExecutionResult.successHandled(1, 0, 0, 0, 0, 0, 0, "ok"),
-                List.of()));
+                ReconcileExecutor.ExecutionResult.successHandled(1, 0, 0, 0, 0, 0, 0, "ok")));
     when(queuedWorkerSupport.executePlannedTable(
             any(),
             eq(connectorId("acct-b")),
@@ -377,8 +435,7 @@ class RemoteDefaultReconcileExecutorTest {
             any()))
         .thenReturn(
             new QueuedReconcileWorkerSupport.TableExecutionResult(
-                ReconcileExecutor.ExecutionResult.successHandled(1, 0, 0, 0, 0, 0, 0, "ok"),
-                List.of()));
+                ReconcileExecutor.ExecutionResult.successHandled(1, 0, 0, 0, 0, 0, 0, "ok")));
     when(workerClient.submitPlanTableSuccess(
             any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
         .thenReturn(true);
@@ -453,7 +510,7 @@ class RemoteDefaultReconcileExecutorTest {
             any()))
         .thenReturn(
             new QueuedReconcileWorkerSupport.TableExecutionResult(
-                ReconcileExecutor.ExecutionResult.success(1, 0, 0, 0, 0, "ok"), List.of()));
+                ReconcileExecutor.ExecutionResult.success(1, 0, 0, 0, 0, "ok")));
     when(workerClient.submitPlanTableSuccess(
             any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
         .thenThrow(new RemoteLeasePreconditionFailedException("submitPlanTableSuccess", null));

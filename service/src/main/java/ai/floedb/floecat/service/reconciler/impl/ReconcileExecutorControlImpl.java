@@ -510,6 +510,18 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
     };
   }
 
+  private void cancelTerminatedPlanChildren(
+      String jobId, String message, LeasedPlannerWorkerService.PlanFailurePersistResult result) {
+    if (!result.accepted()) {
+      return;
+    }
+    switch (result.completionKind()) {
+      case FAILED_TERMINAL, CANCELLED -> cancelChildJobs(jobId, message);
+      // Retryable failures retain children because a retry deduplicates onto the existing jobs.
+      case SUCCEEDED, SUCCEEDED_WAITING, FAILED_RETRYABLE, FAILED_WAITING_ON_DEPENDENCY -> {}
+    }
+  }
+
   @Override
   public Uni<GetReconcileCancellationResponse> getReconcileCancellation(
       GetReconcileCancellationRequest request) {
@@ -693,7 +705,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                     .build();
               }
               if (request.hasFailure()) {
-                boolean accepted =
+                var result =
                     leasedPlannerWorkerService.persistPlanTableFailure(
                         principalContext,
                         jobId,
@@ -702,8 +714,9 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         fromProtoRetryDisposition(request.getFailure().getRetryDisposition()),
                         fromProtoRetryClass(request.getFailure().getRetryClass()),
                         request.getFailure().getMessage());
+                cancelTerminatedPlanChildren(jobId, request.getFailure().getMessage(), result);
                 return SubmitLeasedPlanTableResultResponse.newBuilder()
-                    .setAccepted(accepted)
+                    .setAccepted(result.accepted())
                     .build();
               }
               throw GrpcErrors.invalidArgument(corr, null, java.util.Map.of("field", "outcome"));
@@ -868,7 +881,7 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                     .build();
               }
               if (request.hasFailure()) {
-                boolean accepted =
+                var result =
                     leasedPlannerWorkerService.persistPlanSnapshotFailure(
                         principalContext,
                         jobId,
@@ -877,8 +890,9 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         fromProtoRetryDisposition(request.getFailure().getRetryDisposition()),
                         fromProtoRetryClass(request.getFailure().getRetryClass()),
                         request.getFailure().getMessage());
+                cancelTerminatedPlanChildren(jobId, request.getFailure().getMessage(), result);
                 return SubmitLeasedPlanSnapshotResultResponse.newBuilder()
-                    .setAccepted(accepted)
+                    .setAccepted(result.accepted())
                     .build();
               }
               throw GrpcErrors.invalidArgument(corr, null, java.util.Map.of("field", "outcome"));

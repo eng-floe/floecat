@@ -114,7 +114,8 @@ public interface FloecatConnector extends Closeable {
    *
    * <p>The caller consumes and closes the stream before closing the connector. Implementations
    * should produce bundles lazily so planning can persist downstream work without retaining the
-   * complete snapshot history.
+   * complete snapshot history. Callers must fully drain the stream because implementations may
+   * report end-of-enumeration validation failures only when exhaustion is observed.
    */
   Stream<SnapshotBundle> enumerateSnapshots(
       String namespaceFq,
