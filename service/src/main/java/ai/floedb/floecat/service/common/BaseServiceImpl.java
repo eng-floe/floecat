@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
+import ai.floedb.floecat.service.account.LifecycleDrain;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -77,6 +78,7 @@ import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 public abstract class BaseServiceImpl {
+  @Inject LifecycleDrain lifecycleDrain;
   @Inject PrincipalProvider principal;
 
   protected final Clock clock = Clock.systemUTC();
@@ -111,6 +113,7 @@ public abstract class BaseServiceImpl {
    * {@link CancellationException} is discarded after its subscriber has already terminated.
    */
   protected <T> Uni<T> run(Supplier<T> body) {
+    LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     // Read the resolved call context at method entry — before any executor hop — and carry it by
     // reference into the body. The captured io.grpc.Context alone is unreliable across the hop
@@ -122,6 +125,7 @@ public abstract class BaseServiceImpl {
             emitter -> {
               RequestCancellation cancellation = new RequestCancellation(grpcCtx);
               emitter.onTermination(cancellation::terminate);
+              emitter.onTermination(lifecyclePermit::close);
               try {
                 T result =
                     grpcCtx.call(
@@ -168,6 +172,7 @@ public abstract class BaseServiceImpl {
    */
   protected <T> Multi<T> runStream(
       BiFunction<ResolvedCallContext, BooleanSupplier, Multi<T>> body) {
+    LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     Context otelCtx = otelContextForBody(Context.current());
@@ -185,7 +190,11 @@ public abstract class BaseServiceImpl {
                                   return body.apply(callCtx, cancellation);
                                 }
                               }));
-              return source.onTermination().invoke(cancellation::terminate);
+              return source
+                  .onTermination()
+                  .invoke(cancellation::terminate)
+                  .onTermination()
+                  .invoke(lifecyclePermit::close);
             })
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
@@ -216,21 +225,24 @@ public abstract class BaseServiceImpl {
   /** Emitter-based analogue of {@link #runStream} for bodies that drive a {@link MultiEmitter}. */
   protected <T> Multi<T> runStreamEmitter(
       BiConsumer<ResolvedCallContext, MultiEmitter<? super T>> body) {
+    LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     Context otelCtx = otelContextForBody(Context.current());
     return Multi.createFrom()
         .<T>emitter(
-            emitter ->
-                grpcCtx.run(
-                    () ->
-                        ResolvedCallContexts.runWithOrInherit(
-                            callCtx,
-                            () -> {
-                              try (Scope ignored = otelCtx.makeCurrent()) {
-                                body.accept(callCtx, emitter);
-                              }
-                            })))
+            emitter -> {
+              emitter.onTermination(lifecyclePermit::close);
+              grpcCtx.run(
+                  () ->
+                      ResolvedCallContexts.runWithOrInherit(
+                          callCtx,
+                          () -> {
+                            try (Scope ignored = otelCtx.makeCurrent()) {
+                              body.accept(callCtx, emitter);
+                            }
+                          }));
+            })
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 

@@ -20,16 +20,12 @@ import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.eclipse.microprofile.config.Config;
 
 /**
  * Process-local lifecycle gate for account work.
@@ -42,26 +38,7 @@ import org.eclipse.microprofile.config.Config;
  */
 @ApplicationScoped
 public class AccountAssignment
-    implements AccountScope, AssignmentControl, PlanningPointerIndex.Ownership {
-
-  public enum Mode {
-    STANDALONE,
-    MANAGED,
-    NONE;
-
-    static Mode parse(String configured) {
-      String value = configured == null ? "standalone" : configured.trim().toLowerCase(Locale.ROOT);
-      return switch (value) {
-        case "", "standalone" -> STANDALONE;
-        case "managed" -> MANAGED;
-        case "none" -> NONE;
-        default ->
-            throw new IllegalArgumentException(
-                "floecat.account-assignment.mode must be standalone, managed or none: "
-                    + configured);
-      };
-    }
-  }
+    implements AccountScope, LifecycleDrain, PlanningPointerIndex.Ownership {
 
   public static GcPermit unfencedGcPermit(String accountId) {
     return new RuntimeGcPermit(accountId, null, 0L);
@@ -90,44 +67,34 @@ public class AccountAssignment
     String partitionState(String accountId);
   }
 
-  private final Mode mode;
   private final String memberId;
   private final String incarnation;
   private final ConcurrentHashMap<String, AccountState> accounts = new ConcurrentHashMap<>();
+  private long activeRpcs;
   private volatile boolean processDraining;
 
   @Inject
-  public AccountAssignment(Config config) {
-    this(
-        Mode.parse(
-            config
-                .getOptionalValue("floecat.account-assignment.mode", String.class)
-                .orElse("standalone")),
-        config
-            .getOptionalValue("floecat.account-assignment.member-id", String.class)
-            .map(String::trim)
-            .filter(value -> !value.isBlank())
-            .orElseGet(() -> "floecat-" + UUID.randomUUID()));
+  public AccountAssignment() {
+    this("floecat-" + UUID.randomUUID());
   }
 
-  AccountAssignment(Mode mode, String memberId) {
-    this.mode = Objects.requireNonNull(mode, "mode");
+  AccountAssignment(String memberId) {
     this.memberId =
         memberId == null || memberId.isBlank() ? "floecat-" + UUID.randomUUID() : memberId;
     this.incarnation = UUID.randomUUID().toString();
   }
 
   public static AccountAssignment standaloneForTesting(PartitionHooks ignored) {
-    return new AccountAssignment(Mode.STANDALONE, "standalone-test");
+    return new AccountAssignment("standalone-test");
   }
 
   public static AccountAssignment standaloneForTesting(
       Object ignoredStore, Object ignoredObservability) {
-    return new AccountAssignment(Mode.STANDALONE, "standalone-test");
+    return new AccountAssignment("standalone-test");
   }
 
   public static AccountAssignment managedForTesting(PartitionHooks ignored) {
-    return new AccountAssignment(Mode.MANAGED, "managed-test");
+    return new AccountAssignment("managed-test");
   }
 
   public static AccountAssignment managedForTesting(
@@ -135,16 +102,7 @@ public class AccountAssignment
       String ignoredIncarnation,
       Object ignoredStore,
       Object ignoredObservability) {
-    return new AccountAssignment(Mode.MANAGED, memberId);
-  }
-
-  public Mode mode() {
-    return mode;
-  }
-
-  @Override
-  public boolean managed() {
-    return mode == Mode.MANAGED;
+    return new AccountAssignment(memberId);
   }
 
   public String memberId() {
@@ -157,10 +115,10 @@ public class AccountAssignment
 
   @Override
   public Optional<PlanningPointerIndex.Ownership.Permit> acquire(String accountId, Access access) {
-    if (mode == Mode.STANDALONE || PlanningPointerIndex.isAccountDirectoryPartition(accountId)) {
+    if (PlanningPointerIndex.isAccountDirectoryPartition(accountId)) {
       return Optional.of(PlanningPointerIndex.Ownership.Permit.NOOP);
     }
-    if (mode == Mode.NONE || processDraining || accountId == null || accountId.isBlank()) {
+    if (processDraining || accountId == null || accountId.isBlank()) {
       return Optional.empty();
     }
     if (access == Access.READ) {
@@ -177,17 +135,14 @@ public class AccountAssignment
   }
 
   @Override
-  public Permit admitMutation(String accountId) {
+  public PlanningPointerIndex.Ownership.Permit admitMutation(String accountId) {
     return acquire(accountId, Access.WRITE)
         .orElseThrow(() -> new PlanningPointerIndex.Ownership.NotOwnedException(accountId));
   }
 
   @Override
-  public Permit admitResolution(String accountId) {
-    if (mode == Mode.STANDALONE) {
-      return PlanningPointerIndex.Ownership.Permit.NOOP;
-    }
-    if (mode == Mode.NONE || processDraining || accountId == null || accountId.isBlank()) {
+  public PlanningPointerIndex.Ownership.Permit admitResolution(String accountId) {
+    if (processDraining || accountId == null || accountId.isBlank()) {
       throw new PlanningPointerIndex.Ownership.NotOwnedException(accountId);
     }
     AccountState state = state(accountId);
@@ -202,10 +157,7 @@ public class AccountAssignment
 
   @Override
   public Optional<GcPermit> tryAcquireGc(String accountId) {
-    if (mode == Mode.STANDALONE) {
-      return Optional.of(new RuntimeGcPermit(accountId, null, 0L));
-    }
-    if (mode == Mode.NONE || processDraining || accountId == null || accountId.isBlank()) {
+    if (processDraining || accountId == null || accountId.isBlank()) {
       return Optional.empty();
     }
     AccountState state = state(accountId);
@@ -218,17 +170,6 @@ public class AccountAssignment
       state.activeGc++;
     }
     return Optional.of(new RuntimeGcPermit(accountId, state, generation));
-  }
-
-  @Override
-  public Status apply(
-      long epoch,
-      AssignmentPhase phase,
-      Collection<String> accountIds,
-      Collection<String> gcAllowedAccountIds,
-      String targetIncarnation) {
-    throw new UnsupportedOperationException(
-        "pushed account assignment is not supported by the lifecycle-drain policy");
   }
 
   @Override
@@ -245,19 +186,37 @@ public class AccountAssignment
         AssignmentPhase.SERVING,
         false,
         processDraining,
-        List.copyOf(statuses));
+        List.copyOf(statuses),
+        activeRpcs);
+  }
+
+  @Override
+  public LifecycleDrain.Permit admitRpc() {
+    synchronized (this) {
+      if (processDraining) throw new LifecycleDrain.DrainingException();
+      activeRpcs++;
+    }
+    return new LifecycleDrain.Permit() {
+      private final AtomicBoolean closed = new AtomicBoolean();
+
+      @Override
+      public void close() {
+        if (closed.compareAndSet(false, true)) {
+          synchronized (AccountAssignment.this) {
+            activeRpcs--;
+          }
+        }
+      }
+    };
   }
 
   public AccountStatus status(String accountId) {
-    if (mode == Mode.STANDALONE) {
-      return new AccountStatus(accountId, AccountMode.SERVING, true, 0L, 0L, 0L, "");
-    }
     AccountState state = accounts.get(accountId);
     if (state == null) {
       return new AccountStatus(
           accountId,
           processDraining ? AccountMode.DRAINING : AccountMode.SERVING,
-          !processDraining && mode == Mode.MANAGED,
+          !processDraining,
           0L,
           0L,
           0L,
@@ -278,7 +237,7 @@ public class AccountAssignment
       return new AccountStatus(
           accountId,
           processDraining ? AccountMode.DRAINING : AccountMode.SERVING,
-          !processDraining && mode == Mode.MANAGED,
+          !processDraining,
           state.activeResolutions,
           state.activeMutations,
           state.activeGc,
@@ -302,7 +261,7 @@ public class AccountAssignment
     private long activeGc;
   }
 
-  private final class CountedPermit implements Permit {
+  private final class CountedPermit implements PlanningPointerIndex.Ownership.Permit {
     private final AccountState state;
     private final Activity activity;
     private final AtomicBoolean closed = new AtomicBoolean();

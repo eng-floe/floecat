@@ -52,11 +52,11 @@ application-level in-flight request map or version fence in this path: the parti
 key-lock ownership define the ordering.
 
 `AccountAssignment` (`service/.../account`) is the default `PlanningPointerIndex.Ownership`
-implementation. In standalone mode it behaves exactly like `ALWAYS_OWNED`. In managed mode it
-serves the accounts routed to this process until the runtime starts process drain; once draining,
-new writes and pin resolutions fail retryably and cache reads fall back to durable storage when a
-permit cannot be acquired. Deployments that need leases, durable fences or a coordinator can bind a
-different ownership implementation without changing the cache.
+implementation. It serves every account until the deployment lifecycle starts process drain;
+once draining, new writes and pin resolutions fail retryably and cache reads fall back to durable
+storage when a permit cannot be acquired. Deployments that need leases, durable fences or a
+coordinator can bind a different `AccountScope`/ownership implementation without changing the
+cache.
 
 `ObjectCache` stores immutable-generation target statistics by `(accountId, tableId, snapshotId,
 generation, target identity)`. A live/newest result has no stable identity and is therefore read

@@ -311,18 +311,12 @@ To scale executors horizontally, add more executor-plane instances. They greedil
 
 ### Account lifecycle and drain
 
-A Floecat process runs in one of three modes (`FLOECAT_ACCOUNT_ASSIGNMENT_MODE`):
+The default Floecat process serves every account. Deployments may bind a different
+`AccountScope`/ownership implementation when they need admission or lease coordination. The
+deployment lifecycle drain is always available and only affects the local process: it stops new
+account work and GC while already-admitted work is allowed to finish.
 
-- `standalone` (default): serves every account and runs GC for all of them. Single-process and
-  OSS deployments need nothing else.
-- `managed`: serves every account routed to this process until the runtime starts process drain.
-  Managed deployments use routing and Kubernetes lifecycle to prevent account overlap; Floecat only
-  exposes the local drain switch.
-- `none`: serves no account at all. Account-scoped reads fall through to the durable store and
-  pin resolution is refused, so the process answers directory and metadata reads but runs no query.
-
-The drain endpoint is registered only in `managed` mode. Pods in that mode should drain before
-termination with a `preStop` hook on
+Pods should drain before termination with a `preStop` hook on
 `GET /internal/drain?wait=true&timeoutMs=<ms>`; the response is `200` when in-flight mutations and
 resolutions are gone and `202` at the timeout. `GET /internal/drain` shows the current status.
 Draining is irreversible for the life of the process, and the endpoint authenticates no one —

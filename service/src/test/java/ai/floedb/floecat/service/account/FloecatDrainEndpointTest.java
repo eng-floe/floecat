@@ -65,7 +65,7 @@ class FloecatDrainEndpointTest {
 
   private static FloecatDrainEndpoint endpoint(AccountAssignment assignment) {
     FloecatDrainEndpoint endpoint = new FloecatDrainEndpoint();
-    endpoint.assignment = assignment;
+    endpoint.drain = assignment;
     endpoint.defaultTimeoutMs = 1000L;
     return endpoint;
   }

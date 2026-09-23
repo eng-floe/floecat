@@ -24,9 +24,9 @@ import java.util.Optional;
  * "should I do this for this account?" — a mutation, a pin resolution, a collection pass — asks it
  * here rather than reading assignment state directly.
  *
- * <p>The default implementation is process-local: standalone serves everything, managed mode serves
- * everything until the runtime starts process drain. A deployment that needs leases, fences or a
- * coordinator binds its own implementation here without changing query, cache, mutation or GC code.
+ * <p>The default implementation is process-local and serves every account until lifecycle drain. A
+ * deployment that needs leases, fences or a coordinator binds its own implementation here without
+ * changing query, cache, mutation or GC code.
  */
 public interface AccountScope {
 
