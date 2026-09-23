@@ -46,17 +46,22 @@ public class ErrorMapper implements ExceptionMapper<StatusRuntimeException> {
 
   private Response.Status toHttp(Status status, Error mcError) {
     if (mcError != null) {
-      ErrorCode code = mcError.getCode();
-      return switch (code) {
-        case MC_NOT_FOUND -> Response.Status.NOT_FOUND;
-        case MC_PRECONDITION_FAILED, MC_CONFLICT -> Response.Status.CONFLICT;
-        case MC_PERMISSION_DENIED -> Response.Status.FORBIDDEN;
-        case MC_UNAUTHENTICATED -> Response.Status.UNAUTHORIZED;
-        case MC_INVALID_ARGUMENT -> Response.Status.BAD_REQUEST;
-        default -> fromGrpc(status);
-      };
+      Response.Status mapped = httpForCode(mcError.getCode());
+      return mapped != null ? mapped : fromGrpc(status);
     }
     return fromGrpc(status);
+  }
+
+  /** The HTTP status a floecat ErrorCode names, or null when the code carries no opinion. */
+  static Response.Status httpForCode(ErrorCode code) {
+    return switch (code) {
+      case MC_NOT_FOUND -> Response.Status.NOT_FOUND;
+      case MC_PRECONDITION_FAILED, MC_CONFLICT -> Response.Status.CONFLICT;
+      case MC_PERMISSION_DENIED -> Response.Status.FORBIDDEN;
+      case MC_UNAUTHENTICATED -> Response.Status.UNAUTHORIZED;
+      case MC_INVALID_ARGUMENT -> Response.Status.BAD_REQUEST;
+      default -> null;
+    };
   }
 
   private Response.Status fromGrpc(Status status) {
@@ -92,14 +97,8 @@ public class ErrorMapper implements ExceptionMapper<StatusRuntimeException> {
 
   private String mapType(Error mcError, Status status) {
     if (mcError != null) {
-      return switch (mcError.getCode()) {
-        case MC_NOT_FOUND -> mapNotFoundType(mcError);
-        case MC_PRECONDITION_FAILED, MC_CONFLICT -> "CommitFailedException";
-        case MC_PERMISSION_DENIED -> "ForbiddenException";
-        case MC_UNAUTHENTICATED -> "UnauthorizedException";
-        case MC_INVALID_ARGUMENT -> "ValidationException";
-        default -> status.getCode().name();
-      };
+      String mapped = typeForCode(mcError);
+      return mapped != null ? mapped : status.getCode().name();
     }
     return switch (status.getCode()) {
       case NOT_FOUND -> "NoSuchObjectException";
@@ -113,7 +112,19 @@ public class ErrorMapper implements ExceptionMapper<StatusRuntimeException> {
     };
   }
 
-  private String mapNotFoundType(Error mcError) {
+  /** The Iceberg error type a floecat ErrorCode names, or null when the code carries no opinion. */
+  static String typeForCode(Error mcError) {
+    return switch (mcError.getCode()) {
+      case MC_NOT_FOUND -> mapNotFoundType(mcError);
+      case MC_PRECONDITION_FAILED, MC_CONFLICT -> "CommitFailedException";
+      case MC_PERMISSION_DENIED -> "ForbiddenException";
+      case MC_UNAUTHENTICATED -> "UnauthorizedException";
+      case MC_INVALID_ARGUMENT -> "ValidationException";
+      default -> null;
+    };
+  }
+
+  private static String mapNotFoundType(Error mcError) {
     String key = mcError.getMessageKey();
     if (key != null && !key.isBlank()) {
       String lower = key.toLowerCase();

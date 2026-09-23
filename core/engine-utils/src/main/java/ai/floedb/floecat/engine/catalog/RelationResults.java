@@ -63,8 +63,17 @@ public final class RelationResults {
    */
   public static Relation requireResolved(ResolveRelationsResponse response) {
     Objects.requireNonNull(response, "response");
-    if (response.getResultsCount() == 0) {
-      throw new RelationResolutionException(notFoundError());
+    // One result per requested reference, in order. Any other count is the server breaking that
+    // contract, which is not the same as the relation being absent and must not read as absence.
+    if (response.getResultsCount() != 1) {
+      throw new RelationResolutionException(
+          Error.newBuilder()
+              .setCode(ErrorCode.MC_INTERNAL)
+              .setMessage(
+                  "resolve response carried "
+                      + response.getResultsCount()
+                      + " results for one reference")
+              .build());
     }
 
     ResolveRelationResult result = response.getResults(0);
@@ -79,13 +88,6 @@ public final class RelationResults {
             .setCode(ErrorCode.MC_INTERNAL)
             .setMessage("resolve response contained an empty result")
             .build());
-  }
-
-  private static Error notFoundError() {
-    return Error.newBuilder()
-        .setCode(ErrorCode.MC_NOT_FOUND)
-        .setMessage("relation not found")
-        .build();
   }
 
   private static String describe(RelationListError error) {

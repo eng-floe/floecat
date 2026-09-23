@@ -283,8 +283,7 @@ class GrpcReconcilerBackendTest {
 
     backend.relation = mock(RelationServiceGrpc.RelationServiceBlockingStub.class);
     when(backend.relation.withInterceptors(any())).thenReturn(backend.relation);
-    when(backend.relation.resolveRelations(any()))
-        .thenReturn(ResolveRelationsResponse.getDefaultInstance());
+    when(backend.relation.resolveRelations(any())).thenReturn(relationNotFound());
     when(backend.namespace.getNamespace(any()))
         .thenReturn(
             GetNamespaceResponse.newBuilder()
@@ -596,8 +595,7 @@ class GrpcReconcilerBackendTest {
         mock(ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc.DirectoryServiceBlockingStub.class);
     backend.relation = mock(RelationServiceGrpc.RelationServiceBlockingStub.class);
     when(backend.relation.withInterceptors(any())).thenReturn(backend.relation);
-    when(backend.relation.resolveRelations(any()))
-        .thenReturn(ResolveRelationsResponse.getDefaultInstance());
+    when(backend.relation.resolveRelations(any())).thenReturn(relationNotFound());
 
     Optional<ResourceId> resolved =
         backend.lookupTable(
@@ -733,8 +731,7 @@ class GrpcReconcilerBackendTest {
     when(backend.relation.withInterceptors(any())).thenReturn(backend.relation);
     when(backend.namespace.withInterceptors(any())).thenReturn(backend.namespace);
     when(backend.table.withInterceptors(any())).thenReturn(backend.table);
-    when(backend.relation.resolveRelations(any()))
-        .thenReturn(ResolveRelationsResponse.getDefaultInstance());
+    when(backend.relation.resolveRelations(any())).thenReturn(relationNotFound());
 
     ResourceId namespaceId =
         ResourceId.newBuilder()
@@ -1437,6 +1434,21 @@ class GrpcReconcilerBackendTest {
             ResolveRelationResult.newBuilder()
                 .setRelation(Relation.newBuilder().setResourceId(id).build())
                 .build())
+        .build();
+  }
+
+  /**
+   * What the server returns for a name that resolves to nothing: one result per reference carrying
+   * MC_NOT_FOUND. An empty response would be a protocol violation, not an absent relation.
+   */
+  private static ResolveRelationsResponse relationNotFound() {
+    return ResolveRelationsResponse.newBuilder()
+        .addResults(
+            ResolveRelationResult.newBuilder()
+                .setError(
+                    ai.floedb.floecat.common.rpc.Error.newBuilder()
+                        .setCode(ai.floedb.floecat.common.rpc.ErrorCode.MC_NOT_FOUND)
+                        .setMessage("relation not found")))
         .build();
   }
 }

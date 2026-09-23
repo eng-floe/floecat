@@ -109,14 +109,38 @@ class RelationResultsTest {
   }
 
   @Test
-  void requireResolvedTreatsAnEmptyResponseAsNotFound() {
+  void requireResolvedRejectsAnEmptyResponseAsAProtocolViolation() {
+    // A reference that resolves to nothing comes back as one result carrying MC_NOT_FOUND. Zero
+    // results is the server breaking the one-result-per-reference contract, and reading that as
+    // absence would let a caller delete or recreate over a relation it never actually checked.
     assertThatThrownBy(
             () -> RelationResults.requireResolved(ResolveRelationsResponse.getDefaultInstance()))
         .isInstanceOf(RelationResults.RelationResolutionException.class)
         .satisfies(
+            failure -> {
+              var resolution = (RelationResults.RelationResolutionException) failure;
+              assertThat(resolution.isNotFound()).isFalse();
+              assertThat(resolution.error().getCode()).isEqualTo(ErrorCode.MC_INTERNAL);
+            });
+  }
+
+  @Test
+  void requireResolvedRejectsMoreResultsThanReferences() {
+    ResolveRelationsResponse response =
+        ResolveRelationsResponse.newBuilder()
+            .addResults(
+                ResolveRelationResult.newBuilder().setRelation(Relation.getDefaultInstance()))
+            .addResults(
+                ResolveRelationResult.newBuilder().setRelation(Relation.getDefaultInstance()))
+            .build();
+
+    assertThatThrownBy(() -> RelationResults.requireResolved(response))
+        .isInstanceOf(RelationResults.RelationResolutionException.class)
+        .satisfies(
             failure ->
-                assertThat(((RelationResults.RelationResolutionException) failure).isNotFound())
-                    .isTrue());
+                assertThat(
+                        ((RelationResults.RelationResolutionException) failure).error().getCode())
+                    .isEqualTo(ErrorCode.MC_INTERNAL));
   }
 
   @Test

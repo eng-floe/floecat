@@ -111,12 +111,17 @@ public final class CatalogSurfaceRelations {
     var results = new ArrayList<RelationListResult>(want);
     var catalogNames = new HashMap<ResourceId, String>();
     int total = total(segments, request.getIncludeTotal(), cursor.total(), accountId);
-    String innerToken = cursor.innerToken();
+    int start = RelationScope.indexAtOrAfter(segments, cursor.segmentKey(), kinds, corr);
+    // The inner token is the resumed segment's own pager token. When that segment is gone the walk
+    // continues at the next one, which must start from its beginning rather than inherit a token
+    // minted for a different source.
+    String innerToken =
+        start < segments.size() && segments.get(start).key().equals(cursor.segmentKey())
+            ? cursor.innerToken()
+            : "";
     String nextToken = "";
 
-    for (int i = RelationScope.indexAtOrAfter(segments, cursor.segmentKey(), kinds, corr);
-        i < segments.size();
-        i++) {
+    for (int i = start; i < segments.size(); i++) {
       Segment segment = segments.get(i);
       var page =
           pageSegment(
