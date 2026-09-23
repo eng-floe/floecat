@@ -17,6 +17,8 @@
 package ai.floedb.floecat.reconciler.impl;
 
 import ai.floedb.floecat.catalog.rpc.ColumnIdentityMap;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.Base64;
@@ -75,5 +77,17 @@ final class ColumnIdentityExecutionSchema {
     } catch (Exception e) {
       throw new IllegalArgumentException("Unable to read execution schema column identity", e);
     }
+  }
+
+  /** Returns the logical schema without the identity metadata used by the execution contract. */
+  static JsonNode logicalSchema(String executionSchemaJson) throws JsonProcessingException {
+    JsonNode parsed = MAPPER.readTree(executionSchemaJson);
+    if (!(parsed instanceof ObjectNode schema)) {
+      return parsed;
+    }
+    ObjectNode logicalSchema = schema.deepCopy();
+    logicalSchema.remove(MAP_FIELD);
+    logicalSchema.remove(FINGERPRINT_FIELD);
+    return logicalSchema;
   }
 }

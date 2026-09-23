@@ -42,7 +42,6 @@ import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -66,7 +65,6 @@ import org.jboss.logging.Logger;
 @ApplicationScoped
 public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecutor {
   private static final Logger LOG = Logger.getLogger(RemoteSnapshotPlanningReconcileExecutor.class);
-  private static final ObjectMapper SCHEMA_JSON = new ObjectMapper();
   private static final long ESTIMATED_FILE_OVERHEAD_BYTES = 4L * 1024L * 1024L;
   private static final int MAX_CACHED_REUSE_MANIFESTS = 256;
   private static final long MAX_CACHED_REUSE_MANIFEST_BYTES = 64L * 1024L * 1024L;
@@ -677,8 +675,8 @@ public class RemoteSnapshotPlanningReconcileExecutor implements ReconcileExecuto
       return false;
     }
     try {
-      var parsedBase = SCHEMA_JSON.readTree(baseSchema);
-      var parsedTarget = SCHEMA_JSON.readTree(targetSchema);
+      var parsedBase = ColumnIdentityExecutionSchema.logicalSchema(baseSchema);
+      var parsedTarget = ColumnIdentityExecutionSchema.logicalSchema(targetSchema);
       return parsedBase != null
           && parsedBase.isObject()
           && parsedTarget != null
