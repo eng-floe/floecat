@@ -24,7 +24,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.NavigableMap;
 import java.util.TreeMap;
-import java.util.function.LongSupplier;
 
 /**
  * Builds one account's planner image from durable storage, within a byte budget.
@@ -61,24 +60,20 @@ final class PlannerPartitionLoad {
     }
   }
 
-  /**
-   * @param otherAccountBytes what every other resident account holds, read as the scan proceeds so
-   *     a load completing alongside this one tightens the budget rather than being missed.
-   */
-  Result load(String partitionKey, LongSupplier otherAccountBytes) {
-    Admission admission = new Admission(otherAccountBytes);
+  Result load(String partitionKey) {
+    Admission admission = new Admission();
     List<String> tableIds = new ArrayList<>();
     String tablesById = Keys.tablePointerByIdPrefix(partitionKey);
 
-    for (String prefix : PlanningPointerIndex.loadPrefixes(partitionKey)) {
+    for (String prefix : PlannerPointerShape.loadPrefixes(partitionKey)) {
       String token = "";
       do {
         StringBuilder next = new StringBuilder();
         for (Pointer pointer :
             durable.listPointersByPrefixConsistent(prefix, PAGE_SIZE, token, next)) {
           String key = pointer.getKey();
-          if (!partitionKey.equals(PlanningPointerIndex.partitionFor(key))
-              || !PlanningPointerIndex.isPlanningKey(key)) {
+          if (!partitionKey.equals(PlannerPointerShape.partitionFor(key))
+              || !PlannerPointerShape.isResidentKey(key)) {
             continue;
           }
           if (!admission.admit(pointer)) {
@@ -110,13 +105,13 @@ final class PlannerPartitionLoad {
       String partitionKey, List<String> tableIds, Admission admission) {
     List<String> batch = new ArrayList<>(PER_TABLE_BATCH_KEYS);
     for (int i = 0; i < tableIds.size(); i++) {
-      batch.addAll(Keys.plannerTableKeys(partitionKey, tableIds.get(i)));
+      batch.addAll(PlannerPointerShape.perTableKeys(partitionKey, tableIds.get(i)));
       boolean last = i == tableIds.size() - 1;
       if (batch.size() < PER_TABLE_BATCH_KEYS && !last) {
         continue;
       }
       for (Pointer pointer : durable.getBatchConsistent(batch).values()) {
-        if (PlanningPointerIndex.isPlanningKey(pointer.getKey()) && !admission.admit(pointer)) {
+        if (PlannerPointerShape.isResidentKey(pointer.getKey()) && !admission.admit(pointer)) {
           return false;
         }
       }
@@ -131,19 +126,11 @@ final class PlannerPartitionLoad {
    */
   private final class Admission {
     private final TreeMap<String, Pointer> loaded = new TreeMap<>();
-    private final LongSupplier otherAccountBytes;
     private long bytes;
-
-    Admission(LongSupplier otherAccountBytes) {
-      this.otherAccountBytes = otherAccountBytes;
-    }
 
     boolean admit(Pointer pointer) {
       bytes += CacheWeights.entry(pointer, 2L * pointer.getKey().length());
-      // One account must fit its own cap, and must still fit beside the accounts already resident:
-      // a per-account cap alone is unbounded in the number of accounts.
-      if (bytes > policy.maxBytesPerAccount()
-          || otherAccountBytes.getAsLong() + bytes > policy.maxBytesTotal()) {
+      if (bytes > policy.maxBytesPerAccount()) {
         return false;
       }
       loaded.put(pointer.getKey(), pointer);

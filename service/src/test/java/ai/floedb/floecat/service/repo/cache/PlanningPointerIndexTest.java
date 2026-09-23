@@ -333,6 +333,35 @@ class PlanningPointerIndexTest {
   }
 
   @Test
+  void ownershipLossDuringLoadDoesNotLeavePhantomResidentBytes() throws Exception {
+    BlockingLoadStore durable = new BlockingLoadStore("acct");
+    String key = Keys.tablePointerById("acct", "table");
+    durable.compareAndSet(key, 0L, pointer(key, "s3://table"));
+    ExecutorService warmExecutor = Executors.newSingleThreadExecutor();
+    ExecutorService revoker = Executors.newSingleThreadExecutor();
+    PlanningPointerIndex index =
+        new PlanningPointerIndex(
+            durable, PlanningPointerIndex.Ownership.ALWAYS_OWNED, warmExecutor);
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+    try {
+      store.get(key);
+      assertThat(durable.loadStarted.await(1, TimeUnit.SECONDS)).isTrue();
+      var revoke = revoker.submit(() -> index.ownershipLost("acct"));
+
+      durable.releaseLoad.countDown();
+      revoke.get(1, TimeUnit.SECONDS);
+
+      assertThat(index.residentBytes()).isZero();
+      assertThat(index.completePartitionCount()).isZero();
+      assertThat(durable.getConsistent(key)).as("durable KV remains authoritative").isPresent();
+    } finally {
+      durable.releaseLoad.countDown();
+      warmExecutor.shutdownNow();
+      revoker.shutdownNow();
+    }
+  }
+
+  @Test
   void clearDropsTheCompleteImageAfterAnOutOfBandFixtureReset() {
     CountingStore durable = new CountingStore();
     String key = Keys.tablePointerById("acct", "table");
@@ -518,6 +547,26 @@ class PlanningPointerIndexTest {
         Thread.currentThread().interrupt();
         throw new AssertionError(interrupted);
       }
+    }
+  }
+
+  private static final class BlockingLoadStore extends InMemoryPointerStore {
+    private final String tableIdentityPrefix;
+    private final CountDownLatch loadStarted = new CountDownLatch(1);
+    private final CountDownLatch releaseLoad = new CountDownLatch(1);
+
+    BlockingLoadStore(String accountId) {
+      tableIdentityPrefix = Keys.tablePointerByIdPrefix(accountId);
+    }
+
+    @Override
+    public List<Pointer> listPointersByPrefixConsistent(
+        String prefix, int limit, String token, StringBuilder next) {
+      if (tableIdentityPrefix.equals(prefix)) {
+        loadStarted.countDown();
+        BlockingStore.await(releaseLoad);
+      }
+      return super.listPointersByPrefixConsistent(prefix, limit, token, next);
     }
   }
 }

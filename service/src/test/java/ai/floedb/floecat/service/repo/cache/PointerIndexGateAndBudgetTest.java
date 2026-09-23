@@ -23,6 +23,12 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 class PointerIndexGateAndBudgetTest {
@@ -151,15 +157,129 @@ class PointerIndexGateAndBudgetTest {
     assertThat(counting.prefixScans)
         .as("the account root would read every operational row too")
         .doesNotContain(Keys.accountRootPrefix(ACCOUNT))
-        .isSubsetOf(Keys.plannerFamilyPrefixes(ACCOUNT));
+        .isSubsetOf(PlannerPointerShape.loadPrefixes(ACCOUNT));
+  }
+
+  @Test
+  void totalBudgetIsRecheckedWhenTheLoadedImagePublishes() {
+    InMemoryPointerStore durable = new InMemoryPointerStore();
+    seedAccount(durable, "first", 12);
+    seedAccount(durable, "second", 12);
+
+    PlanningPointerIndex probe = index(durable, PlanningPointerIndex.Policy.UNLIMITED);
+    new IndexedPointerStore(durable, probe).get(Keys.tablePointerById("first", "t0"));
+    long oneAccount = probe.residentBytes();
+    long budget = oneAccount + oneAccount / 2;
+    PlanningPointerIndex index =
+        index(durable, new PlanningPointerIndex.Policy(true, budget, budget));
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+
+    store.get(Keys.tablePointerById("first", "t0"));
+    store.get(Keys.tablePointerById("second", "t0"));
+
+    assertThat(index.residentBytes()).isEqualTo(oneAccount);
+    assertThat(index.completePartitionCount()).isEqualTo(1);
+    assertThat(index.refusedPartitionCount()).isEqualTo(1);
+  }
+
+  @Test
+  void concurrentAccountWarmsCannotBothPublishPastTheTotalBudget() throws Exception {
+    BarrierStore durable = new BarrierStore("first", "second");
+    seedAccount(durable, "first", 12);
+    seedAccount(durable, "second", 12);
+
+    PlanningPointerIndex probe = index(durable, PlanningPointerIndex.Policy.UNLIMITED);
+    new IndexedPointerStore(durable, probe).get(Keys.tablePointerById("first", "t0"));
+    long oneAccount = probe.residentBytes();
+    long budget = oneAccount + oneAccount / 2;
+    durable.blockTableIdentityScans();
+
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      PlanningPointerIndex index =
+          index(durable, new PlanningPointerIndex.Policy(true, budget, budget), executor);
+      IndexedPointerStore store = new IndexedPointerStore(durable, index);
+
+      store.get(Keys.tablePointerById("first", "t0"));
+      store.get(Keys.tablePointerById("second", "t0"));
+      assertThat(durable.tableScansStarted.await(1, TimeUnit.SECONDS)).isTrue();
+      durable.releaseTableScans.countDown();
+
+      waitFor(() -> index.completePartitionCount() + index.refusedPartitionCount() == 2);
+      assertThat(index.residentBytes()).isLessThanOrEqualTo(budget);
+      assertThat(index.completePartitionCount()).isEqualTo(1);
+      assertThat(index.refusedPartitionCount()).isEqualTo(1);
+    } finally {
+      durable.releaseTableScans.countDown();
+      executor.shutdownNow();
+    }
+  }
+
+  @Test
+  void residentMutationThatExceedsTheBudgetDemotesTheAccount() {
+    InMemoryPointerStore durable = new InMemoryPointerStore();
+    seedAccount(durable, ACCOUNT, 1);
+
+    PlanningPointerIndex probe = index(durable, PlanningPointerIndex.Policy.UNLIMITED);
+    new IndexedPointerStore(durable, probe).get(Keys.tablePointerById(ACCOUNT, "t0"));
+    long loadedBytes = probe.residentBytes();
+    PlanningPointerIndex index =
+        index(durable, new PlanningPointerIndex.Policy(true, loadedBytes + 1, loadedBytes + 1));
+    IndexedPointerStore store = new IndexedPointerStore(durable, index);
+    assertThat(store.get(Keys.tablePointerById(ACCOUNT, "t0"))).isPresent();
+
+    String newTable = Keys.tablePointerById(ACCOUNT, "new-table");
+    assertThat(store.compareAndSet(newTable, 0, pointer(newTable, "s3://new-table"))).isTrue();
+
+    assertThat(index.residentBytes()).isZero();
+    assertThat(index.completePartitionCount()).isZero();
+    assertThat(index.refusedPartitionCount()).isEqualTo(1);
+    assertThat(store.get(newTable)).as("the durable store remains authoritative").isPresent();
+  }
+
+  @Test
+  void deletingDurableOnlyTableSubtreesDoesNotWarmTheResidentIndex() {
+    ScanCountingStore counting = new ScanCountingStore();
+    String stats = Keys.snapshotTargetStatsGenerationPointer(ACCOUNT, "t0", 7L, "gen", "target");
+    counting.compareAndSet(stats, 0, pointer(stats, "s3://stats"));
+    PlanningPointerIndex index = index(counting, PlanningPointerIndex.Policy.UNLIMITED);
+    IndexedPointerStore store = new IndexedPointerStore(counting, index);
+
+    store.deleteByPrefix(Keys.snapshotTargetStatsGenerationPrefix(ACCOUNT, "t0", 7L, "gen"));
+
+    assertThat(counting.prefixScans)
+        .as("operational cleanup must not trigger a planner account load")
+        .isEmpty();
+    assertThat(index.completePartitionCount()).isZero();
+  }
+
+  @Test
+  void writingDurableOnlySnapshotRowsDoesNotWarmTheResidentIndex() {
+    ScanCountingStore counting = new ScanCountingStore();
+    PlanningPointerIndex index = index(counting, PlanningPointerIndex.Policy.UNLIMITED);
+    IndexedPointerStore store = new IndexedPointerStore(counting, index);
+    String stats = Keys.snapshotTargetStatsGenerationPointer(ACCOUNT, "t0", 7L, "gen", "target");
+
+    assertThat(store.compareAndSet(stats, 0, pointer(stats, "s3://stats"))).isTrue();
+
+    assertThat(counting.prefixScans)
+        .as("snapshot-scoped writes must stay out of the resident planner image")
+        .isEmpty();
+    assertThat(index.completePartitionCount()).isZero();
+    assertThat(store.get(stats)).as("durable KV still answers the row").isPresent();
   }
 
   private static PlanningPointerIndex index(
       InMemoryPointerStore durable, PlanningPointerIndex.Policy policy) {
+    return index(durable, policy, Runnable::run);
+  }
+
+  private static PlanningPointerIndex index(
+      InMemoryPointerStore durable, PlanningPointerIndex.Policy policy, Executor executor) {
     return new PlanningPointerIndex(
         durable,
         PlanningPointerIndex.Ownership.ALWAYS_OWNED,
-        Runnable::run,
+        executor,
         PlanningPointerIndex.WarmObserver.NONE,
         policy);
   }
@@ -184,6 +304,17 @@ class PointerIndexGateAndBudgetTest {
 
   private static Pointer pointer(String key, String uri) {
     return Pointer.newBuilder().setKey(key).setBlobUri(uri).build();
+  }
+
+  private static void waitFor(java.util.function.BooleanSupplier condition) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+    while (System.nanoTime() - deadline < 0) {
+      if (condition.getAsBoolean()) {
+        return;
+      }
+      Thread.sleep(10);
+    }
+    assertThat(condition.getAsBoolean()).isTrue();
   }
 
   @Test
@@ -284,6 +415,40 @@ class PointerIndexGateAndBudgetTest {
     public synchronized List<Pointer> listPointersByPrefixConsistent(
         String prefix, int limit, String token, StringBuilder next) {
       prefixScans.add(prefix);
+      return super.listPointersByPrefixConsistent(prefix, limit, token, next);
+    }
+  }
+
+  private static final class BarrierStore extends InMemoryPointerStore {
+    private final Set<String> tablePrefixes;
+    private volatile CountDownLatch tableScansStarted = new CountDownLatch(0);
+    private volatile CountDownLatch releaseTableScans = new CountDownLatch(0);
+
+    BarrierStore(String... accounts) {
+      List<String> prefixes = new ArrayList<>();
+      for (String account : accounts) {
+        prefixes.add(Keys.tablePointerByIdPrefix(account));
+      }
+      tablePrefixes = Set.copyOf(prefixes);
+    }
+
+    void blockTableIdentityScans() {
+      tableScansStarted = new CountDownLatch(tablePrefixes.size());
+      releaseTableScans = new CountDownLatch(1);
+    }
+
+    @Override
+    public List<Pointer> listPointersByPrefixConsistent(
+        String prefix, int limit, String token, StringBuilder next) {
+      if (tablePrefixes.contains(prefix)) {
+        tableScansStarted.countDown();
+        try {
+          assertThat(releaseTableScans.await(1, TimeUnit.SECONDS)).isTrue();
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw new AssertionError(interrupted);
+        }
+      }
       return super.listPointersByPrefixConsistent(prefix, limit, token, next);
     }
   }

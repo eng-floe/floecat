@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.service.repo.model;
+package ai.floedb.floecat.service.repo.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.service.repo.model.Keys;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
@@ -27,25 +28,17 @@ import java.util.Set;
 import java.util.TreeSet;
 import org.junit.jupiter.api.Test;
 
-class KeysPlannerFamilyTest {
+class PlannerPointerShapeTest {
   private static final String ACCOUNT = "acct";
 
-  /**
-   * The invariant the index rests on. Absence in a complete partition is authoritative, so a key
-   * the index admits must sit under a prefix its load actually reads; a planner family outside the
-   * load prefixes would report rows that exist as missing. Driven by reflection so a key family
-   * added later cannot quietly sit outside it.
-   */
   @Test
-  void everyPlannerKeyIsCoveredByALoadPrefix() {
-    List<String> prefixes = Keys.plannerFamilyPrefixes(ACCOUNT);
-    String accountRoot = Keys.accountRootPrefix(ACCOUNT);
-    // The load reads the prefixes, then the per-table keys no prefix reaches. Both phases count.
-    List<String> perTable = Keys.plannerTableKeys(ACCOUNT, ACCOUNT);
+  void everyResidentKeyIsCoveredByALoadPath() {
+    List<String> prefixes = PlannerPointerShape.loadPrefixes(ACCOUNT);
+    List<String> perTable = PlannerPointerShape.perTableKeys(ACCOUNT, ACCOUNT);
     List<String> uncovered = new ArrayList<>();
 
     for (String key : everyAccountScopedKey()) {
-      if (Keys.pointerNamespace(key) != Keys.PointerNamespace.PLANNER || key.equals(accountRoot)) {
+      if (!PlannerPointerShape.isResidentKey(key)) {
         continue;
       }
       if (prefixes.stream().noneMatch(key::startsWith) && !perTable.contains(key)) {
@@ -53,18 +46,13 @@ class KeysPlannerFamilyTest {
       }
     }
 
-    assertThat(uncovered).as("planner keys that no load prefix reads").isEmpty();
+    assertThat(uncovered).as("resident keys that no load path reads").isEmpty();
   }
 
-  /**
-   * Pinned on purpose. The coverage test above derives both sides from this one list, so it cannot
-   * notice the list shrinking -- dropping a family would simply move it to durable and stay green.
-   * This is the assertion that makes removing one a deliberate act.
-   */
   @Test
-  void theAllowlistHoldsExactlyTheKnownPlannerFamilies() {
+  void theLoadPrefixesHoldExactlyTheKnownResidentFamilies() {
     String root = Keys.accountRootPrefix(ACCOUNT);
-    assertThat(Keys.plannerFamilyPrefixes(ACCOUNT))
+    assertThat(PlannerPointerShape.loadPrefixes(ACCOUNT))
         .containsExactly(
             root + "account/",
             root + "catalog-integrations/",
@@ -78,14 +66,10 @@ class KeysPlannerFamilyTest {
             root + "views/");
   }
 
-  /**
-   * A misspelled family would be a no-op that nothing else notices: no key matches it, so the whole
-   * family quietly leaves the index and is answered from durable KV instead.
-   */
   @Test
-  void everyAllowlistedFamilyIsOneKeysActuallyBuilds() {
+  void everyLoadPrefixIsOneKeysActuallyBuilds() {
     List<String> keys = everyAccountScopedKey();
-    assertThat(Keys.plannerFamilyPrefixes(ACCOUNT))
+    assertThat(PlannerPointerShape.loadPrefixes(ACCOUNT))
         .allSatisfy(
             prefix ->
                 assertThat(keys)
@@ -93,11 +77,6 @@ class KeysPlannerFamilyTest {
                     .anySatisfy(key -> assertThat(key).startsWith(prefix)));
   }
 
-  /**
-   * The coverage guarantee is only as good as this enumeration, so its blind spots are pinned. A
-   * builder reflection cannot call is a builder these tests do not check -- adding one has to be a
-   * decision, not a silent gap.
-   */
   @Test
   void reflectionReachesEveryKeyBuilderButTheKnownExceptions() {
     assertThat(unreachableKeyBuilders())
@@ -107,27 +86,21 @@ class KeysPlannerFamilyTest {
   }
 
   @Test
-  void theLoadPrefixesAreNarrowerThanTheAccountRoot() {
-    // Scanning the account root is what read every operational row only to discard it.
-    assertThat(Keys.plannerFamilyPrefixes(ACCOUNT))
+  void loadPrefixesAreNarrowerThanTheAccountRoot() {
+    assertThat(PlannerPointerShape.loadPrefixes(ACCOUNT))
         .isNotEmpty()
         .doesNotContain(Keys.accountRootPrefix(ACCOUNT))
         .allSatisfy(prefix -> assertThat(prefix).startsWith(Keys.accountRootPrefix(ACCOUNT)));
   }
 
-  /**
-   * A table commits far faster than its schema changes, so everything keyed by snapshot grows with
-   * ingest. At a five-second commit cadence those rows outrun any heap; only identity and the two
-   * current pointers stay resident.
-   */
   @Test
   void onlyTableIdentityAndCurrentPointersAreResident() {
-    assertThat(Keys.pointerNamespace(Keys.tablePointerById(ACCOUNT, "t")))
-        .isEqualTo(Keys.PointerNamespace.PLANNER);
-    assertThat(Keys.pointerNamespace(Keys.tableRootByTable(ACCOUNT, "t")))
-        .isEqualTo(Keys.PointerNamespace.PLANNER);
-    assertThat(Keys.pointerNamespace(Keys.currentSnapshotPointerByTable(ACCOUNT, "t")))
-        .isEqualTo(Keys.PointerNamespace.PLANNER);
+    assertThat(PlannerPointerShape.isResidentKey(Keys.tablePointerById(ACCOUNT, "t"))).isTrue();
+    assertThat(PlannerPointerShape.isResidentKey(Keys.tablePointerById(ACCOUNT, "t") + "/future/x"))
+        .isFalse();
+    assertThat(PlannerPointerShape.isResidentKey(Keys.tableRootByTable(ACCOUNT, "t"))).isTrue();
+    assertThat(PlannerPointerShape.isResidentKey(Keys.currentSnapshotPointerByTable(ACCOUNT, "t")))
+        .isTrue();
 
     for (String perSnapshot :
         List.of(
@@ -138,48 +111,35 @@ class KeysPlannerFamilyTest {
             Keys.snapshotTargetStatsGenerationPointer(ACCOUNT, "t", 1L, "g", "col"),
             Keys.snapshotIndexArtifactActiveGenerationPointer(ACCOUNT, "t", 1L),
             Keys.snapshotIndexArtifactGenerationPointer(ACCOUNT, "t", 1L, "g", "a"))) {
-      assertThat(Keys.pointerNamespace(perSnapshot))
-          .as(perSnapshot)
-          .isEqualTo(Keys.PointerNamespace.OPERATIONAL);
+      assertThat(PlannerPointerShape.isResidentKey(perSnapshot)).as(perSnapshot).isFalse();
     }
   }
 
-  /** The classifier reads a suffix list; the loader calls the key builders. Pin that they agree. */
   @Test
-  void theBuiltPerTableKeysAreExactlyTheOnesTheClassifierAdmits() {
-    for (String key : Keys.plannerTableKeys(ACCOUNT, "tbl")) {
-      assertThat(Keys.pointerNamespace(key)).as(key).isEqualTo(Keys.PointerNamespace.PLANNER);
+  void theBuiltPerTableKeysAreExactlyTheResidentTablePointers() {
+    for (String key : PlannerPointerShape.perTableKeys(ACCOUNT, "tbl")) {
+      assertThat(PlannerPointerShape.isResidentKey(key)).as(key).isTrue();
       assertThat(key).startsWith(Keys.accountRootPrefix(ACCOUNT) + "tables/tbl/");
     }
-    assertThat(Keys.plannerTableKeys(ACCOUNT, "tbl"))
+    assertThat(PlannerPointerShape.perTableKeys(ACCOUNT, "tbl"))
         .containsExactlyInAnyOrder(
             Keys.accountRootPrefix(ACCOUNT) + "tables/tbl/root/current",
             Keys.accountRootPrefix(ACCOUNT) + "tables/tbl/snapshots/current");
   }
 
-  /**
-   * A listing served from the index returns only what the index holds, so a prefix may be served
-   * from it only when every key beneath it is also planner state. Otherwise the listing silently
-   * drops rows -- and a caller sweeping a prefix to find references would not see them all.
-   *
-   * <p>Child and relation markers are the one exception, and they predate this: they live under a
-   * planner family, classify operational, and are not listable resources. Excluded by name rather
-   * than by widening the rule, so a new offender of any other shape still fails here.
-   */
   @Test
-  void aPrefixServedFromTheIndexHoldsOnlyPlannerKeysBeneathIt() {
+  void aResidentListPrefixHoldsOnlyResidentKeysBeneathIt() {
     List<String> all = everyAccountScopedKey();
     List<String> offenders = new ArrayList<>();
     for (String prefix : all) {
-      if (!prefix.endsWith("/") || Keys.pointerNamespace(prefix) != Keys.PointerNamespace.PLANNER) {
+      if (!prefix.endsWith("/") || !PlannerPointerShape.isResidentListPrefix(prefix)) {
         continue;
       }
       for (String key : all) {
         if (key.equals(prefix) || !key.startsWith(prefix)) {
           continue;
         }
-        if (Keys.pointerNamespace(key) != Keys.PointerNamespace.PLANNER
-            && !Keys.isIdempotencyOrMarkerKey(key)) {
+        if (!PlannerPointerShape.isResidentKey(key) && !Keys.isIdempotencyOrMarkerKey(key)) {
           offenders.add(prefix + "   serves   " + key);
         }
       }
@@ -189,53 +149,62 @@ class KeysPlannerFamilyTest {
 
   @Test
   void anUnclassifiedFamilyStaysOnDurableStorage() {
-    // The whole point of the allowlist: a family nobody classified must not become resident heap.
-    assertThat(Keys.pointerNamespace(Keys.accountRootPrefix(ACCOUNT) + "brand-new-family/thing"))
-        .isEqualTo(Keys.PointerNamespace.OPERATIONAL);
+    assertThat(
+            PlannerPointerShape.isResidentKey(
+                Keys.accountRootPrefix(ACCOUNT) + "brand-new-family/thing"))
+        .isFalse();
   }
 
   @Test
-  void theFamiliesThatWereOperationalStillAre() {
+  void operationalFamiliesStayDurableOnly() {
     for (String family :
         List.of("transactions", "idempotency", "reconcile", "gc", "root-resyncs")) {
-      assertThat(Keys.pointerNamespace(Keys.accountRootPrefix(ACCOUNT) + family + "/x/y"))
+      assertThat(
+              PlannerPointerShape.isResidentKey(Keys.accountRootPrefix(ACCOUNT) + family + "/x/y"))
           .as(family)
-          .isEqualTo(Keys.PointerNamespace.OPERATIONAL);
+          .isFalse();
     }
   }
 
   @Test
-  void theFamiliesThatWerePlannerStillAre() {
-    assertThat(Keys.pointerNamespace(Keys.tablePointerById(ACCOUNT, "t")))
-        .isEqualTo(Keys.PointerNamespace.PLANNER);
-    assertThat(Keys.pointerNamespace(Keys.catalogPointerById(ACCOUNT, "c")))
-        .isEqualTo(Keys.PointerNamespace.PLANNER);
-    assertThat(Keys.pointerNamespace(Keys.accountRootPrefix(ACCOUNT)))
-        .as(
-            "the account root spans operational families, so a listing of it cannot come from"
-                + " the index")
-        .isEqualTo(Keys.PointerNamespace.OPERATIONAL);
-    assertThat(Keys.prefixTouchesPlannerKeys(Keys.accountRootPrefix(ACCOUNT)))
-        .as("but an account-wide delete still has to be ordered against the index")
+  void accountRootMutationsStillTouchResidentKeysButRootListingsDoNot() {
+    assertThat(PlannerPointerShape.isResidentListPrefix(Keys.accountRootPrefix(ACCOUNT)))
+        .as("the account root spans operational families")
+        .isFalse();
+    assertThat(
+            PlannerPointerShape.mutationPrefixTouchesResidentKeys(Keys.accountRootPrefix(ACCOUNT)))
+        .as("account-wide delete still has to be ordered against the index")
         .isTrue();
-    assertThat(Keys.pointerNamespace(Keys.tablePointerByIdPrefix(ACCOUNT)))
+    assertThat(PlannerPointerShape.isResidentListPrefix(Keys.tablePointerByIdPrefix(ACCOUNT)))
         .as("the table identity listing is how SHOW TABLES is served")
-        .isEqualTo(Keys.PointerNamespace.PLANNER);
+        .isTrue();
   }
 
   @Test
-  void deletionMarkersKeepTheirOldMeaning() {
-    // The account's own marker is operational; a resource *named* deleting is planner state.
-    assertThat(Keys.pointerNamespace(Keys.accountDeletionMarker(ACCOUNT)))
-        .isEqualTo(Keys.PointerNamespace.OPERATIONAL);
-    assertThat(Keys.pointerNamespace(Keys.catalogIntegrationDeletionMarker(ACCOUNT, "i")))
-        .isEqualTo(Keys.PointerNamespace.PLANNER);
+  void snapshotAndStatsPrefixMutationsDoNotForceAResidentLoad() {
+    assertThat(
+            PlannerPointerShape.mutationPrefixTouchesResidentKeys(
+                Keys.snapshotPointerByIdPrefix(ACCOUNT, "tbl")))
+        .isFalse();
+    assertThat(
+            PlannerPointerShape.mutationPrefixTouchesResidentKeys(
+                Keys.snapshotTargetStatsGenerationPrefix(ACCOUNT, "tbl", 7L, "gen")))
+        .isFalse();
+    assertThat(
+            PlannerPointerShape.mutationPrefixTouchesResidentKeys(
+                Keys.snapshotIndexArtifactGenerationPrefix(ACCOUNT, "tbl", 7L, "gen")))
+        .isFalse();
+    assertThat(
+            PlannerPointerShape.mutationPrefixTouchesResidentKeys(
+                Keys.tableBlobPrefix(ACCOUNT, "tbl")))
+        .as("a whole-table delete does touch root/current and snapshots/current")
+        .isTrue();
   }
 
   @Test
-  void markersInsideAPlannerFamilyStayOperational() {
-    assertThat(Keys.pointerNamespace(Keys.namespaceChildrenMarker(ACCOUNT, "ns")))
-        .isEqualTo(Keys.PointerNamespace.OPERATIONAL);
+  void markersInsideAResidentFamilyStayDurableOnly() {
+    assertThat(PlannerPointerShape.isResidentKey(Keys.namespaceChildrenMarker(ACCOUNT, "ns")))
+        .isFalse();
   }
 
   private static Set<String> unreachableKeyBuilders() {
@@ -244,7 +213,6 @@ class KeysPlannerFamilyTest {
     return unreachable;
   }
 
-  /** Every account-scoped string Keys can build, so a new family cannot dodge these assertions. */
   private static List<String> everyAccountScopedKey() {
     return collect(new TreeSet<>());
   }

@@ -23,7 +23,6 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 
 public final class Keys {
   public static final int ACCOUNT_DELETION_FENCE_SHARDS = 64;
@@ -67,53 +66,6 @@ public final class Keys {
   public static final String SEG_STATS = "/stats/";
   public static final String SEG_IDEMPOTENCY = "/idempotency/";
   public static final String SEG_MARKERS = "/markers/";
-
-  /**
-   * Account-scoped families the planner index may hold, and the only ones its load reads.
-   *
-   * <p>An allowlist on purpose: a family missing from it is answered from durable KV, which is
-   * slower and never wrong. A denylist gives the opposite default, where an unclassified family is
-   * resident heap.
-   */
-  private static final Set<String> PLANNER_FAMILIES =
-      Set.of(
-          "account",
-          "catalog-integrations",
-          "catalog-overlays",
-          "catalogs",
-          "connectors",
-          "namespaces",
-          "relations",
-          "storage-authorities",
-          "tables",
-          "views");
-
-  /**
-   * Under a table, only identity and the two current pointers are planner state.
-   *
-   * <p>Everything else beneath a table is keyed by snapshot -- snapshot rows, constraints, stats
-   * generations, index artifacts -- and a table commits far faster than its schema changes, so
-   * those grow with ingest rather than with DDL. They are answered from durable KV, where the
-   * object cache still fronts their content by immutable identity.
-   */
-  /**
-   * The planner keys beneath one table, as suffixes of {@code tables/<tableId>/}.
-   *
-   * <p>Named once because two things must agree about them: what {@link #pointerNamespace} admits,
-   * and what the index's per-table load fetches. A key admitted but never fetched would report a
-   * row that exists as missing, since absence in a complete partition is authoritative.
-   *
-   * <p>Matched exactly, never as subtree prefixes: the subtrees beneath these hold blob bodies and
-   * manifests, so a prefix match would admit a future pointer the load does not fetch.
-   */
-  private static final Set<String> PLANNER_TABLE_SUFFIXES =
-      Set.of("root/current", "snapshots/current");
-
-  private static boolean isPlannerTableKey(String[] segments) {
-    return "by-id".equals(segments[1])
-        || (segments.length == 4
-            && PLANNER_TABLE_SUFFIXES.contains(segments[2] + "/" + segments[3]));
-  }
 
   public static final String SEG_CATALOG_INTEGRATION_CREDENTIAL_CLEANUP =
       "/catalog-integration-credential-cleanup/";
@@ -210,95 +162,8 @@ public final class Keys {
     return "/accounts/";
   }
 
-  /** The durable pointer namespace used by the planner store seam. */
-  public enum PointerNamespace {
-    PLANNER,
-    OPERATIONAL,
-    ACCOUNT_DIRECTORY,
-    UNKNOWN
-  }
-
-  /**
-   * Classifies account pointers once, at the key boundary. Only {@link #PLANNER_FAMILIES} is
-   * planner state; every other shape stays on the durable adapter.
-   */
-  public static PointerNamespace pointerNamespace(String key) {
-    if (key == null || !key.startsWith(accountRootPrefix())) {
-      return PointerNamespace.UNKNOWN;
-    }
-    String remainder = key.substring(accountRootPrefix().length());
-    int slash = remainder.indexOf('/');
-    String account = slash < 0 ? remainder : remainder.substring(0, slash);
-    if (account.isBlank()) return PointerNamespace.UNKNOWN;
-    if (isReservedAccountDirectorySegment(account)) return PointerNamespace.ACCOUNT_DIRECTORY;
-    // An account segment with nothing beneath it names no family, so no load prefix covers it.
-    if (slash < 0) return PointerNamespace.OPERATIONAL;
-    // Anchor on position, never on a substring anywhere in the key. Caller-supplied strings
-    // occupy segments too -- a nested namespace path joins display names mid-key -- and one
-    // that happened to read "gc" would be classified operational, refused by the index and
-    // missing from listings while the parent prefix is still served from it.
-    String[] segments = remainder.substring(slash + 1).split("/", -1);
-    if (segments.length == 1) {
-      // Including the account root prefix itself, the empty segment. This classification answers
-      // what may be READ from the index, and a listing is only answerable there when the index
-      // holds every key beneath the prefix. The account root spans operational families too, so a
-      // listing of it has to come from durable KV or it would silently drop rows.
-      return PointerNamespace.OPERATIONAL;
-    }
-    if (!PLANNER_FAMILIES.contains(segments[0]) || isMarkerSegments(segments)) {
-      return PointerNamespace.OPERATIONAL;
-    }
-    if ("tables".equals(segments[0]) && !isPlannerTableKey(segments)) {
-      return PointerNamespace.OPERATIONAL;
-    }
-    return PointerNamespace.PLANNER;
-  }
-
-  /**
-   * The prefixes covering every planner key of one account, sorted. Derived from the same list as
-   * {@link #pointerNamespace}, so the index cannot admit a key that its load never read -- absence
-   * in the index is authoritative, and an uncovered family would answer "missing" for rows that
-   * exist.
-   */
-  public static List<String> plannerFamilyPrefixes(String accountId) {
-    String root = accountRootPrefix(accountId);
-    return PLANNER_FAMILIES.stream()
-        .sorted()
-        // Tables are the one family whose planner rows are not a prefix: the table id sits above
-        // root/current and snapshots/current, so those are fetched per table instead of scanned.
-        .map(
-            family ->
-                "tables".equals(family) ? tablePointerByIdPrefix(accountId) : root + family + "/")
-        .toList();
-  }
-
-  /**
-   * Whether a mutation on this prefix can touch planner keys, and so must be ordered against the
-   * index even when the prefix itself is not readable from it.
-   *
-   * <p>Broader than {@link #pointerNamespace}, which answers whether a READ may be served from the
-   * index and so needs complete coverage. This answers whether a WRITE must take the partition lock
-   * and maintain the index, and one planner key beneath the prefix is enough to require that.
-   */
-  public static boolean prefixTouchesPlannerKeys(String prefix) {
-    String[] segments = accountKeySegments(prefix);
-    if (segments == null) {
-      return false;
-    }
-    if (segments.length == 1 && segments[0].isEmpty()) {
-      return true; // the account root spans every family, planner ones included
-    }
-    return PLANNER_FAMILIES.contains(segments[0]);
-  }
-
-  /**
-   * The per-table planner keys no prefix reaches, for a table id read from {@link
-   * #tablePointerByIdPrefix}. Built from the canonical key builders and pinned against {@link
-   * #PLANNER_TABLE_SUFFIXES} by test, so the classifier and the loader cannot drift apart.
-   */
-  public static List<String> plannerTableKeys(String accountId, String tableId) {
-    return List.of(
-        tableRootByTable(accountId, tableId), currentSnapshotPointerByTable(accountId, tableId));
+  public static boolean isReservedAccountDirectorySegment(String segment) {
+    return "by-id".equals(segment) || "by-name".equals(segment);
   }
 
   /** Whether the key is an idempotency record or a child/relation marker. */
@@ -321,10 +186,6 @@ public final class Keys {
     int slash = remainder.indexOf('/');
     if (slash < 0) return null;
     return remainder.substring(slash + 1).split("/", -1);
-  }
-
-  public static boolean isReservedAccountDirectorySegment(String segment) {
-    return "by-id".equals(segment) || "by-name".equals(segment);
   }
 
   public static String accountRootPrefix(String accountId) {

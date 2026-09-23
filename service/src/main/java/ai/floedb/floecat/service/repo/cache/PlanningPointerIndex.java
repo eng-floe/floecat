@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.repo.cache;
 
+import ai.floedb.floecat.cache.CacheWeights;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageAbortRetryableException;
@@ -124,10 +125,10 @@ public final class PlanningPointerIndex {
   private final Executor warmExecutor;
   private final WarmObserver warmObserver;
   private final Policy policy;
-  // Admission accounting only: set when a load completes and cleared when a partition is dropped.
-  // Mutations after a load are not tracked, so this drifts by the difference between a replaced
-  // pointer and its replacement -- small next to a budget, and never a reason to admit an account.
+  // Admission accounting: updated when a load completes and when resident mutations publish.
+  // An account stays whole or drops back to durable KV; the index never evicts individual entries.
   private final AtomicLong residentBytes = new AtomicLong();
+  private final Object admissionLock = new Object();
   private final PlannerPartitionLoad loader;
 
   private final ConcurrentHashMap<String, Partition> partitions = new ConcurrentHashMap<>();
@@ -283,7 +284,7 @@ public final class PlanningPointerIndex {
   private List<Pointer> lookupPrefix(
       String prefix, int limit, String token, StringBuilder nextToken) {
     String partitionKey = partitionFor(prefix);
-    if (partitionKey == null || !isPlanningPrefix(prefix))
+    if (partitionKey == null || !PlannerPointerShape.isResidentListPrefix(prefix))
       return durableList(prefix, limit, token, nextToken);
     if (token != null && !token.isBlank() && !token.startsWith("index:"))
       return durableList(prefix, limit, token, nextToken);
@@ -337,7 +338,8 @@ public final class PlanningPointerIndex {
 
   private int countPrefix(String prefix) {
     String partitionKey = partitionFor(prefix);
-    if (partitionKey == null || !isPlanningPrefix(prefix)) return durableCount(prefix);
+    if (partitionKey == null || !PlannerPointerShape.isResidentListPrefix(prefix))
+      return durableCount(prefix);
     Optional<Ownership.Permit> permit = acquireOne(partitionKey, Ownership.Access.READ, false);
     if (permit.isEmpty()) return durableCount(prefix);
     try {
@@ -398,7 +400,10 @@ public final class PlanningPointerIndex {
       }
       // The permissive predicate on purpose: a prefix the index cannot ANSWER may still contain
       // keys it holds, and the write lock is what orders this delete against a concurrent load.
-      String partitionKey = Keys.prefixTouchesPlannerKeys(prefix) ? partitionFor(prefix) : null;
+      String partitionKey =
+          PlannerPointerShape.mutationPrefixTouchesResidentKeys(prefix)
+              ? partitionFor(prefix)
+              : null;
       List<Partition> locked =
           partitionKey == null ? List.of() : lockPartitionsForListing(List.of(partitionKey));
       try {
@@ -448,6 +453,18 @@ public final class PlanningPointerIndex {
     if (keys == null) return List.of();
     if (keys.contains(Keys.accountRootPrefix())) return List.of(GLOBAL);
     return keys.stream()
+        .map(PlanningPointerIndex::partitionFor)
+        .filter(partition -> partition != null && !GLOBAL.equals(partition))
+        .distinct()
+        .sorted()
+        .toList();
+  }
+
+  private List<String> residentAccountPartitions(Collection<String> keys) {
+    if (keys == null) return List.of();
+    if (keys.contains(Keys.accountRootPrefix())) return List.of(GLOBAL);
+    return keys.stream()
+        .filter(PlannerPointerShape::isResidentKey)
         .map(PlanningPointerIndex::partitionFor)
         .filter(partition -> partition != null && !GLOBAL.equals(partition))
         .distinct()
@@ -520,16 +537,44 @@ public final class PlanningPointerIndex {
 
   void publish(String key, Pointer value) {
     if (!isPlanningKey(key)) return;
-    Partition partition = partitions.get(partitionFor(key));
-    if (partition != null && partition.readiness == Readiness.COMPLETE)
+    String partitionKey = partitionFor(key);
+    Partition partition = partitions.get(partitionKey);
+    if (partition == null || partition.readiness != Readiness.COMPLETE) return;
+    synchronized (admissionLock) {
+      if (partition.readiness != Readiness.COMPLETE || partitions.get(partitionKey) != partition) {
+        return;
+      }
+      Pointer previous = partition.entries.get(key);
+      long previousBytes = previous == null ? 0 : pointerWeight(previous);
+      long nextPartitionBytes = partition.residentBytes - previousBytes + pointerWeight(value);
+      long nextResidentBytes = residentBytes.get() - partition.residentBytes + nextPartitionBytes;
+      if (nextPartitionBytes > policy.maxBytesPerAccount()
+          || nextResidentBytes > policy.maxBytesTotal()) {
+        demoteForSize(partition);
+        return;
+      }
       partition.entries.put(key, value);
+      partition.residentBytes = nextPartitionBytes;
+      residentBytes.set(nextResidentBytes);
+    }
   }
 
   void remove(String key) {
     if (!isPlanningKey(key)) return;
-    Partition partition = partitions.get(partitionFor(key));
-    if (partition != null && partition.readiness == Readiness.COMPLETE)
-      partition.entries.remove(key);
+    String partitionKey = partitionFor(key);
+    Partition partition = partitions.get(partitionKey);
+    if (partition == null || partition.readiness != Readiness.COMPLETE) return;
+    synchronized (admissionLock) {
+      if (partition.readiness != Readiness.COMPLETE || partitions.get(partitionKey) != partition) {
+        return;
+      }
+      Pointer removed = partition.entries.remove(key);
+      if (removed != null) {
+        long removedBytes = pointerWeight(removed);
+        partition.residentBytes -= removedBytes;
+        residentBytes.addAndGet(-removedBytes);
+      }
+    }
   }
 
   void refresh(String key, Optional<Pointer> value) {
@@ -539,26 +584,27 @@ public final class PlanningPointerIndex {
 
   void removePrefix(String prefix, String excludedKey) {
     if (Keys.accountRootPrefix().equals(prefix)) {
-      for (Partition partition : partitions.values()) {
-        if (partition.readiness == Readiness.COMPLETE) {
-          partition
-              .entries
-              .keySet()
-              .removeIf(
-                  key -> key.startsWith(prefix) && !java.util.Objects.equals(key, excludedKey));
+      synchronized (admissionLock) {
+        for (Partition partition : partitions.values()) {
+          if (partition.readiness == Readiness.COMPLETE) {
+            removeMatching(partition, prefix, excludedKey);
+          }
+          partition.residentBytes = 0;
         }
+        residentBytes.set(0);
       }
       partitions.clear();
-      residentBytes.set(0);
       return;
     }
     String partitionKey = partitionFor(prefix);
     Partition partition = partitionKey == null ? null : partitions.get(partitionKey);
     if (partition != null && partition.readiness == Readiness.COMPLETE) {
-      partition
-          .entries
-          .keySet()
-          .removeIf(key -> key.startsWith(prefix) && !java.util.Objects.equals(key, excludedKey));
+      synchronized (admissionLock) {
+        if (partition.readiness == Readiness.COMPLETE
+            && partitions.get(partitionKey) == partition) {
+          removeMatching(partition, prefix, excludedKey);
+        }
+      }
     }
     if (isAccountRoot(prefix)) {
       // Not forget(): this runs under the partition write lock, and forget() takes the registry
@@ -566,7 +612,7 @@ public final class PlanningPointerIndex {
       // reversing that order here is a deadlock. Drop the entry and release its bytes directly.
       Partition removed = partitions.remove(accountPartition(prefix));
       if (removed != null) {
-        residentBytes.addAndGet(-removed.residentBytes);
+        releaseResidentBytes(removed.residentBytes);
         removed.residentBytes = 0;
       }
     }
@@ -624,9 +670,27 @@ public final class PlanningPointerIndex {
 
   /** Clears local planner state after a test fixture or administrative wipe changed durable KV. */
   public void clear() {
+    List<Partition> locked;
     synchronized (partitions) {
+      locked = new ArrayList<>(partitions.values());
+      for (Partition partition : locked) {
+        partition.lock.writeLock().lock();
+      }
       partitions.clear();
-      residentBytes.set(0);
+    }
+    try {
+      synchronized (admissionLock) {
+        residentBytes.set(0);
+        for (Partition partition : locked) {
+          partition.entries.clear();
+          partition.keyLocks.clear();
+          partition.residentBytes = 0;
+          partition.readiness = Readiness.LOADING;
+          partition.warmScheduled.set(false);
+        }
+      }
+    } finally {
+      unlockWritePartitions(locked);
     }
   }
 
@@ -675,13 +739,16 @@ public final class PlanningPointerIndex {
       removed = partitions.remove(accountId);
     }
     if (removed != null) {
-      residentBytes.addAndGet(-removed.residentBytes);
-      removed.residentBytes = 0;
       removed.lock.writeLock().lock();
       try {
-        removed.entries.clear();
-        removed.keyLocks.clear();
-        removed.readiness = Readiness.LOADING;
+        synchronized (admissionLock) {
+          residentBytes.addAndGet(-removed.residentBytes);
+          removed.residentBytes = 0;
+          removed.entries.clear();
+          removed.keyLocks.clear();
+          removed.readiness = Readiness.LOADING;
+          removed.warmScheduled.set(false);
+        }
       } finally {
         removed.lock.writeLock().unlock();
       }
@@ -792,38 +859,53 @@ public final class PlanningPointerIndex {
   }
 
   /**
-   * Builds one account's image under the partition write lock. Returns false when the scan crossed
-   * the byte budget, leaving the partition LOADING: reads keep answering from durable KV, and the
-   * pause set here stops a refused account from re-scanning on every read that misses it.
-   *
-   * <p>The staging map is what makes a failure leave no partial index behind, and the budget is
-   * checked as it fills, so a refusal costs the budget rather than the account.
-   */
-  /**
    * Applies a freshly built image under the partition write lock. Building it is {@link
    * PlannerPartitionLoad}'s job; what stays here is the part that needs the lock and the registry.
    */
   private boolean loadLocked(String partitionKey, Partition partition) {
-    PlannerPartitionLoad.Result result =
-        loader.load(partitionKey, () -> residentBytes.get() - partition.residentBytes);
+    PlannerPartitionLoad.Result result = loader.load(partitionKey);
     if (result.refusedForSize()) {
-      partition.refusedForSize = true;
-      partition.loadRetryNotBeforeNanos =
-          System.nanoTime() + refusalPauseNanos(partition.consecutiveRefusals++);
+      refuseForSize(partition);
       return false;
     }
-    partition.entries.clear();
-    partition.entries.putAll(result.entries());
-    residentBytes.addAndGet(result.bytes() - partition.residentBytes);
-    partition.residentBytes = result.bytes();
+    synchronized (admissionLock) {
+      if (partitions.get(partitionKey) != partition) {
+        return false;
+      }
+      long nextResidentBytes = residentBytes.get() - partition.residentBytes + result.bytes();
+      if (nextResidentBytes > policy.maxBytesTotal()) {
+        refuseForSize(partition);
+        return false;
+      }
+      partition.entries.clear();
+      partition.entries.putAll(result.entries());
+      residentBytes.set(nextResidentBytes);
+      partition.residentBytes = result.bytes();
+    }
     partition.refusedForSize = false;
     partition.consecutiveRefusals = 0;
     partition.readiness = Readiness.COMPLETE;
     return true;
   }
 
+  private void refuseForSize(Partition partition) {
+    partition.refusedForSize = true;
+    partition.loadRetryNotBeforeNanos =
+        System.nanoTime() + refusalPauseNanos(partition.consecutiveRefusals++);
+  }
+
+  private void demoteForSize(Partition partition) {
+    residentBytes.addAndGet(-partition.residentBytes);
+    partition.residentBytes = 0;
+    partition.entries.clear();
+    partition.keyLocks.clear();
+    partition.readiness = Readiness.LOADING;
+    partition.warmScheduled.set(false);
+    refuseForSize(partition);
+  }
+
   private List<Partition> lockPartitionsForMutation(Collection<String> keys) {
-    java.util.Set<String> names = new java.util.TreeSet<>(accountPartitions(keys));
+    java.util.Set<String> names = new java.util.TreeSet<>(residentAccountPartitions(keys));
     Map<String, Partition> partitionsByName = new LinkedHashMap<>();
     // Resolve the whole partition set before taking any partition lock. Account-wide mutations
     // hold the registry monitor while they acquire write locks; never reacquire that monitor while
@@ -857,7 +939,7 @@ public final class PlanningPointerIndex {
     if (keys == null || keys.isEmpty()) return List.of();
     java.util.Set<String> keyNames = new java.util.TreeSet<>();
     for (String key : keys) {
-      if (isPlanningKey(key)) keyNames.add(key);
+      if (PlannerPointerShape.isResidentKey(key)) keyNames.add(key);
     }
     List<HeldKeyLock> locked = new ArrayList<>();
     try {
@@ -961,40 +1043,15 @@ public final class PlanningPointerIndex {
   }
 
   static boolean isPlanningKey(String key) {
-    String partition = partitionFor(key);
-    return key != null
-        && partition != null
-        && !GLOBAL.equals(partition)
-        && Keys.pointerNamespace(key) == Keys.PointerNamespace.PLANNER;
-  }
-
-  private static boolean isPlanningPrefix(String prefix) {
-    String partition = partitionFor(prefix);
-    return prefix != null
-        && partition != null
-        && !GLOBAL.equals(partition)
-        && Keys.pointerNamespace(prefix) == Keys.PointerNamespace.PLANNER;
+    return PlannerPointerShape.isResidentKey(key);
   }
 
   static String partitionFor(String key) {
-    if (key == null || !key.startsWith(Keys.accountRootPrefix())) return null;
-    String remainder = key.substring(Keys.accountRootPrefix().length());
-    int slash = remainder.indexOf('/');
-    String encodedAccount = slash < 0 ? remainder : remainder.substring(0, slash);
-    if (encodedAccount.isBlank()) return null;
-    if (Keys.isReservedAccountDirectorySegment(encodedAccount)) return GLOBAL;
-    return Keys.decodeSegment(encodedAccount);
+    return PlannerPointerShape.partitionFor(key);
   }
 
-  /**
-   * Scanning the account root would read every operational row only to discard it. These prefixes
-   * come from the same allowlist as {@link Keys#pointerNamespace}, so they cover exactly what the
-   * index may admit -- a narrower list would answer authoritative absence for rows it never read.
-   */
   static List<String> loadPrefixes(String partition) {
-    if (GLOBAL.equals(partition))
-      return List.of(Keys.accountPointerByIdPrefix(), Keys.accountPointerByNamePrefix());
-    return Keys.plannerFamilyPrefixes(partition);
+    return PlannerPointerShape.loadPrefixes(partition);
   }
 
   private static boolean isAccountRoot(String prefix) {
@@ -1007,6 +1064,33 @@ public final class PlanningPointerIndex {
   private static String accountPartition(String prefix) {
     String encoded = prefix.substring(Keys.accountRootPrefix().length(), prefix.length() - 1);
     return Keys.decodeSegment(encoded);
+  }
+
+  private void releaseResidentBytes(long bytes) {
+    synchronized (admissionLock) {
+      residentBytes.addAndGet(-bytes);
+    }
+  }
+
+  private static long pointerWeight(Pointer pointer) {
+    return CacheWeights.entry(pointer, 2L * pointer.getKey().length());
+  }
+
+  private void removeMatching(Partition partition, String prefix, String excludedKey) {
+    long removedBytes = 0;
+    for (Map.Entry<String, Pointer> entry : partition.entries.tailMap(prefix, true).entrySet()) {
+      String key = entry.getKey();
+      if (!key.startsWith(prefix)) break;
+      if (java.util.Objects.equals(key, excludedKey)) continue;
+      Pointer removed = partition.entries.remove(key);
+      if (removed != null) {
+        removedBytes += pointerWeight(removed);
+      }
+    }
+    if (removedBytes != 0) {
+      partition.residentBytes -= removedBytes;
+      residentBytes.addAndGet(-removedBytes);
+    }
   }
 
   private static final class Partition {
