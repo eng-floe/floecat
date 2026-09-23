@@ -550,7 +550,7 @@ public final class PlanningPointerIndex {
       long nextResidentBytes = residentBytes.get() - partition.residentBytes + nextPartitionBytes;
       if (nextPartitionBytes > policy.maxBytesPerAccount()
           || nextResidentBytes > policy.maxBytesTotal()) {
-        demoteForSize(partition);
+        demoteForSize(partitionKey, partition);
         return;
       }
       partition.entries.put(key, value);
@@ -831,7 +831,7 @@ public final class PlanningPointerIndex {
     }
   }
 
-  private static void unlockKeys(List<HeldKeyLock> locks) {
+  private void unlockKeys(List<HeldKeyLock> locks) {
     for (int i = locks.size() - 1; i >= 0; i--) {
       HeldKeyLock held = locks.get(i);
       held.keyLock().lock.unlock();
@@ -844,6 +844,7 @@ public final class PlanningPointerIndex {
                 current.references--;
                 return current.references == 0 ? null : current;
               });
+      detachDemotedPartitionIfUnused(held.partitionKey(), held.partition());
     }
   }
 
@@ -894,14 +895,41 @@ public final class PlanningPointerIndex {
         System.nanoTime() + refusalPauseNanos(partition.consecutiveRefusals++);
   }
 
-  private void demoteForSize(Partition partition) {
+  private void demoteForSize(String partitionKey, Partition partition) {
     residentBytes.addAndGet(-partition.residentBytes);
     partition.residentBytes = 0;
-    partition.entries.clear();
-    partition.keyLocks.clear();
+    partition.demotedForSize = true;
     partition.readiness = Readiness.LOADING;
     partition.warmScheduled.set(false);
     refuseForSize(partition);
+    detachDemotedPartitionIfUnused(partitionKey, partition);
+  }
+
+  /**
+   * Retires a demoted partition once nothing holds one of its key locks, by replacing the registry
+   * entry with an empty refused one.
+   *
+   * <p>The retired partition keeps its contents. Clearing them would need the write lock, which the
+   * caller cannot take while holding the read side, and a reader that passed {@link
+   * #readyPartition} before the demotion would then read an emptied image and report an absence
+   * that is authoritative. Replacing the registry entry is what makes the partition unreachable;
+   * the image goes with it when the last holder lets go.
+   */
+  private void detachDemotedPartitionIfUnused(String partitionKey, Partition partition) {
+    if (!partition.demotedForSize || !partition.keyLocks.isEmpty()) return;
+    synchronized (admissionLock) {
+      if (!partition.demotedForSize || !partition.keyLocks.isEmpty()) return;
+      Partition refused = new Partition();
+      refused.refusedForSize = true;
+      refused.consecutiveRefusals = partition.consecutiveRefusals;
+      refused.loadRetryNotBeforeNanos = partition.loadRetryNotBeforeNanos;
+      boolean retired =
+          partitions.replace(partitionKey, partition, refused)
+              || partitions.get(partitionKey) != partition;
+      if (retired) {
+        partition.demotedForSize = false;
+      }
+    }
   }
 
   private List<Partition> lockPartitionsForMutation(Collection<String> keys) {
@@ -955,7 +983,7 @@ public final class PlanningPointerIndex {
                   return current;
                 });
         keyLock.lock.lock();
-        locked.add(new HeldKeyLock(partition, key, keyLock));
+        locked.add(new HeldKeyLock(partition, partitionFor(key), key, keyLock));
       }
     } catch (RuntimeException | Error failure) {
       // Partway through, the caller never receives the list and so can never release it.
@@ -1101,6 +1129,7 @@ public final class PlanningPointerIndex {
     // Why this partition is not COMPLETE, which readiness deliberately does not say: readiness
     // answers whether absence is authoritative, and a refusal answers neither differently.
     private volatile boolean refusedForSize;
+    private volatile boolean demotedForSize;
     private volatile int consecutiveRefusals;
     private volatile long residentBytes;
     private volatile Readiness readiness = Readiness.LOADING;
@@ -1112,5 +1141,6 @@ public final class PlanningPointerIndex {
     private int references;
   }
 
-  private record HeldKeyLock(Partition partition, String key, KeyLock keyLock) {}
+  private record HeldKeyLock(
+      Partition partition, String partitionKey, String key, KeyLock keyLock) {}
 }

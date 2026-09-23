@@ -237,6 +237,74 @@ class PointerIndexGateAndBudgetTest {
     assertThat(store.get(newTable)).as("the durable store remains authoritative").isPresent();
   }
 
+  /**
+   * A mutation whose account is demoted under it runs to completion, and the next mutation on the
+   * same key waits rather than racing it.
+   *
+   * <p>What holds the second one back here is the partition lock: a demoted partition is no longer
+   * complete, so the next mutation reloads it and blocks on the write lock. That makes this blind
+   * to whether the key locks themselves survived the demotion -- a demotion that cleared them still
+   * passes. Per-key exclusion stops being observable once a partition is demoted, because publishes
+   * into one are no-ops; it matters only if such a partition were ever completed again, which
+   * retiring it in favour of a fresh one is what prevents.
+   */
+  @Test
+  void aMutationOutlivingItsAccountsDemotionStillSerialisesTheNext() throws Exception {
+    InMemoryPointerStore durable = new InMemoryPointerStore();
+    seedAccount(durable, ACCOUNT, 1);
+    String key = Keys.tablePointerById(ACCOUNT, "t0");
+
+    PlanningPointerIndex probe = index(durable, PlanningPointerIndex.Policy.UNLIMITED);
+    new IndexedPointerStore(durable, probe).get(key);
+    long loadedBytes = probe.residentBytes();
+    PlanningPointerIndex index =
+        index(durable, new PlanningPointerIndex.Policy(true, loadedBytes + 1, loadedBytes + 1));
+    new IndexedPointerStore(durable, index).get(key);
+
+    CountDownLatch demoted = new CountDownLatch(1);
+    CountDownLatch releaseFirstMutation = new CountDownLatch(1);
+    CountDownLatch secondMutationEntered = new CountDownLatch(1);
+    Pointer oversized = pointer(key, "s3://" + "x".repeat((int) loadedBytes + 100));
+
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    try {
+      var first =
+          executor.submit(
+              () ->
+                  index.mutateKeys(
+                      List.of(key),
+                      () -> true,
+                      ignored -> {
+                        index.publish(key, oversized);
+                        demoted.countDown();
+                        await(releaseFirstMutation);
+                      }));
+      assertThat(demoted.await(1, TimeUnit.SECONDS)).isTrue();
+
+      var second =
+          executor.submit(
+              () ->
+                  index.mutateKeys(
+                      List.of(key),
+                      () -> {
+                        secondMutationEntered.countDown();
+                        return true;
+                      },
+                      ignored -> {}));
+
+      assertThat(secondMutationEntered.await(100, TimeUnit.MILLISECONDS))
+          .as("the second mutation waits for the first, which the demotion did not release")
+          .isFalse();
+      releaseFirstMutation.countDown();
+      first.get(1, TimeUnit.SECONDS);
+      second.get(1, TimeUnit.SECONDS);
+      assertThat(secondMutationEntered.await(1, TimeUnit.SECONDS)).isTrue();
+    } finally {
+      releaseFirstMutation.countDown();
+      executor.shutdownNow();
+    }
+  }
+
   @Test
   void deletingDurableOnlyTableSubtreesDoesNotWarmTheResidentIndex() {
     ScanCountingStore counting = new ScanCountingStore();
@@ -315,6 +383,15 @@ class PointerIndexGateAndBudgetTest {
       Thread.sleep(10);
     }
     assertThat(condition.getAsBoolean()).isTrue();
+  }
+
+  private static void await(CountDownLatch latch) {
+    try {
+      assertThat(latch.await(1, TimeUnit.SECONDS)).isTrue();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new AssertionError(e);
+    }
   }
 
   @Test

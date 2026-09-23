@@ -1545,8 +1545,8 @@ class CasBlobGcTest {
     var racingPointers =
         new InMemoryPointerStore() {
           @Override
-          public java.util.Optional<Pointer> get(String key) {
-            var observed = super.get(key);
+          public java.util.Optional<Pointer> getConsistent(String key) {
+            var observed = super.getConsistent(key);
             // The only consistent get of the table's by-id pointer in a pass is the pre-delete
             // owner
             // re-check (the mark scans by prefix), so GC has already HEAD'd blob A here. Serve
@@ -1555,7 +1555,7 @@ class CasBlobGcTest {
             if (!injected[0] && pointerKey.equals(key)) {
               injected[0] = true;
               blobs.put(blobA, "a".getBytes(StandardCharsets.UTF_8), "text/plain");
-              var current = super.get(key).orElseThrow();
+              var current = super.getConsistent(key).orElseThrow();
               super.compareAndSet(
                   key,
                   current.getVersion(),

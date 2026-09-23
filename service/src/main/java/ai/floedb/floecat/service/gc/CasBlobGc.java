@@ -2441,7 +2441,7 @@ public class CasBlobGc {
 
   /** Whether the given owner pointer currently references exactly this normalized blob key. */
   private boolean ownedBy(String ownerPointerKey, String normalizedKey) {
-    var owner = pointerStore.get(ownerPointerKey).orElse(null);
+    var owner = durablePointers.get(ownerPointerKey).orElse(null);
     return owner != null && normalizedKey.equals(normalizeKey(owner.getBlobUri()));
   }
 
