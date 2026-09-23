@@ -50,7 +50,7 @@ public final class SystemGraph {
   private static final int DEFAULT_SNAPSHOT_CACHE_SIZE = 16;
 
   private final SystemNodeRegistry registry;
-  private final Map<VersionKey, GraphSnapshot> snapshots;
+  private final Map<VersionKey, CachedSnapshot> snapshots;
   private final int snapshotCacheSize;
 
   @Inject
@@ -63,10 +63,10 @@ public final class SystemGraph {
     this.snapshotCacheSize = Math.max(1, effective);
     this.snapshots =
         Collections.synchronizedMap(
-            new LinkedHashMap<VersionKey, GraphSnapshot>(snapshotCacheSize, 0.75f, true) {
+            new LinkedHashMap<VersionKey, CachedSnapshot>(snapshotCacheSize, 0.75f, true) {
               private static final long serialVersionUID = 1L;
 
-              protected boolean removeEldestEntry(Map.Entry<VersionKey, GraphSnapshot> eldest) {
+              protected boolean removeEldestEntry(Map.Entry<VersionKey, CachedSnapshot> eldest) {
                 return size() > SystemGraph.this.snapshotCacheSize;
               }
             });
@@ -303,22 +303,29 @@ public final class SystemGraph {
     String normalizedVersion = canonical.effectiveSystemCatalogVersion();
 
     VersionKey key = VersionKey.from(canonical);
-    GraphSnapshot cached = snapshots.get(key);
-    if (cached != null) {
-      return cached;
+    // The snapshot is a projection of one BuiltinNodes, so it is cached against the instance it
+    // was built from rather than against the context alone. Invalidating the registry hands out a
+    // new instance, which retires this entry without a second cache to remember to clear.
+    BuiltinNodes nodes = registry.nodesFor(canonical);
+    CachedSnapshot cached = snapshots.get(key);
+    if (cached != null && cached.nodes() == nodes) {
+      return cached.snapshot();
     }
-    GraphSnapshot snapshot = build(canonical, normalizedKind, normalizedVersion);
-    snapshots.put(key, snapshot);
+    GraphSnapshot snapshot = build(nodes, normalizedKind, normalizedVersion);
+    snapshots.put(key, new CachedSnapshot(nodes, snapshot));
     return snapshot;
   }
+
+  /** A snapshot with the node set it projects, so a rebuilt node set retires it. */
+  private record CachedSnapshot(BuiltinNodes nodes, GraphSnapshot snapshot) {}
 
   private GraphSnapshot snapshotForCatalog(ResourceId catalogId) {
     if (catalogId == null) return GraphSnapshot.empty();
     synchronized (snapshots) {
-      for (Map.Entry<VersionKey, GraphSnapshot> entry : snapshots.entrySet()) {
+      for (Map.Entry<VersionKey, CachedSnapshot> entry : snapshots.entrySet()) {
         ResourceId candidate = systemCatalogId(entry.getKey().engineKind());
         if (catalogId.equals(candidate)) {
-          return entry.getValue();
+          return entry.getValue().snapshot();
         }
       }
     }
@@ -328,7 +335,8 @@ public final class SystemGraph {
   private Optional<GraphNode> resolveAny(ResourceId id) {
     if (id == null) return Optional.empty();
     synchronized (snapshots) {
-      for (GraphSnapshot snapshot : snapshots.values()) {
+      for (CachedSnapshot cached : snapshots.values()) {
+        GraphSnapshot snapshot = cached.snapshot();
         Optional<GraphNode> found = snapshot.resolve(id);
         if (found.isPresent()) {
           return found;
@@ -342,9 +350,7 @@ public final class SystemGraph {
    * Constructs the snapshot by gathering namespace/table nodes from the registry and organizing
    * them per namespace/catalog.
    */
-  private GraphSnapshot build(
-      CatalogContext context, String normalizedKind, String normalizedVersion) {
-    var nodes = registry.nodesFor(context);
+  private GraphSnapshot build(BuiltinNodes nodes, String normalizedKind, String normalizedVersion) {
     if (nodes == null) {
       return GraphSnapshot.empty();
     }

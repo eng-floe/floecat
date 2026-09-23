@@ -210,8 +210,11 @@ public final class ServiceLoaderSystemCatalogProvider
           "System catalog validation failed for engine_kind=" + selectedKind, validatorIssues);
     }
 
+    // An environment names the catalog it composes, except for floecat_internal: ownership is
+    // classified from this identity, and stamping the environment onto the internal catalog makes
+    // it read as engine-owned, which then rejects its own TABLE_BACKEND_KIND_FLOECAT tables.
     String resolvedEngineKind =
-        canonical.environment().hasEnvironmentKind()
+        canonical.environment().hasEnvironmentKind() && !internalSelected
             ? canonical.environment().normalizedKind()
             : selectedKind;
 
