@@ -46,7 +46,7 @@ public final class TestCatalogEnvironmentProvider implements CatalogEnvironmentP
 
   @Override
   public boolean supports(NameRef name, CatalogContext context) {
-    return NameRefUtil.canonical(name).equals("information_schema")
+    return NameRefUtil.identityKey(name).equals("information_schema")
         || NameRefUtil.namespaceCanonical(name).equals("information_schema");
   }
 
@@ -61,7 +61,7 @@ public final class TestCatalogEnvironmentProvider implements CatalogEnvironmentP
     SystemCatalogData catalog = FloecatInternalProvider.catalogData();
     return java.util.stream.Stream.concat(
             catalog.namespaces().stream()
-                .filter(def -> NameRefUtil.canonical(def.name()).equals("information_schema")),
+                .filter(def -> NameRefUtil.identityKey(def.name()).equals("information_schema")),
             catalog.tables().stream()
                 .filter(
                     def -> NameRefUtil.namespaceCanonical(def.name()).equals("information_schema")))

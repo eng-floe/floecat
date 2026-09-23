@@ -183,7 +183,8 @@ public class SystemNodeRegistry {
         namespaceDefs.stream()
             .collect(
                 Collectors.toUnmodifiableMap(
-                    ns -> NameRefUtil.canonical(ns.name()), ns -> resourceId(normalizedKind, ns)));
+                    ns -> NameRefUtil.identityKey(ns.name()),
+                    ns -> resourceId(normalizedKind, ns)));
 
     // --- Functions ---
     List<SystemFunctionDef> functionDefs =
@@ -341,7 +342,7 @@ public class SystemNodeRegistry {
       }
       tableNodes.add(node);
       tablesByNamespace.computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>()).add(node);
-      tableNames.put(NameRefUtil.canonical(table.name()), tableId);
+      tableNames.put(NameRefUtil.matchKey(table.name()), tableId);
     }
 
     for (SystemViewDef view : viewDefs) {
@@ -373,7 +374,7 @@ public class SystemNodeRegistry {
               viewHints);
       viewNodes.add(node);
       viewsByNamespace.computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>()).add(node);
-      viewNames.put(NameRefUtil.canonical(view.name()), viewId);
+      viewNames.put(NameRefUtil.matchKey(view.name()), viewId);
     }
 
     for (SystemNamespaceDef ns : namespaceDefs) {
@@ -391,7 +392,7 @@ public class SystemNodeRegistry {
               Map.of(),
               namespaceHints);
       namespaceNodes.add(node);
-      namespaceNames.put(NameRefUtil.canonical(ns.name()), namespaceId);
+      namespaceNames.put(NameRefUtil.matchKey(ns.name()), namespaceId);
       tablesByNamespace.computeIfAbsent(namespaceId, ignored -> List.of());
       viewsByNamespace.computeIfAbsent(namespaceId, ignored -> List.of());
     }
@@ -541,11 +542,11 @@ public class SystemNodeRegistry {
     private void add(SystemObjectDef def, DefinitionSource source) {
       validateOwnership(def, source);
       if (def instanceof SystemNamespaceDef ns) {
-        putDefinition(namespaces, NameRefUtil.canonical(ns.name()), ns, "namespace", source);
+        putDefinition(namespaces, NameRefUtil.identityKey(ns.name()), ns, "namespace", source);
       } else if (def instanceof SystemTableDef table) {
-        putDefinition(tables, NameRefUtil.canonical(table.name()), table, "table", source);
+        putDefinition(tables, NameRefUtil.identityKey(table.name()), table, "table", source);
       } else if (def instanceof SystemViewDef view) {
-        putDefinition(views, NameRefUtil.canonical(view.name()), view, "view", source);
+        putDefinition(views, NameRefUtil.identityKey(view.name()), view, "view", source);
       } else if (def instanceof SystemFunctionDef function) {
         putDefinition(
             functions, SignatureUtil.identityString(function), function, "function", source);
@@ -611,7 +612,7 @@ public class SystemNodeRegistry {
                 + " contributed non-relation system object "
                 + def.kind()
                 + " ("
-                + NameRefUtil.canonical(def.name())
+                + NameRefUtil.identityKey(def.name())
                 + ")");
       }
       if (!(def instanceof SystemTableDef table)) {
@@ -633,7 +634,7 @@ public class SystemNodeRegistry {
                 + " contributed "
                 + backend
                 + " table "
-                + NameRefUtil.canonical(table.name())
+                + NameRefUtil.identityKey(table.name())
                 + "; expected "
                 + expectedBackends(source.role()));
       }
@@ -947,7 +948,7 @@ public class SystemNodeRegistry {
 
   /** ResourceId builder for objects identified by NameRef only (no overloads). */
   public static ResourceId resourceId(String engineKind, ResourceKind kind, NameRef name) {
-    String canonical = NameRefUtil.canonical(name);
+    String canonical = NameRefUtil.identityKey(name);
     return resourceId(engineKind, kind, canonical);
   }
 
@@ -1125,7 +1126,7 @@ public class SystemNodeRegistry {
   private static Optional<ResourceId> findNamespaceId(
       NameRef name, Map<String, ResourceId> namespaceIds) {
     return NameRefUtil.namespaceRef(name)
-        .map(NameRefUtil::canonical)
+        .map(NameRefUtil::identityKey)
         .flatMap(namespaceKey -> Optional.ofNullable(namespaceIds.get(namespaceKey)));
   }
 
@@ -1138,12 +1139,12 @@ public class SystemNodeRegistry {
                         "No namespace value for "
                             + objectType
                             + " definition: "
-                            + (name == null ? "<null>" : NameRefUtil.canonical(name))));
+                            + (name == null ? "<null>" : NameRefUtil.identityKey(name))));
     return resourceId(engineKind, ResourceKind.RK_NAMESPACE, namespaceRef);
   }
 
   private static void logMissingNamespace(String objectType, NameRef name) {
-    String canonical = name == null ? "<unknown>" : NameRefUtil.canonical(name);
+    String canonical = name == null ? "<unknown>" : NameRefUtil.identityKey(name);
     String namespaceKey = "";
     if (canonical != null) {
       int dot = canonical.lastIndexOf('.');

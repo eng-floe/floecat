@@ -75,7 +75,7 @@ final class SystemConstraintCatalog {
     var nodes = systemNodeRegistry.nodesFor(ctx);
     Map<ResourceId, ConstraintProvider.ConstraintSetView> out = new LinkedHashMap<>();
     for (var tableDef : nodes.toCatalogData().tables()) {
-      ResourceId tableId = nodes.tableNames().get(NameRefUtil.canonical(tableDef.name()));
+      ResourceId tableId = nodes.tableNames().get(NameRefUtil.matchKey(tableDef.name()));
       if (tableId == null) {
         continue;
       }

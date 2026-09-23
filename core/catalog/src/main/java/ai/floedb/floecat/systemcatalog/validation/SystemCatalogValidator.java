@@ -784,7 +784,7 @@ public final class SystemCatalogValidator {
         continue;
       }
       tableColumnsByCanonical.put(
-          NameRefUtil.canonical(table.name()), indexColumns(table.columns()));
+          NameRefUtil.identityKey(table.name()), indexColumns(table.columns()));
     }
 
     Set<NameRef> seen = new HashSet<>();
@@ -951,7 +951,7 @@ public final class SystemCatalogValidator {
       return null;
     }
     NameRef referencedTable = constraint.getReferencedTable();
-    String referencedRaw = NameRefUtil.canonical(referencedTable);
+    String referencedRaw = NameRefUtil.identityKey(referencedTable);
     if (referencedRaw.isBlank()) {
       return null;
     }

@@ -253,6 +253,15 @@ class SystemGraphTest {
   }
 
   @Test
+  void resolveTable_matchesTheStoredSpellingOnly() {
+    NameRef shouted = NameRefUtil.name("PG_CATALOG", "PG_CLASS");
+    assertThat(systemGraph.resolveTable(shouted, context(ENGINE, VERSION))).isEmpty();
+
+    NameRef mixed = NameRefUtil.name("pg_catalog", "Pg_Class");
+    assertThat(systemGraph.resolveTable(mixed, context(ENGINE, VERSION))).isEmpty();
+  }
+
+  @Test
   void tableName_reverseLookupWorks() {
     assertThat(systemGraph.tableName(tableId, context(ENGINE, VERSION)))
         .isPresent()
@@ -375,7 +384,7 @@ class SystemGraphTest {
             Map.of(),
             Map.of(),
             Map.of(),
-            Map.of(NameRefUtil.canonical(NameRefUtil.name("pg_catalog")), namespaceId),
+            Map.of(NameRefUtil.matchKey(NameRefUtil.name("pg_catalog")), namespaceId),
             catalogData);
 
     SystemGraph graph = new SystemGraph(new StubSystemNodeRegistry(nodes), 16);

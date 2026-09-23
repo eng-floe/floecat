@@ -161,7 +161,7 @@ class ServiceLoaderSystemCatalogProviderTest {
   private static void assertInfoSchemaTablesPresent(SystemEngineCatalog catalog) {
     assertThat(catalog.tables()).isNotEmpty();
     assertThat(catalog.tables())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains(
             "information_schema.tables",
             "information_schema.columns",

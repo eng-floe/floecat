@@ -234,7 +234,7 @@ class SystemNodeRegistryTest {
     var nodes = registry.nodesFor(context(PG_KIND, "16.0")).toCatalogData();
     ConstraintDefinition normalized =
         nodes.tables().stream()
-            .filter(t -> "custom.t".equals(NameRefUtil.canonical(t.name())))
+            .filter(t -> "custom.t".equals(NameRefUtil.identityKey(t.name())))
             .findFirst()
             .orElseThrow()
             .constraints()
@@ -692,22 +692,22 @@ class SystemNodeRegistryTest {
     var nodes = registry.nodesFor(context);
 
     assertThat(nodes.catalogData().functions())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.pg_fn");
     assertThat(nodes.catalogData().operators())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.pg_op");
     assertThat(nodes.catalogData().types())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.int4");
     assertThat(nodes.catalogData().casts())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.int4_to_text");
     assertThat(nodes.catalogData().collations())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.default");
     assertThat(nodes.catalogData().aggregates())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.pg_agg");
     assertThat(canonicalTableNames(nodes)).contains("environment.environment_table");
   }
@@ -913,7 +913,7 @@ class SystemNodeRegistryTest {
 
     var first = registry.nodesFor(context);
     assertThat(first.catalogData().functions())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.before_reload");
 
     functionName.set("after_reload");
@@ -923,7 +923,7 @@ class SystemNodeRegistryTest {
     var second = registry.nodesFor(context);
     assertThat(second).isNotSameAs(first);
     assertThat(second.catalogData().functions())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.after_reload")
         .doesNotContain("duck.before_reload");
   }
@@ -1173,7 +1173,9 @@ class SystemNodeRegistryTest {
   }
 
   private static List<String> canonicalTableNames(SystemNodeRegistry.BuiltinNodes nodes) {
-    return nodes.catalogData().tables().stream().map(t -> NameRefUtil.canonical(t.name())).toList();
+    return nodes.catalogData().tables().stream()
+        .map(t -> NameRefUtil.identityKey(t.name()))
+        .toList();
   }
 
   private static final class DynamicEngineProvider implements EngineCatalogProvider {
@@ -1408,7 +1410,7 @@ class SystemNodeRegistryTest {
 
     SystemTableDef overridden =
         nodes.catalogData().tables().stream()
-            .filter(def -> NameRefUtil.canonical(def.name()).equals("information_schema.tables"))
+            .filter(def -> NameRefUtil.identityKey(def.name()).equals("information_schema.tables"))
             .findFirst()
             .orElseThrow();
     assertThat(overridden.backendKind()).isEqualTo(TableBackendKind.TABLE_BACKEND_KIND_ENGINE);

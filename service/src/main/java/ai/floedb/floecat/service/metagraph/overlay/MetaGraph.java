@@ -309,7 +309,7 @@ public final class MetaGraph implements CatalogGraphView {
         LOG.warnf(
             "resolveName miss with empty engine context: ref=%s correlation_id=%s — the request"
                 + " declared engine_kind=%s but its context was lost before resolution",
-            NameRefUtil.canonical(ref), correlationId, declaredEngineKind);
+            NameRefUtil.identityKey(ref), correlationId, declaredEngineKind);
       }
     }
     return resolved;
@@ -766,7 +766,7 @@ public final class MetaGraph implements CatalogGraphView {
   }
 
   private static String canonicalName(NameRef ref) {
-    return NameRefUtil.canonical(ref);
+    return NameRefUtil.identityKey(ref);
   }
 
   private static String decodeUserToken(String token) {

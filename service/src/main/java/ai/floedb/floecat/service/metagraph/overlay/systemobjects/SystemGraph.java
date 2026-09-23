@@ -159,8 +159,7 @@ public final class SystemGraph {
    */
   public Optional<ResourceId> resolveTable(NameRef ref, CatalogContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
-    String canonical = NameRefUtil.canonical(ref);
-    return Optional.ofNullable(snapshot.tableNames().get(canonical));
+    return Optional.ofNullable(snapshot.tableNames().get(NameRefUtil.matchKey(ref)));
   }
 
   /**
@@ -173,8 +172,7 @@ public final class SystemGraph {
    */
   public Optional<ResourceId> resolveView(NameRef ref, CatalogContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
-    String canonical = NameRefUtil.canonical(ref);
-    return Optional.ofNullable(snapshot.viewNames().get(canonical));
+    return Optional.ofNullable(snapshot.viewNames().get(NameRefUtil.matchKey(ref)));
   }
 
   /**
@@ -187,8 +185,7 @@ public final class SystemGraph {
    */
   public Optional<ResourceId> resolveNamespace(NameRef ref, CatalogContext ctx) {
     GraphSnapshot snapshot = snapshotFor(ctx);
-    String canonical = NameRefUtil.canonical(ref);
-    return Optional.ofNullable(snapshot.namespaceNames().get(canonical));
+    return Optional.ofNullable(snapshot.namespaceNames().get(NameRefUtil.matchKey(ref)));
   }
 
   /**

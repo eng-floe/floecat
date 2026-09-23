@@ -650,6 +650,16 @@
     "allowedTags": ["component", "operation"]
   },
   {
+    "name": "floecat.service.planning.pointer.bytes",
+    "type": "GAUGE",
+    "unit": "bytes",
+    "since": "v1",
+    "origin": "service",
+    "description": "Heap the planner pointer index admitted across resident accounts, as weighed on load.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
     "name": "floecat.service.planning.pointer.entries",
     "type": "GAUGE",
     "unit": "count",
