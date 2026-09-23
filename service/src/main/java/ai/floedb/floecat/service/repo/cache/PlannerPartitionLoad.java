@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.repo.cache;
 
-import ai.floedb.floecat.cache.CacheWeights;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -129,7 +128,7 @@ final class PlannerPartitionLoad {
     private long bytes;
 
     boolean admit(Pointer pointer) {
-      bytes += CacheWeights.entry(pointer, 2L * pointer.getKey().length());
+      bytes += PlanningPointerIndex.pointerWeight(pointer);
       if (bytes > policy.maxBytesPerAccount()) {
         return false;
       }

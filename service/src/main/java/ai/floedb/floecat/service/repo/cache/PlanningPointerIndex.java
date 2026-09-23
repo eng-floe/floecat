@@ -1100,7 +1100,12 @@ public final class PlanningPointerIndex {
     }
   }
 
-  private static long pointerWeight(Pointer pointer) {
+  /**
+   * What one entry charges against the budget. One definition, because the load weighs a pointer on
+   * the way in and every later mutation weighs it again on the way out: two expressions that only
+   * happened to agree would let residentBytes drift by their difference on every publish.
+   */
+  static long pointerWeight(Pointer pointer) {
     return CacheWeights.entry(pointer, 2L * pointer.getKey().length());
   }
 

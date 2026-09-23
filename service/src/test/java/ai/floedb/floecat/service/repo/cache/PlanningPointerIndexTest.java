@@ -155,7 +155,10 @@ class PlanningPointerIndexTest {
             (account, access) ->
                 account.equals("owned")
                     ? Optional.of(PlanningPointerIndex.Ownership.Permit.NOOP)
-                    : Optional.empty());
+                    : Optional.empty(),
+            // Load inline: the subject here is batch fallback, and a load fetches the per-table
+            // keys in a batch of its own, which on another thread lands in the middle of the count.
+            Runnable::run);
     IndexedPointerStore store = new IndexedPointerStore(durable, index);
 
     assertThat(store.get(ownedKey)).isPresent(); // Load the owned partition first.
