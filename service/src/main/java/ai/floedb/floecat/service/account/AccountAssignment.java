@@ -110,9 +110,6 @@ public class AccountAssignment
 
   @Override
   public Optional<PlanningPointerIndex.Ownership.Permit> acquire(String accountId, Access access) {
-    if (PlanningPointerIndex.isAccountDirectoryPartition(accountId)) {
-      return Optional.of(PlanningPointerIndex.Ownership.Permit.NOOP);
-    }
     if (processDraining || accountId == null || accountId.isBlank()) {
       return Optional.empty();
     }
@@ -132,18 +129,18 @@ public class AccountAssignment
   @Override
   public PlanningPointerIndex.Ownership.Permit admitMutation(String accountId) {
     return acquire(accountId, Access.WRITE)
-        .orElseThrow(() -> new PlanningPointerIndex.Ownership.NotOwnedException(accountId));
+        .orElseThrow(() -> new IllegalStateException("Account is not admitted: " + accountId));
   }
 
   @Override
   public PlanningPointerIndex.Ownership.Permit admitResolution(String accountId) {
     if (processDraining || accountId == null || accountId.isBlank()) {
-      throw new PlanningPointerIndex.Ownership.NotOwnedException(accountId);
+      throw new IllegalStateException("Account is not admitted: " + accountId);
     }
     AccountState state = state(accountId);
     synchronized (state) {
       if (processDraining) {
-        throw new PlanningPointerIndex.Ownership.NotOwnedException(accountId);
+        throw new IllegalStateException("Account is not admitted: " + accountId);
       }
       state.activeResolutions++;
     }
