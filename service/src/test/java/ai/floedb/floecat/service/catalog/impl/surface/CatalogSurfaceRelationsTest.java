@@ -779,6 +779,41 @@ class CatalogSurfaceRelationsTest {
   }
 
   @Test
+  void resolveReportsTheSameNameWithAndWithoutSchema() {
+    var table = systemTable("pg_class");
+    graphView.addRelation(namespaceId, table);
+    // The name the catalog holds is qualified; the key it is matched on omits the catalog.
+    NameRef stored =
+        NameRef.newBuilder().setCatalog("engine").addPath("pg_catalog").setName("pg_class").build();
+    graphView.bind(stored, table.id());
+
+    // So a candidate naming no catalog still resolves, and must not be echoed back as the name.
+    NameRef candidate = name("pg_catalog", "pg_class");
+
+    var identityOnly =
+        surface()
+            .resolveRelations(
+                ResolveRelationsRequest.newBuilder().addReferences(ref(candidate)).build(),
+                MAX_NAMES,
+                CORRELATION_ID)
+            .getResults(0);
+    var hydrated =
+        surface()
+            .resolveRelations(
+                ResolveRelationsRequest.newBuilder()
+                    .addReferences(ref(candidate))
+                    .setIncludeSchema(true)
+                    .build(),
+                MAX_NAMES,
+                CORRELATION_ID)
+            .getResults(0);
+
+    assertEquals(stored, identityOnly.getResolvedName());
+    assertEquals(identityOnly.getResolvedName(), hydrated.getResolvedName());
+    assertEquals(identityOnly.getRelation().getName(), hydrated.getRelation().getName());
+  }
+
+  @Test
   void resolveReportsOneErrorWhenNoCandidateResolves() {
     var response =
         surface()
@@ -1208,6 +1243,7 @@ class CatalogSurfaceRelationsTest {
 
   private static final class CountingGraphView extends TestCatalogGraphView {
     private final Map<String, ResourceId> byName = new LinkedHashMap<>();
+    private final Map<ResourceId, NameRef> nameById = new LinkedHashMap<>();
     private final Map<ResourceId, List<CatalogGraphView.RelationRef>> relationRefs =
         new LinkedHashMap<>();
     private List<CatalogGraphView.NamespaceRef> pointerNamespaceRefs = List.of();
@@ -1217,6 +1253,19 @@ class CatalogSurfaceRelationsTest {
 
     void bind(NameRef name, ResourceId id) {
       byName.put(NameRefUtil.lookupKey(name), id);
+      nameById.put(id, name);
+    }
+
+    // The graph holds a relation's qualified name and answers every reverse lookup from it, so a
+    // hydrated read and an identity-only read report the same name.
+    @Override
+    public Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext ctx) {
+      return Optional.ofNullable(nameById.get(id));
+    }
+
+    @Override
+    public Optional<NameRef> resolveSystemViewName(ResourceId id, CatalogContext ctx) {
+      return Optional.ofNullable(nameById.get(id));
     }
 
     void addRelationRef(ResourceId namespaceId, CatalogGraphView.RelationRef relationRef) {
@@ -1309,12 +1358,11 @@ class CatalogSurfaceRelationsTest {
       return Optional.ofNullable(byName.get(NameRefUtil.lookupKey(ref)));
     }
 
+    // The bound name, not the lookup key: the key omits the catalog, and a reverse lookup that
+    // rebuilt the name from it would report a relation the catalog does not hold.
     @Override
     public Optional<NameRef> tableName(ResourceId id, CatalogContext catalogContext) {
-      return byName.entrySet().stream()
-          .filter(entry -> entry.getValue().equals(id))
-          .map(entry -> nameFromCanonical(entry.getKey()))
-          .findFirst();
+      return Optional.ofNullable(nameById.get(id));
     }
 
     @Override
@@ -1329,15 +1377,6 @@ class CatalogSurfaceRelationsTest {
     @Override
     public Optional<NameRef> viewName(ResourceId id, CatalogContext catalogContext) {
       return tableName(id, catalogContext);
-    }
-
-    private static NameRef nameFromCanonical(String canonical) {
-      String[] parts = canonical.split("\\.");
-      NameRef.Builder builder = NameRef.newBuilder().setName(parts[parts.length - 1]);
-      for (int i = 0; i < parts.length - 1; i++) {
-        builder.addPath(parts[i]);
-      }
-      return builder.build();
     }
   }
 }

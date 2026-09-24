@@ -43,6 +43,7 @@ import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import io.grpc.StatusRuntimeException;
 import java.nio.charset.StandardCharsets;
@@ -274,24 +275,43 @@ public final class CatalogSurfaceRelations {
       if (id == null) {
         continue;
       }
-      result.setResolvedName(candidate);
+      NameRef name = resolvedNameOf(id, candidate);
+      result.setResolvedName(name);
       try {
         Relation relation =
             includeSchema
                 ? relationById(id, true, includeStatus, corr)
                 : mapper.fromRef(
-                    new CatalogGraphView.RelationRef(id, candidate.getName(), id.getKind()),
-                    candidate,
+                    new CatalogGraphView.RelationRef(id, name.getName(), id.getKind()),
+                    name,
                     includeStatus);
         return result.setRelation(relation).build();
       } catch (StatusRuntimeException failure) {
         if (!GrpcErrors.isRelationScoped(failure)) {
           throw failure;
         }
-        return result.setError(toError(candidate, failure, corr)).build();
+        return result.setError(toError(name, failure, corr)).build();
       }
     }
     return result.setError(noCandidateResolved(reference, corr)).build();
+  }
+
+  /**
+   * The name a reference resolved to, in the shape a hydrated read reports.
+   *
+   * <p>A user relation is matched on a catalog-qualified key, so the candidate that matched is that
+   * name. A builtin is matched without its catalog, so a candidate can resolve while naming no
+   * catalog or another one; the graph holds the name and answers from the snapshot.
+   */
+  private NameRef resolvedNameOf(ResourceId id, NameRef candidate) {
+    if (!SystemResourceIdGenerator.isSystemId(id)) {
+      return candidate;
+    }
+    Optional<NameRef> system =
+        id.getKind() == ResourceKind.RK_VIEW
+            ? graphView.resolveSystemViewName(id, context)
+            : graphView.resolveSystemTableName(id, context);
+    return system.orElse(candidate);
   }
 
   private Relation relationById(

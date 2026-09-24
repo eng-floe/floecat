@@ -306,7 +306,7 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext context) {
+    public Optional<NameRef> resolveSystemRelationName(ResourceId id, CatalogContext context) {
       return Optional.ofNullable(names.get(id.getId()));
     }
 

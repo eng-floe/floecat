@@ -178,8 +178,8 @@ public interface CatalogGraphView {
   /** Resolves a system table name without involving the user graph. */
   Optional<ResourceId> resolveSystemTable(NameRef ref, CatalogContext catalogContext);
 
-  /** Resolves a system table id back to name without involving the user graph. */
-  Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext catalogContext);
+  /** Resolves a system relation id back to name without involving the user graph. */
+  Optional<NameRef> resolveSystemRelationName(ResourceId id, CatalogContext catalogContext);
 
   /** Resolves a system type by namespace + type name without involving the user graph. */
   Optional<TypeNode> resolveSystemType(
