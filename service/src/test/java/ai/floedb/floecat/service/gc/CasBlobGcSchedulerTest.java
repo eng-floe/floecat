@@ -244,6 +244,35 @@ class CasBlobGcSchedulerTest {
   }
 
   @Test
+  void refusedRetainedContinuationIsAbandonedWithoutRetryingTheSameAccount() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.getById(any()))
+        .thenAnswer(
+            invocation -> Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
+    NeverCompletingContinuationGc gc = new NeverCompletingContinuationGc();
+    AccountScope scope = mock(AccountScope.class);
+    when(scope.tryAcquireGc("acct-a")).thenReturn(Optional.empty());
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    scheduler.accountScope = scope;
+    scheduler.observability = new TestObservability();
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(scheduler.observability);
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+    }
+
+    verify(scope).tryAcquireGc("acct-a");
+    assertEquals(0, gc.accountIds.size());
+    assertEquals(1, gc.abandons);
+  }
+
+  @Test
   void accountPageFetchedAtDeadlineIsRetainedForTheNextTick() {
     AccountRepository accounts = mock(AccountRepository.class);
     AtomicInteger listCalls = new AtomicInteger();

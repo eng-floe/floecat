@@ -22,6 +22,7 @@ import ai.floedb.floecat.query.rpc.ExpansionMap;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
@@ -43,6 +44,7 @@ public class QueryInputMetadataAssembler {
   @Inject ViewExpansionResolver expansions;
   @Inject ObligationsResolver obligations;
   @Inject Observability observability;
+  @Inject AccountScope accountScope;
 
   /**
    * Combines the existing resolvers to build the lifecycle metadata that BeginQuery should store
@@ -71,18 +73,24 @@ public class QueryInputMetadataAssembler {
     }
 
     try {
-      var resolution =
-          diagnostics.time(
-              "resolve_inputs",
-              () ->
-                  inputResolver.resolveInputs(
-                      queryId,
-                      correlationId,
-                      inputs,
-                      asOfDefault,
-                      Optional.of(defaultCatalogId),
-                      new SnapshotPinMemo(),
-                      diagnostics));
+      var resolutionPermit = accountScope.admitResolution(defaultCatalogId.getAccountId());
+      QueryInputResolver.ResolutionResult resolution;
+      try {
+        resolution =
+            diagnostics.time(
+                "resolve_inputs",
+                () ->
+                    inputResolver.resolveInputs(
+                        queryId,
+                        correlationId,
+                        inputs,
+                        asOfDefault,
+                        Optional.of(defaultCatalogId),
+                        new SnapshotPinMemo(),
+                        diagnostics));
+      } finally {
+        resolutionPermit.close();
+      }
       diagnostics.put("resolved_inputs", resolution.resolved().size());
       RelationPinSet relationPinSet = resolution.relationPinSet();
       SnapshotSet snapshotSet = resolution.snapshotSet();

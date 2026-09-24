@@ -58,7 +58,7 @@ class AccountAssignmentTest {
     assertThatThrownBy(() -> assignment.admitMutation(ACCOUNT))
         .isInstanceOf(IllegalStateException.class);
     assertThatThrownBy(() -> assignment.admitResolution(ACCOUNT))
-        .isInstanceOf(IllegalStateException.class);
+        .isInstanceOf(LifecycleDrain.DrainingException.class);
   }
 
   @Test

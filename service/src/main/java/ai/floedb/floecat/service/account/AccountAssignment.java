@@ -134,13 +134,16 @@ public class AccountAssignment
 
   @Override
   public PlanningPointerIndex.Ownership.Permit admitResolution(String accountId) {
-    if (processDraining || accountId == null || accountId.isBlank()) {
+    if (processDraining) {
+      throw new LifecycleDrain.DrainingException();
+    }
+    if (accountId == null || accountId.isBlank()) {
       throw new IllegalStateException("Account is not admitted: " + accountId);
     }
     AccountState state = state(accountId);
     synchronized (state) {
       if (processDraining) {
-        throw new IllegalStateException("Account is not admitted: " + accountId);
+        throw new LifecycleDrain.DrainingException();
       }
       state.activeResolutions++;
     }
