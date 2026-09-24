@@ -28,6 +28,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.account.AccountScope;
+import ai.floedb.floecat.service.account.LifecycleDrain;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.ArrayList;
@@ -86,6 +87,45 @@ class PointerGcSchedulerTest {
     }
 
     assertThat(gc.accountIds).containsExactlyInAnyOrder("acct-a", "acct-b");
+  }
+
+  @Test
+  void drainingTickSkipsGlobalGcButDoesNotRunAfterDrain() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any())).thenReturn(List.of());
+    RecordingPointerGc gc = new RecordingPointerGc();
+    PointerGcScheduler scheduler = new PointerGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.pointerGc = () -> gc;
+    scheduler.assignment = AccountAssignment.forTesting();
+    scheduler.lifecycleDrain =
+        new LifecycleDrain() {
+          @Override
+          public Permit admitRpc() {
+            throw new DrainingException();
+          }
+
+          @Override
+          public Status beginProcessDrain() {
+            return new Status("member", "incarnation", true, List.of(), 0L);
+          }
+
+          @Override
+          public Status status() {
+            return new Status("member", "incarnation", true, List.of(), 0L);
+          }
+        };
+    scheduler.observability = new TestObservability();
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.pointer.enabled", "true");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.pointer.enabled");
+    }
+
+    assertThat(gc.globalRuns).as("global GC is lifecycle-admitted").isZero();
   }
 
   private static Account account(String accountId) {
