@@ -445,6 +445,103 @@ class CatalogSurfaceRelationsTest {
   }
 
   @Test
+  void aDeletedNamespaceDoesNotLendItsPageTokenToTheNextOne() {
+    // "aaa" sorts before "mmm", and its table sorts AFTER the one in "mmm", so a token minted in
+    // "aaa" would skip "mmm"'s row entirely if it were carried over.
+    var aaa = namespace(List.of("public"), "aaa");
+    var mmm = namespace(List.of("public"), "mmm");
+    graphView.addNode(aaa);
+    graphView.addNode(mmm);
+    var root = new CatalogGraphView.NamespaceRef(namespaceId, "public", catalogId, List.of());
+    var aaaRef = new CatalogGraphView.NamespaceRef(aaa.id(), "aaa", catalogId, List.of("public"));
+    var mmmRef = new CatalogGraphView.NamespaceRef(mmm.id(), "mmm", catalogId, List.of("public"));
+    graphView.setPointerNamespaceRefs(List.of(root, aaaRef, mmmRef));
+    tableRepo.add(tableIn(aaa.id(), "z_one"));
+    tableRepo.add(tableIn(aaa.id(), "z_two"));
+    tableRepo.add(tableIn(mmm.id(), "a_only"));
+
+    var first =
+        list(
+            ListRelationsRequest.newBuilder()
+                .setCatalogId(catalogId)
+                .setRecursive(true)
+                .addKinds(ResourceKind.RK_TABLE),
+            1);
+    assertEquals(List.of("z_one"), names(first));
+    String token = first.getPage().getNextPageToken();
+    assertFalse(token.isBlank());
+
+    // The namespace the token resumes in is dropped between pages.
+    graphView.setPointerNamespaceRefs(List.of(root, mmmRef));
+
+    var second =
+        list(
+            ListRelationsRequest.newBuilder()
+                .setCatalogId(catalogId)
+                .setRecursive(true)
+                .addKinds(ResourceKind.RK_TABLE)
+                .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken(token)),
+            1);
+    assertEquals(List.of("a_only"), names(second));
+  }
+
+  @Test
+  void anInternalFailureOnOneRelationLeavesTheRestOfThePage() {
+    var good = userTable("orders");
+    var bad = userTable("shipments");
+    tableRepo.add(good);
+    tableRepo.add(bad);
+    graphView.failTableSchemaWith(
+        bad.getResourceId(),
+        io.grpc.Status.INTERNAL.withDescription("bad schema").asRuntimeException());
+
+    var response =
+        surface()
+            .listRelations(
+                ListRelationsRequest.newBuilder()
+                    .setNamespaceId(namespaceId)
+                    .addKinds(ResourceKind.RK_TABLE)
+                    .setIncludeSchema(true)
+                    .setPage(PageRequest.newBuilder().setPageSize(10))
+                    .build(),
+                ACCOUNT_ID,
+                CORRELATION_ID);
+
+    assertEquals(2, response.getResultsCount());
+    var ok = response.getResultsList().stream().filter(r -> r.hasRelation()).toList();
+    var failed = response.getResultsList().stream().filter(r -> r.hasError()).toList();
+
+    assertEquals(1, ok.size());
+    assertEquals("orders", ok.get(0).getRelation().getName().getName());
+    assertEquals(1, failed.size());
+    assertEquals("shipments", failed.get(0).getError().getName().getName());
+    assertEquals(ErrorCode.MC_INTERNAL, failed.get(0).getError().getError().getCode());
+  }
+
+  @Test
+  void aCorruptRelationFailsTheListingInsteadOfBecomingARowError() {
+    var table = userTable("orders");
+    tableRepo.add(table);
+    // What NodeLoader.reload raises for a current pointer whose blob is lost. It is not a gRPC
+    // status, and reporting data loss as one bad row would mask it.
+    graphView.failResolveWith(
+        table.getResourceId(),
+        new BaseResourceRepository.CorruptionException("dangling pointer, missing blob: x", null));
+
+    var request =
+        ListRelationsRequest.newBuilder()
+            .setNamespaceId(namespaceId)
+            .addKinds(ResourceKind.RK_TABLE)
+            .setIncludeSchema(true)
+            .setPage(PageRequest.newBuilder().setPageSize(10))
+            .build();
+
+    assertThrows(
+        BaseResourceRepository.CorruptionException.class,
+        () -> surface().listRelations(request, ACCOUNT_ID, CORRELATION_ID));
+  }
+
+  @Test
   void catalogScopeNormalizesPointerNamespacePaths() {
     var child = namespace(List.of("public"), "nested");
     graphView.addNode(child);
