@@ -46,12 +46,8 @@ import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import io.grpc.StatusRuntimeException;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -109,7 +105,8 @@ public final class CatalogSurfaceRelations {
     // single relation is read.
     int want = Math.min(Math.max(1, pageIn.limit), maxPageSize);
     RelationPageCursor cursor = RelationPageCursor.decode(pageIn.token, corr);
-    String scopeFingerprint = scopeFingerprint(request, kinds, accountId, context);
+    String scopeFingerprint =
+        RelationPageCursor.scopeFingerprint(request, kinds, accountId, context);
     if (!pageIn.token.isBlank()) {
       cursor.requireScope(scopeFingerprint, pageIn.token, corr);
     }
@@ -164,63 +161,6 @@ public final class CatalogSurfaceRelations {
         .addAllResults(results)
         .setPage(MutationOps.pageOut(nextToken, total))
         .build();
-  }
-
-  private static String scopeFingerprint(
-      ListRelationsRequest request,
-      List<ResourceKind> kinds,
-      String accountId,
-      CatalogContext context) {
-    StringBuilder canonical = new StringBuilder(accountId).append('\0');
-    if (request.hasCatalogId()) {
-      appendScope(canonical, "catalog", request.getCatalogId());
-    } else {
-      appendScope(canonical, "namespace", request.getNamespaceId());
-    }
-    canonical
-        .append('\0')
-        .append(request.getRecursive())
-        .append('\0')
-        .append(request.getIncludeSchema())
-        .append('\0')
-        .append(request.getIncludeStatus())
-        .append('\0')
-        .append(request.getIncludeTotal());
-    appendContext(canonical, context);
-    for (ResourceKind kind : kinds) {
-      canonical.append('\0').append(kind.getNumber());
-    }
-    try {
-      return HexFormat.of()
-          .formatHex(
-              MessageDigest.getInstance("SHA-256")
-                  .digest(canonical.toString().getBytes(StandardCharsets.UTF_8)));
-    } catch (NoSuchAlgorithmException impossible) {
-      throw new AssertionError("SHA-256 is required", impossible);
-    }
-  }
-
-  private static void appendContext(StringBuilder canonical, CatalogContext context) {
-    canonical
-        .append('\0')
-        .append(context.environment().normalizedKind())
-        .append('\0')
-        .append(context.environment().normalizedVersion())
-        .append('\0')
-        .append(context.engine().normalizedKind())
-        .append('\0')
-        .append(context.engine().normalizedVersion());
-  }
-
-  private static void appendScope(StringBuilder canonical, String type, ResourceId id) {
-    canonical
-        .append(type)
-        .append('\0')
-        .append(id.getAccountId())
-        .append('\0')
-        .append(id.getId())
-        .append('\0')
-        .append(id.getKindValue());
   }
 
   public ResolveRelationsResponse resolveRelations(
