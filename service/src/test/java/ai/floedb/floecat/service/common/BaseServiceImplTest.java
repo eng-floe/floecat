@@ -157,6 +157,10 @@ class BaseServiceImplTest {
     Uni<String> operation = service.admitted(() -> "ok");
     assertEquals(0, drain.active.get());
     assertEquals("ok", operation.await().indefinitely());
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+    while (drain.active.get() != 0 && System.nanoTime() < deadline) {
+      Thread.onSpinWait();
+    }
     assertEquals(0, drain.active.get());
   }
 
