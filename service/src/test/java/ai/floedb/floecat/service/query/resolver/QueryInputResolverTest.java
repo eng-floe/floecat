@@ -37,6 +37,8 @@ import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.concurrent.UninterruptibleBlocker;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
+import ai.floedb.floecat.service.repo.util.RepositoryReads;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
@@ -166,6 +168,51 @@ public class QueryInputResolverTest {
       blockingGraph.allowSlowPin.countDown();
     }
     resolution.join();
+  }
+
+  @Test
+  void gcCannotObtainTableProofBetweenPinReadAndTransientRegistration() throws Exception {
+    var blockingGraph = new BlockingPinGraph("SLOW");
+    var store = org.mockito.Mockito.mock(QueryContextStore.class);
+    var guard = new TableBlobReachabilityGuard();
+    var withGuard =
+        new QueryInputResolver(blockingGraph, store, RepositoryReads.directPolicy(), guard);
+    ResourceId table = rid("SLOW");
+
+    CompletableFuture<Void> resolution =
+        CompletableFuture.runAsync(
+            () ->
+                withGuard.resolveInputs(
+                    "q-guarded",
+                    "cid",
+                    List.of(QueryInput.newBuilder().setTableId(table).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    new SnapshotPinMemo(),
+                    null));
+
+    assertTrue(blockingGraph.slowPinStarted.await(1, TimeUnit.SECONDS));
+    CountDownLatch exclusiveRan = new CountDownLatch(1);
+    CompletableFuture<Void> gcAttempt =
+        CompletableFuture.runAsync(
+            () ->
+                guard.exclusive(
+                    table,
+                    () -> {
+                      exclusiveRan.countDown();
+                      return null;
+                    }));
+    assertFalse(exclusiveRan.await(100, TimeUnit.MILLISECONDS));
+
+    blockingGraph.allowSlowPin.countDown();
+    resolution.join();
+    gcAttempt.join();
+    assertTrue(exclusiveRan.await(1, TimeUnit.SECONDS));
+    org.mockito.Mockito.verify(store)
+        .registerResolvingPinBlobs(
+            org.mockito.ArgumentMatchers.eq("q-guarded"),
+            org.mockito.ArgumentMatchers.eq(table),
+            org.mockito.ArgumentMatchers.any());
   }
 
   @Test
