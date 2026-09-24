@@ -346,8 +346,10 @@ public final class MetaGraph implements CatalogGraphView {
   }
 
   @Override
-  public Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext ctx) {
-    return systemGraph.tableName(id, ctx);
+  public Optional<NameRef> resolveSystemRelationName(ResourceId id, CatalogContext ctx) {
+    return id.getKind() == ResourceKind.RK_VIEW
+        ? systemGraph.viewName(id, ctx)
+        : systemGraph.tableName(id, ctx);
   }
 
   @Override

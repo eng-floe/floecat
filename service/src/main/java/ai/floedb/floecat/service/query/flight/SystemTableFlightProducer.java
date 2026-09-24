@@ -238,7 +238,7 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
 
   @Override
   protected Optional<String> resolveSystemTableName(ResourceId id, ResolvedCallContext context) {
-    return graph.resolveSystemTableName(id, context.catalogContext()).map(NameRefUtil::matchKey);
+    return graph.resolveSystemRelationName(id, context.catalogContext()).map(NameRefUtil::matchKey);
   }
 
   private SystemObjectScanner resolveScanner(ResourceId tableId, ResolvedCallContext ctx) {
