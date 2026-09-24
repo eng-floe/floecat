@@ -565,9 +565,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#account-assignment-and-drain" class="md-nav__link">
+  <a href="#account-lifecycle-and-drain" class="md-nav__link">
     <span class="md-ellipsis">
-      Account assignment and drain
+      Account lifecycle and drain
     </span>
   </a>
   
@@ -1876,9 +1876,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#account-assignment-and-drain" class="md-nav__link">
+  <a href="#account-lifecycle-and-drain" class="md-nav__link">
     <span class="md-ellipsis">
-      Account assignment and drain
+      Account lifecycle and drain
     </span>
   </a>
   
@@ -2209,34 +2209,19 @@ cross-lane fallback: an accepted intent remains owned by the exact lane recorded
   ship spans to a collector. See <a href="https://github.com/eng-floe/floecat/blob/main/examples/telemetry/telemetry-demo.md"><code>telemetry-demo.md</code></a>
   for the full Prometheus + Tempo + Loki + Grafana demo stack.</li>
 </ul>
-<h3 id="account-assignment-and-drain">Account assignment and drain<a class="headerlink" href="#account-assignment-and-drain" title="Permanent link">&para;</a></h3>
-<p>A Floecat process runs in one of three modes (<code>FLOECAT_ACCOUNT_ASSIGNMENT_MODE</code>):</p>
-<ul>
-<li><code>standalone</code> (default): serves every account and runs GC for all of them. Single-process and
-  OSS deployments need nothing else.</li>
-<li><code>managed</code>: serves only the accounts a control plane assigns to it. Requires <code>FLOECAT_MEMBER_ID</code>,
-  the process's stable identity across restarts (the deployment sets it to the pod name). The control
-  plane decides placement and pushes assignments; a restarted process recovers its own accounts from
-  the store before it hears anything, so reads and writes continue while the control plane is
-  unavailable.</li>
-<li><code>none</code>: serves no account at all. Account-scoped reads fall through to the durable store and
-  pin resolution is refused, so the process answers directory and metadata reads but runs no query.</li>
-</ul>
-<p><code>managed</code> needs a control plane. Setting the mode without something calling <code>ApplyAssignment</code> leaves
-the process owning nothing: reads fall through to the durable store, account-scoped writes fail with
-<code>floecat.not_assigned</code>, and <code>account_assignment_absent</code> is logged on a cadence. See
-<a href="../service/#binding-a-control-plane">binding a control plane</a> before running this mode outside
-FloeDB.</p>
-<p>The drain endpoint is registered only in <code>managed</code> mode. Pods in that mode should drain before
-termination with a <code>preStop</code> hook on
-<code>GET /internal/drain?wait=true&amp;timeoutMs=&lt;ms&gt;</code>; the response is <code>200</code> when in-flight mutations and
-resolutions are gone and <code>202</code> at the timeout. <code>GET /internal/drain</code> shows the current status.
-Draining is irreversible for the life of the process, and the endpoint authenticates no one —
-restricting it is the deployment's job. Under <code>wait=true</code> a malformed or negative <code>timeoutMs</code> is
-refused with <code>400</code> and drains nothing; without it a <code>POST</code> drains regardless of <code>timeoutMs</code> and returns at
-once, so a hook that interpolates one wants <code>wait=true</code> for a bad value to be caught. Related
-metrics: <code>floecat.service.account_assignment.accounts</code> (per state), <code>gc_allowed_accounts</code>,
-<code>self_checks.total</code>, <code>fence_bumps.total</code> and <code>fence_rejections.total</code> (by result).</p>
+<h3 id="account-lifecycle-and-drain">Account lifecycle and drain<a class="headerlink" href="#account-lifecycle-and-drain" title="Permanent link">&para;</a></h3>
+<p>The default Floecat process serves every account. Deployments may bind a different
+<code>AccountScope</code>/ownership implementation when they need admission or lease coordination. The
+deployment lifecycle drain is always available and only affects the local process: it stops new
+account work and GC while already-admitted work is allowed to finish.</p>
+<p>Pods should drain before termination with a <code>preStop</code> hook on the private management listener at
+<code>GET /internal/drain?wait=true&amp;timeoutMs=&lt;ms&gt;</code>; the response is <code>200</code> when all admitted RPCs,
+mutations, resolutions, and GC work are gone and <code>202</code> at the requested timeout. <code>GET
+/internal/drain</code> shows the current status.
+Draining is irreversible for the life of the process. Under <code>wait=true</code> a malformed or negative
+<code>timeoutMs</code> is refused with <code>400</code> and drains nothing; without it a <code>POST</code> drains regardless of
+<code>timeoutMs</code> and returns at once, so a hook that interpolates one wants <code>wait=true</code> for a bad value to
+be caught. The client-facing HTTP/gRPC listener does not expose this route.</p>
 <h3 id="telemetry-hub-configuration">Telemetry hub configuration<a class="headerlink" href="#telemetry-hub-configuration" title="Permanent link">&para;</a></h3>
 <p>The service uses the telemetry hub core + Micrometer backend. The following flags are available in
 <code>service/src/main/resources/application.properties</code> (the <code>telemetry-otlp</code> profile toggles OTLP tracing/log exports):</p>

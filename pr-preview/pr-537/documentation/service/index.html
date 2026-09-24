@@ -537,26 +537,11 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#account-assignment" class="md-nav__link">
+  <a href="#account-lifecycle" class="md-nav__link">
     <span class="md-ellipsis">
-      Account Assignment
+      Account Lifecycle
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Account Assignment">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#binding-a-control-plane" class="md-nav__link">
-    <span class="md-ellipsis">
-      Binding a control plane
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
         
@@ -1978,26 +1963,11 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#account-assignment" class="md-nav__link">
+  <a href="#account-lifecycle" class="md-nav__link">
     <span class="md-ellipsis">
-      Account Assignment
+      Account Lifecycle
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Account Assignment">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#binding-a-control-plane" class="md-nav__link">
-    <span class="md-ellipsis">
-      Binding a control plane
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
         
@@ -2480,72 +2450,34 @@ so <code>CloseScan</code> is best-effort but still recommended to tidy server re
 currently reports <code>DeleteRef.all_deletes=true</code>; finer-grain delete references will come later once the
 applicability logic is defined. The lease data (snapshots, expansion map, obligations) is returned to
 the caller inside the <code>QueryDescriptor</code>.</p>
-<h3 id="account-assignment">Account Assignment<a class="headerlink" href="#account-assignment" title="Permanent link">&para;</a></h3>
-<p><code>AccountScope</code> is the question — may this process mutate, resolve pins for, or collect this
-account? — asked by every caller that needs to know, rather than reading assignment state directly.
-It answers permission only: the store fence below is Floecat's own, so an implementation decides
-who serves what without maintaining the mechanism that enforces it. <code>AccountAssignment</code> is the
-only implementation and decides which accounts this process serves. In the default <code>standalone</code> mode
-every account is served and GC-allowed and nothing below applies. In <code>managed</code> mode an external
-control plane pushes each process its complete assignment through the internal
-<code>AccountAssignmentControl</code> service
-(<code>ApplyAssignment</code>, <code>GetAssignmentStatus</code>; permission <code>account-assignment-control.internal</code>):
-an epoch, the epoch's phase (<code>DRAINING</code> or <code>SERVING</code>), the owned account ids and the subset that
-may run GC. The phase describes the epoch and is pushed unchanged to every process; whether this
-process serves an account is per account. FloeDB's Core is one such control plane; the contract
-is on <code>AssignmentControl</code>.
-Floecat never calls its control plane or another Floecat, and never learns where it is deployed: the
-account set arrives over the RPC and is never derived from a cluster, a replica count or a placement
-hash (<code>DeploymentIndependenceArchTest</code>, which fails if a Kubernetes client reaches the classpath).
-The rejection rules are on <code>AssignmentControl.apply</code>.</p>
-<p>For an owned account the process admits pins and mutations under a permit and reads from the
-planning pointer index. For a non-owned account reads fall through to the durable store and
-<code>BeginQuery</code>, pin resolution and mutations fail with <code>FAILED_PRECONDITION</code> whose message carries
-<code>floecat.not_assigned</code>; <code>RenewQuery</code> and <code>EndQuery</code> for contexts the process already holds keep
-working. Entering <code>SERVING</code> takes the account's fence pointer <code>assignment-fence/&lt;account&gt;</code> by CAS
-to an <code>owned</code> marker and writes the member index <code>assignments/&lt;member&gt;</code>, both in the background on
-one thread, since taking a fence is a read then a CAS and two takers would each believe a different
-version. Both records sit outside <code>accounts/</code> and get one store partition each, so deleting an
-account's prefix cannot take its fence with it.
-From then on every account-scoped write carries <code>CasCheck(fence, remembered_version)</code>
-(<code>AssignmentFence</code>, wired once beneath <code>IndexedPointerStore</code>), so a previous owner's next write
-fails its condition. The fence is separate from the account-deletion fence, which keeps its own
-shards and its existing deletion-in-progress error. A fence self-check (one consistent read of the
-fence pointer per owned account) runs on every GC permit and every
-<code>floecat.account-assignment.self-check-interval</code>; a mismatch drains the account — it stops admitting
-work and drops its index at once, but keeps the fence version so writes already admitted fail their
-condition rather than committing unconditioned — and a sweep that cannot reach the store fences pins
-and writes on every owned account until one succeeds. At
-startup the process restores the accounts whose fence still names its member id, <code>SERVING</code> but
-never GC-allowed. Restoring takes the fence rather than adopting it: member ids are stable across
-restarts and the marker carries no incarnation, so a marker naming this member proves only that some
-process took it once, possibly one still running. The restore CASes the version forward, which is
-what makes that predecessor's next write fail its condition; losing the CAS means the account is
-someone else's now. <code>none</code> mode owns no account, so every account takes the
-non-owned path above and the process runs no query; account-directory reads and writes are
-unaffected, as they are for any unowned account.</p>
-<h4 id="binding-a-control-plane">Binding a control plane<a class="headerlink" href="#binding-a-control-plane" title="Permanent link">&para;</a></h4>
-<p><code>AssignmentControl</code> is the seam: <code>managed()</code>, <code>apply(...)</code>, <code>status()</code>. <code>AccountAssignment</code>
-implements it; the <code>AccountAssignmentControl</code> RPC is one implementation over one transport, and a
-deployment deciding placement in process binds its own control plane against the same three methods.
-The contract is on <code>AssignmentControl</code>, beside the code that enforces it.</p>
-<p>Nothing drives it by default. A <code>managed</code> process that has never been assigned owns nothing, logs
-<code>account_assignment_absent</code> on a cadence, and refuses account-scoped writes. Account-directory
-writes are not account-scoped and stay available, so a control plane can still create the accounts
-it is about to place -- though a create carrying an idempotency key reserves an account-scoped
-record and is refused with the rest.</p>
-<p>Pointer GC needs no fence of its own: every delete it makes is a pointer CAS through the fenced
-store. CAS blob GC deletes objects the store cannot condition, so it revalidates its permit before
-each delete.</p>
+<h3 id="account-lifecycle">Account Lifecycle<a class="headerlink" href="#account-lifecycle" title="Permanent link">&para;</a></h3>
+<p><code>AccountScope</code> controls pin-resolution and collection admission. Pointer mutations use the
+<code>PlanningPointerIndex.Ownership</code> seam, which is the single write-admission path. The default policy
+is process-local and serves every account until the lifecycle drain begins.</p>
+<p>Managed Floe deployments get account exclusivity from routing plus the Kubernetes lifecycle
+contract: a replacement process is not meant to serve traffic for an account until the old process
+has drained or exited. Floecat therefore does not write ownership records, recover assignments from
+KV, or fence every durable write. The local <code>preStop</code> drain is the mechanism Floecat exposes to the
+runtime: once drain starts, new RPCs, pin resolutions and GC permits are refused, while
+already-admitted work, including a multi-write mutation, is counted until its permit is released.</p>
+<p>The extension points remain inside OSS Floecat. Deployments that need a different admission policy
+can bind their own <code>LifecycleDrain</code>, <code>AccountScope</code>, or <code>PlanningPointerIndex.Ownership</code> without
+changing query, cache, mutation or GC call sites.</p>
+<p>Pointer GC needs no separate lifecycle fence: every delete it makes is a pointer CAS through the
+durable store. Its account GC permit is revalidated before each page and before every destructive
+CAS, so a lifecycle drain interrupts an in-progress sweep. CAS blob GC and transaction-intent
+cleanup use the same account permit rule. Transaction GC reclaims only transaction records,
+intents, and their temporary blobs; pointer/blob GC reclaims catalog objects and CAS data. They are
+different collectors over different key families, but all account-scoped collectors participate in
+the same lifecycle drain accounting.</p>
 <p><code>wait=true</code> waits for the drain: <code>400</code> if <code>timeoutMs</code> is malformed or negative, and then nothing
-drains; otherwise <code>200</code> once active mutations and resolutions are zero, or <code>202</code> at the timeout,
-with <code>timeoutMs</code> clamped to one hour. Without <code>wait=true</code> a <code>POST</code> starts the drain and returns at
+drains; otherwise <code>200</code> once active RPCs, mutations, resolutions and GC are zero, or <code>202</code> at the
+requested timeout. Without <code>wait=true</code> a <code>POST</code> starts the drain and returns at
 once, and a <code>GET</code> only reports. <code>wait</code> is read as a boolean, so <code>?wait=TRUE</code> drains while <code>?wait=1</code>
-reports; only <code>GET</code> and <code>POST</code> are routed at all. Draining is irreversible for the life of the process and the endpoint authenticates
-no one: the <code>preStop</code> hook is a kubelet <code>httpGet</code> arriving from the node address, which no in-process
-check can tell from any other caller, so restricting access is the deployment's job — a mesh
-authorization policy or equivalent. The shutdown observer applies the same drain when the hook never
-arrived.</p>
+reports; only <code>GET</code> and <code>POST</code> are routed at all. The route exists only on the separate Quarkus
+management listener, never on the client-facing HTTP/gRPC port. The deployment keeps that listener
+private and the <code>preStop</code> hook calls it directly. Draining is irreversible for the life of the
+process; the shutdown observer only starts the admission gate when the hook never arrived.</p>
 <h3 id="builtin-catalog-service">Builtin Catalog Service<a class="headerlink" href="#builtin-catalog-service" title="Permanent link">&para;</a></h3>
 <p><code>SystemObjectsLoader</code> reads immutable builtin catalogs (<code>&lt;engine_kind&gt;.pb[pbtxt]</code>) from the
 configured location, caches them by engine kind, and exposes them through
@@ -2619,6 +2551,10 @@ rows upserted after all batches have been consumed.</p>
 <td>Port, HTTP2, plaintext/reflection toggles.</td>
 </tr>
 <tr>
+<td><code>quarkus.management.*</code></td>
+<td>Private management listener used by lifecycle drain and operational endpoints (localhost by default; managed deployments bind it to the pod and authorize it at the mesh boundary).</td>
+</tr>
+<tr>
 <td><code>quarkus.grpc.clients.floecat.*</code></td>
 <td>Loopback client config for internal RPC calls.</td>
 </tr>
@@ -2651,20 +2587,8 @@ rows upserted after all batches have been consumed.</p>
 <td>Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to <code>16</code>; clamped to <code>&gt;= 1</code>.</td>
 </tr>
 <tr>
-<td><code>floecat.account-assignment.mode</code></td>
-<td><code>standalone</code> (default), <code>managed</code>, or <code>none</code>; see Account Assignment.</td>
-</tr>
-<tr>
-<td><code>floecat.account-assignment.member-id</code></td>
-<td>Stable process identity across restarts; required in <code>managed</code> (<code>FLOECAT_MEMBER_ID</code>).</td>
-</tr>
-<tr>
-<td><code>floecat.account-assignment.self-check-interval</code></td>
-<td>Background fence self-check period in <code>managed</code> (<code>PT10S</code>).</td>
-</tr>
-<tr>
-<td><code>floecat.account-assignment.drain-timeout-ms</code></td>
-<td>Default wait of <code>/internal/drain?wait=true</code> and of the shutdown drain (<code>110000</code>).</td>
+<td><code>floecat.lifecycle-drain.timeout-ms</code></td>
+<td>Default wait for <code>/internal/drain?wait=true</code> (<code>110000</code> ms). The deployment may pass a different wait explicitly.</td>
 </tr>
 <tr>
 <td><code>floecat.gc.idempotency.*</code></td>

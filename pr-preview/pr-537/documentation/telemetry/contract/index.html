@@ -2279,51 +2279,6 @@
 </thead>
 <tbody>
 <tr>
-<td>floecat.service.account_assignment.accounts</td>
-<td>GAUGE</td>
-<td>count</td>
-<td>v1</td>
-<td>Accounts tracked by this process per assignment state (unassigned, serving, draining).</td>
-<td>component, mode, operation</td>
-<td>component, mode, operation</td>
-</tr>
-<tr>
-<td>floecat.service.account_assignment.fence_bumps.total</td>
-<td>COUNTER</td>
-<td></td>
-<td>v1</td>
-<td>Fence take outcomes when an account enters SERVING (ok, conflict, error).</td>
-<td>component, operation, result</td>
-<td>component, operation, result</td>
-</tr>
-<tr>
-<td>floecat.service.account_assignment.fence_rejections.total</td>
-<td>COUNTER</td>
-<td></td>
-<td>v1</td>
-<td>Account-scoped writes that failed their fence condition (revoked, conflict, error).</td>
-<td>component, operation, result</td>
-<td>component, operation, result</td>
-</tr>
-<tr>
-<td>floecat.service.account_assignment.gc_allowed_accounts</td>
-<td>GAUGE</td>
-<td>count</td>
-<td>v1</td>
-<td>Accounts this process may currently collect garbage for.</td>
-<td>component, operation</td>
-<td>component, operation</td>
-</tr>
-<tr>
-<td>floecat.service.account_assignment.self_checks.total</td>
-<td>COUNTER</td>
-<td></td>
-<td>v1</td>
-<td>Fence self-check outcomes (ok, mismatch, error), per sweep and per GC permit.</td>
-<td>component, operation, result</td>
-<td>component, operation, result</td>
-</tr>
-<tr>
 <td>floecat.service.flight.cancelled.total</td>
 <td>COUNTER</td>
 <td></td>
@@ -2482,6 +2437,15 @@
 <td>count</td>
 <td>v1</td>
 <td>Metadata-I/O admission permits held by in-flight store calls.</td>
+<td>component, operation</td>
+<td>component, operation</td>
+</tr>
+<tr>
+<td>floecat.service.planning.pointer.bytes</td>
+<td>GAUGE</td>
+<td>bytes</td>
+<td>v1</td>
+<td>Heap the planner pointer index admitted across resident accounts, as weighed on load.</td>
 <td>component, operation</td>
 <td>component, operation</td>
 </tr>

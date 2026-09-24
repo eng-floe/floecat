@@ -1805,12 +1805,11 @@ overlay reconcile sales-overlay
 <p>For Unity Catalog with a bearer token, the equivalent Delta integration is:</p>
 <div class="highlight"><pre><span></span><code>integration create databricks unity https://workspace.example \
   --auth-type bearer --cred token=secret \
-  --props s3.region=us-east-1
-overlay create delta-sales databricks local-catalog --include main.sales
+  --props catalog=main s3.region=us-east-1
+overlay create delta-sales databricks local-catalog --include sales
 integration validate databricks
 integration namespaces databricks
-integration namespaces databricks --parent main
-integration objects databricks main.sales --kinds table,view
+integration objects databricks sales --kinds table,view
 overlay reconcile delta-sales
 </code></pre></div>
 <p>For a Delta Sharing recipient, the share and schema are the namespace:</p>
@@ -1949,7 +1948,10 @@ replaces the complete map; passing <code>--props</code> with no values clears it
 <code>client.region</code>, and <code>s3.path-style-access</code>. The S3 properties route reads of credentials the share
 vends; they do not supply storage credentials. <code>s3.endpoint</code> is held to the same rule as Unity's,
 below, for the same reason: a Delta Sharing vend also carries an AWS session token.</p>
-<p>For Unity Catalog, supported properties are <code>http.connect.ms</code>, <code>http.read.ms</code>,
+<p>For Unity Catalog, the optional <code>catalog</code> property scopes the Integration to exactly one Unity
+catalog and exposes that catalog's schemas as root Floecat namespaces. Without <code>catalog</code>, all Unity
+catalogs are exposed as root namespaces and their schemas as child namespaces, preserving the
+behavior of existing Integrations. Other supported properties are <code>http.connect.ms</code>, <code>http.read.ms</code>,
 <code>unity.temporary-table-vend-path</code>, <code>s3.region</code>, <code>s3.endpoint</code>, and <code>s3.path-style-access</code>. The S3
 properties route validation of credentials vended by Unity; they do not supply storage credentials.
 There is no <code>s3.access-point</code> property: validation probes the bucket named in the object URI, which
