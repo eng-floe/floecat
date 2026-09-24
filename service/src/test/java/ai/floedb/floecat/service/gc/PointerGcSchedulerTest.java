@@ -29,7 +29,6 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
-import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.ArrayList;
 import java.util.List;
@@ -43,8 +42,7 @@ class PointerGcSchedulerTest {
         .thenReturn(List.of(account("acct-a"), account("acct-b"), account("acct-c")));
     RecordingPointerGc gc = new RecordingPointerGc();
     TestObservability observability = new TestObservability();
-    AccountAssignment assignment =
-        AccountAssignment.forTesting("m", "m/inc", new InMemoryPointerStore(), observability);
+    AccountAssignment assignment = AccountAssignment.forTesting("m");
     PointerGcScheduler scheduler = new PointerGcScheduler();
     scheduler.accounts = () -> accounts;
     scheduler.pointerGc = () -> gc;
@@ -76,7 +74,7 @@ class PointerGcSchedulerTest {
     PointerGcScheduler scheduler = new PointerGcScheduler();
     scheduler.accounts = () -> accounts;
     scheduler.pointerGc = () -> gc;
-    scheduler.assignment = AccountAssignment.forTesting(new InMemoryPointerStore(), observability);
+    scheduler.assignment = AccountAssignment.forTesting();
     scheduler.observability = observability;
     scheduler.initMeters();
 

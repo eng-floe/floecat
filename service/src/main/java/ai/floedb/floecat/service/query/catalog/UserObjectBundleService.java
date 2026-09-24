@@ -234,7 +234,7 @@ public class UserObjectBundleService {
         inputResolver,
         queryStore,
         new CancelledQueryPinCleanup(queryStore, Runnable::run),
-        AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE),
+        AccountAssignment.forTesting(),
         statsFactory,
         ObjectCache.forTesting(),
         decoratorProvider,

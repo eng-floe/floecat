@@ -266,14 +266,7 @@ class BaseServiceImplTest {
     @Override
     public LifecycleControl.Status status() {
       return new LifecycleControl.Status(
-          "test",
-          "test",
-          0L,
-          LifecycleControl.AssignmentPhase.SERVING,
-          false,
-          draining.get(),
-          java.util.List.of(),
-          active.get());
+          "test", "test", draining.get(), java.util.List.of(), active.get());
     }
   }
 }
