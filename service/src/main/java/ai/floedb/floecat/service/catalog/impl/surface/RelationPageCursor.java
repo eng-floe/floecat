@@ -19,6 +19,8 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 
 import ai.floedb.floecat.service.common.PageTokens;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.Map;
 
 /**
@@ -48,11 +50,30 @@ record RelationPageCursor(
         TOKEN_PREFIX,
         scopeFingerprint
             + FIELD_SEPARATOR
-            + segmentKey
-            + FIELD_SEPARATOR
             + total
             + FIELD_SEPARATOR
+            + encodeField(segmentKey)
+            + FIELD_SEPARATOR
             + innerToken);
+  }
+
+  /**
+   * A segment key carries namespace names, so it can contain the field separator. Base64url has no
+   * separator in its alphabet. The fingerprint is hex and the total is digits; the inner token is
+   * last, so the split's limit absorbs any separator it carries.
+   */
+  private static String encodeField(String value) {
+    return Base64.getUrlEncoder()
+        .withoutPadding()
+        .encodeToString(value.getBytes(StandardCharsets.UTF_8));
+  }
+
+  private static String decodeField(String value, String token, String corr) {
+    try {
+      return new String(Base64.getUrlDecoder().decode(value), StandardCharsets.UTF_8);
+    } catch (IllegalArgumentException badToken) {
+      throw invalid(token, corr);
+    }
   }
 
   static RelationPageCursor decode(String token, String corr) {
@@ -68,7 +89,8 @@ record RelationPageCursor(
       throw invalid(token, corr);
     }
     try {
-      return new RelationPageCursor(parts[0], parts[1], Integer.parseInt(parts[2]), parts[3]);
+      return new RelationPageCursor(
+          parts[0], decodeField(parts[2], token, corr), Integer.parseInt(parts[1]), parts[3]);
     } catch (NumberFormatException notANumber) {
       throw invalid(token, corr);
     }
