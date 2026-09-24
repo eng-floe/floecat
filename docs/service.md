@@ -346,7 +346,9 @@ CAS, so a lifecycle drain interrupts an in-progress sweep. CAS blob GC and trans
 cleanup use the same account permit rule. Transaction GC reclaims only transaction records,
 intents, and their temporary blobs; pointer/blob GC reclaims catalog objects and CAS data. They are
 different collectors over different key families, but all account-scoped collectors participate in
-the same lifecycle drain accounting.
+the same lifecycle drain accounting. The scheduler's global account-directory/credential pass has
+no account to attach to, so it uses the process lifecycle admission permit and is skipped once the
+drain begins.
 
 `wait=true` waits for the drain: `400` if `timeoutMs` is malformed or negative, and then nothing
 drains; otherwise `200` once active RPCs, mutations, resolutions and GC are zero, or `202` at the
