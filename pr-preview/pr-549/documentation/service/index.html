@@ -2449,15 +2449,15 @@ currently reports <code>DeleteRef.all_deletes=true</code>; finer-grain delete re
 applicability logic is defined. The lease data (snapshots, expansion map, obligations) is returned to
 the caller inside the <code>QueryDescriptor</code>.</p>
 <h3 id="account-lifecycle">Account Lifecycle<a class="headerlink" href="#account-lifecycle" title="Permanent link">&para;</a></h3>
-<p><code>AccountScope</code> is the question — may this process mutate, resolve pins for, or collect this
-account? — asked by every caller that needs to know. The default policy is process-local and serves
-every account until the lifecycle drain begins.</p>
+<p><code>AccountScope</code> controls pin-resolution and collection admission. Pointer mutations use the
+<code>PlanningPointerIndex.Ownership</code> seam, which is the single write-admission path. The default policy
+is process-local and serves every account until the lifecycle drain begins.</p>
 <p>Managed Floe deployments get account exclusivity from routing plus the Kubernetes lifecycle
 contract: a replacement process is not meant to serve traffic for an account until the old process
 has drained or exited. Floecat therefore does not write ownership records, recover assignments from
 KV, or fence every durable write. The local <code>preStop</code> drain is the mechanism Floecat exposes to the
-runtime: once drain starts, new pin resolutions, mutations and GC permits are refused, while
-already-admitted work is counted until its permit is released.</p>
+runtime: once drain starts, new RPCs, pin resolutions and GC permits are refused, while
+already-admitted work, including a multi-write mutation, is counted until its permit is released.</p>
 <p>The extension points remain inside OSS Floecat. Deployments that need a different admission policy
 can bind their own <code>LifecycleDrain</code>, <code>AccountScope</code>, or <code>PlanningPointerIndex.Ownership</code> without
 changing query, cache, mutation or GC call sites.</p>
@@ -2472,11 +2472,10 @@ the same lifecycle drain accounting.</p>
 drains; otherwise <code>200</code> once active RPCs, mutations, resolutions and GC are zero, or <code>202</code> at the
 requested timeout. Without <code>wait=true</code> a <code>POST</code> starts the drain and returns at
 once, and a <code>GET</code> only reports. <code>wait</code> is read as a boolean, so <code>?wait=TRUE</code> drains while <code>?wait=1</code>
-reports; only <code>GET</code> and <code>POST</code> are routed at all. Draining is irreversible for the life of the process and the endpoint authenticates
-no one: the <code>preStop</code> hook is a kubelet <code>httpGet</code> arriving from the node address, which no in-process
-check can tell from any other caller, so restricting access is the deployment's job — a mesh
-authorization policy or equivalent. The shutdown observer applies the same drain when the hook never
-arrived.</p>
+reports; only <code>GET</code> and <code>POST</code> are routed at all. The route exists only on the separate Quarkus
+management listener, never on the client-facing HTTP/gRPC port. The deployment keeps that listener
+private and the <code>preStop</code> hook calls it directly. Draining is irreversible for the life of the
+process; the shutdown observer only starts the admission gate when the hook never arrived.</p>
 <h3 id="builtin-catalog-service">Builtin Catalog Service<a class="headerlink" href="#builtin-catalog-service" title="Permanent link">&para;</a></h3>
 <p><code>SystemObjectsLoader</code> reads immutable builtin catalogs (<code>&lt;engine_kind&gt;.pb[pbtxt]</code>) from the
 configured location, caches them by engine kind, and exposes them through
@@ -2548,6 +2547,10 @@ rows upserted after all batches have been consumed.</p>
 <td>Port, HTTP2, plaintext/reflection toggles.</td>
 </tr>
 <tr>
+<td><code>quarkus.management.*</code></td>
+<td>Private management listener used by lifecycle drain and operational endpoints (localhost by default; managed deployments bind it to the pod and authorize it at the mesh boundary).</td>
+</tr>
+<tr>
 <td><code>quarkus.grpc.clients.floecat.*</code></td>
 <td>Loopback client config for internal RPC calls.</td>
 </tr>
@@ -2581,7 +2584,7 @@ rows upserted after all batches have been consumed.</p>
 </tr>
 <tr>
 <td><code>floecat.lifecycle-drain.timeout-ms</code></td>
-<td>Default wait of <code>/internal/drain?wait=true</code> and of the shutdown drain (<code>110000</code>).</td>
+<td>Default wait for <code>/internal/drain?wait=true</code> (<code>110000</code> ms). The deployment may pass a different wait explicitly.</td>
 </tr>
 <tr>
 <td><code>floecat.gc.idempotency.*</code></td>

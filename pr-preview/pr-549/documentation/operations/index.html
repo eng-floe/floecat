@@ -2214,13 +2214,14 @@ cross-lane fallback: an accepted intent remains owned by the exact lane recorded
 <code>AccountScope</code>/ownership implementation when they need admission or lease coordination. The
 deployment lifecycle drain is always available and only affects the local process: it stops new
 account work and GC while already-admitted work is allowed to finish.</p>
-<p>Pods should drain before termination with a <code>preStop</code> hook on
-<code>GET /internal/drain?wait=true&amp;timeoutMs=&lt;ms&gt;</code>; the response is <code>200</code> when in-flight mutations and
-resolutions are gone and <code>202</code> at the timeout. <code>GET /internal/drain</code> shows the current status.
-Draining is irreversible for the life of the process, and the endpoint authenticates no one —
-restricting it is the deployment's job. Under <code>wait=true</code> a malformed or negative <code>timeoutMs</code> is
-refused with <code>400</code> and drains nothing; without it a <code>POST</code> drains regardless of <code>timeoutMs</code> and returns at
-once, so a hook that interpolates one wants <code>wait=true</code> for a bad value to be caught.</p>
+<p>Pods should drain before termination with a <code>preStop</code> hook on the private management listener at
+<code>GET /internal/drain?wait=true&amp;timeoutMs=&lt;ms&gt;</code>; the response is <code>200</code> when all admitted RPCs,
+mutations, resolutions, and GC work are gone and <code>202</code> at the requested timeout. <code>GET
+/internal/drain</code> shows the current status.
+Draining is irreversible for the life of the process. Under <code>wait=true</code> a malformed or negative
+<code>timeoutMs</code> is refused with <code>400</code> and drains nothing; without it a <code>POST</code> drains regardless of
+<code>timeoutMs</code> and returns at once, so a hook that interpolates one wants <code>wait=true</code> for a bad value to
+be caught. The client-facing HTTP/gRPC listener does not expose this route.</p>
 <h3 id="telemetry-hub-configuration">Telemetry hub configuration<a class="headerlink" href="#telemetry-hub-configuration" title="Permanent link">&para;</a></h3>
 <p>The service uses the telemetry hub core + Micrometer backend. The following flags are available in
 <code>service/src/main/resources/application.properties</code> (the <code>telemetry-otlp</code> profile toggles OTLP tracing/log exports):</p>
