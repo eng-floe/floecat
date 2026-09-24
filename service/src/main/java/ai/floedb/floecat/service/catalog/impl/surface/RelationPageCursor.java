@@ -17,10 +17,18 @@ package ai.floedb.floecat.service.catalog.impl.surface;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.PAGE_TOKEN_INVALID;
 
+import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
+import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.common.PageTokens;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
+import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -94,6 +102,64 @@ record RelationPageCursor(
     } catch (NumberFormatException notANumber) {
       throw invalid(token, corr);
     }
+  }
+
+  /** Binds a token to the request that minted it: a different scope cannot resume on it. */
+  static String scopeFingerprint(
+      ListRelationsRequest request,
+      List<ResourceKind> kinds,
+      String accountId,
+      CatalogContext context) {
+    StringBuilder canonical = new StringBuilder(accountId).append('\0');
+    if (request.hasCatalogId()) {
+      appendScope(canonical, "catalog", request.getCatalogId());
+    } else {
+      appendScope(canonical, "namespace", request.getNamespaceId());
+    }
+    canonical
+        .append('\0')
+        .append(request.getRecursive())
+        .append('\0')
+        .append(request.getIncludeSchema())
+        .append('\0')
+        .append(request.getIncludeStatus())
+        .append('\0')
+        .append(request.getIncludeTotal());
+    appendContext(canonical, context);
+    for (ResourceKind kind : kinds) {
+      canonical.append('\0').append(kind.getNumber());
+    }
+    try {
+      return HexFormat.of()
+          .formatHex(
+              MessageDigest.getInstance("SHA-256")
+                  .digest(canonical.toString().getBytes(StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException impossible) {
+      throw new AssertionError("SHA-256 is required", impossible);
+    }
+  }
+
+  private static void appendContext(StringBuilder canonical, CatalogContext context) {
+    canonical
+        .append('\0')
+        .append(context.environment().normalizedKind())
+        .append('\0')
+        .append(context.environment().normalizedVersion())
+        .append('\0')
+        .append(context.engine().normalizedKind())
+        .append('\0')
+        .append(context.engine().normalizedVersion());
+  }
+
+  private static void appendScope(StringBuilder canonical, String type, ResourceId id) {
+    canonical
+        .append(type)
+        .append('\0')
+        .append(id.getAccountId())
+        .append('\0')
+        .append(id.getId())
+        .append('\0')
+        .append(id.getKindValue());
   }
 
   void requireScope(String expected, String token, String corr) {
