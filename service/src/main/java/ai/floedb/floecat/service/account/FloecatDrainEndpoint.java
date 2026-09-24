@@ -82,10 +82,13 @@ public class FloecatDrainEndpoint {
     }
     drain.beginProcessDrain();
     AtomicBoolean completed = new AtomicBoolean();
+    // Vert.x rejects a zero-delay timer. Zero remains a valid API value (it means "return
+    // immediately"), so normalize it only at the transport boundary after drain has begun.
+    long timerDelayMs = Math.max(1L, timeoutMs);
     long timerId =
         context
             .vertx()
-            .setTimer(timeoutMs, ignored -> completeWait(context, completed, drain.status()));
+            .setTimer(timerDelayMs, ignored -> completeWait(context, completed, drain.status()));
     drain
         .drained()
         .whenComplete(

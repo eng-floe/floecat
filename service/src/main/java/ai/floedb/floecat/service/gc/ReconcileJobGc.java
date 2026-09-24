@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
@@ -42,6 +43,7 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
@@ -68,6 +70,7 @@ public class ReconcileJobGc {
   @Inject PointerStore pointerStore;
   @Inject Instance<DurableReconcileJobStore> durableJobStore;
   java.util.function.LongSupplier clock = System::currentTimeMillis;
+  private final ThreadLocal<AccountScope.GcPermit> activePermit = new ThreadLocal<>();
   private final AtomicLong cleanupMarkerVersion =
       new AtomicLong(ThreadLocalRandom.current().nextLong(1L, Long.MAX_VALUE - 1L));
 
@@ -119,6 +122,31 @@ public class ReconcileJobGc {
       String jobTokenIn,
       String canonicalQuarantineTokenIn,
       long absoluteDeadlineMs) {
+    return runAccountSlice(
+        accountId, jobTokenIn, canonicalQuarantineTokenIn, absoluteDeadlineMs, null);
+  }
+
+  public AccountResult runAccountSlice(
+      String accountId,
+      String jobTokenIn,
+      String canonicalQuarantineTokenIn,
+      long absoluteDeadlineMs,
+      AccountScope.GcPermit permit) {
+    activePermit.set(permit);
+    try {
+      return runAccountSliceInternal(
+          accountId, jobTokenIn, canonicalQuarantineTokenIn, absoluteDeadlineMs);
+    } finally {
+      activePermit.remove();
+    }
+  }
+
+  private AccountResult runAccountSliceInternal(
+      String accountId,
+      String jobTokenIn,
+      String canonicalQuarantineTokenIn,
+      long absoluteDeadlineMs) {
+    requirePermit();
     var cfg = ConfigProvider.getConfig();
     final int pageSize =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.page-size", Integer.class).orElse(50);
@@ -202,6 +230,7 @@ public class ReconcileJobGc {
                 retentionEntry.pointerKey(),
                 Keys.reconcileTerminalRetentionPointerPrefix(accountId));
         if (terminalAtMs == INVALID_ORDERED_POINTER_MS) {
+          requirePermit();
           if (deleteJobIndexPointerIfOwned(retentionEntry.pointerKey(), retentionEntry.blobUri())) {
             ptrDeleted++;
           }
@@ -225,6 +254,7 @@ public class ReconcileJobGc {
         lastPreparedJobToken = retentionEntry.pointerKey();
         var canonical = jobIndexBackend.loadIndexEntry(retentionEntry.blobUri()).orElse(null);
         if (canonical == null) {
+          requirePermit();
           if (deleteJobIndexPointerIfOwned(retentionEntry.pointerKey(), retentionEntry.blobUri())) {
             ptrDeleted++;
           }
@@ -269,6 +299,7 @@ public class ReconcileJobGc {
                 stored == null ? "" : jobIndexes.terminalRetentionPointerKey(stored);
             if (!TERMINAL_STATES.contains(state)
                 || !retentionEntry.pointerKey().equals(expectedRetentionKey)) {
+              requirePermit();
               if (deleteJobIndexPointerIfOwned(
                   retentionEntry.pointerKey(), retentionEntry.blobUri())) {
                 ptrDeleted++;
@@ -368,12 +399,14 @@ public class ReconcileJobGc {
                 ? null
                 : jobIndexBackend.loadIndexEntry(canonicalKey).orElse(null);
         if (canonical == null) {
+          requirePermit();
           pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
           continue;
         }
         if (readRecordByReference(canonical.blobUri()) != null
             && (!canonical.cleanupLocked()
                 || !markerPayloadMatches(marker.getBlobUri(), canonical))) {
+          requirePermit();
           pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
           continue;
         }
@@ -501,6 +534,7 @@ public class ReconcileJobGc {
     if (marker == null || !markerPayloadMatches(marker.getBlobUri(), canonical)) {
       if (pointerStore != null) {
         long expectedVersion = marker == null ? 0L : marker.getVersion();
+        requirePermit();
         pointerStore.compareAndSet(
             markerKey,
             expectedVersion,
@@ -510,6 +544,7 @@ public class ReconcileJobGc {
     } else {
       firstSeenMs = quarantineMarkerFirstSeenMs(marker.getBlobUri(), nowMs);
       if (quarantineMarkerCanonicalKey(marker.getBlobUri()).isBlank() && pointerStore != null) {
+        requirePermit();
         boolean migrated =
             pointerStore.compareAndSet(
                 markerKey,
@@ -547,6 +582,7 @@ public class ReconcileJobGc {
     }
     String canonicalKey = quarantineMarkerCanonicalKey(marker.getBlobUri());
     if (!canonicalKey.isBlank() && readRecordByCanonicalKey(canonicalKey) != null) {
+      requirePermit();
       pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
     }
   }
@@ -755,6 +791,7 @@ public class ReconcileJobGc {
           break;
         }
         writeBudget.recordAttempt();
+        requirePermit();
         if (!jobIndexBackend.compareAndSetBatch(phase.indexBatch(), phase.extraPointerOps())) {
           completed = false;
           break;
@@ -773,6 +810,7 @@ public class ReconcileJobGc {
         break;
       }
       writeBudget.recordAttempt();
+      requirePermit();
       if (jobIndexBackend.compareAndSetBatch(chunk.indexBatch(), chunk.extraPointerOps())) {
         for (ReconcileJobIndexStore.JobWritePlan<String> plan : chunk.plans()) {
           expired++;
@@ -786,6 +824,7 @@ public class ReconcileJobGc {
           break regularChunks;
         }
         writeBudget.recordAttempt();
+        requirePermit();
         if (jobIndexBackend.compareAndSetBatch(plan.indexBatch(), plan.extraPointerOps())) {
           expired++;
           ptrDeleted++;
@@ -825,6 +864,7 @@ public class ReconcileJobGc {
     if (existing == null || !expectedReference.equals(existing.blobUri())) {
       return false;
     }
+    requirePermit();
     return jobIndexBackend.compareAndSetBatch(
         new ReconcileJobIndexStore.JobIndexWriteBatch(
             List.of(
@@ -864,6 +904,7 @@ public class ReconcileJobGc {
     int scanned = 0;
     int deleted = 0;
     for (Pointer marker : markers) {
+      requirePermit();
       if (clock.getAsLong() >= deadline) {
         break;
       }
@@ -872,6 +913,7 @@ public class ReconcileJobGc {
           marker == null ? null : decodeBlobCleanupMarker(marker.getBlobUri());
       if (cleanupMarker == null) {
         if (marker != null) {
+          requirePermit();
           pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
         }
         continue;
@@ -885,6 +927,7 @@ public class ReconcileJobGc {
             completedPage = false;
             break;
           }
+          requirePermit();
           if (blobStore.delete(key)) {
             deleted++;
           }
@@ -893,6 +936,7 @@ public class ReconcileJobGc {
           String nextToken = blankToEmpty(page.nextToken());
           if (nextToken.isBlank()) {
             if (blobStore.list(blobPrefix, 1, "").keys().isEmpty()) {
+              requirePermit();
               pointerStore.compareAndDelete(marker.getKey(), marker.getVersion());
             } else {
               advanceBlobCleanupMarker(marker, blobPrefix, "");
@@ -902,6 +946,9 @@ public class ReconcileJobGc {
           }
         }
       } catch (RuntimeException e) {
+        if (e instanceof AccountScope.GcPermitRevokedException revoked) {
+          throw revoked;
+        }
         LOG.warnf(
             e,
             "Reconcile job blob cleanup marker failed; continuing account slice"
@@ -915,12 +962,17 @@ public class ReconcileJobGc {
   }
 
   private void advanceBlobCleanupMarker(Pointer current, String blobPrefix, String pageToken) {
+    requirePermit();
     Pointer next =
         PointerReferences.opaqueMarkerPointer(
             current.getKey(),
             encodeBlobCleanupMarker(blobPrefix, pageToken),
             current.getVersion() + 1L);
     pointerStore.compareAndSet(current.getKey(), current.getVersion(), next);
+  }
+
+  private void requirePermit() {
+    Optional.ofNullable(activePermit.get()).ifPresent(AccountScope.GcPermit::requireValid);
   }
 
   static String encodeBlobCleanupMarker(String blobPrefix, String pageToken) {

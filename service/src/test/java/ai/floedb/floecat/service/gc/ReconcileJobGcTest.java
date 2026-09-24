@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
@@ -133,6 +134,34 @@ class ReconcileJobGcTest {
     assertTrue(blobResult.blobDeleted() >= 1);
     assertTrue(pointers.get(Keys.reconcileJobBlobCleanupPointer(ACCOUNT_ID, jobId)).isEmpty());
     assertFalse(blobs.head(historyBlob).isPresent());
+  }
+
+  @Test
+  void revokedGcPermitStopsTheSliceBeforeItCanWrite() {
+    AccountScope.GcPermit revokedPermit =
+        new AccountScope.GcPermit() {
+          @Override
+          public String accountId() {
+            return ACCOUNT_ID;
+          }
+
+          @Override
+          public long generation() {
+            return 1L;
+          }
+
+          @Override
+          public boolean valid() {
+            return false;
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    assertThrows(
+        AccountScope.GcPermitRevokedException.class,
+        () -> gc.runAccountSlice(ACCOUNT_ID, "", "", Long.MAX_VALUE, revokedPermit));
   }
 
   @Test
