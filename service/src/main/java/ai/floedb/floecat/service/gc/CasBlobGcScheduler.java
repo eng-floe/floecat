@@ -212,6 +212,12 @@ public class CasBlobGcScheduler {
         try {
           var acquired = accountScope.tryAcquireGc(accountId);
           if (acquired.isEmpty()) {
+            // Do not retry the same paged account until the deadline when its policy refuses a
+            // permit (for example because process drain has started). Advance the discovery cursor
+            // just as for any other account-level outcome.
+            if (fromPage && advanceAccountCursor(gc)) {
+              break;
+            }
             continue;
           }
           try (var permit = acquired.get()) {
@@ -219,6 +225,9 @@ public class CasBlobGcScheduler {
           }
         } catch (AccountScope.GcPermitRevokedException revoked) {
           gc.abandonContinuation();
+          if (fromPage && advanceAccountCursor(gc)) {
+            break;
+          }
           continue;
         } catch (RuntimeException e) {
           // Isolate one account's failure from the rest of the tick. A version-targeted delete
