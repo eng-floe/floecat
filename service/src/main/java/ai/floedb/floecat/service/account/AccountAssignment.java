@@ -40,10 +40,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class AccountAssignment
     implements AccountScope, LifecycleDrain, PlanningPointerIndex.Ownership {
 
-  public static GcPermit unfencedGcPermit(String accountId) {
-    return new RuntimeGcPermit(accountId, null, 0L);
-  }
-
   /** Compatibility hook for cache tests and external policy adapters. */
   public interface PartitionHooks {
     PartitionHooks NONE =
