@@ -250,6 +250,7 @@ class CasBlobGcSchedulerTest {
         .thenAnswer(
             invocation -> Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
     NeverCompletingContinuationGc gc = new NeverCompletingContinuationGc();
+    gc.continuingAccount = "acct-a";
     AccountScope scope = mock(AccountScope.class);
     when(scope.tryAcquireGc("acct-a")).thenReturn(Optional.empty());
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
