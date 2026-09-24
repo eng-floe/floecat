@@ -875,6 +875,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../generic-engine-rpc-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Generic Engine RPC Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../metadata-graph/" class="md-nav__link">
         
   
@@ -1864,7 +1887,7 @@ identity; they do not replace a value in an existing key.</p>
 <tr>
 <td>Pointers</td>
 <td><code>PlanningPointerIndex</code> behind <code>IndexedPointerStore</code></td>
-<td>All planner pointer records for an account, including current roots, names, snapshots, constraints, stats and hint-resource pointers</td>
+<td>Account addressing state: names, identities, and each table's <code>root/current</code> and <code>snapshots/current</code>. Rows keyed by snapshot -- snapshot history, constraints, stats generations, index artifacts -- are durable-only, because a table can commit snapshots far faster than its schema or addressing state changes.</td>
 <td>Not a cache. A partition is either <code>LOADING</code> or <code>COMPLETE</code>. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter.</td>
 </tr>
 <tr>
@@ -1951,7 +1974,7 @@ sizing harness use the same arithmetic.</p>
 </tr>
 <tr>
 <td><code>CacheFamily</code></td>
-<td>The independently budgeted in-memory families that use this module. Pointer planning state is not a <code>MemoryCache</code> family: it is a complete index with no eviction budget. <code>OBJECT</code> is decoded metadata and <code>HINT</code> is decoded engine-specific metadata. Disk blob caching has its own volume budget.</td>
+<td>The independently budgeted in-memory families that use this module. Pointer planning state is not a <code>MemoryCache</code> family: it is a complete index with a separate admission budget and no entry eviction. <code>OBJECT</code> is decoded metadata and <code>HINT</code> is decoded engine-specific metadata. Disk blob caching has its own volume budget.</td>
 </tr>
 <tr>
 <td><code>CacheBudget</code> / <code>CacheBudgetResolver</code></td>
@@ -1981,7 +2004,8 @@ budget of zero.</p>
 <p>Only implemented in-memory families appear in <code>CacheFamily</code>; the disk blob cache has its own
 physical-volume budget and lifecycle-shaped interface. It reuses the cache telemetry vocabulary
 where useful but does not pretend that files and heap entries share one budget.</p>
-<p>Pointer planning state is not budgeted by the generic memory-cache contract. The index is the
+<p>Pointer planning state is not budgeted by the generic memory-cache contract; it has its own
+per-account and total caps, and refuses an account rather than evicting part of one. The index is the
 account's current in-memory representation and must stay complete; if it cannot be loaded, the
 durable adapter remains the answer until the next load attempt. Callers do not select a cached or
 authoritative view: every service path receives <code>IndexedPointerStore</code>, which chooses the in-memory
@@ -2028,7 +2052,11 @@ corruption and sweep signals because those are file-lifecycle events rather than
 </tr>
 <tr>
 <td>Are pointer indexes ready?</td>
-<td><code>floecat.service.planning.pointer.partitions</code>, tagged <code>result=loading|complete</code></td>
+<td><code>floecat.service.planning.pointer.partitions</code>, tagged <code>result=loading|complete|refused</code></td>
+</tr>
+<tr>
+<td>Is an account too big to hold?</td>
+<td>the same series tagged <code>result=refused</code>; refusals are logged with <code>account_id</code></td>
 </tr>
 <tr>
 <td>How is pointer warming behaving?</td>
@@ -2047,13 +2075,21 @@ load failure leaves it on the durable path; the next read can retry the load.</p
 <p>Warm-up metrics are intentionally aggregate: account IDs are not metric labels. A failed warm-up
 also emits a structured log containing the account ID, elapsed time, and exception, so an operator
 can identify the affected account without creating one time series per account.</p>
-<p>Nothing expires in the pointer index. The eviction series count only capacity-driven removals in
-the memory-cache families; explicit deletes and prefix sweeps are not included. A non-zero
+<p>Nothing expires in the pointer index: an account is admitted whole or not at all. An account is refused during the
+load, and answered from durable KV, when it exceeds either <code>max-heap-share</code> on its own or
+<code>max-total-heap-share</code> beside the accounts already resident -- a per-account cap alone is unbounded
+in the number of accounts. A refusal shows up as <code>result=refused</code> rather than as an account that
+never finishes warming, and backs off on each consecutive refusal: nothing the index does makes the
+account smaller, so only a durable sweep will change the answer. The eviction series count only
+capacity-driven removals in the memory-cache families; explicit deletes and prefix sweeps are not included. A non-zero
 eviction rate therefore directly signals size pressure. The weight alongside the count
 distinguishes many small evictions from a few large ones.</p>
-<p>There is no independent pointer-cache switch. Pointer reads always go through <code>IndexedPointerStore</code>;
-the durable adapter is used automatically while an account index is loading and for operational
-keys. This keeps the read and mutation path identical in tests and production.</p>
+<p><code>floecat.planner.pointer-index.enabled</code> takes the index out of the read path without a rollback. It
+is fixed for the life of the process, exactly as <code>floecat.cache.object.enabled</code> is. While it is off
+the index never loads, so no partition is ever complete, reads and listings go straight to durable
+KV, and mutations still run through <code>IndexedPointerStore</code> and keep the partition and key locks that
+order a publish against a load. Otherwise the durable adapter is used automatically while an
+account index is loading and for operational keys.</p>
 <h2 id="deliberately-live-reads">Deliberately live reads<a class="headerlink" href="#deliberately-live-reads" title="Permanent link">&para;</a></h2>
 <p>These reads bypass every cache because their result is a detector, not content:</p>
 <table>

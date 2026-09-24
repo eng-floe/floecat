@@ -13,6 +13,10 @@
         <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/generic-engine-rpc-contract/">
       
       
+        <link rel="prev" href="../catalog-access-spi/">
+      
+      
+        <link rel="next" href="../metadata-graph/">
       
       
       <link rel="icon" href="../assets/images/favicon.png">
@@ -640,8 +644,10 @@
       
   
   
+    
   
   
+  
     
     
     
@@ -652,13 +658,11 @@
       
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-          
-        
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
           <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
@@ -674,7 +678,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             Catalog and Metadata
@@ -745,6 +749,134 @@
   
 
       </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    Generic Engine RPC Contract
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    Generic Engine RPC Contract
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#generic-engine-needs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Generic Engine Needs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#engine-surface-and-management-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      Engine Surface And Management Surface
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#adapter-recipe" class="md-nav__link">
+    <span class="md-ellipsis">
+      Adapter Recipe
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relation-rpcs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Relation RPCs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#code-hooks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Code Hooks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pinned-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Pinned Behavior
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#legacy-pin-projections" class="md-nav__link">
+    <span class="md-ellipsis">
+      Legacy Pin Projections
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1827,8 +1959,10 @@ for unpinned name resolution, and <code>QueryInput</code> candidates when reques
   complete catalog.
 - Errors consume page space, so a client must advance the opaque page token even when a page has no
   successful relations.
-- Request, authorization, cancellation and backend failures still fail the whole RPC;
-  <code>RelationListResult.error</code> is only for failures isolated to one relation.
+- Request, cancellation and backend failures still fail the whole RPC, and so does authorization
+  on the request: read is checked per relation kind the request can return, before the walk, so a
+  caller without <code>table.read</code> gets a status rather than a page of errors. <code>RelationListResult.error</code>
+  is only for a failure isolated to one relation, including one the caller may not read.
 - An adapter that cannot represent partial catalog results must fail its own listing when it sees a
   row error. An adapter with a warning-capable UX, such as the CLI, may continue only after showing
   the affected names and preserving the continuation token.</p>
@@ -1837,7 +1971,9 @@ for unpinned name resolution, and <code>QueryInput</code> candidates when reques
   shape <code>query.TableReferenceCandidate</code> uses for planning. A caller expands its search path into
   candidates instead of sending the cross product of names and namespaces and re-applying
   precedence to the results, so the batch stays one entry per SQL table reference.
-- Matching folds case, so candidates never need case variants.
+- Matching is exact, for a builtin relation as much as a user one, so <code>orders</code> and <code>ORDERS</code>
+  are different names and only the stored spelling resolves. A caller that accepts either
+  spelling folds case itself and sends the folded name.
 - The total candidate count is bounded by <code>floecat.relation.resolve.max-names</code>. This is a bind-time
   batch, not an enumeration path; use <code>ListRelations</code> to walk a catalog.
 - <code>include_schema</code>: uses the same hydration semantics as <code>ListRelations</code>; without it, details and

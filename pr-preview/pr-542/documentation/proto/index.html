@@ -761,6 +761,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../generic-engine-rpc-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Generic Engine RPC Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../metadata-graph/" class="md-nav__link">
         
   
@@ -1956,7 +1979,9 @@
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
 <p>Floecat's public surface is entirely gRPC. The <code>core/proto/</code> module defines canonical protobuf
 structures for resource identifiers, catalog services, query lifecycle metadata, connectors, statistics, and
-helper schemas. <code>core/proto/README.md</code> maps every service to the audience that binds it. Every other module depends on these contracts for serialization, validation, and
+helper schemas. <code>core/proto/README.md</code> maps every service to the audience that binds it, and
+<a href="../generic-engine-rpc-contract/">Generic Engine RPC Contract</a> states what an engine adapter
+binds and what it must handle. Every other module depends on these contracts for serialization, validation, and
 compatibility.</p>
 <h3 id="remote-executor-versioning">Remote executor versioning<a class="headerlink" href="#remote-executor-versioning" title="Permanent link">&para;</a></h3>
 <p><code>LeaseReconcileJobRequest.worker_affinity</code> identifies the job-tree contract implemented by a
