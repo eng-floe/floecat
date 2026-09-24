@@ -487,6 +487,39 @@ class CatalogSurfaceRelationsTest {
   }
 
   @Test
+  void anInternalFailureOnOneRelationLeavesTheRestOfThePage() {
+    var good = userTable("orders");
+    var bad = userTable("shipments");
+    tableRepo.add(good);
+    tableRepo.add(bad);
+    graphView.failTableSchemaWith(
+        bad.getResourceId(),
+        io.grpc.Status.INTERNAL.withDescription("bad schema").asRuntimeException());
+
+    var response =
+        surface()
+            .listRelations(
+                ListRelationsRequest.newBuilder()
+                    .setNamespaceId(namespaceId)
+                    .addKinds(ResourceKind.RK_TABLE)
+                    .setIncludeSchema(true)
+                    .setPage(PageRequest.newBuilder().setPageSize(10))
+                    .build(),
+                ACCOUNT_ID,
+                CORRELATION_ID);
+
+    assertEquals(2, response.getResultsCount());
+    var ok = response.getResultsList().stream().filter(r -> r.hasRelation()).toList();
+    var failed = response.getResultsList().stream().filter(r -> r.hasError()).toList();
+
+    assertEquals(1, ok.size());
+    assertEquals("orders", ok.get(0).getRelation().getName().getName());
+    assertEquals(1, failed.size());
+    assertEquals("shipments", failed.get(0).getError().getName().getName());
+    assertEquals(ErrorCode.MC_INTERNAL, failed.get(0).getError().getError().getCode());
+  }
+
+  @Test
   void aCorruptRelationFailsTheListingInsteadOfBecomingARowError() {
     var table = userTable("orders");
     tableRepo.add(table);

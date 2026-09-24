@@ -142,6 +142,10 @@ final class QueryPinCommitter {
    * Collect one batch normally, retrying relation by relation only when the batch has a
    * relation-scoped failure. Query, transport, and cancellation failures still escape and terminate
    * the stream. Normal requests therefore retain the existing one-batch resolver path.
+   *
+   * <p>INTERNAL is relation-scoped, so a batch that fails with it is retried per relation: that
+   * retry is how a failure in one relation is told apart from one in all of them. The cost is one
+   * attempt per relation in the chunk, on a path that is already failing.
    */
   List<RelationFailure> accumulateIsolated(
       List<ResolvedRelation> relations, PhaseDiagnostics diagnostics, BooleanSupplier cancelled) {
