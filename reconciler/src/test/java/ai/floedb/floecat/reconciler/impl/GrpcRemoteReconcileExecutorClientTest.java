@@ -793,7 +793,7 @@ class GrpcRemoteReconcileExecutorClientTest {
 
     assertThat(client.submitPlanTableChunk(remoteLease(), 0, snapshotJobs.subList(0, 8))).isTrue();
     assertThat(client.submitPlanTableChunk(remoteLease(), 1, snapshotJobs.subList(8, 9))).isTrue();
-    assertThat(client.submitPlanTableSuccess(remoteLease(), 2, 1L, 1L, 0L, 9L, 0L)).isTrue();
+    assertThat(client.submitPlanTableSuccess(remoteLease(), 2, 9L, 1L, 1L, 0L, 9L, 0L)).isTrue();
 
     ArgumentCaptor<SubmitLeasedPlanTableResultRequest> firstChunkCaptor =
         ArgumentCaptor.forClass(SubmitLeasedPlanTableResultRequest.class);
@@ -813,6 +813,7 @@ class GrpcRemoteReconcileExecutorClientTest {
     assertThat(secondChunkCaptor.getValue().getChunk().getSnapshotJobsCount()).isEqualTo(1);
     assertThat(successCaptor.getValue().hasSuccess()).isTrue();
     assertThat(successCaptor.getValue().getSuccess().getChunkCount()).isEqualTo(2);
+    assertThat(successCaptor.getValue().getSuccess().getPlannedSnapshotJobs()).isEqualTo(9L);
   }
 
   @Test

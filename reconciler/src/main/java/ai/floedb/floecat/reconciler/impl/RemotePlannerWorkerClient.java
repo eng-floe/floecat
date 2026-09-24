@@ -52,9 +52,16 @@ interface RemotePlannerWorkerClient {
   boolean submitPlanTableChunk(
       RemoteLeasedJob lease, int chunkIndex, List<PlannedSnapshotJob> snapshotJobs);
 
+  /**
+   * @param plannedSnapshotJobs snapshot jobs submitted across {@code chunkCount} chunks. The
+   *     planner reports its own total because each chunk was acknowledged synchronously and its
+   *     children enqueued before the planner moved on; the service must not have to re-read the
+   *     staged chunk records, which are not meant to outlive a long planning phase.
+   */
   boolean submitPlanTableSuccess(
       RemoteLeasedJob lease,
       int chunkCount,
+      long plannedSnapshotJobs,
       long tablesScanned,
       long tablesChanged,
       long errors,

@@ -699,7 +699,8 @@ public class ReconcileExecutorControlImpl extends BaseServiceImpl
                         request.getSuccess().getErrors(),
                         request.getSuccess().getSnapshotsProcessed(),
                         request.getSuccess().getStatsProcessed(),
-                        request.getSuccess().getChunkCount());
+                        request.getSuccess().getChunkCount(),
+                        request.getSuccess().getPlannedSnapshotJobs());
                 return SubmitLeasedPlanTableResultResponse.newBuilder()
                     .setAccepted(accepted)
                     .build();

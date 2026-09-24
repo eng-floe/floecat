@@ -687,6 +687,7 @@ class GrpcRemoteReconcileExecutorClient
   public boolean submitPlanTableSuccess(
       RemoteLeasedJob lease,
       int chunkCount,
+      long plannedSnapshotJobs,
       long tablesScanned,
       long tablesChanged,
       long errors,
@@ -699,7 +700,8 @@ class GrpcRemoteReconcileExecutorClient
             .setErrors(errors)
             .setSnapshotsProcessed(snapshotsProcessed)
             .setStatsProcessed(statsProcessed)
-            .setChunkCount(chunkCount);
+            .setChunkCount(chunkCount)
+            .setPlannedSnapshotJobs(plannedSnapshotJobs);
     SubmitLeasedPlanTableResultRequest request =
         SubmitLeasedPlanTableResultRequest.newBuilder()
             .setJobId(lease.lease().jobId)

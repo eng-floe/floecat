@@ -164,7 +164,7 @@ class RemoteDefaultReconcileExecutorTest {
             });
     when(workerClient.submitPlanTableChunk(any(), anyInt(), any())).thenReturn(true);
     when(workerClient.submitPlanTableSuccess(
-            any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
+            any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
         .thenReturn(true);
 
     ReconcileExecutor.ExecutionResult result =
@@ -185,7 +185,7 @@ class RemoteDefaultReconcileExecutorTest {
             .toList());
     verify(workerClient)
         .submitPlanTableSuccess(
-            eq(remoteLease), eq(2), anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
+            eq(remoteLease), eq(2), eq(9L), anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
   }
 
   @Test
@@ -205,7 +205,7 @@ class RemoteDefaultReconcileExecutorTest {
     when(workerClient.estimatedPlanTableChunkItemBytes(any(), any())).thenReturn(60);
     when(workerClient.submitPlanTableChunk(any(), anyInt(), any())).thenReturn(true);
     when(workerClient.submitPlanTableSuccess(
-            any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
+            any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
         .thenReturn(true);
     when(queuedWorkerSupport.executePlannedTable(
             any(), any(), eq(false), any(), any(), any(), any(), any(), any(), any(), any(), any()))
@@ -243,7 +243,7 @@ class RemoteDefaultReconcileExecutorTest {
     assertEquals(List.of(1, 1, 1), jobsCaptor.getAllValues().stream().map(List::size).toList());
     verify(workerClient)
         .submitPlanTableSuccess(
-            eq(remoteLease), eq(3), anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
+            eq(remoteLease), eq(3), eq(3L), anyLong(), anyLong(), anyLong(), anyLong(), anyLong());
   }
 
   @Test
@@ -437,7 +437,7 @@ class RemoteDefaultReconcileExecutorTest {
             new QueuedReconcileWorkerSupport.TableExecutionResult(
                 ReconcileExecutor.ExecutionResult.successHandled(1, 0, 0, 0, 0, 0, 0, "ok")));
     when(workerClient.submitPlanTableSuccess(
-            any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
+            any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
         .thenReturn(true);
 
     assertTrue(
@@ -512,7 +512,7 @@ class RemoteDefaultReconcileExecutorTest {
             new QueuedReconcileWorkerSupport.TableExecutionResult(
                 ReconcileExecutor.ExecutionResult.success(1, 0, 0, 0, 0, "ok")));
     when(workerClient.submitPlanTableSuccess(
-            any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
+            any(), anyInt(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong(), anyLong()))
         .thenThrow(new RemoteLeasePreconditionFailedException("submitPlanTableSuccess", null));
     AtomicBoolean completionStarted = new AtomicBoolean(false);
 

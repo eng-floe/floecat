@@ -969,6 +969,11 @@ message SubmitLeasedPlanTableResultRequest {
     uint64 snapshots_processed = 5;
     uint64 stats_processed = 6;
     uint32 chunk_count = 7;
+    // Snapshot jobs the planner submitted across chunk_count chunks. Reported by the planner
+    // rather than re-derived from the staged chunks: each chunk is acknowledged synchronously and
+    // its children are enqueued before the planner moves on, and the staged records must not have
+    // to survive a planning phase that can run for hours.
+    uint64 planned_snapshot_jobs = 8;
   }
 
   message Failure {

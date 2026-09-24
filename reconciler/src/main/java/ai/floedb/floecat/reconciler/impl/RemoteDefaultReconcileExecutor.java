@@ -234,6 +234,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
             workerClient.submitPlanTableSuccess(
                 remoteLease,
                 0,
+                0L,
                 result.tablesScanned,
                 result.tablesChanged,
                 result.errors,
@@ -258,6 +259,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
 
     snapshotChunks.flush();
     int chunkCount = snapshotChunks.submittedChunkCount();
+    long plannedSnapshotJobs = snapshotChunks.submittedSnapshotJobCount();
     context.beforeHandledCompletion().run();
     boolean accepted;
     try {
@@ -265,6 +267,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
           workerClient.submitPlanTableSuccess(
               remoteLease,
               chunkCount,
+              plannedSnapshotJobs,
               result.tablesScanned,
               result.tablesChanged,
               result.errors,
@@ -392,6 +395,7 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
     private final List<PlannedSnapshotJob> pending;
     private int pendingBytes;
     private int submittedChunkCount;
+    private long submittedSnapshotJobCount;
 
     private PlanTableChunkBuffer(
         RemotePlannerWorkerClient workerClient,
@@ -427,12 +431,17 @@ public class RemoteDefaultReconcileExecutor implements ReconcileExecutor {
         throw plannerSubmissionRejected();
       }
       submittedChunkCount++;
+      submittedSnapshotJobCount += pending.size();
       pending.clear();
       pendingBytes = 0;
     }
 
     private int submittedChunkCount() {
       return submittedChunkCount;
+    }
+
+    private long submittedSnapshotJobCount() {
+      return submittedSnapshotJobCount;
     }
   }
 
