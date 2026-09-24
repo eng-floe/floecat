@@ -232,6 +232,8 @@ public abstract class BaseServiceImpl {
                 throw failure;
               }
             })
+        .onFailure(t -> t instanceof LifecycleDrain.DrainingException)
+        .transform(t -> toStatus(t, callCtx.effectiveCorrelationId()))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 
@@ -279,6 +281,8 @@ public abstract class BaseServiceImpl {
                             }
                           }));
             })
+        .onFailure(t -> t instanceof LifecycleDrain.DrainingException)
+        .transform(t -> toStatus(t, callCtx.effectiveCorrelationId()))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 

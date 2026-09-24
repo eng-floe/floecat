@@ -29,6 +29,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.rpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
+import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import io.vertx.core.Context;
 import io.vertx.core.Vertx;
@@ -174,6 +175,26 @@ class BaseServiceImplTest {
   }
 
   @Test
+  void drainingAdmissionIsMappedToUnavailableForStreams() {
+    TestDrain drain = new TestDrain();
+    drain.draining.set(true);
+    TestServiceImpl service = new TestServiceImpl(drain);
+
+    StatusRuntimeException streamFailure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.admittedStream().collect().asList().await().indefinitely());
+    StatusRuntimeException emitterFailure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.admittedEmitterStream().collect().asList().await().indefinitely());
+
+    assertEquals(io.grpc.Status.Code.UNAVAILABLE, streamFailure.getStatus().getCode());
+    assertEquals(io.grpc.Status.Code.UNAVAILABLE, emitterFailure.getStatus().getCode());
+    assertEquals(0, drain.active.get());
+  }
+
+  @Test
   void inProgressMapsToAbortedAtTheRpcBoundary() {
     TestServiceImpl service = new TestServiceImpl();
 
@@ -212,6 +233,14 @@ class BaseServiceImplTest {
 
     <T> Uni<T> mappedAdmission(java.util.function.Supplier<T> supplier, String corrId) {
       return mapFailures(run(supplier), corrId);
+    }
+
+    Multi<String> admittedStream() {
+      return runStream(callCtx -> Multi.createFrom().item("ok"));
+    }
+
+    Multi<String> admittedEmitterStream() {
+      return runStreamEmitter((callCtx, emitter) -> emitter.complete());
     }
   }
 
