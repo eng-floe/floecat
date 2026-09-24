@@ -3,7 +3,9 @@
 ## Overview
 Floecat's public surface is entirely gRPC. The `core/proto/` module defines canonical protobuf
 structures for resource identifiers, catalog services, query lifecycle metadata, connectors, statistics, and
-helper schemas. `core/proto/README.md` maps every service to the audience that binds it. Every other module depends on these contracts for serialization, validation, and
+helper schemas. `core/proto/README.md` maps every service to the audience that binds it, and
+[Generic Engine RPC Contract](generic-engine-rpc-contract.md) states what an engine adapter
+binds and what it must handle. Every other module depends on these contracts for serialization, validation, and
 compatibility.
 
 ### Remote executor versioning
