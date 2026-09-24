@@ -350,10 +350,7 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   private SnapshotBundle buildSnapshotBundle(long version, long timestamp, Metadata metadata) {
-    String schemaJson = metadata.getSchemaString();
-    if (schemaJson == null || schemaJson.isBlank()) {
-      throw new IllegalStateException("Delta snapshot metadata schema JSON is required");
-    }
+    String schemaJson = schemaJson(metadata);
     PartitionSpecInfo.Builder partition =
         PartitionSpecInfo.newBuilder().setSpecId(0).setSpecName("delta");
     int fieldId = 0;
@@ -1837,13 +1834,24 @@ abstract class DeltaConnector implements FloecatConnector {
   }
 
   protected String snapshotSchemaJson(Snapshot snapshot) {
-    if (snapshot instanceof SnapshotImpl snapshotImpl && snapshotImpl.getMetadata() != null) {
-      String schemaJson = snapshotImpl.getMetadata().getSchemaString();
-      if (schemaJson != null && !schemaJson.isBlank()) {
-        return schemaJson;
-      }
+    if (snapshot instanceof SnapshotImpl snapshotImpl) {
+      return schemaJson(snapshotImpl.getMetadata());
     }
     throw new IllegalStateException("Delta snapshot metadata schema JSON is required");
+  }
+
+  /**
+   * The single source of a bundle's {@code schemaJson}. Both enumeration paths reach the schema
+   * through here so the same Delta version can never be described two different ways: the commit
+   * walk supplies the metadata action it just read, the snapshot path supplies the metadata kernel
+   * replayed.
+   */
+  private static String schemaJson(Metadata metadata) {
+    String schemaJson = metadata == null ? null : metadata.getSchemaString();
+    if (schemaJson == null || schemaJson.isBlank()) {
+      throw new IllegalStateException("Delta snapshot metadata schema JSON is required");
+    }
+    return schemaJson;
   }
 
   protected static PartitionSpecInfo toPartitionSpecInfo(Snapshot snapshot) {

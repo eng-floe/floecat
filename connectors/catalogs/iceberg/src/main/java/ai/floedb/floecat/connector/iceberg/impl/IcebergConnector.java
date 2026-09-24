@@ -1135,6 +1135,9 @@ public abstract class IcebergConnector implements FloecatConnector {
     return List.copyOf(deduped.values());
   }
 
+  /** A snapshot paired with its position in the table's metadata iteration order. */
+  private record RankedSnapshot(int position, Snapshot snapshot) {}
+
   private Stream<Snapshot> snapshotsToEnumerate(
       Table table,
       boolean fullRescan,
@@ -1168,20 +1171,29 @@ public abstract class IcebergConnector implements FloecatConnector {
       if (keep == 0) {
         return Stream.empty();
       }
-      Comparator<Snapshot> recency =
-          Comparator.comparingLong((Snapshot snapshot) -> Math.max(0L, snapshot.sequenceNumber()))
-              .thenComparingLong(Snapshot::timestampMillis);
-      PriorityQueue<Snapshot> latest = new PriorityQueue<>(keep, recency);
+      // Snapshot ids are random identifiers, so ties on (sequence, commit time) are broken by
+      // position in the metadata iterable -- stable history order -- to keep the selected set and
+      // its emission order deterministic across runs over unchanged metadata.
+      Comparator<RankedSnapshot> recency =
+          Comparator.comparingLong(
+                  (RankedSnapshot ranked) -> Math.max(0L, ranked.snapshot().sequenceNumber()))
+              .thenComparingLong(ranked -> ranked.snapshot().timestampMillis())
+              .thenComparingInt(RankedSnapshot::position);
+      // keep is an unvalidated uint32 from the reconcile policy, so it is only a capacity hint:
+      // the queue grows on demand and retention stays bounded by the eligible snapshot count.
+      PriorityQueue<RankedSnapshot> latest = new PriorityQueue<>(Math.min(keep, 1024), recency);
+      int[] position = {0};
       eligible.forEach(
           snapshot -> {
+            RankedSnapshot ranked = new RankedSnapshot(position[0]++, snapshot);
             if (latest.size() < keep) {
-              latest.add(snapshot);
-            } else if (recency.compare(snapshot, latest.element()) > 0) {
+              latest.add(ranked);
+            } else if (recency.compare(ranked, latest.element()) > 0) {
               latest.remove();
-              latest.add(snapshot);
+              latest.add(ranked);
             }
           });
-      eligible = latest.stream().sorted(recency);
+      eligible = latest.stream().sorted(recency).map(RankedSnapshot::snapshot);
     }
     if (fullRescan || knownSnapshotIds == null || knownSnapshotIds.isEmpty()) {
       return eligible;

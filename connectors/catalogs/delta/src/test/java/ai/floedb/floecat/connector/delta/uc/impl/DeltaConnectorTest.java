@@ -986,6 +986,111 @@ class DeltaConnectorTest {
     }
   }
 
+  /**
+   * Exercises the real {@code snapshotSchemaJson}: {@link TestDeltaConnector} stubs it out, so no
+   * stub-based test covers how the two enumeration paths actually derive a bundle's schema.
+   */
+  private static final class RealSchemaConnector extends DeltaConnector {
+    private final Table table;
+    private final String location;
+
+    RealSchemaConnector(Table table, Engine engine, String location) {
+      super("delta-real-schema", engine, path -> null, false, 0.0d, 0L, null);
+      this.table = table;
+      this.location = location;
+    }
+
+    @Override
+    protected String storageLocation(String namespaceFq, String tableName) {
+      return location;
+    }
+
+    @Override
+    protected Table loadTable(String storageLocation) {
+      return table;
+    }
+
+    @Override
+    public List<String> listTables(String namespaceFq) {
+      return List.of();
+    }
+
+    @Override
+    public List<String> listNamespaces() {
+      return List.of();
+    }
+
+    @Override
+    public TableDescriptor describe(String namespaceFq, String tableName) {
+      throw new UnsupportedOperationException();
+    }
+  }
+
+  @Test
+  void bothEnumerationPathsDescribeTheSameVersionIdentically() throws Exception {
+    Path tablePath = tempDir.resolve("schema-parity/delta-table");
+    Path logPath = Files.createDirectories(tablePath.resolve("_delta_log"));
+    String schemaV1 =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\","
+            + "\"nullable\":false,\"metadata\":{}}]}";
+    String schemaV2 =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\","
+            + "\"nullable\":false,\"metadata\":{}},{\"name\":\"name\",\"type\":\"string\","
+            + "\"nullable\":true,\"metadata\":{}}]}";
+    writeDeltaCommit(
+        logPath,
+        0,
+        "{\"protocol\":{\"minReaderVersion\":1,\"minWriterVersion\":2}}",
+        metadataAction(schemaV1));
+    writeDeltaCommit(logPath, 1, metadataAction(schemaV2));
+    writeDeltaCommit(logPath, 2, "{\"commitInfo\":{\"timestamp\":3000,\"operation\":\"WRITE\"}}");
+
+    Engine engine = DefaultEngine.create(new LocalFileSystemClient(tempDir));
+    String location = "s3://schema-parity/delta-table";
+    RealSchemaConnector connector =
+        new RealSchemaConnector(Table.forPath(engine, location), engine, location);
+
+    // ALL with no targets takes the commit-walk path; an explicit target set falls through to
+    // versionsToEnumerate and the snapshot-based builder.
+    List<FloecatConnector.SnapshotBundle> walked;
+    try (var snapshots =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.full(true))) {
+      walked = snapshots.toList();
+    }
+    List<FloecatConnector.SnapshotBundle> resolved;
+    try (var snapshots =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(0L, 1L, 2L)))) {
+      resolved = snapshots.toList();
+    }
+
+    assertEquals(
+        walked.stream().map(FloecatConnector.SnapshotBundle::snapshotId).toList(),
+        resolved.stream().map(FloecatConnector.SnapshotBundle::snapshotId).toList());
+    for (int i = 0; i < walked.size(); i++) {
+      FloecatConnector.SnapshotBundle fromWalk = walked.get(i);
+      FloecatConnector.SnapshotBundle fromSnapshot = resolved.get(i);
+      // A formatting-only difference here is a content change downstream: metadataFingerprint
+      // hashes schemaJson verbatim, so the two paths would re-ingest each other's snapshots.
+      assertEquals(
+          fromWalk.schemaJson(),
+          fromSnapshot.schemaJson(),
+          "schemaJson differs for version " + fromWalk.snapshotId());
+      assertEquals(
+          fromWalk.upstreamCreatedAtMs(),
+          fromSnapshot.upstreamCreatedAtMs(),
+          "upstreamCreatedAtMs differs for version " + fromWalk.snapshotId());
+      assertEquals(fromWalk.parentId(), fromSnapshot.parentId());
+    }
+  }
+
   private static final class StubTable implements Table {
     private final Snapshot latest;
     private final Map<Long, Snapshot> snapshots;
