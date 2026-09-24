@@ -238,14 +238,6 @@ public class QueryInputResolverTest {
     assertEquals(List.of(callerThread, callerThread), threadConfinedGraph.planningThreads());
   }
 
-  private static ResourceId ownedRid(String accountId, String id) {
-    return ResourceId.newBuilder()
-        .setAccountId(accountId)
-        .setId(id)
-        .setKind(ResourceKind.RK_TABLE)
-        .build();
-  }
-
   /** A late non-interruptible lookup cannot register a root after cancellation cleanup. */
   @Test
   void cancellationDoesNotRegisterRootsFromLatePinLookup() throws Exception {

@@ -30,9 +30,6 @@ import java.util.Optional;
  */
 public interface AccountScope {
 
-  /** Admits one account mutation; refused unless this process serves the account. */
-  Permit admitMutation(String accountId);
-
   /** Admits one pin resolution; released when the pin is rooted or the resolution is abandoned. */
   Permit admitResolution(String accountId);
 

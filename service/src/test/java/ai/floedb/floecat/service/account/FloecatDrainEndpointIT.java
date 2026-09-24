@@ -34,8 +34,11 @@ import org.junit.jupiter.api.Test;
 class FloecatDrainEndpointIT {
   @Inject AccountAssignment assignment;
 
-  @TestHTTPResource("/internal/drain")
+  @TestHTTPResource(value = "/internal/drain", management = true)
   URI drainUri;
+
+  @TestHTTPResource("/internal/drain")
+  URI clientFacingDrainUri;
 
   @Test
   void lifecycleHookDrainsAndWaitsForInFlightWork() throws Exception {
@@ -45,7 +48,7 @@ class FloecatDrainEndpointIT {
 
     HttpResponse<String> before = send(client, "", "GET");
     assertThat(before.statusCode()).isEqualTo(200);
-    assertThat(before.body()).contains("\"draining\":false", "\"servingAccounts\":1");
+    assertThat(before.body()).contains("\"draining\":false");
 
     assertThat(send(client, "?wait=true&timeoutMs=-1", "GET").statusCode()).isEqualTo(400);
     assertThat(assignment.status().processDraining()).isFalse();
@@ -65,6 +68,17 @@ class FloecatDrainEndpointIT {
     HttpResponse<String> drained = send(client, "?wait=true&timeoutMs=1000", "GET");
     assertThat(drained.statusCode()).isEqualTo(200);
     assertThat(drained.body()).contains("\"drained\":true", "\"activeResolutions\":0");
+  }
+
+  @Test
+  void clientFacingPortDoesNotExposeDrain() throws Exception {
+    HttpResponse<String> response =
+        HttpClient.newHttpClient()
+            .send(
+                HttpRequest.newBuilder(clientFacingDrainUri).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+
+    assertThat(response.statusCode()).isEqualTo(404);
   }
 
   private HttpResponse<String> send(HttpClient client, String query, String method)

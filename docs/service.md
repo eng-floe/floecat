@@ -325,16 +325,16 @@ applicability logic is defined. The lease data (snapshots, expansion map, obliga
 the caller inside the `QueryDescriptor`.
 
 ### Account Lifecycle
-`AccountScope` is the question — may this process mutate, resolve pins for, or collect this
-account? — asked by every caller that needs to know. The default policy is process-local and serves
-every account until the lifecycle drain begins.
+`AccountScope` controls pin-resolution and collection admission. Pointer mutations use the
+`PlanningPointerIndex.Ownership` seam, which is the single write-admission path. The default policy
+is process-local and serves every account until the lifecycle drain begins.
 
 Managed Floe deployments get account exclusivity from routing plus the Kubernetes lifecycle
 contract: a replacement process is not meant to serve traffic for an account until the old process
 has drained or exited. Floecat therefore does not write ownership records, recover assignments from
 KV, or fence every durable write. The local `preStop` drain is the mechanism Floecat exposes to the
-runtime: once drain starts, new pin resolutions, mutations and GC permits are refused, while
-already-admitted work is counted until its permit is released.
+runtime: once drain starts, new RPCs, pin resolutions and GC permits are refused, while
+already-admitted work, including a multi-write mutation, is counted until its permit is released.
 
 The extension points remain inside OSS Floecat. Deployments that need a different admission policy
 can bind their own `LifecycleDrain`, `AccountScope`, or `PlanningPointerIndex.Ownership` without
@@ -352,11 +352,10 @@ the same lifecycle drain accounting.
 drains; otherwise `200` once active RPCs, mutations, resolutions and GC are zero, or `202` at the
 requested timeout. Without `wait=true` a `POST` starts the drain and returns at
 once, and a `GET` only reports. `wait` is read as a boolean, so `?wait=TRUE` drains while `?wait=1`
-reports; only `GET` and `POST` are routed at all. Draining is irreversible for the life of the process and the endpoint authenticates
-no one: the `preStop` hook is a kubelet `httpGet` arriving from the node address, which no in-process
-check can tell from any other caller, so restricting access is the deployment's job — a mesh
-authorization policy or equivalent. The shutdown observer applies the same drain when the hook never
-arrived.
+reports; only `GET` and `POST` are routed at all. The route exists only on the separate Quarkus
+management listener, never on the client-facing HTTP/gRPC port. The deployment keeps that listener
+private and the `preStop` hook calls it directly. Draining is irreversible for the life of the
+process; the shutdown observer only starts the admission gate when the hook never arrived.
 
 ### Builtin Catalog Service
 `SystemObjectsLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the
@@ -427,6 +426,7 @@ Notable `application.properties` keys:
 | Property | Purpose |
 |----------|---------|
 | `quarkus.grpc.server.*` | Port, HTTP2, plaintext/reflection toggles. |
+| `quarkus.management.*` | Private management listener used by lifecycle drain and operational endpoints. |
 | `quarkus.grpc.clients.floecat.*` | Loopback client config for internal RPC calls. |
 | `floecat.seed.enabled` | Enable demo data seeding. |
 | `floecat.kv` / `floecat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |

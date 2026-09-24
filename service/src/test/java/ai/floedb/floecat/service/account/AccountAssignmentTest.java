@@ -29,7 +29,8 @@ class AccountAssignmentTest {
   void servingModeAdmitsWorkUntilProcessDrainStarts() {
     AccountAssignment assignment = AccountAssignment.forTesting();
 
-    try (var mutation = assignment.admitMutation(ACCOUNT);
+    try (var mutation =
+            assignment.acquire(ACCOUNT, PlanningPointerIndex.Ownership.Access.WRITE).orElseThrow();
         var resolution = assignment.admitResolution(ACCOUNT);
         var gc = assignment.tryAcquireGc(ACCOUNT).orElseThrow()) {
       assertThat(gc.valid()).isTrue();
@@ -47,16 +48,24 @@ class AccountAssignmentTest {
   void processDrainRejectsNewWorkAndRevokesGcPermits() {
     AccountAssignment assignment = AccountAssignment.forTesting();
     AccountScope.GcPermit gc = assignment.tryAcquireGc(ACCOUNT).orElseThrow();
+    var mutation =
+        assignment.acquire(ACCOUNT, PlanningPointerIndex.Ownership.Access.WRITE).orElseThrow();
 
     LifecycleControl.Status drained = assignment.beginProcessDrain();
 
     assertThat(drained.processDraining()).isTrue();
     assertThat(gc.valid()).isFalse();
     assertThat(assignment.tryAcquireGc(ACCOUNT)).isEmpty();
-    assertThatThrownBy(() -> assignment.admitMutation(ACCOUNT))
-        .isInstanceOf(IllegalStateException.class);
+    var admittedAfterDrain =
+        assignment.acquire(ACCOUNT, PlanningPointerIndex.Ownership.Access.WRITE).orElseThrow();
     assertThatThrownBy(() -> assignment.admitResolution(ACCOUNT))
         .isInstanceOf(LifecycleDrain.DrainingException.class);
+    assertThat(drained.drained()).isFalse();
+
+    mutation.close();
+    admittedAfterDrain.close();
+    gc.close();
+    assertThat(assignment.drained().toCompletableFuture()).isCompleted();
   }
 
   @Test
