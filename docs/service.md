@@ -435,7 +435,7 @@ Notable `application.properties` keys:
 | `floecat.query.metadata-io.max-concurrency` | Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use `64`; present malformed, blank, or out-of-range values fail startup. |
 | `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for GetUserObjects. Defaults to `8`. |
 | `floecat.catalog.bundle.max_parallel_stats_warms` | Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to `16`; clamped to `>= 1`. |
-| `floecat.lifecycle-drain.timeout-ms` | Default wait of `/internal/drain?wait=true` and of the shutdown drain (`110000`). |
+| `floecat.lifecycle-drain.timeout-ms` | Default wait for `/internal/drain?wait=true` (`110000` ms). The deployment may pass a different wait explicitly. |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |

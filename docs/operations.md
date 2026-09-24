@@ -317,8 +317,9 @@ deployment lifecycle drain is always available and only affects the local proces
 account work and GC while already-admitted work is allowed to finish.
 
 Pods should drain before termination with a `preStop` hook on the private management listener at
-`GET /internal/drain?wait=true&timeoutMs=<ms>`; the response is `200` when in-flight mutations and
-resolutions are gone and `202` at the timeout. `GET /internal/drain` shows the current status.
+`GET /internal/drain?wait=true&timeoutMs=<ms>`; the response is `200` when all admitted RPCs,
+mutations, resolutions, and GC work are gone and `202` at the requested timeout. `GET
+/internal/drain` shows the current status.
 Draining is irreversible for the life of the process. Under `wait=true` a malformed or negative
 `timeoutMs` is refused with `400` and drains nothing; without it a `POST` drains regardless of
 `timeoutMs` and returns at once, so a hook that interpolates one wants `wait=true` for a bad value to
