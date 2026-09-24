@@ -23,8 +23,7 @@ import org.junit.jupiter.api.Test;
 class FloecatDrainEndpointTest {
   @Test
   void getWithoutWaitOnlyReportsStatus() {
-    AccountAssignment assignment =
-        AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE);
+    AccountAssignment assignment = AccountAssignment.forTesting();
     FloecatDrainEndpoint endpoint = endpoint(assignment);
 
     FloecatDrainEndpoint.Response response =
@@ -37,8 +36,7 @@ class FloecatDrainEndpointTest {
 
   @Test
   void waitStartsDrainAndReturnsDrainedStatus() {
-    AccountAssignment assignment =
-        AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE);
+    AccountAssignment assignment = AccountAssignment.forTesting();
     FloecatDrainEndpoint endpoint = endpoint(assignment);
 
     FloecatDrainEndpoint.Response response =
@@ -52,8 +50,7 @@ class FloecatDrainEndpointTest {
 
   @Test
   void badTimeoutDoesNotStartDrain() {
-    AccountAssignment assignment =
-        AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE);
+    AccountAssignment assignment = AccountAssignment.forTesting();
     FloecatDrainEndpoint endpoint = endpoint(assignment);
 
     FloecatDrainEndpoint.Response response =

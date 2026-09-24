@@ -17,9 +17,7 @@ public interface LifecycleDrain extends LifecycleControl {
   /** Fallback used by plain unit-test instances created without CDI. */
   LifecycleDrain ALWAYS_SERVING =
       new LifecycleDrain() {
-        private final Status status =
-            new Status(
-                "test", "test", 0L, AssignmentPhase.SERVING, false, false, java.util.List.of(), 0L);
+        private final Status status = new Status("test", "test", false, java.util.List.of(), 0L);
 
         @Override
         public Permit admitRpc() {

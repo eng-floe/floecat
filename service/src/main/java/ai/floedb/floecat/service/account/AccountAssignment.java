@@ -40,29 +40,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class AccountAssignment
     implements AccountScope, LifecycleDrain, PlanningPointerIndex.Ownership {
 
-  /** Compatibility hook for cache tests and external policy adapters. */
-  public interface PartitionHooks {
-    PartitionHooks NONE =
-        new PartitionHooks() {
-          @Override
-          public void ownershipGained(String accountId) {}
-
-          @Override
-          public void ownershipLost(String accountId) {}
-
-          @Override
-          public String partitionState(String accountId) {
-            return "";
-          }
-        };
-
-    void ownershipGained(String accountId);
-
-    void ownershipLost(String accountId);
-
-    String partitionState(String accountId);
-  }
-
   private final String memberId;
   private final String incarnation;
   private final ConcurrentHashMap<String, AccountState> accounts = new ConcurrentHashMap<>();
@@ -80,19 +57,11 @@ public class AccountAssignment
     this.incarnation = UUID.randomUUID().toString();
   }
 
-  public static AccountAssignment forTesting(PartitionHooks ignored) {
+  public static AccountAssignment forTesting() {
     return new AccountAssignment("test");
   }
 
-  public static AccountAssignment forTesting(Object ignoredStore, Object ignoredObservability) {
-    return new AccountAssignment("test");
-  }
-
-  public static AccountAssignment forTesting(
-      String memberId,
-      String ignoredIncarnation,
-      Object ignoredStore,
-      Object ignoredObservability) {
+  public static AccountAssignment forTesting(String memberId) {
     return new AccountAssignment(memberId);
   }
 
@@ -174,15 +143,7 @@ public class AccountAssignment
     synchronized (this) {
       rpcCount = activeRpcs;
     }
-    return new Status(
-        memberId,
-        incarnation,
-        0L,
-        AssignmentPhase.SERVING,
-        false,
-        processDraining,
-        List.copyOf(statuses),
-        rpcCount);
+    return new Status(memberId, incarnation, processDraining, List.copyOf(statuses), rpcCount);
   }
 
   @Override

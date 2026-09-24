@@ -158,7 +158,6 @@ public class FloecatDrainEndpoint {
         new JsonObject()
             .put("memberId", status.memberId())
             .put("incarnation", status.incarnation())
-            .put("epoch", status.epoch())
             .put("draining", status.processDraining())
             .put("drained", status.drained())
             .put("accounts", status.accounts().size())

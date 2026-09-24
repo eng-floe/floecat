@@ -28,13 +28,7 @@ public interface LifecycleControl {
   /** What this process has admitted and what is still in flight on the way out. */
   Status status();
 
-  enum AssignmentPhase {
-    DRAINING,
-    SERVING
-  }
-
   enum AccountMode {
-    UNASSIGNED,
     SERVING,
     DRAINING
   }
@@ -55,9 +49,6 @@ public interface LifecycleControl {
   record Status(
       String memberId,
       String incarnation,
-      long epoch,
-      AssignmentPhase phase,
-      boolean recoveredFromStore,
       boolean processDraining,
       List<AccountStatus> accounts,
       long activeRpcs) {
