@@ -38,13 +38,19 @@ import java.util.Map;
 public final class RelationScope {
 
   /** Listing order. A kind outside this list is not a relation. */
-  private static final List<ResourceKind> KIND_ORDER =
+  public static final List<ResourceKind> KIND_ORDER =
       List.of(ResourceKind.RK_TABLE, ResourceKind.RK_VIEW);
 
   /** Separates path segments, the namespace from the kind, and keeps segment keys unambiguous. */
   private static final char KEY_SEPARATOR = '\0';
 
-  /** One namespace's relations of one kind: the unit a page token resumes at. */
+  /**
+   * One namespace's relations of one kind: the unit a page token resumes at.
+   *
+   * <p>The key is the namespace path and the kind. {@code indexAtOrAfter} resumes by comparing it
+   * against the segment list, which is ordered by the same value, so nothing may be inserted here
+   * that reorders a parent against its own child.
+   */
   record Segment(CatalogGraphView.NamespaceRef namespace, ResourceKind kind) {
     String key() {
       return namespaceKey(namespace) + KEY_SEPARATOR + kind.getNumber();

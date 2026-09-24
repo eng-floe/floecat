@@ -72,13 +72,16 @@ public final class CatalogSurfaceRelations {
   private final CatalogSurfaceViews views;
   private final RelationScope scope;
   private final RelationMapper mapper;
+  private final int maxPageSize;
 
   public CatalogSurfaceRelations(
       TableRepository tableRepo,
       ViewRepository viewRepo,
       CurrentSnapshotView currentSnapshot,
       CatalogGraphView graphView,
-      CatalogContext context) {
+      CatalogContext context,
+      int maxPageSize) {
+    this.maxPageSize = maxPageSize;
     this.graphView = Objects.requireNonNull(graphView, "catalog graph view is required");
     this.context = Objects.requireNonNull(context, "catalog context is required");
     var writePolicy = new CatalogSurfaceWritePolicy(graphView, context);
@@ -102,7 +105,9 @@ public final class CatalogSurfaceRelations {
     List<Segment> segments = scope.segments(request, kinds, corr);
 
     var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
-    int want = Math.max(1, pageIn.limit);
+    // The page buffer is sized from this, so an uncapped request size would allocate before a
+    // single relation is read.
+    int want = Math.min(Math.max(1, pageIn.limit), maxPageSize);
     RelationPageCursor cursor = RelationPageCursor.decode(pageIn.token, corr);
     String scopeFingerprint = scopeFingerprint(request, kinds, accountId, context);
     if (!pageIn.token.isBlank()) {
@@ -307,11 +312,7 @@ public final class CatalogSurfaceRelations {
     if (!SystemResourceIdGenerator.isSystemId(id)) {
       return candidate;
     }
-    Optional<NameRef> system =
-        id.getKind() == ResourceKind.RK_VIEW
-            ? graphView.resolveSystemViewName(id, context)
-            : graphView.resolveSystemTableName(id, context);
-    return system.orElse(candidate);
+    return graphView.resolveSystemRelationName(id, context).orElse(candidate);
   }
 
   private Relation relationById(
@@ -398,7 +399,7 @@ public final class CatalogSurfaceRelations {
   private static Error noCandidateResolved(RelationReference reference, String corr) {
     String tried =
         reference.getCandidatesList().stream()
-            .map(NameRefUtil::canonical)
+            .map(NameRefUtil::identityKey)
             .collect(Collectors.joining(", "));
     return Error.newBuilder()
         .setCode(ErrorCode.MC_NOT_FOUND)

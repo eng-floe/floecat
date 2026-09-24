@@ -59,6 +59,9 @@ public class RelationServiceImpl extends BaseServiceImpl implements RelationServ
   @ConfigProperty(name = "floecat.relation.resolve.max-names", defaultValue = "1000")
   int maxResolveNames;
 
+  @ConfigProperty(name = "floecat.relation.list.max-page-size", defaultValue = "1000")
+  int maxListPageSize;
+
   private static final Logger LOG = Logger.getLogger(RelationService.class);
 
   private CatalogSurfaceRelations catalogSurfaceRelations() {
@@ -70,7 +73,8 @@ public class RelationServiceImpl extends BaseServiceImpl implements RelationServ
                 .getCommittedCurrentSnapshotPointer(tableId)
                 .map(CurrentSnapshotPointer::getSnapshotId),
         graphView,
-        catalogContext());
+        catalogContext(),
+        maxListPageSize);
   }
 
   @Override
@@ -101,7 +105,8 @@ public class RelationServiceImpl extends BaseServiceImpl implements RelationServ
             run(
                 () -> {
                   var pc = principal.get();
-                  requireReadForKinds(pc, RELATION_KINDS);
+                  // ResolveRelations is kind-neutral, so it needs read on every kind it can return.
+                  requireReadForKinds(pc, RelationScope.KIND_ORDER);
 
                   return catalogSurfaceRelations()
                       .resolveRelations(request, maxResolveNames, pc.getCorrelationId());
@@ -131,10 +136,6 @@ public class RelationServiceImpl extends BaseServiceImpl implements RelationServ
         .onItem()
         .invoke(L::ok);
   }
-
-  /** ResolveRelations is kind-neutral, so it needs read on every kind it can return. */
-  private static final List<ResourceKind> RELATION_KINDS =
-      List.of(ResourceKind.RK_TABLE, ResourceKind.RK_VIEW);
 
   private void requireListRead(PrincipalContext pc, ListRelationsRequest request) {
     requireReadForKinds(

@@ -70,6 +70,7 @@ class CatalogSurfaceRelationsTest {
   private static final String ACCOUNT_ID = "acct";
   private static final String CORRELATION_ID = "corr";
   private static final int MAX_NAMES = 1000;
+  private static final int MAX_PAGE_SIZE = 1000;
 
   private final ResourceId catalogId = id(ResourceKind.RK_CATALOG, "cat");
   private final ResourceId namespaceId = id(ResourceKind.RK_NAMESPACE, "ns");
@@ -443,6 +444,66 @@ class CatalogSurfaceRelationsTest {
                 .addKinds(ResourceKind.RK_TABLE),
             10);
     assertEquals(List.of("orders", "nested_orders"), names(everything));
+  }
+
+  @Test
+  void pagesThroughANamespaceWhoseNameCarriesTheTokenFieldSeparator() {
+    // The cursor packs its fields with '|', and a segment key carries namespace names. A name
+    // holding that separator used to mint a token the server itself then rejected.
+    var piped = namespace(List.of("public"), "sales|eu");
+    graphView.addNode(piped);
+    var root = new CatalogGraphView.NamespaceRef(namespaceId, "public", catalogId, List.of());
+    var pipedRef =
+        new CatalogGraphView.NamespaceRef(piped.id(), "sales|eu", catalogId, List.of("public"));
+    graphView.setPointerNamespaceRefs(List.of(root, pipedRef));
+    tableRepo.add(tableIn(piped.id(), "a_one"));
+    tableRepo.add(tableIn(piped.id(), "b_two"));
+
+    var first =
+        list(
+            ListRelationsRequest.newBuilder()
+                .setCatalogId(catalogId)
+                .setRecursive(true)
+                .addKinds(ResourceKind.RK_TABLE),
+            1);
+    assertEquals(List.of("a_one"), names(first));
+    String token = first.getPage().getNextPageToken();
+    assertFalse(token.isBlank());
+
+    var second =
+        surface()
+            .listRelations(
+                ListRelationsRequest.newBuilder()
+                    .setCatalogId(catalogId)
+                    .setRecursive(true)
+                    .addKinds(ResourceKind.RK_TABLE)
+                    .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken(token))
+                    .build(),
+                ACCOUNT_ID,
+                CORRELATION_ID);
+    assertEquals(List.of("b_two"), names(second));
+  }
+
+  @Test
+  void clampsAPageSizeToTheConfiguredCeiling() {
+    // The page buffer is sized from the request, so an uncapped size allocates before any read.
+    tableRepo.add(tableIn(namespaceId, "one"));
+    tableRepo.add(tableIn(namespaceId, "two"));
+    tableRepo.add(tableIn(namespaceId, "three"));
+
+    var response =
+        surfaceWithPageCap(2)
+            .listRelations(
+                ListRelationsRequest.newBuilder()
+                    .setNamespaceId(namespaceId)
+                    .addKinds(ResourceKind.RK_TABLE)
+                    .setPage(PageRequest.newBuilder().setPageSize(Integer.MAX_VALUE))
+                    .build(),
+                ACCOUNT_ID,
+                CORRELATION_ID);
+
+    assertEquals(2, names(response).size());
+    assertFalse(response.getPage().getNextPageToken().isBlank());
   }
 
   @Test
@@ -938,13 +999,24 @@ class CatalogSurfaceRelationsTest {
     return surface(CatalogContext.empty());
   }
 
+  private CatalogSurfaceRelations surfaceWithPageCap(int maxPageSize) {
+    return new CatalogSurfaceRelations(
+        tableRepo,
+        viewRepo,
+        tableId -> Optional.ofNullable(currentSnapshots.get(tableId)),
+        graphView,
+        CatalogContext.empty(),
+        maxPageSize);
+  }
+
   private CatalogSurfaceRelations surface(CatalogContext context) {
     return new CatalogSurfaceRelations(
         tableRepo,
         viewRepo,
         tableId -> Optional.ofNullable(currentSnapshots.get(tableId)),
         graphView,
-        context);
+        context,
+        MAX_PAGE_SIZE);
   }
 
   private ListRelationsResponse list(ListRelationsRequest.Builder request, int pageSize) {
@@ -1252,19 +1324,14 @@ class CatalogSurfaceRelationsTest {
     private final Map<ResourceId, RuntimeException> tableSchemaFailures = new LinkedHashMap<>();
 
     void bind(NameRef name, ResourceId id) {
-      byName.put(NameRefUtil.lookupKey(name), id);
+      byName.put(NameRefUtil.matchKey(name), id);
       nameById.put(id, name);
     }
 
     // The graph holds a relation's qualified name and answers every reverse lookup from it, so a
     // hydrated read and an identity-only read report the same name.
     @Override
-    public Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext ctx) {
-      return Optional.ofNullable(nameById.get(id));
-    }
-
-    @Override
-    public Optional<NameRef> resolveSystemViewName(ResourceId id, CatalogContext ctx) {
+    public Optional<NameRef> resolveSystemRelationName(ResourceId id, CatalogContext ctx) {
       return Optional.ofNullable(nameById.get(id));
     }
 
@@ -1355,7 +1422,7 @@ class CatalogSurfaceRelationsTest {
     @Override
     public Optional<ResourceId> resolveName(
         String correlationId, NameRef ref, CatalogContext catalogContext) {
-      return Optional.ofNullable(byName.get(NameRefUtil.lookupKey(ref)));
+      return Optional.ofNullable(byName.get(NameRefUtil.matchKey(ref)));
     }
 
     // The bound name, not the lookup key: the key omits the catalog, and a reverse lookup that
