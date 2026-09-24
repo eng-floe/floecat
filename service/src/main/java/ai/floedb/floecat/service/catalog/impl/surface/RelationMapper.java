@@ -102,14 +102,6 @@ final class RelationMapper {
     return canonicalName(view.getResourceId(), view.getDisplayName());
   }
 
-  /** Builds the identity/status-only form used by pointer-backed generic reads. */
-  Relation fromRef(
-      CatalogGraphView.RelationRef ref,
-      CatalogGraphView.NamespaceRef namespace,
-      boolean includeStatus) {
-    return fromRef(ref, namespaceName(namespace, ref.name()), includeStatus);
-  }
-
   /** Builds the identity/status-only form while preserving the caller's resolved name. */
   Relation fromRef(CatalogGraphView.RelationRef ref, NameRef name, boolean includeStatus) {
     Origin origin = originOf(ref.id());
@@ -119,15 +111,6 @@ final class RelationMapper {
           ref.kind() == ResourceKind.RK_VIEW ? queryable() : tableStatus(ref.id(), origin));
     }
     return builder.build();
-  }
-
-  NameRef namespaceName(CatalogGraphView.NamespaceRef namespace, String relationName) {
-    return namespaceName(
-        namespace,
-        relationName,
-        namespace.catalogId() == null
-            ? ""
-            : graphView.catalogName(namespace.catalogId(), context).orElse(""));
   }
 
   NameRef namespaceName(
