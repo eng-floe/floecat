@@ -93,8 +93,10 @@ for unpinned name resolution, and `QueryInput` candidates when requesting the pi
   complete catalog.
 - Errors consume page space, so a client must advance the opaque page token even when a page has no
   successful relations.
-- Request, authorization, cancellation and backend failures still fail the whole RPC;
-  `RelationListResult.error` is only for failures isolated to one relation.
+- Request, cancellation and backend failures still fail the whole RPC, and so does authorization
+  on the request: read is checked per relation kind the request can return, before the walk, so a
+  caller without `table.read` gets a status rather than a page of errors. `RelationListResult.error`
+  is only for a failure isolated to one relation, including one the caller may not read.
 - An adapter that cannot represent partial catalog results must fail its own listing when it sees a
   row error. An adapter with a warning-capable UX, such as the CLI, may continue only after showing
   the affected names and preserving the continuation token.
