@@ -27,6 +27,7 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.telemetry.TestObservability;
@@ -108,7 +109,7 @@ class PointerGcSchedulerTest {
     }
 
     @Override
-    public Result runForAccount(String accountId, long deadlineMs) {
+    public Result runForAccount(String accountId, long deadlineMs, AccountScope.GcPermit permit) {
       accountIds.add(accountId);
       return new Result(1, 0, 0, 0);
     }

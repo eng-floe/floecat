@@ -26,7 +26,7 @@ class AccountAssignmentTest {
   private static final String ACCOUNT = "acct-a";
 
   @Test
-  void managedModeAdmitsWorkUntilProcessDrainStarts() {
+  void servingModeAdmitsWorkUntilProcessDrainStarts() {
     AccountAssignment assignment =
         AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE);
 
@@ -56,13 +56,13 @@ class AccountAssignmentTest {
     assertThat(gc.valid()).isFalse();
     assertThat(assignment.tryAcquireGc(ACCOUNT)).isEmpty();
     assertThatThrownBy(() -> assignment.admitMutation(ACCOUNT))
-        .isInstanceOf(PlanningPointerIndex.Ownership.NotOwnedException.class);
+        .isInstanceOf(IllegalStateException.class);
     assertThatThrownBy(() -> assignment.admitResolution(ACCOUNT))
-        .isInstanceOf(PlanningPointerIndex.Ownership.NotOwnedException.class);
+        .isInstanceOf(IllegalStateException.class);
   }
 
   @Test
-  void standaloneModeIgnoresDrainPolicy() {
+  void servingModeAdmitsPointerWrites() {
     AccountAssignment assignment =
         AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE);
 
