@@ -40,6 +40,8 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.EngineContextProvider;
@@ -104,6 +106,7 @@ public class UserObjectBundleService {
   private final RelationBundleBuilder relationBuilder;
   private final EngineRelationDecorator engineRelationDecorator;
   private final CancelledQueryPinCleanup cancelledQueryPinCleanup;
+  private final AccountScope accountScope;
 
   // Mints the pin identity/payload token and serves the identity-only decision. Stateless per
   // call; reused on the driver thread across every chunk.
@@ -149,6 +152,7 @@ public class UserObjectBundleService {
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
       CancelledQueryPinCleanup cancelledQueryPinCleanup,
+      AccountScope accountScope,
       StatsProviderFactory statsFactory,
       ObjectCache objects,
       EngineMetadataDecoratorProvider decoratorProvider,
@@ -171,6 +175,7 @@ public class UserObjectBundleService {
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
     this.cancelledQueryPinCleanup = cancelledQueryPinCleanup;
+    this.accountScope = accountScope;
     this.statsFactory = statsFactory;
     this.engineContext = engineContext;
     this.decorationEpoch = safe(decorationEpoch);
@@ -229,6 +234,7 @@ public class UserObjectBundleService {
         inputResolver,
         queryStore,
         new CancelledQueryPinCleanup(queryStore, Runnable::run),
+        AccountAssignment.forTesting(AccountAssignment.PartitionHooks.NONE),
         statsFactory,
         ObjectCache.forTesting(),
         decoratorProvider,
@@ -267,20 +273,30 @@ public class UserObjectBundleService {
     return Multi.createFrom()
         .<UserObjectsBundleChunk>deferred(
             () -> {
-              UserObjectBundleIterator iterator =
-                  new UserObjectBundleIterator(correlationId, ctx, candidates, knownPayloadTokens);
-              return Multi.createFrom()
-                  .iterable(() -> iterator)
-                  .onFailure()
-                  .invoke(
-                      failure -> {
-                        if (!(failure instanceof CancellationException)) {
-                          iterator.publishStreamTelemetry("failed");
-                        }
-                        iterator.cancel();
-                      })
-                  .onCancellation()
-                  .invoke(iterator::cancel);
+              var resolutionPermit =
+                  accountScope.admitResolution(ctx.getPrincipal().getAccountId());
+              try {
+                UserObjectBundleIterator iterator =
+                    new UserObjectBundleIterator(
+                        correlationId, ctx, candidates, knownPayloadTokens);
+                return Multi.createFrom()
+                    .iterable(() -> iterator)
+                    .onFailure()
+                    .invoke(
+                        failure -> {
+                          if (!(failure instanceof CancellationException)) {
+                            iterator.publishStreamTelemetry("failed");
+                          }
+                          iterator.cancel();
+                        })
+                    .onCancellation()
+                    .invoke(iterator::cancel)
+                    .onTermination()
+                    .invoke(resolutionPermit::close);
+              } catch (Throwable failure) {
+                resolutionPermit.close();
+                throw failure;
+              }
             });
   }
 

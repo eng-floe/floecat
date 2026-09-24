@@ -18,9 +18,12 @@ package ai.floedb.floecat.service.common;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
+import ai.floedb.floecat.service.account.LifecycleControl;
+import ai.floedb.floecat.service.account.LifecycleDrain;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.rpc.Status;
@@ -31,6 +34,7 @@ import io.vertx.core.Context;
 import io.vertx.core.Vertx;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -145,6 +149,31 @@ class BaseServiceImplTest {
   }
 
   @Test
+  void rpcAdmissionStartsAtSubscriptionAndClosesAtTermination() {
+    TestDrain drain = new TestDrain();
+    TestServiceImpl service = new TestServiceImpl(drain);
+
+    Uni<String> operation = service.admitted(() -> "ok");
+    assertEquals(0, drain.active.get());
+    assertEquals("ok", operation.await().indefinitely());
+    assertEquals(0, drain.active.get());
+  }
+
+  @Test
+  void drainingAdmissionIsMappedToUnavailableInsideTheUni() {
+    TestDrain drain = new TestDrain();
+    drain.draining.set(true);
+    TestServiceImpl service = new TestServiceImpl(drain);
+
+    Uni<String> operation = service.mappedAdmission(() -> "never", CORRELATION_ID);
+    StatusRuntimeException failure =
+        assertThrows(StatusRuntimeException.class, () -> operation.await().indefinitely());
+
+    assertEquals(io.grpc.Status.Code.UNAVAILABLE, failure.getStatus().getCode());
+    assertEquals(0, drain.active.get());
+  }
+
+  @Test
   void inProgressMapsToAbortedAtTheRpcBoundary() {
     TestServiceImpl service = new TestServiceImpl();
 
@@ -155,6 +184,12 @@ class BaseServiceImplTest {
   }
 
   private static final class TestServiceImpl extends BaseServiceImpl {
+    private TestServiceImpl() {}
+
+    private TestServiceImpl(LifecycleDrain drain) {
+      lifecycleDrain = drain;
+    }
+
     StatusRuntimeException repack(StatusRuntimeException ex, String corrId) {
       return toStatus(ex, corrId);
     }
@@ -169,6 +204,47 @@ class BaseServiceImplTest {
 
     <T> Uni<T> withRetry(java.util.function.Supplier<T> supplier) {
       return runWithRetry(supplier);
+    }
+
+    <T> Uni<T> admitted(java.util.function.Supplier<T> supplier) {
+      return run(supplier);
+    }
+
+    <T> Uni<T> mappedAdmission(java.util.function.Supplier<T> supplier, String corrId) {
+      return mapFailures(run(supplier), corrId);
+    }
+  }
+
+  private static final class TestDrain implements LifecycleDrain {
+    private final AtomicBoolean draining = new AtomicBoolean();
+    private final AtomicInteger active = new AtomicInteger();
+
+    @Override
+    public Permit admitRpc() {
+      if (draining.get()) {
+        throw new DrainingException();
+      }
+      active.incrementAndGet();
+      return () -> active.decrementAndGet();
+    }
+
+    @Override
+    public LifecycleControl.Status beginProcessDrain() {
+      draining.set(true);
+      return status();
+    }
+
+    @Override
+    public LifecycleControl.Status status() {
+      return new LifecycleControl.Status(
+          "test",
+          "test",
+          0L,
+          LifecycleControl.AssignmentPhase.SERVING,
+          false,
+          draining.get(),
+          java.util.List.of(),
+          active.get());
     }
   }
 }

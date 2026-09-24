@@ -113,18 +113,32 @@ public abstract class BaseServiceImpl {
    * {@link CancellationException} is discarded after its subscriber has already terminated.
    */
   protected <T> Uni<T> run(Supplier<T> body) {
-    LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
-    return run(body, lifecyclePermit, true);
+    return run(body, true);
   }
 
-  private <T> Uni<T> run(
-      Supplier<T> body, LifecycleDrain.Permit lifecyclePermit, boolean closeOnTermination) {
+  private <T> Uni<T> run(Supplier<T> body, boolean closeOnTermination) {
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     // Read the resolved call context at method entry — before any executor hop — and carry it by
     // reference into the body. The captured io.grpc.Context alone is unreliable across the hop
     // (eng-floe/floecat#361).
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrNull();
     Context otelCtx = otelContextForBody(Context.current());
+    return Uni.createFrom()
+        .deferred(
+            () -> {
+              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
+              return run(body, lifecyclePermit, closeOnTermination, grpcCtx, callCtx, otelCtx);
+            })
+        .runSubscriptionOn(Infrastructure.getDefaultExecutor());
+  }
+
+  private <T> Uni<T> run(
+      Supplier<T> body,
+      LifecycleDrain.Permit lifecyclePermit,
+      boolean closeOnTermination,
+      GrpcContextUtil grpcCtx,
+      ResolvedCallContext callCtx,
+      Context otelCtx) {
     return Uni.createFrom()
         .deferred(
             () -> {
@@ -189,29 +203,34 @@ public abstract class BaseServiceImpl {
    */
   protected <T> Multi<T> runStream(
       BiFunction<ResolvedCallContext, BooleanSupplier, Multi<T>> body) {
-    LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     Context otelCtx = otelContextForBody(Context.current());
     return Multi.createFrom()
         .<T>deferred(
             () -> {
+              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
               RequestCancellation cancellation = new RequestCancellation(grpcCtx);
-              Multi<T> source =
-                  grpcCtx.call(
-                      () ->
-                          ResolvedCallContexts.callWithOrInherit(
-                              callCtx,
-                              () -> {
-                                try (Scope ignored = otelCtx.makeCurrent()) {
-                                  return body.apply(callCtx, cancellation);
-                                }
-                              }));
-              return source
-                  .onTermination()
-                  .invoke(cancellation::terminate)
-                  .onTermination()
-                  .invoke(lifecyclePermit::close);
+              try {
+                Multi<T> source =
+                    grpcCtx.call(
+                        () ->
+                            ResolvedCallContexts.callWithOrInherit(
+                                callCtx,
+                                () -> {
+                                  try (Scope ignored = otelCtx.makeCurrent()) {
+                                    return body.apply(callCtx, cancellation);
+                                  }
+                                }));
+                return source
+                    .onTermination()
+                    .invoke(cancellation::terminate)
+                    .onTermination()
+                    .invoke(lifecyclePermit::close);
+              } catch (Throwable failure) {
+                lifecyclePermit.close();
+                throw failure;
+              }
             })
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
@@ -242,13 +261,13 @@ public abstract class BaseServiceImpl {
   /** Emitter-based analogue of {@link #runStream} for bodies that drive a {@link MultiEmitter}. */
   protected <T> Multi<T> runStreamEmitter(
       BiConsumer<ResolvedCallContext, MultiEmitter<? super T>> body) {
-    LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrUnauthenticated();
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     Context otelCtx = otelContextForBody(Context.current());
     return Multi.createFrom()
         .<T>emitter(
             emitter -> {
+              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
               emitter.onTermination(lifecyclePermit::close);
               grpcCtx.run(
                   () ->
@@ -264,18 +283,25 @@ public abstract class BaseServiceImpl {
   }
 
   protected <T> Uni<T> runWithRetry(Supplier<T> body) {
-    LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
-    return run(body, lifecyclePermit, false)
-        .onFailure(
-            t ->
-                t instanceof BaseResourceRepository.AbortRetryableException
-                    || t instanceof StorageAbortRetryableException)
-        .retry()
-        .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
-        .withJitter(JITTER)
-        .atMost(RETRIES)
-        .onTermination()
-        .invoke(lifecyclePermit::close);
+    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrNull();
+    Context otelCtx = otelContextForBody(Context.current());
+    return Uni.createFrom()
+        .deferred(
+            () -> {
+              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
+              return run(body, lifecyclePermit, false, grpcCtx, callCtx, otelCtx)
+                  .onFailure(
+                      t ->
+                          t instanceof BaseResourceRepository.AbortRetryableException
+                              || t instanceof StorageAbortRetryableException)
+                  .retry()
+                  .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
+                  .withJitter(JITTER)
+                  .atMost(RETRIES)
+                  .onTermination()
+                  .invoke(lifecyclePermit::close);
+            });
   }
 
   protected <T> Uni<T> mapFailures(Uni<T> u, String corrId) {

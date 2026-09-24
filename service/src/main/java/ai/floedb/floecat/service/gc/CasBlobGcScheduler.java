@@ -218,6 +218,13 @@ public class CasBlobGcScheduler {
             if (fromPage && advanceAccountCursor(gc)) {
               break;
             }
+            if (!fromPage) {
+              gc.abandonContinuation();
+              continuationAccountId = "";
+              consecutiveContinuationTicks = 0;
+              lastCleanSweepMs.remove(accountId);
+              break;
+            }
             continue;
           }
           try (var permit = acquired.get()) {
