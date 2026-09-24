@@ -205,7 +205,7 @@ public abstract class BaseTestCatalogGraphView implements CatalogGraphView {
   }
 
   @Override
-  public Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext catalogContext) {
+  public Optional<NameRef> resolveSystemRelationName(ResourceId id, CatalogContext catalogContext) {
     throw unsupported();
   }
 
