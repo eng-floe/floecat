@@ -203,7 +203,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
   private ReconcileFileGroupResultDescriptor.IndexGenerationPredecessor pinnedIndexPredecessor(
       ReconcileJobStore.LeasedJob lease) {
     ReconcileJobStore.ReconcileJob parent =
-        jobs.get(lease.accountId, lease.parentJobId)
+        jobs.getCompactLeaseView(lease.parentJobId)
             .filter(
                 candidate ->
                     lease.accountId.equals(candidate.accountId)
@@ -858,7 +858,7 @@ public class LeasedFileGroupExecutionService extends BaseServiceImpl {
       throw unresolvedPlannedTask();
     }
     ReconcileJobStore.ReconcileJob parent =
-        jobs.get(accountId, parentJobId).orElseThrow(this::unresolvedPlannedTask);
+        jobs.getCompactLeaseView(parentJobId).orElseThrow(this::unresolvedPlannedTask);
     ReconcileSnapshotTask snapshotTask =
         parent.snapshotTask == null ? ReconcileSnapshotTask.empty() : parent.snapshotTask;
     if (!accountId.equals(parent.accountId)

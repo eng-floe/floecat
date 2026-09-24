@@ -1029,6 +1029,67 @@ class DurableReconcileJobStoreTest {
         store.getCompactLeaseView(jobId).orElseThrow().snapshotTask.indexPredecessor());
   }
 
+  /**
+   * LeasedFileGroupExecutionService resolves a worker's planned file group from the compact parent
+   * view instead of the full one, so it never deserializes the whole snapshot plan. That only works
+   * while the compact projection carries the plan's locator fields: the file-group list is
+   * deliberately dropped, but dropping any of these turns every file-group execution into an opaque
+   * "planned file group could not be resolved" failure.
+   */
+  @Test
+  void compactLeaseViewCarriesPlanLocatorsWithoutTheFileGroupList() throws Exception {
+    ReconcileScope scope = ReconcileScope.of(List.of(), "table-1", List.of());
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/file.parquet"));
+    String planUri = "s3://bucket/plans/plan-1.json";
+    store.blobStore.put(
+        planUri,
+        store.mapper.writeValueAsBytes(
+            SnapshotPlanBlob.of(
+                List.of(
+                    new ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob(
+                        ReconcileScope.empty(), group)))),
+        "application/json");
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "orders",
+            List.of(group),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            planUri,
+            1);
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    ReconcileSnapshotTask compact = store.getCompactLeaseView(jobId).orElseThrow().snapshotTask;
+    ReconcileSnapshotTask full = store.get(ACCOUNT_ID, jobId).orElseThrow().snapshotTask;
+
+    // The store re-homes the plan under its own derived URI, so the invariant is parity with the
+    // full view rather than the URI handed to enqueue.
+    assertFalse(compact.fileGroupPlanBlobUri().isBlank());
+    assertEquals(full.fileGroupPlanBlobUri(), compact.fileGroupPlanBlobUri());
+    assertTrue(compact.fileGroupPlanRecorded());
+    assertEquals("table-1", compact.tableId());
+    assertEquals(55L, compact.snapshotId());
+    // The heavy field is dropped on purpose -- and isEmpty() must still see a real task, since the
+    // resolver rejects the parent outright when it does not.
+    assertTrue(compact.fileGroups().isEmpty());
+    assertFalse(compact.isEmpty());
+  }
+
   @Test
   void legacyUnpinnedSnapshotJobMustBeRecreated() {
     ReconcileScope scope =
