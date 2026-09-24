@@ -128,8 +128,7 @@ public abstract class BaseServiceImpl {
             () -> {
               LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
               return run(body, lifecyclePermit, closeOnTermination, grpcCtx, callCtx, otelCtx);
-            })
-        .runSubscriptionOn(Infrastructure.getDefaultExecutor());
+            });
   }
 
   private <T> Uni<T> run(

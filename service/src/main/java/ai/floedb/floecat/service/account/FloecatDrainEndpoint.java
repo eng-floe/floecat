@@ -17,13 +17,14 @@
 package ai.floedb.floecat.service.account;
 
 import io.quarkus.runtime.ShutdownEvent;
+import io.quarkus.vertx.http.ManagementInterface;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
@@ -32,19 +33,16 @@ import org.jboss.logging.Logger;
  *
  * <p>{@code GET /internal/drain} reports process status. A {@code POST}, or any request carrying
  * {@code wait=true}, starts the drain -- except that {@code wait=true} validates {@code timeoutMs}
- * first and refuses a malformed or negative one with {@code 400}, draining nothing. Which requests
- * drain is pinned by {@code FloecatDrainEndpointTest.onlyTheseRequestsStartTheDrain}; the rule is
- * stated once in {@code docs/service.md}. Draining is irreversible for the life of the process, and
- * the endpoint authenticates no one: the {@code preStop} hook is a kubelet {@code httpGet} from the
- * node address, which no in-process check can tell from any other caller, so access is the mesh
- * authorization policy's job. The shutdown observer applies the same drain when the hook never
- * arrived.
+ * first and refuses a malformed or negative one with {@code 400}, draining nothing. The route is
+ * registered only on Quarkus's separate management interface, so the client-facing HTTP/gRPC port
+ * has no remote drain switch. Draining is irreversible for the life of the process. The shutdown
+ * observer applies the same admission gate when the lifecycle hook never arrived; the management
+ * hook is responsible for waiting for the normal termination grace period.
  */
 @ApplicationScoped
 public class FloecatDrainEndpoint {
   private static final Logger LOG = Logger.getLogger(FloecatDrainEndpoint.class);
   static final String PATH = "/internal/drain";
-  private static final long POLL_MILLIS = 25L;
 
   record Request(String method, boolean awaitDrain, String timeoutMsParam) {}
 
@@ -56,7 +54,8 @@ public class FloecatDrainEndpoint {
   @ConfigProperty(name = "floecat.lifecycle-drain.timeout-ms", defaultValue = "110000")
   long defaultTimeoutMs;
 
-  void routes(@Observes Router router) {
+  void routes(@Observes ManagementInterface management) {
+    Router router = management.router();
     router.get(PATH).handler(this::handleHttp);
     router.post(PATH).handler(this::handleHttp);
   }
@@ -64,7 +63,6 @@ public class FloecatDrainEndpoint {
   /** SIGTERM fallback for a preStop hook that never reached the pod. */
   void onShutdown(@Observes ShutdownEvent ignored) {
     drain.beginProcessDrain();
-    awaitDrained(clampTimeout(defaultTimeoutMs));
   }
 
   private void handleHttp(RoutingContext context) {
@@ -77,11 +75,30 @@ public class FloecatDrainEndpoint {
       respond(context, handle(request));
       return;
     }
-    context
-        .vertx()
-        .executeBlocking(() -> handle(request), false)
-        .onSuccess(response -> respond(context, response))
-        .onFailure(context::fail);
+    Long timeoutMs = timeoutMs(request.timeoutMsParam());
+    if (timeoutMs == null) {
+      respond(context, new Response(400, error("timeoutMs must be a non-negative integer")));
+      return;
+    }
+    drain.beginProcessDrain();
+    AtomicBoolean completed = new AtomicBoolean();
+    long timerId =
+        context
+            .vertx()
+            .setTimer(timeoutMs, ignored -> completeWait(context, completed, drain.status()));
+    drain
+        .drained()
+        .whenComplete(
+            (ignored, failure) ->
+                context
+                    .vertx()
+                    .runOnContext(
+                        ignoredContext -> {
+                          if (completed.compareAndSet(false, true)) {
+                            context.vertx().cancelTimer(timerId);
+                            respond(context, respond(drain.status()));
+                          }
+                        }));
   }
 
   /**
@@ -104,7 +121,7 @@ public class FloecatDrainEndpoint {
       return new Response(400, error("timeoutMs must be a non-negative integer"));
     }
     drain.beginProcessDrain();
-    return respond(awaitDrained(timeoutMs));
+    return respond(drain.status());
   }
 
   /** Parsed as a non-negative duration; null when the parameter is malformed. */
@@ -124,24 +141,16 @@ public class FloecatDrainEndpoint {
     return Math.max(0L, timeoutMs);
   }
 
-  private LifecycleControl.Status awaitDrained(long timeoutMs) {
-    long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
-    LifecycleControl.Status status = drain.status();
-    while (!status.drained() && System.nanoTime() - deadline < 0) {
-      try {
-        Thread.sleep(POLL_MILLIS);
-      } catch (InterruptedException interrupted) {
-        Thread.currentThread().interrupt();
-        return drain.status();
+  private void completeWait(
+      RoutingContext context, AtomicBoolean completed, LifecycleControl.Status status) {
+    if (completed.compareAndSet(false, true)) {
+      if (!status.drained()) {
+        LOG.warnf(
+            "account_assignment_drain_timeout member=%s active_resolutions=%d active_mutations=%d",
+            status.memberId(), status.activeResolutions(), status.activeMutations());
       }
-      status = drain.status();
+      respond(context, respond(status));
     }
-    if (!status.drained()) {
-      LOG.warnf(
-          "account_assignment_drain_timeout member=%s active_resolutions=%d active_mutations=%d",
-          status.memberId(), status.activeResolutions(), status.activeMutations());
-    }
-    return status;
   }
 
   private static Response respond(LifecycleControl.Status status) {

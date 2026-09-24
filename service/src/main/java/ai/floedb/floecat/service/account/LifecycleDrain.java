@@ -6,6 +6,9 @@
 
 package ai.floedb.floecat.service.account;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+
 /**
  * Deployment-neutral lifecycle contract used by the pod drain endpoint.
  *
@@ -18,6 +21,7 @@ public interface LifecycleDrain extends LifecycleControl {
   LifecycleDrain ALWAYS_SERVING =
       new LifecycleDrain() {
         private final Status status = new Status("test", "test", false, java.util.List.of(), 0L);
+        private final CompletionStage<Void> drained = CompletableFuture.completedFuture(null);
 
         @Override
         public Permit admitRpc() {
@@ -33,9 +37,25 @@ public interface LifecycleDrain extends LifecycleControl {
         public Status status() {
           return status;
         }
+
+        @Override
+        public CompletionStage<Void> drained() {
+          return drained;
+        }
       };
 
   Permit admitRpc();
+
+  /**
+   * Completes once the process has drained all work admitted before the drain began.
+   *
+   * <p>The completed default keeps the lifecycle interface source-compatible for standalone users
+   * that only need the admission hook; managed implementations override it when the drain endpoint
+   * should wait for in-flight work.
+   */
+  default CompletionStage<Void> drained() {
+    return CompletableFuture.completedFuture(null);
+  }
 
   interface Permit extends AutoCloseable {
     @Override

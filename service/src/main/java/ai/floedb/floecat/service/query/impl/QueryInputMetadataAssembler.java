@@ -53,6 +53,7 @@ public class QueryInputMetadataAssembler {
   public QueryInputMetadata assemble(
       String queryId,
       String correlationId,
+      String accountId,
       List<QueryInput> inputs,
       Optional<Timestamp> asOfDefault,
       ResourceId defaultCatalogId) {
@@ -73,7 +74,7 @@ public class QueryInputMetadataAssembler {
     }
 
     try {
-      var resolutionPermit = accountScope.admitResolution(defaultCatalogId.getAccountId());
+      var resolutionPermit = accountScope.admitResolution(accountId);
       QueryInputResolver.ResolutionResult resolution;
       try {
         resolution =

@@ -455,11 +455,6 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     return value.startsWith("/") ? value.substring(1) : value;
   }
 
-  /** Visible for tests: the logical key a physical one maps back to. */
-  static String _testKeyOf(KvStore.Key key) {
-    return new PointerStoreEntity(null).keyOf(key);
-  }
-
   static KvStore.Key _testKey(String key) {
     return pointerKey(key);
   }

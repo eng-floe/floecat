@@ -251,6 +251,7 @@ class BaseServiceImplTest {
   private static final class TestDrain implements LifecycleDrain {
     private final AtomicBoolean draining = new AtomicBoolean();
     private final AtomicInteger active = new AtomicInteger();
+    private final CompletableFuture<Void> drained = new CompletableFuture<>();
 
     @Override
     public Permit admitRpc() {
@@ -258,19 +259,34 @@ class BaseServiceImplTest {
         throw new DrainingException();
       }
       active.incrementAndGet();
-      return () -> active.decrementAndGet();
+      return () -> {
+        active.decrementAndGet();
+        completeIfDrained();
+      };
     }
 
     @Override
     public LifecycleControl.Status beginProcessDrain() {
       draining.set(true);
+      completeIfDrained();
       return status();
+    }
+
+    @Override
+    public java.util.concurrent.CompletionStage<Void> drained() {
+      return drained;
     }
 
     @Override
     public LifecycleControl.Status status() {
       return new LifecycleControl.Status(
           "test", "test", draining.get(), java.util.List.of(), active.get());
+    }
+
+    private void completeIfDrained() {
+      if (draining.get() && active.get() == 0) {
+        drained.complete(null);
+      }
     }
   }
 }

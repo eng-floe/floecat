@@ -24,6 +24,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -32,9 +34,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Standalone Floecat owns every account. In Floe-managed deployments, Core/runtime controls
  * routing and Kubernetes lifecycle; Floecat only needs a local drain switch so preStop can stop new
- * pins, mutations and GC before the process exits. Other OSS users can replace this module at the
- * {@link AccountScope} or {@link PlanningPointerIndex.Ownership} interfaces if their deployment
- * needs leases, fences or a coordinator.
+ * pins, RPCs and GC before the process exits. Other OSS users can replace this module at the {@link
+ * AccountScope} or {@link PlanningPointerIndex.Ownership} interfaces if their deployment needs
+ * leases, fences or a coordinator.
  */
 @ApplicationScoped
 public class AccountAssignment
@@ -43,8 +45,12 @@ public class AccountAssignment
   private final String memberId;
   private final String incarnation;
   private final ConcurrentHashMap<String, AccountState> accounts = new ConcurrentHashMap<>();
+  private final CompletableFuture<Void> drainedSignal = new CompletableFuture<>();
   private long activeRpcs;
-  private volatile boolean processDraining;
+  private long activeResolutions;
+  private long activeMutations;
+  private long activeGc;
+  private boolean processDraining;
 
   @Inject
   public AccountAssignment() {
@@ -73,83 +79,78 @@ public class AccountAssignment
     return incarnation;
   }
 
+  /**
+   * Pointer ownership is the single mutation seam. Process drain is enforced at RPC admission;
+   * allowing an already-admitted RPC to take another pointer permit lets a multi-write operation
+   * finish instead of failing halfway through with an abort.
+   */
   @Override
   public Optional<PlanningPointerIndex.Ownership.Permit> acquire(String accountId, Access access) {
-    if (processDraining || accountId == null || accountId.isBlank()) {
+    if (accountId == null || accountId.isBlank()) {
       return Optional.empty();
     }
     if (access == Access.READ) {
       return Optional.of(PlanningPointerIndex.Ownership.Permit.NOOP);
     }
-    AccountState state = state(accountId);
-    synchronized (state) {
-      if (processDraining) {
-        return Optional.empty();
-      }
+    synchronized (this) {
+      AccountState state = state(accountId);
       state.activeMutations++;
+      activeMutations++;
+      return Optional.of(new CountedPermit(accountId, state, Activity.MUTATION));
     }
-    return Optional.of(new CountedPermit(state, Activity.MUTATION)::close);
-  }
-
-  @Override
-  public PlanningPointerIndex.Ownership.Permit admitMutation(String accountId) {
-    return acquire(accountId, Access.WRITE)
-        .orElseThrow(() -> new IllegalStateException("Account is not admitted: " + accountId));
   }
 
   @Override
   public PlanningPointerIndex.Ownership.Permit admitResolution(String accountId) {
-    if (processDraining) {
-      throw new LifecycleDrain.DrainingException();
-    }
     if (accountId == null || accountId.isBlank()) {
       throw new IllegalStateException("Account is not admitted: " + accountId);
     }
-    AccountState state = state(accountId);
-    synchronized (state) {
+    synchronized (this) {
       if (processDraining) {
         throw new LifecycleDrain.DrainingException();
       }
+      AccountState state = state(accountId);
       state.activeResolutions++;
+      activeResolutions++;
+      return new CountedPermit(accountId, state, Activity.RESOLUTION);
     }
-    return new CountedPermit(state, Activity.RESOLUTION);
   }
 
   @Override
   public Optional<GcPermit> tryAcquireGc(String accountId) {
-    if (processDraining || accountId == null || accountId.isBlank()) {
+    if (accountId == null || accountId.isBlank()) {
       return Optional.empty();
     }
-    AccountState state = state(accountId);
-    long generation;
-    synchronized (state) {
+    synchronized (this) {
       if (processDraining) {
         return Optional.empty();
       }
-      generation = state.generation;
+      AccountState state = state(accountId);
+      long generation = state.generation;
       state.activeGc++;
+      activeGc++;
+      return Optional.of(new RuntimeGcPermit(accountId, state, generation));
     }
-    return Optional.of(new RuntimeGcPermit(accountId, state, generation));
   }
 
   @Override
   public LifecycleControl.Status status() {
-    List<AccountStatus> statuses = new ArrayList<>();
-    for (var entry : accounts.entrySet()) {
-      statuses.add(status(entry.getKey(), entry.getValue()));
-    }
-    statuses.sort(Comparator.comparing(AccountStatus::accountId));
-    long rpcCount;
     synchronized (this) {
-      rpcCount = activeRpcs;
+      return statusLocked();
     }
-    return new Status(memberId, incarnation, processDraining, List.copyOf(statuses), rpcCount);
+  }
+
+  @Override
+  public CompletionStage<Void> drained() {
+    return drainedSignal;
   }
 
   @Override
   public LifecycleDrain.Permit admitRpc() {
     synchronized (this) {
-      if (processDraining) throw new LifecycleDrain.DrainingException();
+      if (processDraining) {
+        throw new LifecycleDrain.DrainingException();
+      }
       activeRpcs++;
     }
     return new LifecycleDrain.Permit() {
@@ -157,59 +158,109 @@ public class AccountAssignment
 
       @Override
       public void close() {
-        if (closed.compareAndSet(false, true)) {
-          synchronized (AccountAssignment.this) {
-            activeRpcs--;
-          }
+        if (!closed.compareAndSet(false, true)) {
+          return;
+        }
+        synchronized (AccountAssignment.this) {
+          activeRpcs--;
+          completeWhenDrainedLocked();
         }
       }
     };
   }
 
   public AccountStatus status(String accountId) {
-    AccountState state = accounts.get(accountId);
-    if (state == null) {
-      return new AccountStatus(
-          accountId,
-          processDraining ? AccountMode.DRAINING : AccountMode.SERVING,
-          !processDraining,
-          0L,
-          0L,
-          0L,
-          "");
+    synchronized (this) {
+      AccountState state = accounts.get(accountId);
+      if (state == null) {
+        return new AccountStatus(
+            accountId,
+            processDraining ? AccountMode.DRAINING : AccountMode.SERVING,
+            !processDraining,
+            0L,
+            0L,
+            0L,
+            "");
+      }
+      return status(accountId, state);
     }
-    return status(accountId, state);
   }
 
-  /** Stops admitting pins, mutations and GC. Irreversible for the life of the process. */
-  public Status beginProcessDrain() {
-    processDraining = true;
-    accounts
-        .values()
-        .forEach(
-            state -> {
-              synchronized (state) {
-                state.generation++;
-              }
-            });
-    return status();
+  /** Stops admitting RPCs, pin resolutions and GC. Existing mutations are allowed to finish. */
+  @Override
+  public LifecycleControl.Status beginProcessDrain() {
+    synchronized (this) {
+      if (!processDraining) {
+        processDraining = true;
+        accounts.values().forEach(state -> state.generation++);
+        completeWhenDrainedLocked();
+      }
+      return statusLocked();
+    }
+  }
+
+  private LifecycleControl.Status statusLocked() {
+    List<AccountStatus> statuses = new ArrayList<>();
+    for (var entry : accounts.entrySet()) {
+      statuses.add(status(entry.getKey(), entry.getValue()));
+    }
+    statuses.sort(Comparator.comparing(AccountStatus::accountId));
+    return new Status(memberId, incarnation, processDraining, List.copyOf(statuses), activeRpcs);
   }
 
   private AccountStatus status(String accountId, AccountState state) {
-    synchronized (state) {
-      return new AccountStatus(
-          accountId,
-          processDraining ? AccountMode.DRAINING : AccountMode.SERVING,
-          !processDraining,
-          state.activeResolutions,
-          state.activeMutations,
-          state.activeGc,
-          "");
+    return new AccountStatus(
+        accountId,
+        processDraining ? AccountMode.DRAINING : AccountMode.SERVING,
+        !processDraining,
+        state.activeResolutions,
+        state.activeMutations,
+        state.activeGc,
+        "");
+  }
+
+  /** Must be called while holding this assignment's monitor. */
+  private AccountState state(String accountId) {
+    return accounts.computeIfAbsent(accountId, ignored -> new AccountState());
+  }
+
+  private void release(String accountId, AccountState state, Activity activity) {
+    synchronized (this) {
+      if (activity == Activity.RESOLUTION) {
+        state.activeResolutions--;
+        activeResolutions--;
+      } else {
+        state.activeMutations--;
+        activeMutations--;
+      }
+      removeIfIdle(accountId, state);
+      completeWhenDrainedLocked();
     }
   }
 
-  private AccountState state(String accountId) {
-    return accounts.computeIfAbsent(accountId, ignored -> new AccountState());
+  private void releaseGc(String accountId, AccountState state) {
+    synchronized (this) {
+      state.activeGc--;
+      activeGc--;
+      removeIfIdle(accountId, state);
+      completeWhenDrainedLocked();
+    }
+  }
+
+  private void removeIfIdle(String accountId, AccountState state) {
+    if (state.activeResolutions == 0L && state.activeMutations == 0L && state.activeGc == 0L) {
+      accounts.remove(accountId, state);
+    }
+  }
+
+  private void completeWhenDrainedLocked() {
+    if (processDraining
+        && activeRpcs == 0L
+        && activeResolutions == 0L
+        && activeMutations == 0L
+        && activeGc == 0L) {
+      drainedSignal.complete(null);
+    }
   }
 
   private enum Activity {
@@ -225,31 +276,26 @@ public class AccountAssignment
   }
 
   private final class CountedPermit implements PlanningPointerIndex.Ownership.Permit {
+    private final String accountId;
     private final AccountState state;
     private final Activity activity;
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    private CountedPermit(AccountState state, Activity activity) {
+    private CountedPermit(String accountId, AccountState state, Activity activity) {
+      this.accountId = accountId;
       this.state = state;
       this.activity = activity;
     }
 
     @Override
     public void close() {
-      if (!closed.compareAndSet(false, true)) {
-        return;
-      }
-      synchronized (state) {
-        if (activity == Activity.RESOLUTION) {
-          state.activeResolutions--;
-        } else {
-          state.activeMutations--;
-        }
+      if (closed.compareAndSet(false, true)) {
+        release(accountId, state, activity);
       }
     }
   }
 
-  private static final class RuntimeGcPermit implements GcPermit {
+  private final class RuntimeGcPermit implements GcPermit {
     private final String accountId;
     private final AccountState state;
     private final long generation;
@@ -276,21 +322,15 @@ public class AccountAssignment
       if (closed.get()) {
         return false;
       }
-      if (state == null) {
-        return true;
-      }
-      synchronized (state) {
+      synchronized (AccountAssignment.this) {
         return state.generation == generation;
       }
     }
 
     @Override
     public void close() {
-      if (!closed.compareAndSet(false, true) || state == null) {
-        return;
-      }
-      synchronized (state) {
-        state.activeGc--;
+      if (closed.compareAndSet(false, true)) {
+        releaseGc(accountId, state);
       }
     }
   }
