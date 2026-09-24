@@ -38,6 +38,7 @@ class GrpcErrorsTest {
     assertTrue(GrpcErrors.isRelationScoped(io.grpc.Status.INVALID_ARGUMENT.asRuntimeException()));
     assertTrue(
         GrpcErrors.isRelationScoped(io.grpc.Status.FAILED_PRECONDITION.asRuntimeException()));
+    assertTrue(GrpcErrors.isRelationScoped(io.grpc.Status.INTERNAL.asRuntimeException()));
     assertFalse(GrpcErrors.isRelationScoped(io.grpc.Status.UNAVAILABLE.asRuntimeException()));
     assertFalse(GrpcErrors.isRelationScoped(new IllegalStateException("not grpc")));
   }
