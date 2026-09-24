@@ -67,12 +67,6 @@ public final class CatalogSurfaceViews {
     return ListViewsResponse.newBuilder().addAllViews(views).setPage(page).build();
   }
 
-  /** The page source this namespace lists through, for callers paging views beside tables. */
-  CatalogSurfaceViewPageSource pageSource(NamespaceNode namespace, String accountId) {
-    return new CatalogSurfaceViewPageSource(
-        viewRepo, graphView, accountId, namespace, namespace.id(), context);
-  }
-
   CatalogSurfaceViewPageSource pageSource(NamespaceRef namespace, String accountId) {
     return new CatalogSurfaceViewPageSource(viewRepo, graphView, accountId, namespace, context);
   }
