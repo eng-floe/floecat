@@ -26,6 +26,8 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.ArrayList;
@@ -46,12 +48,35 @@ class ReconcileJobGcSchedulerTest {
     ReconcileJobGcScheduler scheduler = new ReconcileJobGcScheduler();
     scheduler.accounts = () -> accounts;
     scheduler.reconcileJobGc = () -> gc;
+    scheduler.accountScope = AccountAssignment.forTesting();
     scheduler.observability = new TestObservability();
     scheduler.initMeters();
 
     scheduler.tick();
 
     assertEquals(List.of("acct-a", "acct-b"), gc.accountIds);
+  }
+
+  @Test
+  void tickDoesNotRunAccountSliceWhenGcIsNotAdmitted() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a"), account("acct-b")));
+
+    RecordingGc gc = new RecordingGc();
+    AccountAssignment assignment = AccountAssignment.forTesting();
+    assignment.beginProcessDrain();
+
+    ReconcileJobGcScheduler scheduler = new ReconcileJobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.reconcileJobGc = () -> gc;
+    scheduler.accountScope = assignment;
+    scheduler.observability = new TestObservability();
+    scheduler.initMeters();
+
+    scheduler.tick();
+
+    assertEquals(List.of(), gc.accountIds);
   }
 
   private static Account account(String accountId) {
@@ -68,7 +93,11 @@ class ReconcileJobGcSchedulerTest {
 
     @Override
     public AccountResult runAccountSlice(
-        String accountId, String pageToken, String canonicalQuarantinePageToken, long deadlineMs) {
+        String accountId,
+        String pageToken,
+        String canonicalQuarantinePageToken,
+        long deadlineMs,
+        AccountScope.GcPermit permit) {
       accountIds.add(accountId);
       if (accountId.equals(failAccountId)) {
         throw new RuntimeException("failed account");
