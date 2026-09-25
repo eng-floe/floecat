@@ -401,7 +401,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
    * @return the resolved snapshot selection, or null for system tables
    */
   @Override
-  public ai.floedb.floecat.query.rpc.TablePin tablePinFor(
+  public ai.floedb.floecat.query.rpc.TablePin resolvedSnapshotFor(
       String correlationId,
       ResourceId tableId,
       SnapshotRef override,
@@ -413,7 +413,7 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
         .isPresent()) {
       return null;
     }
-    return userGraph.tablePinFor(correlationId, tableId, override, asOfDefault);
+    return userGraph.resolvedSnapshotFor(correlationId, tableId, override, asOfDefault);
   }
 
   /**
@@ -697,8 +697,8 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
    * @param correlationId correlation ID for error reporting
    * @param tableId the table resource ID
    * @param snapshot the snapshot reference
-   * @param tableBlobUri the pinned table blob, or empty to read the current pointer
-   * @param snapshotBlobUri the pinned snapshot blob, or empty to resolve via the live pointer
+   * @param tableBlobUri the resolved table snapshot blob, or empty to read the current pointer
+   * @param snapshotBlobUri the resolved snapshot blob, or empty to resolve via the live pointer
    * @return the schema resolution, or null if not found
    */
   @Override

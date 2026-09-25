@@ -47,7 +47,7 @@ import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
@@ -438,7 +438,7 @@ public class UserObjectBundleService {
     private final long streamStartNs = System.nanoTime();
     private final Span parentSpan = Span.current();
     // Owns the per-request pin state and drives the collect→commit pin-durability transaction.
-    private final QueryPinCommitter pinCommitter;
+    private final SnapshotSelectionCommitter selectionCommitter;
     // A teardown may publish only after the active next() call has finished mutating iterator
     // diagnostics and caches; a real failure wins when cancellation races that final step.
     private final StreamTelemetryState telemetryState = new StreamTelemetryState();
@@ -478,8 +478,8 @@ public class UserObjectBundleService {
           new RelationResolutionMemo(graphView, correlationId, requestEngine, timings);
       this.decorationSelection = engineRelationDecorator.select(requestEngine);
       this.buildFanout = buildFanout(decorationSelection);
-      this.pinCommitter =
-          new QueryPinCommitter(inputResolver, queryStore, ctx, correlationId, timings);
+      this.selectionCommitter =
+          new SnapshotSelectionCommitter(inputResolver, queryStore, ctx, correlationId, timings);
       initializeParentSpan();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
@@ -601,7 +601,7 @@ public class UserObjectBundleService {
         }
       }
       if (!toPin.isEmpty()) {
-        pinCommitter.accumulate(toPin, diagnostics, this::isCancelled);
+        selectionCommitter.accumulate(toPin, diagnostics, this::isCancelled);
       }
     }
 
@@ -628,7 +628,7 @@ public class UserObjectBundleService {
     private void cancel() {
       StreamTelemetryState.CancellationDecision cancellation = telemetryState.cancel(cancelled);
       if (cancellation != StreamTelemetryState.CancellationDecision.IGNORED) {
-        pinCommitter.detachPendingPins();
+        selectionCommitter.detachPendingSelections();
         if (cancellation == StreamTelemetryState.CancellationDecision.PUBLISH) {
           // No producer is mutating diagnostics or caches, but the RPC span may end as soon as
           // this termination callback returns. Emit while it is still recording.
@@ -674,9 +674,9 @@ public class UserObjectBundleService {
 
     /**
      * Append one selected resolution to the chunk on the driver thread: tally its found/not-found
-     * count, queue a FOUND table for pinning, and — for a FOUND view — drain its base tables right
-     * after it so bases follow their view in the emitted order. ERROR resolutions count toward
-     * neither found nor not-found, matching the end-chunk contract.
+     * count, queue a FOUND table for snapshot selection, and — for a FOUND view — drain its base
+     * tables right after it so bases follow their view in the emitted order. ERROR resolutions
+     * count toward neither found nor not-found, matching the end-chunk contract.
      */
     private void gather(PendingItem item, List<ResolvedRelation> toPin) {
       if (item instanceof PendingFailure failure) {
@@ -733,7 +733,7 @@ public class UserObjectBundleService {
             continue;
           }
           ResourceId baseId = baseIdOpt.get();
-          String baseKey = QueryPins.pinKey(baseId);
+          String baseKey = SnapshotSelections.selectionKey(baseId);
           if (eagerBaseSeen.contains(baseKey)) {
             continue; // deduplicate
           }
@@ -876,10 +876,10 @@ public class UserObjectBundleService {
     }
 
     /**
-     * Warm the pinned table stats for this chunk's FOUND tables in one batched, parallel read after
-     * the pin committer. The returned immutable lookup is carried into relation assembly so worker
-     * tasks never re-enter the request-affine stats provider. Views carry no table stats and are
-     * skipped. A batch failure is best-effort and leaves stats absent for this chunk.
+     * Warm the resolved table snapshot stats for this chunk's FOUND tables in one batched, parallel
+     * read after the pin committer. The returned immutable lookup is carried into relation assembly
+     * so worker tasks never re-enter the request-affine stats provider. Views carry no table stats
+     * and are skipped. A batch failure is best-effort and leaves stats absent for this chunk.
      */
     private Map<ResourceId, Optional<StatsProvider.TableStatsView>> warmChunkStats(
         List<PendingItem> chunkItems) {
@@ -1021,12 +1021,15 @@ public class UserObjectBundleService {
       pending.clear();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
-            "Flushing resolution chunk query_id=%s seq=%d pending_items=%d pending_pins=%d",
-            ctx.getQueryId(), framer.seq(), chunkItems.size(), pinCommitter.pendingPinCount());
+            "Flushing resolution chunk query_id=%s seq=%d pending_items=%d pending_selections=%d",
+            ctx.getQueryId(),
+            framer.seq(),
+            chunkItems.size(),
+            selectionCommitter.pendingSelectionCount());
       }
       // Ensure pins are durable before accessing stats (which expect the QueryContext to be
       // pinned).
-      pinCommitter.commit(this::isCancelled);
+      selectionCommitter.commit(this::isCancelled);
       throwIfCancelled(this::isCancelled);
 
       Map<ResourceId, Optional<StatsProvider.TableStatsView>> statsByTable =

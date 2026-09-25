@@ -189,7 +189,7 @@ public class StatsOrchestrator {
 
   /**
    * Single-target resolution that honors the pinned stats generation, mirroring {@link
-   * #resolvePlannerBatchInGeneration}: the pinned generation for the pinned snapshot (query
+   * #resolvePlannerBatchInGeneration}: the pinned generation for the resolved snapshot (query
    * consistent), then the newest (live active) generation only to fill a target the pinned
    * generation lacks (so an incomplete pinned generation never yields NOT_FOUND), then bounded
    * capture. When the pin froze no generation the live/newest generation is the primary source.
@@ -224,7 +224,7 @@ public class StatsOrchestrator {
       java.util.function.Supplier<Optional<ObjectCache.SnapshotFacts>> loadExact =
           () ->
               plannerResolver
-                  .resolvePinnedFromStore(request, pinned.get())
+                  .resolveSnapshotnedFromStore(request, pinned.get())
                   .filter(TargetStatsRecord::hasTable)
                   .map(StatsOrchestrator::snapshotFacts);
       Optional<ObjectCache.SnapshotFacts> exact =
@@ -355,9 +355,9 @@ public class StatsOrchestrator {
    *   <li>cache hit in the pinned generation's keyspace (the live/newest keyspace when the pin
    *       froze no generation), only if the cached record satisfies the target's completeness
    *       predicate;
-   *   <li>the pinned generation for the pinned snapshot — the primary source; a record that fails
+   *   <li>the pinned generation for the resolved snapshot — the primary source; a record that fails
    *       its predicate is held as a PARTIAL candidate rather than served;
-   *   <li>the newest (live active) generation of the SAME pinned snapshot, consulted for targets
+   *   <li>the newest (live active) generation of the SAME resolved snapshot, consulted for targets
    *       the pinned generation lacks or serves only partially. Never a newer snapshot: this is
    *       richer stats for identical data, not weakened snapshot consistency. If newest satisfies,
    *       it wins; if not, the pinned partial is served (consistency prefers the pin between

@@ -83,10 +83,10 @@ public final class ConstraintProviderFactory {
 
   /**
    * Provider for pinned-query serving: SYSTEM relations resolve as usual, but USER relations yield
-   * empty — a pinned query serves user-table constraints only from the immutable bundle ref frozen
-   * on its pin, never from the live pointer this factory's user provider reads.
+   * empty — a snapshot-resolved query serves user-table constraints only from the immutable bundle
+   * ref frozen on its pin, never from the live pointer this factory's user provider reads.
    */
-  public ConstraintProvider pinnedQueryProvider() {
+  public ConstraintProvider resolvedSnapshotQueryProvider() {
     return new RoutedConstraintProvider(ConstraintProvider.NONE, systemProvider, graphView);
   }
 

@@ -37,7 +37,7 @@ import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleUtils;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
@@ -122,7 +122,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                                       request.getInputsList(),
                                       asOfDefault,
                                       Optional.of(ctx.getQueryDefaultCatalogId()),
-                                      new QueryInputResolver.SnapshotPinMemo(),
+                                      new QueryInputResolver.SnapshotSelectionMemo(),
                                       diagnostics));
                     } finally {
                       resolutionPermit.close();
@@ -147,8 +147,8 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                                         existing ->
                                             existing.toBuilder()
                                                 .relationPins(
-                                                    QueryPins.mergeSets(
-                                                            existing.parseRelationPins(
+                                                    SnapshotSelections.mergeSets(
+                                                            existing.parseSnapshotSelections(
                                                                 correlationId()),
                                                             rr.relationPinSet(),
                                                             correlationId())
@@ -161,12 +161,12 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                                                 QUERY_NOT_FOUND,
                                                 java.util.Map.of("query_id", queryId))));
 
-                    RelationPinSet winnerPins = committed.parseRelationPins(correlationId());
+                    RelationPinSet winnerPins = committed.parseSnapshotSelections(correlationId());
                     diagnostics.put("snapshot_pins", winnerPins.getPinsCount());
-                    Map<ResourceId, TablePin> pinByTableId = new HashMap<>();
+                    Map<ResourceId, TablePin> snapshotByTableId = new HashMap<>();
                     for (RelationPin pin : winnerPins.getPinsList()) {
                       if (pin.hasTablePin()) {
-                        pinByTableId.put(pin.getTablePin().getTableId(), pin.getTablePin());
+                        snapshotByTableId.put(pin.getTablePin().getTableId(), pin.getTablePin());
                       }
                     }
 
@@ -177,11 +177,12 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     // (empty) identity so the two lists stay aligned with `schemas`.
                     try (var ignored = diagnostics.timer("schema_describe")) {
                       for (ResourceId rid : rr.resolved()) {
-                        out.addSchemas(schemaForResolvedInput(correlationId(), rid, pinByTableId));
-                        TablePin winner = pinByTableId.get(rid);
+                        out.addSchemas(
+                            schemaForResolvedInput(correlationId(), rid, snapshotByTableId));
+                        TablePin winner = snapshotByTableId.get(rid);
                         out.addRelationPins(
                             winner != null
-                                ? QueryPins.identity(winner)
+                                ? SnapshotSelections.identity(winner)
                                 : RelationPinIdentity.getDefaultInstance());
                       }
                     }
@@ -204,7 +205,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     List<SnapshotPin> obligationPins = new ArrayList<>();
                     for (RelationPin pin : winnerPins.getPinsList()) {
                       if (pin.hasTablePin()) {
-                        obligationPins.add(QueryPins.toSnapshotPin(pin.getTablePin()));
+                        obligationPins.add(SnapshotSelections.toSnapshotPin(pin.getTablePin()));
                       }
                     }
                     var obligationsResult =
@@ -262,11 +263,11 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   }
 
   private SchemaDescriptor schemaForResolvedInput(
-      String correlationId, ResourceId rid, Map<ResourceId, TablePin> pinByTableId) {
+      String correlationId, ResourceId rid, Map<ResourceId, TablePin> snapshotByTableId) {
 
     return switch (rid.getKind()) {
       case RK_TABLE -> {
-        TablePin pin = pinByTableId.get(rid);
+        TablePin pin = snapshotByTableId.get(rid);
         if (pin == null) {
           // Should never happen because resolveInputs attaches pins for every table input; treat as
           // an
@@ -284,7 +285,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   }
 
   private SchemaDescriptor describeTable(String correlationId, ResourceId rid, TablePin pin) {
-    SchemaDescriptor mapped = objects.pinnedSchema(correlationId, pin, graphView);
+    SchemaDescriptor mapped = objects.resolvedSnapshotSchema(correlationId, pin, graphView);
     // Planner-facing logical schema: synthetic element/key/value placeholder rows are stats
     // plumbing; the planner reads nested typing from the columns' type trees.
     return UserObjectBundleUtils.qualifyNestedColumnNames(

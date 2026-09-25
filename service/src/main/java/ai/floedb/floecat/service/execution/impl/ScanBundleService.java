@@ -39,7 +39,7 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.common.ScanPruningUtils;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.query.PinnedReadContract;
+import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.impl.ScanSession.DeleteFileMetadata;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -71,7 +71,7 @@ public class ScanBundleService {
   private final SnapshotRepository snapshots;
   private final StatsStore statsStore;
   private final ServerSideFileIoPropertiesResolver fileIoPropertiesResolver;
-  private final PinnedReadContract pinnedReads;
+  private final ResolvedSnapshotReadContract resolvedSnapshotReads;
 
   @Inject
   public ScanBundleService(
@@ -79,16 +79,17 @@ public class ScanBundleService {
       SnapshotRepository snapshots,
       StatsStore statsStore,
       ServerSideFileIoPropertiesResolver fileIoPropertiesResolver,
-      PinnedReadContract pinnedReads) {
+      ResolvedSnapshotReadContract resolvedSnapshotReads) {
     this.tables = tables;
     this.snapshots = snapshots;
     this.statsStore = statsStore;
     this.fileIoPropertiesResolver = fileIoPropertiesResolver;
-    this.pinnedReads = pinnedReads;
+    this.resolvedSnapshotReads = resolvedSnapshotReads;
   }
 
   /**
-   * Loads the pinned table and snapshot blobs and builds the initial TableInfo for a scan handle.
+   * Loads the resolved table snapshot and snapshot blobs and builds the initial TableInfo for a
+   * scan handle.
    *
    * <p>Both reads are by the pin's immutable blob URIs, never the live pointers: table-scoped scan
    * properties (storage/connector settings, credentials, metadata location, schema fallback)
@@ -104,16 +105,17 @@ public class ScanBundleService {
     long initStartedNanos = System.nanoTime();
     long tableStartedNanos = initStartedNanos;
     // Cached reads: these blobs are immutable and content-addressed, so a resident decode IS the
-    // pinned content. requirePinned*'s contract is unchanged — a genuinely missing pinned blob
+    // resolved snapshot content. requireResolved*'s contract is unchanged — a genuinely missing
+    // resolved snapshot blob
     // still fails as catalog-integrity corruption at the point of the read.
     Table table =
-        pinnedReads.requirePinnedTableBlob(
+        resolvedSnapshotReads.requireResolvedTableBlob(
             tables.getByBlobUri(pin.getTableBlobUri()), correlationId, tableId);
     StoreOperationSummary.nanos("table_load", System.nanoTime() - tableStartedNanos);
 
     long snapshotStartedNanos = System.nanoTime();
     Snapshot snapshot =
-        pinnedReads.requirePinnedSnapshotBlob(
+        resolvedSnapshotReads.requireResolvedSnapshotBlob(
             snapshots.getByBlobUri(pin.getSnapshotBlobUri()),
             correlationId,
             tableId,
@@ -122,7 +124,8 @@ public class ScanBundleService {
     StoreOperationSummary.nanos("snapshot_load", System.nanoTime() - snapshotStartedNanos);
 
     TableInfo info = buildTableInfo(table, snapshot, snapshotId);
-    // The scan streams its file list from the generation the PINNED root referenced, frozen on the
+    // The scan streams its file list from the generation the RESOLVED root referenced, frozen on
+    // the
     // pin at BeginQuery — NOT the live active generation. A re-stats/reconcile that published a new
     // generation (and committed a new root) between BeginQuery and InitScan must not change what
     // this selected scan reads; retention keeps the selected generation eligible while the query

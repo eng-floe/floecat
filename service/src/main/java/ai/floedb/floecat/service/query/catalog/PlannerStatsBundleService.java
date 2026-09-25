@@ -118,7 +118,7 @@ public class PlannerStatsBundleService {
           int maxResultsPerChunk) {
     this(
         statsFactory,
-        constraintFactory::pinnedQueryProvider,
+        constraintFactory::resolvedSnapshotQueryProvider,
         constraintRepository,
         constraintPrunerFactory::forRequest,
         constraintPrunerFactory::forConstraintsOnlyRequest,
@@ -278,9 +278,10 @@ public class PlannerStatsBundleService {
                   safeRequest.getIncludeConstraints()
                       ? constraintProviderSupplier.get()
                       : ConstraintProvider.NONE);
-      SnapshotPinLookup pinLookup =
+      SnapshotSelectionLookup selectionLookup =
           diagnostics.time(
-              "pin_lookup_provider", () -> statsFactory.pinLookupForQuery(ctx, correlationId));
+              "pin_lookup_provider",
+              () -> statsFactory.selectionLookupForQuery(ctx, correlationId));
       return Multi.createFrom()
           .<TargetStatsBundleChunk>deferred(
               () -> {
@@ -289,7 +290,7 @@ public class PlannerStatsBundleService {
                         ctx == null ? "" : ctx.getQueryId(),
                         correlationId,
                         tableRequests,
-                        pinLookup,
+                        selectionLookup,
                         constraintProvider,
                         constraintRepository,
                         safeRequest.getIncludeConstraints(),
@@ -416,9 +417,10 @@ public class PlannerStatsBundleService {
               () -> constraintsOnlyPrunerFactory.apply(Set.copyOf(requestedRelationKeys)));
       ConstraintProvider constraintProvider =
           diagnostics.time("constraint_provider", constraintProviderSupplier::get);
-      SnapshotPinLookup pinLookup =
+      SnapshotSelectionLookup selectionLookup =
           diagnostics.time(
-              "pin_lookup_provider", () -> statsFactory.pinLookupForQuery(ctx, correlationId));
+              "pin_lookup_provider",
+              () -> statsFactory.selectionLookupForQuery(ctx, correlationId));
       return Multi.createFrom()
           .<TableConstraintsBundleChunk>deferred(
               () -> {
@@ -426,7 +428,7 @@ public class PlannerStatsBundleService {
                     new TableConstraintsIterator(
                         ctx == null ? "" : ctx.getQueryId(),
                         tableIds,
-                        pinLookup,
+                        selectionLookup,
                         constraintProvider,
                         constraintRepository,
                         constraintPruner,
@@ -545,7 +547,7 @@ public class PlannerStatsBundleService {
 
     private final String correlationId;
     private final List<TableWork> tableWorks;
-    private final SnapshotPinLookup pinLookup;
+    private final SnapshotSelectionLookup selectionLookup;
     private final ConstraintProvider constraintProvider;
     private final ConstraintRepository constraintRepository;
     private final boolean includeConstraints;
@@ -576,7 +578,7 @@ public class PlannerStatsBundleService {
         String queryId,
         String correlationId,
         List<PlannerStatsTableRequest> tables,
-        SnapshotPinLookup pinLookup,
+        SnapshotSelectionLookup selectionLookup,
         ConstraintProvider constraintProvider,
         ConstraintRepository constraintRepository,
         boolean includeConstraints,
@@ -593,7 +595,7 @@ public class PlannerStatsBundleService {
         long startedNanos) {
       super(queryId, diagnostics, "floecat.planner_target_stats.summary", startedNanos);
       this.correlationId = correlationId;
-      this.pinLookup = pinLookup;
+      this.selectionLookup = selectionLookup;
       this.constraintProvider = constraintProvider;
       this.constraintRepository = constraintRepository;
       this.includeConstraints = includeConstraints;
@@ -866,7 +868,7 @@ public class PlannerStatsBundleService {
     }
 
     private OptionalLong resolveSnapshotTimed(TableWork work) {
-      return diagnostics.time("pin_resolve", () -> resolveSnapshot(work));
+      return diagnostics.time("snapshot_selection_resolve", () -> resolveSnapshot(work));
     }
 
     private void loadTargetBatchTimed(TableWork work, long snapshotId) {
@@ -877,7 +879,7 @@ public class PlannerStatsBundleService {
                 work.ensureTargetBatchLoaded(
                     targetStatsLookup,
                     snapshotId,
-                    pinLookup.pinnedStatsGenerationRef(work.tableId),
+                    selectionLookup.resolvedStatsGenerationRef(work.tableId),
                     servingPolicy,
                     requestDeadlineNanos));
       }
@@ -890,29 +892,31 @@ public class PlannerStatsBundleService {
               resolveConstraintResult(
                   work.tableId,
                   resolveSnapshot(work),
-                  pinLookup.pinnedConstraintsRef(work.tableId),
+                  selectionLookup.resolvedConstraintsRef(work.tableId),
                   constraintRepository,
                   constraintProvider,
                   constraintPruner));
     }
 
-    /** The query's pinned snapshot for this table, resolved once and memoized on the work item. */
-    private OptionalLong pinnedSnapshotFor(TableWork work) {
+    /**
+     * The query's resolved snapshot for this table, resolved once and memoized on the work item.
+     */
+    private OptionalLong resolvedSnapshotFor(TableWork work) {
       if (!work.pinResolved) {
-        work.pinnedSnapshot = pinLookup.pinnedSnapshotId(work.tableId);
+        work.resolvedSnapshot = selectionLookup.resolvedSnapshotId(work.tableId);
         work.pinResolved = true;
       }
-      return work.pinnedSnapshot;
+      return work.resolvedSnapshot;
     }
 
     private OptionalLong resolveSnapshot(TableWork work) {
       /*
        * The query pin is authoritative: stats (and the correctness constraints served from the same
-       * resolver) are read only at the pinned snapshot. A request snapshot_id may restate the pinned
+       * resolver) are read only at the resolved snapshot. A request snapshot_id may restate the pinned
        * snapshot but must never redirect reads to a different one — a divergent value is a query
        * consistency error, not a silent bypass.
        */
-      OptionalLong pinned = pinnedSnapshotFor(work);
+      OptionalLong pinned = resolvedSnapshotFor(work);
       if (work.snapshotOverride.isPresent()
           && pinned.isPresent()
           && work.snapshotOverride.getAsLong() != pinned.getAsLong()) {
@@ -932,12 +936,12 @@ public class PlannerStatsBundleService {
     }
 
     /**
-     * Stamp the query's pinned snapshot onto a per-target result so the planner can tell whether
-     * the served stats (snapshot_id) are behind the pinned snapshot. No-op when the table is not
+     * Stamp the query's resolved snapshot onto a per-target result so the planner can tell whether
+     * the served stats (snapshot_id) are behind the resolved snapshot. No-op when the table is not
      * pinned. Reuses the same memoized lookup as {@link #resolveSnapshot}.
      */
     private TargetStatsResult stampPinnedSnapshot(TableWork work, TargetStatsResult result) {
-      OptionalLong pinned = pinnedSnapshotFor(work);
+      OptionalLong pinned = resolvedSnapshotFor(work);
       return pinned.isEmpty()
           ? result
           : result.toBuilder().setPinnedSnapshotId(pinned.getAsLong()).build();
@@ -1043,7 +1047,7 @@ public class PlannerStatsBundleService {
       extends BundleIterator<TableConstraintsBundleChunk> {
 
     private final List<ResourceId> tableIds;
-    private final SnapshotPinLookup pinLookup;
+    private final SnapshotSelectionLookup selectionLookup;
     private final ConstraintProvider constraintProvider;
     private final ConstraintRepository constraintRepository;
     private final ConstraintPruner constraintPruner;
@@ -1060,7 +1064,7 @@ public class PlannerStatsBundleService {
     private TableConstraintsIterator(
         String queryId,
         List<ResourceId> tableIds,
-        SnapshotPinLookup pinLookup,
+        SnapshotSelectionLookup selectionLookup,
         ConstraintProvider constraintProvider,
         ConstraintRepository constraintRepository,
         ConstraintPruner constraintPruner,
@@ -1070,7 +1074,7 @@ public class PlannerStatsBundleService {
         long startedNanos) {
       super(queryId, diagnostics, "floecat.planner_constraints.summary", startedNanos);
       this.tableIds = tableIds;
-      this.pinLookup = pinLookup;
+      this.selectionLookup = selectionLookup;
       this.constraintProvider = constraintProvider;
       this.constraintRepository = constraintRepository;
       this.constraintPruner = constraintPruner;
@@ -1165,14 +1169,15 @@ public class PlannerStatsBundleService {
               resolveConstraintResult(
                   tableId,
                   resolveSnapshotTimed(tableId),
-                  pinLookup.pinnedConstraintsRef(tableId),
+                  selectionLookup.resolvedConstraintsRef(tableId),
                   constraintRepository,
                   constraintProvider,
                   constraintPruner));
     }
 
     private OptionalLong resolveSnapshotTimed(ResourceId tableId) {
-      return diagnostics.time("pin_resolve", () -> pinLookup.pinnedSnapshotId(tableId));
+      return diagnostics.time(
+          "snapshot_selection_resolve", () -> selectionLookup.resolvedSnapshotId(tableId));
     }
   }
 
@@ -1209,14 +1214,14 @@ public class PlannerStatsBundleService {
   private static ConstraintResolution resolveConstraintResult(
       ResourceId tableId,
       OptionalLong snapshotId,
-      Optional<SnapshotPinLookup.PinnedConstraintsRef> pinnedRef,
+      Optional<SnapshotSelectionLookup.ResolvedConstraintsRef> pinnedRef,
       ConstraintRepository constraintRepository,
       ConstraintProvider constraintProvider,
       ConstraintPruner constraintPruner) {
     // No early pin-missing return on an empty snapshot: SYSTEM relations are provider-backed and
     // carry no snapshot pin, so they must reach the routed provider below. A USER table with no pin
     // is the real pin-missing case, distinguished in the unpinned branch. -1 stands in for "no
-    // pinned snapshot" in the log lines.
+    // resolved snapshot" in the log lines.
     long sidForLog = snapshotId.orElse(-1L);
     try {
       List<ConstraintDefinition> visible;
@@ -1232,11 +1237,12 @@ public class PlannerStatsBundleService {
         }
         Optional<SnapshotConstraints> bundle =
             // Cached: pinned constraint blobs are immutable and content-addressed, so a resident
-            // decode is the pinned content rather than a stale view of it. What this gives up is
+            // decode is the resolved snapshot content rather than a stale view of it. What this
+            // gives up is
             // DETECTION, not correctness: a swept blob whose decode is still resident serves the
             // right bytes and logs nothing, so the warning below now fires on a miss rather than
             // on every read. This leg reports no repair either way -- unlike the table and
-            // snapshot legs, which enqueue through PinnedReadContract.
+            // snapshot legs, which enqueue through ResolvedSnapshotReadContract.
             constraintRepository.getByBlobUri(tableId, pinnedRef.get().uri());
         if (bundle.isEmpty()) {
           // The selected bundle ref is no longer retrievable. Retention-aware GC may have reclaimed
@@ -1257,7 +1263,7 @@ public class PlannerStatsBundleService {
       } else {
         // No ref on the pin. System relations resolve through the routed provider (which ignores
         // the absent snapshot); a pinned user table deterministically has no constraints for this
-        // query (none existed at pin time); an UNPINNED user table is a real pin-missing.
+        // query (none existed at pin time); an UNRESOLVED user table is a real pin-missing.
         var systemView = constraintProvider.constraints(tableId, snapshotId);
         if (systemView.isEmpty()) {
           if (snapshotId.isEmpty()) {
@@ -1420,12 +1426,12 @@ public class PlannerStatsBundleService {
     /**
      * Explicit snapshot id restated by the request. The query pin stays authoritative: a value that
      * matches the pin is accepted, a divergent one fails with QUERY_TABLE_PIN_CONFLICT (see
-     * resolveSnapshot) — it never redirects reads away from the pinned snapshot.
+     * resolveSnapshot) — it never redirects reads away from the resolved snapshot.
      */
     private final OptionalLong snapshotOverride;
 
-    /** The query's pinned snapshot for this table, resolved once and reused for stamping. */
-    private OptionalLong pinnedSnapshot = OptionalLong.empty();
+    /** The query's resolved snapshot for this table, resolved once and reused for stamping. */
+    private OptionalLong resolvedSnapshot = OptionalLong.empty();
 
     private boolean pinResolved = false;
 

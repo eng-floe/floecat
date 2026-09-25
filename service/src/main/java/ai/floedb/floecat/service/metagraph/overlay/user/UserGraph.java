@@ -30,7 +30,7 @@ import ai.floedb.floecat.service.metagraph.loader.NodeLoader;
 import ai.floedb.floecat.service.metagraph.resolver.FullyQualifiedResolver;
 import ai.floedb.floecat.service.metagraph.resolver.NameResolver;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotHelper;
-import ai.floedb.floecat.service.query.PinnedReadContract;
+import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -67,7 +67,7 @@ public final class UserGraph {
   private final FullyQualifiedResolver fq;
   private final SnapshotHelper snapshots;
   private final PrincipalProvider principal;
-  private final PinnedReadContract pinnedReads;
+  private final ResolvedSnapshotReadContract resolvedSnapshotReads;
 
   // ----------------------------------------------------------------------
   // Constructor
@@ -81,9 +81,10 @@ public final class UserGraph {
    * @param tableRepo repository for table operations
    * @param viewRepo repository for view operations
    * @param principal provider for current principal context
-   * @param pinnedReads unwraps a pinned blob read, failing loudly when the blob is gone
+   * @param resolvedSnapshotReads unwraps a resolved snapshot blob read, failing loudly when the
+   *     blob is gone
    * @param snapshots pinned-snapshot reads and pin construction, container-wired so it shares one
-   *     repair queue with {@code pinnedReads}
+   *     repair queue with {@code resolvedSnapshotReads}
    */
   @Inject
   public UserGraph(
@@ -92,12 +93,12 @@ public final class UserGraph {
       TableRepository tableRepo,
       ViewRepository viewRepo,
       PrincipalProvider principal,
-      PinnedReadContract pinnedReads,
+      ResolvedSnapshotReadContract resolvedSnapshotReads,
       SnapshotHelper snapshots) {
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
-    this.pinnedReads = pinnedReads;
+    this.resolvedSnapshotReads = resolvedSnapshotReads;
     this.snapshots = snapshots;
     this.principal = principal;
   }
@@ -119,7 +120,7 @@ public final class UserGraph {
       TableRootRepository tableRootRepo,
       PrincipalProvider principal) {
     RootRepairRequests repairs = RootRepairRequests.disabled();
-    PinnedReadContract pins = new PinnedReadContract(repairs);
+    ResolvedSnapshotReadContract pins = new ResolvedSnapshotReadContract(repairs);
     return new UserGraph(
         catalogRepo,
         nsRepo,
@@ -285,9 +286,9 @@ public final class UserGraph {
    * @param asOfDefault default timestamp for time travel queries
    * @return the resolved snapshot selection for the table
    */
-  public TablePin tablePinFor(
+  public TablePin resolvedSnapshotFor(
       String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault) {
-    return snapshots.tablePinFor(cid, tableId, override, asOfDefault);
+    return snapshots.resolvedSnapshotFor(cid, tableId, override, asOfDefault);
   }
 
   /**
@@ -327,8 +328,8 @@ public final class UserGraph {
   }
 
   /**
-   * Gets the schema JSON for a table, preferring the pinned snapshot blob. When {@code
-   * snapshotBlobUri} names a pinned snapshot blob, the schema is read from that immutable blob
+   * Gets the schema JSON for a table, preferring the resolved snapshot blob. When {@code
+   * snapshotBlobUri} names a resolved snapshot blob, the schema is read from that immutable blob
    * rather than re-hydrating the snapshot through the live {@code (table, snapshot id)} pointer,
    * which an in-place {@code UpdateSnapshot} can repoint after the pin was built. Empty uri
    * resolves the snapshot reference against the live pointer.
@@ -351,17 +352,17 @@ public final class UserGraph {
   }
 
   /**
-   * Schema resolution for a pinned query. When {@code tableBlobUri} names a pinned table blob, the
-   * table node is loaded from that immutable blob so the mapper interprets the (snapshot-sourced)
-   * schema with the pinned table's format/connector metadata — never the drifted current pointer —
-   * and the resolution survives a drop/unpublish of the current table. Empty uri reads the current
-   * pointer (a non-pinned caller).
+   * Schema resolution for a snapshot-resolved query. When {@code tableBlobUri} names a resolved
+   * table snapshot blob, the table node is loaded from that immutable blob so the mapper interprets
+   * the (snapshot-sourced) schema with the resolved table snapshot's format/connector metadata —
+   * never the drifted current pointer — and the resolution survives a drop/unpublish of the current
+   * table. Empty uri reads the current pointer (a non-pinned caller).
    *
    * @param cid correlation ID for error reporting
    * @param tblId the table resource ID
    * @param snapshot the snapshot reference
-   * @param tableBlobUri the pinned table blob, or empty to read the current pointer
-   * @param snapshotBlobUri the pinned snapshot blob, or empty to resolve via the live pointer
+   * @param tableBlobUri the resolved table snapshot blob, or empty to read the current pointer
+   * @param snapshotBlobUri the resolved snapshot blob, or empty to resolve via the live pointer
    * @return the schema resolution containing the table and schema JSON
    */
   public SchemaResolution schemaFor(
@@ -379,7 +380,7 @@ public final class UserGraph {
                             cid,
                             GeneratedErrorMessages.MessageKey.TABLE,
                             Map.of("id", tblId.getId())))
-            : pinnedReads.requirePinnedTableBlob(
+            : resolvedSnapshotReads.requireResolvedTableBlob(
                 nodes.tableFromBlob(tblId, tableBlobUri), cid, tblId);
     return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri));
   }

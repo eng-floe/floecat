@@ -39,7 +39,7 @@ import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -211,7 +211,8 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           .setSnapshots(metadata.snapshotSet())
                           .setExpansion(metadata.expansionMap())
                           .addAllObligations(metadata.obligations())
-                          .addAllRelationPins(QueryPins.identities(metadata.relationPinSet()))
+                          .addAllRelationPins(
+                              SnapshotSelections.identities(metadata.relationPinSet()))
                           .build();
 
                   return BeginQueryResponse.newBuilder().setQuery(descriptor).build();
@@ -328,9 +329,9 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                     // Expose both descriptor views of the stored pins: the snapshot-selector
                     // projection and the opaque per-relation identities BeginQuery advertises, so a
                     // caller that polls GetQuery keeps the cache/change-detection contract.
-                    var pins = ctx.parseRelationPins(correlationId);
-                    builder.setSnapshots(QueryPins.toSnapshotSet(pins));
-                    builder.addAllRelationPins(QueryPins.identities(pins));
+                    var pins = ctx.parseSnapshotSelections(correlationId);
+                    builder.setSnapshots(SnapshotSelections.toSnapshotSet(pins));
+                    builder.addAllRelationPins(SnapshotSelections.identities(pins));
                   }
 
                   if (ctx.getExpansionMap() != null) {

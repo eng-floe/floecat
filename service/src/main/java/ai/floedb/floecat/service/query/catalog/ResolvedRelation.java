@@ -22,7 +22,10 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 
-/** One selected relation and the request-owned identity needed by pinning and payload assembly. */
+/**
+ * One selected relation and the request-owned identity needed by snapshot selection and payload
+ * assembly.
+ */
 record ResolvedRelation(
     TableReferenceCandidate candidate,
     ResourceId relationId,

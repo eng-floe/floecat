@@ -23,10 +23,10 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
 import ai.floedb.floecat.service.account.AccountScope;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
-import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotSelectionMemo;
 import ai.floedb.floecat.service.query.resolver.ViewExpansionResolver;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
@@ -87,7 +87,7 @@ public class QueryInputMetadataAssembler {
                         inputs,
                         asOfDefault,
                         Optional.of(defaultCatalogId),
-                        new SnapshotPinMemo(),
+                        new SnapshotSelectionMemo(),
                         diagnostics));
       } finally {
         resolutionPermit.close();
@@ -140,7 +140,7 @@ public class QueryInputMetadataAssembler {
 
     /** Projection for consumers (e.g. the query descriptor) that still speak SnapshotSet. */
     public SnapshotSet snapshotSet() {
-      return QueryPins.toSnapshotSet(relationPinSet);
+      return SnapshotSelections.toSnapshotSet(relationPinSet);
     }
 
     public static QueryInputMetadata empty() {

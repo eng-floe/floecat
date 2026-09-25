@@ -35,30 +35,31 @@ import java.util.Optional;
  *
  * <p>A pinned read follows refs out of an immutable, content-addressed root, so a pin whose blobs
  * still read is coherent whatever has happened to the live pointer meanwhile. There is no up-front
- * probe: if a pinned blob is gone, the read that needs it fails here, at the point of the read,
- * rather than at a check taken beforehand.
+ * probe: if a resolved snapshot blob is gone, the read that needs it fails here, at the point of
+ * the read, rather than at a check taken beforehand.
  *
- * <p>Every integrity failure raised here also enqueues the table for repair. A missing pinned blob
- * means the table's committed root names data a read cannot load, and that state persists across
- * queries until the root is re-derived -- so beyond failing this query loudly, the table goes to
- * the periodic resync re-drive. What this owns is the catalog-integrity ERROR for a pinned blob
- * read on the query path. Pin construction in {@code SnapshotHelper} fails before any pinned read
- * exists. Both paths take {@link RootRepairRequests} directly.
+ * <p>Every integrity failure raised here also enqueues the table for repair. A missing resolved
+ * snapshot blob means the table's committed root names data a read cannot load, and that state
+ * persists across queries until the root is re-derived -- so beyond failing this query loudly, the
+ * table goes to the periodic resync re-drive. What this owns is the catalog-integrity ERROR for a
+ * resolved snapshot blob read on the query path. Pin construction in {@code SnapshotHelper} fails
+ * before any pinned read exists. Both paths take {@link RootRepairRequests} directly.
  */
 @ApplicationScoped
-public class PinnedReadContract {
+public class ResolvedSnapshotReadContract {
 
   private final RootRepairRequests repairs;
   private final SnapshotRetentionPolicy retention;
 
   @Inject
-  public PinnedReadContract(RootRepairRequests repairs, SnapshotRetentionPolicy retention) {
+  public ResolvedSnapshotReadContract(
+      RootRepairRequests repairs, SnapshotRetentionPolicy retention) {
     this.repairs = repairs;
     this.retention = retention;
   }
 
   /** Compatibility constructor for embedded tests and standalone callers. */
-  public PinnedReadContract(RootRepairRequests repairs) {
+  public ResolvedSnapshotReadContract(RootRepairRequests repairs) {
     this(
         repairs,
         new SnapshotRetentionPolicy(
@@ -71,7 +72,7 @@ public class PinnedReadContract {
    * Unwrap a pinned-table-blob load, failing with the catalog-integrity error every pinned read
    * uses when the blob is gone.
    */
-  public <T> T requirePinnedTableBlob(
+  public <T> T requireResolvedTableBlob(
       Optional<T> loaded, String correlationId, ResourceId tableId) {
     return require(
         loaded,
@@ -81,8 +82,10 @@ public class PinnedReadContract {
         Map.of("table_id", tableId.getId()));
   }
 
-  /** Snapshot-blob variant of {@link #requirePinnedTableBlob} for sites without the snapshot id. */
-  public <T> T requirePinnedSnapshotBlob(
+  /**
+   * Snapshot-blob variant of {@link #requireResolvedTableBlob} for sites without the snapshot id.
+   */
+  public <T> T requireResolvedSnapshotBlob(
       Optional<T> loaded, String correlationId, ResourceId tableId) {
     return require(
         loaded,
@@ -93,16 +96,16 @@ public class PinnedReadContract {
   }
 
   /** Snapshot-blob variant carrying the snapshot id in the error payload. */
-  public <T> T requirePinnedSnapshotBlob(
+  public <T> T requireResolvedSnapshotBlob(
       Optional<T> loaded, String correlationId, ResourceId tableId, long snapshotId) {
-    return requirePinnedSnapshotBlob(loaded, correlationId, tableId, snapshotId, null);
+    return requireResolvedSnapshotBlob(loaded, correlationId, tableId, snapshotId, null);
   }
 
   /**
    * Variant carrying publication time. Once the grace period has elapsed, a live query must restart
    * instead of being reported as catalog corruption when its immutable snapshot is reclaimed.
    */
-  public <T> T requirePinnedSnapshotBlob(
+  public <T> T requireResolvedSnapshotBlob(
       Optional<T> loaded,
       String correlationId,
       ResourceId tableId,
@@ -123,9 +126,9 @@ public class PinnedReadContract {
   }
 
   /**
-   * The contract itself: a vanished pinned blob fails this query loudly AND enqueues the table for
-   * repair, because the pinned root still names the vanished blob and every future query would fail
-   * the same way until the root is re-derived.
+   * The contract itself: a vanished resolved snapshot blob fails this query loudly AND enqueues the
+   * table for repair, because the resolved root still names the vanished blob and every future
+   * query would fail the same way until the root is re-derived.
    */
   private <T> T require(
       Optional<T> loaded,

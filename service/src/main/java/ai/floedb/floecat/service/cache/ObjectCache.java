@@ -34,7 +34,7 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.MessageLite;
 import java.time.Clock;
@@ -150,11 +150,11 @@ public final class ObjectCache {
   }
 
   /**
-   * Resolve a pinned schema by the immutable identities already carried on the pin. The backing
-   * table and snapshot are read only on a miss, which keeps callers from resolving cache
+   * Resolve a resolved snapshot schema by the immutable identities already carried on the pin. The
+   * backing table and snapshot are read only on a miss, which keeps callers from resolving cache
    * ingredients before asking Objects for the answer.
    */
-  public SchemaDescriptor pinnedSchema(
+  public SchemaDescriptor resolvedSnapshotSchema(
       String correlationId, TablePin pin, CatalogGraphView graphView) {
     Objects.requireNonNull(correlationId, "correlationId");
     Objects.requireNonNull(pin, "pin");
@@ -167,12 +167,12 @@ public final class ObjectCache {
               "table_id", pin.getTableId().getId(),
               "snapshot_id", Long.toString(pin.getSnapshotId())));
     }
-    String schemaScope = pinnedSchemaScope(pin);
+    String schemaScope = resolvedSnapshotSchemaScope(pin);
     String identity =
         Hashing.sha256Hex(
-            requireIdentity(pin.getTableBlobUri(), "pinned table identity")
+            requireIdentity(pin.getTableBlobUri(), "resolved table snapshot identity")
                 + '\0'
-                + requireIdentity(schemaScope, "pinned schema identity"));
+                + requireIdentity(schemaScope, "resolved snapshot schema identity"));
     Key key = new Key(account(pin.getTableId()), Kind.SCHEMA, identity);
     return get(
         key,
@@ -188,9 +188,10 @@ public final class ObjectCache {
                       snapshotRef,
                       pin.getTableBlobUri(),
                       pin.getSnapshotBlobUri()),
-                  "pinned schema resolution returned null");
+                  "resolved snapshot schema resolution returned null");
           if (!resolved.table().id().equals(pin.getTableId())) {
-            throw new IllegalArgumentException("resolved schema does not match the pinned table");
+            throw new IllegalArgumentException(
+                "resolved schema does not match the resolved table snapshot");
           }
           String schemaJson = resolved.schemaJson();
           String effectiveSchema =
@@ -213,7 +214,7 @@ public final class ObjectCache {
             .orElse(table.cacheIdentity());
     String schemaIdentity =
         effectivePin
-            .map(ObjectCache::pinnedSchemaScope)
+            .map(ObjectCache::resolvedSnapshotSchemaScope)
             .orElseGet(() -> schemaIdentity(table, table.schemaJson()));
     String identity =
         Hashing.sha256Hex(
@@ -436,10 +437,10 @@ public final class ObjectCache {
     return Hashing.sha256Hex(material);
   }
 
-  private static String pinnedSchemaScope(TablePin pin) {
-    String scope = QueryPins.schemaScope(pin);
+  private static String resolvedSnapshotSchemaScope(TablePin pin) {
+    String scope = SnapshotSelections.schemaScope(pin);
     return requireIdentity(
-        scope.isBlank() ? pin.getSnapshotBlobUri() : scope, "pinned schema identity");
+        scope.isBlank() ? pin.getSnapshotBlobUri() : scope, "resolved snapshot schema identity");
   }
 
   private static String account(ResourceId id) {

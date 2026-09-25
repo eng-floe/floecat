@@ -84,7 +84,7 @@ public interface StatsProvider {
     return Optional.empty();
   }
 
-  default OptionalLong pinnedSnapshotId(ResourceId tableId) {
+  default OptionalLong resolvedSnapshotId(ResourceId tableId) {
     return OptionalLong.empty();
   }
 

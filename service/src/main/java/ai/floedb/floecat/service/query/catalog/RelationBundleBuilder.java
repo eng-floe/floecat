@@ -337,7 +337,8 @@ final class RelationBundleBuilder {
   private ObjectCache.RelationObject relationTemplate(
       String correlationId, ResolvedRelation relation, QueryContext queryContext) {
     if (relation.node() instanceof UserTableNode userTable) {
-      Optional<TablePin> pin = queryContext.findTablePin(relation.relationId(), correlationId);
+      Optional<TablePin> pin =
+          queryContext.findResolvedSnapshot(relation.relationId(), correlationId);
       // Resolve the schema before entering ObjectCache's relation loader. Caffeine does not allow
       // a loader for one key to recursively update another key in the same cache; the schema is a
       // separate immutable object entry, so composing both cache loads inside the relation loader
@@ -479,7 +480,7 @@ final class RelationBundleBuilder {
     }
     // The stream's producer-thread pre-pass validated this pin before the relation entered worker
     // fan-out. Objects owns the cache-first resolution so every caller gets the same behavior.
-    return objects.pinnedSchema(correlationId, pin.get(), graphView);
+    return objects.resolvedSnapshotSchema(correlationId, pin.get(), graphView);
   }
 
   private ViewDefinition.Builder viewDefinitionBuilder(ViewNode view) {

@@ -30,7 +30,7 @@ import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.TestQueryContextStore;
@@ -50,14 +50,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Direct tests of {@link QueryPinCommitter}: the collect→commit pin-durability transaction the
- * {@link UserObjectBundleService} conductor drives per chunk. {@code accumulate} folds the
+ * Direct tests of {@link SnapshotSelectionCommitter}: the collect→commit pin-durability transaction
+ * the {@link UserObjectBundleService} conductor drives per chunk. {@code accumulate} folds the
  * resolver's pins into the pending set; {@code commit} writes them durably to the QueryContext
  * exactly once and, on any failure arm, releases the transient GC roots the resolver registered at
  * resolution. Uses the shared {@link TestQueryInputResolver} + {@link TestQueryContextStore} fakes
  * over a real {@link TimingAccumulator}.
  */
-class QueryPinCommitterTest {
+class SnapshotSelectionCommitterTest {
 
   private static final String QID = "q-1";
   private static final String CID = "cid";
@@ -107,33 +107,35 @@ class QueryPinCommitterTest {
   @Test
   void accumulateGrowsPendingPinCountAcrossRelations() {
     TestQueryContextStore store = seededStore();
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    SnapshotSelectionCommitter committer =
+        new SnapshotSelectionCommitter(resolver, store, ctx(), CID, timings);
 
-    assertThat(committer.pendingPinCount()).isZero();
+    assertThat(committer.pendingSelectionCount()).isZero();
 
     committer.accumulate(List.of(resolved(TABLE_A), resolved(TABLE_B)), PhaseDiagnostics.NOOP);
     // The fake resolver mints one pin per TABLE_ID input.
-    assertThat(committer.pendingPinCount()).isEqualTo(2);
+    assertThat(committer.pendingSelectionCount()).isEqualTo(2);
 
     committer.accumulate(List.of(resolved(TABLE_C)), PhaseDiagnostics.NOOP);
-    assertThat(committer.pendingPinCount()).isEqualTo(3);
+    assertThat(committer.pendingSelectionCount()).isEqualTo(3);
   }
 
   @Test
   void commitWritesToQueryContextExactlyOnceAndIsDurable() {
     TestQueryContextStore store = seededStore();
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    SnapshotSelectionCommitter committer =
+        new SnapshotSelectionCommitter(resolver, store, ctx(), CID, timings);
 
     committer.accumulate(List.of(resolved(TABLE_A), resolved(TABLE_B)), PhaseDiagnostics.NOOP);
     committer.commit();
 
     // One durable write; the pending set is drained.
     assertThat(store.updateCount()).isEqualTo(1);
-    assertThat(committer.pendingPinCount()).isZero();
+    assertThat(committer.pendingSelectionCount()).isZero();
 
     // The pins are durable on the stored context.
     QueryContext durable = store.get(QID).orElseThrow();
-    RelationPinSet persisted = durable.parseRelationPins(CID);
+    RelationPinSet persisted = durable.parseSnapshotSelections(CID);
     assertThat(persisted.getPinsCount()).isEqualTo(2);
 
     // A second commit with nothing pending does no further work.
@@ -146,7 +148,8 @@ class QueryPinCommitterTest {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
     store.failUpdateWith(new IllegalStateException("boom"));
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    SnapshotSelectionCommitter committer =
+        new SnapshotSelectionCommitter(resolver, store, ctx(), CID, timings);
 
     committer.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP);
 
@@ -157,7 +160,8 @@ class QueryPinCommitterTest {
   void cancellationBeforeCommitDiscardsPendingPinsWithoutUpdatingContext() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    SnapshotSelectionCommitter committer =
+        new SnapshotSelectionCommitter(resolver, store, ctx(), CID, timings);
     AtomicBoolean cancelled = new AtomicBoolean();
 
     committer.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP, cancelled::get);
@@ -166,15 +170,15 @@ class QueryPinCommitterTest {
     assertThatThrownBy(() -> committer.commit(cancelled::get))
         .isInstanceOf(CancellationException.class);
     assertThat(store.updateCount()).isZero();
-    assertThat(committer.pendingPinCount()).isZero();
+    assertThat(committer.pendingSelectionCount()).isZero();
   }
 
   @Test
   void accumulateMergeFailureDiscardsPriorAndIncomingPins() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
-    QueryPinCommitter committer =
-        new QueryPinCommitter(new SnapshotAwareResolver(), store, ctx(), CID, timings);
+    SnapshotSelectionCommitter committer =
+        new SnapshotSelectionCommitter(new SnapshotAwareResolver(), store, ctx(), CID, timings);
 
     committer.accumulate(List.of(resolved(TABLE_A, selected(TABLE_A, 1L))), PhaseDiagnostics.NOOP);
 
@@ -184,17 +188,18 @@ class QueryPinCommitterTest {
                     List.of(resolved(TABLE_A, selected(TABLE_A, 2L))), PhaseDiagnostics.NOOP))
         .isInstanceOf(RuntimeException.class);
 
-    assertThat(committer.pendingPinCount()).isZero();
+    assertThat(committer.pendingSelectionCount()).isZero();
   }
 
   @Test
   void emptyAccumulateThenCommitIsANoOp() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
-    QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
+    SnapshotSelectionCommitter committer =
+        new SnapshotSelectionCommitter(resolver, store, ctx(), CID, timings);
 
     committer.accumulate(List.of(), PhaseDiagnostics.NOOP);
-    assertThat(committer.pendingPinCount()).isZero();
+    assertThat(committer.pendingSelectionCount()).isZero();
 
     committer.commit();
     assertThat(store.updateCount()).isZero();
@@ -276,7 +281,7 @@ class QueryPinCommitterTest {
         long snapshotId = input.getSnapshot().getSnapshotId();
         resolved.add(tableId);
         pins.addPins(
-            QueryPins.ofTable(
+            SnapshotSelections.ofTable(
                 SnapshotTestSupport.blobBackedPin(tableId, snapshotId).toBuilder()
                     .setPinKind(PinKind.PIN_KIND_SNAPSHOT_ID)
                     .build()));

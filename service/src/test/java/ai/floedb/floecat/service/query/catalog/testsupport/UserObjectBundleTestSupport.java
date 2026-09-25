@@ -38,7 +38,7 @@ import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
@@ -278,7 +278,7 @@ public final class UserObjectBundleTestSupport {
      * blob identity (construction fails otherwise, so blob-less pins never exist). An AS_OF
      * reference resolves to the fake's single snapshot, keeping the timestamp only as provenance.
      */
-    public TablePin tablePinFor(
+    public TablePin resolvedSnapshotFor(
         String correlationId,
         ResourceId tableId,
         ai.floedb.floecat.common.rpc.SnapshotRef override,
@@ -463,7 +463,8 @@ public final class UserObjectBundleTestSupport {
             ResourceId rid = input.getTableId();
             resolved.add(rid);
             pins.addPins(
-                QueryPins.ofTable(SnapshotTestSupport.blobBackedPin(rid, nextSnapshotId++)));
+                SnapshotSelections.ofTable(
+                    SnapshotTestSupport.blobBackedPin(rid, nextSnapshotId++)));
           }
           case VIEW_ID -> resolved.add(input.getViewId());
           case NAME -> {}

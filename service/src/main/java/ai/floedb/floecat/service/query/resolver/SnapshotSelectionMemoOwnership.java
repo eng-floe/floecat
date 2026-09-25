@@ -28,12 +28,13 @@ import java.util.concurrent.ConcurrentMap;
  * this attempt's entries, while terminal cleanup prevents late workers from publishing an unrooted
  * pin after the attempt has ended.
  */
-final class SnapshotPinMemoOwnership {
+final class SnapshotSelectionMemoOwnership {
   private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> memoEntries;
   private final Map<ResourceId, CompletableFuture<TablePin>> owned = new LinkedHashMap<>();
   private boolean terminal;
 
-  SnapshotPinMemoOwnership(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> memoEntries) {
+  SnapshotSelectionMemoOwnership(
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> memoEntries) {
     this.memoEntries = memoEntries;
   }
 

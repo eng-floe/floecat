@@ -128,7 +128,7 @@ public abstract class BaseTestCatalogGraphView implements CatalogGraphView {
   }
 
   @Override
-  public TablePin tablePinFor(
+  public TablePin resolvedSnapshotFor(
       String correlationId,
       ResourceId tableId,
       SnapshotRef override,

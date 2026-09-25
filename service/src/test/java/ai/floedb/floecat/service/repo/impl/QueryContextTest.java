@@ -160,7 +160,7 @@ class QueryContextTest {
   }
 
   @Test
-  void requireTablePinReturnsPinOrThrows() {
+  void requireResolvedSnapshotReturnsPinOrThrows() {
     ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     var pc = pc(accountId, "alice", "p-table-pin");
     ResourceId tableId = TestSupport.rid(accountId.getId(), "tbl-tp", ResourceKind.RK_TABLE);
@@ -178,8 +178,9 @@ class QueryContextTest {
             1,
             ResourceId.newBuilder().setId("cat-it").build());
 
-    assertEquals(77, ctx.requireTablePin(tableId, "corr-tp").getSnapshotId());
-    assertThrows(StatusRuntimeException.class, () -> ctx.requireTablePin(other, "corr-tp-missing"));
+    assertEquals(77, ctx.requireResolvedSnapshot(tableId, "corr-tp").getSnapshotId());
+    assertThrows(
+        StatusRuntimeException.class, () -> ctx.requireResolvedSnapshot(other, "corr-tp-missing"));
   }
 
   // Ensures QueryContext rejects tables that were not pinned in the lease snapshot set.
@@ -223,7 +224,7 @@ class QueryContextTest {
   }
 
   @Test
-  void parseRelationPinsMemoized() {
+  void parseSnapshotSelectionsMemoized() {
     ResourceId accountId = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT);
     var pc = pc(accountId, "alice", "p-snapshot");
     ResourceId tableId = TestSupport.rid(accountId.getId(), "tbl-snapshot", ResourceKind.RK_TABLE);
@@ -252,8 +253,8 @@ class QueryContextTest {
             1,
             ResourceId.newBuilder().setId("cat-it").build());
 
-    RelationPinSet first = ctx.parseRelationPins("corr-snapshot");
-    RelationPinSet second = ctx.parseRelationPins("corr-snapshot");
+    RelationPinSet first = ctx.parseSnapshotSelections("corr-snapshot");
+    RelationPinSet second = ctx.parseSnapshotSelections("corr-snapshot");
 
     assertEquals(relationPins, first);
     assertSame(first, second);

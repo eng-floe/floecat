@@ -34,9 +34,9 @@ import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-class PinnedReadContractTest {
+class ResolvedSnapshotReadContractTest {
 
-  private PinnedReadContract contract;
+  private ResolvedSnapshotReadContract contract;
   private InMemoryPointerStore repairPointers;
 
   private static final ResourceId TABLE =
@@ -51,7 +51,9 @@ class PinnedReadContractTest {
     // A real repair pipeline over an in-memory store, so tests can assert which integrity
     // failures durably enqueue the table for the resync re-drive and which do not.
     repairPointers = new InMemoryPointerStore();
-    contract = new PinnedReadContract(new RootRepairRequests(new RootResyncQueue(repairPointers)));
+    contract =
+        new ResolvedSnapshotReadContract(
+            new RootRepairRequests(new RootResyncQueue(repairPointers)));
   }
 
   private boolean repairEnqueued(ResourceId tableId) {
@@ -64,7 +66,7 @@ class PinnedReadContractTest {
   void aMissingPinnedTableBlobRaisesInternalAndEnqueuesRepair() {
     assertThrows(
         StatusRuntimeException.class,
-        () -> contract.requirePinnedTableBlob(java.util.Optional.empty(), "corr", TABLE));
+        () -> contract.requireResolvedTableBlob(java.util.Optional.empty(), "corr", TABLE));
     // The committed root names a blob no read can load; without a re-derived root every future
     // query fails identically, so the failure durably enqueues the table for repair.
     assertTrue(repairEnqueued(TABLE));
@@ -74,21 +76,21 @@ class PinnedReadContractTest {
   void aMissingPinnedSnapshotBlobRaisesInternalAndEnqueuesRepair() {
     assertThrows(
         StatusRuntimeException.class,
-        () -> contract.requirePinnedSnapshotBlob(java.util.Optional.empty(), "corr", TABLE, 7L));
+        () -> contract.requireResolvedSnapshotBlob(java.util.Optional.empty(), "corr", TABLE, 7L));
     assertTrue(repairEnqueued(TABLE));
   }
 
   @Test
   void aPresentPinnedBlobUnwrapsWithoutRepair() {
     assertEquals(
-        "blob", contract.requirePinnedTableBlob(java.util.Optional.of("blob"), "corr", TABLE));
+        "blob", contract.requireResolvedTableBlob(java.util.Optional.of("blob"), "corr", TABLE));
     assertFalse(repairEnqueued(TABLE));
   }
 
   @Test
   void anExpiredPinnedSnapshotRequestsAQueryRestartInsteadOfRepair() {
     contract =
-        new PinnedReadContract(
+        new ResolvedSnapshotReadContract(
             new RootRepairRequests(new RootResyncQueue(repairPointers)),
             new ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy(
                 Clock.fixed(Instant.parse("2026-01-10T00:00:00Z"), java.time.ZoneOffset.UTC),
@@ -99,7 +101,7 @@ class PinnedReadContractTest {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                contract.requirePinnedSnapshotBlob(
+                contract.requireResolvedSnapshotBlob(
                     java.util.Optional.empty(),
                     "corr",
                     TABLE,

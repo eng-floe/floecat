@@ -36,7 +36,7 @@ import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.repo.util.RepositoryReads;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
@@ -107,7 +107,7 @@ public class QueryInputResolver {
 
   // Cap on inputs resolved concurrently. Each is an independent, mostly-blocking chain of metadata
   // store reads; a small fan-out overlaps their round-trips without flooding the store. This is a
-  // per-request bound only; each table-pin chain also passes through pinResolutionReads so all
+  // per-request bound only; each table-pin chain also passes through snapshotResolutionReads so all
   // requests share the process-wide metadata-I/O ceiling. ConfigProvider keeps construction
   // dependent on graph/store collaborators while production reads the deployment setting once.
   private final int maxParallelInputResolutions;
@@ -115,7 +115,7 @@ public class QueryInputResolver {
   private final CatalogGraphView metadataGraph;
   // Admits one complete table-pin chain. Its root/snapshot repositories intentionally stay direct;
   // admitting their leaves too would acquire the same process-wide permit twice for one operation.
-  private final RepositoryReads.ReadPolicy pinResolutionReads;
+  private final RepositoryReads.ReadPolicy snapshotResolutionReads;
 
   private final QueryContextStore queryStore;
 
@@ -123,18 +123,22 @@ public class QueryInputResolver {
   public QueryInputResolver(
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
-      RepositoryReads.ReadPolicy pinResolutionReads) {
-    this(metadataGraph, queryStore, pinResolutionReads, configuredMaxParallelInputResolutions());
+      RepositoryReads.ReadPolicy snapshotResolutionReads) {
+    this(
+        metadataGraph,
+        queryStore,
+        snapshotResolutionReads,
+        configuredMaxParallelInputResolutions());
   }
 
   private QueryInputResolver(
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
-      RepositoryReads.ReadPolicy pinResolutionReads,
+      RepositoryReads.ReadPolicy snapshotResolutionReads,
       int maxParallelInputResolutions) {
     this.metadataGraph = metadataGraph;
     this.queryStore = queryStore;
-    this.pinResolutionReads = pinResolutionReads;
+    this.snapshotResolutionReads = snapshotResolutionReads;
     this.maxParallelInputResolutions = maxParallelInputResolutions;
   }
 
@@ -177,7 +181,7 @@ public class QueryInputResolver {
       List<ResourceId> resolved, RelationPinSet relationPinSet, byte[] asOfDefaultBytes) {
     /** Projection for read-only consumers that still speak SnapshotPin. */
     public SnapshotSet snapshotSet() {
-      return QueryPins.toSnapshotSet(relationPinSet);
+      return SnapshotSelections.toSnapshotSet(relationPinSet);
     }
   }
 
@@ -187,14 +191,14 @@ public class QueryInputResolver {
    * so a later caller may retry; successful selections remain frozen for the attempt. AS-OF and
    * explicit snapshot selectors use their exact-selector paths.
    */
-  public static final class SnapshotPinMemo {
+  public static final class SnapshotSelectionMemo {
     private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> pins;
 
-    public SnapshotPinMemo() {
+    public SnapshotSelectionMemo() {
       this(new ConcurrentHashMap<>());
     }
 
-    SnapshotPinMemo(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> pins) {
+    SnapshotSelectionMemo(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> pins) {
       this.pins = pins;
     }
 
@@ -211,9 +215,11 @@ public class QueryInputResolver {
    * ambient thread state.
    */
   public record ResolutionAttempt(
-      SnapshotPinMemo snapshotPinMemo, PhaseDiagnostics diagnostics, BooleanSupplier cancelled) {
+      SnapshotSelectionMemo snapshotSelectionMemo,
+      PhaseDiagnostics diagnostics,
+      BooleanSupplier cancelled) {
     public ResolutionAttempt {
-      snapshotPinMemo = java.util.Objects.requireNonNull(snapshotPinMemo);
+      snapshotSelectionMemo = java.util.Objects.requireNonNull(snapshotSelectionMemo);
       cancelled = java.util.Objects.requireNonNull(cancelled);
     }
   }
@@ -228,8 +234,8 @@ public class QueryInputResolver {
       String correlationId,
       Optional<Timestamp> asOfDefault,
       Optional<String> defaultCatalog,
-      SnapshotPinMemo snapshotPinMemo,
-      SnapshotPinMemoOwnership snapshotPinMemoOwnership,
+      SnapshotSelectionMemo snapshotSelectionMemo,
+      SnapshotSelectionMemoOwnership snapshotSelectionMemoOwnership,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
 
@@ -244,8 +250,8 @@ public class QueryInputResolver {
           correlationId,
           asOfDefault,
           defaultCatalog,
-          snapshotPinMemo,
-          snapshotPinMemoOwnership,
+          snapshotSelectionMemo,
+          snapshotSelectionMemoOwnership,
           taskDiagnostics,
           cancelled);
     }
@@ -256,7 +262,7 @@ public class QueryInputResolver {
     final ResolutionWork work;
     final List<ResourceId> resolved = new ArrayList<>();
     // Keep insertion order (matching input order) while deduplicating by table ID.
-    final Map<ResourceId, TablePin> pinByTableId = new LinkedHashMap<>();
+    final Map<ResourceId, TablePin> snapshotByTableId = new LinkedHashMap<>();
 
     ResolutionState(ResolutionWork work) {
       this.work = work;
@@ -277,7 +283,13 @@ public class QueryInputResolver {
       Optional<Timestamp> asOfDefault,
       Optional<ResourceId> defaultCatalogId) {
     return resolveInputs(
-        "", correlationId, inputs, asOfDefault, defaultCatalogId, new SnapshotPinMemo(), null);
+        "",
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        new SnapshotSelectionMemo(),
+        null);
   }
 
   /**
@@ -294,8 +306,8 @@ public class QueryInputResolver {
    * <p>{@code defaultCatalogId} is used only when expanding view base relations: if a base-relation
    * {@link NameRef} has a blank catalog or empty path it is enriched with the query's default
    * catalog / creation search-path before resolution. Non-view inputs are unaffected. The {@code
-   * snapshotPinMemo} is shared by concurrent input tasks and freezes each table's CURRENT snapshot
-   * for the attempt lifetime.
+   * snapshotSelectionMemo} is shared by concurrent input tasks and freezes each table's CURRENT
+   * snapshot for the attempt lifetime.
    */
   public ResolutionResult resolveInputs(
       String queryId,
@@ -303,7 +315,7 @@ public class QueryInputResolver {
       List<QueryInput> inputs,
       Optional<Timestamp> asOfDefault,
       Optional<ResourceId> defaultCatalogId,
-      SnapshotPinMemo snapshotPinMemo,
+      SnapshotSelectionMemo snapshotSelectionMemo,
       PhaseDiagnostics diagnostics) {
     return resolveInputsAttempt(
         queryId,
@@ -311,11 +323,11 @@ public class QueryInputResolver {
         inputs,
         asOfDefault,
         defaultCatalogId,
-        new ResolutionAttempt(snapshotPinMemo, diagnostics, Context.current()::isCancelled));
+        new ResolutionAttempt(snapshotSelectionMemo, diagnostics, Context.current()::isCancelled));
   }
 
   /**
-   * As {@link #resolveInputs(String, String, List, Optional, Optional, SnapshotPinMemo,
+   * As {@link #resolveInputs(String, String, List, Optional, Optional, SnapshotSelectionMemo,
    * PhaseDiagnostics)}, but stops before additional metadata work and interrupts fan-out tasks when
    * {@code cancelled} becomes true. The supplier may be read concurrently by the caller and worker
    * threads, so it must be non-blocking and thread-safe (typically {@link AtomicBoolean#get}).
@@ -327,7 +339,7 @@ public class QueryInputResolver {
       List<QueryInput> inputs,
       Optional<Timestamp> asOfDefault,
       Optional<ResourceId> defaultCatalogId,
-      SnapshotPinMemo snapshotPinMemo,
+      SnapshotSelectionMemo snapshotSelectionMemo,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
     return resolveInputsAttempt(
@@ -336,7 +348,7 @@ public class QueryInputResolver {
         inputs,
         asOfDefault,
         defaultCatalogId,
-        new ResolutionAttempt(snapshotPinMemo, diagnostics, cancelled));
+        new ResolutionAttempt(snapshotSelectionMemo, diagnostics, cancelled));
   }
 
   /**
@@ -356,7 +368,7 @@ public class QueryInputResolver {
         inputs,
         asOfDefault,
         defaultCatalogId,
-        attempt.snapshotPinMemo(),
+        attempt.snapshotSelectionMemo(),
         attempt.diagnostics(),
         attempt.cancelled());
   }
@@ -368,7 +380,7 @@ public class QueryInputResolver {
       List<QueryInput> inputs,
       Optional<Timestamp> asOfDefault,
       Optional<ResourceId> defaultCatalogId,
-      SnapshotPinMemo snapshotPinMemo,
+      SnapshotSelectionMemo snapshotSelectionMemo,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
     throwIfCancelled(cancelled);
@@ -382,13 +394,13 @@ public class QueryInputResolver {
       // view base-relation NameRefs so they re-resolve exactly as they did at view-creation time.
       Optional<String> defaultCatalog = Optional.empty();
       if (metadataGraph != null && defaultCatalogId.isPresent()) {
-        diag.count("pin.default_catalog_lookups");
+        diag.count("snapshot.default_catalog_lookups");
         long defaultCatalogStartNs = System.nanoTime();
         try {
           defaultCatalog =
               metadataGraph.catalog(defaultCatalogId.get()).map(CatalogNode::displayName);
         } finally {
-          diag.nanos("pin.default_catalog_resolve", System.nanoTime() - defaultCatalogStartNs);
+          diag.nanos("snapshot.default_catalog_resolve", System.nanoTime() - defaultCatalogStartNs);
         }
       }
       throwIfCancelled(cancelled);
@@ -400,8 +412,8 @@ public class QueryInputResolver {
                   correlationId,
                   asOfDefault,
                   defaultCatalog,
-                  snapshotPinMemo,
-                  new SnapshotPinMemoOwnership(snapshotPinMemo.pins),
+                  snapshotSelectionMemo,
+                  new SnapshotSelectionMemoOwnership(snapshotSelectionMemo.pins),
                   diag,
                   cancelled));
 
@@ -418,21 +430,24 @@ public class QueryInputResolver {
 
         // Resolve each input to its id and the table pins it contributes (a table yields its own
         // pin; a view yields its base tables' pins). planInput reads the metadata graph and the
-        // shared current-snapshot memo; it does not touch `resolved` or `pinByTableId`. Inputs
+        // shared current-snapshot memo; it does not touch `resolved` or `snapshotByTableId`. Inputs
         // resolve independently, so graph views that support concurrent resolution fan them out;
         // otherwise the fan-out runs serially on the caller thread. Results merge in input order.
         planInputs(state, inputs, resolvedNames, cancelled);
 
         RelationPinSet relationPinSet =
             RelationPinSet.newBuilder()
-                .addAllPins(state.pinByTableId.values().stream().map(QueryPins::ofTable).toList())
+                .addAllPins(
+                    state.snapshotByTableId.values().stream()
+                        .map(SnapshotSelections::ofTable)
+                        .toList())
                 .build();
-        diag.add("pin.resolver_output_pins", relationPinSet.getPinsCount());
+        diag.add("snapshot.resolver_output_snapshots", relationPinSet.getPinsCount());
         return new ResolutionResult(
             state.resolved, relationPinSet, asOfDefault.map(Timestamp::toByteArray).orElse(null));
       } catch (RuntimeException | Error e) {
         try {
-          state.work.snapshotPinMemoOwnership().closeAndEvict();
+          state.work.snapshotSelectionMemoOwnership().closeAndEvict();
         } catch (RuntimeException | Error cleanupFailure) {
           e.addSuppressed(cleanupFailure);
         }
@@ -458,10 +473,12 @@ public class QueryInputResolver {
 
   /** Merge one completed plan on the request thread, preserving request-order semantics. */
   private void mergePlan(
-      ResolutionState state, InputPlan plan, Consumer<CompatibleDiscard> discardCompatiblePin) {
+      ResolutionState state,
+      InputPlan plan,
+      Consumer<CompatibleDiscard> discardCompatibleSelection) {
     state.resolved.add(plan.resolvedId());
     for (TablePin pin : plan.pins()) {
-      mergePin(state, pin, discardCompatiblePin);
+      mergePin(state, pin, discardCompatibleSelection);
     }
     if (plan.terminalFailure() instanceof RuntimeException runtime) {
       throw runtime;
@@ -508,7 +525,7 @@ public class QueryInputResolver {
       // Ordered merging can finish a compatible CURRENT holder while a later parallel planner is
       // still registering its own use of that holder. Rebind losing holders only after every
       // planner has joined, so every waiter observes one stable first-touch pin.
-      deferredDiscards.forEach(discard -> discardCompatiblePin(state, discard));
+      deferredDiscards.forEach(discard -> discardCompatibleSelection(state, discard));
     } finally {
       // A failed or cancelled sibling can still leave completed tasks' pin work in this
       // accumulator. Preserve those counters for the request's failure telemetry too.
@@ -525,17 +542,17 @@ public class QueryInputResolver {
   /**
    * Resolve one input to its {@link InputPlan}, reading the metadata graph and updating the shared
    * current-snapshot memo and diagnostics. It does not read or write {@code state.resolved} or
-   * {@code state.pinByTableId}; the caller merges the returned pins. Callers invoke this method
-   * serially unless those memo and diagnostics collaborators are thread-safe.
+   * {@code state.snapshotByTableId}; the caller merges the returned pins. Callers invoke this
+   * method serially unless those memo and diagnostics collaborators are thread-safe.
    */
   private InputPlan planInput(
       ResolutionWork state, QueryInput in, Map<NameRef, Optional<ResourceId>> resolvedNames) {
-    state.diagnostics.count("pin.resolver_inputs");
+    state.diagnostics.count("snapshot.resolver_inputs");
     SnapshotRef override = in.getSnapshot();
     ResourceId rid =
         switch (in.getTargetCase()) {
           case NAME -> {
-            state.diagnostics.count("pin.name_inputs");
+            state.diagnostics.count("snapshot.name_inputs");
             long nameResolveStartNs = System.nanoTime();
             ResourceId resolved =
                 resolvedNames
@@ -547,15 +564,15 @@ public class QueryInputResolver {
                                 QUERY_INPUT_UNRESOLVED,
                                 Map.of("name", in.getName().toString())));
             state.diagnostics.nanos(
-                "pin.input_name_resolve", System.nanoTime() - nameResolveStartNs);
+                "snapshot.input_name_resolve", System.nanoTime() - nameResolveStartNs);
             yield resolved;
           }
           case TABLE_ID -> {
-            state.diagnostics.count("pin.table_id_inputs");
+            state.diagnostics.count("snapshot.table_id_inputs");
             yield in.getTableId();
           }
           case VIEW_ID -> {
-            state.diagnostics.count("pin.view_id_inputs");
+            state.diagnostics.count("snapshot.view_id_inputs");
             yield in.getViewId();
           }
           default ->
@@ -568,10 +585,10 @@ public class QueryInputResolver {
         // Views are not pinned directly. We only pin their base tables.
         // Reject snapshot_id overrides for views; allow AS-OF and apply it to dependency pins.
         validateViewOverride(state.correlationId, rid, override);
-        collectBaseTablePins(
+        collectBaseTableSnapshots(
             state, rid, effectiveAsOf(override, state.asOfDefault), new HashSet<>(), pins);
       } else {
-        TablePin pin = pinForResource(state, rid, override, state.asOfDefault);
+        TablePin pin = snapshotForResource(state, rid, override, state.asOfDefault);
         if (pin != null) {
           pins.add(pin);
         }
@@ -584,12 +601,12 @@ public class QueryInputResolver {
     return new InputPlan(rid, pins, null);
   }
 
-  private TablePin pinForResource(
+  private TablePin snapshotForResource(
       ResolutionWork state, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {
     return switch (rid.getKind()) {
-      case RK_TABLE -> pinForTable(state, rid, override, asOfDefault);
+      case RK_TABLE -> snapshotForTable(state, rid, override, asOfDefault);
       case RK_VIEW -> {
-        // Views are not pinned directly. Dependency pinning is handled by the caller.
+        // Views are not pinned directly. Dependency snapshot selection is handled by the caller.
         validateViewOverride(state.correlationId, rid, override);
         yield null;
       }
@@ -604,7 +621,7 @@ public class QueryInputResolver {
    * pin before publication; failures evict the holder and wake waiters. Explicit and AS-OF requests
    * reuse an exactly matching committed pin or construct a fresh one.
    */
-  private TablePin pinForTable(
+  private TablePin snapshotForTable(
       ResolutionWork state, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {
     Optional<Timestamp> effectiveAsOfDefault =
         isExplicitCurrentSnapshot(override) ? Optional.empty() : asOfDefault;
@@ -616,33 +633,35 @@ public class QueryInputResolver {
       // the task that inserts the placeholder performs the lookup, and same-table tasks await it.
       while (true) {
         CompletableFuture<TablePin> holder = new CompletableFuture<>();
-        CompletableFuture<TablePin> inflight = state.snapshotPinMemo.pins.putIfAbsent(rid, holder);
+        CompletableFuture<TablePin> inflight =
+            state.snapshotSelectionMemo.pins.putIfAbsent(rid, holder);
         TablePin pin;
         if (inflight == null) {
-          if (!state.snapshotPinMemoOwnership.claim(rid, holder)) {
+          if (!state.snapshotSelectionMemoOwnership.claim(rid, holder)) {
             throw new CancellationException("input resolution no longer active");
           }
           try {
             long snapshotPinStartNs = System.nanoTime();
             pin =
-                resolvePin(
+                resolveSnapshot(
                     () ->
-                        pinResolutionReads.read(
+                        snapshotResolutionReads.read(
                             () ->
-                                metadataGraph.tablePinFor(
+                                metadataGraph.resolvedSnapshotFor(
                                     state.correlationId, rid, override, effectiveAsOfDefault)));
-            state.diagnostics.count("pin.snapshot_calls");
-            state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
+            state.diagnostics.count("snapshot.snapshot_calls");
+            state.diagnostics.nanos(
+                "snapshot.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
           } catch (RuntimeException | Error e) {
             // Never memoize a failure: drop the placeholder so a retry re-resolves, and release any
             // callers already awaiting this id with the same error.
-            state.snapshotPinMemo.pins.remove(rid, holder);
-            state.snapshotPinMemoOwnership.forget(rid, holder);
+            state.snapshotSelectionMemo.pins.remove(rid, holder);
+            state.snapshotSelectionMemoOwnership.forget(rid, holder);
             holder.completeExceptionally(e);
             throw e;
           }
           holder.complete(pin);
-          state.diagnostics.count("pin.current_snapshot_cache_misses");
+          state.diagnostics.count("snapshot.current_snapshot_cache_misses");
           return pin;
         }
 
@@ -651,8 +670,8 @@ public class QueryInputResolver {
         // waiter therefore either installs its own root while the holder remains published or
         // retries against the replacement entry without using a retired pin.
         synchronized (inflight) {
-          if (state.snapshotPinMemo.pins.get(rid) == inflight) {
-            state.diagnostics.count("pin.current_snapshot_cache_hits");
+          if (state.snapshotSelectionMemo.pins.get(rid) == inflight) {
+            state.diagnostics.count("snapshot.current_snapshot_cache_hits");
             return pin;
           }
         }
@@ -660,9 +679,9 @@ public class QueryInputResolver {
       }
     }
     state.diagnostics.count(
-        "pin.explicit_snapshot_pins", override != null && override.hasSnapshotId());
+        "snapshot.explicit_snapshot_selections", override != null && override.hasSnapshotId());
     state.diagnostics.count(
-        "pin.asof_snapshot_pins",
+        "snapshot.asof_snapshot_selections",
         (override != null && override.hasAsOf()) || asOfDefault.isPresent());
     // Reuse a committed pin that froze this exact explicit or AS-OF request. The committed query
     // keeps its blobs rooted even after the live manifest no longer contains that snapshot, and
@@ -673,24 +692,26 @@ public class QueryInputResolver {
           queryStore
               .get(state.queryId)
               .flatMap(
-                  ctx -> QueryPins.findTablePin(ctx.parseRelationPins(state.correlationId), rid))
+                  ctx ->
+                      SnapshotSelections.findResolvedSnapshot(
+                          ctx.parseSnapshotSelections(state.correlationId), rid))
               .filter(pin -> reusableFor(pin, override, asOfDefault));
       if (reused.isPresent()) {
-        state.diagnostics.count("pin.committed_pin_reuse");
+        state.diagnostics.count("snapshot.committed_selection_reuse");
         TablePin pin = reused.get();
         return pin;
       }
     }
     long snapshotPinStartNs = System.nanoTime();
     TablePin resolved =
-        resolvePin(
+        resolveSnapshot(
             () ->
-                pinResolutionReads.read(
+                snapshotResolutionReads.read(
                     () ->
-                        metadataGraph.tablePinFor(
+                        metadataGraph.resolvedSnapshotFor(
                             state.correlationId, rid, override, asOfDefault)));
-    state.diagnostics.count("pin.snapshot_calls");
-    state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
+    state.diagnostics.count("snapshot.snapshot_calls");
+    state.diagnostics.nanos("snapshot.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
     return resolved;
   }
 
@@ -698,7 +719,7 @@ public class QueryInputResolver {
    * Resolve and publish a pin. The returned identity is persisted in the query context by the
    * caller; snapshot retention controls whether the referenced immutable data remains available.
    */
-  private TablePin resolvePin(Supplier<TablePin> resolver) {
+  private TablePin resolveSnapshot(Supplier<TablePin> resolver) {
     return resolver.get();
   }
 
@@ -749,8 +770,8 @@ public class QueryInputResolver {
   }
 
   /**
-   * Selects dependency pinning time: explicit CURRENT clears the request default, explicit AS-OF
-   * replaces it, and an input without either selector inherits the request default.
+   * Selects dependency snapshot selection time: explicit CURRENT clears the request default,
+   * explicit AS-OF replaces it, and an input without either selector inherits the request default.
    */
   private Optional<Timestamp> effectiveAsOf(SnapshotRef override, Optional<Timestamp> asOfDefault) {
     if (isExplicitCurrentSnapshot(override)) {
@@ -788,18 +809,18 @@ public class QueryInputResolver {
    * guards against reference cycles. Appends rather than merging, so the caller decides ordering
    * and deduplication.
    */
-  private void collectBaseTablePins(
+  private void collectBaseTableSnapshots(
       ResolutionWork state,
       ResourceId relationId,
       Optional<Timestamp> effectiveAsOf,
       Set<String> seen,
       List<TablePin> out) {
-    String key = QueryPins.pinKey(relationId);
+    String key = SnapshotSelections.selectionKey(relationId);
     if (!seen.add(key)) {
       return;
     }
     if (relationId.getKind() == ResourceKind.RK_TABLE) {
-      TablePin pin = pinForResource(state, relationId, null, effectiveAsOf);
+      TablePin pin = snapshotForResource(state, relationId, null, effectiveAsOf);
       if (pin != null) {
         out.add(pin);
       }
@@ -811,7 +832,7 @@ public class QueryInputResolver {
             .resolve(relationId)
             .filter(ViewNode.class::isInstance)
             .map(ViewNode.class::cast);
-    state.diagnostics.nanos("pin.view_node_resolve", System.nanoTime() - viewResolveStartNs);
+    state.diagnostics.nanos("snapshot.view_node_resolve", System.nanoTime() - viewResolveStartNs);
     view.ifPresent(
         resolvedView -> {
           // Batch-resolve the view's base relations: bases typically share the view's
@@ -830,38 +851,38 @@ public class QueryInputResolver {
           Map<NameRef, Optional<ResourceId>> baseIds =
               metadataGraph.resolveNames(state.correlationId, baseRefs);
           state.diagnostics.nanos(
-              "pin.view_base_name_resolve", System.nanoTime() - baseNameStartNs);
+              "snapshot.view_base_name_resolve", System.nanoTime() - baseNameStartNs);
           for (NameRef baseRef : baseRefs) {
-            state.diagnostics.count("pin.view_base_name_resolutions");
+            state.diagnostics.count("snapshot.view_base_name_resolutions");
             baseIds
                 .getOrDefault(baseRef, Optional.empty())
-                .ifPresent(rid -> collectBaseTablePins(state, rid, effectiveAsOf, seen, out));
+                .ifPresent(rid -> collectBaseTableSnapshots(state, rid, effectiveAsOf, seen, out));
           }
         });
   }
 
   private void mergePin(
-      ResolutionState state, TablePin pin, Consumer<CompatibleDiscard> discardCompatiblePin) {
+      ResolutionState state, TablePin pin, Consumer<CompatibleDiscard> discardCompatibleSelection) {
     if (pin == null) {
       return;
     }
-    TablePin existing = state.pinByTableId.get(pin.getTableId());
+    TablePin existing = state.snapshotByTableId.get(pin.getTableId());
     if (existing == null) {
-      state.pinByTableId.put(pin.getTableId(), pin);
+      state.snapshotByTableId.put(pin.getTableId(), pin);
       return;
     }
     // First-touch wins: compatible later pins are discarded.
-    QueryPins.reconcile(existing, pin, state.work.correlationId());
+    SnapshotSelections.reconcile(existing, pin, state.work.correlationId());
     if (existing != pin) {
-      discardCompatiblePin.accept(new CompatibleDiscard(pin, existing));
+      discardCompatibleSelection.accept(new CompatibleDiscard(pin, existing));
     }
   }
 
   /** Rebind a compatible losing pin's memo entry. */
-  private void discardCompatiblePin(ResolutionState state, CompatibleDiscard discard) {
+  private void discardCompatibleSelection(ResolutionState state, CompatibleDiscard discard) {
     state
         .work
-        .snapshotPinMemoOwnership()
+        .snapshotSelectionMemoOwnership()
         .replaceCompatiblePin(discard.losingPin(), discard.retainedPin());
   }
 }

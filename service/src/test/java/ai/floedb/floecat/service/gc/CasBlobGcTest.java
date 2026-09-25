@@ -99,7 +99,7 @@ class CasBlobGcTest {
   }
 
   @Test
-  void retentionMakesOldSnapshotBlobsCollectableWithoutQueryPins() {
+  void retentionMakesOldSnapshotBlobsCollectableWithoutSnapshotSelections() {
     Instant now = Instant.parse("2026-01-10T00:00:00Z");
     gc.retentionPolicy =
         new ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy(

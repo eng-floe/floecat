@@ -25,7 +25,7 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Timestamp;
 import java.time.Clock;
@@ -43,7 +43,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <ul>
  *   <li>basic metadata (query ID, principal, create/expiry timestamps),
- *   <li>the pinned snapshots for all referenced tables,
+ *   <li>the resolved snapshots for all referenced tables,
  *   <li>the expansion map used during planning,
  *   <li>governance obligations (row/column filters),
  *   <li>the optional as-of-default timestamp provided at BeginQuery,
@@ -297,34 +297,34 @@ public final class QueryContext {
   // ----------------------------------------------------------------------
 
   /**
-   * Returns the pinned snapshot for a given table, or throws if not pinned. Projected from the
+   * Returns the resolved snapshot for a given table, or throws if not pinned. Projected from the
    * stored {@link TablePin} so snapshot-selector callers are unchanged.
    */
   public SnapshotPin requireSnapshotPin(ResourceId tableId, String correlationId) {
-    return QueryPins.toSnapshotPin(requireTablePin(tableId, correlationId));
+    return SnapshotSelections.toSnapshotPin(requireResolvedSnapshot(tableId, correlationId));
   }
 
   public Optional<SnapshotPin> findSnapshotPin(ResourceId tableId, String correlationId) {
-    return findTablePin(tableId, correlationId).map(QueryPins::toSnapshotPin);
+    return findResolvedSnapshot(tableId, correlationId).map(SnapshotSelections::toSnapshotPin);
   }
 
   /** Returns the full stored {@link TablePin} for a table, if one has been pinned in this query. */
-  public Optional<TablePin> findTablePin(ResourceId tableId, String correlationId) {
+  public Optional<TablePin> findResolvedSnapshot(ResourceId tableId, String correlationId) {
     Objects.requireNonNull(tableId, "tableId");
     if (relationPins == null) {
       return Optional.empty();
     }
-    return QueryPins.findTablePin(parseRelationPins(correlationId), tableId);
+    return SnapshotSelections.findResolvedSnapshot(parseSnapshotSelections(correlationId), tableId);
   }
 
   /** Returns the full stored {@link TablePin} for a table, or throws if the table is not pinned. */
-  public TablePin requireTablePin(ResourceId tableId, String correlationId) {
+  public TablePin requireResolvedSnapshot(ResourceId tableId, String correlationId) {
     Objects.requireNonNull(tableId, "tableId");
     if (relationPins == null) {
       throw GrpcErrors.invalidArgument(
           correlationId, QUERY_SNAPSHOTS_MISSING, Map.of("query_id", queryId));
     }
-    return QueryPins.findTablePin(parseRelationPins(correlationId), tableId)
+    return SnapshotSelections.findResolvedSnapshot(parseSnapshotSelections(correlationId), tableId)
         .orElseThrow(
             () ->
                 GrpcErrors.notFound(
@@ -333,7 +333,7 @@ public final class QueryContext {
                     Map.of("query_id", queryId, "table_id", tableId.getId())));
   }
 
-  public RelationPinSet parseRelationPins(String correlationId) {
+  public RelationPinSet parseSnapshotSelections(String correlationId) {
     if (relationPins == null || relationPins.length == 0) {
       return RelationPinSet.getDefaultInstance();
     }

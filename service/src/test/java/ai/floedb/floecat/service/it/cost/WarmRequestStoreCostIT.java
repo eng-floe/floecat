@@ -284,7 +284,10 @@ class WarmRequestStoreCostIT {
   // lookup, regardless of how many tables it resolves.
   private static final Cost KV = new Cost("KV round trips", 0, 1, t -> t.reads.pointerRoundTrips());
 
-  /** Immutable pinned content is served through the object/blob caches, with no live probes. */
+  /**
+   * Immutable resolved snapshot content is served through the object/blob caches, with no live
+   * probes.
+   */
   private static final Cost S3_GET =
       new Cost("S3 objects GET", 0, 0, t -> t.reads.blobObjectGets());
 

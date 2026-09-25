@@ -25,7 +25,7 @@ import java.util.OptionalLong;
 import java.util.function.LongFunction;
 
 /**
- * Resolves the pinned snapshot id for the stats/constraints path from the query context.
+ * Resolves the resolved snapshot id for the stats/constraints path from the query context.
  *
  * <p>This intentionally consumes only the snapshot id, not the full pin blob identity: a table pin
  * is validated (its immutable table and snapshot blobs confirmed present at the captured versions)
@@ -34,14 +34,14 @@ import java.util.function.LongFunction;
  * the hot stats path does not re-run per-read blob validation; the snapshot id alone scopes the
  * lookup coherently.
  */
-final class SnapshotPinResolver implements SnapshotPinLookup {
+final class SnapshotSelectionResolver implements SnapshotSelectionLookup {
 
   private final QueryContextStore queryStore;
   private final QueryContext initialCtx;
   private final String queryId;
   private final String correlationId;
 
-  SnapshotPinResolver(QueryContextStore queryStore, QueryContext ctx, String correlationId) {
+  SnapshotSelectionResolver(QueryContextStore queryStore, QueryContext ctx, String correlationId) {
     this.queryStore = queryStore;
     this.initialCtx = ctx;
     // ctx may be null (no query-scoped context on this request); tolerate it here and in
@@ -51,7 +51,7 @@ final class SnapshotPinResolver implements SnapshotPinLookup {
   }
 
   @Override
-  public OptionalLong pinnedSnapshotId(ResourceId tableId) {
+  public OptionalLong resolvedSnapshotId(ResourceId tableId) {
     QueryContext ctx = liveContext();
     if (ctx == null) {
       return OptionalLong.empty();
@@ -64,26 +64,26 @@ final class SnapshotPinResolver implements SnapshotPinLookup {
   }
 
   @Override
-  public Optional<PinnedConstraintsRef> pinnedConstraintsRef(ResourceId tableId) {
+  public Optional<ResolvedConstraintsRef> resolvedConstraintsRef(ResourceId tableId) {
     QueryContext ctx = liveContext();
     if (ctx == null) {
       return Optional.empty();
     }
-    return ctx.findTablePin(tableId, correlationId)
+    return ctx.findResolvedSnapshot(tableId, correlationId)
         .filter(pin -> !pin.getConstraintsRefUri().isEmpty())
         .map(
             pin ->
-                new PinnedConstraintsRef(
+                new ResolvedConstraintsRef(
                     pin.getConstraintsRefUri(), pin.getConstraintsRefVersion()));
   }
 
   @Override
-  public Optional<String> pinnedStatsGenerationRef(ResourceId tableId) {
+  public Optional<String> resolvedStatsGenerationRef(ResourceId tableId) {
     QueryContext ctx = liveContext();
     if (ctx == null) {
       return Optional.empty();
     }
-    return ctx.findTablePin(tableId, correlationId)
+    return ctx.findResolvedSnapshot(tableId, correlationId)
         .map(pin -> pin.getStatsGenerationRefUri())
         .filter(uri -> !uri.isBlank());
   }
@@ -94,7 +94,7 @@ final class SnapshotPinResolver implements SnapshotPinLookup {
     if (ctx == null) {
       return false;
     }
-    return ctx.findTablePin(tableId, correlationId)
+    return ctx.findResolvedSnapshot(tableId, correlationId)
         .map(
             pin ->
                 pin.getPinKind() == PinKind.PIN_KIND_CURRENT

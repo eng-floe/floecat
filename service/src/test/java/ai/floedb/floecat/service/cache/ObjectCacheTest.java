@@ -91,7 +91,7 @@ class ObjectCacheTest {
   }
 
   @Test
-  void pinnedSchemaChecksItsIdentityBeforeLoadingTheBackingObjects() {
+  void resolvedSnapshotSchemaChecksItsIdentityBeforeLoadingTheBackingObjects() {
     ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
     UserTableNode table = table("account", "table", TableFormat.TF_ICEBERG, List.of());
     TablePin pin = pin(table.id(), "definition-a", "constraints", "schema-a");
@@ -101,23 +101,23 @@ class ObjectCacheTest {
             + "\"required\":true,\"type\":\"long\"}]}";
     CatalogGraphView graphView = schemaGraph(table, schema, loads);
 
-    SchemaDescriptor first = cache.pinnedSchema("correlation", pin, graphView);
-    SchemaDescriptor second = cache.pinnedSchema("correlation", pin, graphView);
+    SchemaDescriptor first = cache.resolvedSnapshotSchema("correlation", pin, graphView);
+    SchemaDescriptor second = cache.resolvedSnapshotSchema("correlation", pin, graphView);
 
     assertThat(second).isSameAs(first);
     assertThat(loads).hasValue(1);
   }
 
   @Test
-  void pinnedSchemaIdentityIncludesDefinitionInputs() {
+  void resolvedSnapshotSchemaIdentityIncludesDefinitionInputs() {
     ObjectCache cache = new ObjectCache(1024 * 1024, CacheEvents.none(), true);
     UserTableNode table = table("account", "table", TableFormat.TF_ICEBERG, List.of());
     AtomicInteger loads = new AtomicInteger();
     CatalogGraphView graphView = schemaGraph(table, table.schemaJson(), loads);
 
-    cache.pinnedSchema(
+    cache.resolvedSnapshotSchema(
         "correlation", pin(table.id(), "definition-a", "constraints", "schema"), graphView);
-    cache.pinnedSchema(
+    cache.resolvedSnapshotSchema(
         "correlation", pin(table.id(), "definition-b", "constraints", "schema"), graphView);
 
     assertThat(loads).hasValue(2);
