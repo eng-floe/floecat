@@ -57,28 +57,6 @@ class ReconcileJobGcSchedulerTest {
     assertEquals(List.of("acct-a", "acct-b"), gc.accountIds);
   }
 
-  @Test
-  void tickDoesNotRunAccountSliceWhenGcIsNotAdmitted() {
-    AccountRepository accounts = mock(AccountRepository.class);
-    when(accounts.list(anyInt(), anyString(), any()))
-        .thenReturn(List.of(account("acct-a"), account("acct-b")));
-
-    RecordingGc gc = new RecordingGc();
-    AccountAssignment assignment = AccountAssignment.forTesting();
-    assignment.beginProcessDrain();
-
-    ReconcileJobGcScheduler scheduler = new ReconcileJobGcScheduler();
-    scheduler.accounts = () -> accounts;
-    scheduler.reconcileJobGc = () -> gc;
-    scheduler.accountScope = assignment;
-    scheduler.observability = new TestObservability();
-    scheduler.initMeters();
-
-    scheduler.tick();
-
-    assertEquals(List.of(), gc.accountIds);
-  }
-
   private static Account account(String accountId) {
     return Account.newBuilder()
         .setResourceId(

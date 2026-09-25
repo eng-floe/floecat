@@ -48,6 +48,8 @@ import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.Timestamp;
 import io.grpc.StatusRuntimeException;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -78,7 +80,15 @@ class SnapshotHelperTest {
     repairPointers = new InMemoryPointerStore();
     repairs = new RootRepairRequests(new RootResyncQueue(repairPointers));
     pins = new PinnedReadContract(repairs);
-    helper = new SnapshotHelper(repository, roots, null, pins, repairs);
+    helper =
+        new SnapshotHelper(
+            repository,
+            roots,
+            null,
+            pins,
+            repairs,
+            new SnapshotRetentionPolicy(
+                Clock.systemUTC(), Duration.ofDays(30), Duration.ofDays(7)));
   }
 
   private boolean repairEnqueued(ResourceId tableId) {
@@ -382,6 +392,31 @@ class SnapshotHelperTest {
     assertThat(pin.getSnapshotBlobUri()).isEqualTo("s3://tbl/snap-5.pb");
     assertThat(pin.getSnapshotBlobVersion()).isEqualTo("etag-s5");
     assertThat(pin.getRootUri()).isNotEmpty();
+  }
+
+  @Test
+  void tablePinRejectsSnapshotsOutsideVisibilityRetention() {
+    ResourceId tableId = tableId("tbl");
+    committer.commit(
+        tableId,
+        TableRootMutations.upsertSnapshot(
+            roots,
+            tableId,
+            SnapshotManifestEntry.newBuilder()
+                .setSnapshotId(5)
+                .setSnapshotRef(
+                    BlobRef.newBuilder().setUri("s3://tbl/snap-5.pb").setVersion("etag-s5"))
+                .setIngestedAt(ts("2024-01-01T00:00:00Z"))
+                .build(),
+            BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
+            true));
+
+    assertThatThrownBy(() -> helper.tablePinFor("corr", tableId, null, Optional.empty()))
+        .isInstanceOf(StatusRuntimeException.class)
+        .satisfies(
+            e ->
+                assertThat(((StatusRuntimeException) e).getStatus().getCode())
+                    .isEqualTo(io.grpc.Status.Code.FAILED_PRECONDITION));
   }
 
   @Test

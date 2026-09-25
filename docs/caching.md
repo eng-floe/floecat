@@ -31,7 +31,7 @@ identity; they do not replace a value in an existing key.
 | Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | Account addressing state: names, identities, and each table's `root/current` and `snapshots/current`. Rows keyed by snapshot -- snapshot history, constraints, stats generations, index artifacts -- are durable-only, because a table can commit snapshots far faster than its schema or addressing state changes. | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter. |
 | Objects | `ObjectCache` | Decoded relation metadata, mapped schemas, constraints, immutable generation-scoped snapshot facts and target-stat records | Entries are keyed by immutable content or generation identity. A live/newest stats read is read-through and is never retained. Account eviction removes every object entry for that account. |
 | Blobs | `DiskBlobCache` behind `BlobCacheAccess` | Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe | Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mmap content stays pinned until its scoped read closes. The disk budget and kill switch are `floecat.cache.blob.disk.*`; it is independent of the heap budget. |
-| Per-query state | `QueryContextStore` and per-query memos | `QueryContext` (pins, snapshot set, expansion map) keyed by query ID | Scoped to one query lease; consistency comes from pinning, not freshness. |
+| Per-query state | `QueryContextStore` and per-query memos | Snapshot selections, expansion map, and scan/session bookkeeping keyed by query ID | Rebuildable process-local optimization. Snapshot retention, not this state, provides GC safety. |
 
 An owned pointer partition can be warmed in the background when ownership is granted. The first
 read also schedules the warm if no ownership notification was received. Reads never wait for this
@@ -179,15 +179,15 @@ Only operations whose result is a mutation or reclamation decision bypass the ca
 | Reusable-candidate load | `SnapshotRepository.loadReusableCandidate` | Emptiness raises a retryable storage abort: the candidate is expected to be there, so a resident decode of a swept blob would let the reuse path proceed on a candidate the store no longer holds. |
 | Commit funnel, pointer and blob | `TableRootCommitter` | The CAS needs an expected version no cached pointer can supply, and the base blob's emptiness is the corruption detector. |
 
-Pinned **blob** reads are not among them. The blob a pin names is immutable and content-addressed,
-so a resident decode of it *is* the pinned content rather than a stale view — the pinned table,
+Selected **blob** reads are not among them. The blob a query selection names is immutable and
+content-addressed, so a resident decode of it *is* the selected content rather than a stale view — the table,
 snapshot, schema, node and constraint loads all read through the cache. If a required value is not
 resident, the read path reports the existing pinned-read error and requests repair where that
 contract applies.
 
-Nor is a pinned read preceded by a probe of its root. A pin whose blobs still read is coherent
-whatever has happened to the live pointer meanwhile, and a probe could only report what the read
-that needs the blob reports anyway.
+Nor is a selected read preceded by a probe of its root. A selection whose blobs still read is
+coherent whatever has happened to the live pointer meanwhile, and a probe could only report what
+the read that needs the blob reports anyway.
 
 The repository API encodes the split: `getByBlobUri` serves cached content — a present result does
 **not** prove the blob still exists — while `getByBlobUriLive` bypasses the cache for reads whose
@@ -200,7 +200,7 @@ emptiness is load-bearing.
 | Cross-instance DDL visibility (which blob a definition pointer names) | bounded by ownership handoff | One Floecat owner accepts writes for an account. A new owner loads the durable partition before serving it; the old owner must stop accepting writes before handoff. |
 | Table currency (which root is current) | none within the owning replica; cross-instance changes require the owner contract | `IndexedPointerStore` publishes after the durable CAS while holding the account lock |
 | Catalog/namespace listings | none after the account index is complete; loading accounts use durable KV | `PlanningPointerIndex` sorted account partitions |
-| Pinned data read within a query | None by construction | Immutable content-addressed blobs plus query pin roots |
+| Selected data read within a query | Retention window plus grace period | Immutable content-addressed blobs plus durable reachability |
 
 Cache budgets derive from the container: `floecat.cache.total-bytes` defaults to a share of the
 maximum heap, which the JVM already sizes from the container memory limit, and each memory cache takes a

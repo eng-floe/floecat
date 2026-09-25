@@ -59,49 +59,6 @@ public final class QueryPins {
     return RelationPin.newBuilder().setTablePin(tablePin).build();
   }
 
-  /**
-   * Every immutable blob URI this pin references: the pinned ROOT (the object all reads follow refs
-   * out of, and whose chain expansion protects the manifest pages and per-entry refs), plus the
-   * copied table/snapshot/constraints refs. This is the ONE definition shared by the transient
-   * resolving-window registration and the committed context's GC roots — the two must never
-   * diverge, or a pin's blobs are unprotected exactly in the window between resolution and context
-   * commit.
-   */
-  public static List<String> gcRootUris(TablePin pin) {
-    List<String> uris = new ArrayList<>(5);
-    addUriIfPresent(uris, pin.getRootUri());
-    addUriIfPresent(uris, pin.getTableBlobUri());
-    addUriIfPresent(uris, pin.getSnapshotBlobUri());
-    addUriIfPresent(uris, pin.getConstraintsRefUri());
-    // The stats generation frozen on the pin is a DIRECT root, like every other pin ref: the
-    // planner reads the generation manifest through this URI for the query's lifetime, so it must
-    // not depend on the GC's table-root chain walk (which also references it, but is a sweep-time
-    // traversal that can be skipped on read failures) — symmetric with how live scan sessions
-    // root their frozen generation.
-    addUriIfPresent(uris, pin.getStatsGenerationRefUri());
-    return uris;
-  }
-
-  /** Every immutable blob URI referenced by every table pin in {@code pins}. */
-  public static List<String> gcRootUris(RelationPinSet pins) {
-    if (pins == null || pins.getPinsCount() == 0) {
-      return List.of();
-    }
-    List<String> uris = new ArrayList<>();
-    for (RelationPin pin : pins.getPinsList()) {
-      if (pin.hasTablePin()) {
-        uris.addAll(gcRootUris(pin.getTablePin()));
-      }
-    }
-    return uris;
-  }
-
-  private static void addUriIfPresent(List<String> uris, String uri) {
-    if (uri != null && !uri.isEmpty()) {
-      uris.add(uri);
-    }
-  }
-
   /** Find the pinned table for {@code tableId}, matched by account + id. */
   public static Optional<TablePin> findTablePin(RelationPinSet pins, ResourceId tableId) {
     return pins.getPinsList().stream()

@@ -41,6 +41,8 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
@@ -58,6 +60,7 @@ public class SnapshotHelper {
   private final StatsStore statsStore;
   private final PinnedReadContract pins;
   private final RootRepairRequests repairs;
+  private final SnapshotRetentionPolicy retention;
 
   /**
    * Pins are built from a just-read root blob, so construction performs no extra validation
@@ -74,12 +77,30 @@ public class SnapshotHelper {
       TableRootRepository roots,
       StatsStore statsStore,
       PinnedReadContract pins,
-      RootRepairRequests repairs) {
+      RootRepairRequests repairs,
+      SnapshotRetentionPolicy retention) {
     this.snapshots = snapshots;
     this.roots = roots;
     this.statsStore = statsStore;
     this.pins = pins;
     this.repairs = repairs;
+    this.retention = retention;
+  }
+
+  /** Compatibility constructor for embedded graph builders and focused tests. */
+  public SnapshotHelper(
+      SnapshotRepository snapshots,
+      TableRootRepository roots,
+      StatsStore statsStore,
+      PinnedReadContract pins,
+      RootRepairRequests repairs) {
+    this(
+        snapshots,
+        roots,
+        statsStore,
+        pins,
+        repairs,
+        new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ofDays(30), Duration.ofDays(7)));
   }
 
   /**
@@ -273,6 +294,14 @@ public class SnapshotHelper {
       TableRoot root,
       MutationMeta rootMeta,
       Timestamp originalAsOf) {
+    if (entry.hasIngestedAt() && !retention.visible(entry.getIngestedAt())) {
+      throw GrpcErrors.snapshotExpired(
+          cid,
+          null,
+          Map.of(
+              "table_id", tableId.getId(),
+              "snapshot_id", Long.toString(entry.getSnapshotId())));
+    }
     if (!root.hasDefinitionRef() || root.getDefinitionRef().getUri().isEmpty()) {
       // A root without a definition ref is a broken invariant every query trips over: report the
       // table for the resync re-drive (which re-derives the definition ref from committed state).
@@ -307,6 +336,9 @@ public class SnapshotHelper {
             // entries (the token then falls back to snapshot_blob_version — correct, cold on
             // ingest).
             .setSchemaFingerprint(entry.getSchemaFingerprint());
+    if (entry.hasIngestedAt()) {
+      pin.setIngestedAt(entry.getIngestedAt());
+    }
     if (entry.hasConstraintsRef()) {
       pin.setConstraintsRefUri(entry.getConstraintsRef().getUri())
           .setConstraintsRefVersion(entry.getConstraintsRef().getVersion());
@@ -373,6 +405,12 @@ public class SnapshotHelper {
     }
 
     Snapshot snap = resolveSnapshot(cid, tbl.id(), ref);
+    if (!retention.visible(snap.hasIngestedAt() ? snap.getIngestedAt() : null)) {
+      throw GrpcErrors.snapshotExpired(
+          cid,
+          null,
+          Map.of("table_id", tbl.id().getId(), "snapshot_id", Long.toString(snap.getSnapshotId())));
+    }
 
     if (snap == null || snap.getSchemaJson().isBlank()) {
       return supplier.get();

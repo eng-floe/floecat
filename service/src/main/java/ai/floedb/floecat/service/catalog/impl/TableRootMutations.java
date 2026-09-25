@@ -449,6 +449,9 @@ public final class TableRootMutations {
     if (!incoming.hasUpstreamCreatedAt() && existing.hasUpstreamCreatedAt()) {
       merged.setUpstreamCreatedAt(existing.getUpstreamCreatedAt());
     }
+    if (!incoming.hasIngestedAt() && existing.hasIngestedAt()) {
+      merged.setIngestedAt(existing.getIngestedAt());
+    }
     // schema_fingerprint has the same survive-a-partial-rewrite property: an incoming candidate
     // without one must not downgrade a fingerprinted entry to the coarse snapshot_blob_version
     // fallback (cold-on-ingest). Every candidate builder stamps it today, so this only guards a

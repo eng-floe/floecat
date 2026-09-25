@@ -343,12 +343,13 @@ public class StatsOrchestrator {
    * Planner batch resolution that honors the query's pinned stats generation and the planner's
    * per-target completeness needs.
    *
-   * <p>The pin freezes a stats generation for the query's lifetime (as the scan path does), so
-   * plans are stable and reproducible for a given pin. "Exists in the pinned generation" alone is
-   * too coarse a hit rule, though: generations enrich over time (a finalize can add sketch payloads
-   * to a snapshot whose earlier generation was scalar-only), so a pinned record that lacks a
-   * requested capability must not stop resolution — the planner would consume it downgraded while a
-   * richer record for the SAME snapshot exists. For each target the lookup order is:
+   * <p>The query selection freezes a stats generation for the query attempt (as the scan path
+   * does), so plans are stable and reproducible for that attempt. "Exists in the selected
+   * generation" alone is too coarse a hit rule, though: generations enrich over time (a finalize
+   * can add sketch payloads to a snapshot whose earlier generation was scalar-only), so a pinned
+   * record that lacks a requested capability must not stop resolution — the planner would consume
+   * it downgraded while a richer record for the SAME snapshot exists. For each target the lookup
+   * order is:
    *
    * <ol>
    *   <li>cache hit in the pinned generation's keyspace (the live/newest keyspace when the pin

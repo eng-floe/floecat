@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.account;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import org.junit.jupiter.api.Test;
@@ -26,7 +25,7 @@ class AccountAssignmentTest {
   private static final String ACCOUNT = "acct-a";
 
   @Test
-  void servingModeAdmitsWorkUntilProcessDrainStarts() {
+  void servingModeAdmitsAccountWork() {
     AccountAssignment assignment = AccountAssignment.forTesting();
 
     try (var mutation =
@@ -34,38 +33,7 @@ class AccountAssignmentTest {
         var resolution = assignment.admitResolution(ACCOUNT);
         var gc = assignment.tryAcquireGc(ACCOUNT).orElseThrow()) {
       assertThat(gc.valid()).isTrue();
-      assertThat(assignment.status(ACCOUNT).activeMutations()).isEqualTo(1L);
-      assertThat(assignment.status(ACCOUNT).activeResolutions()).isEqualTo(1L);
-      assertThat(assignment.status(ACCOUNT).activeGc()).isEqualTo(1L);
     }
-
-    assertThat(assignment.status(ACCOUNT).activeMutations()).isZero();
-    assertThat(assignment.status(ACCOUNT).activeResolutions()).isZero();
-    assertThat(assignment.status(ACCOUNT).activeGc()).isZero();
-  }
-
-  @Test
-  void processDrainRejectsNewWorkAndRevokesGcPermits() {
-    AccountAssignment assignment = AccountAssignment.forTesting();
-    AccountScope.GcPermit gc = assignment.tryAcquireGc(ACCOUNT).orElseThrow();
-    var mutation =
-        assignment.acquire(ACCOUNT, PlanningPointerIndex.Ownership.Access.WRITE).orElseThrow();
-
-    LifecycleControl.Status drained = assignment.beginProcessDrain();
-
-    assertThat(drained.processDraining()).isTrue();
-    assertThat(gc.valid()).isFalse();
-    assertThat(assignment.tryAcquireGc(ACCOUNT)).isEmpty();
-    var admittedAfterDrain =
-        assignment.acquire(ACCOUNT, PlanningPointerIndex.Ownership.Access.WRITE).orElseThrow();
-    assertThatThrownBy(() -> assignment.admitResolution(ACCOUNT))
-        .isInstanceOf(LifecycleDrain.DrainingException.class);
-    assertThat(drained.drained()).isFalse();
-
-    mutation.close();
-    admittedAfterDrain.close();
-    gc.close();
-    assertThat(assignment.drained().toCompletableFuture()).isCompleted();
   }
 
   @Test

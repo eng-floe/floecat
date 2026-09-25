@@ -41,7 +41,6 @@ import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
@@ -143,7 +142,7 @@ class QueryPinCommitterTest {
   }
 
   @Test
-  void commitFailureReleasesResolvingPinBlobs() {
+  void commitFailureDoesNotUpdateContext() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
     store.failUpdateWith(new IllegalStateException("boom"));
@@ -152,13 +151,10 @@ class QueryPinCommitterTest {
     committer.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP);
 
     assertThatThrownBy(committer::commit).isInstanceOf(IllegalStateException.class);
-    // The transient GC roots registered at resolution are released on the failure arm.
-    assertThat(store.releasedQueryIds()).containsExactly(QID);
-    assertThat(store.releasedBlobUris()).isNotEmpty();
   }
 
   @Test
-  void cancellationBeforeCommitReleasesPendingRootsWithoutUpdatingContext() {
+  void cancellationBeforeCommitDiscardsPendingPinsWithoutUpdatingContext() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
     QueryPinCommitter committer = new QueryPinCommitter(resolver, store, ctx(), CID, timings);
@@ -171,12 +167,10 @@ class QueryPinCommitterTest {
         .isInstanceOf(CancellationException.class);
     assertThat(store.updateCount()).isZero();
     assertThat(committer.pendingPinCount()).isZero();
-    assertThat(store.releasedQueryIds()).containsExactly(QID);
-    assertThat(store.releasedBlobUris()).isNotEmpty();
   }
 
   @Test
-  void accumulateMergeFailureReleasesPriorAndIncomingPinBlobs() {
+  void accumulateMergeFailureDiscardsPriorAndIncomingPins() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
     QueryPinCommitter committer =
@@ -191,9 +185,6 @@ class QueryPinCommitterTest {
         .isInstanceOf(RuntimeException.class);
 
     assertThat(committer.pendingPinCount()).isZero();
-    assertThat(store.releasedQueryIds()).containsExactly(QID);
-    assertThat(store.releasedBlobUris())
-        .contains("s3://TABLE_A/snap-1.pb", "s3://TABLE_A/snap-2.pb");
   }
 
   @Test
@@ -207,7 +198,6 @@ class QueryPinCommitterTest {
 
     committer.commit();
     assertThat(store.updateCount()).isZero();
-    assertThat(store.releasedQueryIds()).isEmpty();
   }
 
   private void registerTable(ResourceId id, String name) {
@@ -295,14 +285,9 @@ class QueryPinCommitterTest {
     }
   }
 
-  /**
-   * A store that records {@code releaseResolvingPinBlobs} calls and can fail {@code update}. Wraps
-   * a {@link TestQueryContextStore} (which is final) by delegation.
-   */
+  /** A store that can fail {@code update}. Wraps a test context store by delegation. */
   private static final class RecordingReleaseStore implements QueryContextStore {
     private final TestQueryContextStore delegate = new TestQueryContextStore();
-    private final List<String> releasedQueryIds = new ArrayList<>();
-    private final List<String> releasedBlobUris = new ArrayList<>();
     private RuntimeException updateFailure;
 
     void seed(QueryContext ctx) {
@@ -317,26 +302,12 @@ class QueryPinCommitterTest {
       return delegate.updateCount();
     }
 
-    List<String> releasedQueryIds() {
-      return releasedQueryIds;
-    }
-
-    List<String> releasedBlobUris() {
-      return releasedBlobUris;
-    }
-
     @Override
     public java.util.Optional<QueryContext> update(String queryId, UnaryOperator<QueryContext> fn) {
       if (updateFailure != null) {
         throw updateFailure;
       }
       return delegate.update(queryId, fn);
-    }
-
-    @Override
-    public void releaseResolvingPinBlobs(String queryId, Collection<String> blobUris) {
-      releasedQueryIds.add(queryId);
-      releasedBlobUris.addAll(blobUris);
     }
 
     @Override
@@ -372,17 +343,6 @@ class QueryPinCommitterTest {
     @Override
     public long size() {
       return delegate.size();
-    }
-
-    @Override
-    public java.util.Set<String> referencedPinBlobUris() {
-      return delegate.referencedPinBlobUris();
-    }
-
-    @Override
-    public void registerResolvingPinBlobs(
-        String queryId, ResourceId tableId, Collection<String> blobUris) {
-      delegate.registerResolvingPinBlobs(queryId, tableId, blobUris);
     }
 
     @Override

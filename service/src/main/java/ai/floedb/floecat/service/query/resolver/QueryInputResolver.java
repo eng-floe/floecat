@@ -39,7 +39,6 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.repo.util.RepositoryReads;
-import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
@@ -94,9 +93,9 @@ import org.jboss.logging.Logger;
  *       view-creation time, regardless of the current query search-path.
  * </ol>
  *
- * <p>This resolver does not persist query context. While resolving, it registers each constructed
- * pin as a transient GC root and releases discarded or abandoned registrations when the resolution
- * attempt ends.
+ * <p>This resolver does not persist query context. It resolves the immutable snapshot identity that
+ * the caller stores in the query context; retention policy, not this in-memory object, defines the
+ * lifetime of the underlying blobs.
  */
 @ApplicationScoped
 public class QueryInputResolver {
@@ -118,50 +117,25 @@ public class QueryInputResolver {
   // admitting their leaves too would acquire the same process-wide permit twice for one operation.
   private final RepositoryReads.ReadPolicy pinResolutionReads;
 
-  // Registers each resolved pin's blobs as a transient GC root at construction time (see
-  // QueryContextStore.registerResolvingPinBlobs). Null in unit tests that construct the resolver
-  // without a store — registration is simply skipped then.
   private final QueryContextStore queryStore;
-  private final TableBlobReachabilityGuard reachabilityGuard;
 
   @Inject
   public QueryInputResolver(
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
-      RepositoryReads.ReadPolicy pinResolutionReads,
-      TableBlobReachabilityGuard reachabilityGuard) {
-    this(
-        metadataGraph,
-        queryStore,
-        pinResolutionReads,
-        reachabilityGuard,
-        configuredMaxParallelInputResolutions());
+      RepositoryReads.ReadPolicy pinResolutionReads) {
+    this(metadataGraph, queryStore, pinResolutionReads, configuredMaxParallelInputResolutions());
   }
 
   private QueryInputResolver(
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
       RepositoryReads.ReadPolicy pinResolutionReads,
-      TableBlobReachabilityGuard reachabilityGuard,
       int maxParallelInputResolutions) {
     this.metadataGraph = metadataGraph;
     this.queryStore = queryStore;
     this.pinResolutionReads = pinResolutionReads;
-    this.reachabilityGuard = reachabilityGuard;
     this.maxParallelInputResolutions = maxParallelInputResolutions;
-  }
-
-  /** Compatibility constructor for callers that provide a custom metadata-read policy. */
-  public QueryInputResolver(
-      CatalogGraphView metadataGraph,
-      QueryContextStore queryStore,
-      RepositoryReads.ReadPolicy pinResolutionReads) {
-    this(
-        metadataGraph,
-        queryStore,
-        pinResolutionReads,
-        new TableBlobReachabilityGuard(),
-        configuredMaxParallelInputResolutions());
   }
 
   /** Compatibility constructor for direct callers that own their metadata execution policy. */
@@ -170,11 +144,10 @@ public class QueryInputResolver {
         metadataGraph,
         queryStore,
         RepositoryReads.directPolicy(),
-        new TableBlobReachabilityGuard(),
         configuredMaxParallelInputResolutions());
   }
 
-  /** Test-only constructor: no store (no pin-root registration). */
+  /** Test-only constructor: no query-context store. */
   public QueryInputResolver(CatalogGraphView metadataGraph) {
     this(metadataGraph, null);
   }
@@ -209,9 +182,9 @@ public class QueryInputResolver {
   }
 
   /**
-   * Per-attempt memo for table snapshot pins. CURRENT lookups use it as a single-flight map so
-   * concurrent references resolve once and reuse the first pin. Failed lookups are evicted so a
-   * later caller may retry; successful pins remain frozen for the attempt lifetime. AS-OF and
+   * Per-attempt memo for table snapshot selections. CURRENT lookups use it as a single-flight map
+   * so concurrent references resolve once and reuse the first selection. Failed lookups are evicted
+   * so a later caller may retry; successful selections remain frozen for the attempt. AS-OF and
    * explicit snapshot selectors use their exact-selector paths.
    */
   public static final class SnapshotPinMemo {
@@ -257,7 +230,6 @@ public class QueryInputResolver {
       Optional<String> defaultCatalog,
       SnapshotPinMemo snapshotPinMemo,
       SnapshotPinMemoOwnership snapshotPinMemoOwnership,
-      ResolvingPinRoots resolvingPinRoots,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
 
@@ -274,7 +246,6 @@ public class QueryInputResolver {
           defaultCatalog,
           snapshotPinMemo,
           snapshotPinMemoOwnership,
-          resolvingPinRoots,
           taskDiagnostics,
           cancelled);
     }
@@ -297,9 +268,8 @@ public class QueryInputResolver {
   // =============================================================================
 
   /**
-   * Convenience overload with no query id (resolving-pin roots are not registered), no shared
-   * snapshot-pin memo, and no diagnostics. Used by unit tests that exercise resolution in
-   * isolation.
+   * Convenience overload with no query id, no shared snapshot-pin memo, and no diagnostics. Used by
+   * unit tests that exercise resolution in isolation.
    */
   public ResolutionResult resolveInputs(
       String correlationId,
@@ -432,7 +402,6 @@ public class QueryInputResolver {
                   defaultCatalog,
                   snapshotPinMemo,
                   new SnapshotPinMemoOwnership(snapshotPinMemo.pins),
-                  new ResolvingPinRoots(queryStore, queryId),
                   diag,
                   cancelled));
 
@@ -463,14 +432,7 @@ public class QueryInputResolver {
             state.resolved, relationPinSet, asOfDefault.map(Timestamp::toByteArray).orElse(null));
       } catch (RuntimeException | Error e) {
         try {
-          // Evict attempt-owned memo entries before releasing their transient roots, so another
-          // resolve call cannot observe an unrooted completed pin in between those operations.
           state.work.snapshotPinMemoOwnership().closeAndEvict();
-        } catch (RuntimeException | Error cleanupFailure) {
-          e.addSuppressed(cleanupFailure);
-        }
-        try {
-          state.work.resolvingPinRoots().releaseAll();
         } catch (RuntimeException | Error cleanupFailure) {
           e.addSuppressed(cleanupFailure);
         }
@@ -638,9 +600,9 @@ public class QueryInputResolver {
   }
 
   /**
-   * Resolve one table pin. CURRENT lookups use a single-flight holder whose owner constructs and
-   * roots the pin before publication; failures evict the holder and wake waiters. Explicit and
-   * AS-OF requests reuse an exactly matching committed pin or construct and root a fresh one.
+   * Resolve one table pin. CURRENT lookups use a single-flight holder whose owner constructs the
+   * pin before publication; failures evict the holder and wake waiters. Explicit and AS-OF requests
+   * reuse an exactly matching committed pin or construct a fresh one.
    */
   private TablePin pinForTable(
       ResolutionWork state, ResourceId rid, SnapshotRef override, Optional<Timestamp> asOfDefault) {
@@ -663,9 +625,7 @@ public class QueryInputResolver {
           try {
             long snapshotPinStartNs = System.nanoTime();
             pin =
-                resolveAndRegister(
-                    state,
-                    rid,
+                resolvePin(
                     () ->
                         pinResolutionReads.read(
                             () ->
@@ -692,7 +652,6 @@ public class QueryInputResolver {
         // retries against the replacement entry without using a retired pin.
         synchronized (inflight) {
           if (state.snapshotPinMemo.pins.get(rid) == inflight) {
-            registerWhileGuarded(state, rid, pin);
             state.diagnostics.count("pin.current_snapshot_cache_hits");
             return pin;
           }
@@ -719,15 +678,12 @@ public class QueryInputResolver {
       if (reused.isPresent()) {
         state.diagnostics.count("pin.committed_pin_reuse");
         TablePin pin = reused.get();
-        registerWhileGuarded(state, rid, pin);
         return pin;
       }
     }
     long snapshotPinStartNs = System.nanoTime();
     TablePin resolved =
-        resolveAndRegister(
-            state,
-            rid,
+        resolvePin(
             () ->
                 pinResolutionReads.read(
                     () ->
@@ -739,28 +695,11 @@ public class QueryInputResolver {
   }
 
   /**
-   * Resolve and publish a pin while holding the table publication read lock. GC may not obtain its
-   * exclusive proof between the metadata read and the transient-root registration.
+   * Resolve and publish a pin. The returned identity is persisted in the query context by the
+   * caller; snapshot retention controls whether the referenced immutable data remains available.
    */
-  private TablePin resolveAndRegister(
-      ResolutionWork state, ResourceId tableId, Supplier<TablePin> resolver) {
-    return reachabilityGuard.publishing(
-        tableId,
-        () -> {
-          TablePin pin = resolver.get();
-          state.resolvingPinRoots.register(pin);
-          return pin;
-        });
-  }
-
-  /** Register a reused single-flight pin under the same publication guard as its owner. */
-  private void registerWhileGuarded(ResolutionWork state, ResourceId tableId, TablePin pin) {
-    reachabilityGuard.publishing(
-        tableId,
-        () -> {
-          state.resolvingPinRoots.register(pin);
-          return null;
-        });
+  private TablePin resolvePin(Supplier<TablePin> resolver) {
+    return resolver.get();
   }
 
   /** Await a single-flight winner without stranding a cancelled waiter on the executor. */
@@ -911,19 +850,18 @@ public class QueryInputResolver {
       state.pinByTableId.put(pin.getTableId(), pin);
       return;
     }
-    // First-touch wins: compatible later pins relinquish only their own provisional roots.
+    // First-touch wins: compatible later pins are discarded.
     QueryPins.reconcile(existing, pin, state.work.correlationId());
     if (existing != pin) {
       discardCompatiblePin.accept(new CompatibleDiscard(pin, existing));
     }
   }
 
-  /** Rebind a compatible losing pin's memo entry before releasing its provisional roots. */
+  /** Rebind a compatible losing pin's memo entry. */
   private void discardCompatiblePin(ResolutionState state, CompatibleDiscard discard) {
     state
         .work
         .snapshotPinMemoOwnership()
         .replaceCompatiblePin(discard.losingPin(), discard.retainedPin());
-    state.work.resolvingPinRoots().discard(discard.losingPin());
   }
 }

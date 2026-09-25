@@ -178,24 +178,11 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           1L,
                           catalogId);
 
-                  // The resolved pin blobs are already transient GC roots (the resolver registered
-                  // them at construction, protected through resolution and until this commit), so
-                  // storing the context — a durable GC root — needs no lease here.
-                  // Always branch on the insert result: putIfAbsent converts this context's pins
-                  // from transient resolving roots to durable ones (dropResolvingPinsRootedBy)
-                  // ONLY when it actually inserts. A silently-ignored no-op insert would serve a
-                  // context whose pins were never rooted — so surface it either way.
+                  // Always branch on the insert result so a duplicate client query id is surfaced
+                  // rather than silently serving a context that was not stored.
                   boolean clientProvidedId = request.hasQueryId();
                   boolean inserted = queryStore.putIfAbsent(ctx);
                   if (!inserted) {
-                    // A context already owns this query id (an incumbent). Do NOT try to release
-                    // this rejected context's resolving-pin roots: they were registered under the
-                    // shared query id and unioned into the incumbent's resolving entry, so dropping
-                    // them by URI would also unroot blobs the incumbent may still be resolving — a
-                    // GC sweep in that window could then delete a live blob. The rejected
-                    // registration is already bounded (the map is size-capped, and the entry is
-                    // released by the incumbent's own commit or the fail-safe grace), so leaving it
-                    // in place is the safe choice.
                     if (clientProvidedId) {
                       throw GrpcErrors.alreadyExists(
                           correlationId,

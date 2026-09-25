@@ -1239,8 +1239,8 @@ public class PlannerStatsBundleService {
             // snapshot legs, which enqueue through PinnedReadContract.
             constraintRepository.getByBlobUri(tableId, pinnedRef.get().uri());
         if (bundle.isEmpty()) {
-          // The pin froze a bundle ref whose blob is no longer retrievable: pinned blobs are
-          // GC-rooted for the query's lifetime, so this is a broken invariant, never client state.
+          // The selected bundle ref is no longer retrievable. Retention-aware GC may have reclaimed
+          // it, which is a retryable query outcome rather than a catalog corruption signal.
           LOG.warnf(
               "pinned constraints blob missing for %s snapshot %d: %s",
               tableId.getId(), sidForLog, pinnedRef.get().uri());

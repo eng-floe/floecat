@@ -37,9 +37,9 @@ so concurrent commits merge instead of clobbering.
 
 Queries read through **pins**: a `TablePin` copies the refs it needs (definition, snapshot,
 constraints, stats generation) out of one root at resolution time, so every later schema, scan,
-stats, and constraints read in that query is coherent by construction. Pinned blobs are GC-rooted
-for the query's lifetime — a pin protects its root's whole reference chain even after the current
-pointer moves past it.
+stats, and constraints read in that query is coherent by construction. Query state is local
+optimization state; retention-aware durable reachability, rather than pins, protects blobs from GC.
+An expired selection may therefore fail retryably if the query outlives the retention contract.
 
 Snapshot visibility is gated at **read time** (`StatsVisibilityGate`): registration and resync
 advance the root's `current_snapshot_id` freely, but when the stats store tracks generations a

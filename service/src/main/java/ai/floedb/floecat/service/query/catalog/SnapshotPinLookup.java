@@ -35,8 +35,9 @@ interface SnapshotPinLookup {
   /**
    * The constraints ref frozen on this table's pin — the pinned root entry's immutable bundle
    * identity, copied onto the pin at construction. Empty means no bundle existed at pin time (or no
-   * pin): the query deterministically serves no constraints for its lifetime, even if a bundle
-   * appears mid-query. The serving path loads the bundle by this ref, never the live pointer.
+   * selection): the query deterministically serves no constraints for this attempt, even if a
+   * bundle appears mid-query. The serving path loads the bundle by this ref, never the live
+   * pointer.
    */
   default Optional<PinnedConstraintsRef> pinnedConstraintsRef(ResourceId tableId) {
     return Optional.empty();

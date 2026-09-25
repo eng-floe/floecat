@@ -30,7 +30,6 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationPinIdentity;
-import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.ResolutionFailure;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
@@ -105,7 +104,6 @@ public class UserObjectBundleService {
   private final long slowRpcMs;
   private final RelationBundleBuilder relationBuilder;
   private final EngineRelationDecorator engineRelationDecorator;
-  private final CancelledQueryPinCleanup cancelledQueryPinCleanup;
   private final AccountScope accountScope;
 
   // Mints the pin identity/payload token and serves the identity-only decision. Stateless per
@@ -151,7 +149,6 @@ public class UserObjectBundleService {
       CatalogGraphView graphView,
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
-      CancelledQueryPinCleanup cancelledQueryPinCleanup,
       AccountScope accountScope,
       StatsProviderFactory statsFactory,
       ObjectCache objects,
@@ -174,7 +171,6 @@ public class UserObjectBundleService {
     this.graphView = graphView;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
-    this.cancelledQueryPinCleanup = cancelledQueryPinCleanup;
     this.accountScope = accountScope;
     this.statsFactory = statsFactory;
     this.engineContext = engineContext;
@@ -228,12 +224,11 @@ public class UserObjectBundleService {
       boolean grpcPlainText,
       String quarkusProfile) {
     // Test-only: the production defaults for decoration epoch, slow-RPC threshold and relation
-    // parallelism, with an inline same-thread pin cleanup.
+    // parallelism.
     this(
         graphView,
         inputResolver,
         queryStore,
-        new CancelledQueryPinCleanup(queryStore, Runnable::run),
         AccountAssignment.forTesting(),
         statsFactory,
         ObjectCache.forTesting(),
@@ -633,16 +628,14 @@ public class UserObjectBundleService {
     private void cancel() {
       StreamTelemetryState.CancellationDecision cancellation = telemetryState.cancel(cancelled);
       if (cancellation != StreamTelemetryState.CancellationDecision.IGNORED) {
-        RelationPinSet toRelease = pinCommitter.detachPendingPins();
+        pinCommitter.detachPendingPins();
         if (cancellation == StreamTelemetryState.CancellationDecision.PUBLISH) {
           // No producer is mutating diagnostics or caches, but the RPC span may end as soon as
           // this termination callback returns. Emit while it is still recording.
           publishClaimedTelemetrySafely("cancelled");
         }
-        // onTermination may run on a transport/event-loop thread. Root release can perform store
-        // I/O, so teardown runs on a managed executor. Telemetry is published only after the
-        // producer reports that no mutable iterator state remains active.
-        cancelledQueryPinCleanup.release(ctx.getQueryId(), toRelease);
+        // Pending pins are query-local values; retention, rather than cancellation cleanup, owns
+        // the lifetime of their immutable snapshot data.
       }
     }
 

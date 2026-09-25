@@ -281,7 +281,7 @@ _State diagram for the query lease protocol:_
   extensions. Document keys in the consuming module (for example connector-specific hints in
   [`docs/connectors-spi.md`](connectors-spi.md)).
 - **Query leases** – Clients decide how aggressively to renew leases; planners should renew before
-  `expires_at` and call `EndQuery` even on failure so `QueryContextStore` can release pins eagerly.
+  `expires_at` and call `EndQuery` even on failure to release process-local query bookkeeping.
 
 ## Examples & Scenarios
 ### Creating a table via gRPC

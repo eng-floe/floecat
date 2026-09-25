@@ -26,7 +26,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
-import ai.floedb.floecat.service.account.LifecycleDrain;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -78,7 +77,6 @@ import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 public abstract class BaseServiceImpl {
-  @Inject LifecycleDrain lifecycleDrain = LifecycleDrain.ALWAYS_SERVING;
   @Inject PrincipalProvider principal;
 
   protected final Clock clock = Clock.systemUTC();
@@ -113,10 +111,10 @@ public abstract class BaseServiceImpl {
    * {@link CancellationException} is discarded after its subscriber has already terminated.
    */
   protected <T> Uni<T> run(Supplier<T> body) {
-    return run(body, true);
+    return runCaptured(body);
   }
 
-  private <T> Uni<T> run(Supplier<T> body, boolean closeOnTermination) {
+  private <T> Uni<T> runCaptured(Supplier<T> body) {
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     // Read the resolved call context at method entry — before any executor hop — and carry it by
     // reference into the body. The captured io.grpc.Context alone is unreliable across the hop
@@ -126,18 +124,12 @@ public abstract class BaseServiceImpl {
     return Uni.createFrom()
         .deferred(
             () -> {
-              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
-              return run(body, lifecyclePermit, closeOnTermination, grpcCtx, callCtx, otelCtx);
+              return runCaptured(body, grpcCtx, callCtx, otelCtx);
             });
   }
 
-  private <T> Uni<T> run(
-      Supplier<T> body,
-      LifecycleDrain.Permit lifecyclePermit,
-      boolean closeOnTermination,
-      GrpcContextUtil grpcCtx,
-      ResolvedCallContext callCtx,
-      Context otelCtx) {
+  private <T> Uni<T> runCaptured(
+      Supplier<T> body, GrpcContextUtil grpcCtx, ResolvedCallContext callCtx, Context otelCtx) {
     return Uni.createFrom()
         .deferred(
             () -> {
@@ -147,9 +139,6 @@ public abstract class BaseServiceImpl {
                       .<T>emitter(
                           emitter -> {
                             emitter.onTermination(cancellation::terminate);
-                            if (closeOnTermination) {
-                              emitter.onTermination(lifecyclePermit::close);
-                            }
                             try {
                               T result =
                                   grpcCtx.call(
@@ -208,7 +197,6 @@ public abstract class BaseServiceImpl {
     return Multi.createFrom()
         .<T>deferred(
             () -> {
-              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
               RequestCancellation cancellation = new RequestCancellation(grpcCtx);
               try {
                 Multi<T> source =
@@ -221,17 +209,12 @@ public abstract class BaseServiceImpl {
                                     return body.apply(callCtx, cancellation);
                                   }
                                 }));
-                return source
-                    .onTermination()
-                    .invoke(cancellation::terminate)
-                    .onTermination()
-                    .invoke(lifecyclePermit::close);
+                return source.onTermination().invoke(cancellation::terminate);
               } catch (Throwable failure) {
-                lifecyclePermit.close();
                 throw failure;
               }
             })
-        .onFailure(t -> t instanceof LifecycleDrain.DrainingException)
+        .onFailure()
         .transform(t -> toStatus(t, callCtx.effectiveCorrelationId()))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
@@ -268,8 +251,6 @@ public abstract class BaseServiceImpl {
     return Multi.createFrom()
         .<T>emitter(
             emitter -> {
-              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
-              emitter.onTermination(lifecyclePermit::close);
               grpcCtx.run(
                   () ->
                       ResolvedCallContexts.runWithOrInherit(
@@ -280,7 +261,7 @@ public abstract class BaseServiceImpl {
                             }
                           }));
             })
-        .onFailure(t -> t instanceof LifecycleDrain.DrainingException)
+        .onFailure()
         .transform(t -> toStatus(t, callCtx.effectiveCorrelationId()))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
@@ -292,8 +273,7 @@ public abstract class BaseServiceImpl {
     return Uni.createFrom()
         .deferred(
             () -> {
-              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
-              return run(body, lifecyclePermit, false, grpcCtx, callCtx, otelCtx)
+              return runCaptured(body, grpcCtx, callCtx, otelCtx)
                   .onFailure(
                       t ->
                           t instanceof BaseResourceRepository.AbortRetryableException
@@ -301,9 +281,7 @@ public abstract class BaseServiceImpl {
                   .retry()
                   .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
                   .withJitter(JITTER)
-                  .atMost(RETRIES)
-                  .onTermination()
-                  .invoke(lifecyclePermit::close);
+                  .atMost(RETRIES);
             });
   }
 
@@ -318,10 +296,6 @@ public abstract class BaseServiceImpl {
       }
       return GrpcErrors.build(
           sre.getStatus(), errorCodeForStatus(sre.getStatus()), corrId, null, null, t);
-    }
-
-    if (t instanceof LifecycleDrain.DrainingException) {
-      return GrpcErrors.unavailable(corrId, null, Map.of(), t);
     }
 
     if (t instanceof BaseResourceRepository.SystemObjectImmutableException) {

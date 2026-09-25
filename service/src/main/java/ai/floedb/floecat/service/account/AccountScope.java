@@ -21,16 +21,15 @@ import java.util.Optional;
 
 /**
  * Whether this process may work on an account, and under what permit. Every caller that asks
- * "should I do this for this account?" — a mutation, a pin resolution, a collection pass — asks it
- * here rather than reading assignment state directly.
+ * "should I do this for this account?" — a mutation, a snapshot resolution, a collection pass —
+ * asks it here rather than reading ownership state directly.
  *
- * <p>The default implementation is process-local and serves every account until lifecycle drain. A
- * deployment that needs leases, fences or a coordinator binds its own implementation here without
- * changing query, cache, mutation or GC code.
+ * <p>The default implementation is process-local and serves every account. Managed deployments bind
+ * their routing-backed account policy here without changing query, cache, mutation or GC code.
  */
 public interface AccountScope {
 
-  /** Admits one pin resolution; released when the pin is rooted or the resolution is abandoned. */
+  /** Admits one snapshot resolution; released when the resolution is complete or abandoned. */
   Permit admitResolution(String accountId);
 
   /** A collection permit, empty unless the account is served and collection is allowed for it. */

@@ -96,9 +96,8 @@ public class QueryInputMetadataAssembler {
       RelationPinSet relationPinSet = resolution.relationPinSet();
       SnapshotSet snapshotSet = resolution.snapshotSet();
       diagnostics.put("snapshot_pins", relationPinSet.getPinsCount());
-      // The resolver already registered each resolved pin's blobs as a transient GC root at
-      // construction (QueryContextStore.registerResolvingPinBlobs), so the blobs are protected
-      // through expansion/obligations and until BeginQuery commits the context — no lease here.
+      // Snapshot identities are carried in the query context. Retention policy, rather than
+      // process-local query state, controls the lifetime of their immutable data.
       ExpansionMap expansionMap =
           diagnostics.time(
               "compute_expansion",

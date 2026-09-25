@@ -274,40 +274,6 @@ class QueryPinsTest {
     assertThat(projected.hasAsOf()).isFalse();
   }
 
-  @org.junit.jupiter.api.Test
-  void gcRootUrisIsTheOneDefinitionForResolvingAndCommittedRoots() {
-    // The resolving-window registration and the committed context's GC roots MUST share this
-    // definition: omitting the pinned ROOT here once left the whole manifest chain sweepable
-    // during the window between pin resolution and context commit.
-    var pin =
-        ai.floedb.floecat.query.rpc.TablePin.newBuilder()
-            .setRootUri("/accounts/a/tables/t/root/r.pb")
-            .setTableBlobUri("/accounts/a/tables/t/table/d.pb")
-            .setSnapshotBlobUri("/accounts/a/tables/t/snapshots/1/snapshot/s.pb")
-            .setConstraintsRefUri("/accounts/a/tables/t/constraints/1/c.pb")
-            .setStatsGenerationRefUri("/accounts/a/tables/t/snapshots/1/stats/gen-1/manifest.pb")
-            .build();
-
-    org.junit.jupiter.api.Assertions.assertEquals(
-        java.util.List.of(
-            "/accounts/a/tables/t/root/r.pb",
-            "/accounts/a/tables/t/table/d.pb",
-            "/accounts/a/tables/t/snapshots/1/snapshot/s.pb",
-            "/accounts/a/tables/t/constraints/1/c.pb",
-            // The frozen stats generation manifest is a direct pin root: the planner reads it for
-            // the query's lifetime, so it must not rely on the GC's chain walk alone.
-            "/accounts/a/tables/t/snapshots/1/stats/gen-1/manifest.pb"),
-        QueryPins.gcRootUris(pin));
-
-    // Absent legs (no constraints, no root on a hand-built pin) are skipped, never empty strings.
-    var bare =
-        ai.floedb.floecat.query.rpc.TablePin.newBuilder()
-            .setTableBlobUri("/accounts/a/tables/t/table/d.pb")
-            .build();
-    org.junit.jupiter.api.Assertions.assertEquals(
-        java.util.List.of("/accounts/a/tables/t/table/d.pb"), QueryPins.gcRootUris(bare));
-  }
-
   @Test
   void findTablePinRequiresMatchingResourceKind() {
     RelationPinSet pins =

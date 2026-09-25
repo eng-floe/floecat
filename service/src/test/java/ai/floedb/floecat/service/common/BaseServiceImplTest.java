@@ -18,24 +18,19 @@ package ai.floedb.floecat.service.common;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.common.rpc.Error;
 import ai.floedb.floecat.common.rpc.ErrorCode;
-import ai.floedb.floecat.service.account.LifecycleControl;
-import ai.floedb.floecat.service.account.LifecycleDrain;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.rpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
-import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import io.vertx.core.Context;
 import io.vertx.core.Vertx;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
@@ -150,55 +145,6 @@ class BaseServiceImplTest {
   }
 
   @Test
-  void rpcAdmissionStartsAtSubscriptionAndClosesAtTermination() {
-    TestDrain drain = new TestDrain();
-    TestServiceImpl service = new TestServiceImpl(drain);
-
-    Uni<String> operation = service.admitted(() -> "ok");
-    assertEquals(0, drain.active.get());
-    assertEquals("ok", operation.await().indefinitely());
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-    while (drain.active.get() != 0 && System.nanoTime() < deadline) {
-      Thread.onSpinWait();
-    }
-    assertEquals(0, drain.active.get());
-  }
-
-  @Test
-  void drainingAdmissionIsMappedToUnavailableInsideTheUni() {
-    TestDrain drain = new TestDrain();
-    drain.draining.set(true);
-    TestServiceImpl service = new TestServiceImpl(drain);
-
-    Uni<String> operation = service.mappedAdmission(() -> "never", CORRELATION_ID);
-    StatusRuntimeException failure =
-        assertThrows(StatusRuntimeException.class, () -> operation.await().indefinitely());
-
-    assertEquals(io.grpc.Status.Code.UNAVAILABLE, failure.getStatus().getCode());
-    assertEquals(0, drain.active.get());
-  }
-
-  @Test
-  void drainingAdmissionIsMappedToUnavailableForStreams() {
-    TestDrain drain = new TestDrain();
-    drain.draining.set(true);
-    TestServiceImpl service = new TestServiceImpl(drain);
-
-    StatusRuntimeException streamFailure =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> service.admittedStream().collect().asList().await().indefinitely());
-    StatusRuntimeException emitterFailure =
-        assertThrows(
-            StatusRuntimeException.class,
-            () -> service.admittedEmitterStream().collect().asList().await().indefinitely());
-
-    assertEquals(io.grpc.Status.Code.UNAVAILABLE, streamFailure.getStatus().getCode());
-    assertEquals(io.grpc.Status.Code.UNAVAILABLE, emitterFailure.getStatus().getCode());
-    assertEquals(0, drain.active.get());
-  }
-
-  @Test
   void inProgressMapsToAbortedAtTheRpcBoundary() {
     TestServiceImpl service = new TestServiceImpl();
 
@@ -210,10 +156,6 @@ class BaseServiceImplTest {
 
   private static final class TestServiceImpl extends BaseServiceImpl {
     private TestServiceImpl() {}
-
-    private TestServiceImpl(LifecycleDrain drain) {
-      lifecycleDrain = drain;
-    }
 
     StatusRuntimeException repack(StatusRuntimeException ex, String corrId) {
       return toStatus(ex, corrId);
@@ -229,64 +171,6 @@ class BaseServiceImplTest {
 
     <T> Uni<T> withRetry(java.util.function.Supplier<T> supplier) {
       return runWithRetry(supplier);
-    }
-
-    <T> Uni<T> admitted(java.util.function.Supplier<T> supplier) {
-      return run(supplier);
-    }
-
-    <T> Uni<T> mappedAdmission(java.util.function.Supplier<T> supplier, String corrId) {
-      return mapFailures(run(supplier), corrId);
-    }
-
-    Multi<String> admittedStream() {
-      return runStream(callCtx -> Multi.createFrom().item("ok"));
-    }
-
-    Multi<String> admittedEmitterStream() {
-      return runStreamEmitter((callCtx, emitter) -> emitter.complete());
-    }
-  }
-
-  private static final class TestDrain implements LifecycleDrain {
-    private final AtomicBoolean draining = new AtomicBoolean();
-    private final AtomicInteger active = new AtomicInteger();
-    private final CompletableFuture<Void> drained = new CompletableFuture<>();
-
-    @Override
-    public Permit admitRpc() {
-      if (draining.get()) {
-        throw new DrainingException();
-      }
-      active.incrementAndGet();
-      return () -> {
-        active.decrementAndGet();
-        completeIfDrained();
-      };
-    }
-
-    @Override
-    public LifecycleControl.Status beginProcessDrain() {
-      draining.set(true);
-      completeIfDrained();
-      return status();
-    }
-
-    @Override
-    public java.util.concurrent.CompletionStage<Void> drained() {
-      return drained;
-    }
-
-    @Override
-    public LifecycleControl.Status status() {
-      return new LifecycleControl.Status(
-          "test", "test", draining.get(), java.util.List.of(), active.get());
-    }
-
-    private void completeIfDrained() {
-      if (draining.get() && active.get() == 0) {
-        drained.complete(null);
-      }
     }
   }
 }

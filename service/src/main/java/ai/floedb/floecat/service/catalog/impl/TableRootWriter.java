@@ -145,6 +145,9 @@ public class TableRootWriter {
     if (candidate.hasUpstreamCreatedAt()) {
       entry.setUpstreamCreatedAt(candidate.getUpstreamCreatedAt());
     }
+    if (candidate.hasIngestedAt()) {
+      entry.setIngestedAt(candidate.getIngestedAt());
+    }
     ai.floedb.floecat.service.repo.impl.SnapshotManifests.applyReuseGenerationRef(entry, candidate);
     return entry.build();
   }
@@ -395,6 +398,9 @@ public class TableRootWriter {
             s -> {
               if (s.hasUpstreamCreatedAt()) {
                 builder.setUpstreamCreatedAt(s.getUpstreamCreatedAt());
+              }
+              if (s.hasIngestedAt()) {
+                builder.setIngestedAt(s.getIngestedAt());
               }
               builder.setSchemaFingerprint(
                   ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(s));

@@ -170,8 +170,8 @@ public class TransactionGcScheduler {
                           intentsDeletedCounter.increment(res.intentsDeleted());
                         }
                       } catch (AccountScope.GcPermitRevokedException revoked) {
-                        // Permit revocation is expected during lifecycle drain; skip this account
-                        // for the current tick without reporting a GC failure.
+                        // Permit revocation is expected when account ownership changes; skip this
+                        // account for the current tick without reporting a GC failure.
                       } catch (RuntimeException e) {
                         // Isolate each account: one account's fault must not cancel the rest of the
                         // tick, or a single bad account would starve every other account's cleanup.

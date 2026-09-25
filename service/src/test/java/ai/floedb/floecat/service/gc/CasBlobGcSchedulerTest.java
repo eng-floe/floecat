@@ -117,7 +117,7 @@ class CasBlobGcSchedulerTest {
   }
 
   @Test
-  void managedTickCollectsAccountsUntilProcessDrain() {
+  void managedTickCollectsAccounts() {
     AccountRepository accounts = mock(AccountRepository.class);
     when(accounts.list(anyInt(), anyString(), any()))
         .thenReturn(List.of(account("acct-a"), account("acct-b"), account("acct-c")));
@@ -128,7 +128,7 @@ class CasBlobGcSchedulerTest {
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
     scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
-    AccountAssignment assignment = AccountAssignment.forTesting("m");
+    AccountAssignment assignment = AccountAssignment.forTesting();
     scheduler.accountScope = assignment;
     scheduler.initMeters();
 
@@ -140,7 +140,6 @@ class CasBlobGcSchedulerTest {
     }
 
     assertEquals(List.of("acct-a", "acct-b", "acct-c"), gc.accountIds);
-    assertEquals(0L, assignment.status("acct-a").activeGc());
   }
 
   @Test
@@ -156,7 +155,7 @@ class CasBlobGcSchedulerTest {
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
     scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
-    AccountAssignment assignment = AccountAssignment.forTesting("m");
+    AccountAssignment assignment = AccountAssignment.forTesting();
     scheduler.accountScope = assignment;
     scheduler.initMeters();
 
@@ -169,8 +168,6 @@ class CasBlobGcSchedulerTest {
 
     assertEquals(2, gc.accountIds.size());
     assertTrue(gc.accountIds.containsAll(List.of("acct-a", "acct-b")));
-    assertEquals(0L, assignment.status("acct-a").activeGc());
-    assertEquals(0L, assignment.status("acct-b").activeGc());
   }
 
   @Test

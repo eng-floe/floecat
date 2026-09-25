@@ -20,15 +20,13 @@ public final class QueryContextStores {
 
   private QueryContextStores() {}
 
-  /** A store with sane test defaults (60s TTL, 100 entries, 60s resolving-pin grace). */
+  /** A store with sane test defaults (60s TTL, 100 entries). */
   public static QueryContextStoreImpl forTesting() {
     QueryContextStoreImpl store = new QueryContextStoreImpl();
     store.defaultTtlMs = 60_000L;
     store.endedGraceMs = 15_000L;
     store.maxSize = 100L;
     store.safetyExpiryMinutes = 10L;
-    store.resolvingPinGraceMs = 60_000L;
-    store.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
     store.init();
     return store;
   }
@@ -40,8 +38,6 @@ public final class QueryContextStores {
     store.endedGraceMs = 15_000L;
     store.maxSize = maxSize;
     store.safetyExpiryMinutes = 10L;
-    store.resolvingPinGraceMs = 60_000L;
-    store.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
     store.init();
     return store;
   }

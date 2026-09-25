@@ -212,9 +212,9 @@ public class CasBlobGcScheduler {
         try {
           var acquired = accountScope.tryAcquireGc(accountId);
           if (acquired.isEmpty()) {
-            // Do not retry the same paged account until the deadline when its policy refuses a
-            // permit (for example because process drain has started). Advance the discovery cursor
-            // just as for any other account-level outcome.
+            // Do not retry the same paged account until the deadline when its ownership policy
+            // refuses a permit. Advance the discovery cursor just as for any other account-level
+            // outcome.
             if (fromPage && advanceAccountCursor(gc)) {
               break;
             }

@@ -28,7 +28,6 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.account.AccountScope;
-import ai.floedb.floecat.service.account.LifecycleDrain;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.ArrayList;
@@ -37,13 +36,13 @@ import org.junit.jupiter.api.Test;
 
 class PointerGcSchedulerTest {
   @Test
-  void managedTickCollectsAccountsUntilProcessDrain() {
+  void managedTickCollectsAccounts() {
     AccountRepository accounts = mock(AccountRepository.class);
     when(accounts.list(anyInt(), anyString(), any()))
         .thenReturn(List.of(account("acct-a"), account("acct-b"), account("acct-c")));
     RecordingPointerGc gc = new RecordingPointerGc();
     TestObservability observability = new TestObservability();
-    AccountAssignment assignment = AccountAssignment.forTesting("m");
+    AccountAssignment assignment = AccountAssignment.forTesting();
     PointerGcScheduler scheduler = new PointerGcScheduler();
     scheduler.accounts = () -> accounts;
     scheduler.pointerGc = () -> gc;
@@ -60,9 +59,6 @@ class PointerGcSchedulerTest {
 
     assertThat(gc.globalRuns).as("directory GC runs on every process").isEqualTo(1);
     assertThat(gc.accountIds).containsExactlyInAnyOrder("acct-a", "acct-b", "acct-c");
-    for (String accountId : List.of("acct-a", "acct-b", "acct-c")) {
-      assertThat(assignment.status(accountId).activeGc()).as(accountId).isZero();
-    }
   }
 
   @Test
@@ -90,7 +86,7 @@ class PointerGcSchedulerTest {
   }
 
   @Test
-  void drainingTickSkipsGlobalGcButDoesNotRunAfterDrain() {
+  void globalGcRunsWithoutLifecycleAdmission() {
     AccountRepository accounts = mock(AccountRepository.class);
     when(accounts.list(anyInt(), anyString(), any())).thenReturn(List.of());
     RecordingPointerGc gc = new RecordingPointerGc();
@@ -98,23 +94,6 @@ class PointerGcSchedulerTest {
     scheduler.accounts = () -> accounts;
     scheduler.pointerGc = () -> gc;
     scheduler.assignment = AccountAssignment.forTesting();
-    scheduler.lifecycleDrain =
-        new LifecycleDrain() {
-          @Override
-          public Permit admitRpc() {
-            throw new DrainingException();
-          }
-
-          @Override
-          public Status beginProcessDrain() {
-            return new Status("member", "incarnation", true, List.of(), 0L);
-          }
-
-          @Override
-          public Status status() {
-            return new Status("member", "incarnation", true, List.of(), 0L);
-          }
-        };
     scheduler.observability = new TestObservability();
     scheduler.initMeters();
 
@@ -125,7 +104,7 @@ class PointerGcSchedulerTest {
       System.clearProperty("floecat.gc.pointer.enabled");
     }
 
-    assertThat(gc.globalRuns).as("global GC is lifecycle-admitted").isZero();
+    assertThat(gc.globalRuns).isEqualTo(1);
   }
 
   private static Account account(String accountId) {

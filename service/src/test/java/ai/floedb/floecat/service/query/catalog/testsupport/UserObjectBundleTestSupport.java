@@ -478,7 +478,6 @@ public final class UserObjectBundleTestSupport {
     private final Map<String, QueryContext> contexts = new HashMap<>();
     private final List<QueryContext> updates = new ArrayList<>();
     private final Map<String, ScanSession> scanSessions = new HashMap<>();
-    private final Set<String> resolvingPinBlobUris = ConcurrentHashMap.newKeySet();
 
     public void seed(QueryContext ctx) {
       contexts.put(ctx.getQueryId(), ctx);
@@ -486,10 +485,6 @@ public final class UserObjectBundleTestSupport {
 
     public int updateCount() {
       return updates.size();
-    }
-
-    public Set<String> resolvingPinBlobUris() {
-      return Set.copyOf(resolvingPinBlobUris);
     }
 
     @Override
@@ -529,22 +524,6 @@ public final class UserObjectBundleTestSupport {
     @Override
     public long size() {
       return contexts.size();
-    }
-
-    @Override
-    public java.util.Set<String> referencedPinBlobUris() {
-      return java.util.Set.of();
-    }
-
-    @Override
-    public void registerResolvingPinBlobs(
-        String correlationId, ResourceId tableId, java.util.Collection<String> blobUris) {
-      resolvingPinBlobUris.addAll(blobUris);
-    }
-
-    @Override
-    public void releaseResolvingPinBlobs(String queryId, java.util.Collection<String> blobUris) {
-      resolvingPinBlobUris.removeAll(blobUris);
     }
 
     @Override

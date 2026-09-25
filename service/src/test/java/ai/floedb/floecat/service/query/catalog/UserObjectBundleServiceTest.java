@@ -1592,7 +1592,6 @@ class UserObjectBundleServiceTest {
             RelationPinSet pins =
                 SnapshotTestSupport.relationPins(
                     SnapshotTestSupport.blobBackedPin(TABLE_A, TABLE_A_SNAPSHOT_ID));
-            queryStore.registerResolvingPinBlobs(queryId, TABLE_A, QueryPins.gcRootUris(pins));
             subscriberRef.get().cancelNow();
             return new ResolutionResult(List.of(TABLE_A), pins, null);
           }
@@ -1620,7 +1619,6 @@ class UserObjectBundleServiceTest {
     service.stream("cid", ctx, List.of(candidate)).subscribe().withSubscriber(subscriber);
     subscriber.await();
 
-    assertThat(queryStore.resolvingPinBlobUris()).isEmpty();
     assertThat(queryStore.updateCount()).isZero();
   }
 

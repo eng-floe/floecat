@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.account.AccountScope;
-import ai.floedb.floecat.service.account.LifecycleDrain;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
@@ -48,9 +47,6 @@ public class PointerGcScheduler {
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<PointerGc> pointerGc;
   @Inject AccountScope assignment;
-
-  /** Scheduled global GC is process work and must participate in lifecycle drain admission. */
-  @Inject LifecycleDrain lifecycleDrain = LifecycleDrain.ALWAYS_SERVING;
 
   @Inject Observability observability;
   private GcMetrics gcMetrics;
@@ -113,21 +109,13 @@ public class PointerGcScheduler {
 
     long tickStart = System.nanoTime();
     try {
-      // Account-directory pointers belong to no account, but this pass still mutates the durable
-      // store. Admit it through the process lifecycle gate so a drain waits for an already-running
-      // pass and never reports completion while global GC is still deleting.
-      try (var globalPermit = lifecycleDrain.admitRpc()) {
-        var globalResult = gc.runGlobalAccountPointers(deadline);
-        gcMetrics.recordCollection(globalResult.scanned(), Tag.of(TagKey.RESULT, "global-scanned"));
-        gcMetrics.recordCollection(globalResult.deleted(), Tag.of(TagKey.RESULT, "global-deleted"));
-        gcMetrics.recordCollection(
-            globalResult.missingBlobs(), Tag.of(TagKey.RESULT, "missing-blobs"));
-        gcMetrics.recordCollection(
-            globalResult.staleSecondaries(), Tag.of(TagKey.RESULT, "stale-secondaries"));
-      } catch (LifecycleDrain.DrainingException ignored) {
-        // A drain is deliberately fail-closed: skip the global pass and let the per-account loop
-        // observe the same lifecycle state through its GC permits.
-      }
+      var globalResult = gc.runGlobalAccountPointers(deadline);
+      gcMetrics.recordCollection(globalResult.scanned(), Tag.of(TagKey.RESULT, "global-scanned"));
+      gcMetrics.recordCollection(globalResult.deleted(), Tag.of(TagKey.RESULT, "global-deleted"));
+      gcMetrics.recordCollection(
+          globalResult.missingBlobs(), Tag.of(TagKey.RESULT, "missing-blobs"));
+      gcMetrics.recordCollection(
+          globalResult.staleSecondaries(), Tag.of(TagKey.RESULT, "stale-secondaries"));
 
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
       Collections.shuffle(allAccounts);

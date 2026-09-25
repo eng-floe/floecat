@@ -119,6 +119,9 @@ message TablePin {
   reserved 13;
   reserved "root_version";
 
+  /** Floecat publication time used to turn an expired live query into a retryable restart. */
+  google.protobuf.Timestamp ingested_at = 18;
+
   /**
    * Ref of the constraints bundle frozen for the pinned snapshot, copied from the pinned root's
    * manifest entry at construction. Unset when no bundle existed at pin time — the query then
@@ -129,11 +132,11 @@ message TablePin {
   string constraints_ref_version = 15;
 
   /**
-   * Ref (manifest blob URI) of the stats generation the PINNED root's manifest entry referenced,
+   * Ref (manifest blob URI) of the stats generation the selected root's manifest entry referenced,
    * frozen at construction. A scan streams its file list from THIS generation, so it reads exactly
    * the generation the pinned snapshot was finalized with — never a newer one a re-stats/reconcile
-   * published (and committed a new root for) between BeginQuery and InitScan. Retention plus the
-   * pin's root-chain GC roots keep this generation readable for the query's lifetime. Unset for
+   * published (and committed a new root for) between BeginQuery and InitScan. Retention keeps this
+   * generation eligible while the query runs; an expired read fails retryably. Unset for
    * stores that do not track generations (the scan then serves live state). Server-side only.
    */
   string stats_generation_ref_uri = 16;

@@ -114,15 +114,19 @@ public class ScanBundleService {
     long snapshotStartedNanos = System.nanoTime();
     Snapshot snapshot =
         pinnedReads.requirePinnedSnapshotBlob(
-            snapshots.getByBlobUri(pin.getSnapshotBlobUri()), correlationId, tableId, snapshotId);
+            snapshots.getByBlobUri(pin.getSnapshotBlobUri()),
+            correlationId,
+            tableId,
+            snapshotId,
+            pin.hasIngestedAt() ? pin.getIngestedAt() : null);
     StoreOperationSummary.nanos("snapshot_load", System.nanoTime() - snapshotStartedNanos);
 
     TableInfo info = buildTableInfo(table, snapshot, snapshotId);
     // The scan streams its file list from the generation the PINNED root referenced, frozen on the
     // pin at BeginQuery — NOT the live active generation. A re-stats/reconcile that published a new
     // generation (and committed a new root) between BeginQuery and InitScan must not change what
-    // this pinned scan reads; retention plus the pin's root-chain GC roots keep the pinned
-    // generation readable for the query's life. "No generation" is a real frozen state
+    // this selected scan reads; retention keeps the selected generation eligible while the query
+    // runs. "No generation" is a real frozen state
     // (STATS_GENERATION_ABSENT — an empty scan, even if a first generation publishes mid-stream);
     // a store that tracks no generations at all is null (reads serve live state). Under the gate a
     // pinnable snapshot is always finalized, so the pin carries its ref.

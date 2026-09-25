@@ -23,6 +23,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
+import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Map;
@@ -40,19 +42,29 @@ import java.util.Optional;
  * means the table's committed root names data a read cannot load, and that state persists across
  * queries until the root is re-derived -- so beyond failing this query loudly, the table goes to
  * the periodic resync re-drive. What this owns is the catalog-integrity ERROR for a pinned blob
- * read on the query path. Two sites report a broken root without coming through here: pin
- * CONSTRUCTION in {@code SnapshotHelper}, which fails before any pinned read exists, and the
- * resolving-pin root guard in {@code QueryContextStoreImpl}, which raises a repository {@code
- * CorruptionException} rather than one of these. Both take {@link RootRepairRequests} directly.
+ * read on the query path. Pin construction in {@code SnapshotHelper} fails before any pinned read
+ * exists. Both paths take {@link RootRepairRequests} directly.
  */
 @ApplicationScoped
 public class PinnedReadContract {
 
   private final RootRepairRequests repairs;
+  private final SnapshotRetentionPolicy retention;
 
   @Inject
-  public PinnedReadContract(RootRepairRequests repairs) {
+  public PinnedReadContract(RootRepairRequests repairs, SnapshotRetentionPolicy retention) {
     this.repairs = repairs;
+    this.retention = retention;
+  }
+
+  /** Compatibility constructor for embedded tests and standalone callers. */
+  public PinnedReadContract(RootRepairRequests repairs) {
+    this(
+        repairs,
+        new SnapshotRetentionPolicy(
+            java.time.Clock.systemUTC(),
+            java.time.Duration.ofDays(30),
+            java.time.Duration.ofDays(7)));
   }
 
   /**
@@ -83,6 +95,25 @@ public class PinnedReadContract {
   /** Snapshot-blob variant carrying the snapshot id in the error payload. */
   public <T> T requirePinnedSnapshotBlob(
       Optional<T> loaded, String correlationId, ResourceId tableId, long snapshotId) {
+    return requirePinnedSnapshotBlob(loaded, correlationId, tableId, snapshotId, null);
+  }
+
+  /**
+   * Variant carrying publication time. Once the grace period has elapsed, a live query must restart
+   * instead of being reported as catalog corruption when its immutable snapshot is reclaimed.
+   */
+  public <T> T requirePinnedSnapshotBlob(
+      Optional<T> loaded,
+      String correlationId,
+      ResourceId tableId,
+      long snapshotId,
+      Timestamp ingestedAt) {
+    if (retention.gcEligible(ingestedAt)) {
+      throw GrpcErrors.snapshotExpired(
+          correlationId,
+          null,
+          Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
+    }
     return require(
         loaded,
         correlationId,
