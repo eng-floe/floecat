@@ -87,13 +87,14 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
 
   /**
    * Unconditional root-pointer removal for DROP / account-cascade purges. Root blobs are
-   * deliberately left behind for CasBlobGc, since a pinned query may still read them.
+   * deliberately left behind for CasBlobGc, since a query may still read a resolved immutable
+   * selection while it remains inside the retention and grace horizons.
    */
   public void purgeRoot(ResourceId tableId) {
     pointerStore.delete(Keys.tableRootByTable(tableId.getAccountId(), tableId.getId()));
   }
 
-  /** Loads a root directly from its immutable blob URI (a pinned root, not the live pointer). */
+  /** Loads a root directly from its immutable blob URI (a resolved root, not the live pointer). */
   public Optional<TableRoot> getByBlobUri(String blobUri) {
     return repo.getByBlobUri(blobUri);
   }

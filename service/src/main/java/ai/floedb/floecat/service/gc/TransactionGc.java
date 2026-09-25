@@ -46,6 +46,10 @@ public class TransactionGc {
   public record Result(int scanned, int deleted, int intentsDeleted) {}
 
   public Result runForAccount(String accountId, long deadlineMs) {
+    return runForAccountInternal(accountId, deadlineMs);
+  }
+
+  private Result runForAccountInternal(String accountId, long deadlineMs) {
     int pageSize =
         ConfigProvider.getConfig()
             .getOptionalValue("floecat.gc.transaction.page-size", Integer.class)
@@ -143,6 +147,8 @@ public class TransactionGc {
                 .setKind(ResourceKind.RK_TABLE)
                 .build();
         if (rootWriter.resyncFromCommittedState(rid)) {
+          // The resync can perform several durable writes. Ownership may have been revoked while
+          // it was running; never acknowledge the marker after that handoff.
           pointerStore.compareAndDelete(p.getKey(), p.getVersion());
         } else {
           LOG.debugf("root resync re-drive still failing for table %s", tableId);

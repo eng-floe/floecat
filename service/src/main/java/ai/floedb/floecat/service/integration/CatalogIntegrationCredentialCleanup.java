@@ -72,15 +72,19 @@ public class CatalogIntegrationCredentialCleanup {
             new PointerStore.CasDelete(markerKey, marker.getVersion())));
   }
 
+  /**
+   * Reaps superseded credential generations. This sweep is intentionally global: cleanup markers
+   * survive account deletion, and cleanIfSuperseded rechecks the current integration generation
+   * before deleting anything. It is not snapshot/object GC and does not grant account access.
+   */
   public Result drain(long deadlineMs, int pageSize) {
     int scanned = 0;
     int deleted = 0;
     String token = "";
+    String prefix = Keys.catalogIntegrationCredentialCleanupPrefix();
     while (System.currentTimeMillis() < deadlineMs) {
       var next = new StringBuilder();
-      var markers =
-          pointerStore.listPointersByPrefix(
-              Keys.catalogIntegrationCredentialCleanupPrefix(), Math.max(1, pageSize), token, next);
+      var markers = pointerStore.listPointersByPrefix(prefix, Math.max(1, pageSize), token, next);
       for (Pointer marker : markers) {
         if (System.currentTimeMillis() >= deadlineMs) break;
         scanned++;

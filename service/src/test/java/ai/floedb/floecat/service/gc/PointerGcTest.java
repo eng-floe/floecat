@@ -17,13 +17,8 @@
 package ai.floedb.floecat.service.gc;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -32,6 +27,9 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -52,9 +50,6 @@ class PointerGcTest {
     gc = new PointerGc();
     gc.pointerStore = pointers;
     gc.blobStore = blobs;
-    gc.credentialCleanup = mock(CatalogIntegrationCredentialCleanup.class);
-    when(gc.credentialCleanup.drain(anyLong(), anyInt()))
-        .thenReturn(new CatalogIntegrationCredentialCleanup.Result(0, 0));
   }
 
   @AfterEach
@@ -72,6 +67,83 @@ class PointerGcTest {
     gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
 
     assertTrue(pointers.get(ptrKey).isEmpty());
+  }
+
+  @Test
+  void deletesSnapshotPointerAfterRetentionAndGrace() {
+    Instant now = Instant.parse("2026-01-10T00:00:00Z");
+    gc.retentionPolicy =
+        new ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy(
+            Clock.fixed(now, java.time.ZoneOffset.UTC), Duration.ofDays(1), Duration.ofDays(1));
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    String rootBlob = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-root");
+    blobs.put(
+        rootBlob,
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setCurrentSnapshotId(2L)
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    putPointer(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID), rootBlob);
+    String snapshotBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-old");
+    blobs.put(
+        snapshotBlob,
+        ai.floedb.floecat.catalog.rpc.Snapshot.newBuilder()
+            .setTableId(
+                ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
+                    .setAccountId(ACCOUNT_ID)
+                    .setId(TABLE_ID)
+                    .build())
+            .setSnapshotId(1L)
+            .setIngestedAt(
+                com.google.protobuf.util.Timestamps.fromMillis(
+                    now.minus(Duration.ofDays(3)).toEpochMilli()))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    String snapshotPointer = Keys.snapshotPointerById(ACCOUNT_ID, TABLE_ID, 1L);
+    putPointer(snapshotPointer, snapshotBlob);
+
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
+
+    assertTrue(pointers.get(snapshotPointer).isEmpty());
+  }
+
+  @Test
+  void usesSnapshotIngestedAtStoredOnPointerWithoutReadingSnapshotBlob() {
+    Instant now = Instant.parse("2026-01-10T00:00:00Z");
+    gc.retentionPolicy =
+        new ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy(
+            Clock.fixed(now, java.time.ZoneOffset.UTC), Duration.ofDays(1), Duration.ofDays(1));
+    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
+    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
+    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    String rootBlob = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-root");
+    blobs.put(
+        rootBlob,
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setCurrentSnapshotId(2L)
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    putPointer(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID), rootBlob);
+
+    String snapshotPointer = Keys.snapshotPointerById(ACCOUNT_ID, TABLE_ID, 1L);
+    String invalidSnapshotBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-invalid");
+    blobs.put(invalidSnapshotBlob, "not-a-snapshot".getBytes(StandardCharsets.UTF_8), "text/plain");
+    putPointer(
+        snapshotPointer,
+        PointerReferences.blobPointer(snapshotPointer, invalidSnapshotBlob, 1L).toBuilder()
+            .setIngestedAt(
+                com.google.protobuf.util.Timestamps.fromMillis(
+                    now.minus(Duration.ofDays(3)).toEpochMilli()))
+            .build());
+
+    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
+
+    assertTrue(pointers.get(snapshotPointer).isEmpty());
   }
 
   @Test
@@ -100,6 +172,15 @@ class PointerGcTest {
     String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
     blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
     putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    String rootBlob = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-root");
+    blobs.put(
+        rootBlob,
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setCurrentSnapshotId(7L)
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    putPointer(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID), rootBlob);
 
     long snapshotId = 7L;
     String generationId = "gen-1";
@@ -156,6 +237,10 @@ class PointerGcTest {
 
   private void putPointer(String key, String blobUri) {
     Pointer ptr = PointerReferences.blobPointer(key, blobUri, 1L);
-    pointers.compareAndSet(key, 0L, ptr);
+    putPointer(key, ptr);
+  }
+
+  private void putPointer(String key, Pointer pointer) {
+    pointers.compareAndSet(key, 0L, pointer);
   }
 }

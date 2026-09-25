@@ -154,8 +154,9 @@ public class TransactionGcScheduler {
                 }
                 accountTimer.record(
                     () -> {
+                      String accountId = account.getResourceId().getId();
                       try {
-                        var res = gc.runForAccount(account.getResourceId().getId(), deadline);
+                        var res = gc.runForAccount(accountId, deadline);
                         accountCounter.increment();
                         txScannedCounter.increment(res.scanned());
                         txDeletedCounter.increment(res.deleted());
@@ -166,7 +167,7 @@ public class TransactionGcScheduler {
                         LOG.warnf(
                             e,
                             "transaction GC failed for account %s; continuing with next account",
-                            account.getResourceId().getId());
+                            accountId);
                       }
                     });
               }

@@ -31,7 +31,7 @@ import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
-import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotSelectionMemo;
 import ai.floedb.floecat.service.testsupport.ConcurrentTestSupport;
 import java.time.Duration;
 import java.util.List;
@@ -65,7 +65,7 @@ class QueryInputResolverAdmissionTest {
             .setSnapshotId(1)
             .build();
     AtomicBoolean backendStarted = new AtomicBoolean();
-    when(graph.tablePinFor(anyString(), eq(tableId), nullable(SnapshotRef.class), any()))
+    when(graph.resolvedSnapshotFor(anyString(), eq(tableId), nullable(SnapshotRef.class), any()))
         .thenAnswer(
             ignored -> {
               backendStarted.set(true);
@@ -97,7 +97,7 @@ class QueryInputResolverAdmissionTest {
                       List.of(QueryInput.newBuilder().setTableId(tableId).build()),
                       Optional.empty(),
                       Optional.empty(),
-                      new SnapshotPinMemo(),
+                      new SnapshotSelectionMemo(),
                       null,
                       () -> false),
               workers);

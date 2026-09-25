@@ -41,6 +41,8 @@ import ai.floedb.floecat.service.repo.util.GenericResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import com.google.protobuf.util.Timestamps;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -321,6 +323,33 @@ class GenericResourceRepositoryCreateTest {
 
     assertThatCode(() -> snapshotRepo.create(snapshot)).doesNotThrowAnyException();
     assertThat(snapshotRepo.getById(tableId, 42L)).isPresent();
+  }
+
+  @Test
+  void snapshotPointersCarryIngestedAtMetadata() {
+    var tableId =
+        ResourceId.newBuilder()
+            .setAccountId("acct-1")
+            .setId("tbl-1")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    var ingestedAt = Timestamps.fromMillis(Instant.parse("2026-01-01T00:00:00Z").toEpochMilli());
+    var snapshot =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(42L)
+            .setIngestedAt(ingestedAt)
+            .build();
+    new SnapshotRepository(ptr, blobs, new TableRepository(ptr, blobs)).create(snapshot);
+
+    assertThat(ptr.get(Keys.snapshotPointerById("acct-1", "tbl-1", 42L)))
+        .get()
+        .extracting(ai.floedb.floecat.common.rpc.Pointer::getIngestedAt)
+        .isEqualTo(ingestedAt);
+    assertThat(ptr.get(Keys.snapshotPointerByTime("acct-1", "tbl-1", 42L, 0L)))
+        .get()
+        .extracting(ai.floedb.floecat.common.rpc.Pointer::getIngestedAt)
+        .isEqualTo(ingestedAt);
   }
 
   @Test

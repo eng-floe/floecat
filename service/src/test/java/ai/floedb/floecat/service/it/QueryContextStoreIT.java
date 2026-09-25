@@ -20,9 +20,12 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.query.rpc.ScanHandle;
+import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.QueryContextStoreImpl;
+import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import io.quarkus.test.junit.QuarkusTest;
@@ -158,5 +161,29 @@ class QueryContextStoreIT {
 
     assertTrue(store.delete(queryId));
     assertTrue(store.get(queryId).isEmpty());
+  }
+
+  @Test
+  void scanSessionHandlePreservesResolvedSnapshotMetadata() {
+    String queryId = "q-scan-session";
+    store.put(newQuery(queryId, 500));
+
+    var session =
+        ScanSession.builder()
+            .queryId(queryId)
+            .tableId(ResourceId.newBuilder().setId("table-1").build())
+            .snapshotId(42L)
+            .statsGeneration("stats-42")
+            .currentSnapshot(true)
+            .tableInfo(TableInfo.getDefaultInstance())
+            .targetBatchItems(100)
+            .targetBatchBytes(1024)
+            .build();
+    ScanHandle handle = store.createScanSession("it", session);
+
+    var stored = store.getScanSession(handle).orElseThrow();
+    assertEquals(42L, stored.snapshotId());
+    assertEquals("stats-42", stored.statsGeneration());
+    assertTrue(stored.currentSnapshot());
   }
 }

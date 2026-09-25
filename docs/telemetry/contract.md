@@ -87,6 +87,7 @@ This lists all metrics currently available in the repository:
 | floecat.service.metadata_io.admission.waiters | GAUGE | count | v1 | Threads waiting for metadata-I/O admission. | component, operation | component, operation |
 | floecat.service.metadata_io.permits.capacity | GAUGE | count | v1 | Configured process-wide metadata-I/O concurrency ceiling. | component, operation | component, operation |
 | floecat.service.metadata_io.permits.in_use | GAUGE | count | v1 | Metadata-I/O admission permits held by in-flight store calls. | component, operation | component, operation |
+| floecat.service.planning.pointer.bytes | GAUGE | bytes | v1 | Heap the planner pointer index admitted across resident accounts, as weighed on load. | component, operation | component, operation |
 | floecat.service.planning.pointer.entries | GAUGE | count | v1 | Number of planner pointer entries resident in the authoritative in-memory index. | component, operation | component, operation |
 | floecat.service.planning.pointer.partitions | GAUGE | count | v1 | Number of planner pointer partitions by readiness state. | component, operation | component, operation, result |
 | floecat.service.planning.pointer.warm.errors.total | COUNTER |  | v1 | Planner pointer index warm-up failures. | component, operation | component, exception, operation, result |

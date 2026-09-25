@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
@@ -45,6 +46,8 @@ public class PointerGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<PointerGc> pointerGc;
+  @Inject Provider<CatalogIntegrationCredentialCleanup> credentialCleanup;
+
   @Inject Observability observability;
   private GcMetrics gcMetrics;
   private final AtomicInteger running = new AtomicInteger(0);
@@ -86,9 +89,11 @@ public class PointerGcScheduler {
 
     final AccountRepository accountRepo;
     final PointerGc gc;
+    final CatalogIntegrationCredentialCleanup credentials;
     try {
       accountRepo = accounts.get();
       gc = pointerGc.get();
+      credentials = credentialCleanup.get();
     } catch (Throwable ignored) {
       return;
     }
@@ -102,17 +107,23 @@ public class PointerGcScheduler {
         cfg.getOptionalValue("floecat.gc.pointer.max-tick-millis", Long.class).orElse(4000L);
     final int accountsPageSize =
         cfg.getOptionalValue("floecat.gc.pointer.accounts-page-size", Integer.class).orElse(200);
+    final int pointerPageSize =
+        cfg.getOptionalValue("floecat.gc.pointer.page-size", Integer.class).orElse(500);
     final long deadline = now + maxTickMillis;
 
     long tickStart = System.nanoTime();
     try {
-      var globalResult = gc.runGlobalAccountPointers(deadline);
-      gcMetrics.recordCollection(globalResult.scanned(), Tag.of(TagKey.RESULT, "global-scanned"));
-      gcMetrics.recordCollection(globalResult.deleted(), Tag.of(TagKey.RESULT, "global-deleted"));
+      var credentialResult = credentials.drain(deadline, pointerPageSize);
       gcMetrics.recordCollection(
-          globalResult.missingBlobs(), Tag.of(TagKey.RESULT, "missing-blobs"));
+          credentialResult.scanned(), Tag.of(TagKey.RESULT, "credential-scanned"));
       gcMetrics.recordCollection(
-          globalResult.staleSecondaries(), Tag.of(TagKey.RESULT, "stale-secondaries"));
+          credentialResult.deleted(), Tag.of(TagKey.RESULT, "credential-deleted"));
+
+      var globalAccountPointers = gc.runGlobalAccountPointers(deadline);
+      gcMetrics.recordCollection(
+          globalAccountPointers.scanned(), Tag.of(TagKey.RESULT, "account-pointers-scanned"));
+      gcMetrics.recordCollection(
+          globalAccountPointers.deleted(), Tag.of(TagKey.RESULT, "account-pointers-deleted"));
 
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
       Collections.shuffle(allAccounts);
@@ -122,7 +133,9 @@ public class PointerGcScheduler {
           break;
         }
         long accountStart = System.nanoTime();
-        var result = gc.runForAccount(account.getResourceId().getId(), deadline);
+        String accountId = account.getResourceId().getId();
+        PointerGc.Result result;
+        result = gc.runForAccount(accountId, deadline);
         gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "account-scanned"));
         gcMetrics.recordCollection(result.deleted(), Tag.of(TagKey.RESULT, "account-deleted"));
         gcMetrics.recordCollection(result.missingBlobs(), Tag.of(TagKey.RESULT, "missing-blobs"));

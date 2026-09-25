@@ -17,7 +17,11 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
+import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
+import ai.floedb.floecat.service.repo.impl.SnapshotManifests;
+import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -26,11 +30,14 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.function.Predicate;
 import org.eclipse.microprofile.config.ConfigProvider;
 
@@ -39,10 +46,20 @@ public class PointerGc {
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
-  @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
+  @Inject TableRootRepository tableRootRepository;
+  @Inject StatsRepository statsRepository;
+
+  @Inject
+  SnapshotRetentionPolicy retentionPolicy =
+      new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ZERO, Duration.ofDays(7));
 
   public record Result(int scanned, int deleted, int missingBlobs, int staleSecondaries) {}
 
+  /**
+   * Account directory pointers are global control-plane indexes, not child data owned by one
+   * account pass. Keep their historical global sweep so orphaned by-id and by-name rows left by a
+   * crash or partial account deletion are still reclaimed.
+   */
   public Result runGlobalAccountPointers(long deadlineMs) {
     int pageSize =
         ConfigProvider.getConfig()
@@ -54,17 +71,6 @@ public class PointerGc {
             .orElse(30_000L);
     long nowMs = System.currentTimeMillis();
     Map<String, Boolean> blobCache = new HashMap<>();
-
-    int scanned = 0;
-    int deleted = 0;
-    int missingBlobs = 0;
-    int staleSecondaries = 0;
-
-    CatalogIntegrationCredentialCleanup.Result credentialResult =
-        credentialCleanup.drain(deadlineMs, pageSize);
-    scanned += credentialResult.scanned();
-    deleted += credentialResult.deleted();
-
     Result byId =
         scanPrefix(
             Keys.accountPointerByIdPrefix(),
@@ -74,11 +80,6 @@ public class PointerGc {
             p -> true,
             nowMs,
             minAgeMs);
-    scanned += byId.scanned;
-    deleted += byId.deleted;
-    missingBlobs += byId.missingBlobs;
-    staleSecondaries += byId.staleSecondaries;
-
     Result byName =
         scanPrefix(
             Keys.accountPointerByNamePrefix(),
@@ -88,15 +89,18 @@ public class PointerGc {
             p -> true,
             nowMs,
             minAgeMs);
-    scanned += byName.scanned;
-    deleted += byName.deleted;
-    missingBlobs += byName.missingBlobs;
-    staleSecondaries += byName.staleSecondaries;
-
-    return new Result(scanned, deleted, missingBlobs, staleSecondaries);
+    return new Result(
+        byId.scanned + byName.scanned,
+        byId.deleted + byName.deleted,
+        byId.missingBlobs + byName.missingBlobs,
+        byId.staleSecondaries + byName.staleSecondaries);
   }
 
   public Result runForAccount(String accountId, long deadlineMs) {
+    return runForAccountInternal(accountId, deadlineMs);
+  }
+
+  private Result runForAccountInternal(String accountId, long deadlineMs) {
     int pageSize =
         ConfigProvider.getConfig()
             .getOptionalValue("floecat.gc.pointer.page-size", Integer.class)
@@ -304,6 +308,15 @@ public class PointerGc {
         break;
       }
       String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
+      OptionalLong currentSnapshotId = currentSnapshotId(accountId, tableId);
+      // A missing or unreadable root is not proof that every historical snapshot is orphaned.
+      // Leave only the retention-dependent deletion for a later pass rather than skipping the
+      // independent secondary-index sweeps below.
+      if (currentSnapshotId.isPresent()) {
+        deleted +=
+            deleteExpiredSnapshotPointers(
+                snapshotsById, pageSize, deadlineMs, currentSnapshotId.getAsLong());
+      }
       Result snapshotById =
           scanPrefix(snapshotsById, pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs);
       scanned += snapshotById.scanned;
@@ -432,6 +445,114 @@ public class PointerGc {
     }
 
     return new Result(scanned, deleted, missingBlobs, staleSecondaries);
+  }
+
+  /** Removes expired canonical snapshot pointers so CAS GC can reclaim their immutable blobs. */
+  private int deleteExpiredSnapshotPointers(
+      String prefix, int pageSize, long deadlineMs, long currentSnapshotId) {
+    if (!retentionPolicy.isRetentionEnabled()) {
+      return 0;
+    }
+    int deleted = 0;
+    String token = "";
+    while (System.currentTimeMillis() < deadlineMs) {
+      StringBuilder next = new StringBuilder();
+      List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
+      if (pointers.isEmpty()) {
+        break;
+      }
+      for (Pointer pointer : pointers) {
+        var ingestedAt = snapshotIngestedAt(pointer);
+        // Legacy backfill may CAS the timestamp onto the pointer and increment its version.
+        Pointer current =
+            pointer.hasIngestedAt() ? pointer : pointerStore.get(pointer.getKey()).orElse(pointer);
+        boolean eligible =
+            snapshotId(pointer.getKey()) != currentSnapshotId
+                && retentionPolicy.gcEligible(ingestedAt);
+        boolean removed =
+            eligible && pointerStore.compareAndDelete(current.getKey(), current.getVersion());
+        if (removed) {
+          deleted++;
+        }
+      }
+      token = next.toString();
+      if (token.isEmpty()) {
+        break;
+      }
+    }
+    return deleted;
+  }
+
+  private OptionalLong currentSnapshotId(String accountId, String tableId) {
+    var rootPointer = pointerStore.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
+    if (rootPointer == null || rootPointer.getBlobUri().isBlank()) {
+      return OptionalLong.empty();
+    }
+    try {
+      var root =
+          tableRootRepository == null
+              ? ai.floedb.floecat.catalog.rpc.TableRoot.parseFrom(
+                  blobStore.get(rootPointer.getBlobUri()))
+              : tableRootRepository.getByBlobUri(rootPointer.getBlobUri()).orElse(null);
+      if (root == null || !root.hasCurrentSnapshotId()) {
+        return OptionalLong.empty();
+      }
+      long committedCurrent = root.getCurrentSnapshotId();
+      if (tableRootRepository == null
+          || statsRepository == null
+          || !StatsVisibilityGate.gateOnFinalize(statsRepository)
+          || !root.hasSnapshotManifestRef()) {
+        return OptionalLong.of(committedCurrent);
+      }
+      var committedEntry =
+          SnapshotManifests.findEntry(
+                  tableRootRepository, root.getSnapshotManifestRef(), committedCurrent)
+              .orElse(null);
+      if (committedEntry == null || committedEntry.hasStatsGenerationRef()) {
+        return OptionalLong.of(committedCurrent);
+      }
+      return SnapshotManifests.latestQueryableCurrent(
+              tableRootRepository, root.getSnapshotManifestRef(), committedEntry)
+          .map(entry -> OptionalLong.of(entry.getSnapshotId()))
+          .orElse(OptionalLong.empty());
+    } catch (RuntimeException | com.google.protobuf.InvalidProtocolBufferException e) {
+      return OptionalLong.empty();
+    }
+  }
+
+  private long snapshotId(String key) {
+    int slash = key == null ? -1 : key.lastIndexOf('/');
+    if (slash < 0) {
+      return Long.MIN_VALUE;
+    }
+    try {
+      return Long.parseLong(key.substring(slash + 1));
+    } catch (NumberFormatException e) {
+      return Long.MIN_VALUE;
+    }
+  }
+
+  private com.google.protobuf.Timestamp snapshotIngestedAt(Pointer pointer) {
+    if (pointer != null && pointer.hasIngestedAt()) {
+      return pointer.getIngestedAt();
+    }
+    try {
+      var snapshot =
+          ai.floedb.floecat.catalog.rpc.Snapshot.parseFrom(blobStore.get(pointer.getBlobUri()));
+      if (!snapshot.hasIngestedAt()) {
+        return null;
+      }
+      var ingestedAt = snapshot.getIngestedAt();
+      if (pointer != null && pointer.getVersion() > 0L) {
+        pointerStore.compareAndSet(
+            pointer.getKey(),
+            pointer.getVersion(),
+            pointer.toBuilder().setIngestedAt(ingestedAt).build());
+      }
+      return ingestedAt;
+    } catch (RuntimeException | com.google.protobuf.InvalidProtocolBufferException e) {
+      return null;
+    }
   }
 
   private void collectIds(String prefix, int pageSize, List<String> out) {

@@ -207,7 +207,8 @@ public class SnapshotRepository {
     // the service layer (SnapshotServiceImpl.updateSnapshot → CurrentSnapshotPointerService), which
     // re-upserts the root entry after advancing — otherwise an UpdateSnapshot that makes a
     // snapshot current would move the pointer but leave the pinned identity stale, and new CURRENT
-    // query pins would resolve the old snapshot. Advancing here silently pre-empted that service
+    // an already-started query may still use the old snapshot selection. Advancing here silently
+    // pre-empted that service
     // advance (it saw the pointer already moved → UNCHANGED → no publish).
     return repo.update(snapshot, expectedPointerVersion);
   }

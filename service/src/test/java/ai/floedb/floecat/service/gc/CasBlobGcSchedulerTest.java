@@ -113,6 +113,30 @@ class CasBlobGcSchedulerTest {
   }
 
   @Test
+  void managedTickCollectsAccounts() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a"), account("acct-b"), account("acct-c")));
+    RecordingGc gc = new RecordingGc();
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+    }
+
+    assertEquals(List.of("acct-a", "acct-b", "acct-c"), gc.accountIds);
+  }
+
+  @Test
   void retainedContinuationIsNotAbandonedBeforeItCompletes() {
     AccountRepository accounts = mock(AccountRepository.class);
     when(accounts.list(anyInt(), anyString(), any()))
@@ -225,7 +249,7 @@ class CasBlobGcSchedulerTest {
     private String poisonAccountId;
 
     @Override
-    public Result runForAccount(String accountId, long deadlineMs) {
+    public synchronized Result runForAccount(String accountId, long deadlineMs) {
       accountIds.add(accountId);
       if (accountId.equals(failAccountId)) {
         throw new RuntimeException("simulated storage fault");
@@ -243,7 +267,7 @@ class CasBlobGcSchedulerTest {
     private int accountARuns;
 
     @Override
-    public Result runForAccount(String accountId, long deadlineMs) {
+    public synchronized Result runForAccount(String accountId, long deadlineMs) {
       accountIds.add(accountId);
       if ("acct-a".equals(accountId)) {
         accountARuns++;
@@ -265,7 +289,7 @@ class CasBlobGcSchedulerTest {
     private int abandons;
 
     @Override
-    public Result runForAccount(String accountId, long deadlineMs) {
+    public synchronized Result runForAccount(String accountId, long deadlineMs) {
       accountIds.add(accountId);
       continuingAccount = accountId;
       return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, true);

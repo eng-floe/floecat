@@ -133,7 +133,7 @@ public class IdempotencyGcScheduler {
         String token = tokenByAccount.getOrDefault(accountId, "");
 
         long sliceStart = System.nanoTime();
-        var result = gc.runSliceForAccount(accountId, token);
+        IdempotencyGc.Result result = gc.runSliceForAccount(accountId, token);
         gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "scanned"));
         gcMetrics.recordCollection(result.expired(), Tag.of(TagKey.RESULT, "expired"));
         gcMetrics.recordCollection(result.ptrDeleted(), Tag.of(TagKey.RESULT, "ptr-deleted"));
