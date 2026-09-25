@@ -533,6 +533,13 @@ message SnapshotCaptureManifest {
   // Predecessor bundles selected for index reuse by this snapshot's immutable file plan. These
   // roots keep generations containing inherited managed sidecars alive without copying them.
   repeated StatsObjectDescriptor inherited_index_artifact_bundles = 32;
+  // Set by OwnerPublicationService clients whose generation is not backed by a reconcile job.
+  // Legacy scheduler manifests leave this empty and continue deriving full-rescan-<parent_job_id>.
+  string publication_generation_id = 33;
+  // Owner-managed publication keeps the existing one-record-per-object artifact layout. These
+  // references live in the object-store manifest rather than the Complete RPC.
+  repeated StatsObjectDescriptor file_stats = 34;
+  repeated StatsObjectDescriptor index_artifacts = 35;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced

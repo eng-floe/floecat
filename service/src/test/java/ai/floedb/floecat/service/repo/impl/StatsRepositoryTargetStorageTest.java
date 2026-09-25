@@ -2390,6 +2390,9 @@ class StatsRepositoryTargetStorageTest {
                 statsRepository.protectPrewrittenStatsObjectsInGeneration(
                     TABLE_ID, snapshotId, generationId, "late-terminal-replay", List.of()))
         .hasMessageContaining("state=DELETED");
+    // A reclaimed generation id can never be published again, so it must not read back as an
+    // existing reservation.
+    assertThat(statsRepository.statsGenerationExists(TABLE_ID, snapshotId, generationId)).isFalse();
 
     StatsRepository.GenerationGcResult repeat =
         statsRepository.deleteUnreferencedGenerations(
@@ -3271,6 +3274,92 @@ class StatsRepositoryTargetStorageTest {
         .contains(
             Keys.snapshotTargetStatsManifestBlobUri(
                 TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId));
+  }
+
+  @Test
+  void statsGenerationExistsOnlyReportsLiveReservations() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    long snapshotId = 725L;
+    String generationId = "owner-publication-liveness";
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+
+    assertThat(repository.statsGenerationExists(TABLE_ID, snapshotId, generationId)).isFalse();
+
+    repository.beginStatsGeneration(TABLE_ID, snapshotId, generationId);
+    assertThat(repository.statsGenerationExists(TABLE_ID, snapshotId, generationId)).isTrue();
+
+    repository.publishPrewrittenStatsGeneration(TABLE_ID, snapshotId, generationId, List.of());
+    assertThat(repository.statsGenerationExists(TABLE_ID, snapshotId, generationId)).isTrue();
+  }
+
+  @Test
+  void preparingManifestIsIdempotentAfterGenerationWasPublished() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    AtomicInteger blobPuts = new AtomicInteger();
+    BlobStore blobStore =
+        new DelegatingBlobStore(new InMemoryBlobStore()) {
+          @Override
+          public void put(String uri, byte[] bytes, String contentType) {
+            blobPuts.incrementAndGet();
+            super.put(uri, bytes, contentType);
+          }
+        };
+    long snapshotId = 723L;
+    String generationId = "owner-publication-begin-retry";
+    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
+    repository.publishPrewrittenStatsGeneration(TABLE_ID, snapshotId, generationId, List.of());
+    int putsAfterPublication = blobPuts.get();
+
+    repository.prepareStatsGenerationManifest(TABLE_ID, snapshotId, generationId);
+
+    assertThat(generationLifecycle(pointerStore, snapshotId, generationId)).isEqualTo("PUBLISHED");
+    assertThat(blobPuts).hasValue(putsAfterPublication);
+  }
+
+  @Test
+  void publishedGenerationRejectsLateWorkerObjectProtection() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    long snapshotId = 724L;
+    String generationId = "owner-publication-late-worker";
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+    repository.publishPrewrittenStatsGeneration(TABLE_ID, snapshotId, generationId, List.of());
+
+    assertThatThrownBy(
+            () ->
+                repository.protectPrewrittenStatsObjectsInGeneration(
+                    TABLE_ID, snapshotId, generationId, "child:lease", List.of()))
+        .isInstanceOf(BaseResourceRepository.AbortRetryableException.class)
+        .hasMessageContaining("state=PUBLISHED");
+  }
+
+  @Test
+  void ownerPublicationRetryValidatesTheDurableReferenceSet() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    long snapshotId = 722L;
+    String generationId = "owner-publication-retry";
+    StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
+    StatsStore.PrewrittenTargetStatsReference original =
+        prewrittenReference(snapshotId, generationId, "column-1", "payload-1");
+    repository.publishPrewrittenStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(original));
+
+    assertThat(
+            repository.validatePreparedStatsGenerationRetry(
+                TABLE_ID, snapshotId, generationId, List.of(original)))
+        .isTrue();
+
+    StatsStore.PrewrittenTargetStatsReference changed =
+        new StatsStore.PrewrittenTargetStatsReference(
+            original.targetStorageId(),
+            original.blobUri(),
+            original.blobBytes() + 1L,
+            original.blobSha256());
+    assertThatThrownBy(
+            () ->
+                repository.validatePreparedStatsGenerationRetry(
+                    TABLE_ID, snapshotId, generationId, List.of(changed)))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("publication intent changed");
   }
 
   @Test

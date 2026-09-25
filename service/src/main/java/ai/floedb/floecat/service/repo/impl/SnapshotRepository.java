@@ -194,6 +194,24 @@ public class SnapshotRepository {
     return repo.createWithMeta(snapshot, completionFactory);
   }
 
+  /**
+   * Writes the immutable snapshot blob and returns the pointer updates that would make it visible.
+   * The caller must include these updates in another repository's atomic publication batch.
+   */
+  public List<StatsStore.PublicationPointerUpdate> prepareCreatePublicationUpdates(
+      Snapshot snapshot) {
+    return repo.prepareCreateOps(snapshot).stream()
+        .map(
+            operation -> {
+              if (!(operation instanceof PointerStore.CasUpsert upsert)) {
+                throw new IllegalStateException("snapshot create produced a non-upsert operation");
+              }
+              return new StatsStore.PublicationPointerUpdate(
+                  upsert.key(), upsert.expectedVersion(), upsert.next());
+            })
+        .toList();
+  }
+
   public Optional<MutationMeta> completeWithMetaIfUnchanged(
       Snapshot snapshot,
       long expectedPointerVersion,
