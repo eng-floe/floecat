@@ -78,6 +78,15 @@ class PointerGcTest {
     String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
     blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
     putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    String rootBlob = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-root");
+    blobs.put(
+        rootBlob,
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setCurrentSnapshotId(2L)
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    putPointer(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID), rootBlob);
     String snapshotBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-old");
     blobs.put(
         snapshotBlob,
