@@ -9,6 +9,7 @@ package ai.floedb.floecat.service.metagraph.snapshot;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -22,6 +23,7 @@ public final class SnapshotRetentionPolicy {
   private final Duration retention;
   private final Duration grace;
 
+  @Inject
   public SnapshotRetentionPolicy(
       @ConfigProperty(name = "floecat.snapshot.retention") Duration retention,
       @ConfigProperty(name = "floecat.snapshot.retention-grace") Duration grace) {
