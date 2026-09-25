@@ -31,12 +31,13 @@ import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleUtils;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
@@ -76,6 +77,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   @Inject QueryContextStore queryStore;
   @Inject CatalogGraphView graphView;
   @Inject Observability observability;
+  @Inject AccountScope accountScope;
 
   @Override
   public Uni<DescribeInputsResponse> describeInputs(DescribeInputsRequest request) {
@@ -106,18 +108,25 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
 
                     // Resolve inputs → resolved ids + snapshot pins (tables and/or view base
                     // tables)
-                    var rr =
-                        diagnostics.time(
-                            "resolve_inputs",
-                            () ->
-                                inputResolver.resolveInputs(
-                                    ctx.getQueryId(),
-                                    correlationId(),
-                                    request.getInputsList(),
-                                    asOfDefault,
-                                    Optional.of(ctx.getQueryDefaultCatalogId()),
-                                    new QueryInputResolver.SnapshotPinMemo(),
-                                    diagnostics));
+                    var resolutionPermit =
+                        accountScope.admitResolution(ctx.getPrincipal().getAccountId());
+                    QueryInputResolver.ResolutionResult rr;
+                    try {
+                      rr =
+                          diagnostics.time(
+                              "resolve_inputs",
+                              () ->
+                                  inputResolver.resolveInputs(
+                                      ctx.getQueryId(),
+                                      correlationId(),
+                                      request.getInputsList(),
+                                      asOfDefault,
+                                      Optional.of(ctx.getQueryDefaultCatalogId()),
+                                      new QueryInputResolver.SnapshotSelectionMemo(),
+                                      diagnostics));
+                    } finally {
+                      resolutionPermit.close();
+                    }
                     diagnostics.put("resolved_inputs", rr.resolved().size());
 
                     // Merge this resolution's pins into the live context FIRST, under the store's
@@ -127,45 +136,37 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     // pinned a different snapshot for a shared table can never make us describe a
                     // losing pin (an incompatible temporal intent still fails via the shared
                     // conflict rule inside mergeSets). Committing pins before any blob read also
-                    // roots them before the schema read; the resolver already registered them as
-                    // transient GC roots at resolution, covering the brief resolve→commit window.
-                    QueryContext committed;
-                    try {
-                      committed =
-                          diagnostics.time(
-                              "query_context_pin_merge",
-                              () ->
-                                  queryStore
-                                      .update(
-                                          queryId,
-                                          existing ->
-                                              existing.toBuilder()
-                                                  .relationPins(
-                                                      QueryPins.mergeSets(
-                                                              existing.parseRelationPins(
-                                                                  correlationId()),
-                                                              rr.relationPinSet(),
-                                                              correlationId())
-                                                          .toByteArray())
-                                                  .build())
-                                      .orElseThrow(
-                                          () ->
-                                              GrpcErrors.notFound(
-                                                  correlationId(),
-                                                  QUERY_NOT_FOUND,
-                                                  java.util.Map.of("query_id", queryId))));
-                    } catch (RuntimeException | Error e) {
-                      queryStore.releaseResolvingPinBlobs(
-                          queryId, QueryPins.gcRootUris(rr.relationPinSet()));
-                      throw e;
-                    }
+                    // roots them before the schema read.
+                    QueryContext committed =
+                        diagnostics.time(
+                            "query_context_pin_merge",
+                            () ->
+                                queryStore
+                                    .update(
+                                        queryId,
+                                        existing ->
+                                            existing.toBuilder()
+                                                .relationPins(
+                                                    SnapshotSelections.mergeSets(
+                                                            existing.parseSnapshotSelections(
+                                                                correlationId()),
+                                                            rr.relationPinSet(),
+                                                            correlationId())
+                                                        .toByteArray())
+                                                .build())
+                                    .orElseThrow(
+                                        () ->
+                                            GrpcErrors.notFound(
+                                                correlationId(),
+                                                QUERY_NOT_FOUND,
+                                                java.util.Map.of("query_id", queryId))));
 
-                    RelationPinSet winnerPins = committed.parseRelationPins(correlationId());
+                    RelationPinSet winnerPins = committed.parseSnapshotSelections(correlationId());
                     diagnostics.put("snapshot_pins", winnerPins.getPinsCount());
-                    Map<ResourceId, TablePin> pinByTableId = new HashMap<>();
+                    Map<ResourceId, TablePin> snapshotByTableId = new HashMap<>();
                     for (RelationPin pin : winnerPins.getPinsList()) {
                       if (pin.hasTablePin()) {
-                        pinByTableId.put(pin.getTablePin().getTableId(), pin.getTablePin());
+                        snapshotByTableId.put(pin.getTablePin().getTableId(), pin.getTablePin());
                       }
                     }
 
@@ -176,11 +177,12 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     // (empty) identity so the two lists stay aligned with `schemas`.
                     try (var ignored = diagnostics.timer("schema_describe")) {
                       for (ResourceId rid : rr.resolved()) {
-                        out.addSchemas(schemaForResolvedInput(correlationId(), rid, pinByTableId));
-                        TablePin winner = pinByTableId.get(rid);
+                        out.addSchemas(
+                            schemaForResolvedInput(correlationId(), rid, snapshotByTableId));
+                        TablePin winner = snapshotByTableId.get(rid);
                         out.addRelationPins(
                             winner != null
-                                ? QueryPins.identity(winner)
+                                ? SnapshotSelections.identity(winner)
                                 : RelationPinIdentity.getDefaultInstance());
                       }
                     }
@@ -203,7 +205,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     List<SnapshotPin> obligationPins = new ArrayList<>();
                     for (RelationPin pin : winnerPins.getPinsList()) {
                       if (pin.hasTablePin()) {
-                        obligationPins.add(QueryPins.toSnapshotPin(pin.getTablePin()));
+                        obligationPins.add(SnapshotSelections.toSnapshotPin(pin.getTablePin()));
                       }
                     }
                     var obligationsResult =
@@ -216,11 +218,12 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     diagnostics.put("obligations", obligationsResult.obligations().size());
                     diagnostics.put("obligation_bytes", obligationsBytes.length);
 
-                    // Store the derived expansion + obligations. Pins were committed above, so this
-                    // is intentionally a separate (non-atomic-with-pins) update: expansion is only
+                    // Store the derived expansion + obligations. Resolved selections were committed
+                    // above, so this is intentionally a separate update: expansion is only
                     // read as diagnostics by GetQuery and obligations have no server-side reader,
                     // so
-                    // a brief window where pins are committed but these are not is harmless. Both
+                    // a brief window where selections are committed but these are not is harmless.
+                    // Both
                     // are
                     // recomputed on every DescribeInputs, so a lost update self-heals.
                     diagnostics.time(
@@ -261,11 +264,11 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   }
 
   private SchemaDescriptor schemaForResolvedInput(
-      String correlationId, ResourceId rid, Map<ResourceId, TablePin> pinByTableId) {
+      String correlationId, ResourceId rid, Map<ResourceId, TablePin> snapshotByTableId) {
 
     return switch (rid.getKind()) {
       case RK_TABLE -> {
-        TablePin pin = pinByTableId.get(rid);
+        TablePin pin = snapshotByTableId.get(rid);
         if (pin == null) {
           // Should never happen because resolveInputs attaches pins for every table input; treat as
           // an
@@ -283,7 +286,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   }
 
   private SchemaDescriptor describeTable(String correlationId, ResourceId rid, TablePin pin) {
-    SchemaDescriptor mapped = objects.pinnedSchema(correlationId, pin, graphView);
+    SchemaDescriptor mapped = objects.resolvedSnapshotSchema(correlationId, pin, graphView);
     // Planner-facing logical schema: synthetic element/key/value placeholder rows are stats
     // plumbing; the planner reads nested typing from the columns' type trees.
     return UserObjectBundleUtils.qualifyNestedColumnNames(

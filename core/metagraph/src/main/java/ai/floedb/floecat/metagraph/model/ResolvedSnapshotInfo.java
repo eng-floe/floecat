@@ -26,9 +26,10 @@ import java.util.List;
  * plus the resolved pins already stored in the {@code QueryContext}. Keeping it as a dedicated
  * record avoids bloating {@link UserTableNode} with repeated repository calls.
  */
-public record ResolvedSnapshotInfo(SnapshotRef currentSnapshot, List<SnapshotRef> pinnedSnapshots) {
+public record ResolvedSnapshotInfo(
+    SnapshotRef currentSnapshot, List<SnapshotRef> resolvedSnapshots) {
 
   public ResolvedSnapshotInfo {
-    pinnedSnapshots = List.copyOf(pinnedSnapshots);
+    resolvedSnapshots = List.copyOf(resolvedSnapshots);
   }
 }

@@ -155,6 +155,8 @@ class BaseServiceImplTest {
   }
 
   private static final class TestServiceImpl extends BaseServiceImpl {
+    private TestServiceImpl() {}
+
     StatusRuntimeException repack(StatusRuntimeException ex, String corrId) {
       return toStatus(ex, corrId);
     }

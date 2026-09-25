@@ -207,6 +207,12 @@ public final class GrpcErrors {
         t);
   }
 
+  public static StatusRuntimeException snapshotTooOld(
+      String corrId, Map<String, String> params, Throwable t) {
+    return build(
+        io.grpc.Status.FAILED_PRECONDITION, ErrorCode.MC_SNAPSHOT_TOO_OLD, corrId, params, null, t);
+  }
+
   public static StatusRuntimeException aborted(String corrId, Map<String, String> params) {
     return aborted(corrId, params, null);
   }
@@ -279,6 +285,10 @@ public final class GrpcErrors {
   public static StatusRuntimeException snapshotExpired(
       String corrId, GeneratedErrorMessages.MessageKey key, Map<String, String> params) {
     return snapshotExpired(corrId, key, params, null);
+  }
+
+  public static StatusRuntimeException snapshotTooOld(String corrId, Map<String, String> params) {
+    return snapshotTooOld(corrId, params, null);
   }
 
   private static String suffix(GeneratedErrorMessages.MessageKey key) {

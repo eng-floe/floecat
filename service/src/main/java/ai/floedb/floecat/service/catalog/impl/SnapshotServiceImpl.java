@@ -85,8 +85,8 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
   @Inject StatsOrchestrator statsOrchestrator;
 
   // Retained as a collaborator so DeleteSnapshot's contract — that it does NOT physically tear down
-  // a snapshot's stats generations, which pinned queries still read — is unit-assertable. Physical
-  // reclamation is reference-aware CasBlobGc's job once no live pin holds the generation.
+  // a snapshot's stats generations, which resolved selections may still read — is unit-assertable.
+  // Physical reclamation is reference-aware CasBlobGc's job after the retention horizon.
   @Inject StatsStore statsStore;
   @Inject TableRootWriter rootWriter;
 
@@ -557,14 +557,11 @@ public class SnapshotServiceImpl extends BaseServiceImpl implements SnapshotServ
 
                     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
                     // Do NOT eagerly tear down the snapshot's stats generations here. A query that
-                    // pinned this snapshot froze its stats_generation_ref and reads pages through
-                    // that frozen manifest for the query's lifetime; a whole-prefix delete would
-                    // pull the manifest out from under an active pinned scan (it fails loudly).
-                    // removeSnapshotFromRoot drops the entry so no new pin references the
-                    // generation;
-                    // reference-aware CasBlobGc then reclaims it once no live pin holds it — the
-                    // same
-                    // retention path superseded generations already take.
+                    // resolved this snapshot reads the frozen stats_generation_ref; a whole-prefix
+                    // delete would pull the manifest out from under that scan.
+                    // removeSnapshotFromRoot
+                    // drops the entry so new queries cannot select the generation; retention-aware
+                    // CasBlobGc reclaims it after the configured visibility and grace horizons.
                     removeSnapshotFromRoot(tableId, snapshotId);
                   } catch (BaseResourceRepository.PreconditionFailedException pfe) {
                     var nowMeta = snapshotRepo.metaForSafe(tableId, snapshotId);

@@ -39,7 +39,7 @@ import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -155,7 +155,12 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
                   var metadata =
                       metadataAssembler.assemble(
-                          queryId, correlationId, request.getInputsList(), asOfDefault, catalogId);
+                          queryId,
+                          correlationId,
+                          pc.getAccountId(),
+                          request.getInputsList(),
+                          asOfDefault,
+                          catalogId);
 
                   byte[] expansionBytes = metadata.expansionMap().toByteArray();
                   byte[] relationPinBytes = metadata.relationPinSet().toByteArray();
@@ -173,24 +178,11 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           1L,
                           catalogId);
 
-                  // The resolved pin blobs are already transient GC roots (the resolver registered
-                  // them at construction, protected through resolution and until this commit), so
-                  // storing the context — a durable GC root — needs no lease here.
-                  // Always branch on the insert result: putIfAbsent converts this context's pins
-                  // from transient resolving roots to durable ones (dropResolvingPinsRootedBy)
-                  // ONLY when it actually inserts. A silently-ignored no-op insert would serve a
-                  // context whose pins were never rooted — so surface it either way.
+                  // Always branch on the insert result so a duplicate client query id is surfaced
+                  // rather than silently serving a context that was not stored.
                   boolean clientProvidedId = request.hasQueryId();
                   boolean inserted = queryStore.putIfAbsent(ctx);
                   if (!inserted) {
-                    // A context already owns this query id (an incumbent). Do NOT try to release
-                    // this rejected context's resolving-pin roots: they were registered under the
-                    // shared query id and unioned into the incumbent's resolving entry, so dropping
-                    // them by URI would also unroot blobs the incumbent may still be resolving — a
-                    // GC sweep in that window could then delete a live blob. The rejected
-                    // registration is already bounded (the map is size-capped, and the entry is
-                    // released by the incumbent's own commit or the fail-safe grace), so leaving it
-                    // in place is the safe choice.
                     if (clientProvidedId) {
                       throw GrpcErrors.alreadyExists(
                           correlationId,
@@ -219,7 +211,8 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           .setSnapshots(metadata.snapshotSet())
                           .setExpansion(metadata.expansionMap())
                           .addAllObligations(metadata.obligations())
-                          .addAllRelationPins(QueryPins.identities(metadata.relationPinSet()))
+                          .addAllRelationPins(
+                              SnapshotSelections.identities(metadata.relationPinSet()))
                           .build();
 
                   return BeginQueryResponse.newBuilder().setQuery(descriptor).build();
@@ -336,9 +329,9 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                     // Expose both descriptor views of the stored pins: the snapshot-selector
                     // projection and the opaque per-relation identities BeginQuery advertises, so a
                     // caller that polls GetQuery keeps the cache/change-detection contract.
-                    var pins = ctx.parseRelationPins(correlationId);
-                    builder.setSnapshots(QueryPins.toSnapshotSet(pins));
-                    builder.addAllRelationPins(QueryPins.identities(pins));
+                    var pins = ctx.parseSnapshotSelections(correlationId);
+                    builder.setSnapshots(SnapshotSelections.toSnapshotSet(pins));
+                    builder.addAllRelationPins(SnapshotSelections.identities(pins));
                   }
 
                   if (ctx.getExpansionMap() != null) {

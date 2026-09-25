@@ -464,7 +464,7 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
                           corr,
                           "namespace restructure",
                           meta.getPointerVersion(),
-                          namespaceRepo.metaForSafe(nsId).getPointerVersion());
+                          namespaceRepo.pointerMetaForSafe(nsId).getPointerVersion());
                     }
                   } catch (BaseResourceRepository.NameConflictException nce) {
                     throw GrpcErrors.alreadyExists(

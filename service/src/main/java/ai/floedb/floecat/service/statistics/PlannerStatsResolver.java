@@ -161,7 +161,7 @@ final class PlannerStatsResolver {
     // (the planner degrades per stat), kept as a last-resort candidate so that if the store re-read
     // for a richer record fails — an unreadable frozen manifest — or comes back empty, an
     // incomplete
-    // PINNED record still serves rather than degrading to stale/capture, honouring the ladder's
+    // RESOLVED record still serves rather than degrading to stale/capture, honouring the ladder's
     // "a partial pinned record is a hit, never a stale/capture trigger" invariant.
     java.util.Map<String, TargetStatsRecord> cachedPartial = new java.util.LinkedHashMap<>();
     for (StatsCaptureRequest req : requests) {
@@ -294,7 +294,7 @@ final class PlannerStatsResolver {
   }
 
   /** Reads only the pinned generation, treating an unreadable frozen manifest as a miss. */
-  Optional<TargetStatsRecord> resolvePinnedFromStore(
+  Optional<TargetStatsRecord> resolveSnapshotnedFromStore(
       StatsCaptureRequest request, String pinnedGeneration) {
     try {
       return statsStore.getTargetStatsInGeneration(
@@ -311,11 +311,11 @@ final class PlannerStatsResolver {
   }
 
   /**
-   * Store rungs of the single-target planner lookup: the pinned generation for the pinned snapshot
-   * (query-consistent; a pinned read failure falls through rather than failing the lookup), then
-   * the newest (live active) generation only to fill a target the pinned generation lacks. Empty
-   * means no store rung could serve; the caller decides whether to capture. Only the immutable
-   * pinned rung is cached; the live/newest rung is always read through.
+   * Store rungs of the single-target planner lookup: the pinned generation for the resolved
+   * snapshot (query-consistent; a pinned read failure falls through rather than failing the
+   * lookup), then the newest (live active) generation only to fill a target the pinned generation
+   * lacks. Empty means no store rung could serve; the caller decides whether to capture. Only the
+   * immutable pinned rung is cached; the live/newest rung is always read through.
    */
   Optional<TargetStatsRecord> resolveSingleFromStore(
       StatsCaptureRequest request, Optional<String> pinnedGenerationToken) {
@@ -331,7 +331,7 @@ final class PlannerStatsResolver {
                 request.snapshotId(),
                 pinnedGeneration,
                 storageId(request),
-                () -> resolvePinnedFromStore(request, pinnedGeneration));
+                () -> resolveSnapshotnedFromStore(request, pinnedGeneration));
     if (primary.isPresent()) {
       return primary;
     }

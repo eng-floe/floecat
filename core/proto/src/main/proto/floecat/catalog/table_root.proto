@@ -109,6 +109,9 @@ message SnapshotManifestEntry {
 
   /** Stats generation whose compact bundles back this snapshot's artifact-reuse manifest. */
   BlobRef reuse_stats_generation_ref = 7;
+
+  /** Floecat publication time; unlike upstream_created_at this is the retention clock. */
+  google.protobuf.Timestamp ingested_at = 8;
 }
 
 /**

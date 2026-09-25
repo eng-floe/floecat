@@ -408,7 +408,8 @@ public class CatalogServiceImpl extends BaseServiceImpl implements CatalogServic
                                 catalogRepo.deleteWhileChildSetsUnchanged(
                                     id, expected, childSetMarkers);
                             if (!deleted
-                                && catalogRepo.metaForSafe(id).getPointerVersion() == expected) {
+                                && catalogRepo.pointerMetaForSafe(id).getPointerVersion()
+                                    == expected) {
                               // The row did not move, so what failed was a child-set assertion:
                               // a namespace or an overlay landed after the checks above.
                               throw BaseResourceRepository.AbortRetryableException.lostFence(

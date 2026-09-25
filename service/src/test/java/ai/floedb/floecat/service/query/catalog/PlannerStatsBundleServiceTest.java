@@ -642,13 +642,13 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
     PlannerStatsBundleService service =
         createService(
             repository, store, /* chunkSize= */ 5, /* maxTables= */ 10, /* maxTargets= */ 10);
-    long pinnedSnapshot = 500L;
+    long resolvedSnapshot = 500L;
     long otherSnapshot = 999L;
     // Distinct stats exist at both snapshots; only the pinned snapshot's stats must be served.
     repository.putTargetStats(
         TargetStatsRecords.columnRecord(
             TABLE,
-            pinnedSnapshot,
+            resolvedSnapshot,
             42L,
             ScalarStats.newBuilder().setRowCount(111L).putProperties("column_id", "42").build(),
             null));
@@ -659,7 +659,7 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
             42L,
             ScalarStats.newBuilder().setRowCount(222L).putProperties("column_id", "42").build(),
             null));
-    QueryContext ctx = queryContextWithPin("query-pinned-snap", pinnedSnapshot);
+    QueryContext ctx = queryContextWithPin("query-pinned-snap", resolvedSnapshot);
     store.seed(ctx);
     FetchTargetStatsRequest request = requestFor(ctx.getQueryId(), TABLE, List.of(42L));
 
@@ -672,11 +672,11 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
             .filter(r -> r.getStatus() == StatsResultStatus.STATS_RESULT_HIT_COMPLETE)
             .findFirst()
             .orElseThrow();
-    assertEquals(pinnedSnapshot, hit.getSnapshotId());
+    assertEquals(resolvedSnapshot, hit.getSnapshotId());
     assertEquals(111L, hit.getStats().getScalar().getRowCount());
     // The response echoes the query's pinned snapshot so the planner can detect staleness.
     assertTrue(hit.hasPinnedSnapshotId());
-    assertEquals(pinnedSnapshot, hit.getPinnedSnapshotId());
+    assertEquals(resolvedSnapshot, hit.getPinnedSnapshotId());
   }
 
   /**
@@ -1041,26 +1041,26 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
         createService(
             repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
 
-    long pinnedSnapshotId = 500L;
+    long resolvedSnapshotId = 500L;
     repository.putTargetStats(
         TargetStatsRecords.columnRecord(
-            TABLE, pinnedSnapshotId, 1L, sampleStats(TABLE, pinnedSnapshotId, 1L), null));
+            TABLE, resolvedSnapshotId, 1L, sampleStats(TABLE, resolvedSnapshotId, 1L), null));
 
-    QueryContext ctx = queryContextWithPin("snap-restate", pinnedSnapshotId);
+    QueryContext ctx = queryContextWithPin("snap-restate", resolvedSnapshotId);
     store.seed(ctx);
 
     // A request snapshot_id equal to the pinned snapshot is a harmless restatement.
     FetchTargetStatsRequest request =
         FetchTargetStatsRequest.newBuilder()
             .setQueryId(ctx.getQueryId())
-            .addTables(tableRequestWithSnapshot(TABLE, List.of(1L), pinnedSnapshotId))
+            .addTables(tableRequestWithSnapshot(TABLE, List.of(1L), resolvedSnapshotId))
             .build();
     List<TargetStatsResult> results =
         flatten(
             service.streamTargets("corr", ctx, request).collect().asList().await().indefinitely());
     assertEquals(1, results.size());
     assertEquals(StatsResultStatus.STATS_RESULT_HIT_COMPLETE, results.get(0).getStatus());
-    assertEquals(pinnedSnapshotId, results.get(0).getSnapshotId());
+    assertEquals(resolvedSnapshotId, results.get(0).getSnapshotId());
   }
 
   @Test
@@ -1072,7 +1072,7 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
         createService(
             repository, store, /* chunkSize= */ 5, /* maxTables= */ 5, /* maxTargets= */ 10);
 
-    long pinnedSnapshotId = 500L;
+    long resolvedSnapshotId = 500L;
     long divergentSnapshotId = 490L;
     // Stats exist at the divergent snapshot, but the pin is authoritative — the request must NOT be
     // able to redirect reads there (this is what would let correctness constraints drift).
@@ -1080,7 +1080,7 @@ class PlannerStatsBundleServiceTest extends PlannerStatsBundleServiceTestSupport
         TargetStatsRecords.columnRecord(
             TABLE, divergentSnapshotId, 1L, sampleStats(TABLE, divergentSnapshotId, 1L), null));
 
-    QueryContext ctx = queryContextWithPin("snap-diverge", pinnedSnapshotId);
+    QueryContext ctx = queryContextWithPin("snap-diverge", resolvedSnapshotId);
     store.seed(ctx);
 
     FetchTargetStatsRequest request =

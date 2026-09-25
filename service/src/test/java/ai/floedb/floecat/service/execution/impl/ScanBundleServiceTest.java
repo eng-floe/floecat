@@ -38,7 +38,8 @@ import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
-import ai.floedb.floecat.service.query.PinnedReadContract;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
+import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -47,6 +48,8 @@ import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsStore.StatsStorePage;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -91,9 +94,17 @@ class ScanBundleServiceTest {
     // A real repair pipeline over an in-memory store: initScan's missing-pinned-blob failures
     // must durably enqueue the table for the resync re-drive, and tests assert the marker.
     repairPointers = new InMemoryPointerStore();
-    PinnedReadContract pinnedReads =
-        new PinnedReadContract(new RootRepairRequests(new RootResyncQueue(repairPointers)));
-    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver, pinnedReads);
+    ResolvedSnapshotReadContract resolvedSnapshotReads =
+        new ResolvedSnapshotReadContract(
+            new RootRepairRequests(new RootResyncQueue(repairPointers)));
+    service =
+        new ScanBundleService(
+            tableRepo,
+            snapshotRepo,
+            statsStore,
+            resolver,
+            resolvedSnapshotReads,
+            new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ZERO, Duration.ZERO));
   }
 
   private boolean repairEnqueued(ResourceId tableId) {

@@ -110,6 +110,9 @@ message Pointer {
   // Size of the object referenced by blob_uri at the time this pointer was written.
   // Zero for non-blob pointers and legacy rows that predate incremental storage accounting.
   optional int64 referenced_object_size_bytes = 8;
+  // Snapshot ingest time copied into snapshot pointers. Absent on legacy pointers; readers must
+  // fall back to the referenced snapshot blob when it is absent.
+  google.protobuf.Timestamp ingested_at = 9;
 }
 
 message BlobHeader {
@@ -177,6 +180,8 @@ enum ErrorCode {
   MC_TIMEOUT = 11;
   MC_CANCELLED = 12;
   MC_ABORT_RETRYABLE = 13;
+  // The requested snapshot is outside the retention visibility horizon for a new query.
+  MC_SNAPSHOT_TOO_OLD = 14;
 }
 
 message Error {

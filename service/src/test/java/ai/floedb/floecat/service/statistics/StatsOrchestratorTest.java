@@ -1403,13 +1403,13 @@ class StatsOrchestratorTest {
     // scalar-only record) then throws — the frozen manifest becomes unreadable between queries.
     RuntimeException manifestGone =
         new RuntimeException("frozen stats generation manifest missing for snapshot 42");
-    java.util.concurrent.atomic.AtomicInteger pinnedReads =
+    java.util.concurrent.atomic.AtomicInteger resolvedSnapshotReads =
         new java.util.concurrent.atomic.AtomicInteger();
     when(store.getTargetStatsBatchInGeneration(
             req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
         .thenAnswer(
             inv -> {
-              if (pinnedReads.getAndIncrement() == 0) {
+              if (resolvedSnapshotReads.getAndIncrement() == 0) {
                 return Map.of(storageId, Optional.of(columnRecord(req, 1L)));
               }
               throw manifestGone;

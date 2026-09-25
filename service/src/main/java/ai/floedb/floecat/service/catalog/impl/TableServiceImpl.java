@@ -546,7 +546,7 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
                           correlationId,
                           "table delete",
                           safe.getPointerVersion(),
-                          tableRepo.metaForSafe(tableId).getPointerVersion());
+                          tableRepo.pointerMetaForSafe(tableId).getPointerVersion());
                     }
                     purgeSnapshotsAndStats(tableId);
                     return DeleteTableResponse.newBuilder().setMeta(safe).build();
@@ -950,7 +950,10 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
           "unconditional table update conflicted with a concurrent mutation: " + tableId.getId());
     }
     return MutationOps.lostFenceOrVersionMismatch(
-        corr, "table update", expectedVersion, tableRepo.metaForSafe(tableId).getPointerVersion());
+        corr,
+        "table update",
+        expectedVersion,
+        tableRepo.pointerMetaForSafe(tableId).getPointerVersion());
   }
 
   /** Record the table's (possibly new) immutable definition blob on its root. */

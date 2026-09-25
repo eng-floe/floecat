@@ -22,6 +22,7 @@ import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.execution.rpc.ScanFileContent;
 import ai.floedb.floecat.query.rpc.DeleteFile;
 import ai.floedb.floecat.query.rpc.TableInfo;
+import com.google.protobuf.Timestamp;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -40,11 +41,13 @@ public final class ScanSession {
   private final String queryId;
   private final ResourceId tableId;
   private final long snapshotId;
-  // Opaque token of the stats generation the PINNED root referenced, frozen at initScan, or null
+  // Opaque token of the stats generation the RESOLVED root referenced, frozen at initScan, or null
   // when the store tracks none. File streaming reads this one immutable generation keyspace to
   // completion: superseded generations are RETAINED (replaceAllStatsForSnapshot no longer deletes
   // them), so the scan stays deterministic at the frozen pointer with no per-page re-check.
   private final String statsGeneration;
+  private final Timestamp snapshotIngestedAt;
+  private final boolean currentSnapshot;
   private final TableInfo tableInfo;
   private final boolean includeColumnStats;
   private final boolean excludePartitionDataJson;
@@ -65,6 +68,8 @@ public final class ScanSession {
     this.tableId = builder.tableId;
     this.snapshotId = builder.snapshotId;
     this.statsGeneration = builder.statsGeneration;
+    this.snapshotIngestedAt = builder.snapshotIngestedAt;
+    this.currentSnapshot = builder.currentSnapshot;
     this.tableInfo = builder.tableInfo;
     this.includeColumnStats = builder.includeColumnStats;
     this.excludePartitionDataJson = builder.excludePartitionDataJson;
@@ -98,6 +103,14 @@ public final class ScanSession {
   /** May be null when the stats store does not track generations. */
   public String statsGeneration() {
     return statsGeneration;
+  }
+
+  public Timestamp snapshotIngestedAt() {
+    return snapshotIngestedAt;
+  }
+
+  public boolean currentSnapshot() {
+    return currentSnapshot;
   }
 
   public TableInfo tableInfo() {
@@ -245,12 +258,33 @@ public final class ScanSession {
     return new Builder();
   }
 
+  /** Returns a builder initialized with every field of this session. */
+  public Builder toBuilder() {
+    return new Builder()
+        .handleId(handleId)
+        .queryId(queryId)
+        .tableId(tableId)
+        .snapshotId(snapshotId)
+        .statsGeneration(statsGeneration)
+        .snapshotIngestedAt(snapshotIngestedAt)
+        .currentSnapshot(currentSnapshot)
+        .tableInfo(tableInfo)
+        .includeColumnStats(includeColumnStats)
+        .excludePartitionDataJson(excludePartitionDataJson)
+        .targetBatchItems(targetBatchItems)
+        .targetBatchBytes(targetBatchBytes)
+        .requiredColumns(requiredColumns)
+        .predicates(predicates);
+  }
+
   public static final class Builder {
     private String handleId;
     private String queryId;
     private ResourceId tableId;
     private long snapshotId;
     private String statsGeneration;
+    private Timestamp snapshotIngestedAt;
+    private boolean currentSnapshot;
     private TableInfo tableInfo;
     private boolean includeColumnStats;
     private boolean excludePartitionDataJson;
@@ -284,6 +318,16 @@ public final class ScanSession {
 
     public Builder statsGeneration(String statsGeneration) {
       this.statsGeneration = statsGeneration;
+      return this;
+    }
+
+    public Builder snapshotIngestedAt(Timestamp snapshotIngestedAt) {
+      this.snapshotIngestedAt = snapshotIngestedAt;
+      return this;
+    }
+
+    public Builder currentSnapshot(boolean currentSnapshot) {
+      this.currentSnapshot = currentSnapshot;
       return this;
     }
 

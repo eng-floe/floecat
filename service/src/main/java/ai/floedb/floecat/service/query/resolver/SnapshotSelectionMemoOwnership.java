@@ -24,16 +24,17 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
 
 /**
- * Owns the table-pin memo entries inserted by one input-resolution attempt. Failure evicts only
- * this attempt's entries, while terminal cleanup prevents late workers from publishing an unrooted
- * pin after the attempt has ended.
+ * Owns the resolved-snapshot memo entries inserted by one input-resolution attempt. Failure evicts
+ * only this attempt's entries, while terminal cleanup prevents late workers from publishing a
+ * selection after the attempt has ended.
  */
-final class SnapshotPinMemoOwnership {
+final class SnapshotSelectionMemoOwnership {
   private final ConcurrentMap<ResourceId, CompletableFuture<TablePin>> memoEntries;
   private final Map<ResourceId, CompletableFuture<TablePin>> owned = new LinkedHashMap<>();
   private boolean terminal;
 
-  SnapshotPinMemoOwnership(ConcurrentMap<ResourceId, CompletableFuture<TablePin>> memoEntries) {
+  SnapshotSelectionMemoOwnership(
+      ConcurrentMap<ResourceId, CompletableFuture<TablePin>> memoEntries) {
     this.memoEntries = memoEntries;
   }
 
@@ -57,9 +58,9 @@ final class SnapshotPinMemoOwnership {
   }
 
   /**
-   * Replace a compatible losing entry with the retained first-touch pin before the losing pin
-   * relinquishes transient-root ownership. The holder lock makes replacement atomic with a waiter's
-   * published-entry check.
+   * Replace a compatible losing entry with the retained first-touch selection before the losing
+   * selection is discarded. The holder lock makes replacement atomic with a waiter's published
+   * entry check.
    */
   synchronized void replaceCompatiblePin(TablePin losingPin, TablePin retainedPin) {
     ResourceId tableId = losingPin.getTableId();

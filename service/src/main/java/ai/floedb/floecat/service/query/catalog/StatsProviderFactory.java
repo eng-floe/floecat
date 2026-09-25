@@ -136,8 +136,8 @@ public final class StatsProviderFactory {
         statsWarmLimiter);
   }
 
-  SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
-    return new SnapshotPinResolver(queryStore, ctx, correlationId);
+  SnapshotSelectionLookup selectionLookupForQuery(QueryContext ctx, String correlationId) {
+    return new SnapshotSelectionResolver(queryStore, ctx, correlationId);
   }
 
   private static final class CachedStatsProvider implements StatsProvider {
@@ -148,7 +148,7 @@ public final class StatsProviderFactory {
     private final StatsOrchestrator statsOrchestrator;
     private final TableRepository tableRepository;
     private final SnapshotRepository snapshotRepository;
-    private final SnapshotPinResolver pinResolver;
+    private final SnapshotSelectionResolver selectionResolver;
     private final String correlationId;
     private final boolean allowUnpinnedLatestSnapshotFallback;
     private final Duration syncLatencyBudget;
@@ -174,7 +174,7 @@ public final class StatsProviderFactory {
       this.syncEnabled = syncEnabled;
       this.statsFanout = MetadataFanout.concurrent(maxParallelStatsWarms);
       this.statsWarmLimiter = statsWarmLimiter;
-      this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
+      this.selectionResolver = new SnapshotSelectionResolver(queryStore, ctx, correlationId);
       this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
     }
 
@@ -191,7 +191,7 @@ public final class StatsProviderFactory {
         return latestSnapshotTableStats(tableId);
       }
       Optional<StatsProvider.TableStatsView> pinnedStats =
-          pinResolver.withPinnedSnapshot(
+          selectionResolver.withPinnedSnapshot(
               tableId, snapshotId -> safeTableStats(tableId, snapshotId));
       if (pinnedStats.isPresent()) {
         return pinnedStats;
@@ -242,13 +242,13 @@ public final class StatsProviderFactory {
 
     @Override
     public Optional<StatsProvider.ColumnStatsView> columnStats(ResourceId tableId, long columnId) {
-      return pinResolver.withPinnedSnapshot(
+      return selectionResolver.withPinnedSnapshot(
           tableId, snapshotId -> safeColumnStats(tableId, snapshotId, columnId));
     }
 
     @Override
-    public OptionalLong pinnedSnapshotId(ResourceId tableId) {
-      return pinResolver.pinnedSnapshotId(tableId);
+    public OptionalLong resolvedSnapshotId(ResourceId tableId) {
+      return selectionResolver.resolvedSnapshotId(tableId);
     }
 
     private OptionalLong resolveLatestSnapshotId(ResourceId tableId) {
@@ -286,8 +286,9 @@ public final class StatsProviderFactory {
         return statsOrchestrator
             .resolveTableFactsInGeneration(
                 request,
-                pinResolver.pinnedStatsGenerationRef(tableId),
-                allowUnpinnedLatestSnapshotFallback || pinResolver.currentSnapshotIsPinned(tableId))
+                selectionResolver.resolvedStatsGenerationRef(tableId),
+                allowUnpinnedLatestSnapshotFallback
+                    || selectionResolver.currentSnapshotIsPinned(tableId))
             .map(
                 facts ->
                     new TableStatsViewImpl(
@@ -314,7 +315,7 @@ public final class StatsProviderFactory {
                 .build();
         StatsResolutionResult result =
             statsOrchestrator.resolveInGeneration(
-                request, pinResolver.pinnedStatsGenerationRef(tableId));
+                request, selectionResolver.resolvedStatsGenerationRef(tableId));
         return result
             .stats()
             .filter(TargetStatsRecord::hasScalar)

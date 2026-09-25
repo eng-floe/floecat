@@ -104,7 +104,8 @@ public class TableRootWriter {
         continue;
       }
       // Root currency tracks the committed current-snapshot selection immediately. Query readers
-      // still require the selected manifest entry to carry a stats generation before pinning it, so
+      // still require the selected manifest entry to carry a stats generation before selecting it,
+      // so
       // logical Iceberg metadata can move current without exposing an unfinalized scan.
       boolean advanceAtRegistration = true;
       committer.commit(
@@ -145,6 +146,9 @@ public class TableRootWriter {
     if (candidate.hasUpstreamCreatedAt()) {
       entry.setUpstreamCreatedAt(candidate.getUpstreamCreatedAt());
     }
+    if (candidate.hasIngestedAt()) {
+      entry.setIngestedAt(candidate.getIngestedAt());
+    }
     ai.floedb.floecat.service.repo.impl.SnapshotManifests.applyReuseGenerationRef(entry, candidate);
     return entry.build();
   }
@@ -184,7 +188,7 @@ public class TableRootWriter {
    * (empty would mean "cannot say", not "none").
    *
    * <p>This commit is the generation's PUBLICATION point: queries serve stats from the generation
-   * their pinned root references, so a new generation becomes visible when it lands here — stats
+   * their resolved root references, so a new generation becomes visible when it lands here — stats
    * are deterministic at a given pointer for a query's lifetime. Every stats write is
    * floecat-mediated (floescan submits through the leased reconcile protocol, other engines via
    * PutTargetStats), so the root stays in sync with the stats family. If publication fails after
@@ -395,6 +399,9 @@ public class TableRootWriter {
             s -> {
               if (s.hasUpstreamCreatedAt()) {
                 builder.setUpstreamCreatedAt(s.getUpstreamCreatedAt());
+              }
+              if (s.hasIngestedAt()) {
+                builder.setIngestedAt(s.getIngestedAt());
               }
               builder.setSchemaFingerprint(
                   ai.floedb.floecat.service.repo.impl.SnapshotManifests.schemaFingerprint(s));

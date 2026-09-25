@@ -48,9 +48,9 @@ class TimingAccumulatorTest {
           "name_resolve",
           "node_resolve",
           "base_inject",
-          "pin_collect",
-          "pin_commit",
-          "pin_ms",
+          "snapshot_selection_collect",
+          "snapshot_selection_commit",
+          "snapshot_selection_ms",
           "relation_build",
           "decoration",
           "stats_lookup",
@@ -134,8 +134,8 @@ class TimingAccumulatorTest {
     assertThat(rec.get("normalize")).isEqualTo(11L);
     assertThat(rec.get("default_catalog")).isEqualTo(11L);
     assertThat(rec.get("base_inject")).isEqualTo(11L);
-    assertThat(rec.get("pin_collect")).isEqualTo(11L);
-    assertThat(rec.get("pin_commit")).isEqualTo(11L);
+    assertThat(rec.get("snapshot_selection_collect")).isEqualTo(11L);
+    assertThat(rec.get("snapshot_selection_commit")).isEqualTo(11L);
     assertThat(rec.get("relation_build")).isEqualTo(11L);
     assertThat(rec.get("decoration")).isEqualTo(11L);
     assertThat(rec.get("select_relation")).isEqualTo(11L);
@@ -193,7 +193,7 @@ class TimingAccumulatorTest {
     assertThat(rec.get("candidates")).isEqualTo(5L);
     assertThat(rec.get("chunks")).isEqualTo(3L);
     assertThat(rec.get("total_ms")).isEqualTo(12.5);
-    assertThat(rec.get("pin_ms")).isEqualTo(1.7);
+    assertThat(rec.get("snapshot_selection_ms")).isEqualTo(1.7);
     assertThat(rec.get("scheduling_ms")).isEqualTo(0.4);
     assertThat(rec.get("outcome")).isEqualTo("completed");
 
@@ -205,8 +205,8 @@ class TimingAccumulatorTest {
     assertThat(rec.get("name_resolve")).isEqualTo(500L);
     assertThat(rec.get("node_resolve")).isEqualTo(600L);
     assertThat(rec.get("base_inject")).isEqualTo(700L);
-    assertThat(rec.get("pin_collect")).isEqualTo(800L);
-    assertThat(rec.get("pin_commit")).isEqualTo(900L);
+    assertThat(rec.get("snapshot_selection_collect")).isEqualTo(800L);
+    assertThat(rec.get("snapshot_selection_commit")).isEqualTo(900L);
     assertThat(rec.get("relation_build")).isEqualTo(1000L);
     assertThat(rec.get("decoration")).isEqualTo(1100L);
     assertThat(rec.get("stats_lookup")).isEqualTo(1200L);

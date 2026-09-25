@@ -83,9 +83,10 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
                               GrpcErrors.notFound(
                                   correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId)));
               ResourceId tableId = request.getTableId();
-              // Build scan metadata from the pinned identity; fail hard on a bad pinned blob rather
+              // Build scan metadata from the pinned identity; fail hard on a bad resolved snapshot
+              // blob rather
               // than initializing a scan against drifted current catalog state.
-              var pin = ctx.requireTablePin(tableId, correlationId);
+              var pin = ctx.requireResolvedSnapshot(tableId, correlationId);
               var initData = scanBundles.initScan(correlationId, pin);
               var session =
                   ScanSession.builder()
@@ -93,6 +94,8 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
                       .tableId(tableId)
                       .snapshotId(initData.snapshotId())
                       .statsGeneration(initData.statsGeneration())
+                      .snapshotIngestedAt(initData.snapshotIngestedAt())
+                      .currentSnapshot(initData.currentSnapshot())
                       .tableInfo(initData.tableInfo())
                       .includeColumnStats(request.getIncludeColumnStats())
                       .excludePartitionDataJson(request.getExcludePartitionDataJson())
