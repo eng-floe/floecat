@@ -351,9 +351,9 @@ only in-process read optimizations, never GC roots. Transaction GC and reconcile
 separate collectors for their own durable key families.
 
 Managed deployments must keep upstream data available for at least the configured snapshot retention
-period. Floecat defaults to a 30-day retention plus a one-day grace period; setting retention to
-`0s` is an explicit compatibility mode that disables retention-based expiry and snapshot GC, and is
-not an authoritative-cache production policy.
+period. Standalone OSS Floecat defaults to compatibility mode (`0s` retention); managed deployments
+must override it with their authoritative-cache policy. Setting retention to `0s` disables
+retention-based expiry and snapshot GC, so it is not an authoritative-cache production policy.
 
 ### Builtin Catalog Service
 `SystemObjectsLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the
@@ -427,7 +427,7 @@ Notable `application.properties` keys:
 | `floecat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
 | `floecat.query.resolver.max_parallel_inputs` | Per-request query-input pin-resolution fan-out. Defaults to `8`; values are clamped to `1`–`16`. |
 | `floecat.query.metadata-io.max-concurrency` | Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use `64`; present malformed, blank, or out-of-range values fail startup. |
-| `floecat.snapshot.retention` / `floecat.snapshot.retention-grace` | Visibility and GC horizons measured from Floecat publication time. Defaults are `30d` retention plus `1d` grace. Set retention to `0s` only for compatibility mode; it disables retention expiry and snapshot GC. |
+| `floecat.snapshot.retention` / `floecat.snapshot.retention-grace` | Visibility and GC horizons measured from Floecat publication time. OSS defaults are `0s` retention plus `7d` grace; managed deployments should override these values explicitly. `0s` disables retention expiry and snapshot GC. |
 | `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for GetUserObjects. Defaults to `8`. |
 | `floecat.catalog.bundle.max_parallel_stats_warms` | Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to `16`; clamped to `>= 1`. |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
