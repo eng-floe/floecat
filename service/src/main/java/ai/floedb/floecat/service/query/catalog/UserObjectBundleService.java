@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.GraphNodeKind;
+import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
@@ -52,6 +53,7 @@ import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
@@ -442,8 +444,11 @@ public class UserObjectBundleService {
     private final PhaseDiagnostics diagnostics = diagnostics("get_user_objects");
     private final long streamStartNs = System.nanoTime();
     private final Span parentSpan = Span.current();
-    // Owns the per-request pin state and drives the collect→commit pin-durability transaction.
+    // Drives the pending-pin collect→commit transaction; resolution is kept in this iterator.
     private final QueryPinCommitter pinCommitter;
+    // Pins are resolved once per request and carried into the committer; the memo freezes CURRENT
+    // snapshots across streamed chunks without making the committer responsible for resolution.
+    private final SnapshotPinMemo snapshotPinMemo = new SnapshotPinMemo();
     // A teardown may publish only after the active next() call has finished mutating iterator
     // diagnostics and caches; a real failure wins when cancellation races that final step.
     private final StreamTelemetryState telemetryState = new StreamTelemetryState();
@@ -483,8 +488,7 @@ public class UserObjectBundleService {
           new RelationResolutionMemo(graphView, correlationId, requestEngine, timings);
       this.decorationSelection = engineRelationDecorator.select(requestEngine);
       this.buildFanout = buildFanout(decorationSelection);
-      this.pinCommitter =
-          new QueryPinCommitter(inputResolver, queryStore, ctx, correlationId, timings);
+      this.pinCommitter = new QueryPinCommitter(queryStore, ctx, correlationId, timings);
       initializeParentSpan();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
@@ -606,8 +610,89 @@ public class UserObjectBundleService {
         }
       }
       if (!toPin.isEmpty()) {
-        pinCommitter.accumulate(toPin, diagnostics, this::isCancelled);
+        long pinStartNs = System.nanoTime();
+        try {
+          pinCommitter.accumulate(resolveChunkPins(toPin), diagnostics, this::isCancelled);
+        } finally {
+          timings.addPinCollectNanos(System.nanoTime() - pinStartNs);
+        }
       }
+    }
+
+    /**
+     * Resolve the selected relations' canonical inputs once, before handing their immutable pins to
+     * the durability committer. The resolver owns transient-root registration; the committer only
+     * folds, commits, or releases the returned set.
+     */
+    private RelationPinSet resolveChunkPins(List<ResolvedRelation> relations) {
+      throwIfCancelled(this::isCancelled);
+      diagnostics.add("pin.relations", relations.size());
+      List<QueryInput> inputs = new ArrayList<>(relations.size());
+      long buildInputsStartNs = System.nanoTime();
+      for (ResolvedRelation relation : relations) {
+        QueryInput input = buildCanonicalQueryInput(relation);
+        if (input != null) {
+          inputs.add(input);
+        }
+      }
+      diagnostics.nanos("pin.build_inputs", System.nanoTime() - buildInputsStartNs);
+      diagnostics.add("pin.inputs", inputs.size());
+      if (inputs.isEmpty()) {
+        return RelationPinSet.getDefaultInstance();
+      }
+      long asOfStartNs = System.nanoTime();
+      var asOfDefault = ctx.parseAsOfDefault(correlationId);
+      diagnostics.nanos("pin.asof_default", System.nanoTime() - asOfStartNs);
+      long resolverStartNs = System.nanoTime();
+      var resolution =
+          inputResolver.resolveInputs(
+              ctx.getQueryId(),
+              correlationId,
+              inputs,
+              asOfDefault,
+              Optional.of(ctx.getQueryDefaultCatalogId()),
+              snapshotPinMemo,
+              diagnostics,
+              this::isCancelled);
+      diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);
+      RelationPinSet pins =
+          resolution.relationPinSet() == null
+              ? RelationPinSet.getDefaultInstance()
+              : resolution.relationPinSet();
+      boolean handedOff = false;
+      try {
+        // The resolver has already registered these roots. Transfer ownership only after the
+        // cancellation check; a cancellation racing the resolver return must release them here
+        // because the committer has not received the set yet.
+        throwIfCancelled(this::isCancelled);
+        diagnostics.add("pin.output_pins", pins.getPinsCount());
+        handedOff = true;
+        return pins;
+      } finally {
+        if (!handedOff) {
+          pinCommitter.releaseUncommitted(pins);
+        }
+      }
+    }
+
+    private QueryInput buildCanonicalQueryInput(ResolvedRelation relation) {
+      // Built-in system relations are not version-pinned in query context snapshots.
+      if (relation.node().origin() == GraphNodeOrigin.SYSTEM) {
+        return null;
+      }
+      QueryInput.Builder builder;
+      GraphNodeKind kind = relation.node().kind();
+      if (kind == GraphNodeKind.TABLE) {
+        builder = QueryInput.newBuilder().setTableId(relation.relationId());
+      } else if (kind == GraphNodeKind.VIEW) {
+        builder = QueryInput.newBuilder().setViewId(relation.relationId());
+      } else {
+        return null;
+      }
+      if (relation.selectedInput().hasSnapshot()) {
+        builder.setSnapshot(relation.selectedInput().getSnapshot());
+      }
+      return builder.build();
     }
 
     private boolean isCancelled() {
