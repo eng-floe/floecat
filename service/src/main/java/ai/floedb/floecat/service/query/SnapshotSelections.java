@@ -161,9 +161,10 @@ public final class SnapshotSelections {
   }
 
   /**
-   * Merge two relation-pin sets keyed by table id, applying {@link #reconcile}. Existing pins are
-   * preserved in place; incoming pins for new tables are appended; incompatible temporal intents
-   * for an already-resolved table snapshot fail planning. Insertion order is stable.
+   * Merge two relation-selection sets keyed by table id, applying {@link #reconcile}. Existing
+   * selections are preserved in place; incoming pins for new tables are appended; incompatible
+   * temporal intents for an already-resolved table snapshot fail planning. Insertion order is
+   * stable.
    */
   public static RelationPinSet mergeSets(
       RelationPinSet existing, RelationPinSet incoming, String correlationId) {

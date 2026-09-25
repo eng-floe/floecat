@@ -91,13 +91,13 @@ public class ScanBundleService {
    * Loads the resolved table snapshot and snapshot blobs and builds the initial TableInfo for a
    * scan handle.
    *
-   * <p>Both reads are by the pin's immutable blob URIs, never the live pointers: table-scoped scan
-   * properties (storage/connector settings, credentials, metadata location, schema fallback)
-   * reflect the pinned state and do not drift with the current table pointer — a scan survives a
-   * drop/unpublish of the current table — and an in-place UpdateSnapshot repointing the (table,
-   * snapshot id) pointer to a new blob cannot drift the scan after the pin was built. Every pin
-   * captures both blob identities at construction, so a missing blob here is a catalog-integrity
-   * failure, not a fallback case.
+   * <p>Both reads are by the resolved selection's immutable blob URIs, never the live pointers:
+   * table-scoped scan properties (storage/connector settings, credentials, metadata location,
+   * schema fallback) reflect the selected state and do not drift with the current table pointer — a
+   * scan survives a drop/unpublish of the current table — and an in-place UpdateSnapshot repointing
+   * the (table, snapshot id) pointer to a new blob cannot drift the scan after the selection was
+   * built. Every selection captures both blob identities at construction, so a missing blob here is
+   * a catalog-integrity failure, not a fallback case.
    */
   public InitData initScan(String correlationId, TablePin pin) {
     ResourceId tableId = pin.getTableId();
@@ -126,13 +126,14 @@ public class ScanBundleService {
     TableInfo info = buildTableInfo(table, snapshot, snapshotId);
     // The scan streams its file list from the generation the RESOLVED root referenced, frozen on
     // the
-    // pin at BeginQuery — NOT the live active generation. A re-stats/reconcile that published a new
+    // selection at BeginQuery — NOT the live active generation. A re-stats/reconcile that published
+    // a new
     // generation (and committed a new root) between BeginQuery and InitScan must not change what
     // this selected scan reads; retention keeps the selected generation eligible while the query
     // runs. "No generation" is a real frozen state
     // (STATS_GENERATION_ABSENT — an empty scan, even if a first generation publishes mid-stream);
     // a store that tracks no generations at all is null (reads serve live state). Under the gate a
-    // pinnable snapshot is always finalized, so the pin carries its ref.
+    // selectable snapshot is always finalized, so the selection carries its ref.
     String statsGeneration =
         StatsVisibilityGate.gateOnFinalize(statsStore)
             ? (pin.getStatsGenerationRefUri().isEmpty()

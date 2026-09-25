@@ -188,7 +188,7 @@ public class TableRootWriter {
    * (empty would mean "cannot say", not "none").
    *
    * <p>This commit is the generation's PUBLICATION point: queries serve stats from the generation
-   * their pinned root references, so a new generation becomes visible when it lands here — stats
+   * their resolved root references, so a new generation becomes visible when it lands here — stats
    * are deterministic at a given pointer for a query's lifetime. Every stats write is
    * floecat-mediated (floescan submits through the leased reconcile protocol, other engines via
    * PutTargetStats), so the root stays in sync with the stats family. If publication fails after

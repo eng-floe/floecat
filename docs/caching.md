@@ -6,14 +6,19 @@ pointer reads is an immutable blob. Caching therefore splits into a small number
 each with a different correctness contract, rather than one generic cache with invalidation
 callbacks.
 
+The wire names `TablePin`, `RelationPinSet`, and related fields are compatibility names for a
+resolved snapshot selection. They freeze the immutable identities used by one query; they are not
+GC roots, leases, or ownership claims. Retention and durable reachability determine when the
+selected data may be collected.
+
 ## Principles
 - **Mutable edges resolve to immutable keys.** A read first resolves a mutable pointer (resource ID
   → current blob URI), then follows content-addressed references. Only the pointer resolution can
   be stale; the content it names is immutable.
 - **Content-addressed means no invalidation.** The bytes at a CAS blob URI never change, so a
   decoded entry keyed by URI is right forever. Eviction exists only for memory, never correctness.
-- **Decoded content is safe for pinned reads.** A resident decode may outlive the durable blob, but
-  immutable content-addressed values remain the exact value named by the pin. The complete pointer
+- **Decoded content is safe for resolved-snapshot reads.** A resident decode may outlive the durable blob, but
+  immutable content-addressed values remain the exact value named by the resolved selection. The complete pointer
   index is deliberately different: after its account load completes, a missing addressing key is
   authoritative absence.
 
@@ -30,7 +35,7 @@ identity; they do not replace a value in an existing key.
 |------------|----------------|---------------|--------------------|
 | Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | Account addressing state: names, identities, and each table's `root/current` and `snapshots/current`. Rows keyed by snapshot -- snapshot history, constraints, stats generations, index artifacts -- are durable-only, because a table can commit snapshots far faster than its schema or addressing state changes. | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter. |
 | Objects | `ObjectCache` | Decoded relation metadata, mapped schemas, constraints, immutable generation-scoped snapshot facts and target-stat records | Entries are keyed by immutable content or generation identity. A live/newest stats read is read-through and is never retained. Account eviction removes every object entry for that account. |
-| Blobs | `DiskBlobCache` behind `BlobCacheAccess` | Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe | Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mmap content stays pinned until its scoped read closes. The disk budget and kill switch are `floecat.cache.blob.disk.*`; it is independent of the heap budget. |
+| Blobs | `DiskBlobCache` behind `BlobCacheAccess` | Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe | Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mapped content stays retained until its scoped read closes. The disk budget and kill switch are `floecat.cache.blob.disk.*`; it is independent of the heap budget. |
 | Per-query state | `QueryContextStore` and per-query memos | Snapshot selections, expansion map, and scan/session bookkeeping keyed by query ID | Rebuildable process-local optimization. Snapshot retention, not this state, provides GC safety. |
 
 An owned pointer partition can be warmed in the background when ownership is granted. The first
@@ -182,7 +187,7 @@ Only operations whose result is a mutation or reclamation decision bypass the ca
 Selected **blob** reads are not among them. The blob a query selection names is immutable and
 content-addressed, so a resident decode of it *is* the selected content rather than a stale view — the table,
 snapshot, schema, node and constraint loads all read through the cache. If a required value is not
-resident, the read path reports the existing pinned-read error and requests repair where that
+resident, the read path reports the existing resolved-snapshot read error and requests repair where that
 contract applies.
 
 Nor is a selected read preceded by a probe of its root. A selection whose blobs still read is

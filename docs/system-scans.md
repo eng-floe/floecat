@@ -54,7 +54,7 @@ default FLOECAT catalog ID where applicable.
 Scanners receive a best-effort `StatsProvider` in scan context.
 
 - System scans resolve table-level stats from the table's latest snapshot (snapshot-independent),
-  even when the query context pins a different snapshot.
+  even when the query context selected a different snapshot.
 - Column stats still use the query's resolved snapshot selection when present.
 - Missing stats are allowed and must be treated as advisory only.
 

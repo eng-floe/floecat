@@ -55,8 +55,8 @@ import java.util.function.Supplier;
  * <p>Callers supply domain objects and immutable content identities; this module owns key layout,
  * weighing, native Caffeine loading and account eviction. Names, projections, engine decoration and
  * absence are deliberately not retained. Content-versioned entries need no mutation invalidation: a
- * writer publishes a new reachable identity and old entries remain useful to existing pins until
- * ordinary capacity eviction.
+ * writer publishes a new reachable identity and old entries remain useful to existing resolved
+ * selections until ordinary capacity eviction.
  *
  * <p>One {@link MemoryCache} and one byte budget serve every object kind. The private typed key
  * keeps schemas, relations, constraints and snapshot facts from colliding without creating a
@@ -150,9 +150,9 @@ public final class ObjectCache {
   }
 
   /**
-   * Resolve a resolved snapshot schema by the immutable identities already carried on the pin. The
-   * backing table and snapshot are read only on a miss, which keeps callers from resolving cache
-   * ingredients before asking Objects for the answer.
+   * Resolve a resolved snapshot schema by the immutable identities already carried on the
+   * selection. The backing table and snapshot are read only on a miss, which keeps callers from
+   * resolving cache ingredients before asking Objects for the answer.
    */
   public SchemaDescriptor resolvedSnapshotSchema(
       String correlationId, TablePin pin, CatalogGraphView graphView) {
@@ -260,7 +260,7 @@ public final class ObjectCache {
    * Load the two small ingest-shaped facts for one table snapshot and stats-generation view.
    *
    * <p>A blank generation identity denotes the mutable live view. A non-blank identity denotes an
-   * immutable generation frozen on a query pin; keeping it in the key preserves the existing
+   * immutable generation frozen by a query selection; keeping it in the key preserves the existing
    * query-consistent stats policy when generations overlap for the same snapshot.
    */
   public Optional<SnapshotFacts> snapshotFacts(

@@ -147,9 +147,9 @@ public final class QueryContext {
   /**
    * Creates a new active QueryContext with TTL.
    *
-   * <p>The context may already contain: - relationPins (empty until pins are committed) -
-   * expansionMap (usually null at BeginQuery) - obligations (usually null at BeginQuery) -
-   * asOfDefault (optional)
+   * <p>The context may already contain: - relationPins (empty until resolved selections are
+   * committed) - expansionMap (usually null at BeginQuery) - obligations (usually null at
+   * BeginQuery) - asOfDefault (optional)
    */
   public static QueryContext newActive(
       String queryId,

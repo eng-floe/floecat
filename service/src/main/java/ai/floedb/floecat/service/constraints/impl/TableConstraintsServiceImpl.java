@@ -92,7 +92,8 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
    * <p>This acknowledgement contract intentionally differs from stats publication. Constraints are
    * acknowledged once their authoritative constraints-family pointer is durable; the table-root ref
    * is derived state that may converge through the durable marker. Stats generation publication is
-   * itself the visibility boundary for pinned reads, so that path records a marker and rethrows.
+   * itself the visibility boundary for resolved-snapshot reads, so that path records a marker and
+   * rethrows.
    */
   void publishCommittedConstraintsToRoot(ResourceId tableId, long snapshotId) {
     if (rootWriter == null || rootWriter.commitConstraintsFromCommittedState(tableId, snapshotId)) {

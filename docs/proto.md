@@ -252,7 +252,7 @@ engine release.
    execution is complete.
 
    * BeginQuery allows clients to provide an optional `query_id` (duplicates are rejected) and
-     a list of `common.QueryInput` records so the lifecycle service can pin snapshots and expansions
+     a list of `common.QueryInput` records so the service can resolve snapshots and expansions
      at creation time for deterministic replay. Schema resolution and planning still occur in the
      downstream services.
 

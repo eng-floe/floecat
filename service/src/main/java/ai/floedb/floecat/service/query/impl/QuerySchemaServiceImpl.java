@@ -218,11 +218,12 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     diagnostics.put("obligations", obligationsResult.obligations().size());
                     diagnostics.put("obligation_bytes", obligationsBytes.length);
 
-                    // Store the derived expansion + obligations. Pins were committed above, so this
-                    // is intentionally a separate (non-atomic-with-pins) update: expansion is only
+                    // Store the derived expansion + obligations. Resolved selections were committed
+                    // above, so this is intentionally a separate update: expansion is only
                     // read as diagnostics by GetQuery and obligations have no server-side reader,
                     // so
-                    // a brief window where pins are committed but these are not is harmless. Both
+                    // a brief window where selections are committed but these are not is harmless.
+                    // Both
                     // are
                     // recomputed on every DescribeInputs, so a lost update self-heals.
                     diagnostics.time(

@@ -66,7 +66,7 @@ import org.jboss.logging.Logger;
  *
  * <p>Account ownership remains the single-writer assumption for publication and GC. The sweep is
  * safe across replicas when Core routes one account to one Floecat owner; it does not require
- * Floecat-to-Floecat communication or a shared query-pin registry.
+ * Floecat-to-Floecat communication or a shared query-selection registry.
  *
  * <p>Defense in depth: independent of how the referenced set was computed, the delete phase
  * re-reads each candidate's OWNING pointer ({@link Keys#ownerPointerKeyForBlob}) immediately before

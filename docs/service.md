@@ -337,6 +337,10 @@ ownership records, recover assignments from KV, or fence every durable write. Pr
 contexts and resolved snapshot selections are optimizations only; retention is the snapshot-GC
 safety mechanism.
 
+The protocol still calls these selections `TablePin` and `RelationPinSet` for compatibility. In
+the current model, “pin” means “resolved snapshot selection”; it does not mean a GC root or a
+durable lifetime reservation.
+
 The extension points remain inside OSS Floecat. Deployments that need a different admission policy
 can bind their own `AccountScope` or `PlanningPointerIndex.Ownership` without
 changing query, cache, mutation or GC call sites.
@@ -346,7 +350,7 @@ then removes the now-unreferenced immutable payloads. Both collectors remain acc
 revalidate their existing permits before destructive batches. Snapshot manifests use Floecat's
 publication timestamp (`ingested_at`), not upstream event time: new snapshot resolutions fail
 with `MC_SNAPSHOT_TOO_OLD` after the visibility horizon, while an already-running query receives
-retryable `MC_SNAPSHOT_EXPIRED` once its grace period has elapsed. QueryContext and its pins are therefore
+retryable `MC_SNAPSHOT_EXPIRED` once its grace period has elapsed. QueryContext and its resolved selections are therefore
 only in-process read optimizations, never GC roots. Transaction GC and reconcile-job GC remain
 separate collectors for their own durable key families.
 
@@ -454,7 +458,7 @@ Extension points:
   additional connector metadata via the `QueryScanService` streaming RPCs / `ScanBundleService` on the query
   path. Reconcile planning/execution does not use `ScanBundleService`; it goes through
   `FloecatConnector` directly. `BeginQuery` optionally accepts a client-specified `query_id` plus
-  `common.QueryInput` records so lifecycle can pre-pin snapshots/expansions for deterministic
+  `common.QueryInput` records so lifecycle can resolve snapshots/expansions up front for deterministic
   replay.
 
 Secrets Manager integration (tags + optional per-account assume-role) is documented in

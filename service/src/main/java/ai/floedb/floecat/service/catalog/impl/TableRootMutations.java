@@ -57,11 +57,11 @@ public final class TableRootMutations {
    * <p>{@code advance} applies the currency-advance rule so the snapshot may become the root's
    * current at registration. The sole caller ({@code TableRootWriter.commitSnapshotEntry}) always
    * passes {@code true}: the root's {@code current_snapshot_id} tracks the committed logical
-   * current immediately. QUERY visibility is gated separately at READ time — a read or pin will not
-   * resolve to a current whose entry has no stats-generation ref (see {@link StatsVisibilityGate}
-   * and the finalize gate in {@code SnapshotRepository}), so currency can advance here without
-   * exposing an unfinalized scan. {@link #setStatsGeneration} is the finalize commit that attaches
-   * that ref.
+   * current immediately. QUERY visibility is gated separately at READ time — a read or resolved
+   * selection will not resolve to a current whose entry has no stats-generation ref (see {@link
+   * StatsVisibilityGate} and the finalize gate in {@code SnapshotRepository}), so currency can
+   * advance here without exposing an unfinalized scan. {@link #setStatsGeneration} is the finalize
+   * commit that attaches that ref.
    */
   public static TableRootCommitter.RootMutator upsertSnapshot(
       TableRootRepository roots,

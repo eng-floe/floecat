@@ -58,12 +58,13 @@ final class SnapshotSelectionCommitter {
   private final String correlationId;
   private final TimingAccumulator timings;
 
-  // First-touch snapshot per relation id, shared with the resolver so a relation pins to one
+  // First-touch snapshot per relation id, shared with the resolver so a relation resolves to one
   // snapshot for the life of the request.
   private final SnapshotSelectionMemo snapshotSelectionMemo = new SnapshotSelectionMemo();
   private final Object pendingSelectionsLock = new Object();
 
-  // Pins gathered but not yet made durable; folded across chunks, drained by commit().
+  // Resolved selections gathered but not yet made durable; folded across chunks, drained by
+  // commit().
   private RelationPinSet pendingSelections = RelationPinSet.getDefaultInstance();
 
   SnapshotSelectionCommitter(

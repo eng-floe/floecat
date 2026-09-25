@@ -105,8 +105,7 @@ public class QueryContextStoreImpl implements QueryContextStore {
   public Optional<QueryContext> get(String queryId) {
     // The lazy ACTIVE→EXPIRED transition must be atomic with respect to concurrent writers. A
     // read-then-put (as an earlier version did) could overwrite a context that update() had just
-    // committed pins into with a stale pre-pin version marked EXPIRED — losing the pins after
-    // their transient resolving roots were already dropped, leaving the blobs rooted by neither.
+    // committed resolved selections into with a stale pre-resolution version marked EXPIRED.
     QueryContext ctx =
         cache.computeIfPresent(
             queryId,

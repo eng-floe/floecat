@@ -31,19 +31,19 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Where a pinned read fails, and what it reports when it does.
+ * Where a resolved-snapshot read fails, and what it reports when it does.
  *
- * <p>A pinned read follows refs out of an immutable, content-addressed root, so a pin whose blobs
- * still read is coherent whatever has happened to the live pointer meanwhile. There is no up-front
- * probe: if a resolved snapshot blob is gone, the read that needs it fails here, at the point of
- * the read, rather than at a check taken beforehand.
+ * <p>A resolved-snapshot read follows refs out of an immutable, content-addressed root, so a
+ * selection whose blobs still read is coherent whatever has happened to the live pointer meanwhile.
+ * There is no up-front probe: if a resolved snapshot blob is gone, the read that needs it fails
+ * here, at the point of the read, rather than at a check taken beforehand.
  *
  * <p>Every integrity failure raised here also enqueues the table for repair. A missing resolved
  * snapshot blob means the table's committed root names data a read cannot load, and that state
  * persists across queries until the root is re-derived -- so beyond failing this query loudly, the
  * table goes to the periodic resync re-drive. What this owns is the catalog-integrity ERROR for a
- * resolved snapshot blob read on the query path. Pin construction in {@code SnapshotHelper} fails
- * before any pinned read exists. Both paths take {@link RootRepairRequests} directly.
+ * resolved snapshot blob read on the query path. Selection construction in {@code SnapshotHelper}
+ * fails before any resolved read exists. Both paths take {@link RootRepairRequests} directly.
  */
 @ApplicationScoped
 public class ResolvedSnapshotReadContract {
@@ -69,7 +69,7 @@ public class ResolvedSnapshotReadContract {
   }
 
   /**
-   * Unwrap a pinned-table-blob load, failing with the catalog-integrity error every pinned read
+   * Unwrap a resolved-table-blob load, failing with the catalog-integrity error every resolved read
    * uses when the blob is gone.
    */
   public <T> T requireResolvedTableBlob(

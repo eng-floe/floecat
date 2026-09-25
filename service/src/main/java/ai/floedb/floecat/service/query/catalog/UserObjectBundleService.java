@@ -750,9 +750,9 @@ public class UserObjectBundleService {
                   rel,
                   syntheticInput,
                   canonicalName(rel));
-          // Base-table pins are already derived from the parent view candidate (including AS-OF
-          // overrides). Avoid re-adding a synthetic TABLE_ID pin here, which would otherwise
-          // resolve to CURRENT and can overwrite AS-OF pins in the same batch.
+          // Base-table selections are already derived from the parent view candidate (including
+          // AS-OF overrides). Avoid re-adding a synthetic TABLE_ID selection here, which would
+          // otherwise resolve to CURRENT and can overwrite AS-OF selections in the same batch.
           pending.add(new PendingFound(-1, syntheticRelation));
         } finally {
           timings.addBaseInjectNanos(System.nanoTime() - resolveStartNs);
@@ -1027,8 +1027,8 @@ public class UserObjectBundleService {
             chunkItems.size(),
             selectionCommitter.pendingSelectionCount());
       }
-      // Ensure pins are durable before accessing stats (which expect the QueryContext to be
-      // pinned).
+      // Ensure resolved selections are durable before accessing stats, which use the QueryContext
+      // snapshot choices.
       selectionCommitter.commit(this::isCancelled);
       throwIfCancelled(this::isCancelled);
 
