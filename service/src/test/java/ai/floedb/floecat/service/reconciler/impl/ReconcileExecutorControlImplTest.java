@@ -56,12 +56,14 @@ import ai.floedb.floecat.reconciler.rpc.LeasedSnapshotFinalizeInput;
 import ai.floedb.floecat.reconciler.rpc.ListLeasedSnapshotFileGroupResultsRequest;
 import ai.floedb.floecat.reconciler.rpc.PlannedFileGroupPlanJob;
 import ai.floedb.floecat.reconciler.rpc.ReconcileCompletionState;
+import ai.floedb.floecat.reconciler.rpc.ReconcileFailureKind;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryClass;
 import ai.floedb.floecat.reconciler.rpc.ReconcileFailureRetryDisposition;
 import ai.floedb.floecat.reconciler.rpc.RenewReconcileLeaseRequest;
 import ai.floedb.floecat.reconciler.rpc.ReportReconcileProgressRequest;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestDescriptor;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanSnapshotResultRequest;
+import ai.floedb.floecat.reconciler.rpc.SubmitLeasedPlanTableResultRequest;
 import ai.floedb.floecat.reconciler.rpc.SubmitLeasedSnapshotFinalizeResultRequest;
 import ai.floedb.floecat.service.reconciler.jobs.LeaseScanCapacityExceededException;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -1120,6 +1122,85 @@ class ReconcileExecutorControlImplTest {
             eq(0L));
   }
 
+  @Test
+  void submitLeasedPlanTableTerminalFailureCancelsAlreadyEnqueuedChildren() {
+    when(service.leasedPlannerWorkerService.persistPlanTableFailure(
+            any(), any(), any(), any(), any(), any(), any()))
+        .thenReturn(
+            new LeasedPlannerWorkerService.PlanFailurePersistResult(
+                true, ReconcileJobStore.CompletionKind.FAILED_TERMINAL));
+    var table = job("table-1", "acct", ReconcileJobKind.PLAN_TABLE, "", "JS_FAILED");
+    var snapshot =
+        job("snapshot-1", "acct", ReconcileJobKind.PLAN_SNAPSHOT, "table-1", "JS_RUNNING");
+    var cancellingSnapshot =
+        job("snapshot-1", "acct", ReconcileJobKind.PLAN_SNAPSHOT, "table-1", "JS_CANCELLING");
+    when(service.jobs.get(null, "table-1")).thenReturn(Optional.of(table));
+    when(service.jobs.get("acct", "snapshot-1")).thenReturn(Optional.of(snapshot));
+    when(service.jobs.childJobsPage("acct", "table-1", 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(List.of(snapshot), ""));
+    when(service.jobs.cancel("acct", "snapshot-1", "table planning failed"))
+        .thenReturn(Optional.of(cancellingSnapshot));
+
+    var response =
+        service
+            .submitLeasedPlanTableResult(
+                SubmitLeasedPlanTableResultRequest.newBuilder()
+                    .setJobId("table-1")
+                    .setLeaseEpoch("lease-1")
+                    .setFailure(
+                        SubmitLeasedPlanTableResultRequest.Failure.newBuilder()
+                            .setFailureKind(ReconcileFailureKind.RFK_INTERNAL)
+                            .setRetryDisposition(ReconcileFailureRetryDisposition.RFRD_TERMINAL)
+                            .setMessage("table planning failed"))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
+    verify(service.jobs).cancel("acct", "snapshot-1", "table planning failed");
+    verify(service.cancellations).requestCancel("snapshot-1");
+  }
+
+  @Test
+  void submitLeasedPlanSnapshotTerminalFailureCancelsAlreadyEnqueuedChildren() {
+    when(service.leasedPlannerWorkerService.persistPlanSnapshotFailure(
+            any(), any(), any(), any(), any(), any(), any()))
+        .thenReturn(
+            new LeasedPlannerWorkerService.PlanFailurePersistResult(
+                true, ReconcileJobStore.CompletionKind.FAILED_TERMINAL));
+    var snapshot = job("snapshot-1", "acct", ReconcileJobKind.PLAN_SNAPSHOT, "", "JS_FAILED");
+    var fileGroup =
+        job("file-1", "acct", ReconcileJobKind.EXEC_FILE_GROUP, "snapshot-1", "JS_RUNNING");
+    var cancellingFileGroup =
+        job("file-1", "acct", ReconcileJobKind.EXEC_FILE_GROUP, "snapshot-1", "JS_CANCELLING");
+    when(service.jobs.get(null, "snapshot-1")).thenReturn(Optional.of(snapshot));
+    when(service.jobs.get("acct", "file-1")).thenReturn(Optional.of(fileGroup));
+    when(service.jobs.childJobsPage("acct", "snapshot-1", 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(List.of(fileGroup), ""));
+    when(service.jobs.cancel("acct", "file-1", "snapshot planning failed"))
+        .thenReturn(Optional.of(cancellingFileGroup));
+
+    var response =
+        service
+            .submitLeasedPlanSnapshotResult(
+                SubmitLeasedPlanSnapshotResultRequest.newBuilder()
+                    .setJobId("snapshot-1")
+                    .setLeaseEpoch("lease-1")
+                    .setFailure(
+                        SubmitLeasedPlanSnapshotResultRequest.Failure.newBuilder()
+                            .setFailureKind(ReconcileFailureKind.RFK_INTERNAL)
+                            .setRetryDisposition(ReconcileFailureRetryDisposition.RFRD_TERMINAL)
+                            .setMessage("snapshot planning failed"))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccepted());
+    verify(service.jobs).cancel("acct", "file-1", "snapshot planning failed");
+    verify(service.cancellations).requestCancel("file-1");
+  }
+
+  @Test
   void completeLeasedReconcileJobCancelsQueuedGrandchildrenOfCancelledPlanChildren() {
     when(service.jobs.applyLeaseOutcome(
             eq("job-1"),

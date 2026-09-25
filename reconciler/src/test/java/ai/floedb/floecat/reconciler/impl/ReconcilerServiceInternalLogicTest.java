@@ -35,10 +35,8 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend.DestinationTableMetadata;
 import java.time.Instant;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBase {
@@ -94,64 +92,6 @@ class ReconcilerServiceInternalLogicTest extends AbstractReconcilerServiceTestBa
 
     assertThat(result.hasParentSnapshotId()).isTrue();
     assertThat(result.getParentSnapshotId()).isZero();
-  }
-
-  @Test
-  void filterBundlesForModeKeepsOnlyKnownLocalSnapshotsForIncrementalCaptureOnly() {
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
-        List.of(
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null),
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, null));
-
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
-        QueuedReconcileWorkerSupport.filterBundlesForMode(
-            bundles, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
-
-    assertThat(filtered)
-        .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(10L, 12L);
-  }
-
-  @Test
-  void filterBundlesForModeKeepsOnlyKnownLocalSnapshotsForCaptureOnly() {
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
-        List.of(
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null));
-
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
-        QueuedReconcileWorkerSupport.filterBundlesForMode(
-            bundles, false, Set.of(10L, 12L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
-
-    assertThat(filtered)
-        .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(10L);
-  }
-
-  @Test
-  void filterBundlesForModeSkipsSnapshotsMissingFromLocalMetadataDuringIncrementalCaptureOnly() {
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> bundles =
-        List.of(
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                10L, 0L, 1L, "", null, 0L, null, Map.of(), 0, null),
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                11L, 10L, 2L, "", null, 0L, null, Map.of(), 0, null),
-            new ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle(
-                12L, 11L, 3L, "", null, 0L, null, Map.of(), 0, null));
-
-    List<ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle> filtered =
-        QueuedReconcileWorkerSupport.filterBundlesForMode(
-            bundles, false, Set.of(11L), (ts, tc, vs, vc, e, sp, stp, m) -> {});
-
-    assertThat(filtered)
-        .extracting(ai.floedb.floecat.connector.spi.FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(11L);
   }
 
   @Test

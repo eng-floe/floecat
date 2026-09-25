@@ -36,6 +36,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.reconciler.impl.ReconcileCancellationRegistry;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
@@ -53,6 +54,8 @@ import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobRequest;
 import ai.floedb.floecat.reconciler.rpc.GetReconcileJobTreeRequest;
 import ai.floedb.floecat.reconciler.rpc.ListReconcileJobsRequest;
+import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.reconciler.jobs.DurableReconcileJobStore;
 import ai.floedb.floecat.service.reconciler.jobs.ReconcilerSettingsStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
@@ -997,10 +1000,38 @@ class ReconcileControlImplTest {
   }
 
   @Test
-  void getReconcileJobTreeUsesDedicatedStoreTraversal() {
+  void getReconcileJobTreeStreamsPagedStoreTraversal() {
     var root = job("plan-1", "JS_RUNNING", 1, 0, 0, "");
     var child = childJob("table-1", "JS_QUEUED", 0, 0, 0, "", "plan-1");
-    when(service.jobs.jobTree("acct", "plan-1")).thenReturn(java.util.List.of(root, child));
+    var leaf = fileGroupChildJob("group-1", "JS_QUEUED", "plan-1", "group-1");
+    when(service.jobs.get("acct", "plan-1")).thenReturn(Optional.of(root));
+    when(service.jobs.childTreeJobsPage("acct", "plan-1", 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(child), "next"));
+    when(service.jobs.childTreeJobsPage("acct", "plan-1", 200, "next"))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(leaf), ""));
+    when(service.jobs.childTreeJobsPage("acct", "table-1", 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(), ""));
+
+    var response = jobTree("plan-1").collect().asList().await().indefinitely();
+
+    assertEquals(3, response.size());
+    assertEquals("plan-1", response.get(0).getJobId());
+    assertEquals("table-1", response.get(1).getJobId());
+    assertEquals("group-1", response.get(2).getJobId());
+    verify(service.jobs).childTreeJobsPage("acct", "plan-1", 200, "");
+    verify(service.jobs).childTreeJobsPage("acct", "plan-1", 200, "next");
+    verify(service.jobs).childTreeJobsPage("acct", "table-1", 200, "");
+    verify(service.jobs, never()).childTreeJobsPage("acct", "group-1", 200, "");
+    verify(service.jobs, never()).list("acct", 100, "", "", java.util.Set.of());
+  }
+
+  @Test
+  void getReconcileJobTreeRetainsTheLegacyUnaryContract() {
+    var root = job("plan-1", "JS_RUNNING", 1, 0, 0, "");
+    var leaf = fileGroupChildJob("group-1", "JS_QUEUED", "plan-1", "group-1");
+    when(service.jobs.get("acct", "plan-1")).thenReturn(Optional.of(root));
+    when(service.jobs.childTreeJobsPage("acct", "plan-1", 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(leaf), ""));
 
     var response =
         service
@@ -1010,9 +1041,38 @@ class ReconcileControlImplTest {
 
     assertEquals(2, response.getJobsCount());
     assertEquals("plan-1", response.getJobs(0).getJobId());
-    assertEquals("table-1", response.getJobs(1).getJobId());
-    verify(service.jobs).jobTree("acct", "plan-1");
-    verify(service.jobs, never()).list("acct", 100, "", "", java.util.Set.of());
+    assertEquals("group-1", response.getJobs(1).getJobId());
+    verify(service.jobs, never()).childTreeJobsPage("acct", "group-1", 200, "");
+  }
+
+  @Test
+  void getReconcileJobTreeFailsOnNonAdvancingContinuationToken() {
+    var root = job("plan-1", "JS_RUNNING", 1, 0, 0, "");
+    var leaf = fileGroupChildJob("group-1", "JS_QUEUED", "plan-1", "group-1");
+    when(service.jobs.get("acct", "plan-1")).thenReturn(Optional.of(root));
+    when(service.jobs.childTreeJobsPage("acct", "plan-1", 200, ""))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(leaf), "next"));
+    when(service.jobs.childTreeJobsPage("acct", "plan-1", 200, "next"))
+        .thenReturn(new ReconcileJobStore.ReconcileJobPage(java.util.List.of(leaf), "next"));
+
+    StatusRuntimeException ex =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> jobTree("plan-1").collect().asList().await().indefinitely());
+
+    assertEquals(Status.Code.INTERNAL, ex.getStatus().getCode());
+  }
+
+  private io.smallrye.mutiny.Multi<ai.floedb.floecat.reconciler.rpc.GetReconcileJobResponse>
+      jobTree(String jobId) {
+    var callContext =
+        new ResolvedCallContext(
+            service.principalProvider.get(), "", "corr", EngineContext.empty(), null, null);
+    return ResolvedCallContexts.callWith(
+        callContext,
+        () ->
+            service.streamReconcileJobTree(
+                GetReconcileJobTreeRequest.newBuilder().setJobId(jobId).build()));
   }
 
   @Test

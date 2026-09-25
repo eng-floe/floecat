@@ -1029,6 +1029,67 @@ class DurableReconcileJobStoreTest {
         store.getCompactLeaseView(jobId).orElseThrow().snapshotTask.indexPredecessor());
   }
 
+  /**
+   * LeasedFileGroupExecutionService resolves a worker's planned file group from the compact parent
+   * view instead of the full one, so it never deserializes the whole snapshot plan. That only works
+   * while the compact projection carries the plan's locator fields: the file-group list is
+   * deliberately dropped, but dropping any of these turns every file-group execution into an opaque
+   * "planned file group could not be resolved" failure.
+   */
+  @Test
+  void compactLeaseViewCarriesPlanLocatorsWithoutTheFileGroupList() throws Exception {
+    ReconcileScope scope = ReconcileScope.of(List.of(), "table-1", List.of());
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/file.parquet"));
+    String planUri = "s3://bucket/plans/plan-1.json";
+    store.blobStore.put(
+        planUri,
+        store.mapper.writeValueAsBytes(
+            SnapshotPlanBlob.of(
+                List.of(
+                    new ai.floedb.floecat.reconciler.impl.PlannedFileGroupJob(
+                        ReconcileScope.empty(), group)))),
+        "application/json");
+    ReconcileSnapshotTask snapshotTask =
+        ReconcileSnapshotTask.of(
+            "table-1",
+            55L,
+            "db",
+            "orders",
+            List.of(group),
+            true,
+            ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+            planUri,
+            1);
+    String jobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            scope,
+            snapshotTask,
+            ReconcileExecutionPolicy.defaults(),
+            "parent-1",
+            "");
+
+    ReconcileSnapshotTask compact = store.getCompactLeaseView(jobId).orElseThrow().snapshotTask;
+    ReconcileSnapshotTask full = store.get(ACCOUNT_ID, jobId).orElseThrow().snapshotTask;
+
+    // The store re-homes the plan under its own derived URI, so the invariant is parity with the
+    // full view rather than the URI handed to enqueue.
+    assertFalse(compact.fileGroupPlanBlobUri().isBlank());
+    assertEquals(full.fileGroupPlanBlobUri(), compact.fileGroupPlanBlobUri());
+    assertTrue(compact.fileGroupPlanRecorded());
+    assertEquals("table-1", compact.tableId());
+    assertEquals(55L, compact.snapshotId());
+    // The heavy field is dropped on purpose -- and isEmpty() must still see a real task, since the
+    // resolver rejects the parent outright when it does not.
+    assertTrue(compact.fileGroups().isEmpty());
+    assertFalse(compact.isEmpty());
+  }
+
   @Test
   void legacyUnpinnedSnapshotJobMustBeRecreated() {
     ReconcileScope scope =
@@ -2562,6 +2623,88 @@ class DurableReconcileJobStoreTest {
             .pointerStore
             .get(Keys.reconcileCancellationCleanupPointer(ACCOUNT_ID, connectorJobId))
             .isEmpty());
+  }
+
+  @Test
+  void completedChildCancellationCleanupRefreshesWaitingAncestor() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            connectorJobId,
+            "");
+
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_WAITING";
+                      current.message = "Waiting on child work";
+                      current.startedAtMs = Math.max(current.startedAtMs, 50L);
+                      current.finishedAtMs = 0L;
+                      current.childrenFinalized = true;
+                      current.expectedDirectChildren = 1L;
+                      current.readyPointerKey = null;
+                      current.nextAttemptAtMs = 0L;
+                      return current;
+                    }));
+    assertDoesNotThrow(
+        () ->
+            invokePrivateMethod(
+                store,
+                "mutateByCanonicalPointerReturningRecord",
+                new Class<?>[] {String.class, UnaryOperator.class},
+                Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId),
+                (UnaryOperator<StoredReconcileJob>)
+                    current -> {
+                      current.state = "JS_CANCELLED";
+                      current.message = "Cancelled";
+                      current.startedAtMs = Math.max(current.startedAtMs, 60L);
+                      current.finishedAtMs = 100L;
+                      current.childrenFinalized = true;
+                      current.readyPointerKey = null;
+                      current.nextAttemptAtMs = 0L;
+                      return current;
+                    }));
+
+    store.pointerStore.delete(dirtyParentKey(ACCOUNT_ID, connectorJobId));
+    StoredReconcileJob table =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, tableJobId));
+    assertEquals(
+        true,
+        assertDoesNotThrow(
+            () ->
+                invokePrivateMethod(
+                    store,
+                    "updateCancellationRootAfterDirectChildren",
+                    new Class<?>[] {StoredReconcileJob.class, boolean.class, long.class},
+                    table,
+                    true,
+                    200L)));
+
+    assertTrue(store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, connectorJobId)).isPresent());
+
+    runProjectionMaintenance();
+
+    assertEquals("JS_CANCELLED", store.getLeaseView(connectorJobId).orElseThrow().state);
   }
 
   @Test

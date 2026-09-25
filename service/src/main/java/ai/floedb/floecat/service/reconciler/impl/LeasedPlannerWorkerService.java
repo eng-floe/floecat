@@ -100,6 +100,9 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
 
   record PlanViewPersistResult(boolean accepted, long viewsChanged) {}
 
+  record PlanFailurePersistResult(
+      boolean accepted, ReconcileJobStore.CompletionKind completionKind) {}
+
   record PlanSnapshotPayload(
       String jobId,
       String leaseEpoch,
@@ -238,8 +241,8 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_CONNECTOR);
-    return persistPlanFailure(
-        jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
+    return persistPlanFailure(jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message)
+        .accepted();
   }
 
   public PlanTablePayload resolvePlanTable(
@@ -267,7 +270,8 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       long errors,
       long snapshotsProcessed,
       long statsProcessed,
-      int chunkCount) {
+      int chunkCount,
+      long reportedSnapshotJobs) {
     ReconcileJobStore.LeasedJob lease =
         requireLeasedJob(
             principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_TABLE);
@@ -279,10 +283,19 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
     if (cancelled != null) {
       return cancelled;
     }
-    List<SubmitLeasedPlanTableResultRequest.Chunk> stagedChunks =
-        loadStagedPlanTableChunks(principalContext, jobId, leaseEpoch, chunkCount);
+    // The planner reports the total it submitted rather than having it re-derived from the staged
+    // chunk records. Every chunk is acknowledged synchronously and its PLAN_SNAPSHOT children are
+    // enqueued before the planner moves on, so reading the payloads back here would only
+    // re-verify that — at the cost of requiring those records to survive the whole planning phase,
+    // which for a --all reconcile of a large snapshot history runs well past
+    // floecat.idempotency.ttl-seconds and wedges the job on every attempt once they expire.
+    //
+    // The boundary probe still catches a planner that under-declares chunk_count while the records
+    // are live, and fails open once they have expired: by then the children are already durable,
+    // so treating the declared count as correct is the safe reading.
+    requireNoStagedPlanTableChunkAt(principalContext, jobId, leaseEpoch, chunkCount, chunkCount);
     long plannedSnapshotJobs =
-        stagedChunks.stream().mapToLong(chunk -> chunk.getSnapshotJobsCount()).sum();
+        requireConsistentPlannedSnapshotJobs(chunkCount, reportedSnapshotJobs);
     boolean accepted =
         completePlanSuccess(
             jobId,
@@ -300,6 +313,36 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       return false;
     }
     return true;
+  }
+
+  /**
+   * Cross-checks the planner's snapshot-job total against the chunk count it declared.
+   *
+   * <p>The total decides {@code handedOffChildWork} — whether the PLAN_TABLE job completes
+   * SUCCEEDED or SUCCEEDED_WAITING — so the two ways it can disagree with chunk_count are both
+   * job-tree corruption: reporting zero after submitting chunks completes the parent terminally
+   * while its PLAN_SNAPSHOT children are still running, and reporting jobs without submitting a
+   * chunk leaves the parent waiting for children that were never enqueued. A planner only flushes a
+   * chunk once it has at least one snapshot job to put in it, so every declared chunk accounts for
+   * at least one reported job; this also rejects a negative total from an out-of-contract caller,
+   * which the uint64 field would otherwise carry through as a huge unsigned value.
+   *
+   * <p>The exact magnitude is not verifiable here without a durable per-job counter maintained as
+   * chunks are accepted; beyond the completion kind it only reaches the completion message.
+   */
+  private static long requireConsistentPlannedSnapshotJobs(
+      int chunkCount, long reportedSnapshotJobs) {
+    long declaredChunks = Math.max(0, chunkCount);
+    if (declaredChunks == 0 ? reportedSnapshotJobs != 0L : reportedSnapshotJobs < declaredChunks) {
+      throw new IllegalArgumentException(
+          "plan-table success declared chunk_count="
+              + declaredChunks
+              + " with planned_snapshot_jobs="
+              + reportedSnapshotJobs
+              + "; each declared chunk carries at least one snapshot job and no chunks means no"
+              + " snapshot jobs");
+    }
+    return reportedSnapshotJobs;
   }
 
   public boolean persistPlanTableSnapshotChunk(
@@ -404,7 +447,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
     }
   }
 
-  public boolean persistPlanTableFailure(
+  public PlanFailurePersistResult persistPlanTableFailure(
       PrincipalContext principalContext,
       String jobId,
       String leaseEpoch,
@@ -478,8 +521,8 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
       String message) {
     requireLeasedJob(
         principalContext.getCorrelationId(), jobId, leaseEpoch, ReconcileJobKind.PLAN_VIEW);
-    return persistPlanFailure(
-        jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message);
+    return persistPlanFailure(jobId, leaseEpoch, failureKind, retryDisposition, retryClass, message)
+        .accepted();
   }
 
   public PlanSnapshotPayload resolvePlanSnapshot(
@@ -981,7 +1024,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
     return snapshotTask.withIndexPredecessor(leasedSnapshotTask.indexPredecessor());
   }
 
-  public boolean persistPlanSnapshotFailure(
+  public PlanFailurePersistResult persistPlanSnapshotFailure(
       PrincipalContext principalContext,
       String jobId,
       String leaseEpoch,
@@ -1001,23 +1044,6 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
   record PlannedViewJob(ReconcileScope scope, ReconcileViewTask viewTask) {}
 
   record PlannedSnapshotJob(ReconcileScope scope, ReconcileSnapshotTask snapshotTask) {}
-
-  private List<SubmitLeasedPlanTableResultRequest.Chunk> loadStagedPlanTableChunks(
-      PrincipalContext principalContext, String jobId, String leaseEpoch, int chunkCount) {
-    int expectedChunkCount = Math.max(0, chunkCount);
-    if (expectedChunkCount == 0) {
-      requireNoStagedPlanTableChunkAt(principalContext, jobId, leaseEpoch, 0, expectedChunkCount);
-      return List.of();
-    }
-    java.util.ArrayList<SubmitLeasedPlanTableResultRequest.Chunk> chunks =
-        new java.util.ArrayList<>(expectedChunkCount);
-    for (int chunkIndex = 0; chunkIndex < expectedChunkCount; chunkIndex++) {
-      chunks.add(loadStagedPlanTableChunk(principalContext, jobId, leaseEpoch, chunkIndex));
-    }
-    requireNoStagedPlanTableChunkAt(
-        principalContext, jobId, leaseEpoch, expectedChunkCount, expectedChunkCount);
-    return List.copyOf(chunks);
-  }
 
   private List<SubmitLeasedPlanSnapshotResultRequest.Chunk> loadStagedPlanSnapshotChunks(
       PrincipalContext principalContext, String jobId, String leaseEpoch, int chunkCount) {
@@ -1093,34 +1119,6 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         .get(idempotencyKey)
         .map(record -> record.getStatus() == IdempotencyRecord.Status.SUCCEEDED)
         .orElse(false);
-  }
-
-  private SubmitLeasedPlanTableResultRequest.Chunk loadStagedPlanTableChunk(
-      PrincipalContext principalContext, String jobId, String leaseEpoch, int chunkIndex) {
-    String idempotencyKey =
-        Keys.idempotencyKey(
-            principalContext.getAccountId(),
-            "SubmitLeasedPlanTableResult",
-            planTableChunkIdempotencyKey(jobId, leaseEpoch, chunkIndex));
-    IdempotencyRecord record =
-        idempotencyStore
-            .get(idempotencyKey)
-            .orElseThrow(() -> missingDeclaredPlanChunk("plan-table", idempotencyKey, chunkIndex));
-    if (record.getStatus() != IdempotencyRecord.Status.SUCCEEDED) {
-      throw new StorageAbortRetryableException(
-          "plan-table result chunk is not complete: key=" + idempotencyKey);
-    }
-    try {
-      SubmitLeasedPlanTableResultRequest.Chunk chunk =
-          SubmitLeasedPlanTableResultRequest.Chunk.parseFrom(record.getPayload());
-      if (chunk.getChunkIndex() != chunkIndex) {
-        throw new IllegalArgumentException("staged plan-table result chunk identity mismatch");
-      }
-      return chunk;
-    } catch (com.google.protobuf.InvalidProtocolBufferException e) {
-      throw new ai.floedb.floecat.service.repo.util.BaseResourceRepository.CorruptionException(
-          "failed to parse staged plan-table result chunk", e);
-    }
   }
 
   private SubmitLeasedPlanSnapshotResultRequest.Chunk loadStagedPlanSnapshotChunk(
@@ -1319,7 +1317,7 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
         .orElse(false);
   }
 
-  private boolean persistPlanFailure(
+  private PlanFailurePersistResult persistPlanFailure(
       String jobId,
       String leaseEpoch,
       ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind failureKind,
@@ -1327,69 +1325,44 @@ public class LeasedPlannerWorkerService extends BaseServiceImpl {
           retryDisposition,
       ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass retryClass,
       String message) {
-    long finishedAtMs = System.currentTimeMillis();
+    ReconcileJobStore.CompletionKind completionKind =
+        completionKindForFailure(failureKind, retryDisposition, retryClass);
+    boolean accepted =
+        jobs.applyLeaseOutcome(
+            jobId,
+            leaseEpoch,
+            completionKind,
+            System.currentTimeMillis(),
+            message,
+            0L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L,
+            0L);
+    return new PlanFailurePersistResult(accepted, completionKind);
+  }
+
+  private static ReconcileJobStore.CompletionKind completionKindForFailure(
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.FailureKind failureKind,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
+          retryDisposition,
+      ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass retryClass) {
     if (isObsoleteFailureKind(failureKind)) {
-      return jobs.applyLeaseOutcome(
-          jobId,
-          leaseEpoch,
-          ReconcileJobStore.CompletionKind.CANCELLED,
-          finishedAtMs,
-          message,
-          0L,
-          0L,
-          0L,
-          0L,
-          1L,
-          0L,
-          0L);
+      return ReconcileJobStore.CompletionKind.CANCELLED;
     }
     if (retryDisposition
         == ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryDisposition
             .TERMINAL) {
-      return jobs.applyLeaseOutcome(
-          jobId,
-          leaseEpoch,
-          ReconcileJobStore.CompletionKind.FAILED_TERMINAL,
-          finishedAtMs,
-          message,
-          0L,
-          0L,
-          0L,
-          0L,
-          1L,
-          0L,
-          0L);
+      return ReconcileJobStore.CompletionKind.FAILED_TERMINAL;
     }
     if (retryClass
         == ai.floedb.floecat.reconciler.impl.ReconcileExecutor.ExecutionResult.RetryClass
             .DEPENDENCY_NOT_READY) {
-      return jobs.applyLeaseOutcome(
-          jobId,
-          leaseEpoch,
-          ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY,
-          finishedAtMs,
-          message,
-          0L,
-          0L,
-          0L,
-          0L,
-          1L,
-          0L,
-          0L);
+      return ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY;
     }
-    return jobs.applyLeaseOutcome(
-        jobId,
-        leaseEpoch,
-        ReconcileJobStore.CompletionKind.FAILED_RETRYABLE,
-        finishedAtMs,
-        message,
-        0L,
-        0L,
-        0L,
-        0L,
-        1L,
-        0L,
-        0L);
+    return ReconcileJobStore.CompletionKind.FAILED_RETRYABLE;
   }
 
   private static boolean isObsoleteFailureKind(

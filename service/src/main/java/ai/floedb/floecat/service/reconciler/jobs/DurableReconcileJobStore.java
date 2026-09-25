@@ -1479,6 +1479,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   @Override
+  public ReconcileJobPage childTreeJobsPage(
+      String accountId, String parentJobId, int pageSize, String pageToken) {
+    var page = jobIndexStore().listStoredChildJobs(accountId, parentJobId, pageSize, pageToken);
+    List<ReconcileJob> out = new java.util.ArrayList<>(page.records().size());
+    for (StoredReconcileJob stored : page.records()) {
+      out.add(projector().toPublicTreeJob(stored, storedProjectionForRead(stored)));
+    }
+    return new ReconcileJobPage(out, page.nextPageToken());
+  }
+
+  @Override
   public FileGroupResultDescriptorPage childFileGroupResultDescriptorsPage(
       String accountId, String parentJobId, int pageSize, String pageToken) {
     var page = jobIndexStore().listStoredChildJobs(accountId, parentJobId, pageSize, pageToken);
@@ -1540,43 +1551,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                     blankToEmpty(stored.sourceRevision),
                     blankToEmpty(stored.metadataFingerprint),
                     stored.captureCoverage));
-  }
-
-  @Override
-  public List<ReconcileJob> jobTree(String accountId, String rootJobId) {
-    if (rootJobId == null || rootJobId.isBlank()) {
-      return List.of();
-    }
-    StoredEnvelope rootEnvelope = loadByAnyAccount(rootJobId).orElse(null);
-    if (rootEnvelope == null
-        || (accountId != null
-            && !accountId.isBlank()
-            && !accountId.equals(rootEnvelope.record.accountId))) {
-      return List.of();
-    }
-    List<ReconcileJob> out = new java.util.ArrayList<>();
-    java.util.ArrayDeque<String> pendingParents = new java.util.ArrayDeque<>();
-    out.add(
-        projector()
-            .toPublicTreeJob(rootEnvelope.record, storedProjectionForRead(rootEnvelope.record)));
-    pendingParents.add(rootJobId);
-    while (!pendingParents.isEmpty()) {
-      String parentJobId = pendingParents.removeFirst();
-      String nextToken = "";
-      do {
-        var page =
-            jobIndexStore()
-                .listStoredChildJobs(rootEnvelope.record.accountId, parentJobId, 1000, nextToken);
-        for (StoredReconcileJob stored : page.records()) {
-          out.add(projector().toPublicTreeJob(stored, storedProjectionForRead(stored)));
-          if (isParentCapable(stored.jobKind())) {
-            pendingParents.addLast(stored.jobId);
-          }
-        }
-        nextToken = page.nextPageToken();
-      } while (nextToken != null && !nextToken.isBlank());
-    }
-    return out;
   }
 
   @Override
@@ -3736,7 +3710,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         effectiveRoot = next;
       }
       requestParentCancellationCleanupIfNeeded(effectiveRoot);
-      return cleanupAbandonedFullRescanStatsGenerationIfTerminal(effectiveRoot);
+      return completeCancellationCleanup(effectiveRoot);
     }
     StoredReconcileJob next = jobIndexStore().cloneStoredRecord(root);
     next.state = "JS_CANCELLED";
@@ -3757,7 +3731,17 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     markDirtyParentForRecord(next);
     upsertRootSummaryForRecord(next);
     requestParentCancellationCleanupIfNeeded(next);
-    return cleanupAbandonedFullRescanStatsGenerationIfTerminal(next);
+    return completeCancellationCleanup(next);
+  }
+
+  private boolean completeCancellationCleanup(StoredReconcileJob root) {
+    boolean complete = cleanupAbandonedFullRescanStatsGenerationIfTerminal(root);
+    if (complete) {
+      // Cancellation-state projections are intentionally skipped. Wake the actual ancestor once
+      // descendant cleanup is complete so it can observe this terminal child.
+      requestProjectionRefresh(root.accountId, root.parentJobId);
+    }
+    return complete;
   }
 
   private void requestParentCancellationCleanupIfNeeded(StoredReconcileJob child) {
@@ -5605,9 +5589,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private boolean isParentCapable(ReconcileJobKind jobKind) {
-    return jobKind == ReconcileJobKind.PLAN_CONNECTOR
-        || jobKind == ReconcileJobKind.PLAN_TABLE
-        || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
+    return jobKind != null && jobKind.isParentCapable();
   }
 
   private static long firstPositiveMin(long first, long second) {

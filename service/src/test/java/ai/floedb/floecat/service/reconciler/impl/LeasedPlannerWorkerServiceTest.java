@@ -706,7 +706,7 @@ class LeasedPlannerWorkerServiceTest {
         .thenReturn(true);
 
     boolean accepted =
-        service.persistPlanTableSuccess(principal, "job-1", "lease-1", 1L, 1L, 0L, 0L, 0L, 0);
+        service.persistPlanTableSuccess(principal, "job-1", "lease-1", 1L, 1L, 0L, 0L, 0L, 0, 0L);
 
     assertTrue(accepted);
     verify(jobs)
@@ -747,7 +747,7 @@ class LeasedPlannerWorkerServiceTest {
         .thenReturn(true);
 
     boolean accepted =
-        service.persistPlanTableSuccess(principal, "job-1", "lease-1", 1L, 1L, 0L, 1L, 0L, 0);
+        service.persistPlanTableSuccess(principal, "job-1", "lease-1", 1L, 1L, 0L, 1L, 0L, 0, 0L);
 
     assertTrue(accepted);
     verify(jobs, never())
@@ -768,21 +768,139 @@ class LeasedPlannerWorkerServiceTest {
             eq(0L));
   }
 
+  /**
+   * Chunks are staged as the planner streams them and their PLAN_SNAPSHOT children are enqueued
+   * before the planner moves on, so a planning phase that outlives the idempotency TTL must still
+   * be able to complete: the staged records are receipts, not the source of truth. Reading them
+   * back here wedged such a job on FAILED_PRECONDITION on every attempt while its children kept
+   * running.
+   */
   @Test
-  void persistPlanTableSuccessRejectsMissingDeclaredChunk() {
+  void persistPlanTableSuccessAcceptsPlanWhoseStagedChunksHaveExpired() {
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_TABLE)));
+    when(jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
+            anyLong(),
+            eq("Planned 9 snapshot job(s)"),
+            eq(1L),
+            eq(1L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(9L),
+            eq(0L)))
+        .thenReturn(true);
+
+    assertTrue(
+        service.persistPlanTableSuccess(principal, "job-1", "lease-1", 1L, 1L, 0L, 9L, 0L, 2, 9L));
+
+    verify(jobs)
+        .applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
+            anyLong(),
+            eq("Planned 9 snapshot job(s)"),
+            eq(1L),
+            eq(1L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(9L),
+            eq(0L));
+  }
+
+  /**
+   * The GC expires receipts oldest-first, so the real shape of the reported failure is an early
+   * chunk gone while a later one is still live — not a clean slate. Completion must not depend on
+   * either.
+   */
+  @Test
+  void persistPlanTableSuccessAcceptsPlanWhoseEarlyStagedChunkHasExpired() {
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_TABLE)));
+    // Chunk 0 has aged out; chunk 1 was staged later and is still readable.
+    stagePlanTableChunk("job-1", "lease-1", 1, 1);
+    when(jobs.applyLeaseOutcome(
+            eq("job-1"),
+            eq("lease-1"),
+            eq(ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING),
+            anyLong(),
+            eq("Planned 9 snapshot job(s)"),
+            eq(1L),
+            eq(1L),
+            eq(0L),
+            eq(0L),
+            eq(0L),
+            eq(9L),
+            eq(0L)))
+        .thenReturn(true);
+
+    assertTrue(
+        service.persistPlanTableSuccess(principal, "job-1", "lease-1", 1L, 1L, 0L, 9L, 0L, 2, 9L));
+  }
+
+  @Test
+  void persistPlanTableSuccessRejectsZeroSnapshotJobsAfterSubmittingChunks() {
     when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
     when(jobs.getLeaseView("job-1"))
         .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_TABLE)));
 
-    StatusRuntimeException error =
+    IllegalArgumentException error =
         assertThrows(
-            StatusRuntimeException.class,
+            IllegalArgumentException.class,
             () ->
                 service.persistPlanTableSuccess(
-                    principal, "job-1", "lease-1", 1L, 1L, 0L, 0L, 0L, 1));
+                    principal, "job-1", "lease-1", 1L, 1L, 0L, 0L, 0L, 2, 0L));
 
-    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
-    assertTrue(error.getStatus().getDescription().contains("declared chunk index 0"));
+    assertTrue(error.getMessage().contains("planned_snapshot_jobs=0"));
+    verify(jobs, never())
+        .applyLeaseOutcome(
+            any(), any(), any(), anyLong(), any(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), anyLong());
+  }
+
+  @Test
+  void persistPlanTableSuccessRejectsSnapshotJobsWithoutSubmittedChunks() {
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_TABLE)));
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                service.persistPlanTableSuccess(
+                    principal, "job-1", "lease-1", 1L, 1L, 0L, 0L, 0L, 0, 4L));
+
+    assertTrue(error.getMessage().contains("chunk_count=0"));
+    verify(jobs, never())
+        .applyLeaseOutcome(
+            any(), any(), any(), anyLong(), any(), anyLong(), anyLong(), anyLong(), anyLong(),
+            anyLong(), anyLong(), anyLong());
+  }
+
+  @Test
+  void persistPlanTableSuccessRejectsUnderDeclaredChunkCount() {
+    when(jobs.renewLease("job-1", "lease-1")).thenReturn(true);
+    when(jobs.getLeaseView("job-1"))
+        .thenReturn(java.util.Optional.of(job("job-1", ReconcileJobKind.PLAN_TABLE)));
+    stagePlanTableChunk("job-1", "lease-1", 0, 4);
+    stagePlanTableChunk("job-1", "lease-1", 1, 4);
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                service.persistPlanTableSuccess(
+                    principal, "job-1", "lease-1", 1L, 1L, 0L, 0L, 0L, 1, 4L));
+
+    assertTrue(error.getMessage().contains("staged chunk exists at index 1"));
     verify(jobs, never())
         .applyLeaseOutcome(
             any(), any(), any(), anyLong(), any(), anyLong(), anyLong(), anyLong(), anyLong(),
@@ -909,7 +1027,7 @@ class LeasedPlannerWorkerServiceTest {
             anyLong()))
         .thenReturn(true);
 
-    boolean accepted =
+    var result =
         service.persistPlanTableFailure(
             principal,
             "job-2",
@@ -922,7 +1040,9 @@ class LeasedPlannerWorkerServiceTest {
                 .DEPENDENCY_NOT_READY,
             "waiting");
 
-    assertTrue(accepted);
+    assertTrue(result.accepted());
+    assertEquals(
+        ReconcileJobStore.CompletionKind.FAILED_WAITING_ON_DEPENDENCY, result.completionKind());
     verify(jobs)
         .applyLeaseOutcome(
             eq("job-2"),
@@ -959,7 +1079,7 @@ class LeasedPlannerWorkerServiceTest {
             anyLong()))
         .thenReturn(true);
 
-    boolean accepted =
+    var result =
         service.persistPlanTableFailure(
             principal,
             "job-2b",
@@ -972,7 +1092,8 @@ class LeasedPlannerWorkerServiceTest {
                 .TRANSIENT_ERROR,
             "getConnector failed: connector-1");
 
-    assertTrue(accepted);
+    assertTrue(result.accepted());
+    assertEquals(ReconcileJobStore.CompletionKind.CANCELLED, result.completionKind());
     verify(jobs)
         .applyLeaseOutcome(
             eq("job-2b"),
@@ -1009,7 +1130,7 @@ class LeasedPlannerWorkerServiceTest {
             anyLong()))
         .thenReturn(false);
 
-    boolean accepted =
+    var result =
         service.persistPlanTableFailure(
             principal,
             "job-2c",
@@ -1022,7 +1143,8 @@ class LeasedPlannerWorkerServiceTest {
                 .TRANSIENT_ERROR,
             "getConnector failed: connector-1");
 
-    assertTrue(!accepted);
+    assertTrue(!result.accepted());
+    assertEquals(ReconcileJobStore.CompletionKind.CANCELLED, result.completionKind());
   }
 
   @Test
@@ -1045,7 +1167,7 @@ class LeasedPlannerWorkerServiceTest {
             anyLong()))
         .thenReturn(true);
 
-    boolean accepted =
+    var result =
         service.persistPlanSnapshotFailure(
             principal,
             "job-3",
@@ -1058,7 +1180,8 @@ class LeasedPlannerWorkerServiceTest {
                 .TRANSIENT_ERROR,
             "retry");
 
-    assertTrue(accepted);
+    assertTrue(result.accepted());
+    assertEquals(ReconcileJobStore.CompletionKind.FAILED_RETRYABLE, result.completionKind());
     verify(jobs)
         .applyLeaseOutcome(
             eq("job-3"),
@@ -1996,6 +2119,23 @@ class LeasedPlannerWorkerServiceTest {
                     ReconcileFileExecutionPlan.of(
                         filePath, 1L, "{}", null, "parquet", 0, List.of(), "identity"))
             .toList());
+  }
+
+  private void stagePlanTableChunk(
+      String jobId, String leaseEpoch, int chunkIndex, int snapshotJobCount) {
+    SubmitLeasedPlanTableResultRequest.Chunk.Builder chunk =
+        SubmitLeasedPlanTableResultRequest.Chunk.newBuilder()
+            .setChunkIndex(Math.max(0, chunkIndex));
+    for (int index = 0; index < snapshotJobCount; index++) {
+      chunk.addSnapshotJobs(
+          ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob.getDefaultInstance());
+    }
+    stageChunk(
+        "SubmitLeasedPlanTableResult",
+        jobId + ":" + leaseEpoch,
+        chunkIndex,
+        tableId("table-1"),
+        chunk.build().toByteArray());
   }
 
   private void stagePlanSnapshotChunk(

@@ -623,18 +623,11 @@ class GrpcRemoteReconcileExecutorClient
         fromProtoTableTask(input.getTableTask()));
   }
 
-  public boolean submitPlanTableSuccess(
-      RemoteLeasedJob lease,
-      List<PlannedSnapshotJob> snapshotJobs,
-      long tablesScanned,
-      long tablesChanged,
-      long errors,
-      long snapshotsProcessed,
-      long statsProcessed) {
+  public boolean submitPlanTableChunk(
+      RemoteLeasedJob lease, int chunkIndex, List<PlannedSnapshotJob> snapshotJobs) {
     List<ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob> protoSnapshotJobs =
         new ArrayList<>();
-    for (PlannedSnapshotJob snapshotJob :
-        snapshotJobs == null ? List.<PlannedSnapshotJob>of() : snapshotJobs) {
+    for (PlannedSnapshotJob snapshotJob : snapshotJobs) {
       if (snapshotJob == null || snapshotJob.snapshotTask() == null) {
         continue;
       }
@@ -644,39 +637,62 @@ class GrpcRemoteReconcileExecutorClient
               .setSnapshotTask(toProtoSnapshotTask(snapshotJob.snapshotTask()))
               .build());
     }
-    List<List<ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob>> chunks =
-        chunksBySerializedSizeAndCount(
-            protoSnapshotJobs, PLAN_CHILD_JOB_CHUNK_TARGET_BYTES, planTableChildJobChunkMaxCount);
+    SubmitLeasedPlanTableResultRequest request =
+        SubmitLeasedPlanTableResultRequest.newBuilder()
+            .setJobId(lease.lease().jobId)
+            .setLeaseEpoch(lease.lease().leaseEpoch)
+            .setChunk(
+                SubmitLeasedPlanTableResultRequest.Chunk.newBuilder()
+                    .setChunkIndex(chunkIndex)
+                    .addAllSnapshotJobs(protoSnapshotJobs)
+                    .build())
+            .build();
     try {
-      for (int chunkIndex = 0; chunkIndex < chunks.size(); chunkIndex++) {
-        int submittedChunkIndex = chunkIndex;
-        List<ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob> chunk =
-            chunks.get(chunkIndex);
-        SubmitLeasedPlanTableResultRequest request =
-            SubmitLeasedPlanTableResultRequest.newBuilder()
-                .setJobId(lease.lease().jobId)
-                .setLeaseEpoch(lease.lease().leaseEpoch)
-                .setChunk(
-                    SubmitLeasedPlanTableResultRequest.Chunk.newBuilder()
-                        .setChunkIndex(submittedChunkIndex)
-                        .addAllSnapshotJobs(chunk)
-                        .build())
-                .build();
-        boolean accepted =
-            invokePlannerMutationOnce(
-                "submitLeasedPlanTableResult",
-                "PLAN_TABLE",
-                "chunk-" + (submittedChunkIndex + 1) + "-of-" + chunks.size(),
-                lease,
-                request,
-                stub -> stub.submitLeasedPlanTableResult(request).getAccepted());
-        if (!accepted) {
-          return false;
-        }
-      }
+      return invokePlannerMutationOnce(
+          "submitLeasedPlanTableResult",
+          "PLAN_TABLE",
+          "chunk-" + (chunkIndex + 1),
+          lease,
+          request,
+          stub -> stub.submitLeasedPlanTableResult(request).getAccepted());
     } catch (RuntimeException error) {
       throw leasePreconditionOrOriginal("submitLeasedPlanTableResult", error);
     }
+  }
+
+  @Override
+  public int planTableChunkMaxCount() {
+    return planTableChildJobChunkMaxCount;
+  }
+
+  @Override
+  public int planTableChunkTargetBytes() {
+    return PLAN_CHILD_JOB_CHUNK_TARGET_BYTES;
+  }
+
+  @Override
+  public int estimatedPlanTableChunkItemBytes(
+      RemoteLeasedJob lease, PlannedSnapshotJob snapshotJob) {
+    if (snapshotJob == null || snapshotJob.snapshotTask() == null) {
+      return 0;
+    }
+    return estimatedChunkItemBytes(
+        ai.floedb.floecat.reconciler.rpc.PlannedSnapshotPlanJob.newBuilder()
+            .setScope(toProtoScope(snapshotJob.scope(), lease.lease()))
+            .setSnapshotTask(toProtoSnapshotTask(snapshotJob.snapshotTask()))
+            .build());
+  }
+
+  @Override
+  public boolean submitPlanTableSuccess(
+      RemoteLeasedJob lease,
+      int chunkCount,
+      long plannedSnapshotJobs,
+      long tablesScanned,
+      long tablesChanged,
+      long errors,
+      long snapshotsProcessed,
+      long statsProcessed) {
     SubmitLeasedPlanTableResultRequest.Success.Builder success =
         SubmitLeasedPlanTableResultRequest.Success.newBuilder()
             .setTablesScanned(tablesScanned)
@@ -684,7 +700,8 @@ class GrpcRemoteReconcileExecutorClient
             .setErrors(errors)
             .setSnapshotsProcessed(snapshotsProcessed)
             .setStatsProcessed(statsProcessed)
-            .setChunkCount(chunks.size());
+            .setChunkCount(chunkCount)
+            .setPlannedSnapshotJobs(plannedSnapshotJobs);
     SubmitLeasedPlanTableResultRequest request =
         SubmitLeasedPlanTableResultRequest.newBuilder()
             .setJobId(lease.lease().jobId)
@@ -2066,39 +2083,6 @@ class GrpcRemoteReconcileExecutorClient
     } catch (NoSuchAlgorithmException e) {
       throw new IllegalStateException("SHA-256 is unavailable", e);
     }
-  }
-
-  private static <T extends MessageLite> List<List<T>> chunksBySerializedSize(
-      List<T> items, int targetBytes) {
-    return chunksBySerializedSizeAndCount(items, targetBytes, Integer.MAX_VALUE);
-  }
-
-  private static <T extends MessageLite> List<List<T>> chunksBySerializedSizeAndCount(
-      List<T> items, int targetBytes, int maxCount) {
-    List<List<T>> out = new ArrayList<>();
-    List<T> current = new ArrayList<>();
-    int currentBytes = 0;
-    int effectiveTargetBytes = Math.max(1, targetBytes);
-    int effectiveMaxCount = Math.max(1, maxCount);
-    for (T item : items == null ? List.<T>of() : items) {
-      if (item == null) {
-        continue;
-      }
-      int itemBytes = estimatedChunkItemBytes(item);
-      if (!current.isEmpty()
-          && (currentBytes + itemBytes > effectiveTargetBytes
-              || current.size() >= effectiveMaxCount)) {
-        out.add(List.copyOf(current));
-        current = new ArrayList<>();
-        currentBytes = 0;
-      }
-      current.add(item);
-      currentBytes += itemBytes;
-    }
-    if (!current.isEmpty()) {
-      out.add(List.copyOf(current));
-    }
-    return List.copyOf(out);
   }
 
   private static int estimatedChunkItemBytes(MessageLite message) {

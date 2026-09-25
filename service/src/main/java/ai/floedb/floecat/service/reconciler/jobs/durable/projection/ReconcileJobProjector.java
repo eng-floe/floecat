@@ -483,9 +483,7 @@ public class ReconcileJobProjector {
   }
 
   public boolean isParentCapable(ReconcileJobKind jobKind) {
-    return jobKind == ReconcileJobKind.PLAN_CONNECTOR
-        || jobKind == ReconcileJobKind.PLAN_TABLE
-        || jobKind == ReconcileJobKind.PLAN_SNAPSHOT;
+    return jobKind != null && jobKind.isParentCapable();
   }
 
   public static String normalizeSucceededMessage(String message) {

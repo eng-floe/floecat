@@ -45,7 +45,6 @@ import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class RemoteReconcileExecutorPoller {
-  private static final long DEFAULT_LEASE_HEARTBEAT_MS = 90_000L;
   private static final long MAX_DEFAULT_LEASE_HEARTBEAT_MS = 90_000L;
   private static final long MIN_LEASE_HEARTBEAT_MS = 1_000L;
   private static final long MIN_CANCEL_CHECK_MS = 500L;
@@ -473,16 +472,12 @@ public class RemoteReconcileExecutorPoller {
             config
                 .getOptionalValue("floecat.reconciler.job-store.lease-ms", Long.class)
                 .orElse(600_000L));
-    long suggestedHeartbeatMs =
-        Math.max(
-            MIN_LEASE_HEARTBEAT_MS,
-            Math.min(MAX_DEFAULT_LEASE_HEARTBEAT_MS, Math.max(1L, leaseMs / 4L)));
     long heartbeatEveryMs =
         Math.max(
             MIN_LEASE_HEARTBEAT_MS,
             config
                 .getOptionalValue("reconciler.lease-heartbeat-ms", Long.class)
-                .orElse(Math.max(DEFAULT_LEASE_HEARTBEAT_MS, suggestedHeartbeatMs)));
+                .orElse(defaultLeaseHeartbeatMs(leaseMs)));
     long cancelCheckEveryMs = Math.max(MIN_CANCEL_CHECK_MS, heartbeatEveryMs / 2L);
     long leaseSafetyMarginMs =
         Math.max(
@@ -811,6 +806,17 @@ public class RemoteReconcileExecutorPoller {
             Math.max(0L, System.currentTimeMillis() - started));
         return;
       }
+      if (shouldAbandonUnconfirmedCancellation(
+          result,
+          cancellationRequested.get(),
+          leaseInvalid.get(),
+          leaseStateUncertain.get(),
+          interrupted.get())) {
+        LOG.warnf(
+            "Remote reconcile execution stopped without a confirmed cancellation for job %s executor=%s; leaving lease for retry",
+            lease.jobId, executor.id());
+        return;
+      }
       if (!leaseStillCompletable(
           remoteLease,
           lease,
@@ -905,6 +911,18 @@ public class RemoteReconcileExecutorPoller {
       shutdownHeartbeatExecutor(heartbeatExecutor);
       Thread.interrupted();
     }
+  }
+
+  static boolean shouldAbandonUnconfirmedCancellation(
+      ReconcileExecutor.ExecutionResult result,
+      boolean cancellationRequested,
+      boolean leaseInvalid,
+      boolean leaseStateUncertain,
+      boolean interrupted) {
+    return result != null
+        && result.cancelled
+        && !cancellationRequested
+        && (leaseInvalid || leaseStateUncertain || interrupted);
   }
 
   private boolean leaseStillCompletable(
@@ -1206,6 +1224,12 @@ public class RemoteReconcileExecutorPoller {
       long leaseMs, long safetyMarginMs, long lastLeaseConfirmedAtMs, long nowMs) {
     long expiryThresholdMs = Math.max(1_000L, leaseMs - safetyMarginMs);
     return nowMs > lastLeaseConfirmedAtMs + expiryThresholdMs;
+  }
+
+  static long defaultLeaseHeartbeatMs(long leaseMs) {
+    return Math.max(
+        MIN_LEASE_HEARTBEAT_MS,
+        Math.min(MAX_DEFAULT_LEASE_HEARTBEAT_MS, Math.max(1L, leaseMs / 4L)));
   }
 
   private static final class ProgressSnapshot {

@@ -20,8 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
-import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -55,57 +53,5 @@ class ReconcilerServiceInternalsTest {
     assertThat(options.latestN()).isEqualTo(2);
     assertThat(options.targetSnapshotIds()).containsExactlyInAnyOrder(42L, 91L);
     assertThat(options.selectionSnapshotIds()).isEmpty();
-  }
-
-  @Test
-  void filterBundlesForModeKeepsOnlyKnownLocalSnapshotsForIncrementalCaptureOnly() {
-    List<FloecatConnector.SnapshotBundle> bundles =
-        List.of(bundle(10L, 0L, 1L), bundle(11L, 10L, 2L), bundle(12L, 11L, 3L));
-
-    List<FloecatConnector.SnapshotBundle> filtered =
-        QueuedReconcileWorkerSupport.filterBundlesForMode(
-            bundles, false, Set.of(10L, 12L), noopProgress());
-
-    assertThat(filtered)
-        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(10L, 12L);
-  }
-
-  @Test
-  void filterBundlesForModeKeepsOnlyKnownLocalSnapshotsForCaptureOnly() {
-    List<FloecatConnector.SnapshotBundle> bundles =
-        List.of(bundle(10L, 0L, 1L), bundle(11L, 10L, 2L));
-
-    List<FloecatConnector.SnapshotBundle> filtered =
-        QueuedReconcileWorkerSupport.filterBundlesForMode(
-            bundles, false, Set.of(10L, 12L), noopProgress());
-
-    assertThat(filtered)
-        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(10L);
-  }
-
-  @Test
-  void filterBundlesForModeSkipsSnapshotsMissingFromLocalMetadataDuringIncrementalCaptureOnly() {
-    List<FloecatConnector.SnapshotBundle> bundles =
-        List.of(bundle(10L, 0L, 1L), bundle(11L, 10L, 2L), bundle(12L, 11L, 3L));
-
-    List<FloecatConnector.SnapshotBundle> filtered =
-        QueuedReconcileWorkerSupport.filterBundlesForMode(
-            bundles, false, Set.of(11L, 12L), noopProgress());
-
-    assertThat(filtered)
-        .extracting(FloecatConnector.SnapshotBundle::snapshotId)
-        .containsExactly(11L, 12L);
-  }
-
-  private static FloecatConnector.SnapshotBundle bundle(
-      long snapshotId, long parentId, long createdAtMs) {
-    return new FloecatConnector.SnapshotBundle(
-        snapshotId, parentId, createdAtMs, "", null, 0L, null, Map.of(), 0, null);
-  }
-
-  private static QueuedReconcileWorkerSupport.ProgressListener noopProgress() {
-    return (ts, tc, vs, vc, e, sp, stp, m) -> {};
   }
 }

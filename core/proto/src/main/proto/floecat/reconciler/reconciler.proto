@@ -969,6 +969,11 @@ message SubmitLeasedPlanTableResultRequest {
     uint64 snapshots_processed = 5;
     uint64 stats_processed = 6;
     uint32 chunk_count = 7;
+    // Snapshot jobs the planner submitted across chunk_count chunks. Reported by the planner
+    // rather than re-derived from the staged chunks: each chunk is acknowledged synchronously and
+    // its children are enqueued before the planner moves on, and the staged records must not have
+    // to survive a planning phase that can run for hours.
+    uint64 planned_snapshot_jobs = 8;
   }
 
   message Failure {
@@ -1278,7 +1283,10 @@ message GetReconcileJobTreeRequest {
   string job_id = 1;
 }
 
+// Legacy unary job-tree response. New clients should use StreamReconcileJobTree so large trees are
+// not constrained by the maximum unary gRPC message size.
 message GetReconcileJobTreeResponse {
+  option deprecated = true;
   repeated GetReconcileJobResponse jobs = 1;
 }
 
@@ -1361,8 +1369,14 @@ service ReconcileControl {
   rpc StartCapture(StartCaptureRequest) returns (StartCaptureResponse);
   // Returns one reconcile job by id.
   rpc GetReconcileJob(GetReconcileJobRequest) returns (GetReconcileJobResponse);
-  // Returns one reconcile job plus all descendants.
-  rpc GetReconcileJobTree(GetReconcileJobTreeRequest) returns (GetReconcileJobTreeResponse);
+  // Returns one reconcile job plus all descendants. Retained for existing downstream clients; new
+  // clients should use StreamReconcileJobTree.
+  rpc GetReconcileJobTree(GetReconcileJobTreeRequest) returns (GetReconcileJobTreeResponse) {
+    option deprecated = true;
+  }
+  // Streams one reconcile job followed by all descendants. Each job is a separate gRPC message so
+  // large reconcile trees do not exceed unary response limits.
+  rpc StreamReconcileJobTree(GetReconcileJobTreeRequest) returns (stream GetReconcileJobResponse);
   // Lists reconcile jobs visible to the caller.
   rpc ListReconcileJobs(ListReconcileJobsRequest) returns (ListReconcileJobsResponse);
   // Returns finalization state for one snapshot.

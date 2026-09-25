@@ -20,6 +20,19 @@ import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import java.util.List;
 
 interface RemotePlannerWorkerClient {
+  default int planTableChunkMaxCount() {
+    return 8;
+  }
+
+  default int planTableChunkTargetBytes() {
+    return 128 * 1024;
+  }
+
+  default int estimatedPlanTableChunkItemBytes(
+      RemoteLeasedJob lease, PlannedSnapshotJob snapshotJob) {
+    return 1;
+  }
+
   record PlanViewSubmitResult(boolean accepted, long viewsChanged) {}
 
   StandalonePlanConnectorPayload getPlanConnectorInput(RemoteLeasedJob lease);
@@ -36,9 +49,19 @@ interface RemotePlannerWorkerClient {
 
   StandalonePlanTablePayload getPlanTableInput(RemoteLeasedJob lease);
 
+  boolean submitPlanTableChunk(
+      RemoteLeasedJob lease, int chunkIndex, List<PlannedSnapshotJob> snapshotJobs);
+
+  /**
+   * @param plannedSnapshotJobs snapshot jobs submitted across {@code chunkCount} chunks. The
+   *     planner reports its own total because each chunk was acknowledged synchronously and its
+   *     children enqueued before the planner moved on; the service must not have to re-read the
+   *     staged chunk records, which are not meant to outlive a long planning phase.
+   */
   boolean submitPlanTableSuccess(
       RemoteLeasedJob lease,
-      List<PlannedSnapshotJob> snapshotJobs,
+      int chunkCount,
+      long plannedSnapshotJobs,
       long tablesScanned,
       long tablesChanged,
       long errors,

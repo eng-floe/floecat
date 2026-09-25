@@ -46,6 +46,7 @@ import ai.floedb.floecat.stats.identity.StatsTargetScopeCodec;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -395,7 +396,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
               }
 
               @Override
-              public List<SnapshotBundle> enumerateSnapshots(
+              public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
                   String namespaceFq,
                   String tableName,
                   ResourceId destinationTableId,
@@ -1105,7 +1106,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
   }
 
   @Test
-  void reconcileWritesSnapshotConstraintsViaStatsPathWhenProvidedByConnector() {
+  void incrementalMetadataReexaminesKnownSnapshotToRepairConstraints() {
     ResourceId tableId =
         ResourceId.newBuilder()
             .setAccountId("acct")
@@ -1243,12 +1244,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(
                 42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
@@ -1276,7 +1277,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         cfg ->
             new ConstraintsConnector() {
               @Override
-              public List<SnapshotBundle> enumerateSnapshots(
+              public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
                   String namespaceFq,
                   String tableName,
                   ResourceId destinationTableId,
@@ -1301,8 +1302,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                     ReconcileCapturePolicy.Output.COLUMN_STATS,
                     ReconcileCapturePolicy.Output.PARQUET_PAGE_INDEX)));
     var result =
-        reconcileTableTask(
-            tableId, true, scope, ReconcilerService.CaptureMode.METADATA_AND_CAPTURE);
+        reconcileTableTask(tableId, false, scope, ReconcilerService.CaptureMode.METADATA_ONLY);
 
     assertThat(result.ok()).isTrue();
     assertThat(result.degraded()).isFalse();
@@ -1444,12 +1444,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(
                 42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
@@ -1598,13 +1598,13 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
         backend.capturedKnownSnapshotIds = options.knownSnapshotIds();
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(
                 42L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null),
             new SnapshotBundle(
@@ -1633,7 +1633,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
 
     assertThat(result.ok()).isTrue();
     assertThat(backend.capturedKnownSnapshotIds).isEmpty();
-    assertThat(result.captureSnapshotIds()).containsExactly(42L, 43L);
+    assertThat(result.emittedSnapshotIds()).containsExactly(42L, 43L);
     assertThat(backend.indexCompletenessCalls).isZero();
   }
 
@@ -1744,12 +1744,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(
                 201L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null),
             new SnapshotBundle(
@@ -2057,12 +2057,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(201L, -1L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
       }
     }
@@ -2173,12 +2173,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
               }
 
               @Override
-              public List<SnapshotBundle> enumerateSnapshots(
+              public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
                   String namespaceFq,
                   String tableName,
                   ResourceId destinationTableId,
                   SnapshotEnumerationOptions options) {
-                return List.of(
+                return java.util.stream.Stream.of(
                     new SnapshotBundle(
                         301L,
                         0L,
@@ -2340,12 +2340,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
               }
 
               @Override
-              public List<SnapshotBundle> enumerateSnapshots(
+              public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
                   String namespaceFq,
                   String tableName,
                   ResourceId destinationTableId,
                   SnapshotEnumerationOptions options) {
-                return List.of(
+                return java.util.stream.Stream.of(
                     new SnapshotBundle(
                         401L,
                         0L,
@@ -2494,12 +2494,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(501L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
       }
 
@@ -2644,12 +2644,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(201L, 0L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
       }
     }
@@ -2786,12 +2786,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(201L, -1L, createdAtMs, "", null, 0L, null, Map.of(), 0, null));
       }
 
@@ -2948,12 +2948,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(
                 101L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
@@ -3080,12 +3080,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(
                 102L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
@@ -3216,12 +3216,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(
                 103L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
@@ -3349,12 +3349,12 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       }
 
       @Override
-      public List<SnapshotBundle> enumerateSnapshots(
+      public java.util.stream.Stream<SnapshotBundle> enumerateSnapshots(
           String namespaceFq,
           String tableName,
           ResourceId destinationTableId,
           SnapshotEnumerationOptions options) {
-        return List.of(
+        return java.util.stream.Stream.of(
             new SnapshotBundle(
                 104L, 0L, Instant.now().toEpochMilli(), "", null, 0L, null, Map.of(), 0, null));
       }
@@ -3444,6 +3444,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       String bearerToken,
       java.util.function.BooleanSupplier cancelRequested,
       ReconcileExecutor.ProgressListener progress) {
+    List<Long> emittedSnapshotIds = new ArrayList<>();
     var tableExecution =
         queuedWorkerSupport()
             .executePlannedTable(
@@ -3457,7 +3458,8 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
                 "test-job",
                 "test-lease",
                 cancelRequested,
-                progress);
+                progress,
+                emission -> emittedSnapshotIds.add(emission.bundle().snapshotId()));
     var execution = tableExecution.result();
     return new TestResult(
         execution.cancelled,
@@ -3469,7 +3471,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
         execution.snapshotsProcessed,
         execution.statsProcessed,
         execution.error,
-        tableExecution.captureSnapshotIds());
+        List.copyOf(emittedSnapshotIds));
   }
 
   private record TestResult(
@@ -3482,7 +3484,7 @@ class ReconcilerServiceTest extends AbstractReconcilerServiceTestBase {
       long snapshotsProcessed,
       long statsProcessed,
       Exception error,
-      List<Long> captureSnapshotIds) {
+      List<Long> emittedSnapshotIds) {
     private long changed() {
       return tablesChanged + viewsChanged;
     }

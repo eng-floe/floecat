@@ -32,6 +32,7 @@ import io.delta.kernel.Snapshot.ChecksumWriteMode;
 import io.delta.kernel.Table;
 import io.delta.kernel.TransactionBuilder;
 import io.delta.kernel.data.ColumnVector;
+import io.delta.kernel.defaults.engine.DefaultEngine;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.exceptions.CheckpointAlreadyExistsException;
 import io.delta.kernel.exceptions.KernelException;
@@ -46,6 +47,9 @@ import io.delta.kernel.types.StructField;
 import io.delta.kernel.types.StructType;
 import io.delta.kernel.utils.FileStatus;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -53,8 +57,11 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class DeltaConnectorTest {
+  @TempDir Path tempDir;
+
   private static final String TEST_SCHEMA_JSON =
       """
       {
@@ -140,11 +147,13 @@ class DeltaConnectorTest {
     TestDeltaConnector connector = new TestDeltaConnector(table);
 
     List<FloecatConnector.SnapshotBundle> bundles =
-        connector.enumerateSnapshots(
-            "ns",
-            "tbl",
-            ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(3L, 5L)));
+        connector
+            .enumerateSnapshots(
+                "ns",
+                "tbl",
+                ResourceId.getDefaultInstance(),
+                FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(3L, 5L)))
+            .toList();
 
     List<Long> snapshotIds =
         bundles.stream()
@@ -162,11 +171,13 @@ class DeltaConnectorTest {
         new TestDeltaConnector(new StubTable(versionOne, Map.of(0L, versionZero, 1L, versionOne)));
 
     List<FloecatConnector.SnapshotBundle> bundles =
-        connector.enumerateSnapshots(
-            "ns",
-            "tbl",
-            ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(0L, 1L)));
+        connector
+            .enumerateSnapshots(
+                "ns",
+                "tbl",
+                ResourceId.getDefaultInstance(),
+                FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(0L, 1L)))
+            .toList();
 
     assertEquals(
         List.of(0L, 1L),
@@ -249,11 +260,13 @@ class DeltaConnectorTest {
     TestDeltaConnector connector = new TestDeltaConnector(table);
 
     List<FloecatConnector.SnapshotBundle> bundles =
-        connector.enumerateSnapshots(
-            "ns",
-            "tbl",
-            ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(1L, 4L)));
+        connector
+            .enumerateSnapshots(
+                "ns",
+                "tbl",
+                ResourceId.getDefaultInstance(),
+                FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(1L, 4L)))
+            .toList();
 
     List<Long> snapshotIds =
         bundles.stream()
@@ -266,6 +279,80 @@ class DeltaConnectorTest {
             .map(FloecatConnector.SnapshotBundle::upstreamCreatedAtMs)
             .collect(Collectors.toList());
     assertEquals(List.of(0L, 2000L, 3000L, 5000L), timestamps);
+  }
+
+  @Test
+  void enumerateAllSnapshotsWalksRealDeltaCommitsInVersionOrder() throws Exception {
+    Path tablePath = tempDir.resolve("bucket/delta-table");
+    Path logPath = Files.createDirectories(tablePath.resolve("_delta_log"));
+    String schemaV1 =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\","
+            + "\"nullable\":false,\"metadata\":{}}]}";
+    String schemaV2 =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\","
+            + "\"nullable\":false,\"metadata\":{}},{\"name\":\"name\",\"type\":\"string\","
+            + "\"nullable\":true,\"metadata\":{}}]}";
+    writeDeltaCommit(
+        logPath,
+        0,
+        "{\"protocol\":{\"minReaderVersion\":1,\"minWriterVersion\":2}}",
+        metadataAction(schemaV1));
+    writeDeltaCommit(logPath, 1, metadataAction(schemaV2));
+    writeDeltaCommit(logPath, 2, "{\"commitInfo\":{\"timestamp\":3000,\"operation\":\"WRITE\"}}");
+
+    Engine engine = DefaultEngine.create(new LocalFileSystemClient(tempDir));
+    String location = "s3://bucket/delta-table";
+    TestDeltaConnector connector =
+        new TestDeltaConnector(Table.forPath(engine, location), engine, location);
+
+    List<FloecatConnector.SnapshotBundle> bundles;
+    try (var snapshots =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.full(true))) {
+      bundles = snapshots.toList();
+    }
+
+    assertEquals(List.of(0L, 1L, 2L), bundles.stream().map(b -> b.snapshotId()).toList());
+    assertEquals(List.of(-1L, 0L, 1L), bundles.stream().map(b -> b.parentId()).toList());
+    assertTrue(bundles.get(0).schemaJson().contains("\"name\": \"id\""));
+    assertEquals(schemaV2, bundles.get(1).schemaJson());
+    assertEquals(schemaV2, bundles.get(2).schemaJson());
+
+    try (var snapshots =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(0L, 1L)))) {
+      assertEquals(List.of(2L), snapshots.map(b -> b.snapshotId()).toList());
+    }
+
+    try (var snapshots =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of(), Set.of(0L)))) {
+      assertEquals(List.of(0L), snapshots.map(b -> b.snapshotId()).toList());
+    }
+  }
+
+  private static void writeDeltaCommit(Path logPath, long version, String... actions)
+      throws IOException {
+    Files.writeString(
+        logPath.resolve("%020d.json".formatted(version)),
+        String.join("\n", actions) + "\n",
+        StandardCharsets.UTF_8);
+  }
+
+  private static String metadataAction(String schemaJson) {
+    return "{\"metaData\":{\"id\":\"test-table\",\"format\":{\"provider\":\"parquet\","
+        + "\"options\":{}},\"schemaString\":\""
+        + schemaJson.replace("\\", "\\\\").replace("\"", "\\\"")
+        + "\",\"partitionColumns\":[],\"configuration\":{},\"createdTime\":1000}}";
   }
 
   @Test
@@ -286,17 +373,39 @@ class DeltaConnectorTest {
     TestDeltaConnector connector = new TestDeltaConnector(table);
 
     List<FloecatConnector.SnapshotBundle> bundles =
-        connector.enumerateSnapshots(
-            "ns",
-            "tbl",
-            ResourceId.getDefaultInstance(),
-            FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of()));
+        connector
+            .enumerateSnapshots(
+                "ns",
+                "tbl",
+                ResourceId.getDefaultInstance(),
+                FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of()))
+            .toList();
 
     List<Long> snapshotIds =
         bundles.stream()
             .map(FloecatConnector.SnapshotBundle::snapshotId)
             .collect(Collectors.toList());
     assertEquals(List.of(107800L, 107801L, 107802L, 107803L, 107804L, 107805L), snapshotIds);
+  }
+
+  @Test
+  void baselineLoadHandlesRetentionAdvancingAgainAfterTheInitialSkip() {
+    Snapshot latest = snapshot(107805L, 107805000L);
+    Snapshot expectedBaseline = snapshot(107801L, 107801000L);
+    Table table =
+        new StubTable(
+            latest,
+            Map.of(107801L, expectedBaseline, 107805L, latest),
+            Map.of(
+                0L, truncatedHistory(107800L),
+                107800L, truncatedHistory(107801L)));
+    TestDeltaConnector connector = new TestDeltaConnector(table);
+
+    DeltaConnector.SnapshotBaseline baseline =
+        connector.loadSnapshotBaseline(table, 0L, 107805L, "s3://bucket/table");
+
+    assertEquals(107801L, baseline.version());
+    assertEquals(expectedBaseline, baseline.snapshot());
   }
 
   @Test
@@ -309,11 +418,13 @@ class DeltaConnectorTest {
     assertThrows(
         IllegalStateException.class,
         () ->
-            connector.enumerateSnapshots(
-                "ns",
-                "tbl",
-                ResourceId.getDefaultInstance(),
-                FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(2L))));
+            connector
+                .enumerateSnapshots(
+                    "ns",
+                    "tbl",
+                    ResourceId.getDefaultInstance(),
+                    FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(2L)))
+                .toList());
   }
 
   @Test
@@ -787,9 +898,17 @@ class DeltaConnectorTest {
       this.table = table;
     }
 
+    TestDeltaConnector(Table table, Engine engine, String storageLocation) {
+      super("delta-test", engine, path -> null, false, 0.0d, 0L, null);
+      this.table = table;
+      this.storageLocation = storageLocation;
+    }
+
+    private String storageLocation = "ignored";
+
     @Override
     protected String storageLocation(String namespaceFq, String tableName) {
-      return "ignored";
+      return storageLocation;
     }
 
     @Override
@@ -867,6 +986,111 @@ class DeltaConnectorTest {
     }
   }
 
+  /**
+   * Exercises the real {@code snapshotSchemaJson}: {@link TestDeltaConnector} stubs it out, so no
+   * stub-based test covers how the two enumeration paths actually derive a bundle's schema.
+   */
+  private static final class RealSchemaConnector extends DeltaConnector {
+    private final Table table;
+    private final String location;
+
+    RealSchemaConnector(Table table, Engine engine, String location) {
+      super("delta-real-schema", engine, path -> null, false, 0.0d, 0L, null);
+      this.table = table;
+      this.location = location;
+    }
+
+    @Override
+    protected String storageLocation(String namespaceFq, String tableName) {
+      return location;
+    }
+
+    @Override
+    protected Table loadTable(String storageLocation) {
+      return table;
+    }
+
+    @Override
+    public List<String> listTables(String namespaceFq) {
+      return List.of();
+    }
+
+    @Override
+    public List<String> listNamespaces() {
+      return List.of();
+    }
+
+    @Override
+    public TableDescriptor describe(String namespaceFq, String tableName) {
+      throw new UnsupportedOperationException();
+    }
+  }
+
+  @Test
+  void bothEnumerationPathsDescribeTheSameVersionIdentically() throws Exception {
+    Path tablePath = tempDir.resolve("schema-parity/delta-table");
+    Path logPath = Files.createDirectories(tablePath.resolve("_delta_log"));
+    String schemaV1 =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\","
+            + "\"nullable\":false,\"metadata\":{}}]}";
+    String schemaV2 =
+        "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\","
+            + "\"nullable\":false,\"metadata\":{}},{\"name\":\"name\",\"type\":\"string\","
+            + "\"nullable\":true,\"metadata\":{}}]}";
+    writeDeltaCommit(
+        logPath,
+        0,
+        "{\"protocol\":{\"minReaderVersion\":1,\"minWriterVersion\":2}}",
+        metadataAction(schemaV1));
+    writeDeltaCommit(logPath, 1, metadataAction(schemaV2));
+    writeDeltaCommit(logPath, 2, "{\"commitInfo\":{\"timestamp\":3000,\"operation\":\"WRITE\"}}");
+
+    Engine engine = DefaultEngine.create(new LocalFileSystemClient(tempDir));
+    String location = "s3://schema-parity/delta-table";
+    RealSchemaConnector connector =
+        new RealSchemaConnector(Table.forPath(engine, location), engine, location);
+
+    // ALL with no targets takes the commit-walk path; an explicit target set falls through to
+    // versionsToEnumerate and the snapshot-based builder.
+    List<FloecatConnector.SnapshotBundle> walked;
+    try (var snapshots =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.full(true))) {
+      walked = snapshots.toList();
+    }
+    List<FloecatConnector.SnapshotBundle> resolved;
+    try (var snapshots =
+        connector.enumerateSnapshots(
+            "ns",
+            "tbl",
+            ResourceId.getDefaultInstance(),
+            FloecatConnector.SnapshotEnumerationOptions.fullExplicit(true, Set.of(0L, 1L, 2L)))) {
+      resolved = snapshots.toList();
+    }
+
+    assertEquals(
+        walked.stream().map(FloecatConnector.SnapshotBundle::snapshotId).toList(),
+        resolved.stream().map(FloecatConnector.SnapshotBundle::snapshotId).toList());
+    for (int i = 0; i < walked.size(); i++) {
+      FloecatConnector.SnapshotBundle fromWalk = walked.get(i);
+      FloecatConnector.SnapshotBundle fromSnapshot = resolved.get(i);
+      // A formatting-only difference here is a content change downstream: metadataFingerprint
+      // hashes schemaJson verbatim, so the two paths would re-ingest each other's snapshots.
+      assertEquals(
+          fromWalk.schemaJson(),
+          fromSnapshot.schemaJson(),
+          "schemaJson differs for version " + fromWalk.snapshotId());
+      assertEquals(
+          fromWalk.upstreamCreatedAtMs(),
+          fromSnapshot.upstreamCreatedAtMs(),
+          "upstreamCreatedAtMs differs for version " + fromWalk.snapshotId());
+      assertEquals(fromWalk.parentId(), fromSnapshot.parentId());
+    }
+  }
+
   private static final class StubTable implements Table {
     private final Snapshot latest;
     private final Map<Long, Snapshot> snapshots;
@@ -930,9 +1154,15 @@ class DeltaConnectorTest {
   }
 
   private static KernelException truncatedHistory() {
+    return truncatedHistory(107800L);
+  }
+
+  private static KernelException truncatedHistory(long earliestAvailableVersion) {
     return new KernelException(
         "s3://bucket/table: Cannot load table version 0 as the transaction log has been truncated"
             + " due to manual deletion or the log/checkpoint retention policy. The earliest"
-            + " available version is 107800.");
+            + " available version is "
+            + earliestAvailableVersion
+            + ".");
   }
 }

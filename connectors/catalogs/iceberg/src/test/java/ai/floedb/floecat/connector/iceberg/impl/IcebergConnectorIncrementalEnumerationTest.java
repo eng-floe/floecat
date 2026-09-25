@@ -23,11 +23,14 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.spi.ConnectorNotReadyException;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.junit.jupiter.api.Test;
@@ -74,8 +77,8 @@ class IcebergConnectorIncrementalEnumerationTest {
     method.setAccessible(true);
 
     @SuppressWarnings("unchecked")
-    List<Snapshot> snapshots =
-        (List<Snapshot>)
+    Stream<Snapshot> snapshots =
+        (Stream<Snapshot>)
             method.invoke(
                 connector,
                 table,
@@ -86,7 +89,7 @@ class IcebergConnectorIncrementalEnumerationTest {
                 Set.of(),
                 0);
 
-    assertEquals(List.of(300L, 250L), snapshots.stream().map(Snapshot::snapshotId).toList());
+    assertEquals(List.of(300L, 250L), snapshots.map(Snapshot::snapshotId).toList());
   }
 
   @Test
@@ -112,7 +115,7 @@ class IcebergConnectorIncrementalEnumerationTest {
     Snapshot latest = snapshot(300L, 3L, 3000L, 200L);
     Snapshot target = snapshot(200L, 2L, 2000L, 100L);
     Snapshot earlier = snapshot(100L, 1L, 1000L, null);
-    Table table = table(List.of(latest, target, earlier), latest);
+    Table table = table(List.of(latest, earlier, target), latest);
 
     Method method =
         IcebergConnector.class.getDeclaredMethod(
@@ -127,8 +130,8 @@ class IcebergConnectorIncrementalEnumerationTest {
     method.setAccessible(true);
 
     @SuppressWarnings("unchecked")
-    List<Snapshot> snapshots =
-        (List<Snapshot>)
+    Stream<Snapshot> snapshots =
+        (Stream<Snapshot>)
             method.invoke(
                 connector,
                 table,
@@ -139,7 +142,282 @@ class IcebergConnectorIncrementalEnumerationTest {
                 Set.of(),
                 0);
 
-    assertEquals(List.of(100L, 200L, 300L), snapshots.stream().map(Snapshot::snapshotId).toList());
+    assertEquals(List.of(300L, 100L, 200L), snapshots.map(Snapshot::snapshotId).toList());
+  }
+
+  @Test
+  void snapshotsToEnumeratePreservesMetadataOrderInsteadOfSortingBySequenceOrSnapshotId()
+      throws Exception {
+    IcebergConnector connector =
+        new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
+          @Override
+          public List<String> listNamespaces() {
+            return List.of();
+          }
+
+          @Override
+          public List<String> listTables(String namespaceFq) {
+            return List.of();
+          }
+
+          @Override
+          protected Table loadTableFromSource(String namespaceFq, String tableName) {
+            throw new UnsupportedOperationException();
+          }
+        };
+    Snapshot first = snapshot(17L, 5L, 5000L, null);
+    Snapshot second = snapshot(900_000_007L, 2L, 2000L, first.snapshotId());
+    Table table = table(List.of(first, second), second);
+    Method method =
+        IcebergConnector.class.getDeclaredMethod(
+            "snapshotsToEnumerate",
+            Table.class,
+            boolean.class,
+            Set.class,
+            Set.class,
+            FloecatConnector.SnapshotSelectionKind.class,
+            Set.class,
+            int.class);
+    method.setAccessible(true);
+
+    @SuppressWarnings("unchecked")
+    Stream<Snapshot> snapshots =
+        (Stream<Snapshot>)
+            method.invoke(
+                connector,
+                table,
+                true,
+                Set.of(),
+                Set.of(),
+                FloecatConnector.SnapshotSelectionKind.ALL,
+                Set.of(),
+                0);
+
+    assertEquals(List.of(17L, 900_000_007L), snapshots.map(Snapshot::snapshotId).toList());
+  }
+
+  @Test
+  void snapshotsToEnumerateLatestNUsesSequenceNumberNotMetadataOrSnapshotIdOrder()
+      throws Exception {
+    IcebergConnector connector =
+        new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
+          @Override
+          public List<String> listNamespaces() {
+            return List.of();
+          }
+
+          @Override
+          public List<String> listTables(String namespaceFq) {
+            return List.of();
+          }
+
+          @Override
+          protected Table loadTableFromSource(String namespaceFq, String tableName) {
+            throw new UnsupportedOperationException();
+          }
+        };
+    Snapshot newest = snapshot(11L, 9L, 9000L, null);
+    Snapshot oldest = snapshot(999_999_937L, 1L, 1000L, null);
+    Snapshot middle = snapshot(23L, 5L, 5000L, null);
+    Table table = table(List.of(newest, oldest, middle), newest);
+    Method method =
+        IcebergConnector.class.getDeclaredMethod(
+            "snapshotsToEnumerate",
+            Table.class,
+            boolean.class,
+            Set.class,
+            Set.class,
+            FloecatConnector.SnapshotSelectionKind.class,
+            Set.class,
+            int.class);
+    method.setAccessible(true);
+
+    @SuppressWarnings("unchecked")
+    Stream<Snapshot> snapshots =
+        (Stream<Snapshot>)
+            method.invoke(
+                connector,
+                table,
+                true,
+                Set.of(),
+                Set.of(),
+                FloecatConnector.SnapshotSelectionKind.LATEST_N,
+                Set.of(),
+                2);
+
+    assertEquals(List.of(23L, 11L), snapshots.map(Snapshot::snapshotId).toList());
+  }
+
+  @Test
+  void snapshotsToEnumerateLatestNBreaksTiesByMetadataPositionNotSnapshotId() throws Exception {
+    IcebergConnector connector =
+        new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
+          @Override
+          public List<String> listNamespaces() {
+            return List.of();
+          }
+
+          @Override
+          public List<String> listTables(String namespaceFq) {
+            return List.of();
+          }
+
+          @Override
+          protected Table loadTableFromSource(String namespaceFq, String tableName) {
+            throw new UnsupportedOperationException();
+          }
+        };
+    // v1 tables report sequenceNumber 0 for every snapshot; same-millisecond commits then tie on
+    // both ordering keys, and snapshot ids are random so they cannot break the tie meaningfully.
+    Snapshot first = snapshot(900_000_007L, 0L, 1000L, null);
+    Snapshot second = snapshot(11L, 0L, 1000L, first.snapshotId());
+    Snapshot third = snapshot(500_000_003L, 0L, 1000L, second.snapshotId());
+    Table table = table(List.of(first, second, third), third);
+    Method method =
+        IcebergConnector.class.getDeclaredMethod(
+            "snapshotsToEnumerate",
+            Table.class,
+            boolean.class,
+            Set.class,
+            Set.class,
+            FloecatConnector.SnapshotSelectionKind.class,
+            Set.class,
+            int.class);
+    method.setAccessible(true);
+
+    @SuppressWarnings("unchecked")
+    Stream<Snapshot> snapshots =
+        (Stream<Snapshot>)
+            method.invoke(
+                connector,
+                table,
+                true,
+                Set.of(),
+                Set.of(),
+                FloecatConnector.SnapshotSelectionKind.LATEST_N,
+                Set.of(),
+                2);
+
+    // The two latest by history position, in history order -- not the two largest ids.
+    assertEquals(List.of(11L, 500_000_003L), snapshots.map(Snapshot::snapshotId).toList());
+  }
+
+  @Test
+  void snapshotsToEnumerateLatestNDoesNotPreallocateForUnboundedLatestN() throws Exception {
+    IcebergConnector connector =
+        new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
+          @Override
+          public List<String> listNamespaces() {
+            return List.of();
+          }
+
+          @Override
+          public List<String> listTables(String namespaceFq) {
+            return List.of();
+          }
+
+          @Override
+          protected Table loadTableFromSource(String namespaceFq, String tableName) {
+            throw new UnsupportedOperationException();
+          }
+        };
+    Snapshot newest = snapshot(11L, 3L, 3000L, null);
+    Snapshot middle = snapshot(23L, 2L, 2000L, null);
+    Snapshot oldest = snapshot(37L, 1L, 1000L, null);
+    Table table = table(List.of(newest, middle, oldest), newest);
+    Method method =
+        IcebergConnector.class.getDeclaredMethod(
+            "snapshotsToEnumerate",
+            Table.class,
+            boolean.class,
+            Set.class,
+            Set.class,
+            FloecatConnector.SnapshotSelectionKind.class,
+            Set.class,
+            int.class);
+    method.setAccessible(true);
+
+    // latest_n is an unvalidated uint32 on the wire; a policy value this large must not drive an
+    // up-front array allocation on a table that only has three snapshots.
+    Object result;
+    try {
+      result =
+          method.invoke(
+              connector,
+              table,
+              true,
+              Set.of(),
+              Set.of(),
+              FloecatConnector.SnapshotSelectionKind.LATEST_N,
+              Set.of(),
+              Integer.MAX_VALUE);
+    } catch (InvocationTargetException e) {
+      if (e.getCause() instanceof OutOfMemoryError oom) {
+        throw new AssertionError(
+            "LATEST_N preallocated from the unvalidated latest_n policy value", oom);
+      }
+      throw e;
+    }
+
+    @SuppressWarnings("unchecked")
+    Stream<Snapshot> snapshots = (Stream<Snapshot>) result;
+    assertEquals(List.of(37L, 23L, 11L), snapshots.map(Snapshot::snapshotId).toList());
+  }
+
+  @Test
+  void snapshotsToEnumerateConsumesAllSelectionLazily() throws Exception {
+    IcebergConnector connector =
+        new IcebergConnector("test", null, null, null, false, 0.0d, 0L, null) {
+          @Override
+          public List<String> listNamespaces() {
+            return List.of();
+          }
+
+          @Override
+          public List<String> listTables(String namespaceFq) {
+            return List.of();
+          }
+
+          @Override
+          protected Table loadTableFromSource(String namespaceFq, String tableName) {
+            throw new UnsupportedOperationException();
+          }
+        };
+    Snapshot first = snapshot(71L, 1L, 1000L, null);
+    Snapshot second = snapshot(23L, 2L, 2000L, first.snapshotId());
+    AtomicInteger consumed = new AtomicInteger();
+    Iterable<Snapshot> source =
+        () ->
+            List.of(first, second).stream().peek(ignored -> consumed.incrementAndGet()).iterator();
+    Table table = table(source, second);
+    Method method =
+        IcebergConnector.class.getDeclaredMethod(
+            "snapshotsToEnumerate",
+            Table.class,
+            boolean.class,
+            Set.class,
+            Set.class,
+            FloecatConnector.SnapshotSelectionKind.class,
+            Set.class,
+            int.class);
+    method.setAccessible(true);
+
+    @SuppressWarnings("unchecked")
+    Stream<Snapshot> snapshots =
+        (Stream<Snapshot>)
+            method.invoke(
+                connector,
+                table,
+                true,
+                Set.of(),
+                Set.of(),
+                FloecatConnector.SnapshotSelectionKind.ALL,
+                Set.of(),
+                0);
+
+    assertEquals(0, consumed.get());
+    assertEquals(71L, snapshots.findFirst().orElseThrow().snapshotId());
+    assertEquals(1, consumed.get());
   }
 
   @Test
@@ -168,11 +446,13 @@ class IcebergConnectorIncrementalEnumerationTest {
     assertThrows(
         ConnectorNotReadyException.class,
         () ->
-            connector.enumerateSnapshots(
-                "iceberg",
-                "duckdb_mutation_smoke",
-                ResourceId.getDefaultInstance(),
-                FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of())));
+            connector
+                .enumerateSnapshots(
+                    "iceberg",
+                    "duckdb_mutation_smoke",
+                    ResourceId.getDefaultInstance(),
+                    FloecatConnector.SnapshotEnumerationOptions.incremental(Set.of()))
+                .toList());
   }
 
   private static Snapshot snapshot(
@@ -204,6 +484,10 @@ class IcebergConnectorIncrementalEnumerationTest {
   }
 
   private static Table table(List<Snapshot> snapshots, Snapshot current) {
+    return table((Iterable<Snapshot>) snapshots, current);
+  }
+
+  private static Table table(Iterable<Snapshot> snapshots, Snapshot current) {
     InvocationHandler handler =
         (proxy, method, args) -> {
           return switch (method.getName()) {
@@ -211,7 +495,14 @@ class IcebergConnectorIncrementalEnumerationTest {
             case "currentSnapshot" -> current;
             case "snapshot" -> {
               Long id = (Long) args[0];
-              yield snapshots.stream().filter(s -> s.snapshotId() == id).findFirst().orElse(null);
+              Snapshot match = null;
+              for (Snapshot snapshot : snapshots) {
+                if (snapshot.snapshotId() == id) {
+                  match = snapshot;
+                  break;
+                }
+              }
+              yield match;
             }
             case "toString" -> "table";
             case "name" -> "test";

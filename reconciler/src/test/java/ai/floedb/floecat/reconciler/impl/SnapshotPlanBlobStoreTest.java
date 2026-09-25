@@ -52,6 +52,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class SnapshotPlanBlobStoreTest {
@@ -272,6 +276,89 @@ class SnapshotPlanBlobStoreTest {
         Optional.of(first),
         store.resolveFileGroup(persisted.fileGroupPlanBlobUri(), "plan-1", "group-1"));
     assertEquals(2, blobStore.getCount);
+  }
+
+  @Test
+  void concurrentFileGroupResolutionLoadsEachPlanOnce() throws Exception {
+    SnapshotPlanBlobStore store = new SnapshotPlanBlobStore();
+    InMemoryBlobStore persistedBlobs = new InMemoryBlobStore();
+    store.blobStore = persistedBlobs;
+    store.mapper = new ObjectMapper();
+    ReconcileFileGroupTask group =
+        ReconcileFileGroupTask.of(
+            "plan-1", "group-1", "table-1", 55L, List.of("s3://bucket/file.parquet"));
+    ReconcileSnapshotTask persisted =
+        store.persistPlan(
+            "acct",
+            "job-1",
+            ReconcileSnapshotTask.of(
+                "table-1",
+                55L,
+                "db",
+                "events",
+                List.of(),
+                true,
+                ReconcileSnapshotTask.CompletionMode.FILE_GROUPS,
+                "",
+                1),
+            List.of(new PlannedFileGroupJob(ReconcileScope.empty(), group)));
+    String planUri = persisted.fileGroupPlanBlobUri();
+    byte[] planBytes = persistedBlobs.bytesByUri.get(planUri);
+    AtomicInteger reads = new AtomicInteger();
+    CountDownLatch getEntered = new CountDownLatch(1);
+    CountDownLatch releaseGet = new CountDownLatch(1);
+    BlobStore blockingBlobStore = mock(BlobStore.class);
+    when(blockingBlobStore.get(planUri))
+        .thenAnswer(
+            ignored -> {
+              reads.incrementAndGet();
+              getEntered.countDown();
+              assertTrue(releaseGet.await(5, TimeUnit.SECONDS));
+              return planBytes;
+            });
+    store.blobStore = blockingBlobStore;
+    store.clearPlanIndexCache();
+
+    var executor = Executors.newFixedThreadPool(2);
+    CountDownLatch callersReady = new CountDownLatch(2);
+    CountDownLatch start = new CountDownLatch(1);
+    try {
+      var first =
+          executor.submit(
+              () -> {
+                callersReady.countDown();
+                start.await();
+                return store.resolveFileGroup(planUri, "plan-1", "group-1");
+              });
+      var second =
+          executor.submit(
+              () -> {
+                callersReady.countDown();
+                start.await();
+                return store.resolveFileGroup(planUri, "plan-1", "group-1");
+              });
+      assertTrue(callersReady.await(5, TimeUnit.SECONDS));
+      start.countDown();
+      assertTrue(getEntered.await(5, TimeUnit.SECONDS));
+      // Releasing the loader as soon as it enters get() would let the second caller arrive after
+      // the load finished and hit the cache -- one read either way, whether or not concurrent
+      // misses coalesce. Hold the loader until the second caller is actually parked on it, so the
+      // assertion below can only pass if the wait happened.
+      long deadlineNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+      while (store.waitingPlanIndexLoads() == 0) {
+        assertTrue(
+            System.nanoTime() < deadlineNs, "second caller never waited on the in-flight load");
+        Thread.onSpinWait();
+      }
+      releaseGet.countDown();
+
+      assertEquals(Optional.of(group), first.get(5, TimeUnit.SECONDS));
+      assertEquals(Optional.of(group), second.get(5, TimeUnit.SECONDS));
+      assertEquals(1, reads.get());
+    } finally {
+      releaseGet.countDown();
+      executor.shutdownNow();
+    }
   }
 
   @Test

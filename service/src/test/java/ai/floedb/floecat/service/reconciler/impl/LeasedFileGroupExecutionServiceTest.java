@@ -190,7 +190,7 @@ class LeasedFileGroupExecutionServiceTest {
                     group.asReference(),
                     PARENT_JOB_ID,
                     true)));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -229,7 +229,8 @@ class LeasedFileGroupExecutionServiceTest {
     verify(statsStore).beginStatsGeneration(tableId(), SNAPSHOT_ID, "full-rescan-" + PARENT_JOB_ID);
     verify(snapshotPlanBlobStore)
         .resolveFileGroup(anyString(), eq(group.planId()), eq(group.groupId()));
-    verify(jobs).get(ACCOUNT_ID, PARENT_JOB_ID);
+    verify(jobs).getCompactLeaseView(PARENT_JOB_ID);
+    verify(jobs, never()).get(ACCOUNT_ID, PARENT_JOB_ID);
   }
 
   @Test
@@ -515,7 +516,7 @@ class LeasedFileGroupExecutionServiceTest {
             PARENT_JOB_ID);
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -564,7 +565,7 @@ class LeasedFileGroupExecutionServiceTest {
     ReconcileJobStore.ReconcileJob terminal =
         terminalFileGroupJob(plannedGroup.asReference(), "JS_SUCCEEDED");
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(terminal));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -688,7 +689,7 @@ class LeasedFileGroupExecutionServiceTest {
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
     stubIndexedPlan(plannedGroup);
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID)).thenReturn(Optional.of(parent));
 
     assertThrows(
         IllegalArgumentException.class,
@@ -724,7 +725,7 @@ class LeasedFileGroupExecutionServiceTest {
             PARENT_JOB_ID);
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -821,7 +822,7 @@ class LeasedFileGroupExecutionServiceTest {
             PARENT_JOB_ID);
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -948,7 +949,7 @@ class LeasedFileGroupExecutionServiceTest {
             "");
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID)).thenReturn(Optional.of(parent));
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID)).thenReturn(Optional.of(parent));
     when(jobs.get(ACCOUNT_ID, CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
     stubIndexedPlan(plannedGroup);
     when(jobs.completeFileGroupSuccess(
@@ -999,7 +1000,7 @@ class LeasedFileGroupExecutionServiceTest {
             PARENT_JOB_ID);
     when(jobs.renewLease(CHILD_JOB_ID, LEASE_EPOCH)).thenReturn(true);
     when(jobs.getLeaseView(CHILD_JOB_ID)).thenReturn(Optional.of(childLeaseView));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -1103,7 +1104,7 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileSnapshotTask.empty(),
                     childRef,
                     PARENT_JOB_ID)));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -1150,7 +1151,8 @@ class LeasedFileGroupExecutionServiceTest {
         error.getMessage());
     verify(snapshotPlanBlobStore)
         .resolveFileGroup(anyString(), eq(childRef.planId()), eq(childRef.groupId()));
-    verify(jobs).get(ACCOUNT_ID, PARENT_JOB_ID);
+    verify(jobs).getCompactLeaseView(PARENT_JOB_ID);
+    verify(jobs, never()).get(ACCOUNT_ID, PARENT_JOB_ID);
   }
 
   @Test
@@ -1182,7 +1184,7 @@ class LeasedFileGroupExecutionServiceTest {
                     PARENT_JOB_ID,
                     CaptureMode.METADATA_AND_CAPTURE,
                     scopedCapture)));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -1243,7 +1245,7 @@ class LeasedFileGroupExecutionServiceTest {
                     CaptureMode.METADATA_AND_CAPTURE,
                     scope)));
     stubIndexedPlan(group);
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -1277,7 +1279,8 @@ class LeasedFileGroupExecutionServiceTest {
         .loadGenerationInput(
             eq(tableId()), eq(SNAPSHOT_ID), eq(repositoryPredecessor), eq(List.of(filePath)));
     verify(indexArtifactRepository, never()).captureGenerationInput(any(), anyLong(), any());
-    verify(jobs, times(2)).get(ACCOUNT_ID, PARENT_JOB_ID);
+    verify(jobs, times(2)).getCompactLeaseView(PARENT_JOB_ID);
+    verify(jobs, never()).get(ACCOUNT_ID, PARENT_JOB_ID);
   }
 
   @Test
@@ -1296,7 +1299,7 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileSnapshotTask.empty(),
                     group.asReference(),
                     PARENT_JOB_ID)));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -1358,7 +1361,7 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileSnapshotTask.empty(),
                     group.asReference(),
                     PARENT_JOB_ID)));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -1410,7 +1413,7 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileSnapshotTask.empty(),
                     group.asReference(),
                     PARENT_JOB_ID)));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -1462,7 +1465,7 @@ class LeasedFileGroupExecutionServiceTest {
                     ReconcileSnapshotTask.empty(),
                     group.asReference(),
                     PARENT_JOB_ID)));
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(
@@ -1669,7 +1672,7 @@ class LeasedFileGroupExecutionServiceTest {
             group.fileCount(),
             "",
             0);
-    when(jobs.get(ACCOUNT_ID, PARENT_JOB_ID))
+    when(jobs.getCompactLeaseView(PARENT_JOB_ID))
         .thenReturn(
             Optional.of(
                 job(

@@ -36,12 +36,18 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -54,10 +60,14 @@ public class SnapshotPlanBlobStore {
       "append-only-base-v" + APPEND_ONLY_PLAN_FORMAT_VERSION;
   private static final int MAX_CACHED_PLAN_INDEXES = 64;
   private static final int MAX_CACHED_PLAN_FILES = 65_536;
+  private static final long PLAN_INDEX_LOAD_WAIT_MS = 120_000L;
   @Inject BlobStore blobStore;
   @Inject ObjectMapper mapper;
   private final Map<String, SnapshotPlanIndex> planIndexes = new LinkedHashMap<>(16, 0.75f, true);
+  private final Map<String, PlanIndexLoad> planIndexLoads = new HashMap<>();
+  private final AtomicInteger waitingPlanIndexLoads = new AtomicInteger();
   private long cachedPlanFiles;
+  private long planIndexGeneration;
 
   public ReconcileSnapshotTask persistPlan(
       String accountId,
@@ -260,6 +270,7 @@ public class SnapshotPlanBlobStore {
     synchronized (planIndexes) {
       planIndexes.clear();
       cachedPlanFiles = 0L;
+      planIndexGeneration++;
     }
   }
 
@@ -268,23 +279,99 @@ public class SnapshotPlanBlobStore {
     if (effectiveSnapshotPlanUri.isBlank()) {
       throw new IllegalStateException("Missing snapshot plan blob URI");
     }
+    PlanIndexLoad load;
+    boolean loader = false;
     synchronized (planIndexes) {
       SnapshotPlanIndex cached = planIndexes.get(effectiveSnapshotPlanUri);
       if (cached != null) {
         return cached;
       }
-    }
-    SnapshotPlanIndex loaded = SnapshotPlanIndex.from(loadPlanBlob(effectiveSnapshotPlanUri));
-    synchronized (planIndexes) {
-      SnapshotPlanIndex raced = planIndexes.get(effectiveSnapshotPlanUri);
-      if (raced != null) {
-        return raced;
+      load = planIndexLoads.get(effectiveSnapshotPlanUri);
+      if (load == null) {
+        load = new PlanIndexLoad(planIndexGeneration, new CompletableFuture<>());
+        planIndexLoads.put(effectiveSnapshotPlanUri, load);
+        loader = true;
       }
-      trimPlanIndexesFor(loaded.plannedFileCount());
-      planIndexes.put(effectiveSnapshotPlanUri, loaded);
-      cachedPlanFiles += loaded.plannedFileCount();
-      return loaded;
     }
+
+    if (!loader) {
+      waitingPlanIndexLoads.incrementAndGet();
+      try {
+        return awaitPlanIndex(effectiveSnapshotPlanUri, load.future());
+      } finally {
+        waitingPlanIndexLoads.decrementAndGet();
+      }
+    }
+
+    try {
+      SnapshotPlanIndex loaded = SnapshotPlanIndex.from(loadPlanBlob(effectiveSnapshotPlanUri));
+      synchronized (planIndexes) {
+        if (planIndexLoads.get(effectiveSnapshotPlanUri) == load) {
+          planIndexLoads.remove(effectiveSnapshotPlanUri);
+        }
+        if (load.generation() == planIndexGeneration) {
+          trimPlanIndexesFor(loaded.plannedFileCount());
+          planIndexes.put(effectiveSnapshotPlanUri, loaded);
+          cachedPlanFiles += loaded.plannedFileCount();
+        }
+      }
+      load.future().complete(loaded);
+      return loaded;
+    } catch (Throwable failure) {
+      synchronized (planIndexes) {
+        if (planIndexLoads.get(effectiveSnapshotPlanUri) == load) {
+          planIndexLoads.remove(effectiveSnapshotPlanUri);
+        }
+      }
+      load.future().completeExceptionally(failure);
+      throw propagatePlanIndexLoadFailure(effectiveSnapshotPlanUri, failure);
+    }
+  }
+
+  /**
+   * Waits on the in-flight load rather than starting a second one. The wait is bounded: the loader
+   * inherits whatever timeout {@link BlobStore} applies, but a stalled load must not pin every
+   * concurrent requester for the same plan to it indefinitely. A waiter that times out fails its
+   * own request and leaves the load running for whoever is still waiting.
+   */
+  private static SnapshotPlanIndex awaitPlanIndex(
+      String snapshotPlanUri, CompletableFuture<SnapshotPlanIndex> future) {
+    try {
+      return future.get(PLAN_INDEX_LOAD_WAIT_MS, TimeUnit.MILLISECONDS);
+    } catch (ExecutionException failure) {
+      throw propagatePlanIndexLoadFailure(snapshotPlanUri, failure.getCause());
+    } catch (TimeoutException failure) {
+      throw new IllegalStateException(
+          "Timed out waiting for an in-flight load of snapshot plan index " + snapshotPlanUri,
+          failure);
+    } catch (InterruptedException failure) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException(
+          "Interrupted waiting for an in-flight load of snapshot plan index " + snapshotPlanUri,
+          failure);
+    }
+  }
+
+  /**
+   * Returns the failure for the caller to throw, except for {@link Error}, which is rethrown here
+   * rather than returned so it is never wrapped or swallowed. Call sites therefore read {@code
+   * throw propagatePlanIndexLoadFailure(...)} even though that call can itself throw.
+   */
+  private static RuntimeException propagatePlanIndexLoadFailure(
+      String snapshotPlanUri, Throwable failure) {
+    if (failure instanceof RuntimeException runtime) {
+      return runtime;
+    }
+    if (failure instanceof Error error) {
+      throw error;
+    }
+    return new IllegalStateException(
+        "Failed to load snapshot plan index " + snapshotPlanUri, failure);
+  }
+
+  /** Test seam: how many callers are parked on another thread's in-flight load right now. */
+  int waitingPlanIndexLoads() {
+    return waitingPlanIndexLoads.get();
   }
 
   private void trimPlanIndexesFor(int plannedFileCount) {
@@ -300,6 +387,8 @@ public class SnapshotPlanBlobStore {
   }
 
   private record FileGroupIdentity(String planId, String groupId) {}
+
+  private record PlanIndexLoad(long generation, CompletableFuture<SnapshotPlanIndex> future) {}
 
   private record SnapshotPlanIndex(
       SnapshotPlanBlob plan,
