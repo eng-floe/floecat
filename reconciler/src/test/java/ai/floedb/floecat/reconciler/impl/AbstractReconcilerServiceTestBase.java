@@ -35,7 +35,6 @@ import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
 import ai.floedb.floecat.reconciler.spi.ReconcilerBackend;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -260,15 +259,6 @@ abstract class AbstractReconcilerServiceTestBase {
                   .setId("ns-1")
                   .build(),
               "view"));
-    }
-
-    @Override
-    public SnapshotPin snapshotPinFor(
-        ReconcileContext ctx,
-        ResourceId tableId,
-        ai.floedb.floecat.common.rpc.SnapshotRef ref,
-        Optional<com.google.protobuf.Timestamp> asOf) {
-      throw new UnsupportedOperationException();
     }
 
     @Override

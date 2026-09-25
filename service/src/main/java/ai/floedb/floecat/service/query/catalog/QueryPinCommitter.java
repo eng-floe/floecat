@@ -100,6 +100,14 @@ final class QueryPinCommitter {
    */
   void accumulate(
       List<ResolvedRelation> toPin, PhaseDiagnostics diagnostics, BooleanSupplier cancelled) {
+    accumulateInternal(toPin, diagnostics, cancelled, false);
+  }
+
+  private void accumulateInternal(
+      List<ResolvedRelation> toPin,
+      PhaseDiagnostics diagnostics,
+      BooleanSupplier cancelled,
+      boolean preservePendingOnFailure) {
     long pinStartNs = System.nanoTime();
     RelationPinSet chunkPins = RelationPinSet.getDefaultInstance();
     boolean handedOff = false;
@@ -115,7 +123,7 @@ final class QueryPinCommitter {
         // keeps them pending, cancellation releases them, and a failed merge releases them together
         // with the previously pending roots in one store call.
         handedOff = true;
-        accumulated = accumulateChunkPins(chunkPins, cancelled);
+        accumulated = accumulateChunkPins(chunkPins, cancelled, preservePendingOnFailure);
       } finally {
         diagnostics.nanos("pin.accumulate", System.nanoTime() - accumulateStartNs);
       }
@@ -129,6 +137,48 @@ final class QueryPinCommitter {
       timings.addPinCollectNanos(System.nanoTime() - pinStartNs);
     }
   }
+
+  /**
+   * Collect one batch normally, retrying relation by relation only when the batch has a
+   * relation-scoped failure. Query, transport, and cancellation failures still escape and terminate
+   * the stream. Normal requests therefore retain the existing one-batch resolver path.
+   *
+   * <p>INTERNAL is relation-scoped, so a batch that fails with it is retried per relation: that
+   * retry is how a failure in one relation is told apart from one in all of them. The cost is one
+   * attempt per relation in the chunk, on a path that is already failing.
+   */
+  List<RelationFailure> accumulateIsolated(
+      List<ResolvedRelation> relations, PhaseDiagnostics diagnostics, BooleanSupplier cancelled) {
+    if (relations == null || relations.isEmpty()) {
+      return List.of();
+    }
+    try {
+      accumulateInternal(relations, diagnostics, cancelled, true);
+      return List.of();
+    } catch (CancellationException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      if (!GrpcErrors.isRelationScoped(e)) {
+        throw e;
+      }
+      List<RelationFailure> failures = new ArrayList<>();
+      for (ResolvedRelation relation : relations) {
+        try {
+          accumulateInternal(List.of(relation), diagnostics, cancelled, true);
+        } catch (CancellationException cancellation) {
+          throw cancellation;
+        } catch (RuntimeException relationFailure) {
+          if (!GrpcErrors.isRelationScoped(relationFailure)) {
+            throw relationFailure;
+          }
+          failures.add(new RelationFailure(relation, relationFailure));
+        }
+      }
+      return failures;
+    }
+  }
+
+  record RelationFailure(ResolvedRelation relation, RuntimeException failure) {}
 
   /** Make the accumulated pins durable on the QueryContext. Records the pin-commit timing. */
   void commit() {
@@ -237,7 +287,8 @@ final class QueryPinCommitter {
   }
 
   // Track every pin that must be durable before the next chunk is emitted.
-  private boolean accumulateChunkPins(RelationPinSet incomingPins, BooleanSupplier cancelled) {
+  private boolean accumulateChunkPins(
+      RelationPinSet incomingPins, BooleanSupplier cancelled, boolean preserveExistingOnFailure) {
     if (incomingPins == null || incomingPins.getPinsCount() == 0) {
       return true;
     }
@@ -250,16 +301,22 @@ final class QueryPinCommitter {
           accumulatedPins = RelationPinSet.getDefaultInstance();
         } else {
           accumulatedPins = pendingChunkPins;
-          try {
-            pendingChunkPins = QueryPins.mergeSets(accumulatedPins, incomingPins, correlationId);
-          } catch (RuntimeException | Error e) {
-            pendingChunkPins = RelationPinSet.getDefaultInstance();
-            throw e;
-          }
+          pendingChunkPins = QueryPins.mergeSets(accumulatedPins, incomingPins, correlationId);
         }
       }
     } catch (RuntimeException | Error e) {
-      releaseRoots(accumulatedPins.toBuilder().addAllPins(incomingPins.getPinsList()).build());
+      if (preserveExistingOnFailure) {
+        // The existing pending pins belong to earlier successful relations and must remain
+        // pending when this relation conflicts. Only the incoming relation's roots are abandoned.
+        releaseRoots(incomingPins);
+      } else {
+        // Direct callers own the whole batch transaction: a failed merge abandons both the
+        // existing pending set and this incoming set.
+        synchronized (pendingPinsLock) {
+          pendingChunkPins = RelationPinSet.getDefaultInstance();
+        }
+        releaseRoots(accumulatedPins.toBuilder().addAllPins(incomingPins.getPinsList()).build());
+      }
       throw e;
     }
     if (cancelledBeforeMerge) {

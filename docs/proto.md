@@ -3,7 +3,9 @@
 ## Overview
 Floecat's public surface is entirely gRPC. The `core/proto/` module defines canonical protobuf
 structures for resource identifiers, catalog services, query lifecycle metadata, connectors, statistics, and
-helper schemas. Every other module depends on these contracts for serialization, validation, and
+helper schemas. `core/proto/README.md` maps every service to the audience that binds it, and
+[Generic Engine RPC Contract](generic-engine-rpc-contract.md) states what an engine adapter
+binds and what it must handle. Every other module depends on these contracts for serialization, validation, and
 compatibility.
 
 ### Remote executor versioning
@@ -43,7 +45,10 @@ CLI, and reconciler.
   operations.
 - **`query/lifecycle.proto`** – Query lifecycle (`BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`) and the
   snapshot pin metadata sent down to the SQL planner.
-- **`query/system_objects_registry.proto`** – `GetSystemObjects` plus message definitions for builtin functions,
+- **`catalog/relation.proto`** – kind-neutral table/view read model for engine adapters:
+  `ListRelations`, `ResolveRelations` (per-item errors), and `GetRelation`.
+- **`query/sql_catalog.proto`** – `SqlCatalogService.GetSqlObjectsRegistry`.
+- **`query/system_objects_registry.proto`** – message definitions for builtin functions,
   operators, casts, collations, aggregates, and types loaded from static files.
 - **`query/user_objects_bundle.proto`** – `GetUserObjects` streams resolved relation metadata for planner binding, including per-column `ColumnResult` outcomes (`READY` with `ColumnInfo` or `FAILED` with `ColumnFailure`).
 - **`execution/scan.proto`** – Scan metadata (data/delete files + per-file stats) produced by
@@ -64,7 +69,8 @@ CLI, and reconciler.
 | `NamespaceService` | `ListNamespaces`, `GetNamespace`, `CreateNamespace`, `UpdateNamespace`, `DeleteNamespace` | Supports hierarchical selectors (`path`, `recursive`, `children_only`). |
 | `TableService` | `ListTables`, `GetTable`, `CreateTable`, `UpdateTable`, `DeleteTable` | `TableSpec` carries `UpstreamRef` with connector link, schema JSON, and partition info. |
 | `ViewService` | Similar CRUD semantics, storing SQL definitions and metadata. |
-| `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `GetLatestFinalizedSnapshot`, `CreateSnapshot`, `DeleteSnapshot` | Pins upstream checkpoints and timestamps. The bounded latest-finalized lookup selects a root-published reuse basis without scanning snapshot history. Finalized snapshots expose a system-owned `reuse_manifest_ref`; `SnapshotSpec` does not accept that field. |
+| `RelationService` | `ListRelations`, `ResolveRelations`, `GetRelation` | Kind-neutral table/view read API for engine adapters. Scopes by `namespace_id` (with `recursive`) or `catalog_id`, like `ListNamespacesRequest`. `kinds` accepts `RK_TABLE`/`RK_VIEW` only; page tokens are opaque and bound to the account, scope, filters, and listing semantics that minted them. |
+| `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `GetLatestFinalizedSnapshot`, `GetCurrentSnapshotPointer`, `GetSnapshotSchema`, `CreateSnapshot`, `DeleteSnapshot`, `UpdateSnapshot` | Pins upstream checkpoints and timestamps. The bounded latest-finalized lookup selects a root-published reuse basis without scanning snapshot history. Finalized snapshots expose a system-owned `reuse_manifest_ref`; `SnapshotSpec` does not accept that field. |
 | `TableStatisticsService` | `GetTargetStats`, `ListTargetStats`, client-streaming `PutTargetStats` | Accepts per-snapshot target stats envelopes (table/column/expression/file). `ListTargetStats` supports target-kind filtering (currently at most one kind per request); streaming writes collapse multiple batches into a single call. |
 | `TableIndexService` | `GetIndexArtifact`, `GetIndexCaptureStatus`, `ListIndexArtifacts`, client-streaming `PutIndexArtifacts` | Stores and resolves snapshot-scoped parquet sidecar artifact metadata and bounded-cost finalized capture status keyed by table and snapshot. |
 | `TableConstraintsService` | `GetTableConstraints`, `ListTableConstraints`, `PutTableConstraints`, `MergeTableConstraints`, `AppendTableConstraints`, `DeleteTableConstraints`, `AddTableConstraint`, `DeleteTableConstraint` | Snapshot-scoped constraints CRUD for user tables. `PutTableConstraints` is full-bundle upsert, `MergeTableConstraints` is server-side merge by `constraint.name` plus shallow merge of bundle `properties` (incoming keys win), `AppendTableConstraints` is server-side append-only (duplicate names rejected), and `AddTableConstraint`/`DeleteTableConstraint` are single-constraint partial mutations. All write operations require snapshot existence (`NOT_FOUND` when missing). |
@@ -81,7 +87,7 @@ CLI, and reconciler.
 | `PlannerStatsService` | `GetTargetStats`, `GetTableConstraints` | Split planner-facing streams for target stats and table constraints; `GetTargetStats(include_constraints=true)` remains as a combined single-roundtrip convenience mode. |
 | `UserObjectsService` | `GetUserObjects` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
 | &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. For each `RelationInfo`, inspect `columns[*].status`: `COLUMN_STATUS_OK` exposes `columns[*].column`, while `COLUMN_STATUS_FAILED` exposes `columns[*].failure` with typed `ColumnFailureCode` plus details. Extension-defined failures must use `COLUMN_FAILURE_CODE_ENGINE_EXTENSION` and set `extension_code_value`; clients branch on `extension_code_value` inside the engine domain (for FloeDB, see `FloeDecorationFailureCode` in `extensions/floedb/src/main/proto/engine_floe.proto`). |
-| `SystemObjectsService` | `GetSystemObjects` | Returns the builtin catalog selected by the independent `x-environment-kind` / `x-environment-version` and `x-engine-kind` / `x-engine-version` headers supplied with the request. |
+| `SqlCatalogService` | `GetSqlObjectsRegistry` | Returns the builtin catalog selected by the independent `x-environment-kind` / `x-environment-version` and `x-engine-kind` / `x-engine-version` headers supplied with the request. |
 
 Resource IDs supplied to integration and overlay RPCs must include an `account_id` matching the
 authenticated principal's account. The service rejects blank or cross-account IDs before hitting
@@ -104,7 +110,7 @@ case-sensitive. Each path selects that namespace subtree.
   the file is data vs equality/position deletes.
 - `ScanFileContent` enumerates the delete/data categories.
 
-`query/system_objects_registry.proto` exposes immutable builtin metadata via `SystemObjectsService.GetSystemObjects`
+`query/sql_catalog.proto` exposes immutable builtin metadata via `SqlCatalogService.GetSqlObjectsRegistry`
 so planners can hydrate functions/operators/types once per engine version. Clients send the
 `x-environment-kind` / `x-environment-version` and `x-engine-kind` / `x-engine-version` headers and always receive the composed catalog for that
 engine release.

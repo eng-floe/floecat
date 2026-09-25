@@ -39,11 +39,11 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Test-only {@link EngineCatalogProvider} for {@code SystemObjectsServiceIT}.
+ * Test-only {@link EngineCatalogProvider} for {@code SqlCatalogServiceIT}.
  *
  * <p>Provides a fully programmatic catalog for the {@code "test-engine"} engine kind, with exactly
- * the objects that {@code SystemObjectsServiceIT} asserts on. This avoids any dependency on the
- * FloeDB extension's classpath resources, so the integration tests remain stable after the FloeDB
+ * the objects that {@code SqlCatalogServiceIT} asserts on. This avoids any dependency on the FloeDB
+ * extension's classpath resources, so the integration tests remain stable after the FloeDB
  * extension is removed.
  *
  * <p>Registered via {@code META-INF/services} in the test classpath.

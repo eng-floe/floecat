@@ -22,7 +22,6 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.QueryStatus;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryPins;
@@ -295,18 +294,6 @@ public final class QueryContext {
   // ----------------------------------------------------------------------
   //  Snapshot handling
   // ----------------------------------------------------------------------
-
-  /**
-   * Returns the pinned snapshot for a given table, or throws if not pinned. Projected from the
-   * stored {@link TablePin} so snapshot-selector callers are unchanged.
-   */
-  public SnapshotPin requireSnapshotPin(ResourceId tableId, String correlationId) {
-    return QueryPins.toSnapshotPin(requireTablePin(tableId, correlationId));
-  }
-
-  public Optional<SnapshotPin> findSnapshotPin(ResourceId tableId, String correlationId) {
-    return findTablePin(tableId, correlationId).map(QueryPins::toSnapshotPin);
-  }
 
   /** Returns the full stored {@link TablePin} for a table, if one has been pinned in this query. */
   public Optional<TablePin> findTablePin(ResourceId tableId, String correlationId) {

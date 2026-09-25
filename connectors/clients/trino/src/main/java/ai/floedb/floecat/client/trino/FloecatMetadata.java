@@ -16,23 +16,26 @@
 
 package ai.floedb.floecat.client.trino;
 
-import static java.util.stream.Collectors.toList;
 
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetSnapshotRequest;
-import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.ListNamespacesRequest;
+import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.Namespace;
+import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.catalog.rpc.RelationReference;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveFQTablesRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveFQTablesResponse;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.PageRequest;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.common.rpc.SpecialSnapshot;
+import ai.floedb.floecat.engine.catalog.RelationResults;
 import com.google.inject.Inject;
 import com.google.protobuf.Timestamp;
 import io.trino.plugin.iceberg.ColumnIdentity;
@@ -58,6 +61,7 @@ import io.trino.spi.expression.Constant;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.TypeManager;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -74,8 +78,8 @@ import org.apache.iceberg.types.Types.NestedField;
 public class FloecatMetadata implements ConnectorMetadata {
 
   private final NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaceService;
-  private final TableServiceGrpc.TableServiceBlockingStub tableService;
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryService;
+  private final RelationServiceGrpc.RelationServiceBlockingStub relationService;
   private final SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotService;
   private final CatalogName catalogName;
   private final CatalogHandle catalogHandle;
@@ -92,8 +96,8 @@ public class FloecatMetadata implements ConnectorMetadata {
       TypeManager typeManager) {
     this(
         client.namespaces(),
-        client.tables(),
         client.directory(),
+        client.relations(),
         client.snapshots(),
         catalogName,
         catalogHandle,
@@ -103,15 +107,15 @@ public class FloecatMetadata implements ConnectorMetadata {
   // Testing/helper constructor to allow direct stub injection
   FloecatMetadata(
       NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaceService,
-      TableServiceGrpc.TableServiceBlockingStub tableService,
       DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryService,
+      RelationServiceGrpc.RelationServiceBlockingStub relationService,
       SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshotService,
       CatalogName catalogName,
       CatalogHandle catalogHandle,
       TypeManager typeManager) {
     this.namespaceService = namespaceService;
-    this.tableService = tableService;
     this.directoryService = directoryService;
+    this.relationService = relationService;
     this.snapshotService = snapshotService;
     this.catalogName = catalogName;
     this.catalogHandle = catalogHandle;
@@ -120,36 +124,87 @@ public class FloecatMetadata implements ConnectorMetadata {
 
   @Override
   public List<String> listSchemaNames(ConnectorSession session) {
-    var catResponse =
-        directoryService.resolveCatalog(
+    return namespaceEntries().stream().map(NamespaceEntry::schemaName).toList();
+  }
+
+  private record NamespaceEntry(ResourceId id, String schemaName) {}
+
+  private ResourceId catalogId() {
+    return directoryService
+        .resolveCatalog(
             ResolveCatalogRequest.newBuilder()
                 .setRef(NameRef.newBuilder().setCatalog(catalogName.toString()).build())
-                .build());
+                .build())
+        .getResourceId();
+  }
 
-    var nsResponse =
-        namespaceService.listNamespaces(
-            ListNamespacesRequest.newBuilder().setCatalogId(catResponse.getResourceId()).build());
+  /** Every namespace in the catalog, nested ones included, flattened to dotted Trino schemas. */
+  private List<NamespaceEntry> namespaceEntries() {
+    ResourceId catalogId = catalogId();
+    var out = new ArrayList<NamespaceEntry>();
+    String token = "";
+    do {
+      var response =
+          namespaceService.listNamespaces(
+              ListNamespacesRequest.newBuilder()
+                  .setCatalogId(catalogId)
+                  .setRecursive(true)
+                  .setPage(PageRequest.newBuilder().setPageToken(token).build())
+                  .build());
+      for (Namespace ns : response.getNamespacesList()) {
+        out.add(new NamespaceEntry(ns.getResourceId(), schemaNameOf(ns)));
+      }
+      token = response.getPage().getNextPageToken();
+    } while (!token.isEmpty());
+    return out;
+  }
 
-    return nsResponse.getNamespacesList().stream()
-        .map(
-            ns -> {
-              if (ns.getParentsCount() == 0) {
-                return ns.getDisplayName();
-              }
-              String parentPath = String.join(".", ns.getParentsList());
-              return parentPath.isEmpty()
-                  ? ns.getDisplayName()
-                  : parentPath + "." + ns.getDisplayName();
-            })
-        .toList();
+  private static String schemaNameOf(Namespace ns) {
+    if (ns.getParentsCount() == 0) {
+      return ns.getDisplayName();
+    }
+    String parentPath = String.join(".", ns.getParentsList());
+    return parentPath.isEmpty() ? ns.getDisplayName() : parentPath + "." + ns.getDisplayName();
+  }
+
+  /** The dotted schema a relation sits in, from the path on its resolved name. */
+  private static String schemaOf(Relation relation, String fallback) {
+    List<String> path = relation.getName().getPathList();
+    return path.isEmpty() ? fallback : String.join(".", path);
   }
 
   public List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName) {
-    NameRef prefix = NameMapper.prefix(catalogName.toString(), schemaName.orElse(null));
-    ResolveFQTablesRequest request = ResolveFQTablesRequest.newBuilder().setPrefix(prefix).build();
-    ResolveFQTablesResponse response = directoryService.resolveFQTables(request);
+    var request = ListRelationsRequest.newBuilder().addKinds(ResourceKind.RK_TABLE);
+    String fallbackSchema = schemaName.orElse("");
 
-    return response.getTablesList().stream().map(NameMapper::toSchemaTableName).collect(toList());
+    if (schemaName.isPresent()) {
+      Optional<NamespaceEntry> namespace =
+          namespaceEntries().stream()
+              .filter(entry -> entry.schemaName().equals(schemaName.get()))
+              .findFirst();
+      if (namespace.isEmpty()) {
+        return List.of();
+      }
+      request.setNamespaceId(namespace.get().id());
+    } else {
+      request.setCatalogId(catalogId()).setRecursive(true);
+    }
+
+    var out = new ArrayList<SchemaTableName>();
+    String token = "";
+    do {
+      var response =
+          relationService.listRelations(
+              request.setPage(PageRequest.newBuilder().setPageToken(token)).build());
+      var page = RelationResults.read(response);
+      RelationResults.requireComplete(page);
+      for (Relation relation : page.relations()) {
+        out.add(
+            new SchemaTableName(schemaOf(relation, fallbackSchema), relation.getDisplayName()));
+      }
+      token = page.nextPageToken();
+    } while (!token.isEmpty());
+    return out;
   }
 
   @Override
@@ -162,27 +217,39 @@ public class FloecatMetadata implements ConnectorMetadata {
     NameRef nameRef =
         NameMapper.nameRef(
             catalogName.toString(), tableName.getSchemaName(), tableName.getTableName());
-    ResolveTableRequest resolveRequest = ResolveTableRequest.newBuilder().setRef(nameRef).build();
-    ResourceId tableId = directoryService.resolveTable(resolveRequest).getResourceId();
+    var resolved =
+        relationService.resolveRelations(
+            ResolveRelationsRequest.newBuilder()
+                .addReferences(RelationReference.newBuilder().addCandidates(nameRef))
+                .setIncludeSchema(true)
+                .build());
 
-    if (tableId == null || tableId.getId().isEmpty()) {
+    Relation relation;
+    try {
+      relation = RelationResults.requireResolved(resolved);
+    } catch (RelationResults.RelationResolutionException e) {
+      if (e.isNotFound()) {
+        return null;
+      }
+      throw e;
+    }
+    if (relation.getResourceId().getKind() != ResourceKind.RK_TABLE || !relation.hasTable()) {
       return null;
     }
 
-    GetTableRequest request = GetTableRequest.newBuilder().setTableId(tableId).build();
-    var response = tableService.getTable(request);
-
-    if (!response.hasTable() || !response.getTable().hasUpstream()) {
+    var details = relation.getTable();
+    if (!details.hasUpstream()) {
       return null;
     }
 
-    String tableUri = response.getTable().getUpstream().getUri();
-    String schemaJson = response.getTable().getSchemaJson();
+    ResourceId tableId = relation.getResourceId();
+    String tableUri = details.getUpstream().getUri();
+    String schemaJson = details.getSchemaJson();
     if (tableUri == null || tableUri.isEmpty() || schemaJson == null || schemaJson.isEmpty()) {
       return null;
     }
 
-    List<String> partitionKeys = response.getTable().getUpstream().getPartitionKeysList();
+    List<String> partitionKeys = details.getUpstream().getPartitionKeysList();
 
     Optional<Long> snapshotId = FloecatSessionProperties.getSnapshotId(session);
     Optional<Long> asOfMillis = FloecatSessionProperties.getAsOfEpochMillis(session);
@@ -232,7 +299,7 @@ public class FloecatMetadata implements ConnectorMetadata {
         tableUri,
         schemaJson,
         PartitionSpecParser.toJson(partitionSpec),
-        response.getTable().getUpstream().getFormat().name(),
+        details.getUpstream().getFormat().name(),
         catalogHandle.getId(),
         TupleDomain.all(),
         Set.of(),

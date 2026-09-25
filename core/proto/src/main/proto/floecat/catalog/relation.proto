@@ -1,0 +1,236 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package ai.floedb.floecat.catalog;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.catalog.rpc";
+
+import "floecat/catalog/table.proto";
+import "floecat/catalog/view.proto";
+import "floecat/common/common.proto";
+import "floecat/query/schema.proto";
+import "floecat/query/sql_objects.proto";
+
+// Generic read model for FROM-clause objects. Table and view mutation APIs stay
+// separate because their write specs differ, but engine-facing reads should not
+// require callers to guess the relation kind before listing, resolving, or
+// describing an object.
+
+// Whether the relation itself has the metadata needed for a current read. Advisory: browse and
+// bind report it without pinning, so Q_QUERYABLE can still fail to pin at plan time. For views,
+// Q_QUERYABLE means the view has no relation-local snapshot requirement; dependency readiness is
+// evaluated by the query/pinning path.
+enum Queryability {
+  reserved 3, 4;
+  reserved "Q_NOT_QUERYABLE_PENDING_FINALIZATION", "Q_NOT_QUERYABLE_SNAPSHOT_EXPIRED";
+
+  /** Not reported, because the request did not set `include_status`. */
+  Q_UNSPECIFIED = 0;
+
+  Q_QUERYABLE = 1;
+  Q_NOT_QUERYABLE_NO_SNAPSHOT = 2;
+
+  /** Reported, but undecidable: `reason` says why. */
+  Q_UNKNOWN = 5;
+}
+
+message RelationStatus {
+  Queryability queryability = 1;
+  optional int64 current_snapshot_id = 2;
+  string reason = 3;
+}
+
+message TableDetails {
+  // Format and partition keys live on UpstreamRef; they are not repeated here.
+  reserved 1, 3;
+  reserved "format", "partition_keys";
+
+  UpstreamRef upstream = 2;
+
+  /** Format-native schema document, as stored on Table.schema_json. */
+  string schema_json = 4;
+}
+
+message ViewDetails {
+  repeated ViewSqlDefinition sql_definitions = 1;
+
+  /** Fully-qualified names of the relations the view reads, as stored on View.base_relations. */
+  repeated string base_relations = 2;
+
+  repeated string creation_search_path = 3;
+}
+
+message Relation {
+  // The kind is `resource_id.kind`; the `details` oneof carries the kind-specific payload.
+  reserved 4;
+  reserved "kind";
+
+  ai.floedb.floecat.common.ResourceId resource_id = 1;
+
+  /** Fully qualified name, as resolved. */
+  ai.floedb.floecat.common.NameRef name = 2;
+
+  /** The relation's own name, without its namespace path. */
+  string display_name = 3;
+
+  ai.floedb.floecat.query.SchemaDescriptor schema = 5;
+  RelationStatus status = 6;
+  /**
+   * Builtin or user-defined, as query.Origin means it for SQL objects. Listings merge both, so a
+   * client that treats them differently reads this rather than the name or namespace.
+   */
+  ai.floedb.floecat.query.Origin origin = 7;
+
+  oneof details {
+    TableDetails table = 10;
+    ViewDetails view = 11;
+  }
+
+  map<string,string> properties = 99;
+}
+
+message ListRelationsRequest {
+  // Scoping mirrors ListNamespacesRequest.
+  oneof parent {
+    /** Lists this namespace. */
+    ai.floedb.floecat.common.ResourceId namespace_id = 1;
+
+    /** Lists the catalog's top-level namespaces. */
+    ai.floedb.floecat.common.ResourceId catalog_id = 7;
+  }
+
+  /** Filter over RK_TABLE and RK_VIEW. Empty lists both. Any other kind is rejected. */
+  repeated ai.floedb.floecat.common.ResourceKind kinds = 2;
+
+  /** Also lists namespaces below the scope. */
+  bool recursive = 3;
+
+  /**
+   * Hydrates current relation metadata, including the logical schema, properties and kind-specific
+   * details. When false, the relation is identity-only: details and properties are absent, while
+   * `resource_id.kind` remains the authoritative table/view discriminator.
+   */
+  bool include_schema = 4;
+
+  /** Populates `Relation.status`. Costs one current-snapshot read per relation. */
+  bool include_status = 5;
+
+  /** Populates `page.total_size`. Costs one count per namespace in scope, on the first page. */
+  bool include_total = 8;
+
+  ai.floedb.floecat.common.PageRequest page = 6;
+}
+
+message ListRelationsResponse {
+  reserved 1, 3;
+  reserved "relations", "errors";
+
+  /**
+   * Canonical ordered page. There is exactly one result for every discovered relation, including
+   * rows that could not be hydrated.
+   */
+  repeated RelationListResult results = 4;
+
+  ai.floedb.floecat.common.PageResponse page = 2;
+
+}
+
+/**
+ * One ordered listing row. An error consumes page space and carries the row identity, so one bad
+ * relation does not hide the rest of a page or make pagination repeat the same row forever.
+ */
+message RelationListResult {
+  oneof result {
+    Relation relation = 1;
+    RelationListError error = 2;
+  }
+}
+
+message RelationListError {
+  ai.floedb.floecat.common.ResourceId relation_id = 1;
+  /** Fully qualified name when available; otherwise the relation's leaf name. */
+  ai.floedb.floecat.common.NameRef name = 2;
+  ai.floedb.floecat.common.Error error = 3;
+}
+
+/**
+ * One logical reference, with the names to try in order, as query.TableReferenceCandidate does for
+ * planning. A caller expands its search path into candidates here rather than sending the cross
+ * product of names and namespaces and re-applying precedence to the results.
+ *
+ * Matching folds case, so candidates never need case variants.
+ *
+ * Example: candidates=[sales.orders, public.orders] for an unqualified `orders`.
+ */
+message RelationReference {
+  repeated ai.floedb.floecat.common.NameRef candidates = 1;
+}
+
+message ResolveRelationsRequest {
+  reserved 1;
+  reserved "names";
+
+  /**
+   * One entry per logical reference, in the order results are returned. The total candidate count
+   * is bounded by `floecat.relation.resolve.max-names`.
+   */
+  repeated RelationReference references = 4;
+
+  /** Same hydration semantics as `ListRelationsRequest.include_schema`. */
+  bool include_schema = 2;
+  bool include_status = 3;
+}
+
+message ResolveRelationResult {
+  reserved 1;
+  reserved "requested_name";
+
+  /** The candidate that resolved. Unset when none did. */
+  ai.floedb.floecat.common.NameRef resolved_name = 4;
+
+  oneof result {
+    Relation relation = 2;
+    /**
+     * Per-reference failure. MC_NOT_FOUND means no candidate resolved; every other code means a
+     * candidate was found or evaluated but its relation could not be read. Clients must not map
+     * those failures to absence. Request-scoped failures fail the whole RPC instead.
+     */
+    ai.floedb.floecat.common.Error error = 3;
+  }
+}
+
+message ResolveRelationsResponse {
+  /** One result per requested reference, in request order. */
+  repeated ResolveRelationResult results = 1;
+}
+
+message GetRelationRequest {
+  ai.floedb.floecat.common.ResourceId relation_id = 1;
+  /** Same hydration semantics as `ListRelationsRequest.include_schema`. */
+  bool include_schema = 2;
+  bool include_status = 3;
+}
+
+message GetRelationResponse {
+  Relation relation = 1;
+}
+
+// ENGINE. Kind-neutral reads for tables and views. Never pins a snapshot.
+service RelationService {
+  rpc ListRelations(ListRelationsRequest) returns (ListRelationsResponse);
+  rpc ResolveRelations(ResolveRelationsRequest) returns (ResolveRelationsResponse);
+  rpc GetRelation(GetRelationRequest) returns (GetRelationResponse);
+}

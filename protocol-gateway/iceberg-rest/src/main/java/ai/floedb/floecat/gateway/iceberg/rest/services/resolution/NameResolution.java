@@ -16,12 +16,15 @@
 
 package ai.floedb.floecat.gateway.iceberg.rest.services.resolution;
 
+import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.catalog.rpc.RelationReference;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.engine.catalog.RelationResults;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
 import io.grpc.Status;
@@ -63,9 +66,15 @@ public final class NameResolution {
       GrpcServiceFacade client, String catalogName, List<String> path, String tableName) {
     NameRef ref =
         NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(tableName).build();
-    var response = client.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build());
+    var response = resolveRelation(client, ref);
     return requireId(
-        response == null ? null : response.getResourceId(), "table", catalogName, path, tableName);
+        response != null && response.getResourceId().getKind() == ResourceKind.RK_TABLE
+            ? response.getResourceId()
+            : null,
+        "table",
+        catalogName,
+        path,
+        tableName);
   }
 
   public static ResourceId resolveView(
@@ -77,9 +86,34 @@ public final class NameResolution {
       GrpcServiceFacade client, String catalogName, List<String> path, String viewName) {
     NameRef ref =
         NameRef.newBuilder().setCatalog(catalogName).addAllPath(path).setName(viewName).build();
-    var response = client.resolveView(ResolveViewRequest.newBuilder().setRef(ref).build());
+    var response = resolveRelation(client, ref);
     return requireId(
-        response == null ? null : response.getResourceId(), "view", catalogName, path, viewName);
+        response != null && response.getResourceId().getKind() == ResourceKind.RK_VIEW
+            ? response.getResourceId()
+            : null,
+        "view",
+        catalogName,
+        path,
+        viewName);
+  }
+
+  private static Relation resolveRelation(GrpcServiceFacade client, NameRef ref) {
+    var response =
+        client.resolveRelations(
+            ResolveRelationsRequest.newBuilder()
+                .addReferences(RelationReference.newBuilder().addCandidates(ref))
+                .build());
+    if (response == null) {
+      return null;
+    }
+    try {
+      return RelationResults.requireResolved(response);
+    } catch (RelationResults.RelationResolutionException e) {
+      if (e.isNotFound()) {
+        return null;
+      }
+      throw e;
+    }
   }
 
   private static ResourceId requireId(

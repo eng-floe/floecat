@@ -28,7 +28,6 @@ import ai.floedb.floecat.query.rpc.RelationPin;
 import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.cache.ObjectCache;
@@ -201,10 +200,10 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     // Obligations cover the query's FULL committed pin set, not just the tables
                     // this call first-touched — a later DescribeInputs must not narrow what an
                     // earlier one obligated.
-                    List<SnapshotPin> obligationPins = new ArrayList<>();
+                    List<TablePin> obligationPins = new ArrayList<>();
                     for (RelationPin pin : winnerPins.getPinsList()) {
                       if (pin.hasTablePin()) {
-                        obligationPins.add(QueryPins.toSnapshotPin(pin.getTablePin()));
+                        obligationPins.add(pin.getTablePin());
                       }
                     }
                     var obligationsResult =

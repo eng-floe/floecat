@@ -80,6 +80,9 @@ class TableMutationIT {
   @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
+  @GrpcClient("floecat")
+  RelationServiceGrpc.RelationServiceBlockingStub relation;
+
   private String tablePrefix = this.getClass().getSimpleName() + "_";
 
   private static final Schema SCHEMA_V1 =
@@ -131,16 +134,17 @@ class TableMutationIT {
     var tblId = tbl.getResourceId();
     assertEquals(ResourceKind.RK_TABLE, tblId.getKind());
 
-    var tblResolved =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder()
-                .setRef(
-                    NameRef.newBuilder()
-                        .setCatalog(cat.getDisplayName())
-                        .addAllPath(nsPath)
-                        .setName("orders"))
-                .build());
-    assertEquals(tblId.getId(), tblResolved.getResourceId().getId());
+    assertEquals(
+        tblId.getId(),
+        TestSupport.resolveRelationId(
+                relation,
+                NameRef.newBuilder()
+                    .setCatalog(cat.getDisplayName())
+                    .addAllPath(nsPath)
+                    .setName("orders")
+                    .build(),
+                ResourceKind.RK_TABLE)
+            .getId());
 
     var beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
     FieldMask mask = FieldMask.newBuilder().addPaths("display_name").build();
@@ -161,30 +165,31 @@ class TableMutationIT {
     assertTrue(m1.getPointerVersion() > beforeRename.getPointerVersion());
 
     // New resolve must succeed
-    var resolvedRenamed =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder()
-                .setRef(
-                    NameRef.newBuilder()
-                        .setCatalog(cat.getDisplayName())
-                        .addAllPath(nsPath)
-                        .setName("orders_v2"))
-                .build());
-    assertEquals(tblId.getId(), resolvedRenamed.getResourceId().getId());
+    assertEquals(
+        tblId.getId(),
+        TestSupport.resolveRelationId(
+                relation,
+                NameRef.newBuilder()
+                    .setCatalog(cat.getDisplayName())
+                    .addAllPath(nsPath)
+                    .setName("orders_v2")
+                    .build(),
+                ResourceKind.RK_TABLE)
+            .getId());
 
     // Old path must be NOT_FOUND
     var nfOld =
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                directory.resolveTable(
-                    ResolveTableRequest.newBuilder()
-                        .setRef(
-                            NameRef.newBuilder()
-                                .setCatalog(cat.getDisplayName())
-                                .addAllPath(nsPath)
-                                .setName("orders"))
-                        .build()));
+                TestSupport.resolveRelationId(
+                    relation,
+                    NameRef.newBuilder()
+                        .setCatalog(cat.getDisplayName())
+                        .addAllPath(nsPath)
+                        .setName("orders")
+                        .build(),
+                    ResourceKind.RK_TABLE));
     TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
 
     TableSpec staleSpec = TableSpec.newBuilder().setDisplayName("orders_v3").build();
@@ -708,16 +713,17 @@ class TableMutationIT {
     var tblId = tbl.getResourceId();
     assertEquals(ResourceKind.RK_TABLE, tblId.getKind());
 
-    var tblResolved =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder()
-                .setRef(
-                    NameRef.newBuilder()
-                        .setCatalog(cat.getDisplayName())
-                        .addAllPath(nsPath)
-                        .setName("orders"))
-                .build());
-    assertEquals(tblId.getId(), tblResolved.getResourceId().getId());
+    assertEquals(
+        tblId.getId(),
+        TestSupport.resolveRelationId(
+                relation,
+                NameRef.newBuilder()
+                    .setCatalog(cat.getDisplayName())
+                    .addAllPath(nsPath)
+                    .setName("orders")
+                    .build(),
+                ResourceKind.RK_TABLE)
+            .getId());
 
     var beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
 
@@ -739,30 +745,31 @@ class TableMutationIT {
     assertTrue(m1.getPointerVersion() > beforeRename.getPointerVersion());
 
     // New resolve must succeed
-    var resolvedRenamed =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder()
-                .setRef(
-                    NameRef.newBuilder()
-                        .setCatalog(cat.getDisplayName())
-                        .addAllPath(nsPath2)
-                        .setName("orders"))
-                .build());
-    assertEquals(tblId.getId(), resolvedRenamed.getResourceId().getId());
+    assertEquals(
+        tblId.getId(),
+        TestSupport.resolveRelationId(
+                relation,
+                NameRef.newBuilder()
+                    .setCatalog(cat.getDisplayName())
+                    .addAllPath(nsPath2)
+                    .setName("orders")
+                    .build(),
+                ResourceKind.RK_TABLE)
+            .getId());
 
     // Old path must be NOT_FOUND
     var nfOld =
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                directory.resolveTable(
-                    ResolveTableRequest.newBuilder()
-                        .setRef(
-                            NameRef.newBuilder()
-                                .setCatalog(cat.getDisplayName())
-                                .addAllPath(nsPath)
-                                .setName("orders"))
-                        .build()));
+                TestSupport.resolveRelationId(
+                    relation,
+                    NameRef.newBuilder()
+                        .setCatalog(cat.getDisplayName())
+                        .addAllPath(nsPath)
+                        .setName("orders")
+                        .build(),
+                    ResourceKind.RK_TABLE));
     TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
 
     beforeRename = TestSupport.metaForTable(ptr, blob, tblId);
@@ -785,30 +792,31 @@ class TableMutationIT {
     var m2 = r2.getMeta();
     assertTrue(m2.getPointerVersion() > beforeRename.getPointerVersion());
 
-    resolvedRenamed =
-        directory.resolveTable(
-            ResolveTableRequest.newBuilder()
-                .setRef(
-                    NameRef.newBuilder()
-                        .setCatalog(cat.getDisplayName())
-                        .addAllPath(nsPath2)
-                        .setName("orders_v2"))
-                .build());
-    assertEquals(tblId.getId(), resolvedRenamed.getResourceId().getId());
+    assertEquals(
+        tblId.getId(),
+        TestSupport.resolveRelationId(
+                relation,
+                NameRef.newBuilder()
+                    .setCatalog(cat.getDisplayName())
+                    .addAllPath(nsPath2)
+                    .setName("orders_v2")
+                    .build(),
+                ResourceKind.RK_TABLE)
+            .getId());
 
     // Old path must be NOT_FOUND
     nfOld =
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                directory.resolveTable(
-                    ResolveTableRequest.newBuilder()
-                        .setRef(
-                            NameRef.newBuilder()
-                                .setCatalog(cat.getDisplayName())
-                                .addAllPath(nsPath)
-                                .setName("orders"))
-                        .build()));
+                TestSupport.resolveRelationId(
+                    relation,
+                    NameRef.newBuilder()
+                        .setCatalog(cat.getDisplayName())
+                        .addAllPath(nsPath)
+                        .setName("orders")
+                        .build(),
+                    ResourceKind.RK_TABLE));
     TestSupport.assertGrpcAndMc(nfOld, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
   }
 

@@ -146,8 +146,10 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
   `GetQuery`) and exposes the scan streaming helpers (`InitScan`, `StreamDeleteFiles`,
   `StreamDataFiles`, `CloseScan`) so planners can request connector metadata safely.
-- **SystemObjectsServiceImpl** – Loads immutable builtin catalogs from disk/classpath, caches them
-  per engine version, and serves them via `GetSystemObjects`.
+- **RelationServiceImpl** – Exposes kind-neutral table/view listing, name resolution, and by-id
+  description for engine adapters. Requires `table.read` and/or `view.read` per selected kind.
+- **SqlCatalogServiceImpl** – Loads immutable builtin catalogs from disk/classpath, caches them
+  per engine version, and serves them via `GetSqlObjectsRegistry`.
 
 ## Important Internal Details
 ### BaseServiceImpl & Idempotency
@@ -328,8 +330,8 @@ the caller inside the `QueryDescriptor`.
 ### Builtin Catalog Service
 `SystemObjectsLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the
 configured location, caches them by engine kind, and exposes them through
-`SystemObjectsService.GetSystemObjects`. Clients must send both `x-engine-kind` and
-`x-engine-version`; the RPC always returns the filtered builtin bundle for the requested engine.
+`SqlCatalogService.GetSqlObjectsRegistry`. Clients must send both `x-engine-kind` and
+`x-engine-version`; the RPC returns the filtered builtin bundle for that engine.
 
 ### GC and Bootstrap
 `IdempotencyGc` runs on a configurable cadence (see `floecat.gc.*` config) and sweeps expired

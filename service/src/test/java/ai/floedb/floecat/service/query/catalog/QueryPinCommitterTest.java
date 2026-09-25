@@ -41,6 +41,8 @@ import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
 import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -203,6 +205,54 @@ class QueryPinCommitterTest {
   }
 
   @Test
+  void isolatedMergeFailureKeepsPriorPinsAndReleasesOnlyIncomingRoots() {
+    RecordingReleaseStore store = new RecordingReleaseStore();
+    store.seed(ctx());
+    QueryPinCommitter committer =
+        new QueryPinCommitter(
+            new SnapshotAwareResolver(), store, ctx(), CID, timings, CatalogContext.empty());
+
+    assertThat(
+            committer.accumulateIsolated(
+                List.of(resolved(TABLE_A, selected(TABLE_A, 1L))),
+                PhaseDiagnostics.NOOP,
+                () -> false))
+        .isEmpty();
+
+    List<QueryPinCommitter.RelationFailure> failures =
+        committer.accumulateIsolated(
+            List.of(resolved(TABLE_A, selected(TABLE_A, 2L))), PhaseDiagnostics.NOOP, () -> false);
+
+    assertThat(failures).hasSize(1);
+    assertThat(committer.pendingPinCount()).isEqualTo(1);
+    assertThat(store.releasedBlobUris())
+        .isNotEmpty()
+        .doesNotContain("s3://TABLE_A/snap-1.pb")
+        .containsOnly("s3://TABLE_A/table.pb", "s3://TABLE_A/snap-2.pb");
+  }
+
+  @Test
+  void isolatedRequestScopedFailureEscapesWithoutDiscardingPendingPins() {
+    RecordingReleaseStore store = new RecordingReleaseStore();
+    store.seed(ctx());
+    RequestFailingResolver resolver = new RequestFailingResolver();
+    QueryPinCommitter committer =
+        new QueryPinCommitter(resolver, store, ctx(), CID, timings, CatalogContext.empty());
+    committer.accumulateIsolated(
+        List.of(resolved(TABLE_A, selected(TABLE_A, 1L))), PhaseDiagnostics.NOOP, () -> false);
+    resolver.fail = true;
+
+    assertThatThrownBy(
+            () ->
+                committer.accumulateIsolated(
+                    List.of(resolved(TABLE_B)), PhaseDiagnostics.NOOP, () -> false))
+        .isInstanceOf(StatusRuntimeException.class)
+        .hasMessageContaining("backend unavailable");
+    assertThat(committer.pendingPinCount()).isEqualTo(1);
+    assertThat(store.releasedBlobUris()).isEmpty();
+  }
+
+  @Test
   void emptyAccumulateThenCommitIsANoOp() {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
@@ -274,7 +324,7 @@ class QueryPinCommitterTest {
         .build();
   }
 
-  private static final class SnapshotAwareResolver extends QueryInputResolver {
+  private static class SnapshotAwareResolver extends QueryInputResolver {
     private SnapshotAwareResolver() {
       super(null);
     }
@@ -300,6 +350,29 @@ class QueryPinCommitterTest {
                     .build()));
       }
       return new ResolutionResult(resolved, pins.build(), null);
+    }
+  }
+
+  private static final class RequestFailingResolver extends SnapshotAwareResolver {
+    private boolean fail;
+
+    private RequestFailingResolver() {
+      super();
+    }
+
+    @Override
+    protected ResolutionResult resolveInputsAttempt(
+        String queryId,
+        String correlationId,
+        List<QueryInput> inputs,
+        Optional<Timestamp> asOfDefault,
+        Optional<ResourceId> defaultCatalogId,
+        QueryInputResolver.ResolutionAttempt attempt) {
+      if (!fail) {
+        return super.resolveInputsAttempt(
+            queryId, correlationId, inputs, asOfDefault, defaultCatalogId, attempt);
+      }
+      throw Status.UNAVAILABLE.withDescription("backend unavailable").asRuntimeException();
     }
   }
 

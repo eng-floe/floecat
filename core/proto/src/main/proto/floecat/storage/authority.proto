@@ -152,6 +152,7 @@ message ResolveSnapshotCompatStorageResponse {
   ResolveStorageAuthorityResponse storage = 2;
 }
 
+// ENGINE.
 service StorageAuthorities {
   rpc ListStorageAuthorities(ListStorageAuthoritiesRequest)
       returns (ListStorageAuthoritiesResponse);

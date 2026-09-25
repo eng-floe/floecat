@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.query.catalog;
 
+import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.QUERY_TABLE_PIN_CONFLICT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -50,6 +51,7 @@ import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
+import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CancellingSubscriber;
@@ -1643,6 +1645,71 @@ class UserObjectBundleServiceTest {
     QueryContext updated = queryStore.get(ctx.getQueryId()).orElseThrow();
     SnapshotSet pins = QueryPins.toSnapshotSet(RelationPinSet.parseFrom(updated.getRelationPins()));
     assertThat(pins.getPinsCount()).isEqualTo(2);
+  }
+
+  @Test
+  void relationScopedPinFailureDoesNotDiscardOtherRelations() {
+    QueryInputResolver selectiveResolver =
+        new QueryInputResolver(null) {
+          @Override
+          protected ResolutionResult resolveInputsAttempt(
+              String queryId,
+              String correlationId,
+              List<QueryInput> inputs,
+              Optional<Timestamp> asOfDefault,
+              Optional<ResourceId> defaultCatalogId,
+              QueryInputResolver.ResolutionAttempt attempt) {
+            ResourceId tableId = inputs.getFirst().getTableId();
+            if (TABLE_A.equals(tableId)) {
+              throw GrpcErrors.preconditionFailed(
+                  correlationId,
+                  QUERY_TABLE_PIN_CONFLICT,
+                  Map.of(
+                      "table_id", TABLE_A.getId(),
+                      "pinned_snapshot", "1",
+                      "requested_snapshot", "2"));
+            }
+            RelationPinSet pins =
+                SnapshotTestSupport.relationPins(
+                    SnapshotTestSupport.blobBackedPin(tableId, TABLE_A_SNAPSHOT_ID));
+            return new ResolutionResult(List.of(tableId), pins, null);
+          }
+        };
+    service =
+        new UserObjectBundleService(
+            graphView,
+            selectiveResolver,
+            queryStore,
+            statsFactory,
+            decoratorProvider,
+            engineContextProvider,
+            false,
+            "localhost",
+            47470,
+            false,
+            "test");
+
+    List<TableReferenceCandidate> candidates =
+        List.of(
+            TableReferenceCandidate.newBuilder()
+                .addCandidates(QueryInput.newBuilder().setTableId(TABLE_A))
+                .build(),
+            TableReferenceCandidate.newBuilder()
+                .addCandidates(QueryInput.newBuilder().setTableId(TABLE_B))
+                .build());
+
+    List<UserObjectsBundleChunk> chunks =
+        service.stream("cid", ctx, candidates).collect().asList().await().indefinitely();
+
+    RelationResolutions resolutions = chunks.get(1).getResolutions();
+    assertThat(resolutions.getItems(0).getStatus())
+        .isEqualTo(ResolutionStatus.RESOLUTION_STATUS_ERROR);
+    assertThat(resolutions.getItems(0).getFailure().getCode())
+        .isEqualTo("query.table.pin.conflict");
+    assertThat(resolutions.getItems(1).getStatus())
+        .isEqualTo(ResolutionStatus.RESOLUTION_STATUS_FOUND);
+    assertThat(chunks.get(2).getEnd().getFoundCount()).isEqualTo(1);
+    assertThat(queryStore.updateCount()).isEqualTo(1);
   }
 
   @Test

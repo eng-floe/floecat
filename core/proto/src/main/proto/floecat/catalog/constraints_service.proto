@@ -131,6 +131,7 @@ message DeleteTableConstraintResponse {
   ai.floedb.floecat.common.MutationMeta meta = 2;
 }
 
+// MANAGEMENT.
 service TableConstraintsService {
   rpc GetTableConstraints(GetTableConstraintsRequest)
       returns (GetTableConstraintsResponse);

@@ -43,9 +43,8 @@ import java.util.Optional;
  *
  * <ul>
  *   <li>Projections between the coherent {@link RelationPin} the query context stores and the
- *       snapshot-selector {@link SnapshotPin} the older read paths (obligations, schema-describe,
- *       scan/stats pin lookup) still speak. The stored representation is always {@code
- *       RelationPinSet}; richer paths consume the {@code TablePin} directly.
+ *       legacy lifecycle/query-descriptor snapshot messages. The stored representation is always
+ *       {@code RelationPinSet}; service paths consume the {@code TablePin} directly.
  *   <li>The table-pin conflict rule ({@link #compatible} / {@link #reconcile} / {@link
  *       #mergeSets}): first-touch wins, compatible later resolutions reuse the stored pin, and
  *       incompatible temporal intents fail planning.
@@ -311,7 +310,7 @@ public final class QueryPins {
     // Same identity as pinKey (account + kind + id): a lookup must carry the fully-resolved id AND
     // the right kind, so a non-RK_TABLE id reusing a pinned table's account/id cannot match a table
     // pin. A blank accountId on one side is a DIFFERENT identity, never a wildcard — see
-    // QueryContextTest.requireSnapshotPinDoesNotMatchWhenAccountIsMissingOnOneSide.
+    // QueryContextTest.requireTablePinDoesNotMatchWhenAccountIsMissingOnOneSide.
     return a.getAccountId().equals(b.getAccountId())
         && a.getKind() == b.getKind()
         && a.getId().equals(b.getId());

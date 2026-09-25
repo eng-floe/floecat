@@ -27,6 +27,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView.NamespaceRef;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -40,12 +41,14 @@ public final class CatalogSurfaceViews {
   private final ViewRepository viewRepo;
   private final CatalogGraphView graphView;
   private final CatalogSurfaceWritePolicy writePolicy;
+  private final CatalogContext context;
 
   public CatalogSurfaceViews(
       ViewRepository viewRepo, CatalogGraphView graphView, CatalogContext context) {
     this.viewRepo = Objects.requireNonNull(viewRepo, "view repository is required");
     this.graphView = graphView;
     this.writePolicy = new CatalogSurfaceWritePolicy(graphView, context);
+    this.context = context;
   }
 
   public ListViewsResponse listViews(ListViewsRequest request, String accountId, String corr) {
@@ -54,24 +57,28 @@ public final class CatalogSurfaceViews {
 
     var pageIn = MutationOps.pageIn(request.hasPage() ? request.getPage() : null);
     final int want = Math.max(1, pageIn.limit);
-    var result =
-        CatalogSurfaceRelationPager.list(
-            want,
-            pageIn.token,
-            new CatalogSurfaceViewPageSource(
-                viewRepo, graphView, accountId, nsNode, namespaceId, writePolicy.context()),
-            corr);
+    var source =
+        new CatalogSurfaceViewPageSource(
+            viewRepo, graphView, accountId, nsNode, namespaceId, writePolicy.context());
+    var result = CatalogSurfaceRelationPager.listRefs(want, pageIn.token, source, corr);
 
-    var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
-    return ListViewsResponse.newBuilder().addAllViews(result.items()).setPage(page).build();
+    var views = result.relations().stream().map(ref -> source.hydrate(ref, corr)).toList();
+    var page = MutationOps.pageOut(result.nextToken(), CatalogSurfaceRelationPager.total(source));
+    return ListViewsResponse.newBuilder().addAllViews(views).setPage(page).build();
+  }
+
+  CatalogSurfaceViewPageSource pageSource(NamespaceRef namespace, String accountId) {
+    return new CatalogSurfaceViewPageSource(viewRepo, graphView, accountId, namespace, context);
+  }
+
+  /** The visible view, without the wire envelope, for in-process callers. */
+  public View byId(ResourceId viewId, String corr) {
+    ViewNode node = writePolicy.requireVisibleView(viewId, corr);
+    return viewFromGraphNodeOrRepo(node, viewId, corr);
   }
 
   public GetViewResponse getView(GetViewRequest request, String corr) {
-    var viewId = request.getViewId();
-    ViewNode node = writePolicy.requireVisibleView(viewId, corr);
-    var view = viewFromGraphNodeOrRepo(node, viewId, corr);
-
-    return GetViewResponse.newBuilder().setView(view).build();
+    return GetViewResponse.newBuilder().setView(byId(request.getViewId(), corr)).build();
   }
 
   private View viewFromGraphNodeOrRepo(ViewNode node, ResourceId viewId, String corr) {

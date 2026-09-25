@@ -31,6 +31,7 @@ import "floecat/query/engine_specific.proto";
 import "floecat/query/pinning.proto";
 import "floecat/query/sql_objects.proto";
 import "floecat/query/system_objects_registry.proto";
+import "floecat/types/types.proto";
 
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";
@@ -39,6 +40,7 @@ option java_outer_classname = "UserObjectsProto";
 /**
  * Service that resolves planner inputs and streams user object metadata.
  */
+// ENGINE.
 service UserObjectsService {
   /**
    * GetUserObjects resolves each requested logical reference and streams results.
@@ -458,8 +460,8 @@ message ColumnInfo {
   // Column name.
   string name = 2;
 
-  /** Logical type identifier for the column. */
-  ai.floedb.floecat.common.NameRef type = 3;
+  /** Canonical recursive logical type for the column. */
+  ai.floedb.floecat.types.LogicalType type = 3;
 
   /** Whether NULL is allowed. */
   bool nullable = 4;

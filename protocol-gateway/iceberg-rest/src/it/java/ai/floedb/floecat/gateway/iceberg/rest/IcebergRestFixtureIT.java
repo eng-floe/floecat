@@ -38,8 +38,9 @@ import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableResponse;
+import ai.floedb.floecat.catalog.rpc.RelationReference;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
@@ -2555,6 +2556,11 @@ class IcebergRestFixtureIT {
     return withServiceClient("Directory", DirectoryServiceGrpc::newBlockingStub, fn);
   }
 
+  private <T> T withRelationClient(
+      Function<RelationServiceGrpc.RelationServiceBlockingStub, T> fn) {
+    return withServiceClient("Relation", RelationServiceGrpc::newBlockingStub, fn);
+  }
+
   private static String resolveSeedAccountId() {
     if (seedAccountId != null && !seedAccountId.isBlank()) {
       return seedAccountId;
@@ -2725,10 +2731,15 @@ class IcebergRestFixtureIT {
             .addAllPath(namespaceSegments(namespace))
             .setName(table)
             .build();
-    ResolveTableResponse response =
-        withDirectoryClient(
-            stub -> stub.resolveTable(ResolveTableRequest.newBuilder().setRef(ref).build()));
-    return response.getResourceId();
+    return withRelationClient(
+            stub ->
+                stub.resolveRelations(
+                    ResolveRelationsRequest.newBuilder()
+                        .addReferences(RelationReference.newBuilder().addCandidates(ref))
+                        .build()))
+        .getResults(0)
+        .getRelation()
+        .getResourceId();
   }
 
   private ResourceId resolveNamespaceId(String namespace) {

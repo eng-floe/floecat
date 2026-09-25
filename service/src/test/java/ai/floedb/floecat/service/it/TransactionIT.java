@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
@@ -60,6 +61,9 @@ class TransactionIT {
 
   @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
+
+  @GrpcClient("floecat")
+  RelationServiceGrpc.RelationServiceBlockingStub relations;
 
   @GrpcClient("floecat")
   TransactionsGrpc.TransactionsBlockingStub transactions;
@@ -376,14 +380,15 @@ class TransactionIT {
       List<String> namespacePath,
       String tableName,
       ai.floedb.floecat.common.rpc.ResourceId expected) {
-    var resolved = TestSupport.resolveTableId(directory, catalogName, namespacePath, tableName);
+    var resolved =
+        TestSupport.resolveTableId(directory, relations, catalogName, namespacePath, tableName);
     assertEquals(expected.getId(), resolved.getId());
   }
 
   private void assertNotResolvable(
       String catalogName, List<String> namespacePath, String tableName) {
     try {
-      TestSupport.resolveTableId(directory, catalogName, namespacePath, tableName);
+      TestSupport.resolveTableId(directory, relations, catalogName, namespacePath, tableName);
       throw new AssertionError("expected resolution failure for " + tableName);
     } catch (StatusRuntimeException e) {
       assertEquals(Status.Code.NOT_FOUND, e.getStatus().getCode());

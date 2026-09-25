@@ -121,6 +121,7 @@ message ListIndexArtifactsResponse {
   ai.floedb.floecat.common.PageResponse page = 2;
 }
 
+// MANAGEMENT.
 service TableIndexService {
   rpc GetIndexArtifact(GetIndexArtifactRequest) returns (GetIndexArtifactResponse);
   rpc GetIndexCaptureStatus(GetIndexCaptureStatusRequest) returns (GetIndexCaptureStatusResponse);

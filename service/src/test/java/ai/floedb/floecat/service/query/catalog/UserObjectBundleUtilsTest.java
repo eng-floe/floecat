@@ -41,6 +41,7 @@ class UserObjectBundleUtilsTest {
 
     assertThat(info.getId()).isEqualTo(42);
     assertThat(info.getName()).isEqualTo("ts");
+    assertThat(info.getType()).isEqualTo(schema.getType());
     assertThat(info.getNullable()).isTrue();
     assertThat(info.getOrdinal()).isEqualTo(1);
   }

@@ -24,10 +24,10 @@ not need to duplicate changing engine metadata in PBtxt.
 │ (environment,│
 │  engine)     │
 └──────┬───────┘
-       │ gRPC GetSystemObjects
+       │ gRPC GetSqlObjectsRegistry
        ▼
 ┌────────────────────────────────────────────────────────────┐
-│ SystemObjectsServiceImpl (service)                        │
+│ SqlCatalogServiceImpl (service)                        │
 │ - validates headers + correlation id                        │
 │ - calls SystemNodeRegistry.nodesFor(CatalogContext)          │
 │ - maps SystemCatalogData → SystemObjectsRegistry via              │
@@ -255,7 +255,7 @@ Builtins are cached at every stage of the pipeline:
 
 3. **SystemGraph snapshot cache** – `SystemGraph` consumes `BuiltinNodes` to build a `GraphSnapshot` that buckets namespace→relations, indexes every `GraphNode` by `ResourceId`, and keeps `_system` catalog metadata ready for `CatalogGraphView`. Snapshots are stored in a synchronized `LinkedHashMap` configured by `floecat.system.graph.snapshot-cache-size` (defaults to 16) and evict the oldest entry when the cache is full.
 
-`SystemObjectsServiceImpl` itself stays cache-less: it simply fetches the prebuilt `BuiltinNodes`, hands the embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and responds. Because all heavy work (parsing, filtering, node construction, snapshotting) happens before the gRPC layer, repeated requests hit the cache in <1ms.
+`SqlCatalogServiceImpl` itself stays cache-less: it simply fetches the prebuilt `BuiltinNodes`, hands the embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and responds. Because all heavy work (parsing, filtering, node construction, snapshotting) happens before the gRPC layer, repeated requests hit the cache in <1ms.
 
 ## Plugin Architecture
 
@@ -328,7 +328,7 @@ com.example.MyEngineCatalogProvider
 
 ### Request Flow (Planner → Floecat)
 
-1. **Planner** sends `GetSystemObjectsRequest` with the selected catalog context:
+1. **Planner** sends `GetSqlObjectsRegistryRequest` with the selected catalog context:
    - `x-environment-kind: "env_a"`
    - `x-environment-version: "1.0"`
    - `x-engine-kind: "engine_b"`
@@ -336,14 +336,14 @@ com.example.MyEngineCatalogProvider
    The request boundary converts these headers into one `CatalogContext`. If both axes are absent,
    it uses `CatalogContext.forRequest(...)` to select `floecat_internal`. `CatalogContext.empty()`
    is reserved for neutral internal/test contexts and is not the request-defaulting function.
-2. **SystemObjectsServiceImpl** validates the request and calls `SystemNodeRegistry.nodesFor(CatalogContext)`.
+2. **SqlCatalogServiceImpl** validates the request and calls `SystemNodeRegistry.nodesFor(CatalogContext)`.
 3. **SystemNodeRegistry** looks up the complete `(environmentKind, environmentVersion, engineKind, engineVersion)` context in its cache, and, on a miss, asks `SystemDefinitionRegistry` for the engine catalog data.
 4. **SystemDefinitionRegistry** delegates to `ServiceLoaderSystemCatalogProvider` when it needs to load the engine's static catalog snapshot.
 5. **SystemNodeRegistry** composes static engine data, live engine definitions, and live environment definitions. It caches the result per complete `CatalogContext`.
 6. **SystemNodeRegistry** filters the catalog by version (`EngineSpecificMatcher`), applies engine-specific rules, and materialises `BuiltinNodes` (graph nodes + filtered `SystemCatalogData`). The `BuiltinNodes` instance is cached for future requests for the same context.
-7. **SystemObjectsServiceImpl** receives the cached `BuiltinNodes`, hands its embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and streams the `GetSystemObjectsResponse` back to the planner.
+7. **SqlCatalogServiceImpl** receives the cached `BuiltinNodes`, hands its embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and streams the `GetSqlObjectsRegistryResponse` back to the planner.
 8. **SystemGraph** reuses the same `BuiltinNodes` to build `_system` catalog snapshots (namespace buckets, relation map, `SystemTableNode`s) that `MetaGraph` exposes as `CatalogGraphView`/`SystemObjectGraphView` for system object scanning.
-   * The scanner-visible system relations (information_schema, pg_catalog, etc.) are seeded from the shared provider and merged into the selected catalog context for `_system` scans.
+   * The scanner-visible system relations (information_schema, pg_catalog, etc.) are seeded from the shared provider and merged into the selected catalog context for `_system` scans. They are **not** emitted by `GetSqlObjectsRegistry`, which only returns engine-visible SQL objects produced by plugins/providers.
 
 ### SystemNodeRegistry Caching
 
@@ -600,10 +600,10 @@ class CatalogExtensionTest {
 
 ### Core Engine Tests
 
-**SystemObjectsServiceIT** – Full gRPC flow:
-- Valid engine headers return full catalog
+**SqlCatalogServiceIT** – Full gRPC flow:
+- Valid engine selectors return full catalog
 - Version filtering returns only version-matched objects
-- Missing headers trigger INVALID_ARGUMENT errors
+- Missing selectors trigger INVALID_ARGUMENT errors
 
 **SystemNodeRegistryTest** – Version-specific filtering:
 - Filters catalog by engine kind and version
@@ -622,7 +622,7 @@ class CatalogExtensionTest {
 mvn -pl extensions/plugins/floedb test
 
 # Run core engine tests
-mvn -pl service test -Dtest=SystemObjectsServiceIT
+mvn -pl service test -Dtest=SqlCatalogServiceIT
 mvn -pl core/catalog test -Dtest=SystemNodeRegistryTest
 mvn -pl core/catalog test -Dtest=SystemCatalogValidator*
 
@@ -642,7 +642,7 @@ When adding a new plugin or modifying .pbtxt files:
 | Operators have valid types | Type resolution | SystemCatalogValidatorTest |
 | Casts reference valid types | Type resolution | SystemCatalogValidatorTest |
 | Engine-specific fields rewritten | Payload bytes present | FloeBuiltinExtensionTest.preservesRules |
-| ServiceLoader discovers plugin | SystemObjectsServiceIT | Dynamic runtime discovery |
+| ServiceLoader discovers plugin | SqlCatalogServiceIT | Dynamic runtime discovery |
 | Version filtering works | Version matching logic | SystemNodeRegistryTest |
 
 ## Future Enhancements

@@ -85,11 +85,6 @@ class TestRefCatalogGraphView extends TestCatalogGraphView {
   }
 
   @Override
-  public boolean supportsLightweightRefs() {
-    return true;
-  }
-
-  @Override
   public List<CatalogGraphView.NamespaceRef> listNamespaceRefs(
       ResourceId catalogId, CatalogContext catalogContext) {
     if (namespaceRefsFailure != null) {

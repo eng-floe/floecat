@@ -19,12 +19,14 @@ package ai.floedb.floecat.gateway.iceberg.rest.services.catalog;
 import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableRequest;
 import ai.floedb.floecat.catalog.rpc.GetTableResponse;
-import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
-import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
+import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ListRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.UpdateTableRequest;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.engine.catalog.RelationResults;
 import ai.floedb.floecat.gateway.iceberg.grpc.GrpcWithHeaders;
 import ai.floedb.floecat.gateway.iceberg.rest.api.dto.TableIdentifierDto;
 import ai.floedb.floecat.gateway.iceberg.rest.services.client.GrpcServiceFacade;
@@ -47,7 +49,10 @@ public class TableLifecycleService {
     List<String> namespacePath = NamespacePaths.split(namespace);
     ResourceId namespaceId = resolveNamespaceId(catalogName, namespacePath);
 
-    ListTablesRequest.Builder request = ListTablesRequest.newBuilder().setNamespaceId(namespaceId);
+    ListRelationsRequest.Builder request =
+        ListRelationsRequest.newBuilder()
+            .setNamespaceId(namespaceId)
+            .addKinds(ResourceKind.RK_TABLE);
     if (pageToken != null || pageSize != null) {
       PageRequest.Builder page = PageRequest.newBuilder();
       if (pageToken != null) {
@@ -59,22 +64,21 @@ public class TableLifecycleService {
       request.setPage(page);
     }
 
-    var resp = tableClient.listTables(request.build());
+    var resp = tableClient.listRelations(request.build());
     if (resp == null) {
-      resp = ListTablesResponse.getDefaultInstance();
+      resp = ListRelationsResponse.getDefaultInstance();
     }
+    var page = RelationResults.read(resp);
+    RelationResults.requireComplete(page);
     List<TableIdentifierDto> identifiers =
-        resp.getTablesList().stream()
-            .map(table -> new TableIdentifierDto(namespacePath, table.getDisplayName()))
+        page.relations().stream()
+            .map(relation -> new TableIdentifierDto(namespacePath, relation.getDisplayName()))
             .collect(Collectors.toList());
-    String nextToken = null;
-    if (resp.hasPage()) {
-      String token = resp.getPage().getNextPageToken();
-      if (token != null && !token.isBlank()) {
-        nextToken = token;
-      }
+    String nextToken = page.nextPageToken();
+    if (nextToken != null && !nextToken.isBlank()) {
+      return new ListTablesResult(identifiers, nextToken);
     }
-    return new ListTablesResult(identifiers, nextToken);
+    return new ListTablesResult(identifiers, null);
   }
 
   public ResourceId resolveNamespaceId(String catalogName, String namespace) {

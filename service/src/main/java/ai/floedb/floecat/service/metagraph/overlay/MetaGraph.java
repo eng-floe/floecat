@@ -346,8 +346,10 @@ public final class MetaGraph implements CatalogGraphView {
   }
 
   @Override
-  public Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext ctx) {
-    return systemGraph.tableName(id, ctx);
+  public Optional<NameRef> resolveSystemRelationName(ResourceId id, CatalogContext ctx) {
+    return id.getKind() == ResourceKind.RK_VIEW
+        ? systemGraph.viewName(id, ctx)
+        : systemGraph.tableName(id, ctx);
   }
 
   @Override
@@ -642,6 +644,13 @@ public final class MetaGraph implements CatalogGraphView {
     return systemGraph.catalog(id, ctx);
   }
 
+  @Override
+  public Optional<String> catalogName(ResourceId id, CatalogContext ctx) {
+    return userGraph
+        .catalogName(id)
+        .or(() -> systemGraph.catalog(id, ctx).map(CatalogNode::displayName));
+  }
+
   /**
    * Gets the schema resolution for a table at a specific snapshot.
    *
@@ -896,11 +905,6 @@ public final class MetaGraph implements CatalogGraphView {
   // ---- Lightweight pointer-backed ref listing ----
 
   @Override
-  public boolean supportsLightweightRefs() {
-    return true;
-  }
-
-  @Override
   public List<CatalogGraphView.NamespaceRef> listNamespaceRefs(
       ResourceId catalogId, CatalogContext ctx) {
     List<NamespaceNode> sysNs = systemGraph.listNamespaces(catalogId, ctx);
@@ -916,6 +920,21 @@ public final class MetaGraph implements CatalogGraphView {
     }
     result.addAll(userNs);
     return result;
+  }
+
+  @Override
+  public Optional<CatalogGraphView.NamespaceRef> namespaceRef(
+      ResourceId namespaceId, CatalogContext ctx) {
+    Optional<CatalogGraphView.NamespaceRef> system =
+        systemGraph
+            .resolve(namespaceId, ctx)
+            .filter(NamespaceNode.class::isInstance)
+            .map(NamespaceNode.class::cast)
+            .map(
+                ns ->
+                    new CatalogGraphView.NamespaceRef(
+                        ns.id(), ns.displayName(), ns.catalogId(), ns.pathSegments()));
+    return system.or(() -> userGraph.namespaceRef(namespaceId));
   }
 
   @Override

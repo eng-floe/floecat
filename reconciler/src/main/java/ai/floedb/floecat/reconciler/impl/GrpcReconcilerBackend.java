@@ -31,7 +31,6 @@ import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
-import ai.floedb.floecat.catalog.rpc.LookupTableByRefRequest;
 import ai.floedb.floecat.catalog.rpc.MutinyTableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.MutinyTableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Namespace;
@@ -41,8 +40,10 @@ import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.RelationReference;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
@@ -84,7 +85,7 @@ import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
-import ai.floedb.floecat.query.rpc.SnapshotPin;
+import ai.floedb.floecat.engine.catalog.RelationResults;
 import ai.floedb.floecat.reconciler.spi.ColumnSelectorCoverage;
 import ai.floedb.floecat.reconciler.spi.NameRefNormalizer;
 import ai.floedb.floecat.reconciler.spi.ReconcileContext;
@@ -97,7 +98,6 @@ import ai.floedb.floecat.reconciler.spi.capture.CaptureEngineResult;
 import ai.floedb.floecat.reconciler.spi.capture.PlannedFileGroupCaptureRequest;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.FieldMask;
-import com.google.protobuf.Timestamp;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -169,6 +169,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
+
+  @GrpcClient("floecat")
+  RelationServiceGrpc.RelationServiceBlockingStub relation;
 
   @GrpcClient("floecat")
   NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
@@ -276,14 +279,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   @Override
   public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
-    NameRef normalizedTable = NameRefNormalizer.normalize(table);
-    var response =
-        directory(ctx)
-            .lookupTableByRef(LookupTableByRefRequest.newBuilder().setRef(normalizedTable).build());
-    if (!response.hasResourceId() || response.getResourceId().getId().isBlank()) {
-      return Optional.empty();
-    }
-    return Optional.of(response.getResourceId());
+    return resolveRelationId(ctx, NameRefNormalizer.normalize(table), ResourceKind.RK_TABLE);
   }
 
   @Override
@@ -416,30 +412,6 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
               }
             });
     return Map.copyOf(merged);
-  }
-
-  @Override
-  public SnapshotPin snapshotPinFor(
-      ReconcileContext ctx, ResourceId tableId, SnapshotRef ref, Optional<Timestamp> asOf) {
-    if (ref != null) {
-      switch (ref.getWhichCase()) {
-        case SNAPSHOT_ID:
-          return pin(tableId, ref.getSnapshotId(), null);
-        case AS_OF:
-          return pin(tableId, 0, ref.getAsOf());
-        case SPECIAL:
-          if (ref.getSpecial() != SpecialSnapshot.SS_CURRENT) {
-            throw new IllegalArgumentException("unsupported special snapshot: " + ref.getSpecial());
-          }
-          return currentSnapshotPin(ctx, tableId);
-        default:
-          break;
-      }
-    }
-    if (asOf.isPresent()) {
-      return pin(tableId, 0, asOf.get());
-    }
-    return currentSnapshotPin(ctx, tableId);
   }
 
   @Override
@@ -1210,17 +1182,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
     if (namespaceFq != null && !namespaceFq.isBlank()) {
       ref.addAllPath(List.of(namespaceFq.split("\\.")));
     }
-    try {
-      return Optional.of(
-          directory(ctx)
-              .resolveView(ResolveViewRequest.newBuilder().setRef(ref.build()).build())
-              .getResourceId());
-    } catch (StatusRuntimeException e) {
-      if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
-        return Optional.empty();
-      }
-      throw e;
-    }
+    return resolveRelationId(ctx, ref.build(), ResourceKind.RK_VIEW);
   }
 
   private static boolean viewMatchesSpec(View current, ViewSpec spec) {
@@ -1278,11 +1240,28 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   @Override
   public Optional<ResourceId> lookupView(ReconcileContext ctx, NameRef view) {
+    return resolveRelationId(ctx, view, ResourceKind.RK_VIEW);
+  }
+
+  private Optional<ResourceId> resolveRelationId(
+      ReconcileContext ctx, NameRef reference, ResourceKind expectedKind) {
     try {
-      return Optional.of(
-          directory(ctx)
-              .resolveView(ResolveViewRequest.newBuilder().setRef(view).build())
-              .getResourceId());
+      var response =
+          relation(ctx)
+              .resolveRelations(
+                  ResolveRelationsRequest.newBuilder()
+                      .addReferences(RelationReference.newBuilder().addCandidates(reference))
+                      .build());
+      ResourceId resourceId;
+      try {
+        resourceId = RelationResults.requireResolved(response).getResourceId();
+      } catch (RelationResults.RelationResolutionException e) {
+        if (e.isNotFound()) {
+          return Optional.empty();
+        }
+        throw e;
+      }
+      return resourceId.getKind() == expectedKind ? Optional.of(resourceId) : Optional.empty();
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return Optional.empty();
@@ -1353,6 +1332,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   private DirectoryServiceGrpc.DirectoryServiceBlockingStub directory(ReconcileContext ctx) {
     return withHeaders(directory, ctx);
+  }
+
+  private RelationServiceGrpc.RelationServiceBlockingStub relation(ReconcileContext ctx) {
+    return withHeaders(relation, ctx);
   }
 
   private NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace(ReconcileContext ctx) {
@@ -1434,29 +1417,6 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       }
       throw e;
     }
-  }
-
-  private SnapshotPin currentSnapshotPin(ReconcileContext ctx, ResourceId tableId) {
-    var response =
-        snapshot(ctx)
-            .getSnapshot(
-                GetSnapshotRequest.newBuilder()
-                    .setTableId(tableId)
-                    .setSnapshot(
-                        SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build())
-                    .build());
-    return pin(tableId, response.getSnapshot().getSnapshotId(), null);
-  }
-
-  private SnapshotPin pin(ResourceId tableId, long snapshotId, Timestamp asOf) {
-    SnapshotPin.Builder builder = SnapshotPin.newBuilder().setTableId(tableId);
-    if (snapshotId >= 0 && asOf == null) {
-      builder.setSnapshotId(snapshotId);
-    }
-    if (asOf != null) {
-      builder.setAsOf(asOf);
-    }
-    return builder.build();
   }
 
   private SnapshotSpec buildSnapshotSpec(Snapshot snapshot) {

@@ -144,6 +144,7 @@ message ReconcileCatalogOverlayResponse {
   uint32 objects_skipped = 11;
 }
 
+// CONTROL PLANE.
 service CatalogOverlays {
   rpc GetCatalogOverlay(GetCatalogOverlayRequest) returns (GetCatalogOverlayResponse);
   rpc ListCatalogOverlays(ListCatalogOverlaysRequest) returns (ListCatalogOverlaysResponse);

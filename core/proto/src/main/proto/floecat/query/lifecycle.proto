@@ -202,6 +202,7 @@ message GetQueryResponse {
  * planning/execution services. It is intentionally scoped to lifecycle + pinned
  * metadata (snapshots, view expansion, and governance obligations).
  */
+// ENGINE.
 service QueryService {
   /** BeginQuery: creates a new query context with a TTL and default catalog/as-of. */
   rpc BeginQuery(BeginQueryRequest) returns (BeginQueryResponse);

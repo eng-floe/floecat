@@ -1362,6 +1362,7 @@ message UpdateReconcilerSettingsResponse {
 }
 
 // Client-facing control plane for synchronous and asynchronous reconcile operations.
+// CONTROL PLANE.
 service ReconcileControl {
   // Starts a reconcile and waits for its aggregated result up to max_wait.
   rpc CaptureNow(CaptureNowRequest) returns (CaptureNowResponse);
@@ -1392,6 +1393,7 @@ service ReconcileControl {
 }
 
 // Executor-facing lease protocol used by remote workers to pull and report reconcile jobs.
+// INTERNAL.
 service ReconcileExecutorControl {
   // Attempts to lease one eligible reconcile job.
   rpc LeaseReconcileJob(LeaseReconcileJobRequest) returns (LeaseReconcileJobResponse);

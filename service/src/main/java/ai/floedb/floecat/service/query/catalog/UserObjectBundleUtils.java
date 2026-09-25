@@ -25,8 +25,7 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
-import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.rpc.LogicalType;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -117,9 +116,7 @@ public final class UserObjectBundleUtils {
         ColumnInfo.newBuilder()
             .setId(column.getId())
             .setName(column.getName())
-            .setType(
-                NameRefUtil.name(
-                    column.hasType() ? LogicalTypeProtoAdapter.columnTypeString(column) : ""))
+            .setType(column.hasType() ? column.getType() : LogicalType.getDefaultInstance())
             .setNullable(column.getNullable())
             .setOrdinal(column.getOrdinal())
             .setOrigin(origin);
