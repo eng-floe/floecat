@@ -309,21 +309,14 @@ To scale executors horizontally, add more executor-plane instances. They greedil
   ship spans to a collector. See [`telemetry-demo.md`][telemetry-demo-doc]
   for the full Prometheus + Tempo + Loki + Grafana demo stack.
 
-### Account lifecycle and drain
+### Account lifecycle
 
 The default Floecat process serves every account. Deployments may bind a different
-`AccountScope`/ownership implementation when they need admission or lease coordination. The
-deployment lifecycle drain is always available and only affects the local process: it stops new
-account work and GC while already-admitted work is allowed to finish.
-
-Pods should drain before termination with a `preStop` hook on the private management listener at
-`GET /internal/drain?wait=true&timeoutMs=<ms>`; the response is `200` when all admitted RPCs,
-mutations, resolutions, and GC work are gone and `202` at the requested timeout. `GET
-/internal/drain` shows the current status.
-Draining is irreversible for the life of the process. Under `wait=true` a malformed or negative
-`timeoutMs` is refused with `400` and drains nothing; without it a `POST` drains regardless of
-`timeoutMs` and returns at once, so a hook that interpolates one wants `wait=true` for a bad value to
-be caught. The client-facing HTTP/gRPC listener does not expose this route.
+`AccountScope`/ownership implementation when they need account admission or lease coordination.
+Query contexts and object caches are local optimizations; retention-based snapshot visibility and
+account-scoped GC determine whether durable data can be used or collected. A pod can therefore be
+restarted without a Floecat drain protocol: Core stops routing new work to the old pod and retries
+queries whose local context was lost.
 
 ### Telemetry hub configuration
 The service uses the telemetry hub core + Micrometer backend. The following flags are available in

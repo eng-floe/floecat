@@ -22,6 +22,7 @@ import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.cache.CacheFamily;
 import ai.floedb.floecat.cache.DiskBlobCache;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
@@ -166,12 +167,17 @@ public class MetadataCaches {
       CacheBudgetResolver budgets,
       Observability observability,
       LogicalSchemaMapper schemaMapper,
+      SnapshotRetentionPolicy retentionPolicy,
       @ConfigProperty(name = "floecat.cache.object.enabled", defaultValue = "true")
           boolean enabled) {
     var metrics = metricsFor(CacheFamily.OBJECT, observability);
     var cache =
         new ObjectCache(
-            budgets.bytesFor(CacheFamily.OBJECT), events(metrics), schemaMapper, enabled);
+            budgets.bytesFor(CacheFamily.OBJECT),
+            events(metrics),
+            schemaMapper,
+            enabled,
+            retentionPolicy);
     report(cache.family(), cache::entryCount, cache::bytes, budgets, metrics, cache.enabled());
     return cache;
   }

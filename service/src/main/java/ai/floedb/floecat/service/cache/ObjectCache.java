@@ -32,12 +32,17 @@ import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.MessageLite;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -67,6 +72,7 @@ public final class ObjectCache {
 
   private final MemoryCache<Key, Value> entries;
   private final LogicalSchemaMapper schemaMapper;
+  private final SnapshotRetentionPolicy retentionPolicy;
   private final boolean enabled;
 
   ObjectCache(long maxBytes, CacheEvents events, boolean enabled) {
@@ -75,10 +81,25 @@ public final class ObjectCache {
 
   ObjectCache(
       long maxBytes, CacheEvents events, LogicalSchemaMapper schemaMapper, boolean enabled) {
+    this(
+        maxBytes,
+        events,
+        schemaMapper,
+        enabled,
+        new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ZERO, Duration.ZERO));
+  }
+
+  ObjectCache(
+      long maxBytes,
+      CacheEvents events,
+      LogicalSchemaMapper schemaMapper,
+      boolean enabled,
+      SnapshotRetentionPolicy retentionPolicy) {
     this.entries =
         new CaffeineMemoryCache<>(
             CacheFamily.OBJECT, maxBytes, ObjectCache::estimatedKeyBytes, events);
     this.schemaMapper = Objects.requireNonNull(schemaMapper, "schemaMapper");
+    this.retentionPolicy = Objects.requireNonNull(retentionPolicy, "retentionPolicy");
     this.enabled = enabled;
   }
 
@@ -138,6 +159,14 @@ public final class ObjectCache {
     Objects.requireNonNull(correlationId, "correlationId");
     Objects.requireNonNull(pin, "pin");
     Objects.requireNonNull(graphView, "graphView");
+    if (pin.hasIngestedAt() && retentionPolicy.gcEligible(pin.getIngestedAt())) {
+      throw GrpcErrors.snapshotExpired(
+          correlationId,
+          null,
+          Map.of(
+              "table_id", pin.getTableId().getId(),
+              "snapshot_id", Long.toString(pin.getSnapshotId())));
+    }
     String schemaScope = pinnedSchemaScope(pin);
     String identity =
         Hashing.sha256Hex(

@@ -34,6 +34,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.function.Predicate;
 import org.eclipse.microprofile.config.ConfigProvider;
 
@@ -272,8 +273,15 @@ public class PointerGc {
         break;
       }
       String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
+      OptionalLong currentSnapshotId = currentSnapshotId(accountId, tableId);
+      if (currentSnapshotId.isEmpty()) {
+        // A missing or unreadable root is not proof that every historical snapshot is orphaned.
+        // Leave the table's snapshot pointers for a later pass rather than deleting them blindly.
+        continue;
+      }
       deleted +=
-          deleteExpiredSnapshotPointers(accountId, tableId, snapshotsById, pageSize, deadlineMs);
+          deleteExpiredSnapshotPointers(
+              snapshotsById, pageSize, deadlineMs, currentSnapshotId.getAsLong());
       Result snapshotById =
           scanPrefix(snapshotsById, pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs);
       scanned += snapshotById.scanned;
@@ -411,9 +419,8 @@ public class PointerGc {
 
   /** Removes expired canonical snapshot pointers so CAS GC can reclaim their immutable blobs. */
   private int deleteExpiredSnapshotPointers(
-      String accountId, String tableId, String prefix, int pageSize, long deadlineMs) {
+      String prefix, int pageSize, long deadlineMs, long currentSnapshotId) {
     int deleted = 0;
-    long currentSnapshotId = currentSnapshotId(accountId, tableId);
     String token = "";
     while (System.currentTimeMillis() < deadlineMs) {
       requirePermit();
@@ -438,18 +445,20 @@ public class PointerGc {
     return deleted;
   }
 
-  private long currentSnapshotId(String accountId, String tableId) {
+  private OptionalLong currentSnapshotId(String accountId, String tableId) {
     var rootPointer = pointerStore.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
     if (rootPointer == null || rootPointer.getBlobUri().isBlank()) {
-      return Long.MIN_VALUE;
+      return OptionalLong.empty();
     }
     try {
       var root =
           ai.floedb.floecat.catalog.rpc.TableRoot.parseFrom(
               blobStore.get(rootPointer.getBlobUri()));
-      return root.hasCurrentSnapshotId() ? root.getCurrentSnapshotId() : Long.MIN_VALUE;
+      return root.hasCurrentSnapshotId()
+          ? OptionalLong.of(root.getCurrentSnapshotId())
+          : OptionalLong.empty();
     } catch (RuntimeException | com.google.protobuf.InvalidProtocolBufferException e) {
-      return Long.MIN_VALUE;
+      return OptionalLong.empty();
     }
   }
 

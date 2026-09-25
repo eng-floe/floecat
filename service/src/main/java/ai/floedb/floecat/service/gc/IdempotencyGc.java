@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.errors.StorageException;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
@@ -37,6 +38,11 @@ public class IdempotencyGc {
       int scanned, int expired, int ptrDeleted, int blobDeleted, String nextToken) {}
 
   public Result runSliceForAccount(String accountId, String pageTokenIn) {
+    return runSliceForAccount(accountId, pageTokenIn, null);
+  }
+
+  public Result runSliceForAccount(
+      String accountId, String pageTokenIn, AccountScope.GcPermit permit) {
     final var cfg = ConfigProvider.getConfig();
 
     final int pageSize =
@@ -76,12 +82,15 @@ public class IdempotencyGc {
 
         if (isExpiredByPtr) {
           expired++;
+          requirePermit(permit);
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             ptrDeleted++;
           }
+          requirePermit(permit);
           if (blobStore.delete(p.getBlobUri())) {
             blobDeleted++;
           }
+          requirePermit(permit);
           blobStore.deletePrefix(Keys.idempotencyBlobPrefixForPointerKey(p.getKey()));
           continue;
         }
@@ -94,6 +103,7 @@ public class IdempotencyGc {
           }
 
           if (bytes == null || bytes.length == 0) {
+            requirePermit(permit);
             if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
               ptrDeleted++;
             }
@@ -110,12 +120,15 @@ public class IdempotencyGc {
             long expMs = Timestamps.toMillis(rec.getExpiresAt());
             if (expMs <= System.currentTimeMillis()) {
               expired++;
+              requirePermit(permit);
               if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
                 ptrDeleted++;
               }
+              requirePermit(permit);
               if (blobStore.delete(p.getBlobUri())) {
                 blobDeleted++;
               }
+              requirePermit(permit);
               blobStore.deletePrefix(Keys.idempotencyBlobPrefixForPointerKey(p.getKey()));
             }
           }
@@ -128,5 +141,11 @@ public class IdempotencyGc {
     }
 
     return new Result(scanned, expired, ptrDeleted, blobDeleted, token);
+  }
+
+  private static void requirePermit(AccountScope.GcPermit permit) {
+    if (permit != null) {
+      permit.requireValid();
+    }
   }
 }

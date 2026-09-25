@@ -391,11 +391,16 @@ public class SnapshotHelper {
       java.util.function.Supplier<String> supplier) {
 
     if (snapshotBlobUri != null && !snapshotBlobUri.isEmpty()) {
+      var loaded = snapshots.getByBlobUri(snapshotBlobUri);
       Snapshot snap =
           pins.requirePinnedSnapshotBlob(
               // Cached: the blob a pin names is immutable and content-addressed, so a resident
               // decode IS the pinned content. Emptiness still fails through requirePinned*.
-              snapshots.getByBlobUri(snapshotBlobUri), cid, tbl.id());
+              loaded,
+              cid,
+              tbl.id(),
+              loaded.map(Snapshot::getSnapshotId).orElse(0L),
+              loaded.map(Snapshot::getIngestedAt).orElse(null));
       return snap.getSchemaJson().isBlank() ? supplier.get() : snap.getSchemaJson();
     }
 

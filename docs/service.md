@@ -418,7 +418,7 @@ Notable `application.properties` keys:
 | Property | Purpose |
 |----------|---------|
 | `quarkus.grpc.server.*` | Port, HTTP2, plaintext/reflection toggles. |
-| `quarkus.management.*` | Private management listener for operational endpoints. |
+| `quarkus.management.*` | Private management listener for health and operational endpoints. |
 | `quarkus.grpc.clients.floecat.*` | Loopback client config for internal RPC calls. |
 | `floecat.seed.enabled` | Enable demo data seeding. |
 | `floecat.kv` / `floecat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |

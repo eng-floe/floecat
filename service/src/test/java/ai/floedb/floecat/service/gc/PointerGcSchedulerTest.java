@@ -98,7 +98,7 @@ class PointerGcSchedulerTest {
 
   private static CatalogIntegrationCredentialCleanup credentialCleanup() {
     CatalogIntegrationCredentialCleanup cleanup = mock(CatalogIntegrationCredentialCleanup.class);
-    when(cleanup.drain(anyLong(), anyInt()))
+    when(cleanup.drainForAccount(anyString(), anyLong(), anyInt(), any()))
         .thenReturn(new CatalogIntegrationCredentialCleanup.Result(0, 0));
     return cleanup;
   }

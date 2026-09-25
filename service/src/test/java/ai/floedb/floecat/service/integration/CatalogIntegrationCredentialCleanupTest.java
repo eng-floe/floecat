@@ -21,6 +21,7 @@ import ai.floedb.floecat.integration.rpc.CatalogAuthentication;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
 import ai.floedb.floecat.integration.rpc.SecretValue;
+import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -34,6 +35,7 @@ class CatalogIntegrationCredentialCleanupTest {
   private CatalogIntegrationRepository integrations;
   private CatalogIntegrationCredentialStore credentials;
   private CatalogIntegrationCredentialCleanup cleanup;
+  private AccountAssignment accountScope;
 
   @BeforeEach
   void setUp() {
@@ -44,6 +46,7 @@ class CatalogIntegrationCredentialCleanupTest {
     cleanup.pointerStore = pointers;
     cleanup.integrations = integrations;
     cleanup.credentials = credentials;
+    accountScope = AccountAssignment.forTesting();
   }
 
   @Test
@@ -59,17 +62,21 @@ class CatalogIntegrationCredentialCleanupTest {
         .deleteImmediately(id, 7L);
 
     cleanup.schedule(integration);
-    cleanup.drain(System.currentTimeMillis() + 1_000L, 10);
+    cleanup.drainForAccount("acct", System.currentTimeMillis() + 1_000L, 10, gcPermit());
     assertTrue(pointers.get(marker).isPresent());
 
-    cleanup.drain(System.currentTimeMillis() + 1_000L, 10);
+    cleanup.drainForAccount("acct", System.currentTimeMillis() + 1_000L, 10, gcPermit());
     assertTrue(pointers.get(marker).isPresent());
 
     CatalogIntegrationCredentialCleanup.Result result =
-        cleanup.drain(System.currentTimeMillis() + 1_000L, 10);
+        cleanup.drainForAccount("acct", System.currentTimeMillis() + 1_000L, 10, gcPermit());
     assertEquals(1, result.deleted());
     assertTrue(pointers.get(marker).isEmpty());
     verify(credentials, org.mockito.Mockito.times(2)).deleteImmediately(id, 7L);
+  }
+
+  private ai.floedb.floecat.service.account.AccountScope.GcPermit gcPermit() {
+    return accountScope.tryAcquireGc("acct").orElseThrow();
   }
 
   @Test

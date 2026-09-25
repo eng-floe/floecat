@@ -11,6 +11,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -72,26 +73,30 @@ public class CatalogIntegrationCredentialCleanup {
             new PointerStore.CasDelete(markerKey, marker.getVersion())));
   }
 
-  public Result drain(long deadlineMs, int pageSize) {
+  public Result drainForAccount(
+      String accountId, long deadlineMs, int pageSize, AccountScope.GcPermit permit) {
     int scanned = 0;
     int deleted = 0;
     String token = "";
+    String prefix =
+        Keys.catalogIntegrationCredentialCleanupPrefix() + Keys.encodeSegment(accountId) + "/";
     while (System.currentTimeMillis() < deadlineMs) {
+      permit.requireValid();
       var next = new StringBuilder();
-      var markers =
-          pointerStore.listPointersByPrefix(
-              Keys.catalogIntegrationCredentialCleanupPrefix(), Math.max(1, pageSize), token, next);
+      var markers = pointerStore.listPointersByPrefix(prefix, Math.max(1, pageSize), token, next);
       for (Pointer marker : markers) {
+        permit.requireValid();
         if (System.currentTimeMillis() >= deadlineMs) break;
         scanned++;
         CleanupTarget target = parse(marker.getKey());
         if (target == null) {
           LOG.errorf(
               "invalid catalog integration credential cleanup marker key=%s", marker.getKey());
+          permit.requireValid();
           if (pointerStore.compareAndDelete(marker.getKey(), marker.getVersion())) deleted++;
           continue;
         }
-        if (cleanIfSuperseded(target.integrationId(), target.generation())) deleted++;
+        if (cleanIfSuperseded(target.integrationId(), target.generation(), permit)) deleted++;
       }
       token = next.toString();
       if (token.isEmpty()) break;
@@ -106,6 +111,11 @@ public class CatalogIntegrationCredentialCleanup {
   }
 
   private boolean cleanIfSuperseded(ResourceId integrationId, long generation) {
+    return cleanIfSuperseded(integrationId, generation, null);
+  }
+
+  private boolean cleanIfSuperseded(
+      ResourceId integrationId, long generation, AccountScope.GcPermit permit) {
     String key = key(integrationId, generation);
     Pointer marker = pointerStore.get(key).orElse(null);
     if (marker == null) return false;
@@ -116,7 +126,13 @@ public class CatalogIntegrationCredentialCleanup {
           && current.get().getAuthentication().getCredentialGeneration() == generation) {
         return false;
       }
+      if (permit != null) {
+        permit.requireValid();
+      }
       credentials.deleteImmediately(integrationId, generation);
+      if (permit != null) {
+        permit.requireValid();
+      }
       return pointerStore.compareAndDelete(key, marker.getVersion());
     } catch (RuntimeException failure) {
       LOG.warnf(
