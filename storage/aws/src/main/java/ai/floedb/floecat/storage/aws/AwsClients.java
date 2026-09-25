@@ -18,7 +18,6 @@ package ai.floedb.floecat.storage.aws;
 
 import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.aws.RefreshingAwsClient.ClientResource;
-import ai.floedb.floecat.storage.AwsCredentialsUnavailableException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
 import jakarta.inject.Singleton;
@@ -32,7 +31,6 @@ import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
-import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
@@ -211,14 +209,6 @@ public class AwsClients {
             .overrideConfiguration(ClientOverrideConfiguration.builder().build());
     stsEndpoint.ifPresent(builder::endpointOverride);
     return builder.build();
-  }
-
-  public void ensureCredentialsAvailable() {
-    try {
-      resolveCredentials().resolveCredentials();
-    } catch (SdkClientException e) {
-      throw new AwsCredentialsUnavailableException("AWS credentials are unavailable", e);
-    }
   }
 
   AwsCredentialsProvider resolveCredentials() {

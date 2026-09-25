@@ -14,10 +14,14 @@
  * limitations under the License.
  */
 
-package ai.floedb.floecat.storage;
+package ai.floedb.floecat.storage.aws;
 
-public class AwsCredentialsUnavailableException extends RuntimeException {
-  public AwsCredentialsUnavailableException(String message, Throwable cause) {
-    super(message, cause);
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+
+/** Test double that fails if code independently resolves the default AWS credential chain. */
+public final class CredentialResolutionForbiddenAwsClients extends AwsClients {
+  @Override
+  AwsCredentialsProvider resolveCredentials() {
+    throw new AssertionError("Independent AWS credential resolution was attempted");
   }
 }
