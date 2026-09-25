@@ -374,6 +374,10 @@ public final class DeltaSchemaNormalizer {
       case "byte", "short", "integer" -> "int";
       case "real" -> "float";
       case "str" -> "string";
+      // Delta `timestamp` is an instant (UTC-stored) and Iceberg spells that `timestamptz`;
+      // Delta `timestamp_ntz` is the naive one, which Iceberg spells `timestamp`. The names
+      // collide, so neither may fall through to the passthrough default.
+      case "timestamp" -> "timestamptz";
       case "timestamp_ntz" -> "timestamp";
       default -> normalized;
     };
