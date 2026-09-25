@@ -62,7 +62,6 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
@@ -643,12 +642,10 @@ public class QueryInputResolver {
           try {
             long snapshotPinStartNs = System.nanoTime();
             pin =
-                resolveSnapshot(
+                snapshotResolutionReads.read(
                     () ->
-                        snapshotResolutionReads.read(
-                            () ->
-                                metadataGraph.resolvedSnapshotFor(
-                                    state.correlationId, rid, override, effectiveAsOfDefault)));
+                        metadataGraph.resolvedSnapshotFor(
+                            state.correlationId, rid, override, effectiveAsOfDefault));
             state.diagnostics.count("snapshot.snapshot_calls");
             state.diagnostics.nanos(
                 "snapshot.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
@@ -683,10 +680,10 @@ public class QueryInputResolver {
     state.diagnostics.count(
         "snapshot.asof_snapshot_selections",
         (override != null && override.hasAsOf()) || asOfDefault.isPresent());
-    // Reuse a committed pin that froze this exact explicit or AS-OF request. The committed query
-    // keeps its blobs rooted even after the live manifest no longer contains that snapshot, and
-    // first-touch semantics require subsequent resolution to return the same frozen pin. A
-    // different snapshot id or timestamp still resolves against the live root.
+    // Reuse a committed resolution for this exact explicit or AS-OF request. This is an in-process
+    // optimization only; if its immutable data has expired, the read path returns
+    // MC_SNAPSHOT_EXPIRED and the caller must start a fresh query. A different snapshot id or
+    // timestamp still resolves against the live root.
     if (queryStore != null) {
       Optional<TablePin> reused =
           queryStore
@@ -704,23 +701,12 @@ public class QueryInputResolver {
     }
     long snapshotPinStartNs = System.nanoTime();
     TablePin resolved =
-        resolveSnapshot(
+        snapshotResolutionReads.read(
             () ->
-                snapshotResolutionReads.read(
-                    () ->
-                        metadataGraph.resolvedSnapshotFor(
-                            state.correlationId, rid, override, asOfDefault)));
+                metadataGraph.resolvedSnapshotFor(state.correlationId, rid, override, asOfDefault));
     state.diagnostics.count("snapshot.snapshot_calls");
     state.diagnostics.nanos("snapshot.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
     return resolved;
-  }
-
-  /**
-   * Resolve and publish a pin. The returned identity is persisted in the query context by the
-   * caller; snapshot retention controls whether the referenced immutable data remains available.
-   */
-  private TablePin resolveSnapshot(Supplier<TablePin> resolver) {
-    return resolver.get();
   }
 
   /** Await a single-flight winner without stranding a cancelled waiter on the executor. */

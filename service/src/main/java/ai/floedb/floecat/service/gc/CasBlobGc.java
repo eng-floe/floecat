@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.gc;
 
+import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -43,8 +44,6 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Clock;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -53,7 +52,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
@@ -127,9 +125,7 @@ public class CasBlobGc {
   @Inject StatsRepository statsRepository;
   @Inject TableBlobReachabilityGuard reachabilityGuard;
 
-  @Inject
-  SnapshotRetentionPolicy retentionPolicy =
-      new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ZERO, Duration.ofDays(7));
+  @Inject SnapshotRetentionPolicy retentionPolicy = SnapshotRetentionPolicy.disabled();
 
   private static final String SCAN_COMPLETE = "\u0000";
   private PassContinuation continuation;
@@ -646,12 +642,10 @@ public class CasBlobGc {
         Math.max(1, cfg.getOptionalValue("floecat.gc.cas.page-size", Integer.class).orElse(500));
     final long minAgeMs =
         Math.max(0L, cfg.getOptionalValue("floecat.gc.cas.min-age-ms", Long.class).orElse(30_000L));
-    // A stats generation belongs to its snapshot. Keep superseded generations for at least the
-    // snapshot retention+grace window, even after the live root moves to a newer generation.
-    final long generationMinAgeMs =
-        retentionPolicy.isRetentionEnabled()
-            ? Math.max(minAgeMs, retentionPolicy.retentionAndGraceMillis())
-            : minAgeMs;
+    // Minimum age for every superseded immutable blob: an unreferenced blob may still be read by a
+    // query that selected it.
+    final long supersededArtifactMinAgeMs =
+        Math.max(minAgeMs, retentionPolicy.retentionAndGraceMillis());
     int remainingGenerationBlobDeletes =
         Math.max(
             1,
@@ -839,7 +833,7 @@ public class CasBlobGc {
                 tableReferenced,
                 null,
                 pageSize,
-                this::retainSnapshotPointer,
+                p -> true,
                 storageEstimate,
                 true,
                 pointer ->
@@ -901,7 +895,7 @@ public class CasBlobGc {
                       return false;
                     },
                     nowMs,
-                    generationMinAgeMs,
+                    supersededArtifactMinAgeMs,
                     remainingGenerationBlobDeletes,
                     deadlineMs,
                     pass.generationGcContinuation,
@@ -956,7 +950,7 @@ public class CasBlobGc {
                   pass.tableWalkFailures,
                   pageSize,
                   nowMs,
-                  minAgeMs,
+                  supersededArtifactMinAgeMs,
                   referenceCapacity,
                   referenceFalsePositiveRate);
           pass.blobsScanned += tableSweep.scanned();
@@ -1173,7 +1167,7 @@ public class CasBlobGc {
       int[] walkFailures,
       int pageSize,
       long nowMs,
-      long minAgeMs,
+      long supersededArtifactMinAgeMs,
       long referenceCapacity,
       double referenceFalsePositiveRate) {
     int scanned = 0;
@@ -1188,7 +1182,14 @@ public class CasBlobGc {
       for (String prefix : directPrefixes) {
         DeleteResult result =
             deleteUnreferenced(
-                prefix, referenced, walkFailures, key -> true, null, pageSize, nowMs, minAgeMs);
+                prefix,
+                referenced,
+                walkFailures,
+                key -> true,
+                null,
+                pageSize,
+                nowMs,
+                supersededArtifactMinAgeMs);
         scanned += result.scanned();
         deleted += result.deleted();
         rescued += result.rescued();
@@ -1209,7 +1210,7 @@ public class CasBlobGc {
               null,
               pageSize,
               nowMs,
-              minAgeMs);
+              supersededArtifactMinAgeMs);
       scanned += snapshots.scanned();
       deleted += snapshots.deleted();
       rescued += snapshots.rescued();
@@ -1228,7 +1229,7 @@ public class CasBlobGc {
                   deferred,
                   pageSize,
                   nowMs,
-                  minAgeMs);
+                  supersededArtifactMinAgeMs);
           scanned += listed.scanned();
           deleted += listed.deleted();
           rescued += listed.rescued();
@@ -1594,12 +1595,11 @@ public class CasBlobGc {
       }
       String accountId = root.getTableId().getAccountId();
       String tableId = root.getTableId().getId();
-      long effectiveCurrentSnapshotId =
-          effectiveCurrentSnapshotId(root)
-              .orElse(root.hasCurrentSnapshotId() ? root.getCurrentSnapshotId() : Long.MIN_VALUE);
+      Set<Long> protectedSnapshotIds = protectedSnapshotIds(root);
       if (root.hasDefinitionRef() && !root.getDefinitionRef().getUri().isBlank()) {
         referenced.add(normalizeKey(root.getDefinitionRef().getUri()));
       }
+      markAll(referenced, root.getSupersededDefinitionRefsList());
       var pageRef = root.hasSnapshotManifestRef() ? root.getSnapshotManifestRef() : null;
       boolean resumingPage =
           resumable && continuation.traversal.chainEntryIndexes.containsKey(chainKey);
@@ -1643,12 +1643,13 @@ public class CasBlobGc {
         for (int entryIndex = entryStart; entryIndex < page.getEntriesCount(); entryIndex++) {
           checkDeadline();
           var entry = page.getEntries(entryIndex);
-          // Keep the current root and the grace-period history. Older entries remain in the
-          // manifest for audit/AS OF error reporting, but no longer keep their data blobs alive.
           boolean retainEntry =
-              (entry.getSnapshotId() == effectiveCurrentSnapshotId)
-                  || !retentionPolicy.gcEligible(
-                      entry.hasIngestedAt() ? entry.getIngestedAt() : null);
+              !retentionPolicy.isRetentionEnabled()
+                  || protectedSnapshotIds.contains(entry.getSnapshotId())
+                  || !retentionPolicy.expired(
+                      SnapshotRetentionPolicy.publishedAt(
+                              root.getTableId(), entry, pointerStore, blobStore)
+                          .orElse(null));
           if (!retainEntry) {
             if (resumable) {
               continuation.traversal.chainEntryIndexes.put(chainKey, entryIndex + 1);
@@ -1685,6 +1686,11 @@ public class CasBlobGc {
           if (entry.hasConstraintsRef() && !entry.getConstraintsRef().getUri().isBlank()) {
             referenced.add(normalizeKey(entry.getConstraintsRef().getUri()));
           }
+          for (var ref : entry.getSupersededStatsGenerationRefsList()) {
+            referenced.add(normalizeKey(ref.getUri()));
+            rememberTableGeneration(referenced, ref.getUri());
+          }
+          markAll(referenced, entry.getSupersededConstraintsRefsList());
           if (resumable) {
             continuation.traversal.chainEntryIndexes.put(chainKey, entryIndex + 1);
           }
@@ -1717,32 +1723,28 @@ public class CasBlobGc {
     }
   }
 
-  /** Matches query resolution when a committed current snapshot is not finalized yet. */
-  private OptionalLong effectiveCurrentSnapshotId(TableRoot root) {
-    if (!root.hasCurrentSnapshotId()
-        || !StatsVisibilityGate.gateOnFinalize(statsRepository)
-        || !root.hasSnapshotManifestRef()) {
-      return root.hasCurrentSnapshotId()
-          ? OptionalLong.of(root.getCurrentSnapshotId())
-          : OptionalLong.empty();
-    }
-    var committed =
-        readChainObject(
-                "current snapshot manifest " + root.getSnapshotManifestRef().getUri(),
-                () ->
-                    SnapshotManifests.findEntry(
-                        tableRootRepo, root.getSnapshotManifestRef(), root.getCurrentSnapshotId()))
-            .orElse(null);
-    if (committed == null || committed.hasStatsGenerationRef()) {
-      return OptionalLong.of(root.getCurrentSnapshotId());
+  /** Snapshots retention keeps regardless of age; empty when retention is off (all are kept). */
+  private Set<Long> protectedSnapshotIds(TableRoot root) {
+    if (!retentionPolicy.isRetentionEnabled()) {
+      return Set.of();
     }
     return readChainObject(
-            "latest queryable current snapshot " + root.getSnapshotManifestRef().getUri(),
+            "protected snapshots of root manifest " + root.getSnapshotManifestRef().getUri(),
             () ->
-                SnapshotManifests.latestQueryableCurrent(
-                    tableRootRepo, root.getSnapshotManifestRef(), committed))
-        .map(entry -> OptionalLong.of(entry.getSnapshotId()))
-        .orElse(OptionalLong.empty());
+                Optional.of(
+                    retentionPolicy.protectedSnapshotIds(
+                        SnapshotManifests.chain(tableRootRepo, null, root.getSnapshotManifestRef()),
+                        root,
+                        StatsVisibilityGate.gateOnFinalize(statsRepository))))
+        .orElseThrow();
+  }
+
+  private static void markAll(ReferenceIndex referenced, List<BlobRef> refs) {
+    for (BlobRef ref : refs) {
+      if (!ref.getUri().isBlank()) {
+        referenced.add(normalizeKey(ref.getUri()));
+      }
+    }
   }
 
   private boolean rootSnapshotReusableArtifactIndex(
@@ -2044,39 +2046,6 @@ public class CasBlobGc {
       boolean markBlobReferences) {
     return collectPointers(
         prefix, referenced, tableIds, pageSize, filter, storageEstimate, markBlobReferences, null);
-  }
-
-  /**
-   * Snapshot pointer rows older than retention+grace no longer keep their immutable payload alive.
-   */
-  private boolean retainSnapshotPointer(Pointer pointer) {
-    // With retention disabled, snapshot pointers are never eligible. Avoid a blob GET/parse for
-    // every pointer in every sweep just to rediscover that policy decision.
-    if (!retentionPolicy.isRetentionEnabled()) {
-      return true;
-    }
-    if (pointer == null || pointer.getBlobUri().isBlank()) {
-      return true;
-    }
-    try {
-      if (pointer.hasIngestedAt()) {
-        return !retentionPolicy.gcEligible(pointer.getIngestedAt());
-      }
-      Snapshot snapshot = Snapshot.parseFrom(blobStore.get(pointer.getBlobUri()));
-      if (!snapshot.hasIngestedAt()) {
-        return true;
-      }
-      var ingestedAt = snapshot.getIngestedAt();
-      pointerStore.compareAndSet(
-          pointer.getKey(),
-          pointer.getVersion(),
-          pointer.toBuilder().setIngestedAt(ingestedAt).build());
-      return !retentionPolicy.gcEligible(ingestedAt);
-    } catch (RuntimeException | com.google.protobuf.InvalidProtocolBufferException e) {
-      // A malformed or unreadable snapshot is retained; the normal repair/missing-blob paths
-      // decide whether it can be removed later.
-      return true;
-    }
   }
 
   private int collectPointers(
@@ -2444,7 +2413,7 @@ public class CasBlobGc {
         fresh,
         null,
         pageSize,
-        this::retainSnapshotPointer,
+        p -> true,
         null,
         true,
         pointer ->

@@ -134,8 +134,7 @@ public class PointerGcScheduler {
         }
         long accountStart = System.nanoTime();
         String accountId = account.getResourceId().getId();
-        PointerGc.Result result;
-        result = gc.runForAccount(accountId, deadline);
+        PointerGc.Result result = gc.runForAccount(accountId, deadline);
         gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "account-scanned"));
         gcMetrics.recordCollection(result.deleted(), Tag.of(TagKey.RESULT, "account-deleted"));
         gcMetrics.recordCollection(result.missingBlobs(), Tag.of(TagKey.RESULT, "missing-blobs"));

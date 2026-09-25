@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.account;
 
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
+import io.quarkus.arc.DefaultBean;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Optional;
@@ -29,6 +30,7 @@ import java.util.Optional;
  * than query snapshot selections or process-local state, is the GC safety mechanism.
  */
 @ApplicationScoped
+@DefaultBean
 public class AccountAssignment implements AccountScope, PlanningPointerIndex.Ownership {
 
   @Inject

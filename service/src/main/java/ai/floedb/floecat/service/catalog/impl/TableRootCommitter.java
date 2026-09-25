@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.catalog.impl;
 
 import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
@@ -71,13 +72,22 @@ public class TableRootCommitter {
 
   private final TableRootRepository roots;
   private final TableBlobReachabilityGuard reachabilityGuard;
+  private final SnapshotRetentionPolicy retention;
   private final ReentrantLock[] commitLocks = newCommitLocks();
 
   @Inject
   public TableRootCommitter(
-      TableRootRepository roots, TableBlobReachabilityGuard reachabilityGuard) {
+      TableRootRepository roots,
+      TableBlobReachabilityGuard reachabilityGuard,
+      SnapshotRetentionPolicy retention) {
     this.roots = roots;
     this.reachabilityGuard = reachabilityGuard;
+    this.retention = retention;
+  }
+
+  public TableRootCommitter(
+      TableRootRepository roots, TableBlobReachabilityGuard reachabilityGuard) {
+    this(roots, reachabilityGuard, SnapshotRetentionPolicy.disabled());
   }
 
   /** A root commit could not be applied; the calling mutation must fail. */
@@ -94,11 +104,12 @@ public class TableRootCommitter {
   /**
    * Builds the desired next root from the current one. Return {@code null} to signal a no-op
    * (nothing to commit); the committer then returns the current root unchanged. {@code root_seq}
-   * and {@code committed_at} are stamped by the committer — mutators must not manage them.
+   * and {@code committed_at} are stamped by the committer — mutators must not manage them. A
+   * mutator that replaces a versioned ref keeps the last {@code retainLast} replaced ones.
    */
   @FunctionalInterface
   public interface RootMutator {
-    TableRoot apply(Optional<TableRoot> current);
+    TableRoot apply(Optional<TableRoot> current, int retainLast);
   }
 
   /**
@@ -227,7 +238,7 @@ public class TableRootCommitter {
     boolean fromStore = stored.isPresent();
     Optional<TableRoot> current = stored;
 
-    TableRoot produced = mutator.apply(current);
+    TableRoot produced = mutator.apply(current, retention.retainLast());
     if (produced == null || (fromStore && current.get().equals(produced))) {
       return CommitAttempt.completed(current);
     }

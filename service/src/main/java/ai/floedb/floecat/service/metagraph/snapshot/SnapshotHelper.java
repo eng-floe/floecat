@@ -41,8 +41,6 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.time.Clock;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
@@ -95,13 +93,7 @@ public class SnapshotHelper {
       StatsStore statsStore,
       ResolvedSnapshotReadContract pins,
       RootRepairRequests repairs) {
-    this(
-        snapshots,
-        roots,
-        statsStore,
-        pins,
-        repairs,
-        new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ZERO, Duration.ofDays(7)));
+    this(snapshots, roots, statsStore, pins, repairs, SnapshotRetentionPolicy.disabled());
   }
 
   /**
@@ -227,36 +219,28 @@ public class SnapshotHelper {
           cid, QUERY_TABLE_NO_QUERYABLE_SNAPSHOT, Map.of("table_id", tableId.getId()));
     }
     long currentId = root.getCurrentSnapshotId();
-    SnapshotManifestEntry entry =
-        SnapshotManifests.findEntry(roots, manifestHead(root), currentId)
-            .orElseThrow(
-                // Currency pointing at a snapshot the manifest does not carry is a broken root
-                // invariant (removal clears currency in the same commit), never a client state —
-                // report the table for the resync re-drive to re-derive its root.
-                () -> {
-                  repairs.request(tableId);
-                  return GrpcErrors.internal(
-                      cid,
-                      QUERY_PINNED_SNAPSHOT_BLOB_MISSING,
-                      Map.of(
-                          "table_id", tableId.getId(),
-                          "snapshot_id", Long.toString(currentId)));
-                });
-    if (gateOnFinalize() && !entry.hasStatsGenerationRef()) {
-      // Committed currency can move before the generation publishes. Rather than reporting no
-      // current for the whole append->finalize window, select the newest FINALIZED snapshot at or
-      // before the committed current — snapshot isolation on the latest fully-queryable state,
-      // consistent with metadata surfaces (getCommittedCurrent*) still exposing the committed id.
-      // NOT_FOUND only when nothing at or before it is finalized yet (pre-first-finalize).
-      entry =
-          SnapshotManifests.latestQueryableCurrent(roots, manifestHead(root), entry)
-              .orElseThrow(
-                  () ->
-                      GrpcErrors.notFound(
-                          cid,
-                          QUERY_TABLE_NO_QUERYABLE_SNAPSHOT,
-                          Map.of("table_id", tableId.getId())));
+    var current = SnapshotManifests.currentSnapshots(roots, root, gateOnFinalize());
+    if (current.committed().isEmpty()) {
+      // Currency pointing at a snapshot the manifest does not carry is a broken root invariant
+      // (removal clears currency in the same commit), never a client state — report the table for
+      // the resync re-drive to re-derive its root.
+      repairs.request(tableId);
+      throw GrpcErrors.internal(
+          cid,
+          QUERY_PINNED_SNAPSHOT_BLOB_MISSING,
+          Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(currentId)));
     }
+    // Under the finalize gate an unfinalized current is served as the newest finalized snapshot at
+    // or before it; NOT_FOUND only when nothing is finalized yet.
+    SnapshotManifestEntry entry =
+        current
+            .queryable()
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        cid,
+                        QUERY_TABLE_NO_QUERYABLE_SNAPSHOT,
+                        Map.of("table_id", tableId.getId())));
     return snapshotFromEntry(cid, tableId, PinKind.PIN_KIND_CURRENT, entry, root, rootMeta, null);
   }
 
@@ -297,18 +281,7 @@ public class SnapshotHelper {
       TableRoot root,
       MutationMeta rootMeta,
       Timestamp originalAsOf) {
-    // The current snapshot is the table's live state and is retained by both GC collectors even
-    // when it is older than the historical-snapshot retention window. Retention limits historical
-    // and AS OF selections; it must not make an otherwise queryable cold table invisible.
-    if (pinKind != PinKind.PIN_KIND_CURRENT
-        && entry.hasIngestedAt()
-        && !retention.visible(entry.getIngestedAt())) {
-      throw GrpcErrors.snapshotTooOld(
-          cid,
-          Map.of(
-              "table_id", tableId.getId(),
-              "snapshot_id", Long.toString(entry.getSnapshotId())));
-    }
+    Timestamp expiresFrom = admit(cid, tableId, root, entry, pinKind == PinKind.PIN_KIND_CURRENT);
     if (!root.hasDefinitionRef() || root.getDefinitionRef().getUri().isEmpty()) {
       // A root without a definition ref is a broken invariant every query trips over: report the
       // table for the resync re-drive (which re-derives the definition ref from committed state).
@@ -343,8 +316,8 @@ public class SnapshotHelper {
             // entries (the token then falls back to snapshot_blob_version — correct, cold on
             // ingest).
             .setSchemaFingerprint(entry.getSchemaFingerprint());
-    if (entry.hasIngestedAt()) {
-      pin.setIngestedAt(entry.getIngestedAt());
+    if (expiresFrom != null) {
+      pin.setIngestedAt(expiresFrom);
     }
     if (entry.hasConstraintsRef()) {
       pin.setConstraintsRefUri(entry.getConstraintsRef().getUri())
@@ -360,6 +333,36 @@ public class SnapshotHelper {
       pin.setOriginalAsOf(originalAsOf);
     }
     return pin.build();
+  }
+
+  /**
+   * Admits a new selection of {@code entry}, failing {@code MC_SNAPSHOT_TOO_OLD} past the
+   * visibility horizon. Returns the publication time the selection later expires by, or null when
+   * retention keeps the snapshot regardless of age (a current or one of the last replaced ones).
+   */
+  private Timestamp admit(
+      String cid,
+      ResourceId tableId,
+      TableRoot root,
+      SnapshotManifestEntry entry,
+      boolean currentSelection) {
+    if (!retention.isRetentionEnabled()
+        || currentSelection
+        || retention
+            .protectedSnapshotIds(
+                SnapshotManifests.chain(roots, null, manifestHead(root)), root, gateOnFinalize())
+            .contains(entry.getSnapshotId())) {
+      return null;
+    }
+    Timestamp publishedAt = snapshots.publishedAt(tableId, entry).orElse(null);
+    if (!retention.visible(publishedAt)) {
+      throw GrpcErrors.snapshotTooOld(
+          cid,
+          Map.of(
+              "table_id", tableId.getId(),
+              "snapshot_id", Long.toString(entry.getSnapshotId())));
+    }
+    return publishedAt;
   }
 
   // ----------------------------------------------------------------------
@@ -397,33 +400,14 @@ public class SnapshotHelper {
       SnapshotRef ref,
       String snapshotBlobUri,
       java.util.function.Supplier<String> supplier) {
-    return schemaJsonFor(cid, tbl, ref, snapshotBlobUri, null, false, supplier);
-  }
-
-  public String schemaJsonFor(
-      String cid,
-      UserTableNode tbl,
-      SnapshotRef ref,
-      String snapshotBlobUri,
-      Timestamp snapshotIngestedAt,
-      boolean currentSnapshot,
-      java.util.function.Supplier<String> supplier) {
 
     if (snapshotBlobUri != null && !snapshotBlobUri.isEmpty()) {
       var loaded = snapshots.getByBlobUri(snapshotBlobUri);
       Snapshot snap =
-          pins.requireResolvedSnapshotBlob(
-              // Cached: the blob a pin names is immutable and content-addressed, so a resident
-              // decode IS the resolved snapshot content. Emptiness still fails through
-              // requireResolved*.
-              loaded,
-              cid,
-              tbl.id(),
-              loaded.map(Snapshot::getSnapshotId).orElse(0L),
-              snapshotIngestedAt != null
-                  ? snapshotIngestedAt
-                  : loaded.map(Snapshot::getIngestedAt).orElse(null),
-              currentSnapshot);
+          // Cached: the blob a selection names is immutable and content-addressed, so a resident
+          // decode IS the resolved snapshot content. Emptiness still fails through
+          // requireResolved*.
+          pins.requireResolvedSnapshotBlob(loaded, cid, tbl.id());
       return snap.getSchemaJson().isBlank() ? supplier.get() : snap.getSchemaJson();
     }
 
@@ -432,18 +416,20 @@ public class SnapshotHelper {
     }
 
     Snapshot snap = resolveSnapshot(cid, tbl.id(), ref);
-    boolean currentSelection =
-        ref.getWhichCase() == SnapshotRef.WhichCase.SPECIAL
-            && ref.getSpecial() == SpecialSnapshot.SS_CURRENT;
-    // CURRENT is the table's live selection.  It may be an old, cold snapshot when no newer
-    // data has arrived, so retention must not make the table's current schema disappear.  Once
-    // a query has resolved a historical/as-of snapshot, the normal retention check still applies.
-    if (snap != null
-        && !currentSelection
-        && !retention.visible(snap.hasIngestedAt() ? snap.getIngestedAt() : null)) {
-      throw GrpcErrors.snapshotTooOld(
-          cid,
-          Map.of("table_id", tbl.id().getId(), "snapshot_id", Long.toString(snap.getSnapshotId())));
+    if (snap != null) {
+      TableRoot root = loadRoot(roots.pointerMetaForSafe(tbl.id()));
+      if (root != null) {
+        SnapshotManifests.findEntry(roots, manifestHead(root), snap.getSnapshotId())
+            .ifPresent(
+                entry ->
+                    admit(
+                        cid,
+                        tbl.id(),
+                        root,
+                        entry,
+                        ref.getWhichCase() == SnapshotRef.WhichCase.SPECIAL
+                            && ref.getSpecial() == SpecialSnapshot.SS_CURRENT));
+      }
     }
 
     if (snap == null || snap.getSchemaJson().isBlank()) {

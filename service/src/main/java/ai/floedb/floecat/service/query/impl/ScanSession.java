@@ -22,7 +22,7 @@ import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.execution.rpc.ScanFileContent;
 import ai.floedb.floecat.query.rpc.DeleteFile;
 import ai.floedb.floecat.query.rpc.TableInfo;
-import com.google.protobuf.Timestamp;
+import ai.floedb.floecat.query.rpc.TablePin;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -46,8 +46,7 @@ public final class ScanSession {
   // completion: superseded generations are RETAINED (replaceAllStatsForSnapshot no longer deletes
   // them), so the scan stays deterministic at the frozen pointer with no per-page re-check.
   private final String statsGeneration;
-  private final Timestamp snapshotIngestedAt;
-  private final boolean currentSnapshot;
+  private final TablePin selection;
   private final TableInfo tableInfo;
   private final boolean includeColumnStats;
   private final boolean excludePartitionDataJson;
@@ -68,8 +67,7 @@ public final class ScanSession {
     this.tableId = builder.tableId;
     this.snapshotId = builder.snapshotId;
     this.statsGeneration = builder.statsGeneration;
-    this.snapshotIngestedAt = builder.snapshotIngestedAt;
-    this.currentSnapshot = builder.currentSnapshot;
+    this.selection = builder.selection;
     this.tableInfo = builder.tableInfo;
     this.includeColumnStats = builder.includeColumnStats;
     this.excludePartitionDataJson = builder.excludePartitionDataJson;
@@ -105,12 +103,9 @@ public final class ScanSession {
     return statsGeneration;
   }
 
-  public Timestamp snapshotIngestedAt() {
-    return snapshotIngestedAt;
-  }
-
-  public boolean currentSnapshot() {
-    return currentSnapshot;
+  /** The resolved selection this scan reads; its retention decides when the scan expires. */
+  public TablePin selection() {
+    return selection;
   }
 
   public TableInfo tableInfo() {
@@ -266,8 +261,7 @@ public final class ScanSession {
         .tableId(tableId)
         .snapshotId(snapshotId)
         .statsGeneration(statsGeneration)
-        .snapshotIngestedAt(snapshotIngestedAt)
-        .currentSnapshot(currentSnapshot)
+        .selection(selection)
         .tableInfo(tableInfo)
         .includeColumnStats(includeColumnStats)
         .excludePartitionDataJson(excludePartitionDataJson)
@@ -283,8 +277,7 @@ public final class ScanSession {
     private ResourceId tableId;
     private long snapshotId;
     private String statsGeneration;
-    private Timestamp snapshotIngestedAt;
-    private boolean currentSnapshot;
+    private TablePin selection;
     private TableInfo tableInfo;
     private boolean includeColumnStats;
     private boolean excludePartitionDataJson;
@@ -321,13 +314,8 @@ public final class ScanSession {
       return this;
     }
 
-    public Builder snapshotIngestedAt(Timestamp snapshotIngestedAt) {
-      this.snapshotIngestedAt = snapshotIngestedAt;
-      return this;
-    }
-
-    public Builder currentSnapshot(boolean currentSnapshot) {
-      this.currentSnapshot = currentSnapshot;
+    public Builder selection(TablePin selection) {
+      this.selection = selection;
       return this;
     }
 

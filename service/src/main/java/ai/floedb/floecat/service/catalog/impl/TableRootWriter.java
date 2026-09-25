@@ -205,7 +205,7 @@ public class TableRootWriter {
     try {
       committer.commit(
           tableId,
-          current -> {
+          (current, retainLast) -> {
             // Read the active generation INSIDE the mutator: concurrent activations race, and a
             // ref captured before a lost CAS could land last, leaving the root referencing a
             // superseded generation forever. Re-reading per attempt makes the last commit reflect
@@ -227,7 +227,7 @@ public class TableRootWriter {
                     .orElse(null);
             return TableRootMutations.setStatsGeneration(
                     roots, tableId, snapshotId, generationRef, committedCurrentSnapshotId)
-                .apply(current);
+                .apply(current, retainLast);
           });
       return Optional.ofNullable(committedGeneration.get()).filter(uri -> !uri.isBlank());
     } catch (RuntimeException publicationFailure) {
@@ -302,7 +302,7 @@ public class TableRootWriter {
           boolean[] converged = {true};
           committer.commit(
               tableId,
-              current -> {
+              (current, retainLast) -> {
                 // The committed families are re-read INSIDE the mutator: resync FORCES currency,
                 // so a lost CAS must not re-apply state captured before the winner's commit — it
                 // would resurrect stale currency or re-insert a concurrently deleted snapshot's
@@ -353,7 +353,7 @@ public class TableRootWriter {
                           }
                           return loaded;
                         })
-                    .apply(current);
+                    .apply(current, retainLast);
               });
           // A drop can race the commit: the committer persists synthesized history even on a
           // mutator no-op, so a definition-less root (built from lingering snapshot pointers

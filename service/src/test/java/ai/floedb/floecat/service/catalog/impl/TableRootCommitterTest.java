@@ -76,7 +76,8 @@ class TableRootCommitterTest {
   }
 
   private void commitDefinition(String uri) {
-    committer.commit(TABLE, current -> TableRoot.newBuilder().setDefinitionRef(ref(uri)).build());
+    committer.commit(
+        TABLE, (current, retainLast) -> TableRoot.newBuilder().setDefinitionRef(ref(uri)).build());
   }
 
   @Test
@@ -85,7 +86,7 @@ class TableRootCommitterTest {
         committer
             .commit(
                 TABLE,
-                current ->
+                (current, retainLast) ->
                     TableRoot.newBuilder().setDefinitionRef(ref("s3://tbl/def-1.pb")).build())
             .orElseThrow();
 
@@ -113,7 +114,7 @@ class TableRootCommitterTest {
         () ->
             committer.commit(
                 TABLE,
-                current ->
+                (current, retainLast) ->
                     TableRoot.newBuilder().setDefinitionRef(ref("s3://tbl/def.pb")).build()));
   }
 
@@ -125,7 +126,7 @@ class TableRootCommitterTest {
             () ->
                 committer.commit(
                     TABLE,
-                    current ->
+                    (current, retainLast) ->
                         TableRoot.newBuilder()
                             .setSnapshotManifestRef(
                                 ref("/accounts/acct/tables/tbl/root/manifest/missing.pb"))
@@ -142,7 +143,7 @@ class TableRootCommitterTest {
         () ->
             committer.commit(
                 TABLE,
-                current ->
+                (current, retainLast) ->
                     TableRoot.newBuilder()
                         .setSnapshotManifestRef(
                             ref("/accounts/acct/tables/other/root/manifest/page.pb"))
@@ -159,7 +160,8 @@ class TableRootCommitterTest {
         committer
             .commit(
                 TABLE,
-                current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(7L).build())
+                (current, retainLast) ->
+                    current.orElseThrow().toBuilder().setCurrentSnapshotId(7L).build())
             .orElseThrow();
 
     assertEquals(2L, second.getRootSeq());
@@ -179,10 +181,12 @@ class TableRootCommitterTest {
         committer
             .commit(
                 TABLE,
-                current -> {
+                (current, retainLast) -> {
                   if (calls.incrementAndGet() == 1) {
                     committer.commit(
-                        TABLE, c -> c.orElseThrow().toBuilder().setCurrentSnapshotId(42L).build());
+                        TABLE,
+                        (c, innerRetainLast) ->
+                            c.orElseThrow().toBuilder().setCurrentSnapshotId(42L).build());
                   }
                   return current.orElseThrow().toBuilder()
                       .setDefinitionRef(ref("s3://tbl/def-2.pb"))
@@ -201,7 +205,7 @@ class TableRootCommitterTest {
     commitDefinition("s3://tbl/def-1.pb");
     long versionBefore = roots.metaForSafe(TABLE).getPointerVersion();
 
-    Optional<TableRoot> result = committer.commit(TABLE, current -> null);
+    Optional<TableRoot> result = committer.commit(TABLE, (current, retainLast) -> null);
 
     assertEquals(1L, result.orElseThrow().getRootSeq());
     assertEquals(versionBefore, roots.metaForSafe(TABLE).getPointerVersion());
@@ -212,7 +216,7 @@ class TableRootCommitterTest {
     commitDefinition("s3://tbl/def-1.pb");
     long versionBefore = roots.metaForSafe(TABLE).getPointerVersion();
 
-    committer.commit(TABLE, current -> current.orElseThrow());
+    committer.commit(TABLE, (current, retainLast) -> current.orElseThrow());
 
     assertEquals(versionBefore, roots.metaForSafe(TABLE).getPointerVersion());
   }
@@ -236,7 +240,8 @@ class TableRootCommitterTest {
         () ->
             failingCommitter.commit(
                 TABLE,
-                current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
+                (current, retainLast) ->
+                    current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
   }
 
   @Test
@@ -257,7 +262,8 @@ class TableRootCommitterTest {
         () ->
             contendedCommitter.commit(
                 TABLE,
-                current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
+                (current, retainLast) ->
+                    current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
   }
 
   @Test
@@ -289,7 +295,8 @@ class TableRootCommitterTest {
             () ->
                 contendedCommitter.commit(
                     TABLE,
-                    current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
+                    (current, retainLast) ->
+                        current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
     try {
       assertTrue(firstCasLost.await(1, TimeUnit.SECONDS));
       Future<Optional<TableRoot>> second =
@@ -297,7 +304,7 @@ class TableRootCommitterTest {
               () ->
                   contendedCommitter.commit(
                       TABLE,
-                      current ->
+                      (current, retainLast) ->
                           current.orElseThrow().toBuilder().setCurrentSnapshotId(2L).build()));
 
       assertEquals(2L, second.get(1, TimeUnit.SECONDS).orElseThrow().getCurrentSnapshotId());

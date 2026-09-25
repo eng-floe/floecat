@@ -123,6 +123,10 @@ engine release.
   capture-manifest contract; older references are rejected before their blobs are read.
   `SnapshotManifestEntry.reuse_stats_generation_ref` heads the compact stats generation used by
   that manifest.
+- **Retained replaced versions** – `TableRoot.superseded_definition_refs` and
+  `SnapshotManifestEntry.superseded_stats_generation_refs` / `superseded_constraints_refs` hold the
+  last `floecat.snapshot.retain-last` replaced versions, newest first, so GC keeps them reachable.
+  `TablePin.ingested_at` is set only on a selection retention may expire.
 - **External reusable-index compatibility** – external planner and finalizer deployments must
   regenerate bindings for `ReusableArtifactIndexReference` format 1 and its immutable sorted-run,
   run-manifest, and block messages. The old trie-root representation has no compatibility reader.

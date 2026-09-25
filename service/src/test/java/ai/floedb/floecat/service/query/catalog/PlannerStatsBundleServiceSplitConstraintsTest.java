@@ -446,7 +446,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
   }
 
   @Test
-  void streamConstraintsKeepsAnOldCurrentSnapshotVisible() {
+  void streamConstraintsServesAnOldCurrentSnapshot() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     StatsRepository repository = createRepository();
@@ -463,9 +463,6 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
     TablePin pin =
         SnapshotTestSupport.blobBackedPin(TABLE, 498L).toBuilder()
             .setPinKind(PinKind.PIN_KIND_CURRENT)
-            .setIngestedAt(
-                Timestamps.fromMillis(
-                    System.currentTimeMillis() - java.time.Duration.ofDays(45).toMillis()))
             .setConstraintsRefUri(meta.getBlobUri())
             .setConstraintsRefVersion(meta.getEtag())
             .build();

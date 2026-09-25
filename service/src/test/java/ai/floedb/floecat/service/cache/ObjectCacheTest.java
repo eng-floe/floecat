@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.cache;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -396,8 +395,7 @@ class ObjectCacheTest {
   private static CatalogGraphView schemaGraph(
       UserTableNode table, String schemaJson, AtomicInteger loads) {
     CatalogGraphView graphView = mock(CatalogGraphView.class);
-    when(graphView.schemaFor(
-            anyString(), eq(table.id()), any(), anyString(), anyString(), any(), anyBoolean()))
+    when(graphView.schemaFor(anyString(), eq(table.id()), any(), anyString(), anyString()))
         .thenAnswer(
             ignored -> {
               loads.incrementAndGet();

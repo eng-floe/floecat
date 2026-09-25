@@ -2094,15 +2094,15 @@ public class StatsRepository implements StatsStore {
 
   /**
    * GC hook: reclaim this table's superseded stats generations. A generation survives while any of
-   * these hold — its manifest blob URI is protected (referenced by a retained or pinned table root,
-   * or frozen by a live scan stream), it is the snapshot's LIVE active generation (the
-   * creation-window safeguard: a just-activated generation whose root commit has not landed), its
-   * manifest blob does not exist yet (an in-flight replace writes records before publishing), or
-   * its manifest blob is younger than {@code minAgeMs} — the publish→flip window: the manifest is
-   * written BEFORE the active pointer flips and before the root commit references it, so during
-   * that instant a brand-new generation is neither live nor rooted and only its age protects it
-   * (the same guard the blob sweep applies). Everything else — record pointers, record blobs, and
-   * the manifest blob — is deleted. Returns the number of generations reclaimed.
+   * these hold — its manifest blob URI is protected (referenced by a retained table root), it is
+   * the snapshot's LIVE active generation (the creation-window safeguard: a just-activated
+   * generation whose root commit has not landed), its manifest blob does not exist yet (an
+   * in-flight replace writes records before publishing), or its manifest blob is younger than
+   * {@code minAgeMs} — the publish→flip window: the manifest is written BEFORE the active pointer
+   * flips and before the root commit references it, so during that instant a brand-new generation
+   * is neither live nor rooted and only its age protects it (the same guard the blob sweep
+   * applies). Everything else — record pointers, record blobs, and the manifest blob — is deleted.
+   * Returns the number of generations reclaimed.
    */
   public int deleteUnreferencedGenerations(
       ResourceId tableId,
@@ -2310,7 +2310,8 @@ public class StatsRepository implements StatsStore {
         if (isProtectedManifestUri.test(manifestUri)
             || manifestUri.equals(activeStatsGenerationConsistent(tableId, snapshotId).orElse(""))
             || isActiveIndexGeneration(tableId, snapshotId, generationId)) {
-          // A late pin/root can appear between bounded deletion slices, after an earlier slice has
+          // A late root reference can appear between bounded deletion slices, after an earlier
+          // slice has
           // already removed blobs or pointers. Restoring PUBLISHED here would expose that partial
           // generation as healthy. Keep the terminal claim in place and retry reclamation after the
           // protection disappears; DELETING prevents writers from reviving the keyspace.

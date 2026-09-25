@@ -16,7 +16,10 @@
 
 package ai.floedb.floecat.service.gc;
 
+import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.impl.SnapshotManifests;
@@ -30,28 +33,26 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Clock;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalLong;
+import java.util.Set;
 import java.util.function.Predicate;
 import org.eclipse.microprofile.config.ConfigProvider;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class PointerGc {
 
+  private static final Logger LOG = Logger.getLogger(PointerGc.class);
+
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
+  @Inject SnapshotRetentionPolicy retentionPolicy = SnapshotRetentionPolicy.disabled();
   @Inject TableRootRepository tableRootRepository;
   @Inject StatsRepository statsRepository;
-
-  @Inject
-  SnapshotRetentionPolicy retentionPolicy =
-      new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ZERO, Duration.ofDays(7));
 
   public record Result(int scanned, int deleted, int missingBlobs, int staleSecondaries) {}
 
@@ -97,10 +98,6 @@ public class PointerGc {
   }
 
   public Result runForAccount(String accountId, long deadlineMs) {
-    return runForAccountInternal(accountId, deadlineMs);
-  }
-
-  private Result runForAccountInternal(String accountId, long deadlineMs) {
     int pageSize =
         ConfigProvider.getConfig()
             .getOptionalValue("floecat.gc.pointer.page-size", Integer.class)
@@ -308,17 +305,18 @@ public class PointerGc {
         break;
       }
       String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
-      OptionalLong currentSnapshotId = currentSnapshotId(accountId, tableId);
-      // A missing or unreadable root is not proof that every historical snapshot is orphaned.
-      // Leave only the retention-dependent deletion for a later pass rather than skipping the
-      // independent secondary-index sweeps below.
-      if (currentSnapshotId.isPresent()) {
-        deleted +=
-            deleteExpiredSnapshotPointers(
-                snapshotsById, pageSize, deadlineMs, currentSnapshotId.getAsLong());
-      }
       Result snapshotById =
-          scanPrefix(snapshotsById, pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs);
+          scanPrefix(
+              snapshotsById,
+              pageSize,
+              deadlineMs,
+              blobCache,
+              p -> true,
+              nowMs,
+              minAgeMs,
+              retentionPolicy.isRetentionEnabled()
+                  ? expiredSnapshotPointers(accountId, tableId)
+                  : null);
       scanned += snapshotById.scanned;
       deleted += snapshotById.deleted;
       missingBlobs += snapshotById.missingBlobs;
@@ -359,6 +357,18 @@ public class PointerGc {
       Predicate<Pointer> filter,
       long nowMs,
       long minAgeMs) {
+    return scanPrefix(prefix, pageSize, deadlineMs, blobCache, filter, nowMs, minAgeMs, null);
+  }
+
+  private Result scanPrefix(
+      String prefix,
+      int pageSize,
+      long deadlineMs,
+      Map<String, Boolean> blobCache,
+      Predicate<Pointer> filter,
+      long nowMs,
+      long minAgeMs,
+      Predicate<Pointer> deletePredicate) {
     String token = "";
     int scanned = 0;
     int deleted = 0;
@@ -384,6 +394,12 @@ public class PointerGc {
         }
 
         scanned++;
+        if (deletePredicate != null && deletePredicate.test(p)) {
+          if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
+            deleted++;
+          }
+          continue;
+        }
         if (!PointerReferences.isBlobPointer(p)) {
           continue;
         }
@@ -447,111 +463,53 @@ public class PointerGc {
     return new Result(scanned, deleted, missingBlobs, staleSecondaries);
   }
 
-  /** Removes expired canonical snapshot pointers so CAS GC can reclaim their immutable blobs. */
-  private int deleteExpiredSnapshotPointers(
-      String prefix, int pageSize, long deadlineMs, long currentSnapshotId) {
-    if (!retentionPolicy.isRetentionEnabled()) {
-      return 0;
+  /**
+   * By-id snapshot pointers whose manifest entry retention no longer keeps. A pointer without an
+   * entry, or a table whose root cannot be read, is kept.
+   */
+  private Predicate<Pointer> expiredSnapshotPointers(String accountId, String tableId) {
+    try {
+      return expiredSnapshotPointersOrThrow(accountId, tableId);
+    } catch (RuntimeException e) {
+      LOG.warnf(e, "pointer gc keeps snapshot pointers of table %s: root unreadable", tableId);
+      return p -> false;
     }
-    int deleted = 0;
-    String token = "";
-    while (System.currentTimeMillis() < deadlineMs) {
-      StringBuilder next = new StringBuilder();
-      List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
-      if (pointers.isEmpty()) {
-        break;
-      }
-      for (Pointer pointer : pointers) {
-        var ingestedAt = snapshotIngestedAt(pointer);
-        // Legacy backfill may CAS the timestamp onto the pointer and increment its version.
-        Pointer current =
-            pointer.hasIngestedAt() ? pointer : pointerStore.get(pointer.getKey()).orElse(pointer);
-        boolean eligible =
-            snapshotId(pointer.getKey()) != currentSnapshotId
-                && retentionPolicy.gcEligible(ingestedAt);
-        boolean removed =
-            eligible && pointerStore.compareAndDelete(current.getKey(), current.getVersion());
-        if (removed) {
-          deleted++;
-        }
-      }
-      token = next.toString();
-      if (token.isEmpty()) {
-        break;
-      }
-    }
-    return deleted;
   }
 
-  private OptionalLong currentSnapshotId(String accountId, String tableId) {
+  private Predicate<Pointer> expiredSnapshotPointersOrThrow(String accountId, String tableId) {
     var rootPointer = pointerStore.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
-    if (rootPointer == null || rootPointer.getBlobUri().isBlank()) {
-      return OptionalLong.empty();
+    TableRoot root =
+        rootPointer == null || rootPointer.getBlobUri().isBlank()
+            ? null
+            : tableRootRepository.getByBlobUri(rootPointer.getBlobUri()).orElse(null);
+    if (root == null) {
+      return p -> false;
     }
-    try {
-      var root =
-          tableRootRepository == null
-              ? ai.floedb.floecat.catalog.rpc.TableRoot.parseFrom(
-                  blobStore.get(rootPointer.getBlobUri()))
-              : tableRootRepository.getByBlobUri(rootPointer.getBlobUri()).orElse(null);
-      if (root == null || !root.hasCurrentSnapshotId()) {
-        return OptionalLong.empty();
-      }
-      long committedCurrent = root.getCurrentSnapshotId();
-      if (tableRootRepository == null
-          || statsRepository == null
-          || !StatsVisibilityGate.gateOnFinalize(statsRepository)
-          || !root.hasSnapshotManifestRef()) {
-        return OptionalLong.of(committedCurrent);
-      }
-      var committedEntry =
-          SnapshotManifests.findEntry(
-                  tableRootRepository, root.getSnapshotManifestRef(), committedCurrent)
-              .orElse(null);
-      if (committedEntry == null || committedEntry.hasStatsGenerationRef()) {
-        return OptionalLong.of(committedCurrent);
-      }
-      return SnapshotManifests.latestQueryableCurrent(
-              tableRootRepository, root.getSnapshotManifestRef(), committedEntry)
-          .map(entry -> OptionalLong.of(entry.getSnapshotId()))
-          .orElse(OptionalLong.empty());
-    } catch (RuntimeException | com.google.protobuf.InvalidProtocolBufferException e) {
-      return OptionalLong.empty();
-    }
+    var chain = SnapshotManifests.chain(tableRootRepository, null, root.getSnapshotManifestRef());
+    Set<Long> protectedIds =
+        retentionPolicy.protectedSnapshotIds(
+            chain, root, StatsVisibilityGate.gateOnFinalize(statsRepository));
+    ResourceId tableRid = ResourceId.newBuilder().setAccountId(accountId).setId(tableId).build();
+    Map<Long, SnapshotManifestEntry> entries = new HashMap<>();
+    chain.forEachEntry(entry -> entries.put(entry.getSnapshotId(), entry));
+    return p -> {
+      long snapshotId = snapshotId(p.getKey());
+      SnapshotManifestEntry entry = entries.get(snapshotId);
+      return entry != null
+          && !protectedIds.contains(snapshotId)
+          && retentionPolicy.expired(
+              SnapshotRetentionPolicy.publishedAt(tableRid, entry, pointerStore, blobStore)
+                  .orElse(null));
+    };
   }
 
   private long snapshotId(String key) {
     int slash = key == null ? -1 : key.lastIndexOf('/');
-    if (slash < 0) {
-      return Long.MIN_VALUE;
-    }
+    if (slash < 0) return Long.MIN_VALUE;
     try {
       return Long.parseLong(key.substring(slash + 1));
     } catch (NumberFormatException e) {
       return Long.MIN_VALUE;
-    }
-  }
-
-  private com.google.protobuf.Timestamp snapshotIngestedAt(Pointer pointer) {
-    if (pointer != null && pointer.hasIngestedAt()) {
-      return pointer.getIngestedAt();
-    }
-    try {
-      var snapshot =
-          ai.floedb.floecat.catalog.rpc.Snapshot.parseFrom(blobStore.get(pointer.getBlobUri()));
-      if (!snapshot.hasIngestedAt()) {
-        return null;
-      }
-      var ingestedAt = snapshot.getIngestedAt();
-      if (pointer != null && pointer.getVersion() > 0L) {
-        pointerStore.compareAndSet(
-            pointer.getKey(),
-            pointer.getVersion(),
-            pointer.toBuilder().setIngestedAt(ingestedAt).build());
-      }
-      return ingestedAt;
-    } catch (RuntimeException | com.google.protobuf.InvalidProtocolBufferException e) {
-      return null;
     }
   }
 

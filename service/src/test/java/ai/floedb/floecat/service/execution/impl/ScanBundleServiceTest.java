@@ -38,7 +38,6 @@ import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
-import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -48,8 +47,6 @@ import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsStore.StatsStorePage;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
-import java.time.Clock;
-import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -98,13 +95,7 @@ class ScanBundleServiceTest {
         new ResolvedSnapshotReadContract(
             new RootRepairRequests(new RootResyncQueue(repairPointers)));
     service =
-        new ScanBundleService(
-            tableRepo,
-            snapshotRepo,
-            statsStore,
-            resolver,
-            resolvedSnapshotReads,
-            new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ZERO, Duration.ZERO));
+        new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver, resolvedSnapshotReads);
   }
 
   private boolean repairEnqueued(ResourceId tableId) {
@@ -157,23 +148,22 @@ class ScanBundleServiceTest {
   }
 
   @Test
-  void initScanFailsWhenPinnedTableBlobMissingAndEnqueuesRepair() {
+  void initScanRepairsWhenResolvedTableBlobMissing() {
     when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.empty());
 
     assertThrows(io.grpc.StatusRuntimeException.class, () -> service.initScan("corr", PIN));
-    // The pinned root names a table blob no read can load: without a re-derived root every
-    // future scan fails the same way, so the failure durably enqueues the table for repair.
+    // The selected table definition is a catalog root, so a missing blob is queued for repair.
     assertTrue(repairEnqueued(TABLE_ID));
   }
 
   @Test
-  void initScanFailsWhenPinnedSnapshotBlobMissingAndEnqueuesRepair() {
+  void initScanFailsWhenPinnedSnapshotBlobMissingWithoutRepairingTheTable() {
     when(tableRepo.getByBlobUri(TABLE_BLOB_URI))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
     when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI)).thenReturn(Optional.empty());
 
     assertThrows(io.grpc.StatusRuntimeException.class, () -> service.initScan("corr", PIN));
-    assertTrue(repairEnqueued(TABLE_ID));
+    assertFalse(repairEnqueued(TABLE_ID));
   }
 
   private static ScanSession session(String statsGeneration) {
@@ -183,6 +173,7 @@ class ScanBundleServiceTest {
         .tableId(TABLE_ID)
         .snapshotId(42L)
         .statsGeneration(statsGeneration)
+        .selection(TablePin.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build())
         .tableInfo(TableInfo.getDefaultInstance())
         .targetBatchItems(10)
         .targetBatchBytes(1 << 20)

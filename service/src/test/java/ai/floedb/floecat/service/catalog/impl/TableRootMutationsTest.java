@@ -29,6 +29,7 @@ import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.util.Timestamps;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -72,6 +73,50 @@ class TableRootMutationsTest {
 
   private TableRoot commit(TableRootCommitter.RootMutator mutator) {
     return committer.commit(TABLE, mutator).orElseThrow();
+  }
+
+  @Test
+  void replacedStatsGenerationsAndConstraintsKeepTheLastRetainedVersions() {
+    commit(
+        TableRootMutations.upsertSnapshot(roots, TABLE, entry(1, 1_000), ref("s3://t/d.pb"), true));
+    for (String gen : new String[] {"g1", "g2", "g3"}) {
+      commit(
+          TableRootMutations.setStatsGeneration(roots, TABLE, 1, ref("s3://t/" + gen + ".pb"), 1L));
+      commit(TableRootMutations.setConstraints(roots, TABLE, 1, ref("s3://t/c-" + gen + ".pb")));
+    }
+
+    SnapshotManifestEntry entry =
+        SnapshotManifests.findEntry(roots, commit(noChange()).getSnapshotManifestRef(), 1)
+            .orElseThrow();
+    // The committer's default policy keeps the last one replaced version.
+    assertEquals(List.of("s3://t/g2.pb"), uris(entry.getSupersededStatsGenerationRefsList()));
+    assertEquals(List.of("s3://t/c-g2.pb"), uris(entry.getSupersededConstraintsRefsList()));
+  }
+
+  @Test
+  void replacedDefinitionsKeepTheLastRetainedVersions() {
+    commit(TableRootMutations.setDefinition(TABLE, ref("s3://t/d1.pb")));
+    commit(TableRootMutations.setDefinition(TABLE, ref("s3://t/d2.pb")));
+    TableRoot root = commit(TableRootMutations.setDefinition(TABLE, ref("s3://t/d3.pb")));
+
+    assertEquals("s3://t/d3.pb", root.getDefinitionRef().getUri());
+    assertEquals(List.of("s3://t/d2.pb"), uris(root.getSupersededDefinitionRefsList()));
+  }
+
+  @Test
+  void rewritingTheSameRefRecordsNoReplacement() {
+    commit(TableRootMutations.setDefinition(TABLE, ref("s3://t/d1.pb")));
+    TableRoot root = commit(TableRootMutations.setDefinition(TABLE, ref("s3://t/d1.pb")));
+
+    assertTrue(root.getSupersededDefinitionRefsList().isEmpty());
+  }
+
+  private static TableRootCommitter.RootMutator noChange() {
+    return (current, retainLast) -> current.orElseThrow();
+  }
+
+  private static List<String> uris(List<BlobRef> refs) {
+    return refs.stream().map(BlobRef::getUri).toList();
   }
 
   @Test
@@ -262,7 +307,8 @@ class TableRootMutationsTest {
         committer
             .commit(
                 TABLE,
-                current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(5L).build())
+                (current, retainLast) ->
+                    current.orElseThrow().toBuilder().setCurrentSnapshotId(5L).build())
             .orElseThrow();
     assertEquals(5L, degenerate.getCurrentSnapshotId());
 

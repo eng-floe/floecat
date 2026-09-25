@@ -73,17 +73,17 @@ public class QueryContextStoreImpl implements QueryContextStore {
   void init() {
     cache =
         CaffeineStateCache.<String, QueryContext>builder()
-            // Active contexts remain query state: follow-up RPCs need the query id and resolved
-            // selections to continue the query. Zero weight keeps max-size applicable to terminal
-            // contexts without evicting a live query; safetyExpiryMinutes remains the bound for
-            // abandoned active contexts.
+            // Active contexts are required to serve follow-up query RPCs. Zero weight keeps the
+            // configured bound applicable to terminal contexts without evicting a live query;
+            // safetyExpiryMinutes remains the bound for abandoned active contexts.
             .maximumWeight(Math.max(1, maxSize))
             .weigher((String k, QueryContext ctx) -> ctx != null && ctx.isActive() ? 0 : 1)
             .expireAfterWrite(Duration.ofMinutes(Math.max(1, safetyExpiryMinutes)))
             .recordStats()
             .removalListener(
                 (String key, QueryContext ctx, RemovalCause cause) -> {
-                  if (ctx != null) {
+                  // A replaced context is the same query's next version, which keeps its handles.
+                  if (ctx != null && cause != RemovalCause.REPLACED) {
                     cleanupScanHandles(ctx);
                   }
                 })
@@ -143,6 +143,10 @@ public class QueryContextStoreImpl implements QueryContextStore {
                 // Leave a lazily-EXPIRED / ended context in place; the method returns empty
                 // below.
                 return ctx;
+              }
+
+              if (now > ctx.getExpiresAtMs()) {
+                return ctx.asExpired(versionGen.incrementAndGet());
               }
 
               long newExp = Math.max(ctx.getExpiresAtMs(), Math.max(now, requestedExpiresAtMs));

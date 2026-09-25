@@ -68,6 +68,7 @@ public final class UserGraph {
   private final SnapshotHelper snapshots;
   private final PrincipalProvider principal;
   private final ResolvedSnapshotReadContract resolvedSnapshotReads;
+  private final TableRootRepository tableRoots;
 
   // ----------------------------------------------------------------------
   // Constructor
@@ -94,13 +95,15 @@ public final class UserGraph {
       ViewRepository viewRepo,
       PrincipalProvider principal,
       ResolvedSnapshotReadContract resolvedSnapshotReads,
-      SnapshotHelper snapshots) {
+      SnapshotHelper snapshots,
+      TableRootRepository tableRoots) {
     this.nodes = new NodeLoader(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.names = new NameResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.fq = new FullyQualifiedResolver(catalogRepo, nsRepo, tableRepo, viewRepo);
     this.resolvedSnapshotReads = resolvedSnapshotReads;
     this.snapshots = snapshots;
     this.principal = principal;
+    this.tableRoots = tableRoots;
   }
 
   /**
@@ -128,7 +131,8 @@ public final class UserGraph {
         viewRepo,
         principal,
         pins,
-        new SnapshotHelper(snapshotRepo, tableRootRepo, null, pins, repairs));
+        new SnapshotHelper(snapshotRepo, tableRootRepo, null, pins, repairs),
+        tableRootRepo);
   }
 
   /**
@@ -336,27 +340,7 @@ public final class UserGraph {
    */
   public String schemaJsonFor(
       String cid, UserTableNode tbl, SnapshotRef snapshot, String snapshotBlobUri) {
-    return schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri, null);
-  }
-
-  public String schemaJsonFor(
-      String cid,
-      UserTableNode tbl,
-      SnapshotRef snapshot,
-      String snapshotBlobUri,
-      Timestamp snapshotIngestedAt) {
-    return schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri, snapshotIngestedAt, false);
-  }
-
-  public String schemaJsonFor(
-      String cid,
-      UserTableNode tbl,
-      SnapshotRef snapshot,
-      String snapshotBlobUri,
-      Timestamp snapshotIngestedAt,
-      boolean currentSnapshot) {
-    return snapshots.schemaJsonFor(
-        cid, tbl, snapshot, snapshotBlobUri, snapshotIngestedAt, currentSnapshot, tbl::schemaJson);
+    return snapshots.schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri, tbl::schemaJson);
   }
 
   /**
@@ -391,28 +375,6 @@ public final class UserGraph {
       SnapshotRef snapshot,
       String tableBlobUri,
       String snapshotBlobUri) {
-    return schemaFor(cid, tblId, snapshot, tableBlobUri, snapshotBlobUri, null);
-  }
-
-  public SchemaResolution schemaFor(
-      String cid,
-      ResourceId tblId,
-      SnapshotRef snapshot,
-      String tableBlobUri,
-      String snapshotBlobUri,
-      Timestamp snapshotIngestedAt) {
-    return schemaFor(
-        cid, tblId, snapshot, tableBlobUri, snapshotBlobUri, snapshotIngestedAt, false);
-  }
-
-  public SchemaResolution schemaFor(
-      String cid,
-      ResourceId tblId,
-      SnapshotRef snapshot,
-      String tableBlobUri,
-      String snapshotBlobUri,
-      Timestamp snapshotIngestedAt,
-      boolean currentSnapshot) {
     UserTableNode tbl =
         (tableBlobUri == null || tableBlobUri.isEmpty())
             ? table(tblId)
@@ -423,13 +385,25 @@ public final class UserGraph {
                             GeneratedErrorMessages.MessageKey.TABLE,
                             Map.of("id", tblId.getId())))
             : resolvedSnapshotReads.requireResolvedTableBlob(
-                nodes.tableFromBlob(tblId, tableBlobUri), cid, tblId);
-    return new SchemaResolution(
-        tbl,
-        schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri, snapshotIngestedAt, currentSnapshot));
+                nodes.tableFromBlob(tblId, tableBlobUri),
+                cid,
+                tblId,
+                () -> currentRootOwnsTableBlob(tblId, tableBlobUri));
+    return new SchemaResolution(tbl, schemaJsonFor(cid, tbl, snapshot, snapshotBlobUri));
   }
 
   public record SchemaResolution(UserTableNode table, String schemaJson) {}
+
+  private boolean currentRootOwnsTableBlob(ResourceId tableId, String tableBlobUri) {
+    if (tableRoots == null) {
+      return true;
+    }
+    return tableRoots
+        .get(tableId)
+        .filter(root -> root.hasDefinitionRef())
+        .map(root -> root.getDefinitionRef().getUri().equals(tableBlobUri))
+        .orElse(false);
+  }
 
   // ----------------------------------------------------------------------
   // Name resolution

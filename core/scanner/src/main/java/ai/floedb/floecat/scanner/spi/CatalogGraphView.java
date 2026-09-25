@@ -299,35 +299,6 @@ public interface CatalogGraphView {
       String tableBlobUri,
       String snapshotBlobUri);
 
-  /**
-   * Resolve a schema while carrying the selection publication time independently of its blob.
-   * Implementations that read the resolved blob can use this to classify a reclaimed snapshot as
-   * retryable expiry instead of catalog corruption. The default preserves source compatibility for
-   * graph implementations that do not need that distinction.
-   */
-  default SchemaResolution schemaFor(
-      String correlationId,
-      ResourceId tableId,
-      SnapshotRef snapshot,
-      String tableBlobUri,
-      String snapshotBlobUri,
-      Timestamp snapshotIngestedAt) {
-    return schemaFor(
-        correlationId, tableId, snapshot, tableBlobUri, snapshotBlobUri, snapshotIngestedAt, false);
-  }
-
-  /** Variant that preserves the current-selection retention exemption. */
-  default SchemaResolution schemaFor(
-      String correlationId,
-      ResourceId tableId,
-      SnapshotRef snapshot,
-      String tableBlobUri,
-      String snapshotBlobUri,
-      Timestamp snapshotIngestedAt,
-      boolean currentSnapshot) {
-    return schemaFor(correlationId, tableId, snapshot, tableBlobUri, snapshotBlobUri);
-  }
-
   /** Resolve the schema from the current table pointer (no pin). */
   default SchemaResolution schemaFor(
       String correlationId, ResourceId tableId, SnapshotRef snapshot) {

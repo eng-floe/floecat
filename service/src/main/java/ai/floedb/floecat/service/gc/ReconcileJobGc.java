@@ -119,15 +119,6 @@ public class ReconcileJobGc {
       String jobTokenIn,
       String canonicalQuarantineTokenIn,
       long absoluteDeadlineMs) {
-    return runAccountSliceInternal(
-        accountId, jobTokenIn, canonicalQuarantineTokenIn, absoluteDeadlineMs);
-  }
-
-  private AccountResult runAccountSliceInternal(
-      String accountId,
-      String jobTokenIn,
-      String canonicalQuarantineTokenIn,
-      long absoluteDeadlineMs) {
     var cfg = ConfigProvider.getConfig();
     final int pageSize =
         cfg.getOptionalValue("floecat.gc.reconcile-jobs.page-size", Integer.class).orElse(50);

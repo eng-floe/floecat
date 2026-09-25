@@ -20,6 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
@@ -47,6 +50,7 @@ import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
 import java.time.Clock;
 import java.time.Duration;
@@ -183,10 +187,9 @@ class SnapshotHelperTest {
   }
 
   @Test
-  void schemaJsonKeepsAnOldCurrentSnapshotVisible() {
+  void schemaJsonKeepsACurrentSnapshotWithoutPublicationMetadataVisible() {
     ResourceId tableId = tableId("tbl");
-    // A cold table can legitimately have a current snapshot older than the historical retention
-    // window.  CURRENT is the live selection, not an AS OF request, so its schema remains usable.
+    // CURRENT remains readable even after its publication time is outside the history horizon.
     repository.put(
         tableId,
         Snapshot.newBuilder()
@@ -194,6 +197,7 @@ class SnapshotHelperTest {
             .setSnapshotId(41L)
             .setSchemaJson("{\"fields\":[\"current\"]}")
             .setUpstreamCreatedAt(ts("2024-04-01T00:00:00Z"))
+            .setIngestedAt(ts("2024-04-01T00:00:00Z"))
             .build());
     commitEntry(tableId, 41L, "2024-04-01T00:00:00Z");
 
@@ -334,7 +338,9 @@ class SnapshotHelperTest {
     // Force a broken root: currency names a snapshot the manifest does not carry. Removal clears
     // currency in the same commit, so this state is a violated invariant, never a client state.
     committer.commit(
-        tableId, current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(999).build());
+        tableId,
+        (current, retainLast) ->
+            current.orElseThrow().toBuilder().setCurrentSnapshotId(999).build());
 
     assertThatThrownBy(() -> helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class)
@@ -425,35 +431,102 @@ class SnapshotHelperTest {
     assertThat(pin.getRootUri()).isNotEmpty();
   }
 
-  @Test
-  void tablePinRejectsSnapshotsOutsideVisibilityRetention() {
-    ResourceId tableId = tableId("tbl");
-    committer.commit(
-        tableId,
-        TableRootMutations.upsertSnapshot(
-            roots,
-            tableId,
-            SnapshotManifestEntry.newBuilder()
-                .setSnapshotId(5)
-                .setSnapshotRef(
-                    BlobRef.newBuilder().setUri("s3://tbl/snap-5.pb").setVersion("etag-s5"))
-                .setIngestedAt(ts("2024-01-01T00:00:00Z"))
-                .build(),
-            BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
-            true));
+  /** Commits snapshots 5, 6 and 7 (current), each published at {@code ingestedAt}. */
+  private void commitThreeSnapshots(ResourceId tableId, Timestamp ingestedAt) {
+    for (long id = 5; id <= 7; id++) {
+      var entry =
+          SnapshotManifestEntry.newBuilder()
+              .setSnapshotId(id)
+              .setSnapshotRef(
+                  BlobRef.newBuilder()
+                      .setUri("s3://" + tableId.getId() + "/snap-" + id + ".pb")
+                      .setVersion("etag-s" + id))
+              .setUpstreamCreatedAt(ts("2024-01-0" + id + "T00:00:00Z"));
+      if (ingestedAt != null) {
+        entry.setIngestedAt(ingestedAt);
+      }
+      committer.commit(
+          tableId,
+          TableRootMutations.upsertSnapshot(
+              roots,
+              tableId,
+              entry.build(),
+              BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
+              true));
+    }
+  }
 
-    assertThatThrownBy(
-            () ->
-                helper.resolvedSnapshotFor(
-                    "corr",
-                    tableId,
-                    SnapshotRef.newBuilder().setSnapshotId(5).build(),
-                    Optional.empty()))
+  private TablePin select(ResourceId tableId, long snapshotId) {
+    return helper.resolvedSnapshotFor(
+        "corr",
+        tableId,
+        SnapshotRef.newBuilder().setSnapshotId(snapshotId).build(),
+        Optional.empty());
+  }
+
+  private void assertTooOld(ResourceId tableId, long snapshotId) {
+    assertThatThrownBy(() -> select(tableId, snapshotId))
         .isInstanceOf(StatusRuntimeException.class)
         .satisfies(
             e ->
                 assertThat(((StatusRuntimeException) e).getStatus().getCode())
                     .isEqualTo(io.grpc.Status.Code.FAILED_PRECONDITION));
+  }
+
+  @Test
+  void tablePinRejectsSnapshotsOutsideVisibilityRetention() {
+    ResourceId tableId = tableId("tbl");
+    commitThreeSnapshots(tableId, ts("2024-01-01T00:00:00Z"));
+
+    assertTooOld(tableId, 5);
+  }
+
+  @Test
+  void theCurrentAndLastReplacedSnapshotsStaySelectableRegardlessOfAge() {
+    ResourceId tableId = tableId("tbl");
+    commitThreeSnapshots(tableId, ts("2024-01-01T00:00:00Z"));
+
+    assertThat(select(tableId, 7).hasIngestedAt()).isFalse();
+    assertThat(select(tableId, 6).hasIngestedAt()).isFalse();
+    TablePin asOfNow =
+        helper.resolvedSnapshotFor(
+            "corr",
+            tableId,
+            SnapshotRef.newBuilder().setAsOf(ts("2030-01-01T00:00:00Z")).build(),
+            Optional.empty());
+    assertThat(asOfNow.getSnapshotId()).isEqualTo(7);
+    assertThat(asOfNow.hasIngestedAt()).isFalse();
+  }
+
+  @Test
+  void aVisibleHistoricalSelectionCarriesThePublicationTimeItExpiresBy() {
+    ResourceId tableId = tableId("tbl");
+    Timestamp recent = Timestamps.fromMillis(System.currentTimeMillis());
+    commitThreeSnapshots(tableId, recent);
+
+    assertThat(select(tableId, 5).getIngestedAt()).isEqualTo(recent);
+  }
+
+  @Test
+  void legacyManifestEntryWhosePayloadWasCollectedIsTooOld() {
+    ResourceId tableId = tableId("tbl-collected");
+    commitThreeSnapshots(tableId, null);
+
+    assertTooOld(tableId, 5);
+  }
+
+  @Test
+  void disabledRetentionSkipsThePublicationTimeLookup() {
+    ResourceId tableId = tableId("tbl");
+    seedAndCommit(tableId, 5, "2024-01-01T00:00:00Z");
+    var spied = spy(repository);
+    var disabled =
+        new SnapshotHelper(spied, roots, null, pins, repairs, SnapshotRetentionPolicy.disabled());
+
+    disabled.resolvedSnapshotFor(
+        "corr", tableId, SnapshotRef.newBuilder().setSnapshotId(5).build(), Optional.empty());
+
+    verify(spied, never()).publishedAt(any(), any());
   }
 
   @Test

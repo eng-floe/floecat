@@ -24,6 +24,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import ai.floedb.floecat.common.rpc.Pointer;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -56,20 +57,32 @@ class CasBlobGcTest {
     System.setProperty("floecat.gc.cas.min-age-ms", "0");
     System.setProperty("floecat.gc.cas.page-size", "200");
     pointers = new InMemoryPointerStore();
-    blobs = new InMemoryBlobStore();
     gc = new CasBlobGc();
+    gc.retentionPolicy =
+        new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ZERO, Duration.ZERO);
     gc.pointerStore = pointers;
     gc.durablePointers = new DurablePointerReads(pointers);
+    gc.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
+    useBlobs(new InMemoryBlobStore());
+  }
+
+  private void useBlobs(BlobStore store) {
+    blobs = store;
     gc.blobStore = blobs;
     gc.tableRootRepo = new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
     gc.statsRepository = new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs);
-    gc.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
   }
 
   @AfterEach
   void tearDown() {
     System.clearProperty("floecat.gc.cas.min-age-ms");
     System.clearProperty("floecat.gc.cas.page-size");
+  }
+
+  private void allowImmediateGenerationGc() {
+    gc.retentionPolicy =
+        new ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy(
+            Clock.systemUTC(), Duration.ZERO, Duration.ZERO);
   }
 
   @Test
@@ -100,10 +113,10 @@ class CasBlobGcTest {
 
   @Test
   void retentionMakesOldSnapshotBlobsCollectableWithoutSnapshotSelections() {
-    Instant now = Instant.parse("2026-01-10T00:00:00Z");
+    Instant now = Instant.now();
     gc.retentionPolicy =
-        new ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy(
-            Clock.fixed(now, java.time.ZoneOffset.UTC), Duration.ofDays(1), Duration.ofDays(1));
+        new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ofDays(1), Duration.ofDays(1), 0);
+    useBlobs(new InMemoryBlobStore(Clock.offset(Clock.systemUTC(), Duration.ofDays(-3))));
 
     String oldUri = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-old");
     String currentUri = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 2L, "sha-current");
@@ -167,6 +180,79 @@ class CasBlobGcTest {
     gc.runForAccount(ACCOUNT_ID);
 
     assertFalse(blobs.head(oldUri).isPresent(), "expired snapshots are not GC roots");
+    assertTrue(blobs.head(currentUri).isPresent(), "the current snapshot remains a root");
+  }
+
+  @Test
+  void theLastReplacedSnapshotSurvivesRetention() {
+    Instant now = Instant.now();
+    gc.retentionPolicy =
+        new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ofDays(1), Duration.ofDays(1));
+    useBlobs(new InMemoryBlobStore(Clock.offset(Clock.systemUTC(), Duration.ofDays(-3))));
+
+    String oldUri = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-old");
+    String currentUri = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 2L, "sha-current");
+    blobs.put(
+        oldUri,
+        ai.floedb.floecat.catalog.rpc.Snapshot.newBuilder()
+            .setTableId(tableRid())
+            .setSnapshotId(1L)
+            .setIngestedAt(
+                com.google.protobuf.util.Timestamps.fromMillis(
+                    now.minus(Duration.ofDays(3)).toEpochMilli()))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    blobs.put(
+        currentUri,
+        ai.floedb.floecat.catalog.rpc.Snapshot.newBuilder()
+            .setTableId(tableRid())
+            .setSnapshotId(2L)
+            .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(now.toEpochMilli()))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    putPointer(Keys.snapshotPointerById(ACCOUNT_ID, TABLE_ID, 2L), currentUri);
+
+    var page =
+        ai.floedb.floecat.catalog.rpc.SnapshotManifestPage.newBuilder()
+            .addEntries(
+                ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+                    .setSnapshotId(2L)
+                    .setSnapshotRef(
+                        ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(currentUri))
+                    .setIngestedAt(
+                        com.google.protobuf.util.Timestamps.fromMillis(now.toEpochMilli())))
+            .addEntries(
+                ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+                    .setSnapshotId(1L)
+                    .setSnapshotRef(
+                        ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(oldUri))
+                    .setIngestedAt(
+                        com.google.protobuf.util.Timestamps.fromMillis(
+                            now.minus(Duration.ofDays(3)).toEpochMilli())))
+            .build();
+    String pageUri =
+        Keys.snapshotManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, ai.floedb.floecat.types.Hashing.sha256Hex(page.toByteArray()));
+    blobs.put(pageUri, page.toByteArray(), "application/x-protobuf");
+    String tableRootUri = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-root");
+    blobs.put(
+        tableRootUri,
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setTableId(tableRid())
+            .setCurrentSnapshotId(2L)
+            .setSnapshotManifestRef(
+                ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(pageUri))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    putPointer(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID), tableRootUri);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(
+        blobs.head(oldUri).isPresent(), "the last replaced snapshot is kept regardless of age");
     assertTrue(blobs.head(currentUri).isPresent(), "the current snapshot remains a root");
   }
 
@@ -643,6 +729,7 @@ class CasBlobGcTest {
 
   @Test
   void generationGcDoesNotHoldThePublicationGuardAcrossBlobIo() {
+    allowImmediateGenerationGc();
     var insideGuard = new java.util.concurrent.atomic.AtomicBoolean();
     var guardedBlobIo = new java.util.concurrent.atomic.AtomicBoolean();
     var checkingBlobs =
@@ -1230,6 +1317,77 @@ class CasBlobGcTest {
   }
 
   @Test
+  void supersededSnapshotBlobSurvivesRetentionAndGrace() {
+    // A query may still read the snapshot blob an in-place UpdateSnapshot replaced.
+    gc.retentionPolicy =
+        new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ZERO, Duration.ofHours(1));
+    seedCurrentTable();
+    String superseded = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-superseded");
+    blobs.put(superseded, "old".getBytes(StandardCharsets.UTF_8), "application/x-protobuf");
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(superseded).isPresent());
+  }
+
+  @Test
+  void theLastReplacedDefinitionAndConstraintsStayReachable() {
+    seedCurrentTable();
+    String liveDefinition = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-def-live");
+    String replacedDefinition = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-def-replaced");
+    String droppedDefinition = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-def-dropped");
+    String replacedConstraints =
+        Keys.snapshotConstraintsBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-c-replaced");
+    String droppedConstraints =
+        Keys.snapshotConstraintsBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-c-dropped");
+    for (String uri :
+        List.of(
+            liveDefinition,
+            replacedDefinition,
+            droppedDefinition,
+            replacedConstraints,
+            droppedConstraints)) {
+      blobs.put(uri, "x".getBytes(StandardCharsets.UTF_8), "application/octet-stream");
+    }
+    var page =
+        ai.floedb.floecat.catalog.rpc.SnapshotManifestPage.newBuilder()
+            .addEntries(
+                ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+                    .setSnapshotId(1L)
+                    .addSupersededConstraintsRefs(
+                        ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
+                            .setUri(replacedConstraints)))
+            .build();
+    String pageUri =
+        Keys.snapshotManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, ai.floedb.floecat.types.Hashing.sha256Hex(page.toByteArray()));
+    blobs.put(pageUri, page.toByteArray(), "application/x-protobuf");
+    String rootUri = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-root-replaced");
+    blobs.put(
+        rootUri,
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setTableId(tableRid())
+            .setCurrentSnapshotId(1L)
+            .setDefinitionRef(
+                ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(liveDefinition))
+            .addSupersededDefinitionRefs(
+                ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(replacedDefinition))
+            .setSnapshotManifestRef(
+                ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(pageUri))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    putPointer(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID), rootUri);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(blobs.head(replacedDefinition).isPresent());
+    assertTrue(blobs.head(replacedConstraints).isPresent());
+    assertFalse(blobs.head(droppedDefinition).isPresent());
+    assertFalse(blobs.head(droppedConstraints).isPresent());
+  }
+
+  @Test
   void generationStatsBlobsAreNeverSweptIndividually() {
     long snapshotId = 1L;
     String generationId = "gen-1";
@@ -1293,6 +1451,7 @@ class CasBlobGcTest {
 
   @Test
   void deletingLargeGenerationDoesNotDereferenceRemovedIndexWrappers() {
+    allowImmediateGenerationGc();
     long snapshotId = 11L;
     String generationId = "full-rescan-parent";
     String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
@@ -1968,10 +2127,7 @@ class CasBlobGcTest {
 
     assertFalse(result.poisoned(), "a retryable one-off read failure should not poison the sweep");
     assertFalse(blobs.head(orphan).isPresent(), "healthy sweep still collects unrelated garbage");
-    assertEquals(
-        4,
-        attempts[0],
-        "the transient page read is retried in both effective-current and mark walks");
+    assertEquals(2, attempts[0], "the transient page read is retried before the mark walk");
   }
 
   @Test

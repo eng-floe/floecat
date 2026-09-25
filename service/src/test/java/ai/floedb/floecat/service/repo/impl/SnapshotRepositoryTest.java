@@ -664,7 +664,9 @@ class SnapshotRepositoryTest {
             null,
             false));
     committer.commit(
-        tableRid, current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(9L).build());
+        tableRid,
+        (current, retainLast) ->
+            current.orElseThrow().toBuilder().setCurrentSnapshotId(9L).build());
 
     var served = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
     assertEquals(
@@ -918,7 +920,7 @@ class SnapshotRepositoryTest {
     if (currentSnapshotId != null) {
       committer.commit(
           tableId,
-          current ->
+          (current, retainLast) ->
               current.orElseThrow().toBuilder().setCurrentSnapshotId(currentSnapshotId).build());
     }
   }

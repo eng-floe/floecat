@@ -708,27 +708,8 @@ public final class MetaGraph implements CatalogGraphView, TopologyGraph {
       SnapshotRef snapshot,
       String tableBlobUri,
       String snapshotBlobUri) {
-    return schemaFor(correlationId, tableId, snapshot, tableBlobUri, snapshotBlobUri, null, false);
-  }
-
-  @Override
-  public SchemaResolution schemaFor(
-      String correlationId,
-      ResourceId tableId,
-      SnapshotRef snapshot,
-      String tableBlobUri,
-      String snapshotBlobUri,
-      com.google.protobuf.Timestamp snapshotIngestedAt,
-      boolean currentSnapshot) {
     UserGraph.SchemaResolution delegate =
-        userGraph.schemaFor(
-            correlationId,
-            tableId,
-            snapshot,
-            tableBlobUri,
-            snapshotBlobUri,
-            snapshotIngestedAt,
-            currentSnapshot);
+        userGraph.schemaFor(correlationId, tableId, snapshot, tableBlobUri, snapshotBlobUri);
     if (delegate == null) {
       return null;
     }

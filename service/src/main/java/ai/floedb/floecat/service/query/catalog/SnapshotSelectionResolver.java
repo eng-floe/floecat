@@ -65,14 +65,9 @@ final class SnapshotSelectionResolver implements SnapshotSelectionLookup {
   }
 
   @Override
-  public Optional<com.google.protobuf.Timestamp> resolvedSnapshotIngestedAt(ResourceId tableId) {
+  public Optional<TablePin> resolvedSelection(ResourceId tableId) {
     QueryContext ctx = liveContext();
-    if (ctx == null) {
-      return Optional.empty();
-    }
-    return ctx.findResolvedSnapshot(tableId, correlationId)
-        .filter(TablePin::hasIngestedAt)
-        .map(TablePin::getIngestedAt);
+    return ctx == null ? Optional.empty() : ctx.findResolvedSnapshot(tableId, correlationId);
   }
 
   @Override

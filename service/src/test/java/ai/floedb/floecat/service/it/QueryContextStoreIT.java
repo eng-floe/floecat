@@ -22,6 +22,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.query.rpc.TableInfo;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.QueryContextStoreImpl;
@@ -44,7 +45,7 @@ class QueryContextStoreIT {
       return Map.of(
           "floecat.query.default-ttl-ms", "100",
           "floecat.query.ended-grace-ms", "80",
-          "floecat.query.max-size", "1000");
+          "floecat.query.max-size", "1");
     }
   }
 
@@ -140,6 +141,16 @@ class QueryContextStoreIT {
   }
 
   @Test
+  void queryNoExtendIfLazilyExpired() throws Exception {
+    String queryId = "q-extend-expired";
+    store.put(newQuery(queryId, 20));
+    Thread.sleep(40);
+
+    assertTrue(store.extendLease(queryId, clock.millis() + 10_000).isEmpty());
+    assertEquals(QueryContext.State.EXPIRED, store.get(queryId).orElseThrow().getState());
+  }
+
+  @Test
   void queryEndCommit() {
     String queryId = "q-end-1";
     var ctx = newQuery(queryId, 100);
@@ -164,6 +175,15 @@ class QueryContextStoreIT {
   }
 
   @Test
+  void activeContextsAreNotEvictedByTerminalContextBound() {
+    store.put(newQuery("q-active-1", 500));
+    store.put(newQuery("q-active-2", 500));
+
+    assertTrue(store.get("q-active-1").isPresent());
+    assertTrue(store.get("q-active-2").isPresent());
+  }
+
+  @Test
   void scanSessionHandlePreservesResolvedSnapshotMetadata() {
     String queryId = "q-scan-session";
     store.put(newQuery(queryId, 500));
@@ -174,7 +194,7 @@ class QueryContextStoreIT {
             .tableId(ResourceId.newBuilder().setId("table-1").build())
             .snapshotId(42L)
             .statsGeneration("stats-42")
-            .currentSnapshot(true)
+            .selection(TablePin.newBuilder().setSnapshotId(42L).build())
             .tableInfo(TableInfo.getDefaultInstance())
             .targetBatchItems(100)
             .targetBatchBytes(1024)
@@ -184,6 +204,22 @@ class QueryContextStoreIT {
     var stored = store.getScanSession(handle).orElseThrow();
     assertEquals(42L, stored.snapshotId());
     assertEquals("stats-42", stored.statsGeneration());
-    assertTrue(stored.currentSnapshot());
+    assertEquals(42L, stored.selection().getSnapshotId());
+  }
+
+  @Test
+  void scanSessionForMissingQueryLeavesNoHandleBookkeeping() {
+    long contextsBefore = store.size();
+    var session =
+        ScanSession.builder()
+            .queryId("q-missing")
+            .tableId(ResourceId.newBuilder().setId("table-1").build())
+            .snapshotId(42L)
+            .tableInfo(TableInfo.getDefaultInstance())
+            .build();
+
+    assertThrows(RuntimeException.class, () -> store.createScanSession("it", session));
+    assertEquals(contextsBefore, store.size());
+    assertTrue(store.getScanSession(ScanHandle.newBuilder().setId("missing").build()).isEmpty());
   }
 }

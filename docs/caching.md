@@ -9,7 +9,8 @@ callbacks.
 The wire names `TablePin`, `RelationPinSet`, and related fields are compatibility names for a
 resolved snapshot selection. They freeze the immutable identities used by one query; they are not
 GC roots, leases, or ownership claims. Retention and durable reachability determine when the
-selected data may be collected.
+selected data may be collected; an explicit delete or a later collection can make an already-
+selected snapshot unavailable.
 
 ## Principles
 - **Mutable edges resolve to immutable keys.** A read first resolves a mutable pointer (resource ID
@@ -36,7 +37,7 @@ identity; they do not replace a value in an existing key.
 | Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | Account addressing state: names, identities, and each table's `root/current` and `snapshots/current`. Rows keyed by snapshot -- snapshot history, constraints, stats generations, index artifacts -- are durable-only, because a table can commit snapshots far faster than its schema or addressing state changes. | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter. |
 | Objects | `ObjectCache` | Decoded relation metadata, mapped schemas, constraints, immutable generation-scoped snapshot facts and target-stat records | Entries are keyed by immutable content or generation identity. A live/newest stats read is read-through and is never retained. Account eviction removes every object entry for that account. |
 | Blobs | `DiskBlobCache` behind `BlobCacheAccess` | Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe | Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mapped content stays retained until its scoped read closes. The disk budget and kill switch are `floecat.cache.blob.disk.*`; it is independent of the heap budget. |
-| Per-query state | `QueryContextStore` and per-query memos | Snapshot selections, expansion map, and scan/session bookkeeping keyed by query ID | Rebuildable process-local optimization. Snapshot retention, not this state, provides GC safety. |
+| Per-query state | `QueryContextStore` and per-query memos | Snapshot selections, expansion map, and scan/session bookkeeping keyed by query ID | Rebuildable process-local optimization, not a GC root. If the selected snapshot is deleted or collected, the query receives the snapshot-unavailable error. |
 
 An owned pointer partition can be warmed in the background when ownership is granted. The first
 read also schedules the warm if no ownership notification was received. Reads never wait for this

@@ -17,16 +17,16 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
-import com.google.protobuf.Timestamp;
+import ai.floedb.floecat.query.rpc.TablePin;
 import java.util.Optional;
 import java.util.OptionalLong;
 
-/** Query-scoped snapshot pin lookup used by planner bundle assembly. */
+/** Query-scoped snapshot selection lookup used by planner bundle assembly. */
 interface SnapshotSelectionLookup {
   OptionalLong resolvedSnapshotId(ResourceId tableId);
 
-  /** Publication time of the resolved snapshot, when the selection carries it. */
-  default Optional<Timestamp> resolvedSnapshotIngestedAt(ResourceId tableId) {
+  /** The query's resolved selection for this table, when it has one. */
+  default Optional<TablePin> resolvedSelection(ResourceId tableId) {
     return Optional.empty();
   }
 

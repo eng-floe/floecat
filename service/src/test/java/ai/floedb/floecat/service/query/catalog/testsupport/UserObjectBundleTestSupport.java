@@ -227,6 +227,9 @@ public final class UserObjectBundleTestSupport {
     @Override
     public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
       resolveNameCalls.merge(ref, 1, Integer::sum);
+      if (ref.hasResourceId()) {
+        return Optional.of(ref.getResourceId());
+      }
       return names.entrySet().stream()
           .filter(entry -> entry.getValue().equals(ref))
           .map(entry -> nodes.get(entry.getKey()).id())

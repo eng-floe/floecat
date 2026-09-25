@@ -25,12 +25,13 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import io.grpc.StatusRuntimeException;
 import java.time.Clock;
 import java.time.Duration;
-import java.time.Instant;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -73,11 +74,13 @@ class ResolvedSnapshotReadContractTest {
   }
 
   @Test
-  void aMissingPinnedSnapshotBlobRaisesInternalAndEnqueuesRepair() {
+  void aMissingPinnedSnapshotBlobRaisesSnapshotUnavailableWithoutRepair() {
     assertThrows(
         StatusRuntimeException.class,
-        () -> contract.requireResolvedSnapshotBlob(java.util.Optional.empty(), "corr", TABLE, 7L));
-    assertTrue(repairEnqueued(TABLE));
+        () ->
+            contract.requireResolvedSnapshotBlob(
+                java.util.Optional.empty(), "corr", selection(null)));
+    assertFalse(repairEnqueued(TABLE));
   }
 
   @Test
@@ -88,27 +91,75 @@ class ResolvedSnapshotReadContractTest {
   }
 
   @Test
-  void anExpiredPinnedSnapshotRequestsAQueryRestartInsteadOfRepair() {
-    contract =
+  void aPresentPinnedTableBlobDoesNotProbeTheLiveRoot() {
+    AtomicBoolean probed = new AtomicBoolean();
+    assertEquals(
+        "blob",
+        contract.requireResolvedTableBlob(
+            java.util.Optional.of("blob"),
+            "corr",
+            selection(null),
+            () -> {
+              probed.set(true);
+              return true;
+            }));
+    assertFalse(probed.get());
+  }
+
+  @Test
+  void aMissingSelectedTableBlobEnqueuesRepair() {
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            contract.requireResolvedTableBlob(
+                java.util.Optional.empty(), "corr", selection(null), () -> true));
+    assertTrue(repairEnqueued(TABLE));
+  }
+
+  @Test
+  void aMissingHistoricalTableBlobReportsSnapshotLossWithoutRepairingLiveRoot() {
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            contract.requireResolvedTableBlob(
+                java.util.Optional.empty(), "corr", selection(null), () -> false));
+    assertFalse(repairEnqueued(TABLE));
+  }
+
+  @Test
+  void anExpiredSelectedSnapshotFailsBeforeReadingTheBlob() {
+    var expired =
         new ResolvedSnapshotReadContract(
             new RootRepairRequests(new RootResyncQueue(repairPointers)),
-            new ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy(
-                Clock.fixed(Instant.parse("2026-01-10T00:00:00Z"), java.time.ZoneOffset.UTC),
-                Duration.ofDays(1),
-                Duration.ofDays(1)));
+            new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ofDays(1), Duration.ZERO));
+    assertThrows(
+        StatusRuntimeException.class,
+        () ->
+            expired.requireResolvedSnapshotBlob(
+                java.util.Optional.of("cached"), "corr", selection(OLD)));
+  }
 
-    StatusRuntimeException error =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                contract.requireResolvedSnapshotBlob(
-                    java.util.Optional.empty(),
-                    "corr",
-                    TABLE,
-                    7L,
-                    com.google.protobuf.util.Timestamps.parse("2026-01-01T00:00:00Z")));
+  @Test
+  void aSelectionRetentionKeepsRegardlessOfAgeNeverExpires() {
+    var retained =
+        new ResolvedSnapshotReadContract(
+            new RootRepairRequests(new RootResyncQueue(repairPointers)),
+            new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ofDays(1), Duration.ZERO));
+    assertEquals(
+        "cached",
+        retained.requireResolvedSnapshotBlob(
+            java.util.Optional.of("cached"), "corr", selection(null)));
+  }
 
-    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
-    assertFalse(repairEnqueued(TABLE));
+  private static final com.google.protobuf.Timestamp OLD =
+      com.google.protobuf.util.Timestamps.fromMillis(0L);
+
+  private static ai.floedb.floecat.query.rpc.TablePin selection(
+      com.google.protobuf.Timestamp ingestedAt) {
+    var pin = ai.floedb.floecat.query.rpc.TablePin.newBuilder().setTableId(TABLE).setSnapshotId(7L);
+    if (ingestedAt != null) {
+      pin.setIngestedAt(ingestedAt);
+    }
+    return pin.build();
   }
 }

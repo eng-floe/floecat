@@ -16,19 +16,19 @@
 
 package ai.floedb.floecat.service.query;
 
-import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.QUERY_PINNED_SNAPSHOT_BLOB_MISSING;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.QUERY_PINNED_TABLE_BLOB_MISSING;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
-import com.google.protobuf.Timestamp;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.BooleanSupplier;
 
 /**
  * Where a resolved-snapshot read fails, and what it reports when it does.
@@ -38,12 +38,10 @@ import java.util.Optional;
  * There is no up-front probe: if a resolved snapshot blob is gone, the read that needs it fails
  * here, at the point of the read, rather than at a check taken beforehand.
  *
- * <p>Every integrity failure raised here also enqueues the table for repair. A missing resolved
- * snapshot blob means the table's committed root names data a read cannot load, and that state
- * persists across queries until the root is re-derived -- so beyond failing this query loudly, the
- * table goes to the periodic resync re-drive. What this owns is the catalog-integrity ERROR for a
- * resolved snapshot blob read on the query path. Selection construction in {@code SnapshotHelper}
- * fails before any resolved read exists. Both paths take {@link RootRepairRequests} directly.
+ * <p>A missing table blob is a catalog-integrity failure and is queued for repair. A missing
+ * resolved snapshot blob is different: explicit snapshot deletion and normal immutable-object GC
+ * may invalidate a running query. That path returns the snapshot-unavailable error and must not
+ * enqueue root repair for an otherwise healthy table.
  */
 @ApplicationScoped
 public class ResolvedSnapshotReadContract {
@@ -58,12 +56,20 @@ public class ResolvedSnapshotReadContract {
     this.retention = retention;
   }
 
-  /** Compatibility constructor for embedded tests and standalone callers. */
+  /** Compatibility constructor for embedded graph builders and focused tests. */
   public ResolvedSnapshotReadContract(RootRepairRequests repairs) {
-    this(
-        repairs,
-        new SnapshotRetentionPolicy(
-            java.time.Clock.systemUTC(), java.time.Duration.ZERO, java.time.Duration.ofDays(7)));
+    this(repairs, SnapshotRetentionPolicy.disabled());
+  }
+
+  /**
+   * Fails {@code MC_SNAPSHOT_EXPIRED} once a selection retention may expire is past retention plus
+   * grace. A selection retention kept regardless of age carries no publication time and never
+   * expires here.
+   */
+  public void requireReadable(String correlationId, TablePin selection) {
+    if (selection.hasIngestedAt() && retention.expired(selection.getIngestedAt())) {
+      throw expired(correlationId, selection.getTableId(), selection.getSnapshotId());
+    }
   }
 
   /**
@@ -81,63 +87,71 @@ public class ResolvedSnapshotReadContract {
   }
 
   /**
-   * Snapshot-blob variant of {@link #requireResolvedTableBlob} for sites without the snapshot id.
+   * Reads a selected table definition. A missing blob is repaired only when {@code repairIfMissing}
+   * says the live root still owns it; otherwise the selection lost it and reports the snapshot
+   * unavailable. The probe runs only on a miss.
    */
+  public <T> T requireResolvedTableBlob(
+      Optional<T> loaded,
+      String correlationId,
+      ResourceId tableId,
+      BooleanSupplier repairIfMissing) {
+    if (loaded.isPresent()) {
+      return loaded.orElseThrow();
+    }
+    if (repairIfMissing.getAsBoolean()) {
+      repairs.request(tableId);
+      throw GrpcErrors.internal(
+          correlationId, QUERY_PINNED_TABLE_BLOB_MISSING, Map.of("table_id", tableId.getId()));
+    }
+    throw GrpcErrors.snapshotExpired(correlationId, null, Map.of("table_id", tableId.getId()));
+  }
+
+  public <T> T requireResolvedTableBlob(
+      Optional<T> loaded,
+      String correlationId,
+      TablePin selection,
+      BooleanSupplier repairIfMissing) {
+    requireReadable(correlationId, selection);
+    if (loaded.isPresent()) {
+      return loaded.orElseThrow();
+    }
+    if (repairIfMissing.getAsBoolean()) {
+      repairs.request(selection.getTableId());
+      throw GrpcErrors.internal(
+          correlationId,
+          QUERY_PINNED_TABLE_BLOB_MISSING,
+          Map.of(
+              "table_id", selection.getTableId().getId(),
+              "snapshot_id", Long.toString(selection.getSnapshotId())));
+    }
+    throw expired(correlationId, selection.getTableId(), selection.getSnapshotId());
+  }
+
+  /** Snapshot-blob unwrap for sites without a selection: a missing blob is unavailable. */
   public <T> T requireResolvedSnapshotBlob(
       Optional<T> loaded, String correlationId, ResourceId tableId) {
-    return require(
-        loaded,
+    return loaded.orElseThrow(
+        () -> GrpcErrors.snapshotExpired(correlationId, null, Map.of("table_id", tableId.getId())));
+  }
+
+  public <T> T requireResolvedSnapshotBlob(
+      Optional<T> loaded, String correlationId, TablePin selection) {
+    requireReadable(correlationId, selection);
+    return loaded.orElseThrow(
+        () -> expired(correlationId, selection.getTableId(), selection.getSnapshotId()));
+  }
+
+  private static io.grpc.StatusRuntimeException expired(
+      String correlationId, ResourceId tableId, long snapshotId) {
+    return GrpcErrors.snapshotExpired(
         correlationId,
-        tableId,
-        QUERY_PINNED_SNAPSHOT_BLOB_MISSING,
-        Map.of("table_id", tableId.getId()));
-  }
-
-  /** Snapshot-blob variant carrying the snapshot id in the error payload. */
-  public <T> T requireResolvedSnapshotBlob(
-      Optional<T> loaded, String correlationId, ResourceId tableId, long snapshotId) {
-    return requireResolvedSnapshotBlob(loaded, correlationId, tableId, snapshotId, null);
-  }
-
-  /**
-   * Variant carrying publication time. Once the grace period has elapsed, a live query must restart
-   * instead of being reported as catalog corruption when its immutable snapshot is reclaimed.
-   */
-  public <T> T requireResolvedSnapshotBlob(
-      Optional<T> loaded,
-      String correlationId,
-      ResourceId tableId,
-      long snapshotId,
-      Timestamp ingestedAt) {
-    return requireResolvedSnapshotBlob(
-        loaded, correlationId, tableId, snapshotId, ingestedAt, false);
-  }
-
-  public <T> T requireResolvedSnapshotBlob(
-      Optional<T> loaded,
-      String correlationId,
-      ResourceId tableId,
-      long snapshotId,
-      Timestamp ingestedAt,
-      boolean currentSnapshot) {
-    if (retention.expiredForRead(currentSnapshot, ingestedAt)) {
-      throw GrpcErrors.snapshotExpired(
-          correlationId,
-          null,
-          Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
-    }
-    return require(
-        loaded,
-        correlationId,
-        tableId,
-        QUERY_PINNED_SNAPSHOT_BLOB_MISSING,
+        null,
         Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
   }
 
   /**
-   * The contract itself: a vanished resolved snapshot blob fails this query loudly AND enqueues the
-   * table for repair, because the resolved root still names the vanished blob and every future
-   * query would fail the same way until the root is re-derived.
+   * Legacy table-definition contract: a missing live definition is a repairable catalog failure.
    */
   private <T> T require(
       Optional<T> loaded,

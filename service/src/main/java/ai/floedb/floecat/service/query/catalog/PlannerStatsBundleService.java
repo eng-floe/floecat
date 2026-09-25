@@ -33,6 +33,7 @@ import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleEnd;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleHeader;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TargetStatsBatch;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleChunk;
 import ai.floedb.floecat.query.rpc.TargetStatsBundleEnd;
@@ -41,7 +42,7 @@ import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
+import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -96,7 +97,7 @@ public class PlannerStatsBundleService {
       constraintPrunerFactory;
   private final Function<Set<String>, ConstraintPruner> constraintsOnlyPrunerFactory;
   private final TargetStatsLookup targetStatsLookup;
-  private final SnapshotRetentionPolicy retentionPolicy;
+  private final ResolvedSnapshotReadContract selections;
   private final PlannerStatsRequestNormalizer requestNormalizer;
   private final int maxTables;
   private final int maxTargets;
@@ -114,7 +115,7 @@ public class PlannerStatsBundleService {
       ConstraintPrunerFactory constraintPrunerFactory,
       StatsOrchestrator statsOrchestrator,
       TableRepository tableRepository,
-      SnapshotRetentionPolicy retentionPolicy,
+      ResolvedSnapshotReadContract selections,
       @ConfigProperty(name = "floecat.planner.stats.max-tables", defaultValue = "50") int maxTables,
       @ConfigProperty(name = "floecat.planner.stats.max-targets", defaultValue = "10000")
           int maxTargets,
@@ -127,7 +128,7 @@ public class PlannerStatsBundleService {
         constraintPrunerFactory::forRequest,
         constraintPrunerFactory::forConstraintsOnlyRequest,
         providerLookup(statsOrchestrator, tableRepository),
-        retentionPolicy,
+        selections,
         new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
   }
 
@@ -138,7 +139,7 @@ public class PlannerStatsBundleService {
       BiFunction<Set<String>, Map<String, Set<Long>>, ConstraintPruner> constraintPrunerFactory,
       Function<Set<String>, ConstraintPruner> constraintsOnlyPrunerFactory,
       TargetStatsLookup targetStatsLookup,
-      SnapshotRetentionPolicy retentionPolicy,
+      ResolvedSnapshotReadContract selections,
       PlannerStatsLimits limits) {
     this.statsFactory = Objects.requireNonNull(statsFactory, "statsFactory");
     this.constraintProviderSupplier =
@@ -149,7 +150,7 @@ public class PlannerStatsBundleService {
     this.constraintsOnlyPrunerFactory =
         Objects.requireNonNull(constraintsOnlyPrunerFactory, "constraintsOnlyPrunerFactory");
     this.targetStatsLookup = Objects.requireNonNull(targetStatsLookup, "targetStatsLookup");
-    this.retentionPolicy = Objects.requireNonNull(retentionPolicy, "retentionPolicy");
+    this.selections = Objects.requireNonNull(selections, "selections");
     this.maxTables = Math.max(1, limits.maxTables);
     this.maxTargets = Math.max(1, limits.maxTargets);
     this.maxResultsPerChunk = Math.max(1, limits.maxResultsPerChunk);
@@ -167,7 +168,8 @@ public class PlannerStatsBundleService {
       StatsProviderFactory statsFactory,
       int maxTables,
       int maxTargets,
-      int maxResultsPerChunk) {
+      int maxResultsPerChunk,
+      ResolvedSnapshotReadContract selections) {
     return new PlannerStatsBundleService(
         statsFactory,
         () -> ConstraintProvider.NONE,
@@ -175,40 +177,8 @@ public class PlannerStatsBundleService {
         RequestScopeConstraintPruner::new,
         RequestScopeConstraintPruner::forRequestedTablesOnly,
         providerLookup(orchestrator, tableRepository),
-        testingRetentionPolicy(),
+        selections,
         new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
-  }
-
-  public static PlannerStatsBundleService forTesting(
-      StatsProviderFactory statsFactory,
-      StatsStore statsStore,
-      int maxTables,
-      int maxTargets,
-      int maxResultsPerChunk) {
-    return forTesting(
-        statsFactory,
-        ConstraintProvider.NONE,
-        statsStore,
-        maxTables,
-        maxTargets,
-        maxResultsPerChunk);
-  }
-
-  public static PlannerStatsBundleService forTesting(
-      StatsProviderFactory statsFactory,
-      ConstraintProvider constraintProvider,
-      StatsStore statsStore,
-      int maxTables,
-      int maxTargets,
-      int maxResultsPerChunk) {
-    return forTesting(
-        statsFactory,
-        constraintProvider,
-        null,
-        statsStore,
-        maxTables,
-        maxTargets,
-        maxResultsPerChunk);
   }
 
   public static PlannerStatsBundleService forTesting(
@@ -218,7 +188,8 @@ public class PlannerStatsBundleService {
       StatsStore statsStore,
       int maxTables,
       int maxTargets,
-      int maxResultsPerChunk) {
+      int maxResultsPerChunk,
+      ResolvedSnapshotReadContract selections) {
     return new PlannerStatsBundleService(
         statsFactory,
         () -> constraintProvider == null ? ConstraintProvider.NONE : constraintProvider,
@@ -237,14 +208,8 @@ public class PlannerStatsBundleService {
           }
           return Map.copyOf(byTarget);
         },
-        testingRetentionPolicy(),
+        selections,
         new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
-  }
-
-  /** Test-only policy used by focused factories that exercise the expiry path. */
-  private static SnapshotRetentionPolicy testingRetentionPolicy() {
-    return new SnapshotRetentionPolicy(
-        java.time.Clock.systemUTC(), java.time.Duration.ofDays(30), java.time.Duration.ofDays(7));
   }
 
   /** Stream target statistics without an external cancellation signal. */
@@ -308,7 +273,7 @@ public class PlannerStatsBundleService {
                         selectionLookup,
                         constraintProvider,
                         constraintRepository,
-                        retentionPolicy,
+                        selections,
                         safeRequest.getIncludeConstraints(),
                         constraintPrunerFactory,
                         targetStatsLookup,
@@ -448,7 +413,7 @@ public class PlannerStatsBundleService {
                         selectionLookup,
                         constraintProvider,
                         constraintRepository,
-                        retentionPolicy,
+                        selections,
                         constraintPruner,
                         maxResultsPerChunk,
                         servingPolicy,
@@ -568,7 +533,7 @@ public class PlannerStatsBundleService {
     private final SnapshotSelectionLookup selectionLookup;
     private final ConstraintProvider constraintProvider;
     private final ConstraintRepository constraintRepository;
-    private final SnapshotRetentionPolicy retentionPolicy;
+    private final ResolvedSnapshotReadContract selections;
     private final boolean includeConstraints;
     private final ConstraintPruner constraintPruner;
     private final TargetStatsLookup targetStatsLookup;
@@ -600,7 +565,7 @@ public class PlannerStatsBundleService {
         SnapshotSelectionLookup selectionLookup,
         ConstraintProvider constraintProvider,
         ConstraintRepository constraintRepository,
-        SnapshotRetentionPolicy retentionPolicy,
+        ResolvedSnapshotReadContract selections,
         boolean includeConstraints,
         BiFunction<Set<String>, Map<String, Set<Long>>, ConstraintPruner> constraintPrunerFactory,
         TargetStatsLookup targetStatsLookup,
@@ -618,7 +583,7 @@ public class PlannerStatsBundleService {
       this.selectionLookup = selectionLookup;
       this.constraintProvider = constraintProvider;
       this.constraintRepository = constraintRepository;
-      this.retentionPolicy = retentionPolicy;
+      this.selections = selections;
       this.includeConstraints = includeConstraints;
       this.targetStatsLookup = targetStatsLookup;
       this.maxResultsPerChunk = maxResultsPerChunk;
@@ -893,6 +858,9 @@ public class PlannerStatsBundleService {
     }
 
     private void loadTargetBatchTimed(TableWork work, long snapshotId) {
+      selectionLookup
+          .resolvedSelection(work.tableId)
+          .ifPresent(pin -> selections.requireReadable(correlationId, pin));
       try (var cancellationScope = PropagatedContext.bindCancellation(cancelled)) {
         diagnostics.time(
             "target_batch_lookup",
@@ -915,9 +883,8 @@ public class PlannerStatsBundleService {
                   work.tableId,
                   resolveSnapshot(work),
                   selectionLookup.resolvedConstraintsRef(work.tableId),
-                  selectionLookup.resolvedSnapshotIngestedAt(work.tableId),
-                  selectionLookup.currentSnapshotIsPinned(work.tableId),
-                  retentionPolicy,
+                  selectionLookup.resolvedSelection(work.tableId),
+                  selections,
                   constraintRepository,
                   constraintProvider,
                   constraintPruner));
@@ -1076,7 +1043,7 @@ public class PlannerStatsBundleService {
     private final SnapshotSelectionLookup selectionLookup;
     private final ConstraintProvider constraintProvider;
     private final ConstraintRepository constraintRepository;
-    private final SnapshotRetentionPolicy retentionPolicy;
+    private final ResolvedSnapshotReadContract selections;
     private final ConstraintPruner constraintPruner;
     private final int maxResultsPerChunk;
     private final PlannerConstraintServingPolicy servingPolicy;
@@ -1095,7 +1062,7 @@ public class PlannerStatsBundleService {
         SnapshotSelectionLookup selectionLookup,
         ConstraintProvider constraintProvider,
         ConstraintRepository constraintRepository,
-        SnapshotRetentionPolicy retentionPolicy,
+        ResolvedSnapshotReadContract selections,
         ConstraintPruner constraintPruner,
         int maxResultsPerChunk,
         PlannerConstraintServingPolicy servingPolicy,
@@ -1107,7 +1074,7 @@ public class PlannerStatsBundleService {
       this.selectionLookup = selectionLookup;
       this.constraintProvider = constraintProvider;
       this.constraintRepository = constraintRepository;
-      this.retentionPolicy = retentionPolicy;
+      this.selections = selections;
       this.constraintPruner = constraintPruner;
       this.maxResultsPerChunk = maxResultsPerChunk;
       this.servingPolicy = servingPolicy;
@@ -1202,9 +1169,8 @@ public class PlannerStatsBundleService {
                   tableId,
                   resolveSnapshotTimed(tableId),
                   selectionLookup.resolvedConstraintsRef(tableId),
-                  selectionLookup.resolvedSnapshotIngestedAt(tableId),
-                  selectionLookup.currentSnapshotIsPinned(tableId),
-                  retentionPolicy,
+                  selectionLookup.resolvedSelection(tableId),
+                  selections,
                   constraintRepository,
                   constraintProvider,
                   constraintPruner));
@@ -1251,9 +1217,8 @@ public class PlannerStatsBundleService {
       ResourceId tableId,
       OptionalLong snapshotId,
       Optional<SnapshotSelectionLookup.ResolvedConstraintsRef> pinnedRef,
-      Optional<com.google.protobuf.Timestamp> snapshotIngestedAt,
-      boolean currentSnapshot,
-      SnapshotRetentionPolicy retentionPolicy,
+      Optional<TablePin> selection,
+      ResolvedSnapshotReadContract selections,
       ConstraintRepository constraintRepository,
       ConstraintProvider constraintProvider,
       ConstraintPruner constraintPruner) {
@@ -1265,13 +1230,7 @@ public class PlannerStatsBundleService {
     try {
       // Expiry belongs to the resolved selection, not to repository residency. Check before
       // loading the immutable bundle so a warm cache cannot keep an expired selection visible.
-      if (snapshotIngestedAt.isPresent()
-          && retentionPolicy.expiredForRead(currentSnapshot, snapshotIngestedAt.orElseThrow())) {
-        throw GrpcErrors.snapshotExpired(
-            correlationId,
-            null,
-            Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(sidForLog)));
-      }
+      selection.ifPresent(pin -> selections.requireReadable(correlationId, pin));
       List<ConstraintDefinition> visible;
       String servedRefVersion;
       if (pinnedRef.isPresent()) {

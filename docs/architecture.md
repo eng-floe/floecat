@@ -38,9 +38,10 @@ so concurrent commits merge instead of clobbering.
 Queries resolve one coherent snapshot selection: `TablePin` copies the refs it needs (definition,
 snapshot, constraints, stats generation) out of one root at resolution time, so every later schema,
 scan, stats, and constraints read in that query is coherent by construction. This selection is
-process-local query state, not a GC root or lifetime lease; retention-aware durable reachability
-protects blobs from GC.
-An expired selection may therefore fail retryably if the query outlives the retention contract.
+process-local query state, not a GC root or lifetime lease. Retention controls which snapshots new
+queries may select; explicit deletion or later collection can make an already-selected snapshot
+unavailable. Such a query fails with the snapshot-unavailable error, and Core replans only when the
+original query semantics allow a different selection.
 
 Snapshot visibility is gated at **read time** (`StatsVisibilityGate`): registration and resync
 advance the root's `current_snapshot_id` freely, but when the stats store tracks generations a
