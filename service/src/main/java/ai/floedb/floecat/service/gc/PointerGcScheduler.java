@@ -113,6 +113,12 @@ public class PointerGcScheduler {
 
     long tickStart = System.nanoTime();
     try {
+      var credentialResult = credentials.drain(deadline, accountsPageSize);
+      gcMetrics.recordCollection(
+          credentialResult.scanned(), Tag.of(TagKey.RESULT, "credential-scanned"));
+      gcMetrics.recordCollection(
+          credentialResult.deleted(), Tag.of(TagKey.RESULT, "credential-deleted"));
+
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
       Collections.shuffle(allAccounts);
 
@@ -129,12 +135,6 @@ public class PointerGcScheduler {
         }
         PointerGc.Result result;
         try (var permit = acquired.get()) {
-          var credentialResult =
-              credentials.drainForAccount(accountId, deadline, accountsPageSize, permit);
-          gcMetrics.recordCollection(
-              credentialResult.scanned(), Tag.of(TagKey.RESULT, "credential-scanned"));
-          gcMetrics.recordCollection(
-              credentialResult.deleted(), Tag.of(TagKey.RESULT, "credential-deleted"));
           result = gc.runForAccount(accountId, deadline, permit);
         } catch (AccountScope.GcPermitRevokedException revoked) {
           gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "gc-permit-revoked"));
