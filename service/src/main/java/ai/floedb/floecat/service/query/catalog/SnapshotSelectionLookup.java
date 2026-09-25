@@ -17,12 +17,18 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import com.google.protobuf.Timestamp;
 import java.util.Optional;
 import java.util.OptionalLong;
 
 /** Query-scoped snapshot pin lookup used by planner bundle assembly. */
 interface SnapshotSelectionLookup {
   OptionalLong resolvedSnapshotId(ResourceId tableId);
+
+  /** Publication time of the resolved snapshot, when the selection carries it. */
+  default Optional<Timestamp> resolvedSnapshotIngestedAt(ResourceId tableId) {
+    return Optional.empty();
+  }
 
   /**
    * The stats generation ref frozen on this table's pin. Empty means no pin, no stats generation at
@@ -43,6 +49,6 @@ interface SnapshotSelectionLookup {
     return Optional.empty();
   }
 
-  /** Immutable identity of a pinned constraints bundle: content-addressed URI + version. */
+  /** Immutable identity of a resolved constraints bundle: content-addressed URI + version. */
   record ResolvedConstraintsRef(String uri, String version) {}
 }

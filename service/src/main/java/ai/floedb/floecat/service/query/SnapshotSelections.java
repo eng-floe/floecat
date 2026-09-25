@@ -37,7 +37,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Query-pin helpers shared by the resolver and the relation-resolution RPCs.
+ * Resolved-snapshot selection helpers shared by the resolver and relation-resolution RPCs.
  *
  * <p>Three concerns live here:
  *
@@ -46,7 +46,7 @@ import java.util.Optional;
  *       snapshot-selector {@link SnapshotPin} the older read paths (obligations, schema-describe,
  *       scan/stats pin lookup) still speak. The stored representation is always {@code
  *       RelationPinSet}; richer paths consume the {@code TablePin} directly.
- *   <li>The table-pin conflict rule ({@link #compatible} / {@link #reconcile} / {@link
+ *   <li>The resolved-snapshot conflict rule ({@link #compatible} / {@link #reconcile} / {@link
  *       #mergeSets}): first-touch wins, compatible later resolutions reuse the stored pin, and
  *       incompatible temporal intents fail planning.
  *   <li>The opaque planner-facing {@link RelationPinIdentity} built by {@link #identity}.
@@ -92,8 +92,8 @@ public final class SnapshotSelections {
   }
 
   /**
-   * The table-pin conflict rule. A later resolution of an already-resolved table snapshot is
-   * compatible when:
+   * The resolved-snapshot conflict rule. A later resolution of an already-resolved table snapshot
+   * is compatible when:
    *
    * <ul>
    *   <li>it carries no temporal intent (CURRENT / unspecified) — it simply reuses the stored pin;
@@ -143,9 +143,9 @@ public final class SnapshotSelections {
   }
 
   /**
-   * Reconcile an incoming pin against the existing pin for the same table. Returns the pin to keep
-   * (always the existing one, per first-touch semantics) or throws a query-consistency error when
-   * the two carry incompatible temporal intents.
+   * Reconcile an incoming selection against the existing selection for the same table. Returns the
+   * selection to keep (always the existing one, per first-touch semantics) or throws a
+   * query-consistency error when the two carry incompatible temporal intents.
    */
   public static TablePin reconcile(TablePin existing, TablePin incoming, String correlationId) {
     if (compatible(existing, incoming)) {

@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query.catalog;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.PinKind;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import java.util.Optional;
@@ -61,6 +62,17 @@ final class SnapshotSelectionResolver implements SnapshotSelectionLookup {
     return ctx.findSnapshotPin(tableId, correlationId)
         .map(p -> OptionalLong.of(p.getSnapshotId()))
         .orElseGet(OptionalLong::empty);
+  }
+
+  @Override
+  public Optional<com.google.protobuf.Timestamp> resolvedSnapshotIngestedAt(ResourceId tableId) {
+    QueryContext ctx = liveContext();
+    if (ctx == null) {
+      return Optional.empty();
+    }
+    return ctx.findResolvedSnapshot(tableId, correlationId)
+        .filter(TablePin::hasIngestedAt)
+        .map(TablePin::getIngestedAt);
   }
 
   @Override

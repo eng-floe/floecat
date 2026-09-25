@@ -88,6 +88,8 @@ public class TransactionGc {
     // the pagination itself. The divergent root simply waits for the next pass.
     try {
       redrivePendingRootResyncs(accountId, pageSize, deadlineMs);
+    } catch (AccountScope.GcPermitRevokedException revoked) {
+      throw revoked;
     } catch (RuntimeException e) {
       LOG.warnf(
           e,
@@ -167,6 +169,9 @@ public class TransactionGc {
                 .setKind(ResourceKind.RK_TABLE)
                 .build();
         if (rootWriter.resyncFromCommittedState(rid)) {
+          // The resync can perform several durable writes. Ownership may have been revoked while
+          // it was running; never acknowledge the marker after that handoff.
+          requirePermit();
           pointerStore.compareAndDelete(p.getKey(), p.getVersion());
         } else {
           LOG.debugf("root resync re-drive still failing for table %s", tableId);

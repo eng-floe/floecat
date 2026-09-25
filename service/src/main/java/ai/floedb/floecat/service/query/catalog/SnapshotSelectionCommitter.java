@@ -42,8 +42,8 @@ import org.jboss.logging.Logger;
  * calls {@link #accumulate} as each chunk's relations are gathered (collect the resolver's
  * selections and fold them into the pending set) and {@link #commit} before the chunk's stats are
  * warmed (write the pending set durably to the QueryContext). Owns the mutable selection state —
- * {@code pendingSelections} plus the per-request snapshot-pin memo — and records the pin-collect /
- * pin-commit timers into the shared request {@link TimingAccumulator}.
+ * {@code pendingSelections} plus the per-request snapshot-selection memo — and records the
+ * selection-collect / selection-commit timers into the shared request {@link TimingAccumulator}.
  *
  * <p>Snapshot selections are accumulated here before they are written to the process-local query
  * context. They are not GC roots; retention-aware durable reachability owns object lifetime.
@@ -61,7 +61,7 @@ final class SnapshotSelectionCommitter {
   // First-touch snapshot per relation id, shared with the resolver so a relation pins to one
   // snapshot for the life of the request.
   private final SnapshotSelectionMemo snapshotSelectionMemo = new SnapshotSelectionMemo();
-  private final Object pendingPinsLock = new Object();
+  private final Object pendingSelectionsLock = new Object();
 
   // Pins gathered but not yet made durable; folded across chunks, drained by commit().
   private RelationPinSet pendingSelections = RelationPinSet.getDefaultInstance();
@@ -80,9 +80,9 @@ final class SnapshotSelectionCommitter {
   }
 
   /**
-   * Resolve pins for the chunk's relations and fold them into the pending set. Records the
-   * pin-collect timing into the shared tally and the {@code pin.*} sub-phase counters into {@code
-   * diagnostics}.
+   * Resolve snapshot selections for the chunk's relations and fold them into the pending set.
+   * Records the selection-collect timing into the shared tally and the selection sub-phase counters
+   * into {@code diagnostics}.
    */
   void accumulate(List<ResolvedRelation> toPin, PhaseDiagnostics diagnostics) {
     accumulate(toPin, diagnostics, () -> false);
@@ -105,14 +105,14 @@ final class SnapshotSelectionCommitter {
         diagnostics.nanos("snapshot.accumulate", System.nanoTime() - accumulateStartNs);
       }
       if (!accumulated) {
-        throw new CancellationException("query pin accumulation cancelled");
+        throw new CancellationException("snapshot selection accumulation cancelled");
       }
     } finally {
       timings.addPinCollectNanos(System.nanoTime() - pinStartNs);
     }
   }
 
-  /** Make the accumulated pins durable on the QueryContext. Records the pin-commit timing. */
+  /** Make the accumulated selections durable on the QueryContext. */
   void commit() {
     commit(() -> false);
   }
@@ -132,14 +132,14 @@ final class SnapshotSelectionCommitter {
 
   /** Pending (not-yet-committed) pin count, for the driver's per-chunk debug log. */
   int pendingSelectionCount() {
-    synchronized (pendingPinsLock) {
+    synchronized (pendingSelectionsLock) {
       return pendingSelections.getPinsCount();
     }
   }
 
   /** Detach selections that cancellation must discard without blocking on a store operation. */
   RelationPinSet detachPendingSelections() {
-    synchronized (pendingPinsLock) {
+    synchronized (pendingSelectionsLock) {
       RelationPinSet detached = pendingSelections;
       pendingSelections = RelationPinSet.getDefaultInstance();
       return detached;
@@ -216,7 +216,7 @@ final class SnapshotSelectionCommitter {
     }
     RelationPinSet accumulatedPins = RelationPinSet.getDefaultInstance();
     boolean cancelledBeforeMerge;
-    synchronized (pendingPinsLock) {
+    synchronized (pendingSelectionsLock) {
       cancelledBeforeMerge = cancelled.getAsBoolean();
       if (cancelledBeforeMerge) {
         accumulatedPins = RelationPinSet.getDefaultInstance();
@@ -240,7 +240,7 @@ final class SnapshotSelectionCommitter {
   private void commitChunkPins(BooleanSupplier cancelled) {
     RelationPinSet toCommit;
     boolean cancelledBeforeCommit;
-    synchronized (pendingPinsLock) {
+    synchronized (pendingSelectionsLock) {
       cancelledBeforeCommit = cancelled.getAsBoolean();
       if (cancelledBeforeCommit) {
         toCommit = pendingSelections;
@@ -257,7 +257,7 @@ final class SnapshotSelectionCommitter {
     }
     if (LOG.isDebugEnabled()) {
       LOG.debugf(
-          "Committing chunk pins query_id=%s pin_count=%d",
+          "Committing chunk snapshot selections query_id=%s selection_count=%d",
           ctx.getQueryId(), toCommit.getPinsCount());
     }
     Optional<QueryContext> updated;
