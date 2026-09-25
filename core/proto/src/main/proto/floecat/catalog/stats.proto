@@ -213,6 +213,8 @@ message TargetStatsRecord {
   StatsTarget target = 3;
   // Canonical metadata envelope for all target kinds.
   StatsMetadata metadata = 4;
+  // Identity map used when assigning any column IDs in this record.
+  string column_identity_fingerprint = 5;
   // value holds the statistics payload for this record.
   // Expression targets (StatsTarget.expression) store their statistics as scalar values.
   // There is no dedicated expression value payload type.
