@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.reconciler.impl;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.gc.ReconcileJobGcScheduler;
 import io.quarkus.scheduler.Scheduled;
@@ -80,6 +81,9 @@ public class SnapshotFinalizePublicationScheduler {
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = ReconcileJobGcScheduler.DisabledOrStopping.class)
   void tick() {
+    if (!ReconcileJobQueue.isEnabled()) {
+      return;
+    }
     if (inFlight.size() >= maxParallelism) {
       return;
     }

@@ -28,6 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask;
@@ -39,8 +40,30 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 class InMemoryReconcileJobStoreTest {
+
+  @Test
+  @ResourceLock(ReconcileJobQueue.ENABLED_PROPERTY)
+  void enqueueRejectsWorkWhenJobQueueIsDisabled() {
+    String key = ReconcileJobQueue.ENABLED_PROPERTY;
+    String previous = System.getProperty(key);
+    try {
+      System.setProperty(key, "false");
+
+      var store = new InMemoryReconcileJobStore();
+
+      assertThrows(
+          ReconcileJobQueue.DisabledException.class,
+          () ->
+              store.enqueue(
+                  "acct", "conn", false, CaptureMode.METADATA_AND_CAPTURE, ReconcileScope.empty()));
+      assertEquals(0L, store.queueStats().queued);
+    } finally {
+      restoreProperty(key, previous);
+    }
+  }
 
   @Test
   void enqueueDedupesWhileJobIsActive() {

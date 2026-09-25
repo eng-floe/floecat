@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.telemetry;
 
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
@@ -72,6 +73,13 @@ public class ReconcileQueueMetrics {
 
   @Scheduled(every = "{floecat.metrics.reconcile.refresh:15s}")
   void refresh() {
+    if (!ReconcileJobQueue.isEnabled()) {
+      queued.set(0L);
+      running.set(0L);
+      cancelling.set(0L);
+      oldestAgeMs.set(0L);
+      return;
+    }
     try {
       var stats = jobs.queueStats();
       queued.set(stats.queued);

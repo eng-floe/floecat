@@ -22,6 +22,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScopeCanonicalizer;
@@ -194,6 +195,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       ReconcileExecutionPolicy executionPolicy,
       String parentJobId,
       String pinnedExecutorId) {
+    ReconcileJobQueue.requireEnabled();
     ReconcileJobKind effectiveJobKind = jobKind == null ? ReconcileJobKind.PLAN_CONNECTOR : jobKind;
     ReconcileTableTask effectiveTableTask =
         tableTask == null ? ReconcileTableTask.empty() : tableTask;
@@ -313,6 +315,7 @@ public class InMemoryReconcileJobStore implements ReconcileJobStore {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
+    ReconcileJobQueue.requireEnabled();
     bulkEnqueue(specs);
     return applyLeaseOutcome(
         jobId,

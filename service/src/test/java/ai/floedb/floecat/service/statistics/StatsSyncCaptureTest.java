@@ -29,11 +29,13 @@ import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
 import ai.floedb.floecat.reconciler.impl.ReconcilerService.CaptureMode;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
+import ai.floedb.floecat.service.reconciler.ReconcileJobQueueTestScope;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.stats.spi.StatsSyncOutcome;
 import java.time.Duration;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.mockito.Mockito;
 
 class StatsSyncCaptureTest {
@@ -160,6 +162,20 @@ class StatsSyncCaptureTest {
 
     assertThat(outcome).isEqualTo(StatsSyncOutcome.FAILED);
     verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+  }
+
+  @Test
+  @ResourceLock(ReconcileJobQueueTestScope.LOCK_NAME)
+  void returnsFailedWithoutEnqueueWhenReconcileQueueIsDisabled() {
+    try (var ignored = ReconcileJobQueueTestScope.disabled()) {
+      ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+
+      StatsSyncOutcome outcome =
+          capture(jobStore).capture("acct", "conn-1", SCOPE, Duration.ofSeconds(5));
+
+      assertThat(outcome).isEqualTo(StatsSyncOutcome.FAILED);
+      verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+    }
   }
 
   private static StatsSyncCapture capture(ReconcileJobStore jobStore) {

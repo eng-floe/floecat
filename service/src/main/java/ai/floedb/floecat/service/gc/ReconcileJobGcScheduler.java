@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
@@ -131,7 +132,7 @@ public class ReconcileJobGcScheduler {
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = DisabledOrStopping.class)
   void tick() {
-    if (stopping) {
+    if (stopping || !ReconcileJobQueue.isEnabled()) {
       return;
     }
 

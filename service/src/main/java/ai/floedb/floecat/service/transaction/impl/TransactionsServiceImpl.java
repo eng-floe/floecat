@@ -40,6 +40,7 @@ import ai.floedb.floecat.reconciler.impl.ReconcilerService;
 import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
@@ -1218,7 +1219,11 @@ public class TransactionsServiceImpl extends BaseServiceImpl implements Transact
 
   private void schedulePostCommitCaptureBootstrap(
       String accountId, String txId, List<TransactionIntent> intents) {
-    if (accountId == null || accountId.isBlank() || txId == null || txId.isBlank()) {
+    if (!ReconcileJobQueue.isEnabled()
+        || accountId == null
+        || accountId.isBlank()
+        || txId == null
+        || txId.isBlank()) {
       return;
     }
     if (intents == null || intents.isEmpty()) {

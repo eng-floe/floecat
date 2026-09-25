@@ -28,6 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupResultDescriptor;
 import ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotContentState;
@@ -691,6 +692,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
 
   @Override
   public BulkEnqueueResult bulkEnqueue(List<BulkEnqueueSpec> specs) {
+    ReconcileJobQueue.requireEnabled();
     List<BulkEnqueueSpec> effectiveSpecs = specs == null ? List.of() : specs;
     var admittedSpecs = new ArrayList<BulkEnqueueSpec>(effectiveSpecs.size());
     var rejectedItems = new ArrayList<BulkEnqueueItemResult>();
@@ -1131,6 +1133,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       long errors,
       long snapshotsProcessed,
       long statsProcessed) {
+    ReconcileJobQueue.requireEnabled();
     List<BulkEnqueueSpec> effectiveSpecs = specs == null ? List.of() : specs;
     if (effectiveSpecs.isEmpty()) {
       return applyLeaseOutcome(

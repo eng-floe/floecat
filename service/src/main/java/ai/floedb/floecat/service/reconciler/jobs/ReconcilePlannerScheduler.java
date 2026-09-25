@@ -26,6 +26,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionClass;
 import ai.floedb.floecat.reconciler.jobs.ReconcileExecutionPolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobKind;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
@@ -78,6 +79,9 @@ public class ReconcilePlannerScheduler {
       concurrentExecution = Scheduled.ConcurrentExecution.SKIP,
       skipExecutionIf = ReconcileJobGcScheduler.DisabledOrStopping.class)
   void tick() {
+    if (!ReconcileJobQueue.isEnabled()) {
+      return;
+    }
     long startedNanos = System.nanoTime();
     if (!running.compareAndSet(false, true)) {
       return;

@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobQueue;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -271,6 +272,9 @@ public abstract class BaseServiceImpl {
           ACCOUNT_DELETION_IN_PROGRESS,
           Map.of("account_id", deleting.accountId()),
           deleting);
+    }
+    if (t instanceof ReconcileJobQueue.DisabledException) {
+      return GrpcErrors.preconditionFailed(corrId, null, null, t);
     }
     if (t instanceof BaseResourceRepository.NameConflictException
         || t instanceof StorageConflictException) {
