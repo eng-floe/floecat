@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.gc;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -28,6 +29,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.account.AccountScope;
+import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.telemetry.TestObservability;
 import java.util.ArrayList;
@@ -46,6 +48,7 @@ class PointerGcSchedulerTest {
     PointerGcScheduler scheduler = new PointerGcScheduler();
     scheduler.accounts = () -> accounts;
     scheduler.pointerGc = () -> gc;
+    scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.assignment = assignment;
     scheduler.observability = observability;
     scheduler.initMeters();
@@ -70,6 +73,7 @@ class PointerGcSchedulerTest {
     PointerGcScheduler scheduler = new PointerGcScheduler();
     scheduler.accounts = () -> accounts;
     scheduler.pointerGc = () -> gc;
+    scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.assignment = AccountAssignment.forTesting();
     scheduler.observability = observability;
     scheduler.initMeters();
@@ -90,6 +94,13 @@ class PointerGcSchedulerTest {
             ResourceId.newBuilder().setId(accountId).setKind(ResourceKind.RK_ACCOUNT).build())
         .setDisplayName(accountId)
         .build();
+  }
+
+  private static CatalogIntegrationCredentialCleanup credentialCleanup() {
+    CatalogIntegrationCredentialCleanup cleanup = mock(CatalogIntegrationCredentialCleanup.class);
+    when(cleanup.drain(anyLong(), anyInt()))
+        .thenReturn(new CatalogIntegrationCredentialCleanup.Result(0, 0));
+    return cleanup;
   }
 
   private static final class RecordingPointerGc extends PointerGc {

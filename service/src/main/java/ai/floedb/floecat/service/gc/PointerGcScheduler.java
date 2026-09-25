@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.service.account.AccountScope;
+import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
@@ -46,6 +47,7 @@ public class PointerGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<PointerGc> pointerGc;
+  @Inject Provider<CatalogIntegrationCredentialCleanup> credentialCleanup;
   @Inject AccountScope assignment;
 
   @Inject Observability observability;
@@ -89,9 +91,11 @@ public class PointerGcScheduler {
 
     final AccountRepository accountRepo;
     final PointerGc gc;
+    final CatalogIntegrationCredentialCleanup credentials;
     try {
       accountRepo = accounts.get();
       gc = pointerGc.get();
+      credentials = credentialCleanup.get();
     } catch (Throwable ignored) {
       return;
     }
@@ -109,6 +113,12 @@ public class PointerGcScheduler {
 
     long tickStart = System.nanoTime();
     try {
+      var credentialResult = credentials.drain(deadline, accountsPageSize);
+      gcMetrics.recordCollection(
+          credentialResult.scanned(), Tag.of(TagKey.RESULT, "credential-scanned"));
+      gcMetrics.recordCollection(
+          credentialResult.deleted(), Tag.of(TagKey.RESULT, "credential-deleted"));
+
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
       Collections.shuffle(allAccounts);
 
