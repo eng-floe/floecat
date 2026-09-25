@@ -45,6 +45,7 @@ import ai.floedb.floecat.service.query.impl.ScanSession.DeleteFileMetadata;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
+import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver.ResolvedTableProperties;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
 import ai.floedb.floecat.telemetry.StoreOperationSummary;
@@ -466,8 +467,10 @@ public class ScanBundleService {
     }
 
     String metadataLocation = SnapshotRepository.metadataLocation(snapshot);
-    Map<String, String> tableProperties =
-        fileIoPropertiesResolver.applyToTableProperties(table, null, table.getPropertiesMap());
+    ResolvedTableProperties resolvedTableProperties =
+        fileIoPropertiesResolver.applyToTablePropertiesWithStorage(
+            table, null, table.getPropertiesMap());
+    Map<String, String> tableProperties = resolvedTableProperties.properties();
     if (deltaTable
         && rawSchemaJson != null
         && !rawSchemaJson.isBlank()
@@ -483,6 +486,9 @@ public class ScanBundleService {
     }
     if (metadataLocation != null && !metadataLocation.isBlank()) {
       builder.setMetadataLocation(metadataLocation);
+    }
+    if (resolvedTableProperties.response() != null) {
+      builder.setResolvedStorage(resolvedTableProperties.response());
     }
 
     return builder.build();
