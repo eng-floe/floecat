@@ -18,14 +18,10 @@ package ai.floedb.floecat.service.query.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
-import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.ScanHandle;
-import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.repo.impl.StatsRepository;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
@@ -58,9 +54,6 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 @ApplicationScoped
 public class QueryContextStoreImpl implements QueryContextStore {
 
-  @Inject TableRootRepository tableRoots;
-  @Inject RootRepairRequests repairs;
-  @Inject StatsRepository statsRepository;
   @Inject TableBlobReachabilityGuard reachabilityGuard;
 
   @ConfigProperty(name = "floecat.query.default-ttl-ms", defaultValue = "60000")
@@ -295,15 +288,44 @@ public class QueryContextStoreImpl implements QueryContextStore {
     reachabilityGuard.publishing(
         tableId,
         () -> {
-          registerResolvingPinBlobsGuarded(queryId, tableId, clean);
+          validatePinScope(tableId, clean);
+          registerResolvingPinBlobsGuarded(queryId, clean);
           return null;
         });
   }
 
-  private void registerResolvingPinBlobsGuarded(
-      String queryId, ResourceId tableId, Set<String> clean) {
-    requirePinnedRootLive(tableId, clean);
-    requirePinnedGenerationLive(tableId, clean);
+  /** Validate URI ownership without probing immutable storage. The resolver creates these URIs. */
+  private void validatePinScope(ResourceId tableId, Set<String> roots) {
+    if (tableId == null) {
+      return;
+    }
+    String rootPrefix = Keys.tableRootBlobPrefix(tableId.getAccountId(), tableId.getId());
+    for (String uri : roots) {
+      if (uri.startsWith("/accounts/")
+          && uri.contains(Keys.SEG_TABLE_ROOT)
+          && !uri.startsWith(rootPrefix)) {
+        throw new BaseResourceRepository.CorruptionException(
+            "pinned table root belongs to a different table: " + uri);
+      }
+      Keys.GenerationKey generation = Keys.generationFromManifestBlobUri(uri);
+      if (generation != null
+          && !uri.equals(
+              Keys.snapshotTargetStatsManifestBlobUri(
+                  tableId.getAccountId(),
+                  tableId.getId(),
+                  generation.snapshotId(),
+                  generation.generationId()))) {
+        throw new BaseResourceRepository.CorruptionException(
+            "frozen stats generation belongs to a different table: " + uri);
+      }
+    }
+  }
+
+  private void registerResolvingPinBlobsGuarded(String queryId, Set<String> clean) {
+    // Registration is the only operation needed to close the resolve-to-commit window. CAS GC is
+    // account-scoped and cannot collect this account without its ownership permit; the table guard
+    // serializes this publication with the collector's delete proof. Immutable content is therefore
+    // read through the normal cache path, and a missing blob is reported by the read that needs it.
     long now = clock.millis();
     // Expiry pruning normally happens on the GC read path (referencedPinBlobUris), which the blob
     // GC calls regularly — not per-pin here. But deployments can run with CAS blob GC disabled
@@ -322,75 +344,6 @@ public class QueryContextStoreImpl implements QueryContextStore {
           added.uriCounts().forEach((uri, count) -> merged.merge(uri, count, Integer::sum));
           return new ResolvingPinBlobs(Map.copyOf(merged), added.expiresAtMs());
         });
-  }
-
-  private void requirePinnedRootLive(ResourceId tableId, Set<String> roots) {
-    if (tableRoots == null || tableId == null) {
-      return;
-    }
-    String rootPrefix = Keys.tableRootBlobPrefix(tableId.getAccountId(), tableId.getId());
-    String manifestPrefix =
-        Keys.snapshotManifestBlobPrefix(tableId.getAccountId(), tableId.getId());
-    for (String uri : roots) {
-      if (!uri.startsWith(rootPrefix)) {
-        if (uri.startsWith("/accounts/") && uri.contains(Keys.SEG_TABLE_ROOT)) {
-          throw new BaseResourceRepository.CorruptionException(
-              "pinned table root belongs to a different table: " + uri);
-        }
-        continue;
-      }
-      if (uri.startsWith(manifestPrefix)) {
-        continue;
-      }
-      // LIVE, unlike the pinned blob reads on the query path. This is the GC handoff guard: it
-      // asks whether the pinned root is still PRESENT before registering it as a resolving root,
-      // and a cache hit cannot answer that -- the bytes are immutable, but their presence in the
-      // store is exactly what a sweep changes. Emptiness here is the verdict, not a miss.
-      TableRoot root =
-          tableRoots.getByBlobUriLive(uri).orElseThrow(() -> pinnedRootMissing(tableId, uri));
-      if (!root.hasTableId()
-          || !root.getTableId().getAccountId().equals(tableId.getAccountId())
-          || !root.getTableId().getId().equals(tableId.getId())) {
-        throw new BaseResourceRepository.CorruptionException(
-            "pinned table root belongs to a different table: " + uri);
-      }
-      if (root.hasSnapshotManifestRef()) {
-        String currentRootUri = tableRoots.metaForSafeConsistent(tableId).getBlobUri();
-        if (uri.equals(currentRootUri)) {
-          // The common pin path names the current root. Its existing tail remains protected by
-          // that live pointer, while this guard protects the head/pin handoff from GC. Avoid an
-          // O(total snapshot history) live traversal on every query.
-          tableRoots.requireManifestHeadLive(tableId, root.getSnapshotManifestRef());
-        } else {
-          // A root superseded before registration may already have become collectible, so prove
-          // the complete immutable chain before making it live again as a query root.
-          tableRoots.requireManifestChainLive(tableId, root.getSnapshotManifestRef());
-        }
-      }
-    }
-  }
-
-  /**
-   * The pinned root is the one leg {@code requirePinnedTableBlob} and {@code
-   * requirePinnedSnapshotBlob} do not cover: without this report, a table's committed root can name
-   * data no read can load and nothing ever re-derives it. Fire-and-forget before throwing, like
-   * every other raiser of a catalog-integrity error.
-   */
-  private BaseResourceRepository.CorruptionException pinnedRootMissing(
-      ResourceId tableId, String uri) {
-    repairs.request(tableId);
-    return new BaseResourceRepository.CorruptionException("pinned table root is missing: " + uri);
-  }
-
-  private void requirePinnedGenerationLive(ResourceId tableId, Set<String> roots) {
-    if (statsRepository == null || tableId == null) {
-      return;
-    }
-    for (String uri : roots) {
-      if (Keys.generationFromManifestBlobUri(uri) != null) {
-        statsRepository.requirePublishedGenerationLive(tableId, uri);
-      }
-    }
   }
 
   @Override

@@ -133,7 +133,7 @@ public class SnapshotHelper {
     // Steady state is one pointer read + one blob read: the root pointer names the blob, and the
     // blob at that URI is immutable. Rootless tables are unsupported and fail through the normal
     // per-pin-kind NOT_FOUND handling below.
-    MutationMeta rootMeta = roots.metaForSafe(tableId);
+    MutationMeta rootMeta = roots.pointerMetaForSafe(tableId);
     TableRoot root = loadRoot(rootMeta);
     if (root == null && rootMeta != null && !rootMeta.getBlobUri().isEmpty()) {
       // The root was superseded and its blob swept between the pointer read and the blob read —
@@ -141,7 +141,7 @@ public class SnapshotHelper {
       // The retry reads past the cache, which would otherwise hand back the same dead URI.
       // Still null after the retry means the re-read pointer is also unreadable (corruption, or a
       // pathological second race): fall through to the per-pin-kind not-found handling below.
-      rootMeta = roots.metaForSafeConsistent(tableId);
+      rootMeta = roots.pointerMetaForSafeConsistent(tableId);
       root = loadRoot(rootMeta);
       if (root == null && rootMeta != null && !rootMeta.getBlobUri().isEmpty()) {
         // The re-read pointer still names an unreadable blob (a vanished pointer would be a
