@@ -39,6 +39,7 @@ import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.repo.util.RepositoryReads;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.telemetry.AggregatingPhaseDiagnostics;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import com.google.protobuf.Timestamp;
@@ -62,6 +63,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
@@ -120,24 +122,46 @@ public class QueryInputResolver {
   // QueryContextStore.registerResolvingPinBlobs). Null in unit tests that construct the resolver
   // without a store — registration is simply skipped then.
   private final QueryContextStore queryStore;
+  private final TableBlobReachabilityGuard reachabilityGuard;
 
   @Inject
   public QueryInputResolver(
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
-      RepositoryReads.ReadPolicy pinResolutionReads) {
-    this(metadataGraph, queryStore, pinResolutionReads, configuredMaxParallelInputResolutions());
+      RepositoryReads.ReadPolicy pinResolutionReads,
+      TableBlobReachabilityGuard reachabilityGuard) {
+    this(
+        metadataGraph,
+        queryStore,
+        pinResolutionReads,
+        reachabilityGuard,
+        configuredMaxParallelInputResolutions());
   }
 
   private QueryInputResolver(
       CatalogGraphView metadataGraph,
       QueryContextStore queryStore,
       RepositoryReads.ReadPolicy pinResolutionReads,
+      TableBlobReachabilityGuard reachabilityGuard,
       int maxParallelInputResolutions) {
     this.metadataGraph = metadataGraph;
     this.queryStore = queryStore;
     this.pinResolutionReads = pinResolutionReads;
+    this.reachabilityGuard = reachabilityGuard;
     this.maxParallelInputResolutions = maxParallelInputResolutions;
+  }
+
+  /** Compatibility constructor for callers that provide a custom metadata-read policy. */
+  public QueryInputResolver(
+      CatalogGraphView metadataGraph,
+      QueryContextStore queryStore,
+      RepositoryReads.ReadPolicy pinResolutionReads) {
+    this(
+        metadataGraph,
+        queryStore,
+        pinResolutionReads,
+        new TableBlobReachabilityGuard(),
+        configuredMaxParallelInputResolutions());
   }
 
   /** Compatibility constructor for direct callers that own their metadata execution policy. */
@@ -146,6 +170,7 @@ public class QueryInputResolver {
         metadataGraph,
         queryStore,
         RepositoryReads.directPolicy(),
+        new TableBlobReachabilityGuard(),
         configuredMaxParallelInputResolutions());
   }
 
@@ -638,11 +663,14 @@ public class QueryInputResolver {
           try {
             long snapshotPinStartNs = System.nanoTime();
             pin =
-                pinResolutionReads.read(
+                resolveAndRegister(
+                    state,
+                    rid,
                     () ->
-                        metadataGraph.tablePinFor(
-                            state.correlationId, rid, override, effectiveAsOfDefault));
-            state.resolvingPinRoots.register(pin);
+                        pinResolutionReads.read(
+                            () ->
+                                metadataGraph.tablePinFor(
+                                    state.correlationId, rid, override, effectiveAsOfDefault)));
             state.diagnostics.count("pin.snapshot_calls");
             state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
           } catch (RuntimeException | Error e) {
@@ -664,7 +692,7 @@ public class QueryInputResolver {
         // retries against the replacement entry without using a retired pin.
         synchronized (inflight) {
           if (state.snapshotPinMemo.pins.get(rid) == inflight) {
-            state.resolvingPinRoots.register(pin);
+            registerWhileGuarded(state, rid, pin);
             state.diagnostics.count("pin.current_snapshot_cache_hits");
             return pin;
           }
@@ -691,18 +719,48 @@ public class QueryInputResolver {
       if (reused.isPresent()) {
         state.diagnostics.count("pin.committed_pin_reuse");
         TablePin pin = reused.get();
-        state.resolvingPinRoots.register(pin);
+        registerWhileGuarded(state, rid, pin);
         return pin;
       }
     }
     long snapshotPinStartNs = System.nanoTime();
     TablePin resolved =
-        pinResolutionReads.read(
-            () -> metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault));
-    state.resolvingPinRoots.register(resolved);
+        resolveAndRegister(
+            state,
+            rid,
+            () ->
+                pinResolutionReads.read(
+                    () ->
+                        metadataGraph.tablePinFor(
+                            state.correlationId, rid, override, asOfDefault)));
     state.diagnostics.count("pin.snapshot_calls");
     state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
     return resolved;
+  }
+
+  /**
+   * Resolve and publish a pin while holding the table publication read lock. GC may not obtain its
+   * exclusive proof between the metadata read and the transient-root registration.
+   */
+  private TablePin resolveAndRegister(
+      ResolutionWork state, ResourceId tableId, Supplier<TablePin> resolver) {
+    return reachabilityGuard.publishing(
+        tableId,
+        () -> {
+          TablePin pin = resolver.get();
+          state.resolvingPinRoots.register(pin);
+          return pin;
+        });
+  }
+
+  /** Register a reused single-flight pin under the same publication guard as its owner. */
+  private void registerWhileGuarded(ResolutionWork state, ResourceId tableId, TablePin pin) {
+    reachabilityGuard.publishing(
+        tableId,
+        () -> {
+          state.resolvingPinRoots.register(pin);
+          return null;
+        });
   }
 
   /** Await a single-flight winner without stranding a cancelled waiter on the executor. */

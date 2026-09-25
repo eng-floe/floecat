@@ -99,6 +99,8 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
                           ctx,
                           request.getTablesList(),
                           Set.copyOf(request.getKnownTableBlobVersionsList()))
+                      .onFailure()
+                      .transform(t -> toStatus(t, correlationId))
                       .subscribe()
                       .with(emitter::emit, emitter::fail, emitter::complete);
 

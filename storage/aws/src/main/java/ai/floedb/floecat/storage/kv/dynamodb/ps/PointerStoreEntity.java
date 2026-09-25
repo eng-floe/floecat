@@ -94,7 +94,6 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     if (k.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
       return new KvStore.Key(CREDENTIAL_CLEANUP_PK, k);
     }
-
     if (!k.startsWith("accounts/")) {
       throw new IllegalArgumentException("unexpected key: " + pointerKey);
     }
@@ -133,7 +132,6 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
         || p.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
       return new KvStore.Key(CREDENTIAL_CLEANUP_PK, p);
     }
-
     if (!p.startsWith("accounts/")) {
       throw new IllegalArgumentException("unexpected prefix: " + prefix);
     }

@@ -51,10 +51,12 @@ deletion take the account write side because they need one stable ordered view. 
 application-level in-flight request map or version fence in this path: the partition gate and
 key-lock ownership define the ordering.
 
-Standalone Floecat uses `ALWAYS_OWNED`, because there is no competing owner. A managed deployment
-provides the `PlanningPointerIndex.Ownership` implementation and connects ownership handoff to the
-index: revoke ownership before routing the account away, then drop the old partition; after the
-new owner is granted, start warming it. The index never assumes ownership from a cache hit.
+`AccountAssignment` (`service/.../account`) is the default `PlanningPointerIndex.Ownership`
+implementation. It serves every account until the deployment lifecycle starts process drain;
+once draining, new writes and pin resolutions fail retryably and cache reads fall back to durable
+storage when a permit cannot be acquired. Deployments that need leases, durable fences or a
+coordinator can bind a different `AccountScope`/ownership implementation without changing the
+cache.
 
 `ObjectCache` stores immutable-generation target statistics by `(accountId, tableId, snapshotId,
 generation, target identity)`. A live/newest result has no stable identity and is therefore read

@@ -26,6 +26,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
+import ai.floedb.floecat.service.account.LifecycleDrain;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -77,6 +78,7 @@ import java.util.function.Supplier;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 public abstract class BaseServiceImpl {
+  @Inject LifecycleDrain lifecycleDrain = LifecycleDrain.ALWAYS_SERVING;
   @Inject PrincipalProvider principal;
 
   protected final Clock clock = Clock.systemUTC();
@@ -111,6 +113,10 @@ public abstract class BaseServiceImpl {
    * {@link CancellationException} is discarded after its subscriber has already terminated.
    */
   protected <T> Uni<T> run(Supplier<T> body) {
+    return run(body, true);
+  }
+
+  private <T> Uni<T> run(Supplier<T> body, boolean closeOnTermination) {
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     // Read the resolved call context at method entry — before any executor hop — and carry it by
     // reference into the body. The captured io.grpc.Context alone is unreliable across the hop
@@ -118,31 +124,59 @@ public abstract class BaseServiceImpl {
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrNull();
     Context otelCtx = otelContextForBody(Context.current());
     return Uni.createFrom()
-        .<T>emitter(
-            emitter -> {
+        .deferred(
+            () -> {
+              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
+              return run(body, lifecyclePermit, closeOnTermination, grpcCtx, callCtx, otelCtx);
+            });
+  }
+
+  private <T> Uni<T> run(
+      Supplier<T> body,
+      LifecycleDrain.Permit lifecyclePermit,
+      boolean closeOnTermination,
+      GrpcContextUtil grpcCtx,
+      ResolvedCallContext callCtx,
+      Context otelCtx) {
+    return Uni.createFrom()
+        .deferred(
+            () -> {
               RequestCancellation cancellation = new RequestCancellation(grpcCtx);
-              emitter.onTermination(cancellation::terminate);
-              try {
-                T result =
-                    grpcCtx.call(
-                        () ->
-                            ResolvedCallContexts.callWithOrInherit(
-                                callCtx,
-                                () -> {
-                                  try (var cancellationScope =
-                                          PropagatedContext.bindCancellation(cancellation);
-                                      Scope ignored = otelCtx.makeCurrent()) {
-                                    return body.get();
-                                  }
-                                }));
-                emitter.complete(result);
-              } catch (CancellationException cancelled) {
-                if (!cancellation.subscriptionTerminated()) {
-                  emitter.fail(cancelled);
-                }
-              } catch (Throwable failure) {
-                emitter.fail(failure);
-              }
+              Uni<T> operation =
+                  Uni.createFrom()
+                      .<T>emitter(
+                          emitter -> {
+                            emitter.onTermination(cancellation::terminate);
+                            if (closeOnTermination) {
+                              emitter.onTermination(lifecyclePermit::close);
+                            }
+                            try {
+                              T result =
+                                  grpcCtx.call(
+                                      () ->
+                                          ResolvedCallContexts.callWithOrInherit(
+                                              callCtx,
+                                              () -> {
+                                                try (var cancellationScope =
+                                                        PropagatedContext.bindCancellation(
+                                                            cancellation);
+                                                    Scope ignored = otelCtx.makeCurrent()) {
+                                                  return body.get();
+                                                }
+                                              }));
+                              emitter.complete(result);
+                            } catch (CancellationException cancelled) {
+                              if (!cancellation.subscriptionTerminated()) {
+                                emitter.fail(cancelled);
+                              }
+                            } catch (Throwable failure) {
+                              emitter.fail(failure);
+                            }
+                          });
+              // Mutiny invokes this callback immediately when the subscriber abandons a Uni.
+              // onTermination alone may wait for the emitter body to return, which would leave a
+              // queued metadata read unaware of cancellation and holding up admission.
+              return operation.onCancellation().invoke(cancellation::terminate);
             })
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
@@ -174,19 +208,31 @@ public abstract class BaseServiceImpl {
     return Multi.createFrom()
         .<T>deferred(
             () -> {
+              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
               RequestCancellation cancellation = new RequestCancellation(grpcCtx);
-              Multi<T> source =
-                  grpcCtx.call(
-                      () ->
-                          ResolvedCallContexts.callWithOrInherit(
-                              callCtx,
-                              () -> {
-                                try (Scope ignored = otelCtx.makeCurrent()) {
-                                  return body.apply(callCtx, cancellation);
-                                }
-                              }));
-              return source.onTermination().invoke(cancellation::terminate);
+              try {
+                Multi<T> source =
+                    grpcCtx.call(
+                        () ->
+                            ResolvedCallContexts.callWithOrInherit(
+                                callCtx,
+                                () -> {
+                                  try (Scope ignored = otelCtx.makeCurrent()) {
+                                    return body.apply(callCtx, cancellation);
+                                  }
+                                }));
+                return source
+                    .onTermination()
+                    .invoke(cancellation::terminate)
+                    .onTermination()
+                    .invoke(lifecyclePermit::close);
+              } catch (Throwable failure) {
+                lifecyclePermit.close();
+                throw failure;
+              }
             })
+        .onFailure(t -> t instanceof LifecycleDrain.DrainingException)
+        .transform(t -> toStatus(t, callCtx.effectiveCorrelationId()))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 
@@ -221,29 +267,44 @@ public abstract class BaseServiceImpl {
     Context otelCtx = otelContextForBody(Context.current());
     return Multi.createFrom()
         .<T>emitter(
-            emitter ->
-                grpcCtx.run(
-                    () ->
-                        ResolvedCallContexts.runWithOrInherit(
-                            callCtx,
-                            () -> {
-                              try (Scope ignored = otelCtx.makeCurrent()) {
-                                body.accept(callCtx, emitter);
-                              }
-                            })))
+            emitter -> {
+              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
+              emitter.onTermination(lifecyclePermit::close);
+              grpcCtx.run(
+                  () ->
+                      ResolvedCallContexts.runWithOrInherit(
+                          callCtx,
+                          () -> {
+                            try (Scope ignored = otelCtx.makeCurrent()) {
+                              body.accept(callCtx, emitter);
+                            }
+                          }));
+            })
+        .onFailure(t -> t instanceof LifecycleDrain.DrainingException)
+        .transform(t -> toStatus(t, callCtx.effectiveCorrelationId()))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 
   protected <T> Uni<T> runWithRetry(Supplier<T> body) {
-    return run(body)
-        .onFailure(
-            t ->
-                t instanceof BaseResourceRepository.AbortRetryableException
-                    || t instanceof StorageAbortRetryableException)
-        .retry()
-        .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
-        .withJitter(JITTER)
-        .atMost(RETRIES);
+    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
+    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrNull();
+    Context otelCtx = otelContextForBody(Context.current());
+    return Uni.createFrom()
+        .deferred(
+            () -> {
+              LifecycleDrain.Permit lifecyclePermit = lifecycleDrain.admitRpc();
+              return run(body, lifecyclePermit, false, grpcCtx, callCtx, otelCtx)
+                  .onFailure(
+                      t ->
+                          t instanceof BaseResourceRepository.AbortRetryableException
+                              || t instanceof StorageAbortRetryableException)
+                  .retry()
+                  .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
+                  .withJitter(JITTER)
+                  .atMost(RETRIES)
+                  .onTermination()
+                  .invoke(lifecyclePermit::close);
+            });
   }
 
   protected <T> Uni<T> mapFailures(Uni<T> u, String corrId) {
@@ -257,6 +318,10 @@ public abstract class BaseServiceImpl {
       }
       return GrpcErrors.build(
           sre.getStatus(), errorCodeForStatus(sre.getStatus()), corrId, null, null, t);
+    }
+
+    if (t instanceof LifecycleDrain.DrainingException) {
+      return GrpcErrors.unavailable(corrId, null, Map.of(), t);
     }
 
     if (t instanceof BaseResourceRepository.SystemObjectImmutableException) {

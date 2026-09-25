@@ -31,6 +31,7 @@ import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.SnapshotPin;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.LogHelper;
@@ -76,6 +77,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   @Inject QueryContextStore queryStore;
   @Inject CatalogGraphView graphView;
   @Inject Observability observability;
+  @Inject AccountScope accountScope;
 
   @Override
   public Uni<DescribeInputsResponse> describeInputs(DescribeInputsRequest request) {
@@ -106,18 +108,25 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
 
                     // Resolve inputs → resolved ids + snapshot pins (tables and/or view base
                     // tables)
-                    var rr =
-                        diagnostics.time(
-                            "resolve_inputs",
-                            () ->
-                                inputResolver.resolveInputs(
-                                    ctx.getQueryId(),
-                                    correlationId(),
-                                    request.getInputsList(),
-                                    asOfDefault,
-                                    Optional.of(ctx.getQueryDefaultCatalogId()),
-                                    new QueryInputResolver.SnapshotPinMemo(),
-                                    diagnostics));
+                    var resolutionPermit =
+                        accountScope.admitResolution(ctx.getPrincipal().getAccountId());
+                    QueryInputResolver.ResolutionResult rr;
+                    try {
+                      rr =
+                          diagnostics.time(
+                              "resolve_inputs",
+                              () ->
+                                  inputResolver.resolveInputs(
+                                      ctx.getQueryId(),
+                                      correlationId(),
+                                      request.getInputsList(),
+                                      asOfDefault,
+                                      Optional.of(ctx.getQueryDefaultCatalogId()),
+                                      new QueryInputResolver.SnapshotPinMemo(),
+                                      diagnostics));
+                    } finally {
+                      resolutionPermit.close();
+                    }
                     diagnostics.put("resolved_inputs", rr.resolved().size());
 
                     // Merge this resolution's pins into the live context FIRST, under the store's

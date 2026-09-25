@@ -30,6 +30,8 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
@@ -62,6 +64,7 @@ class CasBlobGcSchedulerTest {
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
+    scheduler.accountScope = AccountAssignment.forTesting();
     StorageUsageMetrics storageUsageMetrics = new StorageUsageMetrics(observability);
     scheduler.storageUsageMetrics = () -> storageUsageMetrics;
     scheduler.initMeters();
@@ -98,6 +101,7 @@ class CasBlobGcSchedulerTest {
     scheduler.accounts = () -> accounts;
     scheduler.casBlobGc = () -> gc;
     scheduler.observability = new TestObservability();
+    scheduler.accountScope = AccountAssignment.forTesting();
     scheduler.storageUsageMetrics = () -> storageUsageMetrics;
     scheduler.initMeters();
 
@@ -110,6 +114,63 @@ class CasBlobGcSchedulerTest {
 
     verify(storageUsageMetrics, never())
         .recordGcEstimate(anyString(), anyInt(), anyLong(), anyInt(), anyInt());
+  }
+
+  @Test
+  void managedTickCollectsAccountsUntilProcessDrain() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a"), account("acct-b"), account("acct-c")));
+    RecordingGc gc = new RecordingGc();
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
+    AccountAssignment assignment = AccountAssignment.forTesting("m");
+    scheduler.accountScope = assignment;
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+    }
+
+    assertEquals(List.of("acct-a", "acct-b", "acct-c"), gc.accountIds);
+    assertEquals(0L, assignment.status("acct-a").activeGc());
+  }
+
+  @Test
+  void revocationMidSweepIsReportedAndTheTickMovesOn() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a"), account("acct-b")));
+    RecordingGc gc = new RecordingGc();
+    gc.revokeAccountId = "acct-a";
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
+    AccountAssignment assignment = AccountAssignment.forTesting("m");
+    scheduler.accountScope = assignment;
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+    }
+
+    assertEquals(2, gc.accountIds.size());
+    assertTrue(gc.accountIds.containsAll(List.of("acct-a", "acct-b")));
+    assertEquals(0L, assignment.status("acct-a").activeGc());
+    assertEquals(0L, assignment.status("acct-b").activeGc());
   }
 
   @Test
@@ -126,6 +187,7 @@ class CasBlobGcSchedulerTest {
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
+    scheduler.accountScope = AccountAssignment.forTesting();
     scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
     scheduler.initMeters();
 
@@ -155,6 +217,7 @@ class CasBlobGcSchedulerTest {
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
+    scheduler.accountScope = AccountAssignment.forTesting();
     scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
     scheduler.initMeters();
 
@@ -170,6 +233,36 @@ class CasBlobGcSchedulerTest {
     }
 
     assertTrue(gc.accountIds.contains("acct-b"));
+    assertEquals(1, gc.abandons);
+  }
+
+  @Test
+  void refusedRetainedContinuationIsAbandonedWithoutRetryingTheSameAccount() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.getById(any()))
+        .thenAnswer(
+            invocation -> Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
+    NeverCompletingContinuationGc gc = new NeverCompletingContinuationGc();
+    gc.continuingAccount = "acct-a";
+    AccountScope scope = mock(AccountScope.class);
+    when(scope.tryAcquireGc("acct-a")).thenReturn(Optional.empty());
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts = () -> accounts;
+    scheduler.casBlobGc = () -> gc;
+    scheduler.accountScope = scope;
+    scheduler.observability = new TestObservability();
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(scheduler.observability);
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+    }
+
+    verify(scope).tryAcquireGc("acct-a");
+    assertEquals(0, gc.accountIds.size());
     assertEquals(1, gc.abandons);
   }
 
@@ -193,6 +286,7 @@ class CasBlobGcSchedulerTest {
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
+    scheduler.accountScope = AccountAssignment.forTesting();
     scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
     scheduler.initMeters();
 
@@ -223,12 +317,17 @@ class CasBlobGcSchedulerTest {
     private final List<String> accountIds = new ArrayList<>();
     private String failAccountId;
     private String poisonAccountId;
+    private String revokeAccountId;
 
     @Override
-    public Result runForAccount(String accountId, long deadlineMs) {
+    public synchronized Result runForAccount(
+        String accountId, long deadlineMs, AccountScope.GcPermit permit) {
       accountIds.add(accountId);
       if (accountId.equals(failAccountId)) {
         throw new RuntimeException("simulated storage fault");
+      }
+      if (accountId.equals(revokeAccountId)) {
+        throw new AccountScope.GcPermitRevokedException(accountId);
       }
       if (accountId.equals(poisonAccountId)) {
         return new Result(99, 999L, 1, 2, 0, 0, 0, 0, 0, true, false, false);
@@ -243,7 +342,8 @@ class CasBlobGcSchedulerTest {
     private int accountARuns;
 
     @Override
-    public Result runForAccount(String accountId, long deadlineMs) {
+    public synchronized Result runForAccount(
+        String accountId, long deadlineMs, AccountScope.GcPermit permit) {
       accountIds.add(accountId);
       if ("acct-a".equals(accountId)) {
         accountARuns++;
@@ -265,7 +365,8 @@ class CasBlobGcSchedulerTest {
     private int abandons;
 
     @Override
-    public Result runForAccount(String accountId, long deadlineMs) {
+    public synchronized Result runForAccount(
+        String accountId, long deadlineMs, AccountScope.GcPermit permit) {
       accountIds.add(accountId);
       continuingAccount = accountId;
       return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, false, false, true);
