@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.*;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.*;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.scanner.utils.ScannerTestGraphView;
 import java.util.List;
@@ -134,7 +135,7 @@ class SystemObjectScanContextTest {
     CatalogGraphView view =
         new ScannerTestGraphView() {
           @Override
-          public Optional<GraphNode> resolve(ResourceId id) {
+          public Optional<GraphNode> resolve(ResourceId id, CatalogContext context) {
             throw ex;
           }
         };

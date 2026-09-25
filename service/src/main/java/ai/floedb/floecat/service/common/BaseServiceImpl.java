@@ -26,6 +26,9 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.NamespacePath;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.context.impl.ResolvedCallContexts;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -78,8 +81,16 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 public abstract class BaseServiceImpl {
   @Inject PrincipalProvider principal;
+  @Inject protected EngineContextProvider engineContextProvider;
 
   protected final Clock clock = Clock.systemUTC();
+
+  /** Captures the explicit catalog selection at the external service boundary. */
+  protected CatalogContext catalogContext() {
+    return engineContextProvider == null
+        ? CatalogContext.forEngine(EngineContext.empty())
+        : engineContextProvider.catalogContext();
+  }
 
   protected static final Duration BACKOFF_MIN = FenceRetry.BACKOFF_MIN;
   protected static final Duration BACKOFF_MAX = FenceRetry.BACKOFF_MAX;

@@ -21,7 +21,7 @@ import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
-import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.validation.Severity;
 import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
@@ -443,7 +443,7 @@ public final class SystemObjectsValidatorCli {
             + " [--json]\n"
             + "\n"
             + "Notes:\n"
-            + "  --engine loads the EngineSystemCatalogExtension via ServiceLoader.\n"
+            + "  --engine loads the EngineCatalogProvider via ServiceLoader.\n"
             + "  The extension implementation must be on the classpath.");
   }
 
@@ -452,9 +452,9 @@ public final class SystemObjectsValidatorCli {
     if (normalized.isBlank()) {
       throw new IOException("Engine kind is blank");
     }
-    EngineSystemCatalogExtension ext = findEngineExtension(normalized);
+    EngineCatalogProvider ext = findEngineProvider(normalized);
     if (ext == null) {
-      throw new IOException("No EngineSystemCatalogExtension found for engine_kind=" + normalized);
+      throw new IOException("No EngineCatalogProvider found for engine_kind=" + normalized);
     }
     try {
       return ext.loadSystemCatalog();
@@ -469,7 +469,7 @@ public final class SystemObjectsValidatorCli {
     if (normalized.isBlank()) {
       return List.of();
     }
-    EngineSystemCatalogExtension ext = findEngineExtension(normalized);
+    EngineCatalogProvider ext = findEngineProvider(normalized);
     if (ext == null) {
       return List.of(
           new ValidationIssue(
@@ -482,9 +482,8 @@ public final class SystemObjectsValidatorCli {
     return ext.validate(catalog);
   }
 
-  private static EngineSystemCatalogExtension findEngineExtension(String normalizedEngineKind) {
-    for (EngineSystemCatalogExtension ext :
-        ServiceLoader.load(EngineSystemCatalogExtension.class)) {
+  private static EngineCatalogProvider findEngineProvider(String normalizedEngineKind) {
+    for (EngineCatalogProvider ext : ServiceLoader.load(EngineCatalogProvider.class)) {
       String extKind = EngineIdentityNormalizer.normalizeEngineKind(ext.engineKind());
       if (normalizedEngineKind.equals(extKind)) {
         return ext;

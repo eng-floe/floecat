@@ -291,7 +291,8 @@ class TablesScannerTest {
 
   private static final class NamespaceListingFailsGraphView extends TestRefCatalogGraphView {
     @Override
-    public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
+    public List<NamespaceNode> listNamespaces(
+        ResourceId catalogId, ai.floedb.floecat.scanner.utils.CatalogContext catalogContext) {
       throw new AssertionError("ref scan should not materialize namespaces");
     }
   }

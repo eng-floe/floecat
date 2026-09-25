@@ -29,19 +29,38 @@ public final class NameRefUtil {
    *
    * <p>Catalog is intentionally omitted to remain engine-neutral.
    *
-   * <p>This canonical form lower-cases every segment so it can safely be used as a case-insensitive
-   * key when merging or overriding builtin definitions.
+   * <p>Folds case. This is an identity key: it backs builtin ResourceIds and the signatures that
+   * merge or override builtin definitions, where the two sides are both definitions. To match a
+   * name a caller supplied, use {@link #lookupKey(NameRef)}.
    */
-  public static String canonical(NameRef ref) {
+  public static String identityKey(NameRef ref) {
     if (ref == null) return "";
 
-    String name = ref.getName().trim().toLowerCase();
+    String name = ref.getName().trim().toLowerCase(java.util.Locale.ROOT);
     var path = ref.getPathList();
 
     if (path.isEmpty()) {
       return name;
     }
-    return (String.join(".", path).toLowerCase() + "." + name);
+    return (String.join(".", path).toLowerCase(java.util.Locale.ROOT) + "." + name);
+  }
+
+  /**
+   * Returns the key a relation or namespace is matched on: path1.path2.name, spelling preserved.
+   *
+   * <p>A user relation is keyed by its exact stored name, and a builtin is keyed the same way, so
+   * one spelling resolves and `orders` and `ORDERS` are different names.
+   */
+  public static String matchKey(NameRef ref) {
+    if (ref == null) return "";
+
+    String name = ref.getName().trim();
+    var path = ref.getPathList();
+
+    if (path.isEmpty()) {
+      return name;
+    }
+    return String.join(".", path) + "." + name;
   }
 
   public static NameRef fromCanonical(String canonical) {
@@ -59,7 +78,7 @@ public final class NameRefUtil {
   /** Returns the canonical namespace part (path only), or empty if none */
   public static String namespaceCanonical(NameRef ref) {
     if (ref == null || ref.getPathCount() == 0) return "";
-    return String.join(".", ref.getPathList()).toLowerCase();
+    return String.join(".", ref.getPathList()).toLowerCase(java.util.Locale.ROOT);
   }
 
   public static String namespaceFromCanonical(String canonical) {
@@ -90,25 +109,6 @@ public final class NameRefUtil {
     }
     b.setName(ref.getPath(ref.getPathCount() - 1));
     return Optional.of(b.build());
-  }
-
-  /**
-   * Matches a NameRef against a schema + object identifier.
-   *
-   * <p>Schema may be nested; we match the last path segment as the schema.
-   */
-  public static boolean matches(NameRef ref, String schema, String object) {
-    if (ref == null || schema == null || object == null) {
-      return false;
-    }
-
-    // canonical(NameRef) = "a.b.c" or "c"
-    String canonical = canonical(ref);
-
-    // expected = schema + "." + object OR object only
-    String expected = schema.isEmpty() ? object : (schema + "." + object);
-
-    return canonical.equalsIgnoreCase(expected);
   }
 
   /**

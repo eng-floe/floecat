@@ -204,14 +204,17 @@ public final class ConstraintScanIndex {
         .computeIfAbsent(
             key,
             ignored ->
-                ctx.graph().resolveTable(RESOLVE_CORRELATION_ID, referencedTable).map(byId::get))
+                ctx.graph()
+                    .resolveTable(RESOLVE_CORRELATION_ID, referencedTable, ctx.catalogContext())
+                    .map(byId::get))
         .orElse(null);
   }
 
   private static String referencedTableCacheKey(NameRef referencedTable) {
-    String catalog = referencedTable.getCatalog().trim().toLowerCase(java.util.Locale.ROOT);
-    String canonical = NameRefUtil.canonical(referencedTable);
-    return catalog + "|" + canonical;
+    // The value cached under this key comes from an exact resolution, so the key preserves case
+    // too. Folding it would let two spellings share one entry and inherit each other's result.
+    String catalog = referencedTable.getCatalog().trim();
+    return catalog + "|" + NameRefUtil.matchKey(referencedTable);
   }
 
   private static String resolveReferencedConstraintName(ConstraintDefinition constraint) {
@@ -287,7 +290,7 @@ public final class ConstraintScanIndex {
 
   private static Map<Long, String> columnsById(SystemObjectScanContext ctx, ResourceId tableId) {
     List<SchemaColumn> columns =
-        SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(tableId));
+        SchemaColumns.withoutSyntheticNodes(ctx.graph().tableSchema(tableId, ctx.catalogContext()));
     if (columns.isEmpty()) {
       return Map.of();
     }

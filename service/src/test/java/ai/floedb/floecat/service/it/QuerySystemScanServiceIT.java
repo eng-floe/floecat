@@ -30,6 +30,7 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.catalog.it.TestCatalogExtension;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
@@ -134,8 +135,9 @@ public class QuerySystemScanServiceIT {
         "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
         "orders table");
 
-    ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
-    var stub = withEngine(systemScan, "pg");
+    ResourceId systemTableId =
+        systemTable(TestCatalogExtension.ENGINE_KIND, "information_schema", "tables");
+    var stub = withEngine(systemScan, TestCatalogExtension.ENGINE_KIND);
     List<ScanSystemTableChunk> chunks =
         collectChunks(
             stub,
@@ -184,9 +186,10 @@ public class QuerySystemScanServiceIT {
         "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
         "bar");
 
-    ResourceId systemTableId = systemTable("trino", "information_schema", "tables");
+    ResourceId systemTableId =
+        systemTable(TestCatalogExtension.ENGINE_KIND, "information_schema", "tables");
 
-    var stub = withEngine(systemScan, "trino");
+    var stub = withEngine(systemScan, TestCatalogExtension.ENGINE_KIND);
     List<ScanSystemTableChunk> chunks =
         collectChunks(
             stub,
@@ -215,7 +218,8 @@ public class QuerySystemScanServiceIT {
         QueryPins.toSnapshotSet(RelationPinSet.parseFrom(preScan.getRelationPins()));
     assertEquals(0, preSnapshots.getPinsCount(), "BeginQuery should start with zero pins");
 
-    ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
+    ResourceId systemTableId =
+        systemTable(TestCatalogExtension.ENGINE_KIND, "information_schema", "tables");
     TableValueStats stats = TableValueStats.newBuilder().setRowCount(1).build();
     statsRepository.putTargetStats(
         TargetStatsRecords.tableRecord(systemTableId, 987L, stats, null));
@@ -223,7 +227,7 @@ public class QuerySystemScanServiceIT {
     var provider = statsFactory.forQuery(preScan, "corr-stats");
     assertTrue(provider.tableStats(systemTableId).isEmpty(), "Unpinned tables should skip stats");
 
-    var stub = withEngine(systemScan, "pg");
+    var stub = withEngine(systemScan, TestCatalogExtension.ENGINE_KIND);
     List<ScanSystemTableChunk> chunks =
         collectChunks(
             stub,
@@ -266,8 +270,8 @@ public class QuerySystemScanServiceIT {
   }
 
   @Test
-  void informationSchemaVisibleForAnyEngine() {
-    String engineKind = "no_engine";
+  void informationSchemaVisibleForSelectedEnvironment() {
+    String engineKind = TestCatalogExtension.ENGINE_KIND;
     var catName = catalogPrefix + engineKind;
 
     var cat = TestSupport.createCatalog(catalog, catName, "");
@@ -293,7 +297,8 @@ public class QuerySystemScanServiceIT {
                         && "information_schema".equals(r.get(1)));
     assertTrue(
         found,
-        "There should be a row with table_catalog = no-engine and schema = 'information_schema'");
+        "There should be a row with the selected engine as table_catalog and schema ="
+            + " 'information_schema'");
   }
 
   @Test
@@ -311,8 +316,9 @@ public class QuerySystemScanServiceIT {
         "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
         "orders table");
 
-    ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
-    var stub = withEngine(systemScan, "pg");
+    ResourceId systemTableId =
+        systemTable(TestCatalogExtension.ENGINE_KIND, "information_schema", "tables");
+    var stub = withEngine(systemScan, TestCatalogExtension.ENGINE_KIND);
     List<ScanSystemTableChunk> chunks =
         collectChunks(
             stub,
@@ -345,8 +351,9 @@ public class QuerySystemScanServiceIT {
         "{\"cols\":[{\"name\":\"id\",\"type\":\"int\"}]}",
         "shipments table");
 
-    ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
-    var stub = withEngine(systemScan, "pg");
+    ResourceId systemTableId =
+        systemTable(TestCatalogExtension.ENGINE_KIND, "information_schema", "tables");
+    var stub = withEngine(systemScan, TestCatalogExtension.ENGINE_KIND);
     List<ScanSystemTableChunk> chunks =
         collectChunks(
             stub,
@@ -429,12 +436,22 @@ public class QuerySystemScanServiceIT {
   private static final Metadata.Key<String> ENGINE_VERSION_HEADER =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
 
+  private static final Metadata.Key<String> ENVIRONMENT_KIND_HEADER =
+      Metadata.Key.of("x-environment-kind", Metadata.ASCII_STRING_MARSHALLER);
+
+  private static final Metadata.Key<String> ENVIRONMENT_VERSION_HEADER =
+      Metadata.Key.of("x-environment-version", Metadata.ASCII_STRING_MARSHALLER);
+
   private QuerySystemScanServiceGrpc.QuerySystemScanServiceBlockingStub withEngine(
       QuerySystemScanServiceGrpc.QuerySystemScanServiceBlockingStub stub, String engineKind) {
 
     Metadata metadata = new Metadata();
     metadata.put(ENGINE_KIND_HEADER, engineKind);
     metadata.put(ENGINE_VERSION_HEADER, "");
+    if (engineKind != null && !engineKind.isBlank()) {
+      metadata.put(ENVIRONMENT_KIND_HEADER, TestCatalogEnvironmentProvider.ENVIRONMENT_KIND);
+      metadata.put(ENVIRONMENT_VERSION_HEADER, "");
+    }
 
     return stub.withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
   }

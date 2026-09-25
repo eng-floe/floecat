@@ -31,6 +31,7 @@ import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.concurrent.Futures;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
@@ -213,10 +214,14 @@ public class QueryInputResolver {
    * ambient thread state.
    */
   public record ResolutionAttempt(
-      SnapshotPinMemo snapshotPinMemo, PhaseDiagnostics diagnostics, BooleanSupplier cancelled) {
+      SnapshotPinMemo snapshotPinMemo,
+      PhaseDiagnostics diagnostics,
+      BooleanSupplier cancelled,
+      CatalogContext catalogContext) {
     public ResolutionAttempt {
       snapshotPinMemo = java.util.Objects.requireNonNull(snapshotPinMemo);
       cancelled = java.util.Objects.requireNonNull(cancelled);
+      catalogContext = java.util.Objects.requireNonNull(catalogContext);
     }
   }
 
@@ -234,7 +239,8 @@ public class QueryInputResolver {
       SnapshotPinMemoOwnership snapshotPinMemoOwnership,
       ResolvingPinRoots resolvingPinRoots,
       PhaseDiagnostics diagnostics,
-      BooleanSupplier cancelled) {
+      BooleanSupplier cancelled,
+      CatalogContext catalogContext) {
 
     ResolutionWork {
       diagnostics = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
@@ -251,7 +257,8 @@ public class QueryInputResolver {
           snapshotPinMemoOwnership,
           resolvingPinRoots,
           taskDiagnostics,
-          cancelled);
+          cancelled,
+          catalogContext);
     }
   }
 
@@ -282,7 +289,14 @@ public class QueryInputResolver {
       Optional<Timestamp> asOfDefault,
       Optional<ResourceId> defaultCatalogId) {
     return resolveInputs(
-        "", correlationId, inputs, asOfDefault, defaultCatalogId, new SnapshotPinMemo(), null);
+        "",
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        new SnapshotPinMemo(),
+        null,
+        CatalogContext.empty());
   }
 
   /**
@@ -310,13 +324,34 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       SnapshotPinMemo snapshotPinMemo,
       PhaseDiagnostics diagnostics) {
+    return resolveInputs(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        snapshotPinMemo,
+        diagnostics,
+        CatalogContext.empty());
+  }
+
+  public ResolutionResult resolveInputs(
+      String queryId,
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      SnapshotPinMemo snapshotPinMemo,
+      PhaseDiagnostics diagnostics,
+      CatalogContext catalogContext) {
     return resolveInputsAttempt(
         queryId,
         correlationId,
         inputs,
         asOfDefault,
         defaultCatalogId,
-        new ResolutionAttempt(snapshotPinMemo, diagnostics, Context.current()::isCancelled));
+        new ResolutionAttempt(
+            snapshotPinMemo, diagnostics, Context.current()::isCancelled, catalogContext));
   }
 
   /**
@@ -335,13 +370,35 @@ public class QueryInputResolver {
       SnapshotPinMemo snapshotPinMemo,
       PhaseDiagnostics diagnostics,
       BooleanSupplier cancelled) {
+    return resolveInputs(
+        queryId,
+        correlationId,
+        inputs,
+        asOfDefault,
+        defaultCatalogId,
+        snapshotPinMemo,
+        diagnostics,
+        cancelled,
+        CatalogContext.empty());
+  }
+
+  public ResolutionResult resolveInputs(
+      String queryId,
+      String correlationId,
+      List<QueryInput> inputs,
+      Optional<Timestamp> asOfDefault,
+      Optional<ResourceId> defaultCatalogId,
+      SnapshotPinMemo snapshotPinMemo,
+      PhaseDiagnostics diagnostics,
+      BooleanSupplier cancelled,
+      CatalogContext catalogContext) {
     return resolveInputsAttempt(
         queryId,
         correlationId,
         inputs,
         asOfDefault,
         defaultCatalogId,
-        new ResolutionAttempt(snapshotPinMemo, diagnostics, cancelled));
+        new ResolutionAttempt(snapshotPinMemo, diagnostics, cancelled, catalogContext));
   }
 
   /**
@@ -363,7 +420,8 @@ public class QueryInputResolver {
         defaultCatalogId,
         attempt.snapshotPinMemo(),
         attempt.diagnostics(),
-        attempt.cancelled());
+        attempt.cancelled(),
+        attempt.catalogContext());
   }
 
   /** Run the base resolution implementation after attempt construction has completed. */
@@ -375,7 +433,8 @@ public class QueryInputResolver {
       Optional<ResourceId> defaultCatalogId,
       SnapshotPinMemo snapshotPinMemo,
       PhaseDiagnostics diagnostics,
-      BooleanSupplier cancelled) {
+      BooleanSupplier cancelled,
+      CatalogContext catalogContext) {
     throwIfCancelled(cancelled);
     PhaseDiagnostics diag = diagnostics == null ? PhaseDiagnostics.NOOP : diagnostics;
 
@@ -391,7 +450,9 @@ public class QueryInputResolver {
         long defaultCatalogStartNs = System.nanoTime();
         try {
           defaultCatalog =
-              metadataGraph.catalog(defaultCatalogId.get()).map(CatalogNode::displayName);
+              metadataGraph
+                  .catalog(defaultCatalogId.get(), catalogContext)
+                  .map(CatalogNode::displayName);
         } finally {
           diag.nanos("pin.default_catalog_resolve", System.nanoTime() - defaultCatalogStartNs);
         }
@@ -409,7 +470,8 @@ public class QueryInputResolver {
                   new SnapshotPinMemoOwnership(snapshotPinMemo.pins),
                   new ResolvingPinRoots(queryStore, queryId),
                   diag,
-                  cancelled));
+                  cancelled,
+                  catalogContext));
 
       try {
         // Batch-resolve all NAME inputs up front so duplicate names are resolved once.
@@ -419,7 +481,9 @@ public class QueryInputResolver {
                 .map(QueryInput::getName)
                 .toList();
         Map<NameRef, Optional<ResourceId>> resolvedNames =
-            nameInputs.isEmpty() ? Map.of() : metadataGraph.resolveNames(correlationId, nameInputs);
+            nameInputs.isEmpty()
+                ? Map.of()
+                : metadataGraph.resolveNames(correlationId, nameInputs, catalogContext);
         throwIfCancelled(cancelled);
 
         // Resolve each input to its id and the table pins it contributes (a table yields its own
@@ -641,7 +705,11 @@ public class QueryInputResolver {
                 pinResolutionReads.read(
                     () ->
                         metadataGraph.tablePinFor(
-                            state.correlationId, rid, override, effectiveAsOfDefault));
+                            state.correlationId,
+                            rid,
+                            override,
+                            effectiveAsOfDefault,
+                            state.catalogContext));
             state.resolvingPinRoots.register(pin);
             state.diagnostics.count("pin.snapshot_calls");
             state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
@@ -698,7 +766,9 @@ public class QueryInputResolver {
     long snapshotPinStartNs = System.nanoTime();
     TablePin resolved =
         pinResolutionReads.read(
-            () -> metadataGraph.tablePinFor(state.correlationId, rid, override, asOfDefault));
+            () ->
+                metadataGraph.tablePinFor(
+                    state.correlationId, rid, override, asOfDefault, state.catalogContext));
     state.resolvingPinRoots.register(resolved);
     state.diagnostics.count("pin.snapshot_calls");
     state.diagnostics.nanos("pin.snapshot_lookup", System.nanoTime() - snapshotPinStartNs);
@@ -811,7 +881,7 @@ public class QueryInputResolver {
     long viewResolveStartNs = System.nanoTime();
     Optional<ViewNode> view =
         metadataGraph
-            .resolve(relationId)
+            .resolve(relationId, state.catalogContext)
             .filter(ViewNode.class::isInstance)
             .map(ViewNode.class::cast);
     state.diagnostics.nanos("pin.view_node_resolve", System.nanoTime() - viewResolveStartNs);
@@ -831,7 +901,7 @@ public class QueryInputResolver {
           }
           long baseNameStartNs = System.nanoTime();
           Map<NameRef, Optional<ResourceId>> baseIds =
-              metadataGraph.resolveNames(state.correlationId, baseRefs);
+              metadataGraph.resolveNames(state.correlationId, baseRefs, state.catalogContext);
           state.diagnostics.nanos(
               "pin.view_base_name_resolve", System.nanoTime() - baseNameStartNs);
           for (NameRef baseRef : baseRefs) {

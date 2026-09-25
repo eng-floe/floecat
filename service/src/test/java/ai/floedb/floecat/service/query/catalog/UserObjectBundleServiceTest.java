@@ -46,6 +46,7 @@ import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
@@ -298,7 +299,8 @@ class UserObjectBundleServiceTest {
     FakeCatalogGraphView nullSchemaGraphView =
         new FakeCatalogGraphView() {
           @Override
-          public List<SchemaColumn> tableSchema(ResourceId tableId) {
+          public List<SchemaColumn> tableSchema(
+              ResourceId tableId, ai.floedb.floecat.scanner.utils.CatalogContext context) {
             return null;
           }
         };
@@ -3010,22 +3012,23 @@ class UserObjectBundleServiceTest {
     }
 
     @Override
-    public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(ResourceId id) {
+    public Optional<ai.floedb.floecat.metagraph.model.CatalogNode> catalog(
+        ResourceId id, CatalogContext context) {
       assertProducerThread();
-      return super.catalog(id);
+      return super.catalog(id, context);
     }
 
     @Override
     public Optional<ResourceId> resolveName(
-        String correlationId, NameRef ref, EngineContext engineContext) {
+        String correlationId, NameRef ref, CatalogContext catalogContext) {
       assertProducerThread();
-      return super.resolveName(correlationId, ref, engineContext);
+      return super.resolveName(correlationId, ref, catalogContext);
     }
 
     @Override
-    public Optional<GraphNode> resolve(ResourceId id) {
+    public Optional<GraphNode> resolve(ResourceId id, CatalogContext context) {
       assertProducerThread();
-      return super.resolve(id);
+      return super.resolve(id, context);
     }
 
     private void assertProducerThread() {

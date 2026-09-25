@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.constraints.impl;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -70,9 +71,9 @@ class TableConstraintsServiceImplRootCommitTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId("tbl")
             .build();
-    when(service.graphView.resolve(tableId))
+    when(service.graphView.resolve(eq(tableId), any()))
         .thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
-    when(service.graphView.catalog(any())).thenReturn(Optional.empty());
+    when(service.graphView.catalog(any(), any())).thenReturn(Optional.empty());
     when(service.snapshots.getById(tableId, 5L))
         .thenReturn(
             Optional.of(Snapshot.newBuilder().setTableId(tableId).setSnapshotId(5L).build()));

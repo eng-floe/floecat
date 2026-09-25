@@ -78,7 +78,8 @@ class SnapshotServiceImplTest {
     var principalContext = mock(PrincipalContext.class);
     when(svc.principal.get()).thenReturn(principalContext);
     when(principalContext.getCorrelationId()).thenReturn("corr");
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.graphView.resolve(eq(tableId), any()))
+        .thenReturn(Optional.of(mock(UserTableNode.class)));
     Snapshot finalized =
         Snapshot.newBuilder()
             .setTableId(tableId)
@@ -121,7 +122,8 @@ class SnapshotServiceImplTest {
             .setId("t1")
             .build();
 
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(mock(NamespaceNode.class)));
+    when(svc.graphView.resolve(eq(tableId), any()))
+        .thenReturn(Optional.of(mock(NamespaceNode.class)));
 
     // Call a method that triggers ensureTableVisible
     var req =
@@ -163,7 +165,8 @@ class SnapshotServiceImplTest {
             .build();
 
     // table is visible
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.graphView.resolve(eq(tableId), any()))
+        .thenReturn(Optional.of(mock(UserTableNode.class)));
 
     var tableRow =
         Table.newBuilder().setResourceId(tableId).setSchemaJson("{\"type\":\"struct\"}").build();
@@ -290,7 +293,8 @@ class SnapshotServiceImplTest {
             .setId("t1")
             .build();
 
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.graphView.resolve(eq(tableId), any()))
+        .thenReturn(Optional.of(mock(UserTableNode.class)));
     when(svc.tableRepo.getById(eq(tableId)))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
     when(svc.tableRepo.metaFor(eq(tableId)))
@@ -341,7 +345,8 @@ class SnapshotServiceImplTest {
             .setId("t1")
             .build();
 
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.graphView.resolve(eq(tableId), any()))
+        .thenReturn(Optional.of(mock(UserTableNode.class)));
 
     var tableRow = Table.newBuilder().setResourceId(tableId).build();
     when(svc.tableRepo.getById(eq(tableId))).thenReturn(Optional.of(tableRow));
@@ -388,7 +393,8 @@ class SnapshotServiceImplTest {
             .setId("t1")
             .build();
 
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.graphView.resolve(eq(tableId), any()))
+        .thenReturn(Optional.of(mock(UserTableNode.class)));
 
     var tableRow = Table.newBuilder().setResourceId(tableId).build();
     when(svc.tableRepo.getById(eq(tableId))).thenReturn(Optional.of(tableRow));
@@ -444,7 +450,8 @@ class SnapshotServiceImplTest {
             .setId("t1")
             .build();
 
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.graphView.resolve(eq(tableId), any()))
+        .thenReturn(Optional.of(mock(UserTableNode.class)));
     when(svc.tableRepo.getById(eq(tableId)))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
 
@@ -535,7 +542,8 @@ class SnapshotServiceImplTest {
             .setId("t1")
             .build();
 
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.graphView.resolve(eq(tableId), any()))
+        .thenReturn(Optional.of(mock(UserTableNode.class)));
     when(svc.tableRepo.getById(eq(tableId)))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
     when(svc.tableRepo.metaFor(eq(tableId)))
@@ -605,7 +613,8 @@ class SnapshotServiceImplTest {
             .setId("t1")
             .build();
 
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.graphView.resolve(eq(tableId), any()))
+        .thenReturn(Optional.of(mock(UserTableNode.class)));
     when(svc.tableRepo.getById(eq(tableId)))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
     when(svc.tableRepo.metaFor(eq(tableId)))
@@ -667,7 +676,8 @@ class SnapshotServiceImplTest {
             .setId("t1")
             .build();
 
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.graphView.resolve(eq(tableId), any()))
+        .thenReturn(Optional.of(mock(UserTableNode.class)));
     when(svc.tableRepo.getById(eq(tableId)))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(tableId).build()));
 
@@ -727,7 +737,8 @@ class SnapshotServiceImplTest {
             .setId("t1")
             .build();
 
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(mock(UserTableNode.class)));
+    when(svc.graphView.resolve(eq(tableId), any()))
+        .thenReturn(Optional.of(mock(UserTableNode.class)));
     var tableRow = Table.newBuilder().setResourceId(tableId).build();
     when(svc.tableRepo.getById(eq(tableId))).thenReturn(Optional.of(tableRow));
 
@@ -825,7 +836,7 @@ class SnapshotServiceImplTest {
     svc.graphView = mock(CatalogGraphView.class);
     svc.currentSnapshotPointerService = mock(CurrentSnapshotPointerService.class);
 
-    when(svc.graphView.resolve(eq(tableId))).thenReturn(Optional.of(node));
+    when(svc.graphView.resolve(eq(tableId), any())).thenReturn(Optional.of(node));
 
     var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 

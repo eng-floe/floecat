@@ -40,6 +40,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import io.grpc.Status;
@@ -66,7 +67,7 @@ class CatalogSurfaceViewsTest {
   void setup() {
     viewRepo = mock(ViewRepository.class);
     graphView = new TestCatalogGraphView();
-    surface = new CatalogSurfaceViews(viewRepo, graphView);
+    surface = new CatalogSurfaceViews(viewRepo, graphView, CatalogContext.empty());
 
     graphView.addNode(
         new NamespaceNode(

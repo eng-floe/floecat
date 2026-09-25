@@ -79,7 +79,8 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   ResourceId resourceId =
                       graphView
-                          .resolveCatalog(correlationId(), request.getRef().getCatalog())
+                          .resolveCatalog(
+                              correlationId(), request.getRef().getCatalog(), catalogContext())
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
@@ -107,7 +108,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, "catalog.read");
 
-                  var catalogNode = graphView.catalog(request.getResourceId());
+                  var catalogNode = graphView.catalog(request.getResourceId(), catalogContext());
                   if (catalogNode.isEmpty()) {
                     return LookupCatalogResponse.newBuilder().build();
                   }
@@ -140,7 +141,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   var namespacePath = String.join(".", NameRefUtil.namespacePath(ref));
                   ResourceId namespaceId =
                       graphView
-                          .resolveNamespace(correlationId(), ref)
+                          .resolveNamespace(correlationId(), ref, catalogContext())
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
@@ -168,7 +169,8 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, "catalog.read");
 
-                  var namespaceName = graphView.namespaceName(request.getResourceId());
+                  var namespaceName =
+                      graphView.namespaceName(request.getResourceId(), catalogContext());
                   if (namespaceName == null || namespaceName.isEmpty()) {
                     return LookupNamespaceResponse.newBuilder().build();
                   }
@@ -199,7 +201,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   ResourceId tableId =
                       graphView
-                          .resolveTable(correlationId(), nameRef)
+                          .resolveTable(correlationId(), nameRef, catalogContext())
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
@@ -233,7 +235,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, List.of("catalog.read", "table.read"));
 
-                  var tableName = graphView.tableName(request.getResourceId());
+                  var tableName = graphView.tableName(request.getResourceId(), catalogContext());
                   if (tableName == null || tableName.isEmpty()) {
                     return LookupTableResponse.newBuilder().build();
                   }
@@ -263,7 +265,9 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   validateTableNameOrThrow(nameRef);
 
                   ResourceId tableId =
-                      graphView.resolveTable(correlationId(), nameRef).orElse(null);
+                      graphView
+                          .resolveTable(correlationId(), nameRef, catalogContext())
+                          .orElse(null);
                   if (tableId == null || tableId.getId().isBlank()) {
                     return LookupTableByRefResponse.newBuilder().build();
                   }
@@ -293,7 +297,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   ResourceId viewId =
                       graphView
-                          .resolveView(correlationId(), nameRef)
+                          .resolveView(correlationId(), nameRef, catalogContext())
                           .orElseThrow(
                               () ->
                                   GrpcErrors.notFound(
@@ -327,7 +331,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
 
                   authz.require(principalContext, List.of("catalog.read", "view.read"));
 
-                  var viewName = graphView.viewName(request.getResourceId());
+                  var viewName = graphView.viewName(request.getResourceId(), catalogContext());
                   if (viewName == null || viewName.isEmpty()) {
                     return LookupViewResponse.newBuilder().build();
                   }
@@ -362,7 +366,11 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   if (request.hasList()) {
                     var result =
                         graphView.batchResolveViews(
-                            correlationId(), request.getList().getNamesList(), limit, token);
+                            correlationId(),
+                            request.getList().getNamesList(),
+                            limit,
+                            token,
+                            catalogContext());
 
                     result
                         .relations()
@@ -384,7 +392,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   if (request.hasPrefix()) {
                     var result =
                         graphView.listViewsByPrefix(
-                            correlationId(), request.getPrefix(), limit, token);
+                            correlationId(), request.getPrefix(), limit, token, catalogContext());
 
                     result
                         .relations()
@@ -432,7 +440,11 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   if (request.hasList()) {
                     var result =
                         graphView.batchResolveTables(
-                            correlationId(), request.getList().getNamesList(), limit, token);
+                            correlationId(),
+                            request.getList().getNamesList(),
+                            limit,
+                            token,
+                            catalogContext());
 
                     result
                         .relations()
@@ -454,7 +466,7 @@ public class DirectoryServiceImpl extends BaseServiceImpl implements DirectorySe
                   if (request.hasPrefix()) {
                     var result =
                         graphView.listTablesByPrefix(
-                            correlationId(), request.getPrefix(), limit, token);
+                            correlationId(), request.getPrefix(), limit, token, catalogContext());
 
                     result
                         .relations()

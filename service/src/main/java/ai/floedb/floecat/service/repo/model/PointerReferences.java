@@ -20,7 +20,7 @@ import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView.RelationRef;
 import java.util.Optional;
 
 public final class PointerReferences {

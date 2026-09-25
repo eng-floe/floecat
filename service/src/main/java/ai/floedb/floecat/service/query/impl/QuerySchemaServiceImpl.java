@@ -117,7 +117,8 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                                     asOfDefault,
                                     Optional.of(ctx.getQueryDefaultCatalogId()),
                                     new QueryInputResolver.SnapshotPinMemo(),
-                                    diagnostics));
+                                    diagnostics,
+                                    catalogContext()));
                     diagnostics.put("resolved_inputs", rr.resolved().size());
 
                     // Merge this resolution's pins into the live context FIRST, under the store's
@@ -296,7 +297,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   private SchemaDescriptor describeView(String correlationId, ResourceId rid) {
     ViewNode viewNode =
         graphView
-            .resolve(rid)
+            .resolve(rid, catalogContext())
             .filter(ViewNode.class::isInstance)
             .map(ViewNode.class::cast)
             .orElseThrow(

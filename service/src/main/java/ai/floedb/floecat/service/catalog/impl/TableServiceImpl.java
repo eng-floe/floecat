@@ -109,11 +109,11 @@ public class TableServiceImpl extends BaseServiceImpl implements TableService {
   private static final Logger LOG = Logger.getLogger(TableService.class);
 
   private CatalogSurfaceTables catalogSurfaceTables() {
-    return new CatalogSurfaceTables(tableRepo, graphView);
+    return new CatalogSurfaceTables(tableRepo, graphView, catalogContext());
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView);
+    return new CatalogSurfaceWritePolicy(graphView, catalogContext());
   }
 
   @Override

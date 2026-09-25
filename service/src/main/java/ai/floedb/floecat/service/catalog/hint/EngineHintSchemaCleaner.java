@@ -23,7 +23,7 @@ import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.hint.HintClearContext;
 import ai.floedb.floecat.systemcatalog.hint.HintClearDecision;
 import ai.floedb.floecat.systemcatalog.provider.ServiceLoaderSystemCatalogProvider;
-import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import com.google.protobuf.FieldMask;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -126,8 +126,8 @@ public class EngineHintSchemaCleaner {
           EngineContext.of(identity.engineKind(), identity.engineVersion());
       HintClearDecision decision =
           catalogProvider
-              .extensionFor(identity.engineKind())
-              .map(ext -> safeDecide(ext, identityContext, ctx))
+              .providerFor(identity.engineKind())
+              .map(provider -> safeDecide(provider, identityContext, ctx))
               .orElseGet(HintClearDecision::dropAll);
       applyDecision(decision, keys, properties);
     }
@@ -215,9 +215,9 @@ public class EngineHintSchemaCleaner {
   private record EngineIdentity(String engineKind, String engineVersion) {}
 
   private HintClearDecision safeDecide(
-      EngineSystemCatalogExtension ext, EngineContext ctx, HintClearContext context) {
+      EngineCatalogProvider provider, EngineContext ctx, HintClearContext context) {
     try {
-      return Optional.ofNullable(ext.decideHintClear(ctx, context))
+      return Optional.ofNullable(provider.decideHintClear(ctx, context))
           .orElseGet(HintClearDecision::dropAll);
     } catch (RuntimeException e) {
       return HintClearDecision.dropAll();

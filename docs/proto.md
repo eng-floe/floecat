@@ -81,7 +81,7 @@ CLI, and reconciler.
 | `PlannerStatsService` | `GetTargetStats`, `GetTableConstraints` | Split planner-facing streams for target stats and table constraints; `GetTargetStats(include_constraints=true)` remains as a combined single-roundtrip convenience mode. |
 | `UserObjectsService` | `GetUserObjects` | Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier. |
 | &nbsp;&nbsp;&nbsp;— Consumption pattern | | Clients read `UserObjectsBundleChunk` in three phases: 1) header chunk (cheap metadata), 2) zero or more `resolutions` chunk batches where each `RelationResolution` carries `input_index` + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use `input_index` to map back to planner `TableReferenceCandidate`s and bind as soon as a `FOUND` arrives. For each `RelationInfo`, inspect `columns[*].status`: `COLUMN_STATUS_OK` exposes `columns[*].column`, while `COLUMN_STATUS_FAILED` exposes `columns[*].failure` with typed `ColumnFailureCode` plus details. Extension-defined failures must use `COLUMN_FAILURE_CODE_ENGINE_EXTENSION` and set `extension_code_value`; clients branch on `extension_code_value` inside the engine domain (for FloeDB, see `FloeDecorationFailureCode` in `extensions/floedb/src/main/proto/engine_floe.proto`). |
-| `SystemObjectsService` | `GetSystemObjects` | Returns the builtin catalog filtered by the `x-engine-kind` / `x-engine-version` headers supplied with the request. |
+| `SystemObjectsService` | `GetSystemObjects` | Returns the builtin catalog selected by the independent `x-environment-kind` / `x-environment-version` and `x-engine-kind` / `x-engine-version` headers supplied with the request. |
 
 Resource IDs supplied to integration and overlay RPCs must include an `account_id` matching the
 authenticated principal's account. The service rejects blank or cross-account IDs before hitting
@@ -106,7 +106,7 @@ case-sensitive. Each path selects that namespace subtree.
 
 `query/system_objects_registry.proto` exposes immutable builtin metadata via `SystemObjectsService.GetSystemObjects`
 so planners can hydrate functions/operators/types once per engine version. Clients send the
-`x-engine-kind` and `x-engine-version` headers and always receive the filtered catalog for that
+`x-environment-kind` / `x-environment-version` and `x-engine-kind` / `x-engine-version` headers and always receive the composed catalog for that
 engine release.
 
 ## Important Internal Details

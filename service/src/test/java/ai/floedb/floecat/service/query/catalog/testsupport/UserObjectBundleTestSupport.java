@@ -36,7 +36,7 @@ import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.QueryPins;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -106,7 +106,7 @@ public final class UserObjectBundleTestSupport {
       schemaFailures.add(id.getId());
     }
 
-    /** Make {@link #tableSchema(ResourceId)} return null for this relation. */
+    /** Make {@link #tableSchema(ResourceId, CatalogContext)} return null for this relation. */
     public void returnNullSchemaFor(ResourceId id) {
       nullSchemas.add(id.getId());
     }
@@ -164,7 +164,7 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public Optional<GraphNode> resolve(ResourceId id) {
+    public Optional<GraphNode> resolve(ResourceId id, CatalogContext context) {
       resolveCalls.merge(
           id.getAccountId() + ":" + id.getKind() + ":" + id.getId(), 1, Integer::sum);
       if (hidden.contains(id.getId())) {
@@ -179,53 +179,59 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public List<RelationNode> listRelations(ResourceId catalogId) {
+    public List<RelationNode> listRelations(ResourceId catalogId, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
-    public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
+    public List<NamespaceNode> listNamespaces(ResourceId catalogId, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
     public List<RelationNode> listRelationsInNamespace(
-        ResourceId catalogId, ResourceId namespaceId) {
+        ResourceId catalogId, ResourceId namespaceId, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
-    public List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId) {
+    public List<FunctionNode> listFunctions(
+        ResourceId catalogId, ResourceId namespaceId, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
-    public List<TypeNode> listTypes(ResourceId catalogId) {
+    public List<TypeNode> listTypes(ResourceId catalogId, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
-    public Optional<ResourceId> resolveCatalog(String correlationId, String name) {
+    public Optional<ResourceId> resolveCatalog(
+        String correlationId, String name, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
-    public Optional<ResourceId> resolveNamespace(String correlationId, NameRef ref) {
+    public Optional<ResourceId> resolveNamespace(
+        String correlationId, NameRef ref, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
-    public Optional<ResourceId> resolveTable(String correlationId, NameRef ref) {
+    public Optional<ResourceId> resolveTable(
+        String correlationId, NameRef ref, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
-    public Optional<ResourceId> resolveView(String correlationId, NameRef ref) {
+    public Optional<ResourceId> resolveView(
+        String correlationId, NameRef ref, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
-    public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
+    public Optional<ResourceId> resolveName(
+        String correlationId, NameRef ref, CatalogContext context) {
       resolveNameCalls.merge(ref, 1, Integer::sum);
       return names.entrySet().stream()
           .filter(entry -> entry.getValue().equals(ref))
@@ -233,18 +239,12 @@ public final class UserObjectBundleTestSupport {
           .findFirst();
     }
 
-    @Override
-    public Optional<ResourceId> resolveName(
-        String correlationId, NameRef ref, EngineContext engineContext) {
-      return resolveName(correlationId, ref);
-    }
-
     /** How many times {@link #resolveName} ran for the exact ref (batch loop included). */
     public int resolveNameCount(NameRef ref) {
       return resolveNameCalls.getOrDefault(ref, 0);
     }
 
-    /** How many times {@link #tableSchema(ResourceId)} ran for this relation. */
+    /** How many times {@link #tableSchema(ResourceId, CatalogContext)} ran for this relation. */
     public int tableSchemaCount(ResourceId id) {
       return tableSchemaCalls.getOrDefault(id, 0);
     }
@@ -255,7 +255,7 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public Optional<ResourceId> resolveSystemTable(NameRef ref) {
+    public Optional<ResourceId> resolveSystemTable(NameRef ref, CatalogContext context) {
       return names.entrySet().stream()
           .filter(entry -> entry.getValue().equals(ref))
           .map(entry -> nodes.get(entry.getKey()).id())
@@ -263,12 +263,13 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public Optional<NameRef> resolveSystemTableName(ResourceId id) {
+    public Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext context) {
       return Optional.ofNullable(names.get(id.getId()));
     }
 
     @Override
-    public Optional<TypeNode> resolveSystemType(String namespace, String typeName) {
+    public Optional<TypeNode> resolveSystemType(
+        String namespace, String typeName, CatalogContext context) {
       throw unsupported();
     }
 
@@ -282,7 +283,8 @@ public final class UserObjectBundleTestSupport {
         String correlationId,
         ResourceId tableId,
         ai.floedb.floecat.common.rpc.SnapshotRef override,
-        Optional<Timestamp> asOfDefault) {
+        Optional<Timestamp> asOfDefault,
+        CatalogContext context) {
       long snapshotId = 1L;
       PinKind kind = PinKind.PIN_KIND_CURRENT;
       Timestamp originalAsOf = null;
@@ -306,45 +308,53 @@ public final class UserObjectBundleTestSupport {
 
     @Override
     public ResolveResult batchResolveTables(
-        String correlationId, List<NameRef> items, int limit, String token) {
+        String correlationId,
+        List<NameRef> items,
+        int limit,
+        String token,
+        CatalogContext context) {
       throw unsupported();
     }
 
     @Override
     public ResolveResult listTablesByPrefix(
-        String correlationId, NameRef prefix, int limit, String token) {
+        String correlationId, NameRef prefix, int limit, String token, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
     public ResolveResult batchResolveViews(
-        String correlationId, List<NameRef> items, int limit, String token) {
+        String correlationId,
+        List<NameRef> items,
+        int limit,
+        String token,
+        CatalogContext context) {
       throw unsupported();
     }
 
     @Override
     public ResolveResult listViewsByPrefix(
-        String correlationId, NameRef prefix, int limit, String token) {
+        String correlationId, NameRef prefix, int limit, String token, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
-    public Optional<NameRef> namespaceName(ResourceId id) {
+    public Optional<NameRef> namespaceName(ResourceId id, CatalogContext context) {
       throw unsupported();
     }
 
     @Override
-    public Optional<NameRef> tableName(ResourceId id) {
+    public Optional<NameRef> tableName(ResourceId id, CatalogContext context) {
       return Optional.ofNullable(names.get(id.getId()));
     }
 
     @Override
-    public Optional<NameRef> viewName(ResourceId id) {
+    public Optional<NameRef> viewName(ResourceId id, CatalogContext context) {
       return Optional.ofNullable(names.get(id.getId()));
     }
 
     @Override
-    public Optional<CatalogNode> catalog(ResourceId id) {
+    public Optional<CatalogNode> catalog(ResourceId id, CatalogContext context) {
       return Optional.ofNullable(catalogs.get(id.getId()));
     }
 
@@ -364,7 +374,8 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public List<ai.floedb.floecat.query.rpc.SchemaColumn> tableSchema(ResourceId tableId) {
+    public List<ai.floedb.floecat.query.rpc.SchemaColumn> tableSchema(
+        ResourceId tableId, ai.floedb.floecat.scanner.utils.CatalogContext context) {
       tableSchemaCalls.merge(tableId, 1, Integer::sum);
       if (schemaFailures.contains(tableId.getId())) {
         throw new RuntimeException("schema unavailable for " + tableId.getId());

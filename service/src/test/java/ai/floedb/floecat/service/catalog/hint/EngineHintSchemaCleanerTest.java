@@ -24,7 +24,7 @@ import ai.floedb.floecat.metagraph.hint.EngineHintMetadata;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.hint.HintClearDecision;
 import ai.floedb.floecat.systemcatalog.provider.ServiceLoaderSystemCatalogProvider;
-import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import com.google.protobuf.FieldMask;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -47,14 +47,13 @@ class EngineHintSchemaCleanerTest {
 
   private final ServiceLoaderSystemCatalogProvider provider =
       Mockito.mock(ServiceLoaderSystemCatalogProvider.class);
-  private final EngineSystemCatalogExtension extension =
-      Mockito.mock(EngineSystemCatalogExtension.class);
+  private final EngineCatalogProvider extension = Mockito.mock(EngineCatalogProvider.class);
 
   private EngineHintSchemaCleaner cleaner;
 
   @BeforeEach
   void setUp() {
-    Mockito.when(provider.extensionFor("floedb")).thenReturn(Optional.of(extension));
+    Mockito.when(provider.providerFor("floedb")).thenReturn(Optional.of(extension));
     cleaner = new EngineHintSchemaCleaner(provider);
   }
 
@@ -290,7 +289,7 @@ class EngineHintSchemaCleanerTest {
     putColumnHint(builder, "other.col", 7L, "otherdb", "1", 8);
 
     // By default provider only knows floedb; otherdb will resolve empty.
-    Mockito.when(provider.extensionFor("otherdb")).thenReturn(Optional.empty());
+    Mockito.when(provider.providerFor("otherdb")).thenReturn(Optional.empty());
     Mockito.when(extension.decideHintClear(Mockito.any(), Mockito.any()))
         .thenReturn(clearAllColumns());
 

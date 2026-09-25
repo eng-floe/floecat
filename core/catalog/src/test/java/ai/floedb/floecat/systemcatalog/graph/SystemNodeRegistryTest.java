@@ -17,18 +17,20 @@
 package ai.floedb.floecat.systemcatalog.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastMethod;
@@ -43,19 +45,21 @@ import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
+import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.ServiceLoaderSystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
-import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.testsupport.SystemCatalogTestProviders;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
@@ -92,7 +96,7 @@ class SystemNodeRegistryTest {
     // ---------------------------------
     // example / version 16.0
     // ---------------------------------
-    var floe16 = nodeRegistry.nodesFor(FLOE_KIND, "16.0");
+    var floe16 = nodeRegistry.nodesFor(context(FLOE_KIND, "16.0"));
 
     assertThat(floe16.functions()).extracting(fn -> fn.displayName()).contains("pg_only");
 
@@ -104,7 +108,7 @@ class SystemNodeRegistryTest {
     // ---------------------------------
     // example / version 17.0
     // ---------------------------------
-    var floe17 = nodeRegistry.nodesFor(FLOE_KIND, "17.0");
+    var floe17 = nodeRegistry.nodesFor(context(FLOE_KIND, "17.0"));
 
     assertThat(floe17.functions()).extracting(fn -> fn.displayName()).contains("pg_only");
 
@@ -113,7 +117,7 @@ class SystemNodeRegistryTest {
     // ---------------------------------
     // pg / version 16.0   (alternate engine)
     // ---------------------------------
-    var pg16 = nodeRegistry.nodesFor(PG_KIND, "16.0");
+    var pg16 = nodeRegistry.nodesFor(context(PG_KIND, "16.0"));
 
     assertThat(pg16.functions()).extracting(fn -> fn.displayName()).contains("pg_fn");
 
@@ -148,7 +152,7 @@ class SystemNodeRegistryTest {
     var registry = registryWithCatalogs();
     var nodeRegistry = registryWith(registry);
 
-    assertThat(nodeRegistry.nodesFor("", "16.0").functions()).isEmpty();
+    assertThat(nodeRegistry.nodesFor(context("", "16.0")).functions()).isEmpty();
   }
 
   @Test
@@ -156,7 +160,7 @@ class SystemNodeRegistryTest {
     var registry = registryWithCatalogs();
     var nodeRegistry = registryWith(registry);
 
-    assertThat(nodeRegistry.nodesFor(FLOE_KIND, "").functions())
+    assertThat(nodeRegistry.nodesFor(context(FLOE_KIND, "")).functions())
         .extracting(fn -> fn.displayName())
         .contains(
             "shared_fn", "pg_legacy" // maxVersion applies only when version is known
@@ -170,11 +174,11 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(PG_KIND, catalog)));
     var registry = registryWith(defs);
 
-    var nodesV1 = registry.nodesFor(PG_KIND, "1.0");
+    var nodesV1 = registry.nodesFor(context(PG_KIND, "1.0"));
     assertThat(nodesV1.tableNames()).doesNotContainKey("custom.legacy_table");
     assertThat(nodesV1.viewNames()).containsKey("custom.preview_view");
 
-    var nodesV2 = registry.nodesFor(PG_KIND, "2.0");
+    var nodesV2 = registry.nodesFor(context(PG_KIND, "2.0"));
     assertThat(nodesV2.tableNames()).containsKey("custom.legacy_table");
     assertThat(nodesV2.viewNames()).doesNotContainKey("custom.preview_view");
   }
@@ -186,7 +190,7 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(PG_KIND, catalog)));
     var registry = registryWith(defs);
 
-    var nodes = registry.nodesFor(PG_KIND, "");
+    var nodes = registry.nodesFor(context(PG_KIND, ""));
     assertThat(nodes.tableNames()).doesNotContainKey("custom.legacy_table");
     assertThat(nodes.viewNames()).containsKey("custom.preview_view");
   }
@@ -204,7 +208,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("custom", "t"),
             "t",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -227,10 +231,10 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(PG_KIND, catalog)));
     var registry = registryWith(defs);
 
-    var nodes = registry.nodesFor(PG_KIND, "16.0").toCatalogData();
+    var nodes = registry.nodesFor(context(PG_KIND, "16.0")).toCatalogData();
     ConstraintDefinition normalized =
         nodes.tables().stream()
-            .filter(t -> "custom.t".equals(NameRefUtil.canonical(t.name())))
+            .filter(t -> "custom.t".equals(NameRefUtil.identityKey(t.name())))
             .findFirst()
             .orElseThrow()
             .constraints()
@@ -247,7 +251,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("custom", "ok"),
             "ok",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -258,7 +262,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("orphan"),
             "orphan",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -280,7 +284,7 @@ class SystemNodeRegistryTest {
 
     SystemDefinitionRegistry defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of("kind", catalog)));
-    var nodes = registryWith(defs).nodesFor("kind", "");
+    var nodes = registryWith(defs).nodesFor(context("kind", ""));
 
     assertThat(nodes.tableNames()).containsKey("custom.ok");
     assertThat(nodes.tableNames()).doesNotContainKey("orphan");
@@ -293,7 +297,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("missing", "table"),
             "table",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -315,7 +319,7 @@ class SystemNodeRegistryTest {
 
     SystemDefinitionRegistry defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of("kind", catalog)));
-    var nodes = registryWith(defs).nodesFor("kind", "");
+    var nodes = registryWith(defs).nodesFor(context("kind", ""));
 
     assertThat(nodes.tableNames()).doesNotContainKey("missing.table");
   }
@@ -325,8 +329,8 @@ class SystemNodeRegistryTest {
     var registry = registryWithCatalogs();
     var nodeRegistry = registryWith(registry);
 
-    var nodesLower = nodeRegistry.nodesFor("example", "16.0");
-    var nodesUpper = nodeRegistry.nodesFor("EXAMPLE", "16.0");
+    var nodesLower = nodeRegistry.nodesFor(context("example", "16.0"));
+    var nodesUpper = nodeRegistry.nodesFor(context("EXAMPLE", "16.0"));
 
     // Same logical catalog, same instance from cache
     assertThat(nodesLower).isSameAs(nodesUpper);
@@ -349,13 +353,23 @@ class SystemNodeRegistryTest {
     var registry = registryWithCatalogs();
     var nodeRegistry = registryWith(registry);
 
-    var tables = canonicalTableNames(nodeRegistry.nodesFor("", ""));
+    var tables = canonicalTableNames(nodeRegistry.nodesFor(CatalogContext.floecatInternal()));
 
     assertThat(tables)
         .contains(
             "information_schema.tables",
             "information_schema.columns",
             "information_schema.schemata");
+  }
+
+  @Test
+  void emptyContextRemainsDistinctFromExplicitInternal() {
+    var registry = registryWithCatalogs();
+    var nodeRegistry = registryWith(registry);
+
+    assertThat(nodeRegistry.nodesFor(CatalogContext.empty()).tableNames()).isEmpty();
+    assertThat(nodeRegistry.nodesFor(CatalogContext.floecatInternal()).tableNames().keySet())
+        .contains("information_schema.tables");
   }
 
   @Test
@@ -382,7 +396,7 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
     var nodes =
         registryWith(registry, new SystemCatalogTestProviders.VersionedTableProvider(FLOE_KIND))
-            .nodesFor(FLOE_KIND, "1.0");
+            .nodesFor(context(FLOE_KIND, "1.0"));
 
     var built = nodes.functions().get(0);
 
@@ -433,7 +447,7 @@ class SystemNodeRegistryTest {
 
     var defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+    var nodes = registryWith(defs).nodesFor(context(FLOE_KIND, "1.0"));
 
     assertThat(nodes.functions()).hasSize(2);
 
@@ -488,7 +502,7 @@ class SystemNodeRegistryTest {
 
     var defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+    var nodes = registryWith(defs).nodesFor(context(FLOE_KIND, "1.0"));
 
     var ids = nodes.operators().stream().map(node -> node.id().getId()).toList();
     var expected =
@@ -541,7 +555,7 @@ class SystemNodeRegistryTest {
 
     var defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+    var nodes = registryWith(defs).nodesFor(context(FLOE_KIND, "1.0"));
 
     var expected =
         List.of(
@@ -576,7 +590,7 @@ class SystemNodeRegistryTest {
 
     var defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
-    var nodes = registryWith(defs).nodesFor(FLOE_KIND, "1.0");
+    var nodes = registryWith(defs).nodesFor(context(FLOE_KIND, "1.0"));
 
     var expectedCollations =
         List.of(
@@ -594,8 +608,8 @@ class SystemNodeRegistryTest {
             registryWithCatalogs(),
             new SystemCatalogTestProviders.VersionedTableProvider(FLOE_KIND));
 
-    var tables16 = canonicalTableNames(nodeRegistry.nodesFor(FLOE_KIND, "16.0"));
-    var tables17 = canonicalTableNames(nodeRegistry.nodesFor(FLOE_KIND, "17.0"));
+    var tables16 = canonicalTableNames(nodeRegistry.nodesFor(context(FLOE_KIND, "16.0")));
+    var tables17 = canonicalTableNames(nodeRegistry.nodesFor(context(FLOE_KIND, "17.0")));
     var table16 = FLOE_KIND + ".versioned_16.0";
     var table17 = FLOE_KIND + ".versioned_17.0";
 
@@ -610,7 +624,7 @@ class SystemNodeRegistryTest {
     var provider = new SystemCatalogTestProviders.VersionedTableProvider(FLOE_KIND);
     var nodeRegistry = registryWith(registryWithCatalogs(), provider);
 
-    var tables = canonicalTableNames(nodeRegistry.nodesFor("", "16.0"));
+    var tables = canonicalTableNames(nodeRegistry.nodesFor(context("", "16.0")));
     assertThat(tables).doesNotContain(FLOE_KIND + ".versioned_16.0");
     assertThat(provider.invocationCount()).isEqualTo(0);
   }
@@ -620,22 +634,154 @@ class SystemNodeRegistryTest {
     var provider = new SystemCatalogTestProviders.VersionedTableProvider(FLOE_KIND);
     var nodeRegistry = registryWith(registryWithCatalogs(), provider);
 
-    nodeRegistry.nodesFor(FLOE_KIND, "16.0");
-    nodeRegistry.nodesFor(FLOE_KIND, "16.0");
+    nodeRegistry.nodesFor(context(FLOE_KIND, "16.0"));
+    nodeRegistry.nodesFor(context(FLOE_KIND, "16.0"));
 
     assertThat(provider.invocationCount()).isEqualTo(1);
   }
 
   @Test
-  void providerDefinitionsWithUnknownNamespaceAreIgnored() {
-    SystemObjectScannerProvider invalidProvider =
-        new SystemObjectScannerProvider() {
+  void environmentProviderContributesOnlyToSelectedEnvironment() {
+    var provider =
+        new SystemCatalogTestProviders.EnvironmentTableProvider("floe", "environment_table");
+    var nodeRegistry = registryWith(registryWithCatalogs(), (CatalogEnvironmentProvider) provider);
+    var engine = EngineContext.of(FLOE_KIND, "16.0");
+
+    var floeNodes =
+        nodeRegistry.nodesFor(CatalogContext.of(EnvironmentContext.of("floe", "1"), engine));
+    var otherNodes =
+        nodeRegistry.nodesFor(CatalogContext.of(EnvironmentContext.of("other", "1"), engine));
+
+    assertThat(canonicalTableNames(floeNodes)).contains("environment.environment_table");
+    assertThat(canonicalTableNames(otherNodes)).doesNotContain("environment.environment_table");
+  }
+
+  @Test
+  void environmentOnlyContextUsesEnvironmentCatalogIdentity() {
+    var provider =
+        new SystemCatalogTestProviders.EnvironmentTableProvider("floe", "environment_table");
+    var nodeRegistry = registryWith(registryWithCatalogs(), (CatalogEnvironmentProvider) provider);
+
+    var nodes =
+        nodeRegistry.nodesFor(
+            CatalogContext.of(EnvironmentContext.of("floe", "1"), EngineContext.empty()));
+
+    assertThat(nodes.engineKind()).isEqualTo("floe");
+    assertThat(nodes.tableNames().get("environment.environment_table"))
+        .isEqualTo(
+            SystemNodeRegistry.resourceId(
+                "floe",
+                ResourceKind.RK_TABLE,
+                NameRefUtil.name("environment", "environment_table")));
+  }
+
+  @Test
+  void dynamicEngineAndEnvironmentContributionsCompose() {
+    DynamicEngineProvider engineProvider = new DynamicEngineProvider("duckdb");
+    var environmentProvider =
+        new SystemCatalogTestProviders.EnvironmentTableProvider("floe", "environment_table");
+    var defs =
+        new SystemDefinitionRegistry(
+            new StaticSystemCatalogProvider(Map.of("duckdb", SystemCatalogData.empty())));
+    var registry =
+        new SystemNodeRegistry(
+            defs, internalProvider(), List.of(engineProvider), List.of(environmentProvider));
+
+    var context =
+        CatalogContext.of(EnvironmentContext.of("floe", "1"), EngineContext.of("DUCKDB", "1"));
+    var nodes = registry.nodesFor(context);
+
+    assertThat(nodes.catalogData().functions())
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
+        .contains("duck.pg_fn");
+    assertThat(nodes.catalogData().operators())
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
+        .contains("duck.pg_op");
+    assertThat(nodes.catalogData().types())
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
+        .contains("duck.int4");
+    assertThat(nodes.catalogData().casts())
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
+        .contains("duck.int4_to_text");
+    assertThat(nodes.catalogData().collations())
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
+        .contains("duck.default");
+    assertThat(nodes.catalogData().aggregates())
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
+        .contains("duck.pg_agg");
+    assertThat(canonicalTableNames(nodes)).contains("environment.environment_table");
+  }
+
+  @Test
+  void conflictingEngineAndEnvironmentRelationsFailInsteadOfOverriding() {
+    EngineCatalogProvider engineProvider =
+        new SystemCatalogTestProviders.EngineTableProvider(
+            PG_KIND, NameRefUtil.name("shared", "relation"));
+    CatalogEnvironmentProvider environmentProvider =
+        new CatalogEnvironmentProvider() {
           @Override
-          public List<SystemObjectDef> definitions() {
+          public String environmentKind() {
+            return "floe";
+          }
+
+          @Override
+          public List<SystemObjectDef> definitions(CatalogContext context) {
+            return List.of(
+                new SystemNamespaceDef(NameRefUtil.name("shared"), "shared", List.of()),
+                new SystemTableDef(
+                    NameRefUtil.name("shared", "relation"),
+                    "relation",
+                    List.of(),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "environment-scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null));
+          }
+
+          @Override
+          public boolean supports(NameRef name, CatalogContext context) {
+            return true;
+          }
+
+          @Override
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+            return Optional.empty();
+          }
+        };
+    var registry =
+        new SystemNodeRegistry(
+            registryWithCatalogs(),
+            internalProvider(),
+            List.of(engineProvider),
+            List.of(environmentProvider));
+
+    assertThatThrownBy(
+            () ->
+                registry.nodesFor(
+                    CatalogContext.of(
+                        EnvironmentContext.of("floe", "1"), EngineContext.of(PG_KIND, "16.0"))))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Conflicting system object definition")
+        .hasMessageContaining("relation");
+  }
+
+  @Test
+  void engineProviderMustDeclareEngineTables() {
+    EngineCatalogProvider provider =
+        new EngineCatalogProvider() {
+          @Override
+          public String engineKind() {
+            return PG_KIND;
+          }
+
+          @Override
+          public List<SystemObjectDef> definitions(CatalogContext context) {
             return List.of(
                 new SystemTableDef(
-                    NameRefUtil.name("missing_ns", "bad_table"),
-                    "bad_table",
+                    NameRefUtil.name("engine", "table"),
+                    "table",
                     List.of(),
                     TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
                     "scanner",
@@ -646,24 +792,174 @@ class SystemNodeRegistryTest {
           }
 
           @Override
-          public boolean supportsEngine(String engineKind) {
-            return FLOE_KIND.equals(engineKind);
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+            return Optional.empty();
+          }
+        };
+    var registry =
+        new SystemNodeRegistry(
+            new SystemDefinitionRegistry(
+                new StaticSystemCatalogProvider(Map.of(PG_KIND, SystemCatalogData.empty()))),
+            internalProvider(),
+            List.of(provider),
+            List.of());
+
+    assertThatThrownBy(() -> registry.nodesFor(context(PG_KIND, "16.0")))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("expected TABLE_BACKEND_KIND_ENGINE");
+  }
+
+  @Test
+  void identicalDefinitionsAreDeduplicated() {
+    EngineCatalogProvider first =
+        new SystemCatalogTestProviders.EngineTableProvider(
+            PG_KIND, NameRefUtil.name("shared", "relation"));
+    EngineCatalogProvider second =
+        new SystemCatalogTestProviders.EngineTableProvider(
+            PG_KIND, NameRefUtil.name("shared", "relation"));
+    var registry =
+        new SystemNodeRegistry(
+            new SystemDefinitionRegistry(
+                new StaticSystemCatalogProvider(Map.of(PG_KIND, SystemCatalogData.empty()))),
+            internalProvider(),
+            List.of(first, second),
+            List.of());
+
+    assertThat(canonicalTableNames(registry.nodesFor(context(PG_KIND, "16.0"))))
+        .containsExactly("shared.relation");
+  }
+
+  @Test
+  void relationKindCollisionsFail() {
+    SystemNamespaceDef namespace =
+        new SystemNamespaceDef(NameRefUtil.name("shared"), "shared", List.of());
+    SystemTableDef table =
+        new SystemTableDef(
+            NameRefUtil.name("shared", "relation"),
+            "relation",
+            List.of(),
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+            "",
+            "",
+            "",
+            List.of(),
+            null);
+    SystemViewDef view =
+        new SystemViewDef(
+            NameRefUtil.name("shared", "relation"),
+            "relation",
+            "select 1",
+            "",
+            List.of(),
+            List.of());
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace),
+            List.of(table),
+            List.of(view),
+            List.of());
+    var registry =
+        registryWith(
+            new SystemDefinitionRegistry(
+                new StaticSystemCatalogProvider(Map.of(PG_KIND, catalog))));
+
+    assertThatThrownBy(() -> registry.nodesFor(context(PG_KIND, "16.0")))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Conflicting system object definition")
+        .hasMessageContaining("relation");
+  }
+
+  @Test
+  void invalidationRebuildsDynamicEngineContributions() {
+    AtomicReference<String> functionName = new AtomicReference<>("before_reload");
+    EngineCatalogProvider provider =
+        new EngineCatalogProvider() {
+          @Override
+          public String engineKind() {
+            return "duckdb";
           }
 
           @Override
-          public boolean supports(NameRef name, String engineKind) {
-            return supportsEngine(engineKind);
+          public List<SystemObjectDef> definitions(CatalogContext context) {
+            NameRef int4 = NameRefUtil.name("duck", "int4");
+            return List.of(
+                new SystemNamespaceDef(NameRefUtil.name("duck"), "duck", List.of()),
+                new SystemTypeDef(int4, "N", false, null, List.of()),
+                new SystemFunctionDef(
+                    NameRefUtil.name("duck", functionName.get()),
+                    List.of(int4),
+                    int4,
+                    false,
+                    false,
+                    List.of()));
           }
 
           @Override
-          public Optional<SystemObjectScanner> provide(
-              String scannerId, String engineKind, String engineVersion) {
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+            return Optional.empty();
+          }
+        };
+    var defs =
+        new SystemDefinitionRegistry(
+            new StaticSystemCatalogProvider(Map.of("duckdb", SystemCatalogData.empty())));
+    var registry = new SystemNodeRegistry(defs, internalProvider(), List.of(provider), List.of());
+    var context = context("duckdb", "1");
+
+    var first = registry.nodesFor(context);
+    assertThat(first.catalogData().functions())
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
+        .contains("duck.before_reload");
+
+    functionName.set("after_reload");
+    assertThat(registry.nodesFor(context)).isSameAs(first);
+
+    registry.invalidate(context);
+    var second = registry.nodesFor(context);
+    assertThat(second).isNotSameAs(first);
+    assertThat(second.catalogData().functions())
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
+        .contains("duck.after_reload")
+        .doesNotContain("duck.before_reload");
+  }
+
+  @Test
+  void providerDefinitionsWithUnknownNamespaceAreIgnored() {
+    EngineCatalogProvider invalidProvider =
+        new EngineCatalogProvider() {
+          @Override
+          public String engineKind() {
+            return FLOE_KIND;
+          }
+
+          @Override
+          public List<SystemObjectDef> definitions(CatalogContext context) {
+            return List.of(
+                new SystemTableDef(
+                    NameRefUtil.name("missing_ns", "bad_table"),
+                    "bad_table",
+                    List.of(),
+                    TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+                    "scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null));
+          }
+
+          @Override
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
             return Optional.empty();
           }
         };
 
     var nodeRegistry = registryWith(registryWithCatalogs(), invalidProvider);
-    var nodes = nodeRegistry.nodesFor(FLOE_KIND, "16.0");
+    var nodes = nodeRegistry.nodesFor(context(FLOE_KIND, "16.0"));
     assertThat(nodes.tableNames()).doesNotContainKey("missing_ns.bad_table");
   }
 
@@ -736,7 +1032,7 @@ class SystemNodeRegistryTest {
 
     var defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(HINT_ENGINE, catalog)));
-    var nodes = registryWith(defs).nodesFor(HINT_ENGINE, "1.0");
+    var nodes = registryWith(defs).nodesFor(context(HINT_ENGINE, "1.0"));
 
     assertHasHint(nodes.functions(), FUNCTION_HINT);
     assertHasHint(nodes.operators(), OPERATOR_HINT);
@@ -772,7 +1068,8 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
     var nodeRegistry = registryWith(registry);
 
-    var merged = nodeRegistry.nodesFor(FLOE_KIND, "16.0").catalogData().registryEngineSpecific();
+    var merged =
+        nodeRegistry.nodesFor(context(FLOE_KIND, "16.0")).catalogData().registryEngineSpecific();
 
     assertThat(merged).hasSize(1);
     assertThat(merged.get(0)).isEqualTo(engineRule);
@@ -803,11 +1100,13 @@ class SystemNodeRegistryTest {
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
     var nodeRegistry = registryWith(registry);
 
-    var merged15 = nodeRegistry.nodesFor(FLOE_KIND, "15.0").catalogData().registryEngineSpecific();
+    var merged15 =
+        nodeRegistry.nodesFor(context(FLOE_KIND, "15.0")).catalogData().registryEngineSpecific();
     assertThat(merged15).hasSize(1);
     assertThat(merged15.get(0)).isEqualTo(baseRule);
 
-    var merged16 = nodeRegistry.nodesFor(FLOE_KIND, "16.0").catalogData().registryEngineSpecific();
+    var merged16 =
+        nodeRegistry.nodesFor(context(FLOE_KIND, "16.0")).catalogData().registryEngineSpecific();
     assertThat(merged16).hasSize(1);
     assertThat(merged16.get(0)).isEqualTo(nextRule);
   }
@@ -869,13 +1168,56 @@ class SystemNodeRegistryTest {
                 PG_KIND, catalog)));
   }
 
-  private static List<SystemObjectScannerProvider> extensionProviders(
-      SystemObjectScannerProvider... extras) {
+  private static List<EngineCatalogProvider> extensionProviders(EngineCatalogProvider... extras) {
     return Stream.of(extras).toList();
   }
 
   private static List<String> canonicalTableNames(SystemNodeRegistry.BuiltinNodes nodes) {
-    return nodes.catalogData().tables().stream().map(t -> NameRefUtil.canonical(t.name())).toList();
+    return nodes.catalogData().tables().stream()
+        .map(t -> NameRefUtil.identityKey(t.name()))
+        .toList();
+  }
+
+  private static final class DynamicEngineProvider implements EngineCatalogProvider {
+
+    private final String engineKind;
+
+    private DynamicEngineProvider(String engineKind) {
+      this.engineKind = engineKind;
+    }
+
+    @Override
+    public String engineKind() {
+      return engineKind;
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions(CatalogContext context) {
+      NameRef int4 = NameRefUtil.name("duck", "int4");
+      NameRef text = NameRefUtil.name("duck", "text");
+      return List.of(
+          new SystemNamespaceDef(NameRefUtil.name("duck"), "duck", List.of()),
+          new SystemTypeDef(int4, "N", false, null, List.of()),
+          new SystemTypeDef(text, "S", false, null, List.of()),
+          new SystemFunctionDef(
+              NameRefUtil.name("duck", "pg_fn"), List.of(int4), int4, false, false, List.of()),
+          new SystemOperatorDef(
+              NameRefUtil.name("duck", "pg_op"), int4, int4, int4, false, false, List.of()),
+          new SystemCastDef(
+              NameRefUtil.name("duck", "int4_to_text"),
+              int4,
+              text,
+              SystemCastMethod.EXPLICIT,
+              List.of()),
+          new SystemCollationDef(NameRefUtil.name("duck", "default"), "en_US", List.of()),
+          new SystemAggregateDef(
+              NameRefUtil.name("duck", "pg_agg"), List.of(int4), int4, int4, List.of()));
+    }
+
+    @Override
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+      return Optional.empty();
+    }
   }
 
   private static SystemCatalogData catalogWithVersionedObjects() {
@@ -890,7 +1232,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("custom", "legacy_table"),
             "legacy_table",
             List.of(column("value")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "legacy_scanner",
             "",
             "",
@@ -944,44 +1286,45 @@ class SystemNodeRegistryTest {
     return new FloecatInternalProvider();
   }
 
+  private static CatalogContext context(String engineKind, String engineVersion) {
+    EngineContext engine = EngineContext.of(engineKind, engineVersion);
+    return CatalogContext.of(EnvironmentContext.empty(), engine);
+  }
+
   private static SystemNodeRegistry registryWith(
-      SystemDefinitionRegistry defs, SystemObjectScannerProvider... extras) {
-    return new SystemNodeRegistry(defs, internalProvider(), extensionProviders(extras));
+      SystemDefinitionRegistry defs, EngineCatalogProvider... extras) {
+    return new SystemNodeRegistry(defs, internalProvider(), extensionProviders(extras), List.of());
+  }
+
+  private static SystemNodeRegistry registryWith(
+      SystemDefinitionRegistry defs, CatalogEnvironmentProvider environmentProvider) {
+    return new SystemNodeRegistry(
+        defs, internalProvider(), List.of(), List.of(environmentProvider));
   }
 
   @Test
-  void floecatInternalTablesExistForEngineWithoutPlugin() {
+  void explicitEngineDoesNotInheritFloecatInternalTables() {
     ServiceLoaderSystemCatalogProvider loader = new ServiceLoaderSystemCatalogProvider();
     SystemDefinitionRegistry defs = new SystemDefinitionRegistry(loader);
     SystemNodeRegistry registry =
-        new SystemNodeRegistry(defs, loader.internalProvider(), loader.providers());
+        new SystemNodeRegistry(
+            defs, loader.internalProvider(), loader.providers(), loader.environmentProviders());
 
-    EngineContext ctx = EngineContext.of("pg", "");
-    SystemEngineCatalog engineCatalog = defs.catalog(ctx);
-    assertThat(engineCatalog.tables()).isNotEmpty();
-    assertThat(engineCatalog.namespaces()).isNotEmpty();
-    SystemNodeRegistry.BuiltinNodes nodes = registry.nodesFor(ctx);
+    EngineContext ctx = EngineContext.of("test-engine", "");
+    SystemEngineCatalog engineCatalog =
+        defs.catalog(CatalogContext.of(EnvironmentContext.empty(), ctx));
+    assertThat(engineCatalog.tables()).isEmpty();
+    assertThat(engineCatalog.namespaces()).isEmpty();
+    SystemNodeRegistry.BuiltinNodes nodes =
+        registry.nodesFor(CatalogContext.of(EnvironmentContext.empty(), ctx));
 
-    assertThat(nodes.tableNames())
-        .containsKey("information_schema.tables")
-        .containsKey("information_schema.columns")
-        .containsKey("information_schema.schemata");
-    String infoSchemaTableId =
-        SystemNodeRegistry.resourceId(
-                "pg", ResourceKind.RK_TABLE, NameRefUtil.name("information_schema", "tables"))
-            .getId();
-    assertThat(
-            nodes.tableNodes().stream()
-                .map(node -> node.id().getId())
-                .filter(id -> id.equals(infoSchemaTableId))
-                .toList())
-        .isNotEmpty();
+    assertThat(nodes.tableNames()).isEmpty();
   }
 
   @Test
   void namespaceBucketsAlwaysHaveEntries() {
     var registry = registryWith(registryWithCatalogs());
-    SystemNodeRegistry.BuiltinNodes nodes = registry.nodesFor(FLOE_KIND, "16.0");
+    SystemNodeRegistry.BuiltinNodes nodes = registry.nodesFor(context(FLOE_KIND, "16.0"));
 
     for (NamespaceNode ns : nodes.namespaceNodes()) {
       assertThat(nodes.tablesByNamespace()).containsKey(ns.id());
@@ -998,7 +1341,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("orphan"),
             "orphan",
             List.<SystemColumnDef>of(),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -1018,7 +1361,7 @@ class SystemNodeRegistryTest {
             List.of());
     SystemDefinitionRegistry defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of("kind", catalog)));
-    var nodes = registryWith(defs).nodesFor("kind", "");
+    var nodes = registryWith(defs).nodesFor(context("kind", ""));
 
     assertThat(nodes.tableNames()).doesNotContainKey("orphan");
   }
@@ -1030,7 +1373,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("missing", "table"),
             "table",
             List.<SystemColumnDef>of(),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -1050,37 +1393,29 @@ class SystemNodeRegistryTest {
             List.of());
     SystemDefinitionRegistry defs =
         new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of("kind", catalog)));
-    var nodes = registryWith(defs).nodesFor("kind", "");
+    var nodes = registryWith(defs).nodesFor(context("kind", ""));
 
     assertThat(nodes.tableNames()).doesNotContainKey("missing.table");
   }
 
   @Test
-  void pluginTableOverridesInternalDefinition() {
+  void engineProviderContributesEngineRelation() {
     SystemDefinitionRegistry defs = registryWithCatalogs();
-    SystemObjectScannerProvider provider =
-        new SystemCatalogTestProviders.OverridingTableProvider(
-            PG_KIND, NameRefUtil.name("information_schema", "tables"), "overridden_scanner");
+    EngineCatalogProvider provider =
+        new SystemCatalogTestProviders.EngineTableProvider(
+            PG_KIND, NameRefUtil.name("information_schema", "tables"));
 
     SystemNodeRegistry registry = registryWith(defs, provider);
-    var nodes = registry.nodesFor(PG_KIND, "16.0");
+    var nodes = registry.nodesFor(context(PG_KIND, "16.0"));
 
     SystemTableDef overridden =
         nodes.catalogData().tables().stream()
-            .filter(def -> NameRefUtil.canonical(def.name()).equals("information_schema.tables"))
+            .filter(def -> NameRefUtil.identityKey(def.name()).equals("information_schema.tables"))
             .findFirst()
             .orElseThrow();
-    assertThat(overridden.scannerId()).isEqualTo("overridden_scanner");
-    String scannerId = null;
-    ResourceId expectedTableId =
-        SystemNodeRegistry.resourceId(
-            PG_KIND, ResourceKind.RK_TABLE, NameRefUtil.name("information_schema", "tables"));
-    SystemTableNode overriddenNode =
-        nodes.tableNodes().stream()
-            .filter(node -> node.id().equals(expectedTableId))
-            .findFirst()
-            .orElseThrow();
-    assertThat(((SystemTableNode.FloeCatSystemTableNode) overriddenNode).scannerId())
-        .isEqualTo("overridden_scanner");
+    assertThat(overridden.backendKind()).isEqualTo(TableBackendKind.TABLE_BACKEND_KIND_ENGINE);
+    assertThat(nodes.tableNodes())
+        .anySatisfy(
+            node -> assertThat(node).isInstanceOf(SystemTableNode.EngineSystemTableNode.class));
   }
 }

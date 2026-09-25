@@ -23,11 +23,12 @@ import org.junit.jupiter.api.Test;
 final class EngineContextTest {
 
   @Test
-  void blankKindAppearsAsInternalDefault() {
+  void blankKindRemainsAbsent() {
     EngineContext ctx = EngineContext.of(" ", "16.0");
 
     assertThat(ctx.hasEngineKind()).isFalse();
-    assertThat(ctx.normalizedKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+    assertThat(ctx.normalizedKind()).isEmpty();
+    assertThat(ctx.effectiveEngineKind()).isEqualTo("floecat_internal");
     assertThat(ctx.normalizedVersion()).isEmpty();
     assertThat(ctx.engineVersion()).isEmpty();
   }

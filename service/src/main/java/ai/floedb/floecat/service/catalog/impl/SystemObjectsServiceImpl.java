@@ -20,9 +20,9 @@ import ai.floedb.floecat.query.rpc.GetSystemObjectsRequest;
 import ai.floedb.floecat.query.rpc.GetSystemObjectsResponse;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.query.rpc.SystemObjectsService;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
-import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.RequestValidation;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -49,7 +49,6 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
   @Inject SystemNodeRegistry nodeRegistry;
-  @Inject EngineContextProvider engineContextProvider;
   @Inject Observability observability;
 
   @Override
@@ -64,8 +63,8 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
                 var principalContext = diagnostics.time("principal_get", principal::get);
                 diagnostics.time(
                     "authz", () -> authz.require(principalContext, "system-objects.read"));
-                EngineContext ctx =
-                    diagnostics.time("engine_context", engineContextProvider::engineContext);
+                CatalogContext catalogContext = catalogContext();
+                EngineContext ctx = diagnostics.time("engine_context", catalogContext::engine);
                 diagnostics.put("engine_kind", ctx.engineKind());
                 diagnostics.put("engine_version", ctx.engineVersion());
                 RequestValidation.requireNonBlank(
@@ -79,7 +78,8 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
                     correlationId(),
                     "builtin.engine_kind.required");
                 SystemObjectsRegistry registry =
-                    diagnostics.time("fetch_system_objects", () -> fetchSystemObjects(ctx));
+                    diagnostics.time(
+                        "fetch_system_objects", () -> fetchSystemObjects(catalogContext));
                 GetSystemObjectsResponse response =
                     GetSystemObjectsResponse.newBuilder().setRegistry(registry).build();
                 diagnostics.put("registry_bytes", registry.getSerializedSize());
@@ -98,8 +98,8 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
         correlationId());
   }
 
-  private SystemObjectsRegistry fetchSystemObjects(EngineContext ctx) {
-    BuiltinNodes nodes = nodeRegistry.nodesFor(ctx);
+  private SystemObjectsRegistry fetchSystemObjects(CatalogContext context) {
+    BuiltinNodes nodes = nodeRegistry.nodesFor(context);
     return SystemCatalogProtoMapper.toProto(sanitize(nodes.toCatalogData()));
   }
 

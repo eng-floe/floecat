@@ -248,7 +248,8 @@ public class TableIndexServiceImpl extends BaseServiceImpl implements TableIndex
     var pc = principal.get();
     authz.require(pc, "table.write");
 
-    new CatalogSurfaceWritePolicy(graphView).requireWritableTable(state.tableId, correlationId());
+    new CatalogSurfaceWritePolicy(graphView, catalogContext())
+        .requireWritableTable(state.tableId, correlationId());
 
     snapshots
         .getById(state.tableId, state.snapshotId)

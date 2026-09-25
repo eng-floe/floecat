@@ -35,6 +35,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
@@ -61,7 +62,7 @@ class CatalogSurfaceTablesTest {
   void setup() {
     tableRepo = mock(TableRepository.class);
     graphView = new TestCatalogGraphView();
-    surface = new CatalogSurfaceTables(tableRepo, graphView);
+    surface = new CatalogSurfaceTables(tableRepo, graphView, CatalogContext.empty());
 
     graphView.addNode(
         new NamespaceNode(

@@ -42,7 +42,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -104,7 +103,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     LinkedHashSet<String> normalized =
         names.stream()
             .filter(Objects::nonNull)
-            .map(SystemTableFlightProducerBase::normalizeTableName)
+            .map(SystemTableFlightProducerBase::trimTableName)
             .filter(name -> !name.isBlank())
             .collect(Collectors.toCollection(LinkedHashSet::new));
     return Set.copyOf(normalized);
@@ -168,7 +167,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     }
     SystemTableTarget target = command.getTarget();
     if (target.hasName()) {
-      String canonical = normalizeTableName(NameRefUtil.canonical(target.getName()));
+      String canonical = trimTableName(NameRefUtil.matchKey(target.getName()));
       return !canonical.isBlank() && supported.contains(canonical);
     }
     if (target.hasId()) {
@@ -734,7 +733,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
 
   private void requireKnownTable(String tableName, ResolvedCallContext context) {
     ResolvedCallContext ctx = effectiveContext(context);
-    if (tableName == null || !supportedNames(ctx).contains(normalizeTableName(tableName))) {
+    if (tableName == null || !supportedNames(ctx).contains(trimTableName(tableName))) {
       throw new IllegalArgumentException("Unknown system table: " + tableName);
     }
   }
@@ -787,7 +786,7 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     ResolvedCallContext ctx = effectiveContext(context);
     Set<String> supported = supportedNames(ctx);
     return resolveSystemTableName(id, context)
-        .map(SystemTableFlightProducerBase::normalizeTableName)
+        .map(SystemTableFlightProducerBase::trimTableName)
         .filter(supported::contains)
         .map(
             name -> {
@@ -801,10 +800,10 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
 
   private Optional<SystemTableHandle> resolveHandleByName(
       NameRef name, ResolvedCallContext context) {
-    if (name == null || NameRefUtil.canonical(name).isBlank()) {
+    if (name == null || NameRefUtil.matchKey(name).isBlank()) {
       return Optional.empty();
     }
-    String canonical = NameRefUtil.canonical(name);
+    String canonical = NameRefUtil.matchKey(name);
     ResolvedCallContext ctx = effectiveContext(context);
     if (!supportedNames(ctx).contains(canonical)) {
       return Optional.empty();
@@ -878,11 +877,13 @@ public abstract class SystemTableFlightProducerBase extends NoOpFlightProducer
     return SystemTableFlightCommand.newBuilder(command).setTarget(target).build();
   }
 
-  private static String normalizeTableName(String value) {
+  // Resolution matches a relation name exactly, so this trims and does not fold. Folding here
+  // let a builtin that is not authored lowercase pass supportsCommand and then miss resolution.
+  private static String trimTableName(String value) {
     if (value == null) {
       return "";
     }
-    return value.trim().toLowerCase(Locale.ROOT);
+    return value.trim();
   }
 
   protected String requireQueryId(ResolvedCallContext ctx, SystemTableFlightCommand command) {
