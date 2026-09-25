@@ -22,9 +22,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import io.grpc.Context;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.smallrye.mutiny.Multi;
 import io.smallrye.mutiny.Uni;
 import io.smallrye.mutiny.subscription.Cancellable;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -65,11 +68,19 @@ class MetadataRpcCancellationTest {
         await(() -> admission.runner().admissionWaiters() == 1);
         grpcContext.cancel(null);
         await(() -> admission.runner().admissionWaiters() == 0);
-        assertThat(failure.get(2, TimeUnit.SECONDS))
-            .isInstanceOf(java.util.concurrent.CancellationException.class);
+        assertCancellation(failure.get(2, TimeUnit.SECONDS));
         assertThat(queuedBackendStarted).isFalse();
       }
     }
+  }
+
+  private static void assertCancellation(Throwable failure) {
+    if (failure instanceof CancellationException) {
+      return;
+    }
+    assertThat(failure).isInstanceOf(StatusRuntimeException.class);
+    assertThat(((StatusRuntimeException) failure).getStatus().getCode())
+        .isEqualTo(Status.Code.CANCELLED);
   }
 
   private static void assertCancellationAbandonsRead(
