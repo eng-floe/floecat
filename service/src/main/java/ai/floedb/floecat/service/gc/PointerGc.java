@@ -17,7 +17,8 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
+import ai.floedb.floecat.service.account.AccountScope;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -26,11 +27,14 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.function.Predicate;
 import org.eclipse.microprofile.config.ConfigProvider;
 
@@ -39,64 +43,29 @@ public class PointerGc {
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
-  @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
+
+  @Inject
+  SnapshotRetentionPolicy retentionPolicy =
+      new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ofDays(30), Duration.ofDays(7));
+
+  private final ThreadLocal<AccountScope.GcPermit> activePermit = new ThreadLocal<>();
 
   public record Result(int scanned, int deleted, int missingBlobs, int staleSecondaries) {}
 
-  public Result runGlobalAccountPointers(long deadlineMs) {
-    int pageSize =
-        ConfigProvider.getConfig()
-            .getOptionalValue("floecat.gc.pointer.page-size", Integer.class)
-            .orElse(500);
-    long minAgeMs =
-        ConfigProvider.getConfig()
-            .getOptionalValue("floecat.gc.pointer.min-age-ms", Long.class)
-            .orElse(30_000L);
-    long nowMs = System.currentTimeMillis();
-    Map<String, Boolean> blobCache = new HashMap<>();
-
-    int scanned = 0;
-    int deleted = 0;
-    int missingBlobs = 0;
-    int staleSecondaries = 0;
-
-    CatalogIntegrationCredentialCleanup.Result credentialResult =
-        credentialCleanup.drain(deadlineMs, pageSize);
-    scanned += credentialResult.scanned();
-    deleted += credentialResult.deleted();
-
-    Result byId =
-        scanPrefix(
-            Keys.accountPointerByIdPrefix(),
-            pageSize,
-            deadlineMs,
-            blobCache,
-            p -> true,
-            nowMs,
-            minAgeMs);
-    scanned += byId.scanned;
-    deleted += byId.deleted;
-    missingBlobs += byId.missingBlobs;
-    staleSecondaries += byId.staleSecondaries;
-
-    Result byName =
-        scanPrefix(
-            Keys.accountPointerByNamePrefix(),
-            pageSize,
-            deadlineMs,
-            blobCache,
-            p -> true,
-            nowMs,
-            minAgeMs);
-    scanned += byName.scanned;
-    deleted += byName.deleted;
-    missingBlobs += byName.missingBlobs;
-    staleSecondaries += byName.staleSecondaries;
-
-    return new Result(scanned, deleted, missingBlobs, staleSecondaries);
+  public Result runForAccount(String accountId, long deadlineMs) {
+    return runForAccount(accountId, deadlineMs, null);
   }
 
-  public Result runForAccount(String accountId, long deadlineMs) {
+  public Result runForAccount(String accountId, long deadlineMs, AccountScope.GcPermit permit) {
+    activePermit.set(permit);
+    try {
+      return runForAccountInternal(accountId, deadlineMs);
+    } finally {
+      activePermit.remove();
+    }
+  }
+
+  private Result runForAccountInternal(String accountId, long deadlineMs) {
     int pageSize =
         ConfigProvider.getConfig()
             .getOptionalValue("floecat.gc.pointer.page-size", Integer.class)
@@ -304,6 +273,15 @@ public class PointerGc {
         break;
       }
       String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
+      OptionalLong currentSnapshotId = currentSnapshotId(accountId, tableId);
+      if (currentSnapshotId.isEmpty()) {
+        // A missing or unreadable root is not proof that every historical snapshot is orphaned.
+        // Leave the table's snapshot pointers for a later pass rather than deleting them blindly.
+        continue;
+      }
+      deleted +=
+          deleteExpiredSnapshotPointers(
+              snapshotsById, pageSize, deadlineMs, currentSnapshotId.getAsLong());
       Result snapshotById =
           scanPrefix(snapshotsById, pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs);
       scanned += snapshotById.scanned;
@@ -353,6 +331,7 @@ public class PointerGc {
     int staleSecondaries = 0;
 
     while (System.currentTimeMillis() < deadlineMs) {
+      requirePermit();
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       if (pointers.isEmpty()) {
@@ -360,6 +339,7 @@ public class PointerGc {
       }
 
       for (Pointer p : pointers) {
+        requirePermit();
         if (System.currentTimeMillis() >= deadlineMs) {
           break;
         }
@@ -376,6 +356,7 @@ public class PointerGc {
         }
         String blobUri = p.getBlobUri();
         if (blobUri == null || blobUri.isBlank()) {
+          requirePermit();
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             deleted++;
           }
@@ -405,6 +386,7 @@ public class PointerGc {
 
         if (!exists) {
           missingBlobs++;
+          requirePermit();
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             deleted++;
           }
@@ -419,6 +401,7 @@ public class PointerGc {
         Optional<Pointer> canonical = pointerStore.get(canonicalKey);
         if (canonical.isEmpty() || !blobUri.equals(canonical.get().getBlobUri())) {
           staleSecondaries++;
+          requirePermit();
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
             deleted++;
           }
@@ -432,6 +415,80 @@ public class PointerGc {
     }
 
     return new Result(scanned, deleted, missingBlobs, staleSecondaries);
+  }
+
+  /** Removes expired canonical snapshot pointers so CAS GC can reclaim their immutable blobs. */
+  private int deleteExpiredSnapshotPointers(
+      String prefix, int pageSize, long deadlineMs, long currentSnapshotId) {
+    int deleted = 0;
+    String token = "";
+    while (System.currentTimeMillis() < deadlineMs) {
+      requirePermit();
+      StringBuilder next = new StringBuilder();
+      List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
+      if (pointers.isEmpty()) {
+        break;
+      }
+      for (Pointer pointer : pointers) {
+        requirePermit();
+        if (snapshotId(pointer.getKey()) != currentSnapshotId
+            && retentionPolicy.gcEligible(snapshotIngestedAt(pointer))
+            && pointerStore.compareAndDelete(pointer.getKey(), pointer.getVersion())) {
+          deleted++;
+        }
+      }
+      token = next.toString();
+      if (token.isEmpty()) {
+        break;
+      }
+    }
+    return deleted;
+  }
+
+  private OptionalLong currentSnapshotId(String accountId, String tableId) {
+    var rootPointer = pointerStore.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
+    if (rootPointer == null || rootPointer.getBlobUri().isBlank()) {
+      return OptionalLong.empty();
+    }
+    try {
+      var root =
+          ai.floedb.floecat.catalog.rpc.TableRoot.parseFrom(
+              blobStore.get(rootPointer.getBlobUri()));
+      return root.hasCurrentSnapshotId()
+          ? OptionalLong.of(root.getCurrentSnapshotId())
+          : OptionalLong.empty();
+    } catch (RuntimeException | com.google.protobuf.InvalidProtocolBufferException e) {
+      return OptionalLong.empty();
+    }
+  }
+
+  private long snapshotId(String key) {
+    int slash = key == null ? -1 : key.lastIndexOf('/');
+    if (slash < 0) {
+      return Long.MIN_VALUE;
+    }
+    try {
+      return Long.parseLong(key.substring(slash + 1));
+    } catch (NumberFormatException e) {
+      return Long.MIN_VALUE;
+    }
+  }
+
+  private com.google.protobuf.Timestamp snapshotIngestedAt(Pointer pointer) {
+    try {
+      var snapshot =
+          ai.floedb.floecat.catalog.rpc.Snapshot.parseFrom(blobStore.get(pointer.getBlobUri()));
+      return snapshot.hasIngestedAt() ? snapshot.getIngestedAt() : null;
+    } catch (RuntimeException | com.google.protobuf.InvalidProtocolBufferException e) {
+      return null;
+    }
+  }
+
+  private void requirePermit() {
+    AccountScope.GcPermit permit = activePermit.get();
+    if (permit != null) {
+      permit.requireValid();
+    }
   }
 
   private void collectIds(String prefix, int pageSize, List<String> out) {

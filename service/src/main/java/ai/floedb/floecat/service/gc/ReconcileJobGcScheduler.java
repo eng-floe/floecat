@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
@@ -48,6 +49,7 @@ public class ReconcileJobGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<ReconcileJobGc> reconcileJobGc;
+  @Inject AccountScope accountScope;
   @Inject Observability observability;
 
   private GcMetrics gcMetrics;
@@ -198,36 +200,49 @@ public class ReconcileJobGcScheduler {
         long sliceStart = System.nanoTime();
         try {
           if (System.currentTimeMillis() < deadline) {
-            var result =
-                gc.runAccountSlice(accountId, jobToken, canonicalQuarantineToken, deadline);
-            accountsProcessed++;
-            totalAccountScanned += result.scanned();
-            totalExpired += result.expired();
-            totalPtrDeleted += result.ptrDeleted();
-            totalBlobDeleted += result.blobDeleted();
-            totalReadyDeleted += result.readyDeleted();
-            totalQuarantined += result.canonicalQuarantined();
-            gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "account-scanned"));
-            gcMetrics.recordCollection(
-                result.retentionScanned(), Tag.of(TagKey.RESULT, "retention-scanned"));
-            gcMetrics.recordCollection(
-                result.quarantineScanned(), Tag.of(TagKey.RESULT, "quarantine-scanned"));
-            gcMetrics.recordPause(
-                Duration.ofNanos(result.retentionNanos()),
-                Tag.of(TagKey.RESULT, "retention-queue"));
-            gcMetrics.recordPause(
-                Duration.ofNanos(result.quarantineNanos()),
-                Tag.of(TagKey.RESULT, "quarantine-queue"));
-            gcMetrics.recordCollection(result.expired(), Tag.of(TagKey.RESULT, "expired"));
-            gcMetrics.recordCollection(result.ptrDeleted(), Tag.of(TagKey.RESULT, "ptr-deleted"));
-            gcMetrics.recordCollection(result.blobDeleted(), Tag.of(TagKey.RESULT, "blob-deleted"));
-            gcMetrics.recordCollection(
-                result.readyDeleted(), Tag.of(TagKey.RESULT, "ready-deleted"));
-            gcMetrics.recordCollection(
-                result.canonicalQuarantined(), Tag.of(TagKey.RESULT, "canonical-quarantined"));
+            var acquired = accountScope.tryAcquireGc(accountId);
+            if (acquired.isEmpty()) {
+              gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "account-not-owned"));
+            } else {
+              try (var permit = acquired.get()) {
+                var result =
+                    gc.runAccountSlice(
+                        accountId, jobToken, canonicalQuarantineToken, deadline, permit);
+                accountsProcessed++;
+                totalAccountScanned += result.scanned();
+                totalExpired += result.expired();
+                totalPtrDeleted += result.ptrDeleted();
+                totalBlobDeleted += result.blobDeleted();
+                totalReadyDeleted += result.readyDeleted();
+                totalQuarantined += result.canonicalQuarantined();
+                gcMetrics.recordCollection(
+                    result.scanned(), Tag.of(TagKey.RESULT, "account-scanned"));
+                gcMetrics.recordCollection(
+                    result.retentionScanned(), Tag.of(TagKey.RESULT, "retention-scanned"));
+                gcMetrics.recordCollection(
+                    result.quarantineScanned(), Tag.of(TagKey.RESULT, "quarantine-scanned"));
+                gcMetrics.recordPause(
+                    Duration.ofNanos(result.retentionNanos()),
+                    Tag.of(TagKey.RESULT, "retention-queue"));
+                gcMetrics.recordPause(
+                    Duration.ofNanos(result.quarantineNanos()),
+                    Tag.of(TagKey.RESULT, "quarantine-queue"));
+                gcMetrics.recordCollection(result.expired(), Tag.of(TagKey.RESULT, "expired"));
+                gcMetrics.recordCollection(
+                    result.ptrDeleted(), Tag.of(TagKey.RESULT, "ptr-deleted"));
+                gcMetrics.recordCollection(
+                    result.blobDeleted(), Tag.of(TagKey.RESULT, "blob-deleted"));
+                gcMetrics.recordCollection(
+                    result.readyDeleted(), Tag.of(TagKey.RESULT, "ready-deleted"));
+                gcMetrics.recordCollection(
+                    result.canonicalQuarantined(), Tag.of(TagKey.RESULT, "canonical-quarantined"));
 
-            updateAccountTokens(accountId, result);
+                updateAccountTokens(accountId, result);
+              }
+            }
           }
+        } catch (AccountScope.GcPermitRevokedException revoked) {
+          gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "gc-permit-revoked"));
         } catch (Throwable t) {
           gcMetrics.recordError(1, Tag.of(TagKey.RESULT, "account-failed"));
           LOG.warnf(t, "reconcile job gc account slice failed accountId=%s", accountId);

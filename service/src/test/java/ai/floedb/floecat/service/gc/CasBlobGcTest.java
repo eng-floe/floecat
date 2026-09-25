@@ -19,14 +19,11 @@ package ai.floedb.floecat.service.gc;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -36,6 +33,9 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
@@ -49,7 +49,6 @@ class CasBlobGcTest {
 
   private PointerStore pointers;
   private BlobStore blobs;
-  private QueryContextStore queryContextStore;
   private CasBlobGc gc;
 
   @BeforeEach
@@ -58,13 +57,10 @@ class CasBlobGcTest {
     System.setProperty("floecat.gc.cas.page-size", "200");
     pointers = new InMemoryPointerStore();
     blobs = new InMemoryBlobStore();
-    queryContextStore = mock(QueryContextStore.class);
-    when(queryContextStore.referencedPinBlobUris()).thenReturn(Set.of());
     gc = new CasBlobGc();
     gc.pointerStore = pointers;
     gc.durablePointers = new DurablePointerReads(pointers);
     gc.blobStore = blobs;
-    gc.queryContextStore = queryContextStore;
     gc.tableRootRepo = new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
     gc.statsRepository = new ai.floedb.floecat.service.repo.impl.StatsRepository(pointers, blobs);
     gc.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
@@ -100,6 +96,78 @@ class CasBlobGcTest {
 
     assertTrue(blobs.head(live).isPresent());
     assertFalse(blobs.head(orphan).isPresent());
+  }
+
+  @Test
+  void retentionMakesOldSnapshotBlobsCollectableWithoutSnapshotSelections() {
+    Instant now = Instant.parse("2026-01-10T00:00:00Z");
+    gc.retentionPolicy =
+        new ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy(
+            Clock.fixed(now, java.time.ZoneOffset.UTC), Duration.ofDays(1), Duration.ofDays(1));
+
+    String oldUri = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 1L, "sha-old");
+    String currentUri = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 2L, "sha-current");
+    blobs.put(
+        oldUri,
+        ai.floedb.floecat.catalog.rpc.Snapshot.newBuilder()
+            .setTableId(tableRid())
+            .setSnapshotId(1L)
+            .setIngestedAt(
+                com.google.protobuf.util.Timestamps.fromMillis(
+                    now.minus(Duration.ofDays(3)).toEpochMilli()))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    blobs.put(
+        currentUri,
+        ai.floedb.floecat.catalog.rpc.Snapshot.newBuilder()
+            .setTableId(tableRid())
+            .setSnapshotId(2L)
+            .setIngestedAt(com.google.protobuf.util.Timestamps.fromMillis(now.toEpochMilli()))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    putPointer(Keys.snapshotPointerById(ACCOUNT_ID, TABLE_ID, 2L), currentUri);
+
+    var page =
+        ai.floedb.floecat.catalog.rpc.SnapshotManifestPage.newBuilder()
+            .addEntries(
+                ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+                    .setSnapshotId(2L)
+                    .setSnapshotRef(
+                        ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(currentUri))
+                    .setIngestedAt(
+                        com.google.protobuf.util.Timestamps.fromMillis(now.toEpochMilli())))
+            .addEntries(
+                ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+                    .setSnapshotId(1L)
+                    .setSnapshotRef(
+                        ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(oldUri))
+                    .setIngestedAt(
+                        com.google.protobuf.util.Timestamps.fromMillis(
+                            now.minus(Duration.ofDays(3)).toEpochMilli())))
+            .build();
+    String pageUri =
+        Keys.snapshotManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, ai.floedb.floecat.types.Hashing.sha256Hex(page.toByteArray()));
+    blobs.put(pageUri, page.toByteArray(), "application/x-protobuf");
+    String tableRootUri = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-root");
+    blobs.put(
+        tableRootUri,
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setTableId(tableRid())
+            .setCurrentSnapshotId(2L)
+            .setSnapshotManifestRef(
+                ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(pageUri))
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    putPointer(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID), tableRootUri);
+
+    gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(blobs.head(oldUri).isPresent(), "expired snapshots are not GC roots");
+    assertTrue(blobs.head(currentUri).isPresent(), "the current snapshot remains a root");
   }
 
   @Test
@@ -820,7 +888,6 @@ class CasBlobGcTest {
     restarted.pointerStore = pointers;
     restarted.durablePointers = new DurablePointerReads(pointers);
     restarted.blobStore = blobs;
-    restarted.queryContextStore = queryContextStore;
     restarted.tableRootRepo =
         new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
     restarted.statsRepository =
@@ -879,7 +946,6 @@ class CasBlobGcTest {
     conservative.pointerStore = pointers;
     conservative.durablePointers = new DurablePointerReads(pointers);
     conservative.blobStore = blobs;
-    conservative.queryContextStore = queryContextStore;
     conservative.tableRootRepo =
         new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
     conservative.statsRepository =
@@ -942,7 +1008,6 @@ class CasBlobGcTest {
     capacityLimited.pointerStore = pointers;
     capacityLimited.durablePointers = new DurablePointerReads(pointers);
     capacityLimited.blobStore = blobs;
-    capacityLimited.queryContextStore = queryContextStore;
     capacityLimited.tableRootRepo =
         new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
     capacityLimited.statsRepository =
@@ -1037,7 +1102,6 @@ class CasBlobGcTest {
     recreated.pointerStore = pointers;
     recreated.durablePointers = new DurablePointerReads(pointers);
     recreated.blobStore = blobs;
-    recreated.queryContextStore = queryContextStore;
     recreated.tableRootRepo =
         new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
     recreated.statsRepository = recordingStats;
@@ -1135,14 +1199,11 @@ class CasBlobGcTest {
           }
         };
     gc.durablePointers = new DurablePointerReads(gc.pointerStore);
-    when(queryContextStore.referencedPinBlobUris())
-        .thenAnswer(inv -> remarkStarted.get() ? Set.of(fileStatsBlob) : Set.of());
-
     gc.runForAccount(ACCOUNT_ID);
 
     assertTrue(
         blobs.head(fileStatsBlob).isPresent(),
-        "a pin published after the per-table snapshot must still protect the deferred blob");
+        "durable generation reachability, not a process-local pin, protects this blob");
   }
 
   @Test
@@ -1470,19 +1531,12 @@ class CasBlobGcTest {
   }
 
   @Test
-  void keepsBlobPinnedByActiveQuery() {
-    // A blob no current pointer references, but that a live query has pinned, must survive GC.
-    String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-pinned");
-    blobs.put(blobUri, "pinned".getBytes(StandardCharsets.UTF_8), "text/plain");
-    when(queryContextStore.referencedPinBlobUris()).thenReturn(Set.of(blobUri));
-
+  void collectsBlobNotReachableFromDurableRoots() {
+    // Query-local state is not a GC root. A blob with no durable reference is collectible.
+    String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-unreferenced");
+    blobs.put(blobUri, "unreferenced".getBytes(StandardCharsets.UTF_8), "text/plain");
     gc.runForAccount(ACCOUNT_ID);
 
-    assertTrue(blobs.head(blobUri).isPresent());
-
-    // Once the query (and its pin) is gone, the now-orphan blob becomes collectable.
-    when(queryContextStore.referencedPinBlobUris()).thenReturn(Set.of());
-    gc.runForAccount(ACCOUNT_ID);
     assertFalse(blobs.head(blobUri).isPresent());
   }
 
@@ -1643,81 +1697,6 @@ class CasBlobGcTest {
   }
 
   @Test
-  void resolvingPinRootHandsOffToTheCommittedContextAcrossGcRuns() {
-    // Full pin lifecycle against a REAL context store (no stubbed root set): the blob is rooted by
-    // the transient resolving registration, then by the committed context, and only becomes
-    // collectable once the context is gone — with a GC pass probing every stage.
-    var store = ai.floedb.floecat.service.query.impl.QueryContextStores.forTesting();
-    gc.queryContextStore = store;
-    try {
-      String pinnedBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-pin-lifecycle");
-      blobs.put(pinnedBlob, "pinned".getBytes(StandardCharsets.UTF_8), "text/plain");
-
-      // Stage 1: resolving — the pin is constructed but not yet committed into a context.
-      store.registerResolvingPinBlobs("q-gc", tableRid(), java.util.List.of(pinnedBlob));
-      gc.runForAccount(ACCOUNT_ID);
-      assertTrue(blobs.head(pinnedBlob).isPresent(), "resolving root must protect the blob");
-
-      // Stage 2: committed — the stored context takes over as the durable root.
-      ai.floedb.floecat.query.rpc.TablePin pin =
-          ai.floedb.floecat.query.rpc.TablePin.newBuilder()
-              .setTableId(
-                  ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-                      .setAccountId(ACCOUNT_ID)
-                      .setId(TABLE_ID)
-                      .setKind(ai.floedb.floecat.common.rpc.ResourceKind.RK_TABLE))
-              .setPinKind(ai.floedb.floecat.query.rpc.PinKind.PIN_KIND_CURRENT)
-              .setSnapshotId(7)
-              .setTableBlobUri(pinnedBlob)
-              .setSnapshotBlobUri(pinnedBlob)
-              .build();
-      store.put(
-          ai.floedb.floecat.service.query.impl.QueryContext.newActive(
-              "q-gc",
-              ai.floedb.floecat.common.rpc.PrincipalContext.newBuilder()
-                  .setAccountId(ACCOUNT_ID)
-                  .build(),
-              new byte[0],
-              ai.floedb.floecat.query.rpc.RelationPinSet.newBuilder()
-                  .addPins(ai.floedb.floecat.service.query.QueryPins.ofTable(pin))
-                  .build()
-                  .toByteArray(),
-              new byte[0],
-              new byte[0],
-              60_000L,
-              1L,
-              ai.floedb.floecat.common.rpc.ResourceId.newBuilder().setId("cat").build()));
-      gc.runForAccount(ACCOUNT_ID);
-      assertTrue(blobs.head(pinnedBlob).isPresent(), "committed context must protect the blob");
-
-      // Stage 3: query gone — nothing roots the blob and the next pass sweeps it.
-      store.delete("q-gc");
-      gc.runForAccount(ACCOUNT_ID);
-      assertFalse(blobs.head(pinnedBlob).isPresent(), "unrooted blob must be swept");
-    } finally {
-      store.close();
-    }
-  }
-
-  @Test
-  void pinRegisteredMidSweepStillProtectsItsBlob() {
-    // The pin-root set captured when the run starts goes stale over a long sweep. Simulate a pin
-    // registered after that snapshot (first read: empty; every later per-page refresh: pinned) —
-    // the delete pass must consult the fresh roots and keep the blob.
-    String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-late-pin");
-    blobs.put(blobUri, "late".getBytes(StandardCharsets.UTF_8), "text/plain");
-    when(queryContextStore.referencedPinBlobUris())
-        .thenReturn(Set.of())
-        .thenReturn(Set.of(blobUri));
-
-    gc.runForAccount(ACCOUNT_ID);
-
-    assertTrue(
-        blobs.head(blobUri).isPresent(),
-        "a pin registered after the run-start root snapshot must still protect its blob");
-  }
-
-  @Test
   void currentRootChainProtectsEverythingItReferences() {
     // Make the table discoverable so the per-table pass runs.
     seedCurrentTable();
@@ -1791,34 +1770,26 @@ class CasBlobGcTest {
   }
 
   @Test
-  void aPinnedRootChainSurvivesSupersession() {
+  void collectsSupersededRootChainWithoutQueryPinning() {
     seedCurrentTable();
 
-    // A superseded root (not the current pointer target) that a live query pinned. The pin roots
-    // the root URI; the chain expansion must protect its page and refs too.
+    // A superseded root (not the current pointer target) is not retained by query-local state.
+    // Retention-based GC may collect the root and its manifest chain.
     var tableId = tableRid();
-    String pinnedSnapBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 3L, "sha-pinned-snap");
-    putSnapshotBlob(pinnedSnapBlob, 3L);
-    commitRoot(3L, pinnedSnapBlob, "v3", null);
-    var pinnedRootUri = gc.tableRootRepo.metaForSafe(tableId).getBlobUri();
-    String pinnedPage =
+    String supersededSnapshotBlob =
+        Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 3L, "sha-superseded-snap");
+    putSnapshotBlob(supersededSnapshotBlob, 3L);
+    commitRoot(3L, supersededSnapshotBlob, "v3", null);
+    var supersededRootUri = gc.tableRootRepo.metaForSafe(tableId).getBlobUri();
+    String supersededPage =
         gc.tableRootRepo.get(tableId).orElseThrow().getSnapshotManifestRef().getUri();
     // Supersede it: drop the pointer (as a newer root CAS + a later purge would leave it), keep
-    // the pin.
+    // query context.
     pointers.delete(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID));
-    when(queryContextStore.referencedPinBlobUris()).thenReturn(Set.of(pinnedRootUri));
-
     gc.runForAccount(ACCOUNT_ID);
 
-    assertTrue(blobs.head(pinnedRootUri).isPresent(), "pinned root blob survives");
-    assertTrue(blobs.head(pinnedPage).isPresent(), "pinned root's page survives via expansion");
-    assertTrue(blobs.head(pinnedSnapBlob).isPresent(), "pinned root's snapshot ref survives");
-
-    // Pin released: the whole superseded chain becomes collectable.
-    when(queryContextStore.referencedPinBlobUris()).thenReturn(Set.of());
-    gc.runForAccount(ACCOUNT_ID);
-    assertFalse(blobs.head(pinnedRootUri).isPresent());
-    assertFalse(blobs.head(pinnedPage).isPresent());
+    assertFalse(blobs.head(supersededRootUri).isPresent());
+    assertFalse(blobs.head(supersededPage).isPresent());
   }
 
   @Test
@@ -1907,15 +1878,11 @@ class CasBlobGcTest {
     // Supersede the root (nothing but the pin will name it) and register the pin only after the
     // sweep's initial root snapshot (first read empty, later reads pinned).
     pointers.delete(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID));
-    when(queryContextStore.referencedPinBlobUris())
-        .thenReturn(Set.of())
-        .thenReturn(Set.of(pinnedRootUri));
-
     gc.runForAccount(ACCOUNT_ID);
 
     assertTrue(
         blobs.head(g1Manifest).isPresent(),
-        "a mid-sweep pin must protect the generation manifests its pinned root references");
+        "durable generation reachability protects the manifest independently of pins");
   }
 
   @Test

@@ -22,7 +22,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.TablePin;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -75,7 +75,7 @@ public final class SnapshotTestSupport {
   public static RelationPinSet relationPins(TablePin... pins) {
     RelationPinSet.Builder set = RelationPinSet.newBuilder();
     for (TablePin pin : pins) {
-      set.addPins(QueryPins.ofTable(pin));
+      set.addPins(SnapshotSelections.ofTable(pin));
     }
     return set.build();
   }

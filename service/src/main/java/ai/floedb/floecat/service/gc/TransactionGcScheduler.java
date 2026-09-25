@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import io.micrometer.core.instrument.Counter;
@@ -44,6 +45,7 @@ public class TransactionGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<TransactionGc> transactionGc;
+  @Inject AccountScope accountScope;
   @Inject MeterRegistry registry;
 
   private Counter tickCounter;
@@ -154,19 +156,29 @@ public class TransactionGcScheduler {
                 }
                 accountTimer.record(
                     () -> {
+                      String accountId = account.getResourceId().getId();
+                      var permit = accountScope.tryAcquireGc(accountId);
+                      if (permit.isEmpty()) {
+                        return;
+                      }
                       try {
-                        var res = gc.runForAccount(account.getResourceId().getId(), deadline);
-                        accountCounter.increment();
-                        txScannedCounter.increment(res.scanned());
-                        txDeletedCounter.increment(res.deleted());
-                        intentsDeletedCounter.increment(res.intentsDeleted());
+                        try (var admitted = permit.get()) {
+                          var res = gc.runForAccount(accountId, deadline, admitted);
+                          accountCounter.increment();
+                          txScannedCounter.increment(res.scanned());
+                          txDeletedCounter.increment(res.deleted());
+                          intentsDeletedCounter.increment(res.intentsDeleted());
+                        }
+                      } catch (AccountScope.GcPermitRevokedException revoked) {
+                        // Permit revocation is expected when account ownership changes; skip this
+                        // account for the current tick without reporting a GC failure.
                       } catch (RuntimeException e) {
                         // Isolate each account: one account's fault must not cancel the rest of the
                         // tick, or a single bad account would starve every other account's cleanup.
                         LOG.warnf(
                             e,
                             "transaction GC failed for account %s; continuing with next account",
-                            account.getResourceId().getId());
+                            accountId);
                       }
                     });
               }

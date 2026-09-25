@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -31,6 +32,7 @@ import jakarta.inject.Inject;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Optional;
 import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
@@ -42,10 +44,24 @@ public class TransactionGc {
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
   @Inject TableRootWriter rootWriter;
+  private final ThreadLocal<AccountScope.GcPermit> activePermit = new ThreadLocal<>();
 
   public record Result(int scanned, int deleted, int intentsDeleted) {}
 
   public Result runForAccount(String accountId, long deadlineMs) {
+    return runForAccount(accountId, deadlineMs, null);
+  }
+
+  public Result runForAccount(String accountId, long deadlineMs, AccountScope.GcPermit permit) {
+    activePermit.set(permit);
+    try {
+      return runForAccountInternal(accountId, deadlineMs);
+    } finally {
+      activePermit.remove();
+    }
+  }
+
+  private Result runForAccountInternal(String accountId, long deadlineMs) {
     int pageSize =
         ConfigProvider.getConfig()
             .getOptionalValue("floecat.gc.transaction.page-size", Integer.class)
@@ -72,6 +88,8 @@ public class TransactionGc {
     // the pagination itself. The divergent root simply waits for the next pass.
     try {
       redrivePendingRootResyncs(accountId, pageSize, deadlineMs);
+    } catch (AccountScope.GcPermitRevokedException revoked) {
+      throw revoked;
     } catch (RuntimeException e) {
       LOG.warnf(
           e,
@@ -83,11 +101,13 @@ public class TransactionGc {
     String token = "";
     StringBuilder next = new StringBuilder();
     do {
+      requirePermit();
       if (System.currentTimeMillis() > deadlineMs) {
         break;
       }
       List<Pointer> rows = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       for (Pointer p : rows) {
+        requirePermit();
         scanned++;
         Transaction txn = readTransaction(p.getBlobUri());
         if (txn == null) {
@@ -116,6 +136,10 @@ public class TransactionGc {
     return new Result(scanned, deleted, intentsDeleted);
   }
 
+  private void requirePermit() {
+    Optional.ofNullable(activePermit.get()).ifPresent(AccountScope.GcPermit::requireValid);
+  }
+
   /**
    * Re-drives root resyncs whose original post-transaction attempt was absorbed. The transaction
    * was durable, so the failure left a {@link Keys#rootResyncPendingPointer} marker; a table only
@@ -127,11 +151,13 @@ public class TransactionGc {
     String token = "";
     StringBuilder next = new StringBuilder();
     do {
+      requirePermit();
       if (System.currentTimeMillis() > deadlineMs) {
         return;
       }
       List<Pointer> rows = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       for (Pointer p : rows) {
+        requirePermit();
         String tableId = markerSuffix(prefix, p.getKey());
         if (tableId == null || tableId.isBlank()) {
           continue;
@@ -143,6 +169,9 @@ public class TransactionGc {
                 .setKind(ResourceKind.RK_TABLE)
                 .build();
         if (rootWriter.resyncFromCommittedState(rid)) {
+          // The resync can perform several durable writes. Ownership may have been revoked while
+          // it was running; never acknowledge the marker after that handoff.
+          requirePermit();
           pointerStore.compareAndDelete(p.getKey(), p.getVersion());
         } else {
           LOG.debugf("root resync re-drive still failing for table %s", tableId);
@@ -222,8 +251,10 @@ public class TransactionGc {
     StringBuilder next = new StringBuilder();
     int deleted = 0;
     do {
+      requirePermit();
       List<Pointer> rows = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       for (Pointer p : rows) {
+        requirePermit();
         TransactionIntent byTxIntent = readIntent(p.getBlobUri());
         if (byTxIntent != null) {
           if (txId.equals(byTxIntent.getTxId()) && !byTxIntent.getTargetPointerKey().isBlank()) {
@@ -259,11 +290,13 @@ public class TransactionGc {
     StringBuilder next = new StringBuilder();
     int deleted = 0;
     do {
+      requirePermit();
       if (System.currentTimeMillis() > deadlineMs) {
         break;
       }
       List<Pointer> rows = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       for (Pointer p : rows) {
+        requirePermit();
         TransactionIntent intent = readIntent(p.getBlobUri());
         if (intent == null || intent.getTxId().isBlank()) {
           if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
@@ -288,6 +321,7 @@ public class TransactionGc {
   }
 
   private void deleteByTxIfOwned(String accountId, TransactionIntent intent) {
+    requirePermit();
     String targetPointerKey = intent.getTargetPointerKey();
     if (targetPointerKey == null || targetPointerKey.isBlank()) {
       return;
@@ -310,6 +344,7 @@ public class TransactionGc {
   }
 
   private void deleteTargetIfOwned(String accountId, TransactionIntent intent) {
+    requirePermit();
     String targetPointerKey = intent.getTargetPointerKey();
     if (targetPointerKey == null || targetPointerKey.isBlank()) {
       return;

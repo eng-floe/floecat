@@ -309,6 +309,15 @@ To scale executors horizontally, add more executor-plane instances. They greedil
   ship spans to a collector. See [`telemetry-demo.md`][telemetry-demo-doc]
   for the full Prometheus + Tempo + Loki + Grafana demo stack.
 
+### Account lifecycle
+
+The default Floecat process serves every account. Deployments may bind a different
+`AccountScope`/ownership implementation when they need account admission or lease coordination.
+Query contexts and object caches are local optimizations; retention-based snapshot visibility and
+account-scoped GC determine whether durable data can be used or collected. A pod can therefore be
+restarted without a Floecat drain protocol: Core stops routing new work to the old pod and retries
+queries whose local context was lost.
+
 ### Telemetry hub configuration
 The service uses the telemetry hub core + Micrometer backend. The following flags are available in
 `service/src/main/resources/application.properties` (the `telemetry-otlp` profile toggles OTLP tracing/log exports):

@@ -269,9 +269,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   /**
    * Cache-bypassing variant of {@link #getByBlobUri} for reads whose EMPTINESS is load-bearing —
-   * integrity detectors like the resolving-pin root guard in {@code QueryContextStoreImpl} and the
-   * dangling-pointer verdict in {@code NodeLoader.reload}, where a missing blob must fail loudly
-   * rather than be masked by a still-resident decode.
+   * integrity detectors like the dangling-pointer verdict in {@code NodeLoader.reload}, where a
+   * missing blob must fail loudly rather than be masked by a still-resident decode.
    */
   public Optional<T> getByBlobUriLive(String blobUri) {
     return getByBlobUriDecodedFresh(blobUri);

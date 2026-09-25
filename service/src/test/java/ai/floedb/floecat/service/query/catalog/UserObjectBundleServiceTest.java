@@ -49,7 +49,7 @@ import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CancellingSubscriber;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.CollectingSubscriber;
@@ -1147,7 +1147,7 @@ class UserObjectBundleServiceTest {
     assertThat(queryStore.updateCount()).isEqualTo(0);
     QueryContext updatedCtx = queryStore.get(ctx.getQueryId()).orElseThrow();
     SnapshotSet snapshotSet =
-        QueryPins.toSnapshotSet(RelationPinSet.parseFrom(updatedCtx.getRelationPins()));
+        SnapshotSelections.toSnapshotSet(RelationPinSet.parseFrom(updatedCtx.getRelationPins()));
     assertThat(snapshotSet.getPinsList())
         .noneMatch(pin -> pin.hasTableId() && pin.getTableId().equals(SYSTEM_TABLE));
   }
@@ -1592,7 +1592,6 @@ class UserObjectBundleServiceTest {
             RelationPinSet pins =
                 SnapshotTestSupport.relationPins(
                     SnapshotTestSupport.blobBackedPin(TABLE_A, TABLE_A_SNAPSHOT_ID));
-            queryStore.registerResolvingPinBlobs(queryId, TABLE_A, QueryPins.gcRootUris(pins));
             subscriberRef.get().cancelNow();
             return new ResolutionResult(List.of(TABLE_A), pins, null);
           }
@@ -1620,7 +1619,6 @@ class UserObjectBundleServiceTest {
     service.stream("cid", ctx, List.of(candidate)).subscribe().withSubscriber(subscriber);
     subscriber.await();
 
-    assertThat(queryStore.resolvingPinBlobUris()).isEmpty();
     assertThat(queryStore.updateCount()).isZero();
   }
 
@@ -1639,7 +1637,8 @@ class UserObjectBundleServiceTest {
 
     assertThat(queryStore.updateCount()).isEqualTo(1);
     QueryContext updated = queryStore.get(ctx.getQueryId()).orElseThrow();
-    SnapshotSet pins = QueryPins.toSnapshotSet(RelationPinSet.parseFrom(updated.getRelationPins()));
+    SnapshotSet pins =
+        SnapshotSelections.toSnapshotSet(RelationPinSet.parseFrom(updated.getRelationPins()));
     assertThat(pins.getPinsCount()).isEqualTo(2);
   }
 
@@ -2751,7 +2750,8 @@ class UserObjectBundleServiceTest {
     // The AS_OF view override propagates to the eager base-table pin: the pin resolves to a
     // concrete snapshot (as every pin does) but records the AS_OF temporal intent as provenance.
     TablePin basePin =
-        QueryPins.findTablePin(RelationPinSet.parseFrom(updatedCtx.getRelationPins()), baseId)
+        SnapshotSelections.findResolvedSnapshot(
+                RelationPinSet.parseFrom(updatedCtx.getRelationPins()), baseId)
             .orElseThrow();
     assertThat(basePin.getPinKind()).isEqualTo(PinKind.PIN_KIND_AS_OF);
     assertThat(basePin.getOriginalAsOf()).isEqualTo(asOf);

@@ -189,7 +189,7 @@ public class StatsOrchestrator {
 
   /**
    * Single-target resolution that honors the pinned stats generation, mirroring {@link
-   * #resolvePlannerBatchInGeneration}: the pinned generation for the pinned snapshot (query
+   * #resolvePlannerBatchInGeneration}: the pinned generation for the resolved snapshot (query
    * consistent), then the newest (live active) generation only to fill a target the pinned
    * generation lacks (so an incomplete pinned generation never yields NOT_FOUND), then bounded
    * capture. When the pin froze no generation the live/newest generation is the primary source.
@@ -224,7 +224,7 @@ public class StatsOrchestrator {
       java.util.function.Supplier<Optional<ObjectCache.SnapshotFacts>> loadExact =
           () ->
               plannerResolver
-                  .resolvePinnedFromStore(request, pinned.get())
+                  .resolveSnapshotnedFromStore(request, pinned.get())
                   .filter(TargetStatsRecord::hasTable)
                   .map(StatsOrchestrator::snapshotFacts);
       Optional<ObjectCache.SnapshotFacts> exact =
@@ -343,20 +343,21 @@ public class StatsOrchestrator {
    * Planner batch resolution that honors the query's pinned stats generation and the planner's
    * per-target completeness needs.
    *
-   * <p>The pin freezes a stats generation for the query's lifetime (as the scan path does), so
-   * plans are stable and reproducible for a given pin. "Exists in the pinned generation" alone is
-   * too coarse a hit rule, though: generations enrich over time (a finalize can add sketch payloads
-   * to a snapshot whose earlier generation was scalar-only), so a pinned record that lacks a
-   * requested capability must not stop resolution — the planner would consume it downgraded while a
-   * richer record for the SAME snapshot exists. For each target the lookup order is:
+   * <p>The query selection freezes a stats generation for the query attempt (as the scan path
+   * does), so plans are stable and reproducible for that attempt. "Exists in the selected
+   * generation" alone is too coarse a hit rule, though: generations enrich over time (a finalize
+   * can add sketch payloads to a snapshot whose earlier generation was scalar-only), so a pinned
+   * record that lacks a requested capability must not stop resolution — the planner would consume
+   * it downgraded while a richer record for the SAME snapshot exists. For each target the lookup
+   * order is:
    *
    * <ol>
    *   <li>cache hit in the pinned generation's keyspace (the live/newest keyspace when the pin
    *       froze no generation), only if the cached record satisfies the target's completeness
    *       predicate;
-   *   <li>the pinned generation for the pinned snapshot — the primary source; a record that fails
+   *   <li>the pinned generation for the resolved snapshot — the primary source; a record that fails
    *       its predicate is held as a PARTIAL candidate rather than served;
-   *   <li>the newest (live active) generation of the SAME pinned snapshot, consulted for targets
+   *   <li>the newest (live active) generation of the SAME resolved snapshot, consulted for targets
    *       the pinned generation lacks or serves only partially. Never a newer snapshot: this is
    *       richer stats for identical data, not weakened snapshot consistency. If newest satisfies,
    *       it wins; if not, the pinned partial is served (consistency prefers the pin between

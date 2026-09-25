@@ -193,7 +193,7 @@ final class TimingAccumulator {
     return decorationNanos.sum();
   }
 
-  /** Sum of the two pin sub-phases; the {@code pin_ms} derived metric. */
+  /** Sum of the two pin sub-phases; the {@code snapshot_selection_ms} derived metric. */
   long pinNanos() {
     return pinCollectNanos.sum() + pinCommitNanos.sum();
   }
@@ -255,9 +255,9 @@ final class TimingAccumulator {
     diagnostics.nanos("name_resolve", nameResolveNanos.sum());
     diagnostics.nanos("node_resolve", nodeResolveNanos.sum());
     diagnostics.nanos("base_inject", baseInjectNanos.sum());
-    diagnostics.nanos("pin_collect", pinCollectNanos.sum());
-    diagnostics.nanos("pin_commit", pinCommitNanos.sum());
-    diagnostics.put("pin_ms", ctx.pinMs());
+    diagnostics.nanos("snapshot_selection_collect", pinCollectNanos.sum());
+    diagnostics.nanos("snapshot_selection_commit", pinCommitNanos.sum());
+    diagnostics.put("snapshot_selection_ms", ctx.pinMs());
     diagnostics.nanos("relation_build", relationBuildNanos.sum());
     diagnostics.nanos("decoration", decorationNanos.sum());
     diagnostics.nanos("stats_lookup", statsLookupNanos.sum());

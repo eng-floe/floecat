@@ -92,7 +92,8 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
    * <p>This acknowledgement contract intentionally differs from stats publication. Constraints are
    * acknowledged once their authoritative constraints-family pointer is durable; the table-root ref
    * is derived state that may converge through the durable marker. Stats generation publication is
-   * itself the visibility boundary for pinned reads, so that path records a marker and rethrows.
+   * itself the visibility boundary for resolved-snapshot reads, so that path records a marker and
+   * rethrows.
    */
   void publishCommittedConstraintsToRoot(ResourceId tableId, long snapshotId) {
     if (rootWriter == null || rootWriter.commitConstraintsFromCommittedState(tableId, snapshotId)) {
@@ -387,16 +388,14 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
                   var meta = constraints.metaForSafe(tableId, snapshotId);
                   // deleteSnapshotConstraints removes only the (table, snapshot) pointers — the
                   // constraints bundle is a content-addressed CAS blob, so the blob itself is NOT
-                  // deleted here. A query that pinned this snapshot reads the bundle by its frozen
-                  // blob URI (getByBlobUri), independent of the pointer, and reference-aware
-                  // CasBlobGc reclaims the blob only once no live pin holds it — so removing the
-                  // pointer cannot break a pinned reader.
+                  // deleted here. A query that selected this snapshot reads the bundle by its
+                  // frozen blob URI (getByBlobUri), independent of the pointer. Retention-aware
+                  // reachability determines whether an old query must retry.
                   if (!constraints.deleteSnapshotConstraints(tableId, snapshotId)) {
                     // Already gone — either a double-delete or a prior attempt that deleted the
                     // pointer then failed its root commit and is retrying. Clear the root ref
-                    // idempotently before reporting not-found, so a pinned-ref never outlives the
-                    // pointer it points at (new pins would copy a stale ref; root-chain GC would
-                    // anchor the retired blob).
+                    // idempotently before reporting not-found so future selections cannot copy a
+                    // stale ref.
                     publishCommittedConstraintsToRoot(tableId, snapshotId);
                     throw constraintsBundleNotFound(tableId, snapshotId);
                   }

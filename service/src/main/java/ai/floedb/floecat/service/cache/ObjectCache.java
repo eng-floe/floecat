@@ -32,12 +32,17 @@ import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.error.impl.GrpcErrors;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.MessageLite;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
@@ -50,8 +55,8 @@ import java.util.function.Supplier;
  * <p>Callers supply domain objects and immutable content identities; this module owns key layout,
  * weighing, native Caffeine loading and account eviction. Names, projections, engine decoration and
  * absence are deliberately not retained. Content-versioned entries need no mutation invalidation: a
- * writer publishes a new reachable identity and old entries remain useful to existing pins until
- * ordinary capacity eviction.
+ * writer publishes a new reachable identity and old entries remain useful to existing resolved
+ * selections until ordinary capacity eviction.
  *
  * <p>One {@link MemoryCache} and one byte budget serve every object kind. The private typed key
  * keeps schemas, relations, constraints and snapshot facts from colliding without creating a
@@ -67,6 +72,7 @@ public final class ObjectCache {
 
   private final MemoryCache<Key, Value> entries;
   private final LogicalSchemaMapper schemaMapper;
+  private final SnapshotRetentionPolicy retentionPolicy;
   private final boolean enabled;
 
   ObjectCache(long maxBytes, CacheEvents events, boolean enabled) {
@@ -75,10 +81,25 @@ public final class ObjectCache {
 
   ObjectCache(
       long maxBytes, CacheEvents events, LogicalSchemaMapper schemaMapper, boolean enabled) {
+    this(
+        maxBytes,
+        events,
+        schemaMapper,
+        enabled,
+        new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ZERO, Duration.ZERO));
+  }
+
+  ObjectCache(
+      long maxBytes,
+      CacheEvents events,
+      LogicalSchemaMapper schemaMapper,
+      boolean enabled,
+      SnapshotRetentionPolicy retentionPolicy) {
     this.entries =
         new CaffeineMemoryCache<>(
             CacheFamily.OBJECT, maxBytes, ObjectCache::estimatedKeyBytes, events);
     this.schemaMapper = Objects.requireNonNull(schemaMapper, "schemaMapper");
+    this.retentionPolicy = Objects.requireNonNull(retentionPolicy, "retentionPolicy");
     this.enabled = enabled;
   }
 
@@ -129,21 +150,29 @@ public final class ObjectCache {
   }
 
   /**
-   * Resolve a pinned schema by the immutable identities already carried on the pin. The backing
-   * table and snapshot are read only on a miss, which keeps callers from resolving cache
-   * ingredients before asking Objects for the answer.
+   * Resolve a resolved snapshot schema by the immutable identities already carried on the
+   * selection. The backing table and snapshot are read only on a miss, which keeps callers from
+   * resolving cache ingredients before asking Objects for the answer.
    */
-  public SchemaDescriptor pinnedSchema(
+  public SchemaDescriptor resolvedSnapshotSchema(
       String correlationId, TablePin pin, CatalogGraphView graphView) {
     Objects.requireNonNull(correlationId, "correlationId");
     Objects.requireNonNull(pin, "pin");
     Objects.requireNonNull(graphView, "graphView");
-    String schemaScope = pinnedSchemaScope(pin);
+    if (pin.hasIngestedAt() && retentionPolicy.gcEligible(pin.getIngestedAt())) {
+      throw GrpcErrors.snapshotExpired(
+          correlationId,
+          null,
+          Map.of(
+              "table_id", pin.getTableId().getId(),
+              "snapshot_id", Long.toString(pin.getSnapshotId())));
+    }
+    String schemaScope = resolvedSnapshotSchemaScope(pin);
     String identity =
         Hashing.sha256Hex(
-            requireIdentity(pin.getTableBlobUri(), "pinned table identity")
+            requireIdentity(pin.getTableBlobUri(), "resolved table snapshot identity")
                 + '\0'
-                + requireIdentity(schemaScope, "pinned schema identity"));
+                + requireIdentity(schemaScope, "resolved snapshot schema identity"));
     Key key = new Key(account(pin.getTableId()), Kind.SCHEMA, identity);
     return get(
         key,
@@ -159,9 +188,10 @@ public final class ObjectCache {
                       snapshotRef,
                       pin.getTableBlobUri(),
                       pin.getSnapshotBlobUri()),
-                  "pinned schema resolution returned null");
+                  "resolved snapshot schema resolution returned null");
           if (!resolved.table().id().equals(pin.getTableId())) {
-            throw new IllegalArgumentException("resolved schema does not match the pinned table");
+            throw new IllegalArgumentException(
+                "resolved schema does not match the resolved table snapshot");
           }
           String schemaJson = resolved.schemaJson();
           String effectiveSchema =
@@ -184,7 +214,7 @@ public final class ObjectCache {
             .orElse(table.cacheIdentity());
     String schemaIdentity =
         effectivePin
-            .map(ObjectCache::pinnedSchemaScope)
+            .map(ObjectCache::resolvedSnapshotSchemaScope)
             .orElseGet(() -> schemaIdentity(table, table.schemaJson()));
     String identity =
         Hashing.sha256Hex(
@@ -230,7 +260,7 @@ public final class ObjectCache {
    * Load the two small ingest-shaped facts for one table snapshot and stats-generation view.
    *
    * <p>A blank generation identity denotes the mutable live view. A non-blank identity denotes an
-   * immutable generation frozen on a query pin; keeping it in the key preserves the existing
+   * immutable generation frozen by a query selection; keeping it in the key preserves the existing
    * query-consistent stats policy when generations overlap for the same snapshot.
    */
   public Optional<SnapshotFacts> snapshotFacts(
@@ -407,10 +437,10 @@ public final class ObjectCache {
     return Hashing.sha256Hex(material);
   }
 
-  private static String pinnedSchemaScope(TablePin pin) {
-    String scope = QueryPins.schemaScope(pin);
+  private static String resolvedSnapshotSchemaScope(TablePin pin) {
+    String scope = SnapshotSelections.schemaScope(pin);
     return requireIdentity(
-        scope.isBlank() ? pin.getSnapshotBlobUri() : scope, "pinned schema identity");
+        scope.isBlank() ? pin.getSnapshotBlobUri() : scope, "resolved snapshot schema identity");
   }
 
   private static String account(ResourceId id) {

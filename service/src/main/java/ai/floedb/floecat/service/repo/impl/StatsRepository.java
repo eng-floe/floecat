@@ -28,6 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.model.BlobRefs;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
@@ -95,8 +96,8 @@ public class StatsRepository implements StatsStore {
 
   /**
    * Serializes only the final liveness recheck and lifecycle claim with table publishers. Once the
-   * claim changes the generation to {@code DELETING}, publication and new query pins fail closed,
-   * so the caller can release the guard before performing remote blob and pointer I/O.
+   * claim changes the generation to {@code DELETING}, publication and new snapshot selections fail
+   * closed, so the caller can release the guard before performing remote blob and pointer I/O.
    */
   @FunctionalInterface
   public interface GenerationGcClaimGuard {
@@ -216,34 +217,6 @@ public class StatsRepository implements StatsStore {
       throw new BaseResourceRepository.AbortRetryableException(
           "stats generation manifest read retryable: " + uri);
     }
-  }
-
-  /**
-   * Fails closed unless a frozen generation manifest is live, content-valid, and still published.
-   * Query-pin registration calls this while holding the table reachability guard shared with GC
-   * generation reclamation.
-   */
-  public Keys.GenerationKey requirePublishedGenerationLive(ResourceId tableId, String manifestUri) {
-    Keys.GenerationKey generation = Keys.generationFromManifestBlobUri(manifestUri);
-    if (generation == null
-        || !manifestUri.equals(
-            Keys.snapshotTargetStatsManifestBlobUri(
-                tableId.getAccountId(),
-                tableId.getId(),
-                generation.snapshotId(),
-                generation.generationId()))) {
-      throw new BaseResourceRepository.CorruptionException(
-          "frozen stats generation belongs to a different table: " + manifestUri);
-    }
-    String lifecycle =
-        generationLifecycleState(tableId, generation.snapshotId(), generation.generationId());
-    String storedGeneration = loadGenerationId(manifestUri).orElse("");
-    if (!GENERATION_PUBLISHED.equals(lifecycle)
-        || !generation.generationId().equals(storedGeneration)) {
-      throw new BaseResourceRepository.CorruptionException(
-          "frozen stats generation is unavailable: " + manifestUri);
-    }
-    return generation;
   }
 
   @Override
@@ -2940,6 +2913,16 @@ public class StatsRepository implements StatsStore {
     @Override
     protected boolean referencedBlobImmutable(String pointerKey, String blobUri) {
       return ReusableArtifactBundleUris.isBundleUri(blobUri) || isExactTargetStatsBlobUri(blobUri);
+    }
+
+    @Override
+    protected Optional<String> immutableBlobEtag(String pointerKey, String blobUri) {
+      // Legacy target-stat URIs contain only the logical identity, not the serialized-body hash.
+      // Keep their HEAD fallback; only the exact identity form can provide the body ETag locally.
+      if (isExactTargetStatsBlobUri(blobUri) || ReusableArtifactBundleUris.isBundleUri(blobUri)) {
+        return BlobRefs.etagFromCasUri(blobUri);
+      }
+      return Optional.empty();
     }
 
     @Override

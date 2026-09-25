@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
@@ -47,6 +48,7 @@ public class IdempotencyGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<IdempotencyGc> idempotencyGc;
+  @Inject AccountScope accountScope;
   @Inject Observability observability;
 
   private GcMetrics gcMetrics;
@@ -130,10 +132,21 @@ public class IdempotencyGcScheduler {
         }
 
         String accountId = account.getResourceId().getId();
+        var acquired = accountScope.tryAcquireGc(accountId);
+        if (acquired.isEmpty()) {
+          gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "account-not-owned"));
+          continue;
+        }
         String token = tokenByAccount.getOrDefault(accountId, "");
 
         long sliceStart = System.nanoTime();
-        var result = gc.runSliceForAccount(accountId, token);
+        IdempotencyGc.Result result;
+        try (var permit = acquired.get()) {
+          result = gc.runSliceForAccount(accountId, token, permit);
+        } catch (AccountScope.GcPermitRevokedException revoked) {
+          gcMetrics.recordCollection(1, Tag.of(TagKey.RESULT, "gc-permit-revoked"));
+          continue;
+        }
         gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "scanned"));
         gcMetrics.recordCollection(result.expired(), Tag.of(TagKey.RESULT, "expired"));
         gcMetrics.recordCollection(result.ptrDeleted(), Tag.of(TagKey.RESULT, "ptr-deleted"));

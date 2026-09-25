@@ -37,7 +37,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Query-pin helpers shared by the resolver and the relation-resolution RPCs.
+ * Resolved-snapshot selection helpers shared by the resolver and relation-resolution RPCs.
  *
  * <p>Three concerns live here:
  *
@@ -46,64 +46,21 @@ import java.util.Optional;
  *       snapshot-selector {@link SnapshotPin} the older read paths (obligations, schema-describe,
  *       scan/stats pin lookup) still speak. The stored representation is always {@code
  *       RelationPinSet}; richer paths consume the {@code TablePin} directly.
- *   <li>The table-pin conflict rule ({@link #compatible} / {@link #reconcile} / {@link
+ *   <li>The resolved-snapshot conflict rule ({@link #compatible} / {@link #reconcile} / {@link
  *       #mergeSets}): first-touch wins, compatible later resolutions reuse the stored pin, and
  *       incompatible temporal intents fail planning.
  *   <li>The opaque planner-facing {@link RelationPinIdentity} built by {@link #identity}.
  * </ul>
  */
-public final class QueryPins {
-  private QueryPins() {}
+public final class SnapshotSelections {
+  private SnapshotSelections() {}
 
   public static RelationPin ofTable(TablePin tablePin) {
     return RelationPin.newBuilder().setTablePin(tablePin).build();
   }
 
-  /**
-   * Every immutable blob URI this pin references: the pinned ROOT (the object all reads follow refs
-   * out of, and whose chain expansion protects the manifest pages and per-entry refs), plus the
-   * copied table/snapshot/constraints refs. This is the ONE definition shared by the transient
-   * resolving-window registration and the committed context's GC roots — the two must never
-   * diverge, or a pin's blobs are unprotected exactly in the window between resolution and context
-   * commit.
-   */
-  public static List<String> gcRootUris(TablePin pin) {
-    List<String> uris = new ArrayList<>(5);
-    addUriIfPresent(uris, pin.getRootUri());
-    addUriIfPresent(uris, pin.getTableBlobUri());
-    addUriIfPresent(uris, pin.getSnapshotBlobUri());
-    addUriIfPresent(uris, pin.getConstraintsRefUri());
-    // The stats generation frozen on the pin is a DIRECT root, like every other pin ref: the
-    // planner reads the generation manifest through this URI for the query's lifetime, so it must
-    // not depend on the GC's table-root chain walk (which also references it, but is a sweep-time
-    // traversal that can be skipped on read failures) — symmetric with how live scan sessions
-    // root their frozen generation.
-    addUriIfPresent(uris, pin.getStatsGenerationRefUri());
-    return uris;
-  }
-
-  /** Every immutable blob URI referenced by every table pin in {@code pins}. */
-  public static List<String> gcRootUris(RelationPinSet pins) {
-    if (pins == null || pins.getPinsCount() == 0) {
-      return List.of();
-    }
-    List<String> uris = new ArrayList<>();
-    for (RelationPin pin : pins.getPinsList()) {
-      if (pin.hasTablePin()) {
-        uris.addAll(gcRootUris(pin.getTablePin()));
-      }
-    }
-    return uris;
-  }
-
-  private static void addUriIfPresent(List<String> uris, String uri) {
-    if (uri != null && !uri.isEmpty()) {
-      uris.add(uri);
-    }
-  }
-
-  /** Find the pinned table for {@code tableId}, matched by account + id. */
-  public static Optional<TablePin> findTablePin(RelationPinSet pins, ResourceId tableId) {
+  /** Find the resolved table snapshot for {@code tableId}, matched by account + id. */
+  public static Optional<TablePin> findResolvedSnapshot(RelationPinSet pins, ResourceId tableId) {
     return pins.getPinsList().stream()
         .filter(RelationPin::hasTablePin)
         .map(RelationPin::getTablePin)
@@ -135,7 +92,8 @@ public final class QueryPins {
   }
 
   /**
-   * The table-pin conflict rule. A later resolution of an already-pinned table is compatible when:
+   * The resolved-snapshot conflict rule. A later resolution of an already-resolved table snapshot
+   * is compatible when:
    *
    * <ul>
    *   <li>it carries no temporal intent (CURRENT / unspecified) — it simply reuses the stored pin;
@@ -154,9 +112,9 @@ public final class QueryPins {
    * {@code SnapshotHelper.resolvedPin}), so folding it into identity would make two references to
    * the same immutable snapshot conflict merely because the table was ALTERed between them —
    * resolution-order dependent, and the opposite of what first-touch is for. It is carried on the
-   * pin as first-touch provenance (used to read the pinned table blob and validate it), not as
-   * identity. Compatibility never rests on {@code original_as_of}; the stored pin is never mutated
-   * or upgraded.
+   * pin as first-touch provenance (used to read the resolved table snapshot blob and validate it),
+   * not as identity. Compatibility never rests on {@code original_as_of}; the stored pin is never
+   * mutated or upgraded.
    */
   static boolean compatible(TablePin existing, TablePin incoming) {
     PinKind kind = incoming.getPinKind();
@@ -185,9 +143,9 @@ public final class QueryPins {
   }
 
   /**
-   * Reconcile an incoming pin against the existing pin for the same table. Returns the pin to keep
-   * (always the existing one, per first-touch semantics) or throws a query-consistency error when
-   * the two carry incompatible temporal intents.
+   * Reconcile an incoming selection against the existing selection for the same table. Returns the
+   * selection to keep (always the existing one, per first-touch semantics) or throws a
+   * query-consistency error when the two carry incompatible temporal intents.
    */
   public static TablePin reconcile(TablePin existing, TablePin incoming, String correlationId) {
     if (compatible(existing, incoming)) {
@@ -203,9 +161,10 @@ public final class QueryPins {
   }
 
   /**
-   * Merge two relation-pin sets keyed by table id, applying {@link #reconcile}. Existing pins are
-   * preserved in place; incoming pins for new tables are appended; incompatible temporal intents
-   * for an already-pinned table fail planning. Insertion order is stable.
+   * Merge two relation-selection sets keyed by table id, applying {@link #reconcile}. Existing
+   * selections are preserved in place; incoming pins for new tables are appended; incompatible
+   * temporal intents for an already-resolved table snapshot fail planning. Insertion order is
+   * stable.
    */
   public static RelationPinSet mergeSets(
       RelationPinSet existing, RelationPinSet incoming, String correlationId) {
@@ -214,17 +173,17 @@ public final class QueryPins {
     }
     // Keyed by table identity. Only table pins participate: the set is table pins today (views pin
     // their base tables), and skipping non-table pins on both sides avoids collapsing several of
-    // them onto the empty key relationPinKey returns for a non-table pin.
+    // them onto the empty key selectionKey returns for a non-table pin.
     Map<String, RelationPin> merged = new LinkedHashMap<>();
     // Non-table pins from the EXISTING set (a reserved ViewPin arm, none constructed today) are
     // carried through verbatim so an already-stored pin is not lost on merge. Incoming non-table
     // pins are dropped: merging them needs a per-kind identity/dedup key that only ViewPin will
-    // define (relationPinKey returns "" for them) — wire incoming carry-through here when that arm
+    // define (selectionKey returns "" for them) — wire incoming carry-through here when that arm
     // lands.
     List<RelationPin> carryThrough = new ArrayList<>();
     for (RelationPin pin : existing.getPinsList()) {
       if (pin.hasTablePin()) {
-        merged.put(relationPinKey(pin), pin);
+        merged.put(selectionKey(pin), pin);
       } else {
         carryThrough.add(pin);
       }
@@ -233,7 +192,7 @@ public final class QueryPins {
       if (!pin.hasTablePin()) {
         continue;
       }
-      String key = relationPinKey(pin);
+      String key = selectionKey(pin);
       RelationPin current = merged.get(key);
       if (current == null) {
         merged.put(key, pin);
@@ -299,17 +258,19 @@ public final class QueryPins {
   }
 
   /** Stable per-query map key for a table: account + kind + id. */
-  public static String pinKey(ResourceId id) {
+  public static String selectionKey(ResourceId id) {
     return String.join(":", id.getAccountId(), id.getKind().name(), id.getId());
   }
 
-  private static String relationPinKey(RelationPin pin) {
-    return pin.hasTablePin() ? pinKey(pin.getTablePin().getTableId()) : "";
+  private static String selectionKey(RelationPin pin) {
+    return pin.hasTablePin() ? selectionKey(pin.getTablePin().getTableId()) : "";
   }
 
   private static boolean sameTable(ResourceId a, ResourceId b) {
-    // Same identity as pinKey (account + kind + id): a lookup must carry the fully-resolved id AND
-    // the right kind, so a non-RK_TABLE id reusing a pinned table's account/id cannot match a table
+    // Same identity as selectionKey (account + kind + id): a lookup must carry the fully-resolved
+    // id AND
+    // the right kind, so a non-RK_TABLE id reusing a resolved table snapshot's account/id cannot
+    // match a table
     // pin. A blank accountId on one side is a DIFFERENT identity, never a wildcard — see
     // QueryContextTest.requireSnapshotPinDoesNotMatchWhenAccountIsMissingOnOneSide.
     return a.getAccountId().equals(b.getAccountId())

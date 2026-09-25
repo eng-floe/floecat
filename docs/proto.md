@@ -42,7 +42,7 @@ CLI, and reconciler.
   independent of Connector and deliberately contain no connectivity-validation or reconciliation
   operations.
 - **`query/lifecycle.proto`** – Query lifecycle (`BeginQuery`, `RenewQuery`, `EndQuery`, `GetQuery`) and the
-  snapshot pin metadata sent down to the SQL planner.
+  resolved snapshot metadata sent down to the SQL planner.
 - **`query/system_objects_registry.proto`** – `GetSystemObjects` plus message definitions for builtin functions,
   operators, casts, collations, aggregates, and types loaded from static files.
 - **`query/user_objects_bundle.proto`** – `GetUserObjects` streams resolved relation metadata for planner binding, including per-column `ColumnResult` outcomes (`READY` with `ColumnInfo` or `FAILED` with `ColumnFailure`).
@@ -94,7 +94,7 @@ case-sensitive. Each path selects that namespace subtree.
 
 ### Planner Lifecycle & Execution Scan Schemas
 `query/lifecycle.proto` captures everything the planner needs to hold a lease:
-- `QueryDescriptor` mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion
+- `QueryDescriptor` mirrors the live query context (IDs, expiry timestamps, snapshot selections, expansion
   maps, and table obligations). Per-table scan manifests are retrieved lazily via
   `QueryScanService`: clients call `InitScan`, fully consume `StreamDeleteFiles`, then consume
   `StreamDataFiles` for a specific table before `CloseScan`.
@@ -252,7 +252,7 @@ engine release.
    execution is complete.
 
    * BeginQuery allows clients to provide an optional `query_id` (duplicates are rejected) and
-     a list of `common.QueryInput` records so the lifecycle service can pin snapshots and expansions
+     a list of `common.QueryInput` records so the service can resolve snapshots and expansions
      at creation time for deterministic replay. Schema resolution and planning still occur in the
      downstream services.
 
@@ -281,7 +281,7 @@ _State diagram for the query lease protocol:_
   extensions. Document keys in the consuming module (for example connector-specific hints in
   [`docs/connectors-spi.md`](connectors-spi.md)).
 - **Query leases** – Clients decide how aggressively to renew leases; planners should renew before
-  `expires_at` and call `EndQuery` even on failure so `QueryContextStore` can release pins eagerly.
+  `expires_at` and call `EndQuery` even on failure to release process-local query bookkeeping.
 
 ## Examples & Scenarios
 ### Creating a table via gRPC

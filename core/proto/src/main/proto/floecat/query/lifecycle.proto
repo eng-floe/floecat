@@ -31,7 +31,7 @@ import "google/protobuf/timestamp.proto";
  *
  * This service manages ONLY:
  *   - Input references (tables/views)
- *   - Snapshot pinning
+ *   - Coherent snapshot selection
  *   - View expansion
  *   - Row/column obligations
  *   - Query lifecycle (creation, renewal, completion)
@@ -62,9 +62,10 @@ enum QueryStatus {
 }
 
 /**
- * A single pinned snapshot, the wire projection of a resolved table pin.
+ * A single resolved snapshot selection. The historical wire name SnapshotPin is retained for
+ * compatibility; it is the wire projection of a resolved TablePin.
  *
- * Every pin resolves to a concrete snapshot at construction, so the server
+ * Every selection resolves to a concrete snapshot at construction, so the server
  * always emits snapshot_id. The as_of arm is wire-legacy: kept for old
  * clients' decoders, never produced anymore.
  */
@@ -78,7 +79,7 @@ message SnapshotPin {
 }
 
 /**
- * All pinned snapshots for a query.
+ * All resolved snapshot selections for a query.
  */
 message SnapshotSet {
   repeated SnapshotPin pins = 1;

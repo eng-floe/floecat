@@ -334,7 +334,7 @@ class StatsProviderFactoryTest {
   }
 
   @Test
-  void pinnedSnapshotIdReflectsStoredPin() {
+  void resolvedSnapshotIdReflectsStoredPin() {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
@@ -344,12 +344,12 @@ class StatsProviderFactoryTest {
     QueryContext pinned = queryContextWithPin("query-pin", snapshotId);
     store.seed(pinned);
     var provider = factory.forQuery(pinned, "corr");
-    assertEquals(snapshotId, provider.pinnedSnapshotId(TABLE).orElseThrow());
+    assertEquals(snapshotId, provider.resolvedSnapshotId(TABLE).orElseThrow());
 
     QueryContext noPin = queryContextWithoutPin();
     store.seed(noPin);
     var noPinProvider = factory.forQuery(noPin, "corr");
-    assertTrue(noPinProvider.pinnedSnapshotId(TABLE).isEmpty());
+    assertTrue(noPinProvider.resolvedSnapshotId(TABLE).isEmpty());
   }
 
   @Test
@@ -650,7 +650,7 @@ class StatsProviderFactoryTest {
   }
 
   @Test
-  void systemScanUsesLatestSnapshotStatsEvenWhenQueryPinsOlderSnapshot() {
+  void systemScanUsesLatestSnapshotStatsEvenWhenSnapshotSelectionsOlderSnapshot() {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();

@@ -116,8 +116,9 @@ public class NodeLoader {
       return Optional.empty();
     }
     MutationMeta meta = MutationMeta.newBuilder().setBlobUri(blobUri).build();
-    // The blob a pin names is immutable, so a resident decode of it is the pinned content, not a
-    // stale view of it. Emptiness still fails through requirePinnedTableBlob at the caller.
+    // The blob a pin names is immutable, so a resident decode of it is the resolved snapshot
+    // content, not a
+    // stale view of it. Emptiness still fails through requireResolvedTableBlob at the caller.
     return tableRepository.getByBlobUri(blobUri).map(table -> toTableNode(table, meta));
   }
 

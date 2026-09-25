@@ -24,10 +24,10 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
-import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotSelectionMemo;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,21 +38,19 @@ import java.util.function.BooleanSupplier;
 import org.jboss.logging.Logger;
 
 /**
- * The pin-durability transaction for one GetUserObjects stream, driven per chunk. The conductor
- * calls {@link #accumulate} as each chunk's relations are gathered (collect the resolver's pins and
- * fold them into the pending set) and {@link #commit} before the chunk's stats are warmed (write
- * the pending set durably to the QueryContext). Owns the mutable pin state — {@code
- * pendingChunkPins} plus the per-request snapshot-pin memo — and records the pin-collect /
- * pin-commit timers into the shared request {@link TimingAccumulator}.
+ * The snapshot-selection transaction for one GetUserObjects stream, driven per chunk. The conductor
+ * calls {@link #accumulate} as each chunk's relations are gathered (collect the resolver's
+ * selections and fold them into the pending set) and {@link #commit} before the chunk's stats are
+ * warmed (write the pending set durably to the QueryContext). Owns the mutable selection state —
+ * {@code pendingSelections} plus the per-request snapshot-selection memo — and records the
+ * selection-collect / selection-commit timers into the shared request {@link TimingAccumulator}.
  *
- * <p>The transient-GC-root invariant lives here: the resolver registers each pin's blob as a
- * transient GC root at resolution, protecting it across the collect→commit window; {@link #commit}
- * turns the QueryContext into a durable root, and every failure arm releases those transient roots
- * so a failed transaction cannot pin blobs forever.
+ * <p>Snapshot selections are accumulated here before they are written to the process-local query
+ * context. They are not GC roots; retention-aware durable reachability owns object lifetime.
  */
-final class QueryPinCommitter {
+final class SnapshotSelectionCommitter {
 
-  private static final Logger LOG = Logger.getLogger(QueryPinCommitter.class);
+  private static final Logger LOG = Logger.getLogger(SnapshotSelectionCommitter.class);
 
   private final QueryInputResolver inputResolver;
   private final QueryContextStore queryStore;
@@ -60,15 +58,16 @@ final class QueryPinCommitter {
   private final String correlationId;
   private final TimingAccumulator timings;
 
-  // First-touch snapshot per relation id, shared with the resolver so a relation pins to one
+  // First-touch snapshot per relation id, shared with the resolver so a relation resolves to one
   // snapshot for the life of the request.
-  private final SnapshotPinMemo snapshotPinMemo = new SnapshotPinMemo();
-  private final Object pendingPinsLock = new Object();
+  private final SnapshotSelectionMemo snapshotSelectionMemo = new SnapshotSelectionMemo();
+  private final Object pendingSelectionsLock = new Object();
 
-  // Pins gathered but not yet made durable; folded across chunks, drained by commit().
-  private RelationPinSet pendingChunkPins = RelationPinSet.getDefaultInstance();
+  // Resolved selections gathered but not yet made durable; folded across chunks, drained by
+  // commit().
+  private RelationPinSet pendingSelections = RelationPinSet.getDefaultInstance();
 
-  QueryPinCommitter(
+  SnapshotSelectionCommitter(
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
       QueryContext ctx,
@@ -82,23 +81,19 @@ final class QueryPinCommitter {
   }
 
   /**
-   * Resolve pins for the chunk's relations and fold them into the pending set. Records the
-   * pin-collect timing into the shared tally and the {@code pin.*} sub-phase counters into {@code
-   * diagnostics}.
+   * Resolve snapshot selections for the chunk's relations and fold them into the pending set.
+   * Records the selection-collect timing into the shared tally and the selection sub-phase counters
+   * into {@code diagnostics}.
    */
   void accumulate(List<ResolvedRelation> toPin, PhaseDiagnostics diagnostics) {
     accumulate(toPin, diagnostics, () -> false);
   }
 
-  /**
-   * Resolve pins for a chunk while observing cancellation. Any roots collected before cancellation
-   * are released because they will not become durable on the query context.
-   */
+  /** Resolve selections for a chunk while observing cancellation. */
   void accumulate(
       List<ResolvedRelation> toPin, PhaseDiagnostics diagnostics, BooleanSupplier cancelled) {
     long pinStartNs = System.nanoTime();
     RelationPinSet chunkPins = RelationPinSet.getDefaultInstance();
-    boolean handedOff = false;
     try {
       throwIfCancelled(cancelled);
       chunkPins = collectChunkPins(toPin, diagnostics, cancelled);
@@ -106,34 +101,26 @@ final class QueryPinCommitter {
       long accumulateStartNs = System.nanoTime();
       boolean accumulated;
       try {
-        // From this point the committer owns the incoming roots on every outcome: a successful
-        // merge
-        // keeps them pending, cancellation releases them, and a failed merge releases them together
-        // with the previously pending roots in one store call.
-        handedOff = true;
         accumulated = accumulateChunkPins(chunkPins, cancelled);
       } finally {
-        diagnostics.nanos("pin.accumulate", System.nanoTime() - accumulateStartNs);
+        diagnostics.nanos("snapshot.accumulate", System.nanoTime() - accumulateStartNs);
       }
       if (!accumulated) {
-        throw new CancellationException("query pin accumulation cancelled");
+        throw new CancellationException("snapshot selection accumulation cancelled");
       }
     } finally {
-      if (!handedOff) {
-        releaseRoots(chunkPins);
-      }
       timings.addPinCollectNanos(System.nanoTime() - pinStartNs);
     }
   }
 
-  /** Make the accumulated pins durable on the QueryContext. Records the pin-commit timing. */
+  /** Make the accumulated selections durable on the QueryContext. */
   void commit() {
     commit(() -> false);
   }
 
   /**
-   * Make pending pins durable unless cancellation stops the request. Cancellation releases their
-   * transient roots and leaves the query context unchanged.
+   * Make pending selections durable unless cancellation stops the request. Cancellation discards
+   * the pending selection set and leaves the query context unchanged.
    */
   void commit(BooleanSupplier cancelled) {
     long pinCommitStartNs = System.nanoTime();
@@ -145,17 +132,17 @@ final class QueryPinCommitter {
   }
 
   /** Pending (not-yet-committed) pin count, for the driver's per-chunk debug log. */
-  int pendingPinCount() {
-    synchronized (pendingPinsLock) {
-      return pendingChunkPins.getPinsCount();
+  int pendingSelectionCount() {
+    synchronized (pendingSelectionsLock) {
+      return pendingSelections.getPinsCount();
     }
   }
 
-  /** Detach roots that cancellation must release without blocking on a store operation. */
-  RelationPinSet detachPendingPins() {
-    synchronized (pendingPinsLock) {
-      RelationPinSet detached = pendingChunkPins;
-      pendingChunkPins = RelationPinSet.getDefaultInstance();
+  /** Detach selections that cancellation must discard without blocking on a store operation. */
+  RelationPinSet detachPendingSelections() {
+    synchronized (pendingSelectionsLock) {
+      RelationPinSet detached = pendingSelections;
+      pendingSelections = RelationPinSet.getDefaultInstance();
       return detached;
     }
   }
@@ -167,7 +154,7 @@ final class QueryPinCommitter {
     if (relations == null || relations.isEmpty()) {
       return RelationPinSet.getDefaultInstance();
     }
-    diagnostics.add("pin.relations", relations.size());
+    diagnostics.add("snapshot.relations", relations.size());
     List<QueryInput> inputs = new ArrayList<>(relations.size());
     long buildInputsStartNs = System.nanoTime();
     for (ResolvedRelation relation : relations) {
@@ -177,13 +164,13 @@ final class QueryPinCommitter {
       }
     }
     diagnostics.nanos("pin.build_inputs", System.nanoTime() - buildInputsStartNs);
-    diagnostics.add("pin.inputs", inputs.size());
+    diagnostics.add("snapshot.inputs", inputs.size());
     if (inputs.isEmpty()) {
       return RelationPinSet.getDefaultInstance();
     }
     long asOfStartNs = System.nanoTime();
     var asOfDefault = ctx.parseAsOfDefault(correlationId);
-    diagnostics.nanos("pin.asof_default", System.nanoTime() - asOfStartNs);
+    diagnostics.nanos("snapshot.asof_default", System.nanoTime() - asOfStartNs);
     long resolverStartNs = System.nanoTime();
     var resolution =
         inputResolver.resolveInputs(
@@ -192,23 +179,15 @@ final class QueryPinCommitter {
             inputs,
             asOfDefault,
             Optional.of(ctx.getQueryDefaultCatalogId()),
-            snapshotPinMemo,
+            snapshotSelectionMemo,
             diagnostics,
             cancelled);
-    diagnostics.nanos("pin.resolver", System.nanoTime() - resolverStartNs);
+    diagnostics.nanos("snapshot.resolver", System.nanoTime() - resolverStartNs);
     RelationPinSet incoming = resolution.relationPinSet();
     RelationPinSet pins = incoming == null ? RelationPinSet.getDefaultInstance() : incoming;
-    boolean handedOff = false;
-    try {
-      throwIfCancelled(cancelled);
-      diagnostics.add("pin.output_pins", pins.getPinsCount());
-      handedOff = true;
-      return pins;
-    } finally {
-      if (!handedOff) {
-        releaseRoots(pins);
-      }
-    }
+    throwIfCancelled(cancelled);
+    diagnostics.add("snapshot.output_selections", pins.getPinsCount());
+    return pins;
   }
 
   private QueryInput buildCanonicalQueryInput(ResolvedRelation relation) {
@@ -238,27 +217,22 @@ final class QueryPinCommitter {
     }
     RelationPinSet accumulatedPins = RelationPinSet.getDefaultInstance();
     boolean cancelledBeforeMerge;
-    try {
-      synchronized (pendingPinsLock) {
-        cancelledBeforeMerge = cancelled.getAsBoolean();
-        if (cancelledBeforeMerge) {
-          accumulatedPins = RelationPinSet.getDefaultInstance();
-        } else {
-          accumulatedPins = pendingChunkPins;
-          try {
-            pendingChunkPins = QueryPins.mergeSets(accumulatedPins, incomingPins, correlationId);
-          } catch (RuntimeException | Error e) {
-            pendingChunkPins = RelationPinSet.getDefaultInstance();
-            throw e;
-          }
+    synchronized (pendingSelectionsLock) {
+      cancelledBeforeMerge = cancelled.getAsBoolean();
+      if (cancelledBeforeMerge) {
+        accumulatedPins = RelationPinSet.getDefaultInstance();
+      } else {
+        accumulatedPins = pendingSelections;
+        try {
+          pendingSelections =
+              SnapshotSelections.mergeSets(accumulatedPins, incomingPins, correlationId);
+        } catch (RuntimeException | Error e) {
+          pendingSelections = RelationPinSet.getDefaultInstance();
+          throw e;
         }
       }
-    } catch (RuntimeException | Error e) {
-      releaseRoots(accumulatedPins.toBuilder().addAllPins(incomingPins.getPinsList()).build());
-      throw e;
     }
     if (cancelledBeforeMerge) {
-      releaseRoots(incomingPins);
       return false;
     }
     return true;
@@ -267,29 +241,26 @@ final class QueryPinCommitter {
   private void commitChunkPins(BooleanSupplier cancelled) {
     RelationPinSet toCommit;
     boolean cancelledBeforeCommit;
-    synchronized (pendingPinsLock) {
+    synchronized (pendingSelectionsLock) {
       cancelledBeforeCommit = cancelled.getAsBoolean();
       if (cancelledBeforeCommit) {
-        toCommit = pendingChunkPins;
-        pendingChunkPins = RelationPinSet.getDefaultInstance();
-      } else if (pendingChunkPins.getPinsCount() == 0) {
+        toCommit = pendingSelections;
+        pendingSelections = RelationPinSet.getDefaultInstance();
+      } else if (pendingSelections.getPinsCount() == 0) {
         return;
       } else {
-        toCommit = pendingChunkPins;
-        pendingChunkPins = RelationPinSet.getDefaultInstance();
+        toCommit = pendingSelections;
+        pendingSelections = RelationPinSet.getDefaultInstance();
       }
     }
     if (cancelledBeforeCommit) {
-      releaseRoots(toCommit);
       throw new CancellationException("query pin commit cancelled");
     }
     if (LOG.isDebugEnabled()) {
       LOG.debugf(
-          "Committing chunk pins query_id=%s pin_count=%d",
+          "Committing chunk snapshot selections query_id=%s selection_count=%d",
           ctx.getQueryId(), toCommit.getPinsCount());
     }
-    // The resolver registered these pins' blobs as transient GC roots at resolution, so they are
-    // protected across the collect→commit window; this update makes the context a durable root.
     Optional<QueryContext> updated;
     try {
       updated =
@@ -302,24 +273,15 @@ final class QueryPinCommitter {
                 return mergeRelationPins(existing, toCommit, correlationId);
               });
     } catch (RuntimeException | Error e) {
-      queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
       throw e;
     }
     if (updated.isEmpty()) {
-      queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(toCommit));
       LOG.warnf("Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
       throw GrpcErrors.notFound(
           correlationId, QUERY_NOT_FOUND, Map.of("query_id", ctx.getQueryId()));
     }
     if (LOG.isDebugEnabled()) {
       LOG.debugf("Committed chunk pins query_id=%s", ctx.getQueryId());
-    }
-  }
-
-  /** Release the transient roots represented by {@code pins}, if any. */
-  private void releaseRoots(RelationPinSet pins) {
-    if (pins != null && pins.getPinsCount() > 0) {
-      queryStore.releaseResolvingPinBlobs(ctx.getQueryId(), QueryPins.gcRootUris(pins));
     }
   }
 
@@ -335,8 +297,8 @@ final class QueryPinCommitter {
     if (incoming == null || incoming.getPinsCount() == 0) {
       return existing;
     }
-    RelationPinSet current = existing.parseRelationPins(correlationId);
-    RelationPinSet merged = QueryPins.mergeSets(current, incoming, correlationId);
+    RelationPinSet current = existing.parseSnapshotSelections(correlationId);
+    RelationPinSet merged = SnapshotSelections.mergeSets(current, incoming, correlationId);
     if (current.equals(merged)) {
       return existing;
     }

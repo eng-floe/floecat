@@ -201,13 +201,14 @@ public interface CatalogGraphView {
    * <p>The default preserves compatibility for existing implementations whose lifecycle state may
    * be tied to one request thread. Implementations backed by thread-safe services may opt in to
    * concurrent resolution. Opting in permits {@link #catalog}, {@link #resolve}, {@code
-   * resolveName(s)}, and {@link #tablePinFor} callbacks to execute concurrently and off the caller
-   * thread, together with graph-view schema/name callbacks used while assembling GetUserObjects
-   * relations ({@link #schemaFor}, {@link #tableSchema}, {@link #tableName(ResourceId,
-   * EngineContext)}, and {@link #viewName(ResourceId, EngineContext)}). It does not change the
-   * caller-thread contract of separately injected stats or engine-decoration collaborators.
-   * Implementations opting in must make the listed graph-view callbacks thread-safe and must not
-   * depend on custom caller-thread state that service context propagation does not capture.
+   * resolveName(s)}, and {@link #resolvedSnapshotFor} callbacks to execute concurrently and off the
+   * caller thread, together with graph-view schema/name callbacks used while assembling
+   * GetUserObjects relations ({@link #schemaFor}, {@link #tableSchema}, {@link
+   * #tableName(ResourceId, EngineContext)}, and {@link #viewName(ResourceId, EngineContext)}). It
+   * does not change the caller-thread contract of separately injected stats or engine-decoration
+   * collaborators. Implementations opting in must make the listed graph-view callbacks thread-safe
+   * and must not depend on custom caller-thread state that service context propagation does not
+   * capture.
    */
   default boolean supportsConcurrentResolution() {
     return false;
@@ -240,7 +241,7 @@ public interface CatalogGraphView {
    * resolve the snapshot directly. Pin kind follows the request intent (explicit snapshot / as-of /
    * current) so dedupe can rank pins for the same table.
    */
-  TablePin tablePinFor(
+  TablePin resolvedSnapshotFor(
       String correlationId,
       ResourceId tableId,
       SnapshotRef override,
@@ -283,13 +284,13 @@ public interface CatalogGraphView {
   Optional<CatalogNode> catalog(ResourceId id);
 
   /**
-   * Resolve the schema for a pinned query. {@code tableBlobUri} names the pinned table blob and
-   * {@code snapshotBlobUri} the pinned snapshot blob, so both the table metadata and the
-   * snapshot-sourced schema are read from those immutable blobs rather than the live pointers. A
-   * concurrent {@code ALTER} advances the current table pointer, and an in-place {@code
-   * UpdateSnapshot} can repoint the {@code (table, snapshot id)} pointer to a new snapshot blob
-   * after the pin was built; reading the pinned uris cannot drift to either. Empty uris read the
-   * current pointers.
+   * Resolve the schema for a snapshot-resolved query. {@code tableBlobUri} names the resolved table
+   * snapshot blob and {@code snapshotBlobUri} the resolved snapshot blob, so both the table
+   * metadata and the snapshot-sourced schema are read from those immutable blobs rather than the
+   * live pointers. A concurrent {@code ALTER} advances the current table pointer, and an in-place
+   * {@code UpdateSnapshot} can repoint the {@code (table, snapshot id)} pointer to a new snapshot
+   * blob after the pin was built; reading the pinned uris cannot drift to either. Empty uris read
+   * the current pointers.
    */
   SchemaResolution schemaFor(
       String correlationId,

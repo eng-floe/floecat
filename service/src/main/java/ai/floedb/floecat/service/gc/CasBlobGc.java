@@ -24,7 +24,8 @@ import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
-import ai.floedb.floecat.service.query.QueryContextStore;
+import ai.floedb.floecat.service.account.AccountScope;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -40,6 +41,8 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -57,16 +60,13 @@ import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 /**
- * Sweeps unreferenced CAS blobs per account. Roots come from every live pointer (shared store) and
- * the pin/resolving roots of live query contexts — which are <b>node-local</b> (in-process {@code
- * QueryContextStore}), the only root source that is.
+ * Sweeps unreferenced CAS blobs per account. Roots come from durable pointers and retention-aware
+ * table-root manifests. Query contexts are process-local optimizations only and are never required
+ * for reachability or GC safety.
  *
- * <p>Single-GC-writer assumption: because pin roots are node-local, this sweep is only safe where
- * the process running it can see every live pin — i.e. a single-node deployment, or one where all
- * query traffic is served by the node running GC. A multi-node deployment must either disable this
- * sweep on nodes serving queries ({@code floecat.gc.cas.enabled=false}) or share pin roots across
- * nodes first; the in-process context store already makes queries node-sticky, so this constraint
- * travels with the existing query-routing one.
+ * <p>Account ownership remains the single-writer assumption for publication and GC. The sweep is
+ * safe across replicas when Core routes one account to one Floecat owner; it does not require
+ * Floecat-to-Floecat communication or a shared query-selection registry.
  *
  * <p>Defense in depth: independent of how the referenced set was computed, the delete phase
  * re-reads each candidate's OWNING pointer ({@link Keys#ownerPointerKeyForBlob}) immediately before
@@ -86,7 +86,7 @@ import org.jboss.logging.Logger;
  * against the settled store (root-chain re-walk plus constraints/stats pointer re-scan) before
  * deleting. The re-mark retains an exact table publication epoch, and the epoch check plus
  * version-targeted deletes run under the same table entry used by root, shared sidecar, and
- * resolving-pin publishers. A publication before the proof is included by the fresh re-mark; one
+ * table-root publishers. A publication before the proof is included by the fresh re-mark; one
  * during or after it invalidates the proof and forces a complete restart. This closes the
  * late-publication window for ownerless manifest pages.
  *
@@ -120,14 +120,18 @@ public class CasBlobGc {
    */
   @Inject DurablePointerReads durablePointers;
 
-  @Inject QueryContextStore queryContextStore;
   @Inject TableRootRepository tableRootRepo;
   @Inject StatsRepository statsRepository;
   @Inject TableBlobReachabilityGuard reachabilityGuard;
 
+  @Inject
+  SnapshotRetentionPolicy retentionPolicy =
+      new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ofDays(30), Duration.ofDays(7));
+
   private static final String SCAN_COMPLETE = "\u0000";
   private PassContinuation continuation;
   private long activeDeadlineMs = Long.MAX_VALUE;
+  private AccountScope.GcPermit activePermit;
 
   private static final class DeferredPageState {
     private final String prefix;
@@ -207,7 +211,6 @@ public class CasBlobGc {
     private final List<String> tableIds = new ArrayList<>();
     private Set<String> tableIdSet = new HashSet<>();
     private final StorageEstimate storageEstimate = new StorageEstimate();
-    private final Set<String> walkedPinRoots = new HashSet<>();
     private final int[] walkFailures = {0};
     private final TraversalContinuation traversal = new TraversalContinuation();
     private boolean accountMarked;
@@ -215,7 +218,6 @@ public class CasBlobGc {
     private int tableIndex;
     private String currentTableId = "";
     private ReferenceIndex tableReferenced;
-    private final Set<String> tableWalkedPinRoots = new HashSet<>();
     private final Set<Keys.GenerationKey> tableGenerationKeys = new HashSet<>();
     private final int[] tableWalkFailures = {0};
     private StatsRepository.GenerationGcContinuation generationGcContinuation;
@@ -388,7 +390,7 @@ public class CasBlobGc {
   }
 
   public Result runForAccount(String accountId) {
-    return runForAccount(accountId, Long.MAX_VALUE);
+    return runForAccount(accountId, Long.MAX_VALUE, null);
   }
 
   ReferenceIndex newReferenceIndex(long capacity, double falsePositiveRate, long seed) {
@@ -396,10 +398,17 @@ public class CasBlobGc {
   }
 
   public synchronized Result runForAccount(String accountId, long deadlineMs) {
+    return runForAccount(accountId, deadlineMs, null);
+  }
+
+  public synchronized Result runForAccount(
+      String accountId, long deadlineMs, AccountScope.GcPermit permit) {
+    activePermit = permit;
     if (continuation != null && !continuation.accountId.equals(accountId)) {
       // Only one local mark epoch is retained, which gives the process a hard memory bound. The
       // scheduler prioritizes this account on the next tick; callers reaching another account in
       // the same tick receive a safe pending result without replacing the incomplete mark.
+      activePermit = null;
       return new Result(0, 0L, 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false, true);
     }
     activeDeadlineMs = deadlineMs;
@@ -437,6 +446,13 @@ public class CasBlobGc {
       }
     } finally {
       activeDeadlineMs = Long.MAX_VALUE;
+      activePermit = null;
+    }
+  }
+
+  private void requirePermit() {
+    if (activePermit != null) {
+      activePermit.requireValid();
     }
   }
 
@@ -688,7 +704,6 @@ public class CasBlobGc {
     List<String> tableIds = pass.tableIds;
     int pointersScanned = 0;
     StorageEstimate storageEstimate = pass.storageEstimate;
-    Set<String> walkedPinRoots = pass.walkedPinRoots;
     int[] walkFailures = pass.walkFailures;
 
     if (pass.phase == Phase.ACCOUNT_MARK) {
@@ -770,14 +785,7 @@ public class CasBlobGc {
               storageEstimate);
       collectTableBlobIds(accountId, tableIds, pageSize);
 
-      // A pinned ROOT protects everything it references, not just its own blob: a query pinned to a
-      // superseded root must keep reading that root's pages, snapshot blobs, generation manifests,
-      // and constraints bundles until it ends. `walkedPinRoots` remembers which pin roots have had
-      // their chains walked so pins registered mid-sweep can be rooted incrementally.
-      // `walkFailures` poisons the sweep: manifest pages and per-entry refs are reachable ONLY
-      // through chain walks, so a walk that could not complete (missing blob, storage error) means
-      // the referenced set is not trustworthy and nothing may be deleted this pass.
-      rootLivePinChains(referenced, walkedPinRoots, walkFailures);
+      // The durable root chain is walked in the per-table phase below.
       pass.phase = Phase.TABLES;
     }
 
@@ -813,7 +821,6 @@ public class CasBlobGc {
           pass.generationGcContinuation = new StatsRepository.GenerationGcContinuation();
           pass.generationGcProof = reachabilityGuard.beginProof(accountId, tableId);
           pass.generationGcComplete = false;
-          pass.tableWalkedPinRoots.clear();
           pass.tableWalkFailures[0] = 0;
         }
         ReferenceIndex tableReferenced = pass.tableReferenced;
@@ -831,7 +838,6 @@ public class CasBlobGc {
           pointersScanned++;
           storageEstimate.observe(currentSnapshotPointer);
         }
-        rootLivePinChains(tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
         String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
         pointersScanned +=
             collectPointers(
@@ -839,7 +845,7 @@ public class CasBlobGc {
                 tableReferenced,
                 null,
                 pageSize,
-                null,
+                this::retainSnapshotPointer,
                 storageEstimate,
                 true,
                 pointer ->
@@ -852,8 +858,8 @@ public class CasBlobGc {
         // This MUST happen before the generation reclaim below — a generation the current root
         // still
         // references is protected even when the live active pointer has already moved past it (the
-        // finalize's pointer flip and root commit are not atomic). Superseded root chains no live
-        // pin references are unreferenced and swept below.
+        // finalize's pointer flip and root commit are not atomic). Superseded root chains that
+        // are outside the retention window are unreferenced and swept below.
         var rootPtr = durablePointers.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
         if (rootPtr != null && !rootPtr.getBlobUri().isBlank()) {
           pointersScanned++;
@@ -865,8 +871,7 @@ public class CasBlobGc {
 
         // Reclaim superseded stats generations BEFORE collecting stats pointers as roots, so a
         // doomed generation's record blobs are swept in this same pass. On a miss the predicate
-        // re-roots pins registered since the sweep started — a pin protects its root's whole chain,
-        // including the generation manifests its entries reference, not just the root blob.
+        // re-marks durable table roots, including the generation manifests their entries reference.
         var rid =
             ResourceId.newBuilder()
                 .setAccountId(accountId)
@@ -899,8 +904,6 @@ public class CasBlobGc {
                       if (tableReferenced.mightContain(normalized)) {
                         return true;
                       }
-                      rootLivePinChains(
-                          tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
                       return pass.tableWalkFailures[0] > 0
                           || tableReferenced.mightContain(normalized);
                     },
@@ -934,7 +937,6 @@ public class CasBlobGc {
             if (!remarkTable(accountId, tableId, tableReferenced, pageSize)) {
               pass.tableWalkFailures[0]++;
             }
-            rootLivePinChains(tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
             pass.generationGcContinuation = new StatsRepository.GenerationGcContinuation();
             checkDeadline();
           }
@@ -958,7 +960,6 @@ public class CasBlobGc {
                   accountId,
                   tableId,
                   tableReferenced,
-                  pass.tableWalkedPinRoots,
                   pass.tableWalkFailures,
                   pageSize,
                   nowMs,
@@ -985,12 +986,8 @@ public class CasBlobGc {
       pass.phase = Phase.ACCOUNT_SWEEP;
     }
 
-    // Active query pins are GC roots: an immutable blob a live query pinned must survive even after
-    // the current catalog pointers have advanced past it, until that query (and its scan lease)
-    // ends. Pin blob URIs share MutationMeta.getBlobUri()'s shape, so they normalize identically to
-    // the pointer-derived roots above. This snapshot seeds the root set; because a sweep can run
-    // for a while and pins are registered continuously, the delete passes below also re-read the
-    // (in-memory, cheap) pin roots per page so a pin taken mid-sweep still protects its blob.
+    // The retention-aware current-root walk is the complete query-object root set. Delete passes
+    // may re-mark durable publication state per page, but never consult query memory.
 
     int blobsScanned = 0;
     int blobsDeleted = 0;
@@ -1025,7 +1022,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.accountBlobPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_ACCOUNT),
               null,
@@ -1040,7 +1036,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.catalogRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_CATALOG),
               null,
@@ -1055,7 +1050,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.namespaceRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_NAMESPACE),
               null,
@@ -1070,7 +1064,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.viewRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_VIEW),
               null,
@@ -1085,7 +1078,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.connectorRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_CONNECTOR),
               null,
@@ -1100,7 +1092,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.catalogIntegrationRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains("/integration/"),
               null,
@@ -1115,7 +1106,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.catalogOverlayRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains("/overlay/"),
               null,
@@ -1130,7 +1120,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.storageAuthorityRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_STORAGE_AUTHORITY),
               null,
@@ -1146,10 +1135,8 @@ public class CasBlobGc {
     }
     addDeleteProgress(pass, blobsScanned, blobsDeleted, blobsRescued);
 
-    // Report the FINAL poison state, not a static false: the delete passes re-run rootLivePinChains
-    // per page, so a pin registered mid-sweep whose chain walk fails raises walkFailures[0] and
-    // aborts that pass (protecting data). That poison must reach the scheduler's gauges — reporting
-    // clean here would reset the clean-sweep clock and skip the poisoned-account count.
+    // Report the FINAL poison state, not a static false: an incomplete durable root walk aborts
+    // deletion and must reach the scheduler's gauges.
     return new Result(
         storageEstimate.pointers,
         storageEstimate.referencedBytes,
@@ -1172,8 +1159,8 @@ public class CasBlobGc {
       TableBlobReachabilityGuard.Proof proof,
       java.util.function.BooleanSupplier isProtected,
       java.util.function.BooleanSupplier claim) {
-    // Protection can expand a newly registered pin's root chain through remote blob reads. Do
-    // that while retaining the epoch proof but before taking the table write lock. If publication
+    // Protection can expand a newly published root chain through remote blob reads. Do that while
+    // retaining the epoch proof but before taking the table write lock. If publication
     // overlaps the scan, the guarded epoch check rejects the claim and the caller re-marks.
     if (isProtected.getAsBoolean()) {
       return new TableBlobReachabilityGuard.GuardedResult<>(false, false);
@@ -1190,7 +1177,6 @@ public class CasBlobGc {
       String accountId,
       String tableId,
       ReferenceIndex referenced,
-      Set<String> walkedPinRoots,
       int[] walkFailures,
       int pageSize,
       long nowMs,
@@ -1209,15 +1195,7 @@ public class CasBlobGc {
       for (String prefix : directPrefixes) {
         DeleteResult result =
             deleteUnreferenced(
-                prefix,
-                referenced,
-                walkedPinRoots,
-                walkFailures,
-                key -> true,
-                null,
-                pageSize,
-                nowMs,
-                minAgeMs);
+                prefix, referenced, walkFailures, key -> true, null, pageSize, nowMs, minAgeMs);
         scanned += result.scanned();
         deleted += result.deleted();
         rescued += result.rescued();
@@ -1230,7 +1208,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.tableSnapshotBlobPrefix(accountId, tableId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key ->
                   key.contains(Keys.SEG_SNAPSHOT)
@@ -1253,7 +1230,6 @@ public class CasBlobGc {
               deleteUnreferenced(
                   prefix,
                   referenced,
-                  walkedPinRoots,
                   walkFailures,
                   key -> true,
                   deferred,
@@ -1278,7 +1254,6 @@ public class CasBlobGc {
                 accountId,
                 tableId,
                 referenced,
-                walkedPinRoots,
                 walkFailures,
                 pageSize,
                 referenceCapacity,
@@ -1304,14 +1279,12 @@ public class CasBlobGc {
       String accountId,
       String tableId,
       ReferenceIndex referenced,
-      Set<String> walkedPinRoots,
       int[] walkFailures,
       int pageSize,
       long referenceCapacity,
       double referenceFalsePositiveRate) {
     DeferredPageState state = continuation.deferredPage;
     while (true) {
-      rootLivePinChains(referenced, walkedPinRoots, walkFailures);
       if (walkFailures[0] > 0) {
         return new DeleteResult(0, 0, 0, true);
       }
@@ -1368,8 +1341,8 @@ public class CasBlobGc {
           continue;
         }
         // Keep remote reachability reads outside the publication lock. The proof epoch below
-        // invalidates this decision if a publisher or resolving pin overlaps the reads.
-        if (keepForLatePin(normalized, referenced, walkedPinRoots, walkFailures)) {
+        // invalidates this decision if a publisher or metadata resolver overlaps the reads.
+        if (keepIfDurablyReferenced(normalized, referenced, walkFailures)) {
           if (walkFailures[0] > 0) {
             return new DeleteResult(0, state.deleted, 0, true);
           }
@@ -1377,8 +1350,9 @@ public class CasBlobGc {
           continue;
         }
         // Serialize only the irreversible version-targeted delete. Holding the table lock for the
-        // whole candidate page can otherwise stall commits and query-pin registration for nearly
+        // whole candidate page can otherwise stall commits and snapshot-selection work for nearly
         // the entire GC tick.
+        requirePermit();
         var guarded =
             reachabilityGuard.deleteIfUnchanged(
                 state.remarkProof, () -> blobStore.delete(candidate.key(), candidate.versionId()));
@@ -1507,7 +1481,6 @@ public class CasBlobGc {
       pass.generationGcProof.close();
       pass.generationGcProof = null;
     }
-    pass.tableWalkedPinRoots.clear();
     pass.tableGenerationKeys.clear();
     pass.tableWalkFailures[0] = 0;
   }
@@ -1675,6 +1648,18 @@ public class CasBlobGc {
         for (int entryIndex = entryStart; entryIndex < page.getEntriesCount(); entryIndex++) {
           checkDeadline();
           var entry = page.getEntries(entryIndex);
+          // Keep the current root and the grace-period history. Older entries remain in the
+          // manifest for audit/AS OF error reporting, but no longer keep their data blobs alive.
+          boolean retainEntry =
+              (root.hasCurrentSnapshotId() && entry.getSnapshotId() == root.getCurrentSnapshotId())
+                  || !retentionPolicy.gcEligible(
+                      entry.hasIngestedAt() ? entry.getIngestedAt() : null);
+          if (!retainEntry) {
+            if (resumable) {
+              continuation.traversal.chainEntryIndexes.put(chainKey, entryIndex + 1);
+            }
+            continue;
+          }
           if (entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isBlank()) {
             referenced.add(normalizeKey(entry.getSnapshotRef().getUri()));
             if (!rootSnapshotReusableArtifactIndex(
@@ -2038,6 +2023,24 @@ public class CasBlobGc {
         prefix, referenced, tableIds, pageSize, filter, storageEstimate, markBlobReferences, null);
   }
 
+  /**
+   * Snapshot pointer rows older than retention+grace no longer keep their immutable payload alive.
+   */
+  private boolean retainSnapshotPointer(Pointer pointer) {
+    if (pointer == null || pointer.getBlobUri().isBlank()) {
+      return true;
+    }
+    try {
+      Snapshot snapshot = Snapshot.parseFrom(blobStore.get(pointer.getBlobUri()));
+      return !retentionPolicy.gcEligible(
+          snapshot.hasIngestedAt() ? snapshot.getIngestedAt() : null);
+    } catch (RuntimeException | com.google.protobuf.InvalidProtocolBufferException e) {
+      // A malformed or unreadable snapshot is retained; the normal repair/missing-blob paths
+      // decide whether it can be removed later.
+      return true;
+    }
+  }
+
   private int collectPointers(
       String prefix,
       ReferenceIndex referenced,
@@ -2130,49 +2133,6 @@ public class CasBlobGc {
                     new Keys.GenerationKey(snapshotId, Keys.INDEX_ARTIFACT_DIRECT_GENERATION)));
   }
 
-  /** Current pin-root URIs, normalized like every other root. */
-  private Set<String> normalizedPinRoots() {
-    Set<String> roots = new java.util.TreeSet<>();
-    for (String pinUri : queryContextStore.referencedPinBlobUris()) {
-      if (pinUri != null && !pinUri.isBlank()) {
-        roots.add(normalizeKey(pinUri));
-      }
-    }
-    return roots;
-  }
-
-  /**
-   * Roots every currently-live pin: the pin blob URIs themselves, plus — for pin roots not yet
-   * walked this pass — the whole table-root chain they reference. Re-reading the (in-memory,
-   * node-local) pin set is cheap; chain walks happen at most once per distinct pin root per pass,
-   * so pins registered mid-sweep are rooted incrementally without re-walking known chains.
-   */
-  private void rootLivePinChains(
-      ReferenceIndex referenced, Set<String> walkedPinRoots, int[] walkFailures) {
-    for (String pinRoot : normalizedPinRoots()) {
-      if (continuation != null && referenced == continuation.tableReferenced) {
-        String pinTableId =
-            Keys.extractResourceIdFromBlobUri(pinRoot.startsWith("/") ? pinRoot : "/" + pinRoot);
-        if (!continuation.currentTableId.equals(pinTableId)) {
-          continue;
-        }
-      }
-      referenced.add(pinRoot);
-      if (continuation != null && referenced == continuation.referenced) {
-        // Account-scoped families do not depend on table-root chains. The table-scoped mark below
-        // expands the pin only for its owning table, avoiding an account-wide table reference set.
-        continue;
-      }
-      if (pinRoot.contains(Keys.SEG_TABLE_ROOT) && !walkedPinRoots.contains(pinRoot)) {
-        if (!rootTableRootChain(pinRoot, referenced)) {
-          walkFailures[0]++;
-        } else {
-          walkedPinRoots.add(pinRoot);
-        }
-      }
-    }
-  }
-
   private record DeleteResult(int scanned, int deleted, int rescued, boolean pending) {}
 
   private static final class DeleteProgress {
@@ -2191,7 +2151,6 @@ public class CasBlobGc {
   private DeleteResult deleteUnreferenced(
       String prefix,
       ReferenceIndex referenced,
-      Set<String> walkedPinRoots,
       int[] walkFailures,
       Predicate<String> isCandidate,
       List<DeferredCandidate> deferNoOwnerTo,
@@ -2204,7 +2163,6 @@ public class CasBlobGc {
       return deleteUnreferenced(
           prefix,
           referenced,
-          walkedPinRoots,
           walkFailures,
           isCandidate,
           deferNoOwnerTo,
@@ -2224,7 +2182,6 @@ public class CasBlobGc {
   private DeleteResult deleteUnreferenced(
       String prefix,
       ReferenceIndex referenced,
-      Set<String> walkedPinRoots,
       int[] walkFailures,
       Predicate<String> isCandidate,
       List<DeferredCandidate> deferNoOwnerTo,
@@ -2241,17 +2198,11 @@ public class CasBlobGc {
     while (true) {
       checkDeadline();
       BlobStore.Page page = blobStore.list(prefix, pageSize, token);
-      // Re-root the live pins once per page: the root set captured at the start of the run goes
-      // stale over a long sweep, and a pin registered mid-sweep (whose blobs may have just lost
-      // their pointer root) must still protect its blob AND its root's whole chain. The pin set
-      // is
-      // node-local memory and chains walk at most once per pin root, so this stays cheap.
-      rootLivePinChains(referenced, walkedPinRoots, walkFailures);
       if (walkFailures[0] > 0) {
-        // A pin-chain walk failed mid-phase (reachability is now unknowable): stop deleting
+        // A durable root walk failed mid-phase (reachability is now unknowable): stop deleting
         // immediately (see the pass-level gate). A rescue does NOT reach here — it keeps the blob
         // and continues without raising walkFailures.
-        LOG.warnf("cas gc delete pass over %s aborted: pin-chain walk failed mid-phase", prefix);
+        LOG.warnf("cas gc delete pass over %s aborted: durable root walk failed mid-phase", prefix);
         return progress.result(true);
       }
       for (String key : page.keys()) {
@@ -2358,12 +2309,9 @@ public class CasBlobGc {
                 "cas gc skipped %s: no derivable owner pointer and no deferral in this pass", key);
             continue;
           }
-          // Final guard before the irreversible delete: a query may have published a pin to a
-          // superseded root since this page's pin snapshot. Re-read the live pins and keep the
-          // blob
-          // if it is now pin-reachable; a pin-chain walk failure aborts the pass (reachability
-          // unprovable).
-          if (keepForLatePin(normalized, referenced, walkedPinRoots, walkFailures)) {
+          // Final guard before the irreversible delete: re-check durable reachability after the
+          // mark; an incomplete walk aborts the pass because reachability is unprovable.
+          if (keepIfDurablyReferenced(normalized, referenced, walkFailures)) {
             if (walkFailures[0] > 0) {
               return progress.result(true);
             }
@@ -2375,6 +2323,7 @@ public class CasBlobGc {
           // and
           // the act name the same immutable object and the pointer stays resolvable in every
           // interleaving.
+          requirePermit();
           if (blobStore.delete(key, versionId)) {
             progress.deleted++;
             // Defensive post-delete corruption detector. The sweep only reaches here on a
@@ -2418,24 +2367,9 @@ public class CasBlobGc {
     return progress.result(false);
   }
 
-  /**
-   * Re-snapshots the live query pins immediately before an irreversible delete and reports whether
-   * the blob must be kept. A query can publish a pin to a SUPERSEDED root at any instant — the
-   * root's manifest pages and chain blobs are then absent from the sweep-time referenced set and
-   * from the current-root re-mark, yet must survive. Pin publication is read-only (no re-PUT), so
-   * the version fence cannot catch it either. Re-reading the (node-local, cheap) pin set here and
-   * expanding any newly-pinned root's chain protects owner-derived candidates that do not use the
-   * deferred table proof. Deferred manifest-page, reusable-index-node, and shared-sidecar deletes
-   * additionally serialize with resolving-pin publication through {@link
-   * TableBlobReachabilityGuard}. A pin-chain walk failure makes reachability unprovable, so it too
-   * returns "keep" (and the caller aborts).
-   */
-  private boolean keepForLatePin(
-      String normalizedKey,
-      ReferenceIndex referenced,
-      Set<String> walkedPinRoots,
-      int[] walkFailures) {
-    rootLivePinChains(referenced, walkedPinRoots, walkFailures);
+  /** Rechecks durable reachability immediately before an irreversible delete. */
+  private boolean keepIfDurablyReferenced(
+      String normalizedKey, ReferenceIndex referenced, int[] walkFailures) {
     return walkFailures[0] > 0 || referenced.mightContain(normalizedKey);
   }
 

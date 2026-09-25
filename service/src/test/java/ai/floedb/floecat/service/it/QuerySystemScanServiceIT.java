@@ -31,7 +31,7 @@ import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
@@ -212,7 +212,7 @@ public class QuerySystemScanServiceIT {
     String queryId = beginQuery(cat.getResourceId());
     QueryContext preScan = queryStore.get(queryId).orElseThrow();
     SnapshotSet preSnapshots =
-        QueryPins.toSnapshotSet(RelationPinSet.parseFrom(preScan.getRelationPins()));
+        SnapshotSelections.toSnapshotSet(RelationPinSet.parseFrom(preScan.getRelationPins()));
     assertEquals(0, preSnapshots.getPinsCount(), "BeginQuery should start with zero pins");
 
     ResourceId systemTableId = systemTable("pg", "information_schema", "tables");
@@ -237,7 +237,7 @@ public class QuerySystemScanServiceIT {
         chunks.isEmpty(), "System scan should emit rows even when stats provider is active");
     QueryContext postScan = queryStore.get(queryId).orElseThrow();
     SnapshotSet postSnapshots =
-        QueryPins.toSnapshotSet(RelationPinSet.parseFrom(postScan.getRelationPins()));
+        SnapshotSelections.toSnapshotSet(RelationPinSet.parseFrom(postScan.getRelationPins()));
     assertEquals(0, postSnapshots.getPinsCount(), "System scan must not add snapshot pins");
     assertTrue(
         statsFactory.forQuery(postScan, "corr-check").tableStats(systemTableId).isEmpty(),

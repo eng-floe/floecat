@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
@@ -54,6 +55,7 @@ public class CasBlobGcScheduler {
 
   @Inject Provider<AccountRepository> accounts;
   @Inject Provider<CasBlobGc> casBlobGc;
+  @Inject AccountScope accountScope;
   @Inject Provider<StorageUsageMetrics> storageUsageMetrics;
   @Inject Observability observability;
 
@@ -208,7 +210,32 @@ public class CasBlobGcScheduler {
         String accountId = account.getResourceId().getId();
         CasBlobGc.Result result;
         try {
-          result = gc.runForAccount(accountId, deadline);
+          var acquired = accountScope.tryAcquireGc(accountId);
+          if (acquired.isEmpty()) {
+            // Do not retry the same paged account until the deadline when its ownership policy
+            // refuses a permit. Advance the discovery cursor just as for any other account-level
+            // outcome.
+            if (fromPage && advanceAccountCursor(gc)) {
+              break;
+            }
+            if (!fromPage) {
+              gc.abandonContinuation();
+              continuationAccountId = "";
+              consecutiveContinuationTicks = 0;
+              lastCleanSweepMs.remove(accountId);
+              break;
+            }
+            continue;
+          }
+          try (var permit = acquired.get()) {
+            result = gc.runForAccount(accountId, deadline, permit);
+          }
+        } catch (AccountScope.GcPermitRevokedException revoked) {
+          gc.abandonContinuation();
+          if (fromPage && advanceAccountCursor(gc)) {
+            break;
+          }
+          continue;
         } catch (RuntimeException e) {
           // Isolate one account's failure from the rest of the tick. A version-targeted delete
           // throws StorageAbortRetryableException on a transient SDK fault and maps non-404 S3

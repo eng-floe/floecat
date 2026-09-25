@@ -35,10 +35,13 @@ import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleEnd;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
@@ -390,6 +393,54 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
 
     List<TableConstraintsResult> results = streamConstraintsFor(service, ctx);
     assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR, results.get(0).getStatus());
+  }
+
+  @Test
+  void streamConstraintsReportsExpiredSnapshotWhenTheFrozenBundleWasCollected() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    var constraintRepo =
+        new ai.floedb.floecat.service.repo.impl.ConstraintRepository(
+            new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
+            new ai.floedb.floecat.storage.memory.InMemoryBlobStore());
+    TablePin pin =
+        SnapshotTestSupport.blobBackedPin(TABLE, 498L).toBuilder()
+            .setIngestedAt(
+                Timestamps.fromMillis(
+                    System.currentTimeMillis() - java.time.Duration.ofDays(45).toMillis()))
+            .setConstraintsRefUri("s3://tbl/constraints-expired.pb")
+            .setConstraintsRefVersion("etag-x")
+            .build();
+    QueryContext ctx = queryContextWithPins("query-constraints-expired", List.of(pin));
+    store.seed(ctx);
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            ConstraintProvider.NONE,
+            constraintRepo,
+            /* chunkSize= */ 5,
+            /* maxTables= */ 1,
+            /* maxTargets= */ 10);
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .build();
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .streamConstraints("corr", ctx, request)
+                    .collect()
+                    .asList()
+                    .await()
+                    .indefinitely());
+    assertEquals(Status.FAILED_PRECONDITION.getCode(), failure.getStatus().getCode());
   }
 
   private static ConstraintProvider versionedProvider(

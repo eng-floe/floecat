@@ -17,11 +17,14 @@
 package ai.floedb.floecat.service.transaction;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.service.account.AccountScope;
+import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.gc.TransactionGc;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -35,6 +38,7 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
 import java.lang.reflect.Field;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 
 class TransactionGcTest {
@@ -466,6 +470,55 @@ class TransactionGcTest {
         "s3://t/table.pb",
         roots.get(rid).orElseThrow().getDefinitionRef().getUri(),
         "the re-driven resync converged the root with committed state");
+  }
+
+  @Test
+  void revokedPermitCannotAcknowledgeACompletedRootResync() throws Exception {
+    var pointers = new InMemoryPointerStore();
+    var blobs = new InMemoryBlobStore();
+    String accountId = "acct";
+    String tableId = "tbl-revoked";
+    String marker = Keys.rootResyncPendingPointer(accountId, tableId);
+    pointers.compareAndSet(marker, 0L, PointerReferences.blobPointer(marker, "", 1L));
+
+    var rootWriter = mock(TableRootWriter.class);
+    AtomicBoolean valid = new AtomicBoolean(true);
+    when(rootWriter.resyncFromCommittedState(any()))
+        .thenAnswer(
+            ignored -> {
+              valid.set(false);
+              return true;
+            });
+
+    var gc = newGc(pointers, blobs);
+    inject(gc, "rootWriter", rootWriter);
+    AccountScope.GcPermit permit =
+        new AccountScope.GcPermit() {
+          @Override
+          public String accountId() {
+            return accountId;
+          }
+
+          @Override
+          public long generation() {
+            return 1L;
+          }
+
+          @Override
+          public boolean valid() {
+            return valid.get();
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    assertThrows(
+        AccountScope.GcPermitRevokedException.class,
+        () -> gc.runForAccount(accountId, System.currentTimeMillis() + 5000, permit));
+    assertTrue(
+        pointers.get(marker).isPresent(),
+        "a revoked owner must not clear the resync marker after the handoff");
   }
 
   @Test

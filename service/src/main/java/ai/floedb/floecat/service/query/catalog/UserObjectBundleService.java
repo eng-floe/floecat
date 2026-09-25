@@ -30,7 +30,6 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationPinIdentity;
-import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.ResolutionFailure;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
@@ -40,13 +39,15 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.service.account.AccountAssignment;
+import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.ViewContextUtils;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
@@ -103,7 +104,7 @@ public class UserObjectBundleService {
   private final long slowRpcMs;
   private final RelationBundleBuilder relationBuilder;
   private final EngineRelationDecorator engineRelationDecorator;
-  private final CancelledQueryPinCleanup cancelledQueryPinCleanup;
+  private final AccountScope accountScope;
 
   // Mints the pin identity/payload token and serves the identity-only decision. Stateless per
   // call; reused on the driver thread across every chunk.
@@ -148,7 +149,7 @@ public class UserObjectBundleService {
       CatalogGraphView graphView,
       QueryInputResolver inputResolver,
       QueryContextStore queryStore,
-      CancelledQueryPinCleanup cancelledQueryPinCleanup,
+      AccountScope accountScope,
       StatsProviderFactory statsFactory,
       ObjectCache objects,
       EngineMetadataDecoratorProvider decoratorProvider,
@@ -170,7 +171,7 @@ public class UserObjectBundleService {
     this.graphView = graphView;
     this.inputResolver = inputResolver;
     this.queryStore = queryStore;
-    this.cancelledQueryPinCleanup = cancelledQueryPinCleanup;
+    this.accountScope = accountScope;
     this.statsFactory = statsFactory;
     this.engineContext = engineContext;
     this.decorationEpoch = safe(decorationEpoch);
@@ -223,12 +224,12 @@ public class UserObjectBundleService {
       boolean grpcPlainText,
       String quarkusProfile) {
     // Test-only: the production defaults for decoration epoch, slow-RPC threshold and relation
-    // parallelism, with an inline same-thread pin cleanup.
+    // parallelism.
     this(
         graphView,
         inputResolver,
         queryStore,
-        new CancelledQueryPinCleanup(queryStore, Runnable::run),
+        AccountAssignment.forTesting(),
         statsFactory,
         ObjectCache.forTesting(),
         decoratorProvider,
@@ -267,20 +268,30 @@ public class UserObjectBundleService {
     return Multi.createFrom()
         .<UserObjectsBundleChunk>deferred(
             () -> {
-              UserObjectBundleIterator iterator =
-                  new UserObjectBundleIterator(correlationId, ctx, candidates, knownPayloadTokens);
-              return Multi.createFrom()
-                  .iterable(() -> iterator)
-                  .onFailure()
-                  .invoke(
-                      failure -> {
-                        if (!(failure instanceof CancellationException)) {
-                          iterator.publishStreamTelemetry("failed");
-                        }
-                        iterator.cancel();
-                      })
-                  .onCancellation()
-                  .invoke(iterator::cancel);
+              var resolutionPermit =
+                  accountScope.admitResolution(ctx.getPrincipal().getAccountId());
+              try {
+                UserObjectBundleIterator iterator =
+                    new UserObjectBundleIterator(
+                        correlationId, ctx, candidates, knownPayloadTokens);
+                return Multi.createFrom()
+                    .iterable(() -> iterator)
+                    .onFailure()
+                    .invoke(
+                        failure -> {
+                          if (!(failure instanceof CancellationException)) {
+                            iterator.publishStreamTelemetry("failed");
+                          }
+                          iterator.cancel();
+                        })
+                    .onCancellation()
+                    .invoke(iterator::cancel)
+                    .onTermination()
+                    .invoke(resolutionPermit::close);
+              } catch (Throwable failure) {
+                resolutionPermit.close();
+                throw failure;
+              }
             });
   }
 
@@ -427,7 +438,7 @@ public class UserObjectBundleService {
     private final long streamStartNs = System.nanoTime();
     private final Span parentSpan = Span.current();
     // Owns the per-request pin state and drives the collect→commit pin-durability transaction.
-    private final QueryPinCommitter pinCommitter;
+    private final SnapshotSelectionCommitter selectionCommitter;
     // A teardown may publish only after the active next() call has finished mutating iterator
     // diagnostics and caches; a real failure wins when cancellation races that final step.
     private final StreamTelemetryState telemetryState = new StreamTelemetryState();
@@ -467,8 +478,8 @@ public class UserObjectBundleService {
           new RelationResolutionMemo(graphView, correlationId, requestEngine, timings);
       this.decorationSelection = engineRelationDecorator.select(requestEngine);
       this.buildFanout = buildFanout(decorationSelection);
-      this.pinCommitter =
-          new QueryPinCommitter(inputResolver, queryStore, ctx, correlationId, timings);
+      this.selectionCommitter =
+          new SnapshotSelectionCommitter(inputResolver, queryStore, ctx, correlationId, timings);
       initializeParentSpan();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
@@ -590,7 +601,7 @@ public class UserObjectBundleService {
         }
       }
       if (!toPin.isEmpty()) {
-        pinCommitter.accumulate(toPin, diagnostics, this::isCancelled);
+        selectionCommitter.accumulate(toPin, diagnostics, this::isCancelled);
       }
     }
 
@@ -617,16 +628,15 @@ public class UserObjectBundleService {
     private void cancel() {
       StreamTelemetryState.CancellationDecision cancellation = telemetryState.cancel(cancelled);
       if (cancellation != StreamTelemetryState.CancellationDecision.IGNORED) {
-        RelationPinSet toRelease = pinCommitter.detachPendingPins();
+        selectionCommitter.detachPendingSelections();
         if (cancellation == StreamTelemetryState.CancellationDecision.PUBLISH) {
           // No producer is mutating diagnostics or caches, but the RPC span may end as soon as
           // this termination callback returns. Emit while it is still recording.
           publishClaimedTelemetrySafely("cancelled");
         }
-        // onTermination may run on a transport/event-loop thread. Root release can perform store
-        // I/O, so teardown runs on a managed executor. Telemetry is published only after the
-        // producer reports that no mutable iterator state remains active.
-        cancelledQueryPinCleanup.release(ctx.getQueryId(), toRelease);
+        // Pending snapshot selections are query-local values; retention, rather than cancellation
+        // cleanup, owns
+        // the lifetime of their immutable snapshot data.
       }
     }
 
@@ -664,9 +674,9 @@ public class UserObjectBundleService {
 
     /**
      * Append one selected resolution to the chunk on the driver thread: tally its found/not-found
-     * count, queue a FOUND table for pinning, and — for a FOUND view — drain its base tables right
-     * after it so bases follow their view in the emitted order. ERROR resolutions count toward
-     * neither found nor not-found, matching the end-chunk contract.
+     * count, queue a FOUND table for snapshot selection, and — for a FOUND view — drain its base
+     * tables right after it so bases follow their view in the emitted order. ERROR resolutions
+     * count toward neither found nor not-found, matching the end-chunk contract.
      */
     private void gather(PendingItem item, List<ResolvedRelation> toPin) {
       if (item instanceof PendingFailure failure) {
@@ -723,7 +733,7 @@ public class UserObjectBundleService {
             continue;
           }
           ResourceId baseId = baseIdOpt.get();
-          String baseKey = QueryPins.pinKey(baseId);
+          String baseKey = SnapshotSelections.selectionKey(baseId);
           if (eagerBaseSeen.contains(baseKey)) {
             continue; // deduplicate
           }
@@ -740,9 +750,9 @@ public class UserObjectBundleService {
                   rel,
                   syntheticInput,
                   canonicalName(rel));
-          // Base-table pins are already derived from the parent view candidate (including AS-OF
-          // overrides). Avoid re-adding a synthetic TABLE_ID pin here, which would otherwise
-          // resolve to CURRENT and can overwrite AS-OF pins in the same batch.
+          // Base-table selections are already derived from the parent view candidate (including
+          // AS-OF overrides). Avoid re-adding a synthetic TABLE_ID selection here, which would
+          // otherwise resolve to CURRENT and can overwrite AS-OF selections in the same batch.
           pending.add(new PendingFound(-1, syntheticRelation));
         } finally {
           timings.addBaseInjectNanos(System.nanoTime() - resolveStartNs);
@@ -866,10 +876,10 @@ public class UserObjectBundleService {
     }
 
     /**
-     * Warm the pinned table stats for this chunk's FOUND tables in one batched, parallel read after
-     * the pin committer. The returned immutable lookup is carried into relation assembly so worker
-     * tasks never re-enter the request-affine stats provider. Views carry no table stats and are
-     * skipped. A batch failure is best-effort and leaves stats absent for this chunk.
+     * Warm the resolved table snapshot stats for this chunk's FOUND tables in one batched, parallel
+     * read after the pin committer. The returned immutable lookup is carried into relation assembly
+     * so worker tasks never re-enter the request-affine stats provider. Views carry no table stats
+     * and are skipped. A batch failure is best-effort and leaves stats absent for this chunk.
      */
     private Map<ResourceId, Optional<StatsProvider.TableStatsView>> warmChunkStats(
         List<PendingItem> chunkItems) {
@@ -1011,12 +1021,15 @@ public class UserObjectBundleService {
       pending.clear();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
-            "Flushing resolution chunk query_id=%s seq=%d pending_items=%d pending_pins=%d",
-            ctx.getQueryId(), framer.seq(), chunkItems.size(), pinCommitter.pendingPinCount());
+            "Flushing resolution chunk query_id=%s seq=%d pending_items=%d pending_selections=%d",
+            ctx.getQueryId(),
+            framer.seq(),
+            chunkItems.size(),
+            selectionCommitter.pendingSelectionCount());
       }
-      // Ensure pins are durable before accessing stats (which expect the QueryContext to be
-      // pinned).
-      pinCommitter.commit(this::isCancelled);
+      // Ensure resolved selections are durable before accessing stats, which use the QueryContext
+      // snapshot choices.
+      selectionCommitter.commit(this::isCancelled);
       throwIfCancelled(this::isCancelled);
 
       Map<ResourceId, Optional<StatsProvider.TableStatsView>> statsByTable =

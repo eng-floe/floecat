@@ -839,9 +839,9 @@ public class CatalogOverlayReconciler {
       MutationMeta overlayMeta,
       CatalogIntegration integration,
       MutationMeta integrationMeta) {
-    if (overlays.metaForSafe(overlay.getResourceId()).getPointerVersion()
+    if (overlays.pointerMetaForSafe(overlay.getResourceId()).getPointerVersion()
             != overlayMeta.getPointerVersion()
-        || integrations.metaForSafe(integration.getResourceId()).getPointerVersion()
+        || integrations.pointerMetaForSafe(integration.getResourceId()).getPointerVersion()
             != integrationMeta.getPointerVersion()
         || overlays.deletionFenceVersion(overlay.getResourceId()) != 0L
         || integrations.cascadeDeletionFenceVersion(integration.getResourceId()) != 0L) {
@@ -958,7 +958,7 @@ public class CatalogOverlayReconciler {
             path(namespace).segments())) {
       return false;
     }
-    MutationMeta meta = namespaces.metaForSafe(namespaceId);
+    MutationMeta meta = namespaces.pointerMetaForSafe(namespaceId);
     if (meta.getPointerVersion() == 0L) {
       // Already gone -- another pass or another writer retired it. Nothing to do, and nothing lost:
       // failing the fence here would retry the whole reconcile for a namespace that is not there.

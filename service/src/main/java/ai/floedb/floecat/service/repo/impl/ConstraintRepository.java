@@ -233,6 +233,11 @@ public class ConstraintRepository {
     return repo.metaForSafe(key(tableId, snapshotId));
   }
 
+  /** Pointer metadata without a blob HEAD for callers that only need the pointer version. */
+  public MutationMeta pointerMetaForSafe(ResourceId tableId, long snapshotId) {
+    return repo.pointerMetaForSafe(key(tableId, snapshotId));
+  }
+
   /** Reads constraints metadata through the same indexed store seam used by ordinary reads. */
   public MutationMeta metaForSafeConsistent(ResourceId tableId, long snapshotId) {
     return repo.metaForSafeConsistent(key(tableId, snapshotId));
