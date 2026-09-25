@@ -289,6 +289,12 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         CAS_MAX,
         DurableReconcileJobStore::assertImmutableJobIdentityPreserved,
         this::logStateTransition);
+    if (projectionStore == null) {
+      projectionStore = new ReconcileJobProjectionStore();
+    }
+    projectionStore.bind(pointerStore, payloads(), jobIndexStore);
+    jobIndexStore.bindRootSummaryProjector(
+        record -> toRootListSummary(record, storedProjectionForRead(record)));
     return jobIndexStore;
   }
 
@@ -306,10 +312,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   }
 
   private ReconcileJobProjectionStore projections() {
-    if (projectionStore == null) {
-      projectionStore = new ReconcileJobProjectionStore();
-    }
-    projectionStore.bind(pointerStore, payloads(), jobIndexStore());
+    jobIndexStore();
     return projectionStore;
   }
 
@@ -750,7 +753,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         continue;
       }
       coalescePendingSnapshotCoverage(item.jobId, spec);
-      upsertRootSummaryByJobId(item.jobId);
       if (shouldMarkSelfDirtyAfterEnqueue(spec)) {
         markDirtyParent(spec.accountId, item.jobId);
       }
@@ -1315,7 +1317,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     clearExecutionLeasesIfOwned(persistedParent, jobId, leaseEpoch);
     markDirtyParentForRecord(persistedParent.record);
-    upsertRootSummaryForRecord(persistedParent.record);
     for (BulkEnqueueItemResult item : result.items) {
       if (item == null || !item.succeeded()) {
         continue;
@@ -1328,7 +1329,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         continue;
       }
       coalescePendingSnapshotCoverage(item.jobId, spec);
-      upsertRootSummaryByJobId(item.jobId);
       if (shouldMarkSelfDirtyAfterEnqueue(spec)) {
         markDirtyParent(spec.accountId, item.jobId);
       }
@@ -1452,17 +1452,21 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       String pageToken,
       String connectorId,
       java.util.Set<String> states) {
-    var page = rootSummaries().listSummaries(accountId, pageSize, pageToken, connectorId, states);
+    var page =
+        rootSummaries()
+            .listSummaries(
+                accountId,
+                pageSize,
+                pageToken,
+                connectorId,
+                states,
+                this::repairStaleTerminalRootSummary);
     List<ReconcileJob> jobs = new ArrayList<>(page.summaries().size());
     for (StoredReconcileJobListSummary summary : page.summaries()) {
-      StoredReconcileJobListSummary repaired = repairStaleCancellationRootSummary(summary);
-      if (repaired == null) {
+      if (states != null && !states.isEmpty() && !states.contains(blankToEmpty(summary.state()))) {
         continue;
       }
-      if (states != null && !states.isEmpty() && !states.contains(blankToEmpty(repaired.state()))) {
-        continue;
-      }
-      jobs.add(ReconcileJobRootSummaryStore.toPublicJob(repaired));
+      jobs.add(ReconcileJobRootSummaryStore.toPublicJob(summary));
     }
     return new ReconcileJobPage(jobs, page.nextPageToken());
   }
@@ -3022,11 +3026,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         jobIndexStore()
             .mutateByJobIdReturningRecord(jobId, mutator)
             .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
-    updated.ifPresent(
-        env -> {
-          markDirtyParentForRecord(env.record);
-          upsertRootSummaryForRecord(env.record);
-        });
+    updated.ifPresent(env -> markDirtyParentForRecord(env.record));
     return updated;
   }
 
@@ -3036,11 +3036,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         jobIndexStore()
             .mutateByCanonicalPointerReturningRecord(canonicalPointerKey, mutator)
             .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
-    updated.ifPresent(
-        env -> {
-          markDirtyParentForRecord(env.record);
-          upsertRootSummaryForRecord(env.record);
-        });
+    updated.ifPresent(env -> markDirtyParentForRecord(env.record));
     return updated;
   }
 
@@ -3155,7 +3151,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           Long.valueOf((System.nanoTime() - startedNanos) / 1_000_000L));
       return RefreshResult.COMMITTED;
     }
-    var batch = jobIndexStore().buildJobIndexWriteBatch(canonicalSnapshot, parent, nextParent);
+    var batch =
+        jobIndexStore()
+            .buildJobIndexWriteBatch(
+                canonicalSnapshot,
+                parent,
+                nextParent,
+                toRootListSummary(nextParent, nextProjection));
     long batchPreparedNanos = System.nanoTime();
     List<PointerStore.CasOp> pointerOps = new ArrayList<>();
     PointerStore.UnconditionalUpsert ancestorMarker =
@@ -3189,10 +3191,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       cleanupAbandonedFullRescanStatsGenerationIfTerminal(nextParent);
     }
     releaseSnapshotOwnershipIfTerminal(nextParent, canonicalPointerKey);
-    long rootSummaryStartedNanos = System.nanoTime();
-    if (blankToEmpty(nextParent.parentJobId).isBlank()) {
-      rootSummaries().upsert(toRootListSummary(nextParent, nextProjection));
-    }
     long finishedNanos = System.nanoTime();
     LOG.infof(
         "reconcile projection commit accountId=%s jobId=%s kind=%s parentJobId=%s children=%d"
@@ -3202,7 +3200,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
             + " load_ms=%d child_scan_ms=%d aggregate_ms=%d finalizer_enqueue_ms=%d"
             + " canonical_prepare_ms=%d projection_load_ms=%d batch_prepare_ms=%d"
             + " marker_prepare_ms=%d projection_commit_ms=%d marker_ack_ms=%d"
-            + " marker_acknowledged=%s root_summary_ms=%d total_ms=%d",
+            + " marker_acknowledged=%s total_ms=%d",
         accountId,
         parentJobId,
         parent.jobKind(),
@@ -3230,7 +3228,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         Long.valueOf((projectionCommittedNanos - markerPreparedNanos) / 1_000_000L),
         Long.valueOf((markerAcknowledgedNanos - projectionCommittedNanos) / 1_000_000L),
         Boolean.valueOf(markerAcknowledged),
-        Long.valueOf((finishedNanos - rootSummaryStartedNanos) / 1_000_000L),
         Long.valueOf((finishedNanos - startedNanos) / 1_000_000L));
     return markerAcknowledged ? RefreshResult.COMMITTED : RefreshResult.MARKER_ACK_CONFLICT;
   }
@@ -3686,7 +3683,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       next.updatedAtMs = now;
       if (commitSingleCancellationMutation(root, next)) {
         markDirtyParentForRecord(next);
-        upsertRootSummaryForRecord(next);
       }
       return false;
     }
@@ -3706,7 +3702,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
           return false;
         }
         markDirtyParentForRecord(next);
-        upsertRootSummaryForRecord(next);
         effectiveRoot = next;
       }
       requestParentCancellationCleanupIfNeeded(effectiveRoot);
@@ -3729,7 +3724,6 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     }
     clearCancellationLeaseIfTerminal(new StoredEnvelope(next.canonicalPointerKey, next));
     markDirtyParentForRecord(next);
-    upsertRootSummaryForRecord(next);
     requestParentCancellationCleanupIfNeeded(next);
     return completeCancellationCleanup(next);
   }
@@ -3961,39 +3955,36 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     return marker == null ? List.of() : List.of(marker);
   }
 
-  private void upsertRootSummaryByJobId(String jobId) {
-    if (blankToEmpty(jobId).isBlank()) {
-      return;
-    }
-    loadByAnyAccount(jobId).ifPresent(env -> upsertRootSummaryForRecord(env.record));
-  }
-
-  private void upsertRootSummaryForRecord(StoredReconcileJob record) {
-    if (record == null || !blankToEmpty(record.parentJobId).isBlank()) {
-      return;
-    }
-    rootSummaries().upsert(toRootListSummary(record, storedProjectionForRead(record)));
-  }
-
-  private StoredReconcileJobListSummary repairStaleCancellationRootSummary(
+  private StoredReconcileJobListSummary repairStaleTerminalRootSummary(
       StoredReconcileJobListSummary summary) {
-    if (summary == null || !"JS_CANCELLING".equals(blankToEmpty(summary.state()))) {
+    if (summary == null || isTerminalState(blankToEmpty(summary.state()))) {
       return summary;
     }
-    StoredEnvelope loaded = loadByAnyAccount(summary.jobId()).orElse(null);
-    if (loaded == null
-        || loaded.record == null
-        || !blankToEmpty(summary.accountId()).equals(blankToEmpty(loaded.record.accountId))
-        || !blankToEmpty(loaded.record.parentJobId).isBlank()
-        || !"JS_CANCELLED".equals(blankToEmpty(loaded.record.state))) {
+    if (blankToEmpty(summary.accountId()).isBlank() || blankToEmpty(summary.jobId()).isBlank()) {
       return summary;
     }
-    StoredReconcileJobListSummary repaired =
-        toRootListSummary(loaded.record, storedProjectionForRead(loaded.record));
-    if (!Objects.equals(summary, repaired)) {
-      rootSummaries().upsert(repaired);
+    String canonicalPointerKey = Keys.reconcileJobPointerById(summary.accountId(), summary.jobId());
+    StoredReconcileJobListSummary latest = summary;
+    for (int attempt = 0; attempt < CAS_MAX; attempt++) {
+      CanonicalPointerSnapshot snapshot =
+          jobIndexStore().loadCanonicalSnapshot(canonicalPointerKey).orElse(null);
+      if (snapshot == null) {
+        return summary;
+      }
+      StoredReconcileJob canonical = jobIndexStore().readRecord(snapshot).orElse(null);
+      if (canonical == null
+          || !blankToEmpty(summary.accountId()).equals(blankToEmpty(canonical.accountId))
+          || !blankToEmpty(canonical.parentJobId).isBlank()
+          || !isTerminalState(blankToEmpty(canonical.state))) {
+        return summary;
+      }
+      latest = toRootListSummary(canonical, storedProjectionForRead(canonical));
+      if (Objects.equals(summary, latest)
+          || jobIndexStore().repairRootSummary(snapshot, canonical, latest)) {
+        return latest;
+      }
     }
-    return repaired;
+    return latest;
   }
 
   private boolean shouldDeferPlanSnapshotSuccessUntilFinalizer(
@@ -4848,11 +4839,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
                 },
                 this::projectionRefreshMarkerTouchesForRecord)
             .map(env -> new StoredEnvelope(env.canonicalPointerKey(), env.record()));
-    updated.ifPresent(
-        env -> {
-          projectionMaintenance().signalWork();
-          upsertRootSummaryForRecord(env.record);
-        });
+    updated.ifPresent(ignored -> projectionMaintenance().signalWork());
     return updated.isPresent();
   }
 

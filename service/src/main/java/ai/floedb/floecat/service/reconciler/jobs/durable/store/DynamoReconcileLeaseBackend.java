@@ -178,6 +178,8 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
       for (ReconcileJobIndexStore.JobIndexWriteOp write : jobIndexBatch.writes()) {
         if (write instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
           appendJobIndexUpsert(tx, upsert);
+        } else if (write instanceof ReconcileJobIndexStore.JobIndexUnconditionalUpsert upsert) {
+          appendJobIndexUnconditionalUpsert(tx, upsert);
         } else if (write instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
           appendJobIndexDelete(tx, delete);
         } else if (write instanceof ReconcileJobIndexStore.JobIndexCheck check) {
@@ -650,8 +652,40 @@ public class DynamoReconcileLeaseBackend implements ReconcileLeaseBackend {
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
       return;
     }
+    if (JobIndexBackendSupport.validCleanupPointerKey(upsert.pointerKey())) {
+      tx.add(
+          DynamoReconcileJobIndexBackend.buildGenericPointerUpsert(
+              table,
+              new PointerStore.CasUpsert(
+                  upsert.pointerKey(),
+                  upsert.expectedVersion(),
+                  JobIndexWriteBatchSupport.pointer(
+                      upsert.pointerKey(),
+                      upsert.blobUri(),
+                      upsert.expectedVersion() + 1L,
+                      upsert.referenceKind()))));
+      return;
+    }
     throw new IllegalArgumentException(
         "Unsupported reconcile job index upsert key: " + upsert.pointerKey());
+  }
+
+  private void appendJobIndexUnconditionalUpsert(
+      List<TransactWriteItem> tx, ReconcileJobIndexStore.JobIndexUnconditionalUpsert upsert) {
+    if (!JobIndexBackendSupport.validCleanupPointerKey(upsert.pointerKey())) {
+      throw new IllegalArgumentException(
+          "Unsupported reconcile job index unconditional upsert key: " + upsert.pointerKey());
+    }
+    tx.add(
+        DynamoReconcileJobIndexBackend.buildGenericPointerUnconditionalUpsert(
+            table,
+            new PointerStore.UnconditionalUpsert(
+                upsert.pointerKey(),
+                JobIndexWriteBatchSupport.pointer(
+                    upsert.pointerKey(),
+                    upsert.blobUri(),
+                    upsert.version(),
+                    upsert.referenceKind()))));
   }
 
   private void appendJobIndexDelete(

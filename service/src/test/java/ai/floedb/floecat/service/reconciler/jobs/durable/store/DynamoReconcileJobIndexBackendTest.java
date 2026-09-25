@@ -68,6 +68,86 @@ class DynamoReconcileJobIndexBackendTest {
   }
 
   @Test
+  void canonicalTransactionIncludesBothRootSummariesAndSingleAccountFence() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenReturn(TransactWriteItemsResponse.builder().build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+    String token = "9223372036854775807-" + JOB_ID;
+    String accountSummaryKey = Keys.reconcileRootJobSummaryByAccountPointer(ACCOUNT_ID, token);
+    String connectorSummaryKey =
+        Keys.reconcileRootJobSummaryByConnectorPointer(ACCOUNT_ID, "connector-1", token);
+
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        CANONICAL_KEY,
+                        0L,
+                        "inline:canonical",
+                        PointerReferenceKind.PRK_INLINE_JSON),
+                    new ReconcileJobIndexStore.JobIndexUnconditionalUpsert(
+                        accountSummaryKey,
+                        1L,
+                        "inline:summary",
+                        PointerReferenceKind.PRK_INLINE_JSON),
+                    new ReconcileJobIndexStore.JobIndexUnconditionalUpsert(
+                        connectorSummaryKey,
+                        1L,
+                        "inline:summary",
+                        PointerReferenceKind.PRK_INLINE_JSON)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty())));
+
+    ArgumentCaptor<TransactWriteItemsRequest> captor =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(captor.capture());
+    var items = captor.getValue().transactItems();
+    assertEquals(4, items.size());
+    assertEquals(
+        2,
+        items.stream()
+            .filter(item -> item.put() != null)
+            .map(item -> item.put().item().get("blob_uri"))
+            .filter(java.util.Objects::nonNull)
+            .filter(value -> "inline:summary".equals(value.s()))
+            .count());
+  }
+
+  @Test
+  void genericRootSummaryLoadReturnsPayloadAndVersion() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.getItem(any(GetItemRequest.class)))
+        .thenReturn(
+            GetItemResponse.builder()
+                .item(
+                    Map.of(
+                        ATTR_PARTITION_KEY,
+                        AttributeValue.fromS("account/acct-1"),
+                        ATTR_SORT_KEY,
+                        AttributeValue.fromS("summary"),
+                        ATTR_VERSION,
+                        AttributeValue.fromN("7"),
+                        "blob_uri",
+                        AttributeValue.fromS("inline:summary")))
+                .build());
+    DynamoReconcileJobIndexBackend backend = new DynamoReconcileJobIndexBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+    String pointerKey =
+        Keys.reconcileRootJobSummaryByAccountPointer(ACCOUNT_ID, "9223372036854775807-" + JOB_ID);
+
+    JobIndexEntrySnapshot loaded = backend.loadIndexEntry(pointerKey).orElseThrow();
+
+    assertEquals(pointerKey, loaded.pointerKey());
+    assertEquals("inline:summary", loaded.blobUri());
+    assertEquals(7L, loaded.version());
+    ArgumentCaptor<GetItemRequest> captor = ArgumentCaptor.forClass(GetItemRequest.class);
+    verify(dynamoDb).getItem(captor.capture());
+    assertTrue(captor.getValue().consistentRead());
+  }
+
+  @Test
   void lookupPrefixIsNotParsedAsCanonicalPrefix() {
     assertNull(
         JobIndexBackendSupport.parseCanonicalPrefix(Keys.reconcileJobLookupPointerByIdPrefix()));

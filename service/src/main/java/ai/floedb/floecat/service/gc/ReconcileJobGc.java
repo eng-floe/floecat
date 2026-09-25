@@ -665,7 +665,7 @@ public class ReconcileJobGc {
             pointerDeletes,
             Keys.reconcileRootJobSummaryByAccountPointer(
                 accountId,
-                rootSummarySortableJobToken(longValue(record, "createdAtMs", 0L), jobId)));
+                Keys.reconcileJobSortableToken(longValue(record, "createdAtMs", 0L), jobId)));
         String connectorId = text(record, "connectorId");
         if (!connectorId.isBlank()) {
           appendPointerDeleteIfPresent(
@@ -673,7 +673,7 @@ public class ReconcileJobGc {
               Keys.reconcileRootJobSummaryByConnectorPointer(
                   accountId,
                   connectorId,
-                  rootSummarySortableJobToken(longValue(record, "createdAtMs", 0L), jobId)));
+                  Keys.reconcileJobSortableToken(longValue(record, "createdAtMs", 0L), jobId)));
         }
       }
     }
@@ -708,7 +708,7 @@ public class ReconcileJobGc {
             pointerDeletes,
             Keys.reconcileRootJobSummaryByAccountPointer(
                 accountId,
-                rootSummarySortableJobToken(longValue(record, "createdAtMs", 0L), jobId)));
+                Keys.reconcileJobSortableToken(longValue(record, "createdAtMs", 0L), jobId)));
         String connectorId = text(record, "connectorId");
         if (!connectorId.isBlank()) {
           appendPointerDeleteIfPresent(
@@ -716,7 +716,7 @@ public class ReconcileJobGc {
               Keys.reconcileRootJobSummaryByConnectorPointer(
                   accountId,
                   connectorId,
-                  rootSummarySortableJobToken(longValue(record, "createdAtMs", 0L), jobId)));
+                  Keys.reconcileJobSortableToken(longValue(record, "createdAtMs", 0L), jobId)));
         }
       }
     }
@@ -795,12 +795,6 @@ public class ReconcileJobGc {
     }
     return new JobCleanupResult(
         expired, ptrDeleted, blobDeleted, readyDeleted, plans.size() - expired);
-  }
-
-  private static String rootSummarySortableJobToken(long createdAtMs, String jobId) {
-    long created = Math.max(0L, createdAtMs);
-    long reversedCreated = Long.MAX_VALUE - created;
-    return String.format("%019d-%s", reversedCreated, jobId);
   }
 
   private void appendPointerDeleteIfPresent(

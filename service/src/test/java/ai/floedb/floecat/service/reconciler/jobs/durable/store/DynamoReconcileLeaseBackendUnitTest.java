@@ -73,6 +73,47 @@ class DynamoReconcileLeaseBackendUnitTest {
   }
 
   @Test
+  void leaseTransactionAcceptsUnconditionalRootSummaryPointers() {
+    DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
+    when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))
+        .thenReturn(TransactWriteItemsResponse.builder().build());
+    DynamoReconcileLeaseBackend backend = new DynamoReconcileLeaseBackend();
+    backend.bind(() -> dynamoDb, TABLE);
+    String token = "9223372036854775807-" + JOB_ID;
+
+    assertTrue(
+        backend.compareAndSetBatch(
+            new ReconcileJobIndexStore.JobIndexWriteBatch(
+                List.of(
+                    new ReconcileJobIndexStore.JobIndexUpsert(
+                        CANONICAL_KEY,
+                        0L,
+                        "inline:canonical",
+                        PointerReferenceKind.PRK_INLINE_JSON),
+                    new ReconcileJobIndexStore.JobIndexUnconditionalUpsert(
+                        Keys.reconcileRootJobSummaryByAccountPointer(ACCOUNT_ID, token),
+                        1L,
+                        "inline:summary",
+                        PointerReferenceKind.PRK_INLINE_JSON),
+                    new ReconcileJobIndexStore.JobIndexUnconditionalUpsert(
+                        Keys.reconcileRootJobSummaryByConnectorPointer(
+                            ACCOUNT_ID, "connector-1", token),
+                        1L,
+                        "inline:summary",
+                        PointerReferenceKind.PRK_INLINE_JSON)),
+                ReconcileJobIndexStore.ReadyQueueMutation.empty()),
+            new ReconcileLeaseBackend.LeaseWriteBatch(
+                List.of(
+                    new ReconcileLeaseBackend.LeaseRecordUpsert(
+                        ACCOUNT_ID, JOB_ID, 0L, "inline:lease")))));
+
+    ArgumentCaptor<TransactWriteItemsRequest> captor =
+        ArgumentCaptor.forClass(TransactWriteItemsRequest.class);
+    verify(dynamoDb).transactWriteItems(captor.capture());
+    assertEquals(5, captor.getValue().transactItems().size());
+  }
+
+  @Test
   void jobIndexLookupDeleteUsesCurrentPartition() {
     DynamoDbClient dynamoDb = mock(DynamoDbClient.class);
     when(dynamoDb.transactWriteItems(any(TransactWriteItemsRequest.class)))

@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.reconciler.jobs.durable.store;
 import ai.floedb.floecat.common.rpc.PointerReferenceKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore.BulkEnqueueItemResult;
 import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJob;
+import ai.floedb.floecat.service.reconciler.jobs.durable.model.StoredReconcileJobListSummary;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcileJobIndexes;
 import ai.floedb.floecat.service.reconciler.jobs.durable.storage.ReconcilePayloadStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -51,7 +52,11 @@ public interface ReconcileJobIndexStore {
   }
 
   sealed interface JobIndexWriteOp
-      permits JobIndexUpsert, JobIndexDelete, JobIndexCheck, JobIndexCheckAbsent {}
+      permits JobIndexUpsert,
+          JobIndexUnconditionalUpsert,
+          JobIndexDelete,
+          JobIndexCheck,
+          JobIndexCheckAbsent {}
 
   record JobIndexUpsert(
       String pointerKey,
@@ -78,6 +83,10 @@ public interface ReconcileJobIndexStore {
           ReconcileJobIndexCleanupManifest.EMPTY);
     }
   }
+
+  record JobIndexUnconditionalUpsert(
+      String pointerKey, long version, String blobUri, PointerReferenceKind referenceKind)
+      implements JobIndexWriteOp {}
 
   record JobIndexDelete(
       String pointerKey,
@@ -171,6 +180,9 @@ public interface ReconcileJobIndexStore {
       BiConsumer<StoredReconcileJob, StoredReconcileJob> assertImmutableJobIdentityPreserved,
       TriConsumer<StoredReconcileJob, StoredReconcileJob, String> logStateTransition);
 
+  void bindRootSummaryProjector(
+      Function<StoredReconcileJob, StoredReconcileJobListSummary> rootSummaryProjector);
+
   Optional<CanonicalEnvelope> loadByAnyAccount(String jobId);
 
   Optional<CanonicalEnvelope> mutateByJobIdReturningRecord(
@@ -220,6 +232,17 @@ public interface ReconcileJobIndexStore {
       CanonicalPointerSnapshot currentSnapshot,
       StoredReconcileJob previous,
       StoredReconcileJob current);
+
+  JobIndexWriteBatch buildJobIndexWriteBatch(
+      CanonicalPointerSnapshot currentSnapshot,
+      StoredReconcileJob previous,
+      StoredReconcileJob current,
+      StoredReconcileJobListSummary rootSummary);
+
+  boolean repairRootSummary(
+      CanonicalPointerSnapshot canonicalSnapshot,
+      StoredReconcileJob canonicalRecord,
+      StoredReconcileJobListSummary rootSummary);
 
   JobIndexWriteBatch buildJobDeleteBatch(CanonicalPointerSnapshot currentSnapshot);
 
