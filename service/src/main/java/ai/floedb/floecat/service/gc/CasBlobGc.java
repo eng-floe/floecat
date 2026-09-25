@@ -785,9 +785,7 @@ public class CasBlobGc {
               storageEstimate);
       collectTableBlobIds(accountId, tableIds, pageSize);
 
-      // Walk durable current roots. `walkFailures` poisons the sweep: manifest pages and per-entry
-      // refs are reachable only through chain walks, so an incomplete walk means the referenced
-      // set is not trustworthy and nothing may be deleted this pass.
+      // The durable root chain is walked in the per-table phase below.
       pass.phase = Phase.TABLES;
     }
 

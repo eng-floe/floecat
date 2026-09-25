@@ -29,7 +29,8 @@ import "google/protobuf/timestamp.proto";
  * A pin is one coherent table read state, chosen at the first query-context
  * resolution of a table and reused by every later schema/scan/stats/constraints
  * read in that query. It replaces the snapshot-selector-shaped SnapshotPin as the
- * query consistency boundary.
+ * query consistency boundary. The term "pin" describes this immutable read selection;
+ * it is not a GC root, lease, registration, or lifetime extension for any object.
  *
  * Two shapes live here, for two audiences:
  *   - TablePin / RelationPin: the server-side resolved pin, stored in QueryContext.
