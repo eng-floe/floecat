@@ -88,6 +88,14 @@ jobs:
       - name: Build
         run: make build
 
+      - name: Check telemetry contract
+        run: |
+          if ! git diff --quiet -- docs/telemetry; then
+            echo "docs/telemetry is out of date. The build regenerates it; commit the result."
+            git diff -- docs/telemetry
+            exit 1
+          fi
+
       - name: Test (In Memory)
         run: make test
 

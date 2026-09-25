@@ -26,9 +26,14 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+/**
+ * Covers the generator, not the checked-in contract. Generation runs at process-classes, so by the
+ * time a test here reads docs/telemetry the build has already refreshed it. CI compares the tree
+ * against git after the build to catch a contract that was regenerated but not committed.
+ */
 class MetricCatalogDocgenTest {
   @Test
-  void generatedDocsMatchOnDisk(@TempDir Path tempRepo) throws IOException {
+  void writtenDocsRoundTripThroughTheGenerator(@TempDir Path tempRepo) throws IOException {
     System.setProperty(
         "telemetry.doc.dir", tempRepo.resolve("docs").resolve("telemetry").toString());
 
@@ -48,8 +53,7 @@ class MetricCatalogDocgenTest {
     Assertions.assertEquals(
         expectedMd,
         actualMd,
-        "Markdown contract out of date; run `mvn -pl telemetry-hub/tool-docgen -am process-classes`"
-            + " to refresh it.");
+        "Markdown the generator wrote does not round-trip through its own row injection.");
 
     String expectedJson = MetricCatalogDocgen.buildJson(catalog);
     String actualJson = Files.readString(json);
@@ -57,7 +61,6 @@ class MetricCatalogDocgenTest {
     Assertions.assertEquals(
         expectedJson,
         actualJson,
-        "JSON contract out of date; run `mvn -pl telemetry-hub/tool-docgen -am process-classes` to"
-            + " refresh it.");
+        "JSON the generator wrote does not match the catalogue it was built from.");
   }
 }
