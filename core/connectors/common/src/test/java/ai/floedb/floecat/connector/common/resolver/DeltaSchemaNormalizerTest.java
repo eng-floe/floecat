@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
+import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 
 class DeltaSchemaNormalizerTest {
@@ -134,5 +135,22 @@ class DeltaSchemaNormalizerTest {
     assertEquals(List.of("status", "col-200"), mapping.get(1).get("names"));
     assertEquals(List.of("message", "col-211"), nested.get(0).get("names"));
     assertEquals(21, nested.get(0).get("field-id"));
+  }
+
+  @Test
+  void deltaTimestampMapsToIcebergTimestamptzAndNtzToTimestamp() {
+    // Delta "timestamp" is an instant; Iceberg calls that "timestamptz". Delta "timestamp_ntz"
+    // is the naive one, which Iceberg calls "timestamp". Swapping them shifts every value by
+    // the session offset without erroring.
+    String deltaSchemaJson =
+        "{\"type\":\"struct\",\"fields\":["
+            + "{\"name\":\"ingested_at\",\"type\":\"timestamp\",\"nullable\":true,\"metadata\":{}},"
+            + "{\"name\":\"local_at\",\"type\":\"timestamp_ntz\",\"nullable\":true,\"metadata\":{}}]}";
+
+    String normalized = DeltaSchemaNormalizer.normalizeSchemaJson(deltaSchemaJson, 0);
+
+    Schema schema = SchemaParser.fromJson(normalized);
+    assertEquals(Types.TimestampType.withZone(), schema.findType("ingested_at"));
+    assertEquals(Types.TimestampType.withoutZone(), schema.findType("local_at"));
   }
 }
