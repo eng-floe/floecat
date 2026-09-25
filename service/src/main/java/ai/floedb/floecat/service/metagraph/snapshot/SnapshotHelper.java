@@ -295,9 +295,8 @@ public class SnapshotHelper {
       MutationMeta rootMeta,
       Timestamp originalAsOf) {
     if (entry.hasIngestedAt() && !retention.visible(entry.getIngestedAt())) {
-      throw GrpcErrors.snapshotExpired(
+      throw GrpcErrors.snapshotTooOld(
           cid,
-          null,
           Map.of(
               "table_id", tableId.getId(),
               "snapshot_id", Long.toString(entry.getSnapshotId())));
@@ -406,9 +405,8 @@ public class SnapshotHelper {
 
     Snapshot snap = resolveSnapshot(cid, tbl.id(), ref);
     if (!retention.visible(snap.hasIngestedAt() ? snap.getIngestedAt() : null)) {
-      throw GrpcErrors.snapshotExpired(
+      throw GrpcErrors.snapshotTooOld(
           cid,
-          null,
           Map.of("table_id", tbl.id().getId(), "snapshot_id", Long.toString(snap.getSnapshotId())));
     }
 

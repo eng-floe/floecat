@@ -344,8 +344,8 @@ Pointer GC removes snapshot pointers after the configured retention plus grace p
 then removes the now-unreferenced immutable payloads. Both collectors remain account-scoped and
 revalidate their existing permits before destructive batches. Snapshot manifests use Floecat's
 publication timestamp (`ingested_at`), not upstream event time: new snapshot resolutions fail
-with `MC_SNAPSHOT_EXPIRED` after the visibility horizon, while an already-running query receives
-the same retryable error once its grace period has elapsed. QueryContext and its pins are therefore
+with `MC_SNAPSHOT_TOO_OLD` after the visibility horizon, while an already-running query receives
+retryable `MC_SNAPSHOT_EXPIRED` once its grace period has elapsed. QueryContext and its pins are therefore
 only in-process read optimizations, never GC roots. Transaction GC and reconcile-job GC remain
 separate collectors for their own durable key families.
 
@@ -364,8 +364,8 @@ configured location, caches them by engine kind, and exposes them through
 idempotency records in slices to avoid starvation. `CasBlobGc` performs a reachability-based sweep
 per account from durable pointers and current table-root chains. Manifest entries older than the
 configured retention plus grace period no longer root snapshot payloads; current entries and entries
-without publication metadata are retained conservatively. New snapshot resolutions fail after the
-visibility horizon, while an already-running query receives retryable `MC_SNAPSHOT_EXPIRED` once
+without publication metadata are retained conservatively. New snapshot resolutions fail with
+`MC_SNAPSHOT_TOO_OLD` after the visibility horizon, while an already-running query receives retryable `MC_SNAPSHOT_EXPIRED` once
 its grace period has elapsed. QueryContext pins are read optimizations, never GC roots. A retained
 account continuation is abandoned after
 `floecat.gc.cas.max-consecutive-continuation-ticks` so one large account cannot starve every other
