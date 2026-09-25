@@ -44,9 +44,13 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
+import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver.ResolvedTableProperties;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsStore.StatsStorePage;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
+import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
+import com.google.protobuf.util.Timestamps;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -108,11 +112,12 @@ class ScanBundleServiceTest {
     when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI))
         .thenReturn(
             Optional.of(Snapshot.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build()));
-    when(resolver.applyToTableProperties(any(), any(), any())).thenReturn(Map.of());
+    when(resolver.applyToTablePropertiesWithStorage(any(), any(), any()))
+        .thenReturn(new ResolvedTableProperties(Map.of(), null));
   }
 
   @Test
-  void initScanBuildsTableInfoFromPinnedBlobsOnly() {
+  void initScanBuildsTableInfoFromPinnedBlobsAndPreservesResolvedStorage() {
     var table =
         Table.newBuilder()
             .setResourceId(TABLE_ID)
@@ -128,8 +133,26 @@ class ScanBundleServiceTest {
             .build();
     when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
     when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI)).thenReturn(Optional.of(snapshot));
-    when(resolver.applyToTableProperties(table, null, table.getPropertiesMap()))
-        .thenReturn(Map.of("s3.region", "us-east-1"));
+    ResolveStorageAuthorityResponse storage =
+        ResolveStorageAuthorityResponse.newBuilder()
+            .putClientSafeConfig("s3.region", "us-east-1")
+            .addStorageCredentials(
+                VendedStorageCredential.newBuilder()
+                    .setPrefix("s3://bucket/table")
+                    .putConfig("s3.access-key-id", "key")
+                    .putConfig("s3.secret-access-key", "secret")
+                    .putConfig("s3.session-token", "token")
+                    .setExpiresAt(Timestamps.fromSeconds(2_000_000_000L)))
+            .build();
+    when(resolver.applyToTablePropertiesWithStorage(table, null, table.getPropertiesMap()))
+        .thenReturn(
+            new ResolvedTableProperties(
+                Map.of(
+                    "s3.region", "us-east-1",
+                    "s3.access-key-id", "key",
+                    "s3.secret-access-key", "secret",
+                    "s3.session-token", "token"),
+                storage));
 
     var init = service.initScan("corr", PIN);
 
@@ -142,6 +165,11 @@ class ScanBundleServiceTest {
     assertEquals(
         "s3://bucket/table/metadata/00001.metadata.json", init.tableInfo().getMetadataLocation());
     assertEquals("us-east-1", init.tableInfo().getPropertiesMap().get("s3.region"));
+    assertEquals("key", init.tableInfo().getPropertiesMap().get("s3.access-key-id"));
+    assertEquals("secret", init.tableInfo().getPropertiesMap().get("s3.secret-access-key"));
+    assertEquals("token", init.tableInfo().getPropertiesMap().get("s3.session-token"));
+    assertTrue(init.tableInfo().hasResolvedStorage());
+    assertEquals(storage, init.tableInfo().getResolvedStorage());
     assertFalse(init.tableInfo().getPropertiesMap().containsKey("metadata-location"));
   }
 

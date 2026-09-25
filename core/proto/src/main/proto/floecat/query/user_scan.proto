@@ -24,6 +24,7 @@ import "floecat/common/common.proto";
 import "floecat/common/predicate.proto";
 import "floecat/catalog/partition.proto";
 import "floecat/execution/scan.proto";
+import "floecat/storage/authority.proto";
 import "google/protobuf/empty.proto";
 
 /**
@@ -72,6 +73,11 @@ message TableInfo {
   // Optional Iceberg table metadata location for clients that pass FileIO directly.
   string metadata_location = 5;
   int64 snapshot_id = 6;
+
+  // Storage routing and credentials resolved for this scan. The typed response preserves
+  // credential scope and expiry so clients can renew through StorageAuthorities.VendStorageCredentials.
+  // The existing s3.* entries in properties remain available for initial compatibility.
+  ai.floedb.floecat.storage.ResolveStorageAuthorityResponse resolved_storage = 7;
 }
 
 message ScanHandle {

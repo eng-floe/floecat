@@ -54,11 +54,15 @@ public class ServerSideFileIoPropertiesResolver {
   @Inject SourceCatalogCredentialVendor sourceCatalogVendor;
 
   public Map<String, String> resolve(Table table, String location) {
+    return resolveWithStorage(table, location).fileIoProperties();
+  }
+
+  public ResolvedStorage resolveWithStorage(Table table, String location) {
     String locationPrefix =
         TableStorageLocationResolver.resolveRequestedOrTableLocation(table, location, snapshotRepo);
     ResourceId tableId = resolvePersistedTableId(table);
     if (locationPrefix == null || tableId == null) {
-      return Map.of();
+      return ResolvedStorage.empty();
     }
 
     long storageAuthorityStartedNanos = System.nanoTime();
@@ -83,7 +87,7 @@ public class ServerSideFileIoPropertiesResolver {
           sourceCatalogVendor.vendForTable(
               table, locationPrefix, SourceCatalogCredentialVendor.CredentialUse.QUERY);
       if (vended != null) {
-        return mergeStorageAuthorityFileIoConfig(vended);
+        return ResolvedStorage.from(vended);
       }
       // Null only where a fall-back means something: a table with no upstream reference, or a
       // Connector that did not opt in to vending. Fall through so buildResponse raises the
@@ -93,14 +97,21 @@ public class ServerSideFileIoPropertiesResolver {
     }
     ResolveStorageAuthorityResponse response =
         resolver.buildResponse(authority, tableId.getAccountId(), true);
-    return mergeStorageAuthorityFileIoConfig(response);
+    return ResolvedStorage.from(response);
   }
 
   public Map<String, String> applyToTableProperties(
       Table table, String location, Map<String, String> properties) {
-    Map<String, String> resolved = resolve(table, location);
-    if (resolved.isEmpty()) {
-      return properties == null || properties.isEmpty() ? Map.of() : Map.copyOf(properties);
+    return applyToTablePropertiesWithStorage(table, location, properties).properties();
+  }
+
+  public ResolvedTableProperties applyToTablePropertiesWithStorage(
+      Table table, String location, Map<String, String> properties) {
+    ResolvedStorage resolved = resolveWithStorage(table, location);
+    if (resolved.fileIoProperties().isEmpty()) {
+      Map<String, String> unchanged =
+          properties == null || properties.isEmpty() ? Map.of() : Map.copyOf(properties);
+      return new ResolvedTableProperties(unchanged, resolved.response());
     }
 
     LinkedHashMap<String, String> merged = new LinkedHashMap<>();
@@ -108,8 +119,9 @@ public class ServerSideFileIoPropertiesResolver {
       merged.putAll(properties);
       FILE_IO_PROPERTY_KEYS.forEach(merged::remove);
     }
-    merged.putAll(resolved);
-    return merged.isEmpty() ? Map.of() : Map.copyOf(merged);
+    merged.putAll(resolved.fileIoProperties());
+    Map<String, String> mergedProperties = merged.isEmpty() ? Map.of() : Map.copyOf(merged);
+    return new ResolvedTableProperties(mergedProperties, resolved.response());
   }
 
   private static Map<String, String> mergeStorageAuthorityFileIoConfig(
@@ -135,4 +147,18 @@ public class ServerSideFileIoPropertiesResolver {
     }
     return null;
   }
+
+  public record ResolvedStorage(
+      Map<String, String> fileIoProperties, ResolveStorageAuthorityResponse response) {
+    private static ResolvedStorage empty() {
+      return new ResolvedStorage(Map.of(), null);
+    }
+
+    private static ResolvedStorage from(ResolveStorageAuthorityResponse response) {
+      return new ResolvedStorage(mergeStorageAuthorityFileIoConfig(response), response);
+    }
+  }
+
+  public record ResolvedTableProperties(
+      Map<String, String> properties, ResolveStorageAuthorityResponse response) {}
 }

@@ -182,7 +182,6 @@ public class ProdSecretsManager implements SecretsManager {
       String secretType,
       String secretId,
       byte[] payload) {
-    ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     String encoded = encodePayload(payload);
     List<Tag> tags = buildTags(accountId, secretName);
@@ -202,7 +201,6 @@ public class ProdSecretsManager implements SecretsManager {
       String secretType,
       String secretId,
       byte[] payload) {
-    ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     String encoded = encodePayload(payload);
     List<Tag> tags = buildTags(accountId, secretName);
@@ -222,7 +220,6 @@ public class ProdSecretsManager implements SecretsManager {
 
   private Optional<byte[]> getOnce(
       SecretsManagerClient client, String accountId, String secretType, String secretId) {
-    ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     try {
       var response =
@@ -247,7 +244,6 @@ public class ProdSecretsManager implements SecretsManager {
       String secretType,
       String secretId,
       byte[] payload) {
-    ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     String encoded = encodePayload(payload);
     List<Tag> tags = buildTags(accountId, secretName);
@@ -263,7 +259,6 @@ public class ProdSecretsManager implements SecretsManager {
 
   private void deleteOnce(
       SecretsManagerClient client, String accountId, String secretType, String secretId) {
-    ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     try {
       client.deleteSecret(
@@ -287,7 +282,6 @@ public class ProdSecretsManager implements SecretsManager {
 
   private void deleteImmediatelyOnce(
       SecretsManagerClient client, String accountId, String secretType, String secretId) {
-    ensureAwsCredentialsAvailable();
     String secretName = SecretsManager.buildSecretKey(accountId, secretType, secretId);
     try {
       client.deleteSecret(
@@ -431,13 +425,6 @@ public class ProdSecretsManager implements SecretsManager {
       return raw;
     }
     return raw.substring(0, MAX_ROLE_SESSION_LENGTH);
-  }
-
-  private void ensureAwsCredentialsAvailable() {
-    if (awsClients == null) {
-      return;
-    }
-    awsClients.ensureCredentialsAvailable();
   }
 
   private static String encodePayload(byte[] payload) {
