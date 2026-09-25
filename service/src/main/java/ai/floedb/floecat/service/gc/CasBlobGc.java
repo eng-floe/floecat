@@ -211,7 +211,6 @@ public class CasBlobGc {
     private final List<String> tableIds = new ArrayList<>();
     private Set<String> tableIdSet = new HashSet<>();
     private final StorageEstimate storageEstimate = new StorageEstimate();
-    private final Set<String> walkedPinRoots = new HashSet<>();
     private final int[] walkFailures = {0};
     private final TraversalContinuation traversal = new TraversalContinuation();
     private boolean accountMarked;
@@ -219,7 +218,6 @@ public class CasBlobGc {
     private int tableIndex;
     private String currentTableId = "";
     private ReferenceIndex tableReferenced;
-    private final Set<String> tableWalkedPinRoots = new HashSet<>();
     private final Set<Keys.GenerationKey> tableGenerationKeys = new HashSet<>();
     private final int[] tableWalkFailures = {0};
     private StatsRepository.GenerationGcContinuation generationGcContinuation;
@@ -706,7 +704,6 @@ public class CasBlobGc {
     List<String> tableIds = pass.tableIds;
     int pointersScanned = 0;
     StorageEstimate storageEstimate = pass.storageEstimate;
-    Set<String> walkedPinRoots = pass.walkedPinRoots;
     int[] walkFailures = pass.walkFailures;
 
     if (pass.phase == Phase.ACCOUNT_MARK) {
@@ -791,7 +788,6 @@ public class CasBlobGc {
       // Walk durable current roots. `walkFailures` poisons the sweep: manifest pages and per-entry
       // refs are reachable only through chain walks, so an incomplete walk means the referenced
       // set is not trustworthy and nothing may be deleted this pass.
-      refreshDurableReachability(referenced, walkedPinRoots, walkFailures);
       pass.phase = Phase.TABLES;
     }
 
@@ -827,7 +823,6 @@ public class CasBlobGc {
           pass.generationGcContinuation = new StatsRepository.GenerationGcContinuation();
           pass.generationGcProof = reachabilityGuard.beginProof(accountId, tableId);
           pass.generationGcComplete = false;
-          pass.tableWalkedPinRoots.clear();
           pass.tableWalkFailures[0] = 0;
         }
         ReferenceIndex tableReferenced = pass.tableReferenced;
@@ -845,8 +840,6 @@ public class CasBlobGc {
           pointersScanned++;
           storageEstimate.observe(currentSnapshotPointer);
         }
-        refreshDurableReachability(
-            tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
         String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
         pointersScanned +=
             collectPointers(
@@ -913,8 +906,6 @@ public class CasBlobGc {
                       if (tableReferenced.mightContain(normalized)) {
                         return true;
                       }
-                      refreshDurableReachability(
-                          tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
                       return pass.tableWalkFailures[0] > 0
                           || tableReferenced.mightContain(normalized);
                     },
@@ -948,8 +939,6 @@ public class CasBlobGc {
             if (!remarkTable(accountId, tableId, tableReferenced, pageSize)) {
               pass.tableWalkFailures[0]++;
             }
-            refreshDurableReachability(
-                tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
             pass.generationGcContinuation = new StatsRepository.GenerationGcContinuation();
             checkDeadline();
           }
@@ -973,7 +962,6 @@ public class CasBlobGc {
                   accountId,
                   tableId,
                   tableReferenced,
-                  pass.tableWalkedPinRoots,
                   pass.tableWalkFailures,
                   pageSize,
                   nowMs,
@@ -1036,7 +1024,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.accountBlobPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_ACCOUNT),
               null,
@@ -1051,7 +1038,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.catalogRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_CATALOG),
               null,
@@ -1066,7 +1052,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.namespaceRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_NAMESPACE),
               null,
@@ -1081,7 +1066,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.viewRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_VIEW),
               null,
@@ -1096,7 +1080,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.connectorRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_CONNECTOR),
               null,
@@ -1111,7 +1094,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.catalogIntegrationRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains("/integration/"),
               null,
@@ -1126,7 +1108,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.catalogOverlayRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains("/overlay/"),
               null,
@@ -1141,7 +1122,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.storageAuthorityRootPrefix(accountId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key -> key.contains(Keys.SEG_STORAGE_AUTHORITY),
               null,
@@ -1199,7 +1179,6 @@ public class CasBlobGc {
       String accountId,
       String tableId,
       ReferenceIndex referenced,
-      Set<String> walkedPinRoots,
       int[] walkFailures,
       int pageSize,
       long nowMs,
@@ -1218,15 +1197,7 @@ public class CasBlobGc {
       for (String prefix : directPrefixes) {
         DeleteResult result =
             deleteUnreferenced(
-                prefix,
-                referenced,
-                walkedPinRoots,
-                walkFailures,
-                key -> true,
-                null,
-                pageSize,
-                nowMs,
-                minAgeMs);
+                prefix, referenced, walkFailures, key -> true, null, pageSize, nowMs, minAgeMs);
         scanned += result.scanned();
         deleted += result.deleted();
         rescued += result.rescued();
@@ -1239,7 +1210,6 @@ public class CasBlobGc {
           deleteUnreferenced(
               Keys.tableSnapshotBlobPrefix(accountId, tableId),
               referenced,
-              walkedPinRoots,
               walkFailures,
               key ->
                   key.contains(Keys.SEG_SNAPSHOT)
@@ -1262,7 +1232,6 @@ public class CasBlobGc {
               deleteUnreferenced(
                   prefix,
                   referenced,
-                  walkedPinRoots,
                   walkFailures,
                   key -> true,
                   deferred,
@@ -1287,7 +1256,6 @@ public class CasBlobGc {
                 accountId,
                 tableId,
                 referenced,
-                walkedPinRoots,
                 walkFailures,
                 pageSize,
                 referenceCapacity,
@@ -1313,14 +1281,12 @@ public class CasBlobGc {
       String accountId,
       String tableId,
       ReferenceIndex referenced,
-      Set<String> walkedPinRoots,
       int[] walkFailures,
       int pageSize,
       long referenceCapacity,
       double referenceFalsePositiveRate) {
     DeferredPageState state = continuation.deferredPage;
     while (true) {
-      refreshDurableReachability(referenced, walkedPinRoots, walkFailures);
       if (walkFailures[0] > 0) {
         return new DeleteResult(0, 0, 0, true);
       }
@@ -1378,7 +1344,7 @@ public class CasBlobGc {
         }
         // Keep remote reachability reads outside the publication lock. The proof epoch below
         // invalidates this decision if a publisher or metadata resolver overlaps the reads.
-        if (keepIfDurablyReferenced(normalized, referenced, walkedPinRoots, walkFailures)) {
+        if (keepIfDurablyReferenced(normalized, referenced, walkFailures)) {
           if (walkFailures[0] > 0) {
             return new DeleteResult(0, state.deleted, 0, true);
           }
@@ -1517,7 +1483,6 @@ public class CasBlobGc {
       pass.generationGcProof.close();
       pass.generationGcProof = null;
     }
-    pass.tableWalkedPinRoots.clear();
     pass.tableGenerationKeys.clear();
     pass.tableWalkFailures[0] = 0;
   }
@@ -2170,14 +2135,6 @@ public class CasBlobGc {
                     new Keys.GenerationKey(snapshotId, Keys.INDEX_ARTIFACT_DIRECT_GENERATION)));
   }
 
-  /**
-   * Hook for refreshing durable reachability before a destructive step. Query contexts are
-   * deliberately not GC roots; durable table roots and the retention policy are the only snapshot
-   * reachability inputs.
-   */
-  private void refreshDurableReachability(
-      ReferenceIndex referenced, Set<String> walkedPinRoots, int[] walkFailures) {}
-
   private record DeleteResult(int scanned, int deleted, int rescued, boolean pending) {}
 
   private static final class DeleteProgress {
@@ -2196,7 +2153,6 @@ public class CasBlobGc {
   private DeleteResult deleteUnreferenced(
       String prefix,
       ReferenceIndex referenced,
-      Set<String> walkedPinRoots,
       int[] walkFailures,
       Predicate<String> isCandidate,
       List<DeferredCandidate> deferNoOwnerTo,
@@ -2209,7 +2165,6 @@ public class CasBlobGc {
       return deleteUnreferenced(
           prefix,
           referenced,
-          walkedPinRoots,
           walkFailures,
           isCandidate,
           deferNoOwnerTo,
@@ -2229,7 +2184,6 @@ public class CasBlobGc {
   private DeleteResult deleteUnreferenced(
       String prefix,
       ReferenceIndex referenced,
-      Set<String> walkedPinRoots,
       int[] walkFailures,
       Predicate<String> isCandidate,
       List<DeferredCandidate> deferNoOwnerTo,
@@ -2246,8 +2200,6 @@ public class CasBlobGc {
     while (true) {
       checkDeadline();
       BlobStore.Page page = blobStore.list(prefix, pageSize, token);
-      // Re-mark durable roots once per page so publication during a long sweep is not missed.
-      refreshDurableReachability(referenced, walkedPinRoots, walkFailures);
       if (walkFailures[0] > 0) {
         // A durable root walk failed mid-phase (reachability is now unknowable): stop deleting
         // immediately (see the pass-level gate). A rescue does NOT reach here — it keeps the blob
@@ -2361,7 +2313,7 @@ public class CasBlobGc {
           }
           // Final guard before the irreversible delete: re-check durable reachability after the
           // mark; an incomplete walk aborts the pass because reachability is unprovable.
-          if (keepIfDurablyReferenced(normalized, referenced, walkedPinRoots, walkFailures)) {
+          if (keepIfDurablyReferenced(normalized, referenced, walkFailures)) {
             if (walkFailures[0] > 0) {
               return progress.result(true);
             }
@@ -2419,11 +2371,7 @@ public class CasBlobGc {
 
   /** Rechecks durable reachability immediately before an irreversible delete. */
   private boolean keepIfDurablyReferenced(
-      String normalizedKey,
-      ReferenceIndex referenced,
-      Set<String> walkedPinRoots,
-      int[] walkFailures) {
-    refreshDurableReachability(referenced, walkedPinRoots, walkFailures);
+      String normalizedKey, ReferenceIndex referenced, int[] walkFailures) {
     return walkFailures[0] > 0 || referenced.mightContain(normalizedKey);
   }
 

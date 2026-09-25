@@ -1531,10 +1531,10 @@ class CasBlobGcTest {
   }
 
   @Test
-  void keepsBlobPinnedByActiveQuery() {
-    // A blob no current pointer references, but that a live query has pinned, must survive GC.
-    String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-pinned");
-    blobs.put(blobUri, "pinned".getBytes(StandardCharsets.UTF_8), "text/plain");
+  void collectsBlobNotReachableFromDurableRoots() {
+    // Query-local state is not a GC root. A blob with no durable reference is collectible.
+    String blobUri = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-unreferenced");
+    blobs.put(blobUri, "unreferenced".getBytes(StandardCharsets.UTF_8), "text/plain");
     gc.runForAccount(ACCOUNT_ID);
 
     assertFalse(blobs.head(blobUri).isPresent());
@@ -1770,25 +1770,26 @@ class CasBlobGcTest {
   }
 
   @Test
-  void aPinnedRootChainSurvivesSupersession() {
+  void collectsSupersededRootChainWithoutQueryPinning() {
     seedCurrentTable();
 
-    // A superseded root (not the current pointer target) that a live query pinned. The pin roots
-    // the root URI; the chain expansion must protect its page and refs too.
+    // A superseded root (not the current pointer target) is not retained by query-local state.
+    // Retention-based GC may collect the root and its manifest chain.
     var tableId = tableRid();
-    String pinnedSnapBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 3L, "sha-pinned-snap");
-    putSnapshotBlob(pinnedSnapBlob, 3L);
-    commitRoot(3L, pinnedSnapBlob, "v3", null);
-    var pinnedRootUri = gc.tableRootRepo.metaForSafe(tableId).getBlobUri();
-    String pinnedPage =
+    String supersededSnapshotBlob =
+        Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, 3L, "sha-superseded-snap");
+    putSnapshotBlob(supersededSnapshotBlob, 3L);
+    commitRoot(3L, supersededSnapshotBlob, "v3", null);
+    var supersededRootUri = gc.tableRootRepo.metaForSafe(tableId).getBlobUri();
+    String supersededPage =
         gc.tableRootRepo.get(tableId).orElseThrow().getSnapshotManifestRef().getUri();
     // Supersede it: drop the pointer (as a newer root CAS + a later purge would leave it), keep
-    // the pin.
+    // query context.
     pointers.delete(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID));
     gc.runForAccount(ACCOUNT_ID);
 
-    assertFalse(blobs.head(pinnedRootUri).isPresent());
-    assertFalse(blobs.head(pinnedPage).isPresent());
+    assertFalse(blobs.head(supersededRootUri).isPresent());
+    assertFalse(blobs.head(supersededPage).isPresent());
   }
 
   @Test

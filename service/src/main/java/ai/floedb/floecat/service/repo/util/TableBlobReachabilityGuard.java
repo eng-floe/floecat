@@ -37,7 +37,7 @@ import java.util.function.Supplier;
  *
  * <p>The guard is intentionally process-local, matching CAS GC's existing single-node safety
  * contract: every service process that can publish table references must use the same guard while
- * publishing or resolving table metadata.
+ * publishing table metadata and while CAS GC proves and deletes that metadata.
  */
 @ApplicationScoped
 public class TableBlobReachabilityGuard {
