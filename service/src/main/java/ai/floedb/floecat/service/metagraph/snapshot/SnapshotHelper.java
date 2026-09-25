@@ -63,8 +63,8 @@ public class SnapshotHelper {
   private final SnapshotRetentionPolicy retention;
 
   /**
-   * Pins are built from a just-read root blob, so construction performs no extra validation
-   * round-trip; a vanished blob surfaces at the read that needs it, through the {@link
+   * Snapshot selections are built from a just-read root blob, so construction performs no extra
+   * validation round-trip; a vanished blob surfaces at the read that needs it, through the {@link
    * PinnedReadContract}. {@code pins} serves the pinned schema read here; {@code repairs} reports a
    * broken root observed while BUILDING a pin, which happens before any pinned read exists for that
    * contract to unwrap. Both reach the same repair queue, which is the container's doing rather
@@ -114,18 +114,18 @@ public class SnapshotHelper {
   }
 
   // ----------------------------------------------------------------------
-  // Snapshot pinning
+  // Snapshot selection
   // ----------------------------------------------------------------------
 
   /**
    * Build the coherent {@link TablePin} for one table by resolving through the table's immutable
    * root — the single object that names the definition blob, every snapshot's blob identity, and
-   * the current-snapshot selection. This is the pin the query context stores and downstream reads
-   * reuse.
+   * the current-snapshot selection. The query context stores this resolved selection and downstream
+   * reads reuse it.
    *
    * <ul>
-   *   <li>CURRENT pins the root's {@code current_snapshot_id}; a table with no current snapshot is
-   *       NOT_FOUND.
+   *   <li>CURRENT selects the root's {@code current_snapshot_id}; a table with no current snapshot
+   *       is NOT_FOUND.
    *   <li>Explicit {@code snapshot_id} resolves against the root's snapshot manifest (user error
    *       when the snapshot is unknown).
    *   <li>{@code AS_OF} resolves once to the manifest entry with the greatest {@code
@@ -141,7 +141,8 @@ public class SnapshotHelper {
       String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault) {
 
     // A SPECIAL selector other than SS_CURRENT (e.g. an as-yet-unimplemented "oldest"/"first") has
-    // no defined pin resolution. Reject it rather than silently pinning CURRENT, which would hide
+    // no defined snapshot resolution. Reject it rather than silently selecting CURRENT, which would
+    // hide
     // the unsupported request behind a plausible-looking result. SS_CURRENT falls through to the
     // CURRENT path below.
     if (override != null
@@ -241,7 +242,7 @@ public class SnapshotHelper {
                 });
     if (gateOnFinalize() && !entry.hasStatsGenerationRef()) {
       // Committed currency can move before the generation publishes. Rather than reporting no
-      // current for the whole append->finalize window, pin the newest FINALIZED snapshot at or
+      // current for the whole append->finalize window, select the newest FINALIZED snapshot at or
       // before the committed current — snapshot isolation on the latest fully-queryable state,
       // consistent with metadata surfaces (getCommittedCurrent*) still exposing the committed id.
       // NOT_FOUND only when nothing at or before it is finalized yet (pre-first-finalize).
@@ -310,7 +311,7 @@ public class SnapshotHelper {
     }
     if (!entry.hasSnapshotRef() || entry.getSnapshotRef().getUri().isEmpty()) {
       // Every writer records a snapshot ref with the entry; its absence is a broken root
-      // invariant. Failing here names the real problem instead of pinning an empty URI that a
+      // invariant. Failing here names the real problem instead of selecting an empty URI that a
       // downstream requirePinnedSnapshotBlob would report as a generic internal error — and the
       // repair report gives the re-drive a chance to rebuild the manifest entry.
       repairs.request(tableId);

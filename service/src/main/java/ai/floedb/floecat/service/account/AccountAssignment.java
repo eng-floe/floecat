@@ -26,7 +26,7 @@ import java.util.Optional;
  *
  * <p>Standalone Floecat owns every account. In Floe-managed deployments, Core/runtime controls
  * routing and lifecycle; Floecat owns the account-scoped admission seam. Snapshot retention, rather
- * than query pins or process-local state, is the GC safety mechanism.
+ * than query snapshot selections or process-local state, is the GC safety mechanism.
  */
 @ApplicationScoped
 public class AccountAssignment implements AccountScope, PlanningPointerIndex.Ownership {

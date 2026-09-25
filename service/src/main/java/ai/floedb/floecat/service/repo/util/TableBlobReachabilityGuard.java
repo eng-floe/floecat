@@ -36,8 +36,8 @@ import java.util.function.Supplier;
  * entry alive across deadline continuations; unrelated tables never cause false invalidations.
  *
  * <p>The guard is intentionally process-local, matching CAS GC's existing single-node safety
- * contract: every service process that can publish table references must disable CAS GC unless all
- * such publication and query-pin traffic is routed through the GC process.
+ * contract: every service process that can publish table references must use the same guard while
+ * publishing or resolving table metadata.
  */
 @ApplicationScoped
 public class TableBlobReachabilityGuard {

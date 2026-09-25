@@ -51,11 +51,11 @@ application-level in-flight request map or version fence in this path: the parti
 key-lock ownership define the ordering.
 
 `AccountAssignment` (`service/.../account`) is the default `PlanningPointerIndex.Ownership`
-implementation. It serves every account until the deployment lifecycle starts process drain;
-once draining, new writes and pin resolutions fail retryably and cache reads fall back to durable
-storage when a permit cannot be acquired. Deployments that need leases, durable fences or a
-coordinator can bind a different `AccountScope`/ownership implementation without changing the
-cache.
+implementation. It serves every account in standalone Floecat. Managed deployments can bind a
+different `AccountScope` implementation when they have an external account-routing policy; that
+policy is independent of query snapshot selection and cache lifetime. Deployments that need leases,
+durable fences or a coordinator can provide those through the same extension seam without changing
+the cache.
 
 `ObjectCache` stores immutable-generation target statistics by `(accountId, tableId, snapshotId,
 generation, target identity)`. A live/newest result has no stable identity and is therefore read

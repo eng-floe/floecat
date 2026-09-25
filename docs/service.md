@@ -334,7 +334,8 @@ is process-local and serves every account.
 Managed Floe deployments get account exclusivity from routing plus the StatefulSet lifecycle
 contract: a given account is served by one Floecat owner. Floecat therefore does not write
 ownership records, recover assignments from KV, or fence every durable write. Process-local query
-contexts and pins are optimizations only; retention is the snapshot-GC safety mechanism.
+contexts and resolved snapshot selections are optimizations only; retention is the snapshot-GC
+safety mechanism.
 
 The extension points remain inside OSS Floecat. Deployments that need a different admission policy
 can bind their own `AccountScope` or `PlanningPointerIndex.Ownership` without
@@ -366,7 +367,7 @@ per account from durable pointers and current table-root chains. Manifest entrie
 configured retention plus grace period no longer root snapshot payloads; current entries and entries
 without publication metadata are retained conservatively. New snapshot resolutions fail with
 `MC_SNAPSHOT_TOO_OLD` after the visibility horizon, while an already-running query receives retryable `MC_SNAPSHOT_EXPIRED` once
-its grace period has elapsed. QueryContext pins are read optimizations, never GC roots. A retained
+its grace period has elapsed. QueryContext snapshot selections are read optimizations, never GC roots. A retained
 account continuation is abandoned after
 `floecat.gc.cas.max-consecutive-continuation-ticks` so one large account cannot starve every other
 account; raise that bound if the oldest-sweep-age metric shows a large account repeatedly restarting.

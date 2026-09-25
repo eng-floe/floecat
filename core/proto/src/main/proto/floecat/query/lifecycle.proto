@@ -31,7 +31,7 @@ import "google/protobuf/timestamp.proto";
  *
  * This service manages ONLY:
  *   - Input references (tables/views)
- *   - Snapshot pinning
+ *   - Coherent snapshot selection
  *   - View expansion
  *   - Row/column obligations
  *   - Query lifecycle (creation, renewal, completion)

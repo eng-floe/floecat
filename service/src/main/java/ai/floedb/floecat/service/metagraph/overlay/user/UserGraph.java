@@ -277,13 +277,13 @@ public final class UserGraph {
   // ----------------------------------------------------------------------
 
   /**
-   * Gets the snapshot pin for a table.
+   * Gets the resolved snapshot selection for a table.
    *
    * @param cid correlation ID for error reporting
    * @param tableId the table resource ID
    * @param override explicit snapshot override, if any
    * @param asOfDefault default timestamp for time travel queries
-   * @return the snapshot pin for the table
+   * @return the resolved snapshot selection for the table
    */
   public TablePin tablePinFor(
       String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault) {

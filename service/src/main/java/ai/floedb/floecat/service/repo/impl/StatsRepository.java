@@ -96,8 +96,8 @@ public class StatsRepository implements StatsStore {
 
   /**
    * Serializes only the final liveness recheck and lifecycle claim with table publishers. Once the
-   * claim changes the generation to {@code DELETING}, publication and new query pins fail closed,
-   * so the caller can release the guard before performing remote blob and pointer I/O.
+   * claim changes the generation to {@code DELETING}, publication and new snapshot selections fail
+   * closed, so the caller can release the guard before performing remote blob and pointer I/O.
    */
   @FunctionalInterface
   public interface GenerationGcClaimGuard {

@@ -791,7 +791,7 @@ public class CasBlobGc {
       // Walk durable current roots. `walkFailures` poisons the sweep: manifest pages and per-entry
       // refs are reachable only through chain walks, so an incomplete walk means the referenced
       // set is not trustworthy and nothing may be deleted this pass.
-      rootLivePinChains(referenced, walkedPinRoots, walkFailures);
+      refreshDurableReachability(referenced, walkedPinRoots, walkFailures);
       pass.phase = Phase.TABLES;
     }
 
@@ -845,7 +845,8 @@ public class CasBlobGc {
           pointersScanned++;
           storageEstimate.observe(currentSnapshotPointer);
         }
-        rootLivePinChains(tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
+        refreshDurableReachability(
+            tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
         String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
         pointersScanned +=
             collectPointers(
@@ -912,7 +913,7 @@ public class CasBlobGc {
                       if (tableReferenced.mightContain(normalized)) {
                         return true;
                       }
-                      rootLivePinChains(
+                      refreshDurableReachability(
                           tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
                       return pass.tableWalkFailures[0] > 0
                           || tableReferenced.mightContain(normalized);
@@ -947,7 +948,8 @@ public class CasBlobGc {
             if (!remarkTable(accountId, tableId, tableReferenced, pageSize)) {
               pass.tableWalkFailures[0]++;
             }
-            rootLivePinChains(tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
+            refreshDurableReachability(
+                tableReferenced, pass.tableWalkedPinRoots, pass.tableWalkFailures);
             pass.generationGcContinuation = new StatsRepository.GenerationGcContinuation();
             checkDeadline();
           }
@@ -1318,7 +1320,7 @@ public class CasBlobGc {
       double referenceFalsePositiveRate) {
     DeferredPageState state = continuation.deferredPage;
     while (true) {
-      rootLivePinChains(referenced, walkedPinRoots, walkFailures);
+      refreshDurableReachability(referenced, walkedPinRoots, walkFailures);
       if (walkFailures[0] > 0) {
         return new DeleteResult(0, 0, 0, true);
       }
@@ -1375,7 +1377,7 @@ public class CasBlobGc {
           continue;
         }
         // Keep remote reachability reads outside the publication lock. The proof epoch below
-        // invalidates this decision if a publisher or resolving pin overlaps the reads.
+        // invalidates this decision if a publisher or metadata resolver overlaps the reads.
         if (keepIfDurablyReferenced(normalized, referenced, walkedPinRoots, walkFailures)) {
           if (walkFailures[0] > 0) {
             return new DeleteResult(0, state.deleted, 0, true);
@@ -1384,7 +1386,7 @@ public class CasBlobGc {
           continue;
         }
         // Serialize only the irreversible version-targeted delete. Holding the table lock for the
-        // whole candidate page can otherwise stall commits and query-pin registration for nearly
+        // whole candidate page can otherwise stall commits and snapshot-selection work for nearly
         // the entire GC tick.
         requirePermit();
         var guarded =
@@ -2169,10 +2171,11 @@ public class CasBlobGc {
   }
 
   /**
-   * Compatibility hook for the old pin-root pass. Query contexts are deliberately not GC roots;
-   * durable table roots and the retention policy are the only snapshot reachability inputs.
+   * Hook for refreshing durable reachability before a destructive step. Query contexts are
+   * deliberately not GC roots; durable table roots and the retention policy are the only snapshot
+   * reachability inputs.
    */
-  private void rootLivePinChains(
+  private void refreshDurableReachability(
       ReferenceIndex referenced, Set<String> walkedPinRoots, int[] walkFailures) {}
 
   private record DeleteResult(int scanned, int deleted, int rescued, boolean pending) {}
@@ -2244,7 +2247,7 @@ public class CasBlobGc {
       checkDeadline();
       BlobStore.Page page = blobStore.list(prefix, pageSize, token);
       // Re-mark durable roots once per page so publication during a long sweep is not missed.
-      rootLivePinChains(referenced, walkedPinRoots, walkFailures);
+      refreshDurableReachability(referenced, walkedPinRoots, walkFailures);
       if (walkFailures[0] > 0) {
         // A durable root walk failed mid-phase (reachability is now unknowable): stop deleting
         // immediately (see the pass-level gate). A rescue does NOT reach here — it keeps the blob
@@ -2420,7 +2423,7 @@ public class CasBlobGc {
       ReferenceIndex referenced,
       Set<String> walkedPinRoots,
       int[] walkFailures) {
-    rootLivePinChains(referenced, walkedPinRoots, walkFailures);
+    refreshDurableReachability(referenced, walkedPinRoots, walkFailures);
     return walkFailures[0] > 0 || referenced.mightContain(normalizedKey);
   }
 

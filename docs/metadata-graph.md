@@ -12,7 +12,7 @@ or views. The graph provides:
   (`PlanningPointerIndex` behind `IndexedPointerStore`), which
   is refreshed on write and does not expire, so a commit is visible to the replica that made it as
   soon as it lands.
-- Helper APIs for name resolution (Directory RPC parity) and snapshot pinning (Snapshot RPC parity).
+- Helper APIs for name resolution (Directory RPC parity) and coherent snapshot selection (Snapshot RPC parity).
 - Extension points (`EngineHint`) so planners/executors can attach engine-specific payloads without
   mutating the base metadata structures.
 
@@ -43,7 +43,7 @@ facade sit inside `service/metagraph`. The split looks like this:
 - `service/metagraph/resolver/` – `NameResolver` handles catalog/namespace/table/view lookups and
   lightweight pointer-backed ref listings, while `FullyQualifiedResolver` mirrors
   DirectoryService’s ResolveFQ list/prefix semantics.
-- `service/metagraph/snapshot/` – `SnapshotHelper` encapsulates snapshot pinning and schema resolution,
+- `service/metagraph/snapshot/` – `SnapshotHelper` encapsulates snapshot selection and schema resolution,
   wrapping the SnapshotService RPC stub.
 - `service/cache/HintCache` – resolves, caches, and attaches persisted user-relation hints for the
   exact requested engine. `service/metagraph/hint/EngineHintPersistenceImpl` is the runtime SPI
@@ -175,9 +175,10 @@ Internally `resolve(ResourceId)`:
 4. A DDL publishes a new pointer and content identity, so the next resolution naturally uses the
    new object key; no graph-level invalidation is required.
 
-### Snapshot Pinning Semantics
+### Snapshot Selection Semantics
 - Explicit snapshot ID overrides always win.
-- Explicit AS-OF timestamps produce pins with `snapshot_id=0` and `as_of` set.
+- Explicit AS-OF timestamps are resolved once to a concrete snapshot ID and retain the original
+  timestamp only as provenance.
 - `asOfDefault` is applied when no overrides exist (to support `BEGIN QUERY AS OF ...` semantics).
 - Otherwise the graph calls `SnapshotService.GetSnapshot(SS_CURRENT)` to discover the latest ID.
 
@@ -218,7 +219,7 @@ summary, so planners can start binding as soon as the service resolves each rela
 shares the same `QueryContext` as the other query RPCs and relies on `CatalogGraphView.resolve`,
 `snapshotPinFor`, and view metadata stored in `ViewNode` to produce canonical names, pruned schemas,
 and view definitions without issuing a second RPC batch.
-Resolved tables/views also go through `QueryInputResolver` so their snapshot pins are merged into
+Resolved tables/views also go through `QueryInputResolver` so their snapshot selections are merged into
 `QueryContext` before the response hits the planner—`QueryScanService.InitScan` can therefore find
 the same pins later in the lifecycle. Builtins remain behind `GetSystemObjects`; the `information_schema`/`pg_catalog`
 relations are materialized in the engine-specific overlays for `_system` scans but do not appear in the RPC

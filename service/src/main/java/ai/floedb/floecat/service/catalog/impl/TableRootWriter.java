@@ -104,7 +104,8 @@ public class TableRootWriter {
         continue;
       }
       // Root currency tracks the committed current-snapshot selection immediately. Query readers
-      // still require the selected manifest entry to carry a stats generation before pinning it, so
+      // still require the selected manifest entry to carry a stats generation before selecting it,
+      // so
       // logical Iceberg metadata can move current without exposing an unfinalized scan.
       boolean advanceAtRegistration = true;
       committer.commit(

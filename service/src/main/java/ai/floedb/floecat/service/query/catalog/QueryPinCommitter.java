@@ -38,11 +38,11 @@ import java.util.function.BooleanSupplier;
 import org.jboss.logging.Logger;
 
 /**
- * The pin-durability transaction for one GetUserObjects stream, driven per chunk. The conductor
- * calls {@link #accumulate} as each chunk's relations are gathered (collect the resolver's pins and
- * fold them into the pending set) and {@link #commit} before the chunk's stats are warmed (write
- * the pending set durably to the QueryContext). Owns the mutable pin state — {@code
- * pendingChunkPins} plus the per-request snapshot-pin memo — and records the pin-collect /
+ * The snapshot-selection transaction for one GetUserObjects stream, driven per chunk. The conductor
+ * calls {@link #accumulate} as each chunk's relations are gathered (collect the resolver's
+ * selections and fold them into the pending set) and {@link #commit} before the chunk's stats are
+ * warmed (write the pending set durably to the QueryContext). Owns the mutable selection state —
+ * {@code pendingChunkPins} plus the per-request snapshot-pin memo — and records the pin-collect /
  * pin-commit timers into the shared request {@link TimingAccumulator}.
  *
  * <p>Snapshot selections are accumulated here before they are written to the process-local query
@@ -118,8 +118,8 @@ final class QueryPinCommitter {
   }
 
   /**
-   * Make pending pins durable unless cancellation stops the request. Cancellation releases their
-   * transient roots and leaves the query context unchanged.
+   * Make pending selections durable unless cancellation stops the request. Cancellation discards
+   * the pending selection set and leaves the query context unchanged.
    */
   void commit(BooleanSupplier cancelled) {
     long pinCommitStartNs = System.nanoTime();
@@ -137,7 +137,7 @@ final class QueryPinCommitter {
     }
   }
 
-  /** Detach roots that cancellation must release without blocking on a store operation. */
+  /** Detach selections that cancellation must discard without blocking on a store operation. */
   RelationPinSet detachPendingPins() {
     synchronized (pendingPinsLock) {
       RelationPinSet detached = pendingChunkPins;

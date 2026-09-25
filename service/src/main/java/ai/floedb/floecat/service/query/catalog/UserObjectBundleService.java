@@ -634,7 +634,8 @@ public class UserObjectBundleService {
           // this termination callback returns. Emit while it is still recording.
           publishClaimedTelemetrySafely("cancelled");
         }
-        // Pending pins are query-local values; retention, rather than cancellation cleanup, owns
+        // Pending snapshot selections are query-local values; retention, rather than cancellation
+        // cleanup, owns
         // the lifetime of their immutable snapshot data.
       }
     }

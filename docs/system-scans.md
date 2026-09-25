@@ -55,7 +55,7 @@ Scanners receive a best-effort `StatsProvider` in scan context.
 
 - System scans resolve table-level stats from the table's latest snapshot (snapshot-independent),
   even when the query context pins a different snapshot.
-- Column stats still use query snapshot pins when present.
+- Column stats still use the query's resolved snapshot selection when present.
 - Missing stats are allowed and must be treated as advisory only.
 
 ## Memory and cancellation
