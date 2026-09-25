@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.account.AccountScope;
-import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
@@ -43,7 +42,6 @@ public class PointerGc {
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
-  @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
 
   @Inject
   SnapshotRetentionPolicy retentionPolicy =
@@ -52,59 +50,6 @@ public class PointerGc {
   private final ThreadLocal<AccountScope.GcPermit> activePermit = new ThreadLocal<>();
 
   public record Result(int scanned, int deleted, int missingBlobs, int staleSecondaries) {}
-
-  public Result runGlobalAccountPointers(long deadlineMs) {
-    int pageSize =
-        ConfigProvider.getConfig()
-            .getOptionalValue("floecat.gc.pointer.page-size", Integer.class)
-            .orElse(500);
-    long minAgeMs =
-        ConfigProvider.getConfig()
-            .getOptionalValue("floecat.gc.pointer.min-age-ms", Long.class)
-            .orElse(30_000L);
-    long nowMs = System.currentTimeMillis();
-    Map<String, Boolean> blobCache = new HashMap<>();
-
-    int scanned = 0;
-    int deleted = 0;
-    int missingBlobs = 0;
-    int staleSecondaries = 0;
-
-    CatalogIntegrationCredentialCleanup.Result credentialResult =
-        credentialCleanup.drain(deadlineMs, pageSize);
-    scanned += credentialResult.scanned();
-    deleted += credentialResult.deleted();
-
-    Result byId =
-        scanPrefix(
-            Keys.accountPointerByIdPrefix(),
-            pageSize,
-            deadlineMs,
-            blobCache,
-            p -> true,
-            nowMs,
-            minAgeMs);
-    scanned += byId.scanned;
-    deleted += byId.deleted;
-    missingBlobs += byId.missingBlobs;
-    staleSecondaries += byId.staleSecondaries;
-
-    Result byName =
-        scanPrefix(
-            Keys.accountPointerByNamePrefix(),
-            pageSize,
-            deadlineMs,
-            blobCache,
-            p -> true,
-            nowMs,
-            minAgeMs);
-    scanned += byName.scanned;
-    deleted += byName.deleted;
-    missingBlobs += byName.missingBlobs;
-    staleSecondaries += byName.staleSecondaries;
-
-    return new Result(scanned, deleted, missingBlobs, staleSecondaries);
-  }
 
   public Result runForAccount(String accountId, long deadlineMs) {
     return runForAccount(accountId, deadlineMs, null);

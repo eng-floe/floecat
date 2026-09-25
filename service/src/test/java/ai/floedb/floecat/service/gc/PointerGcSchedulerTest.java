@@ -57,7 +57,6 @@ class PointerGcSchedulerTest {
       System.clearProperty("floecat.gc.pointer.enabled");
     }
 
-    assertThat(gc.globalRuns).as("directory GC runs on every process").isEqualTo(1);
     assertThat(gc.accountIds).containsExactlyInAnyOrder("acct-a", "acct-b", "acct-c");
   }
 
@@ -85,28 +84,6 @@ class PointerGcSchedulerTest {
     assertThat(gc.accountIds).containsExactlyInAnyOrder("acct-a", "acct-b");
   }
 
-  @Test
-  void globalGcRunsWithoutLifecycleAdmission() {
-    AccountRepository accounts = mock(AccountRepository.class);
-    when(accounts.list(anyInt(), anyString(), any())).thenReturn(List.of());
-    RecordingPointerGc gc = new RecordingPointerGc();
-    PointerGcScheduler scheduler = new PointerGcScheduler();
-    scheduler.accounts = () -> accounts;
-    scheduler.pointerGc = () -> gc;
-    scheduler.assignment = AccountAssignment.forTesting();
-    scheduler.observability = new TestObservability();
-    scheduler.initMeters();
-
-    System.setProperty("floecat.gc.pointer.enabled", "true");
-    try {
-      scheduler.tick();
-    } finally {
-      System.clearProperty("floecat.gc.pointer.enabled");
-    }
-
-    assertThat(gc.globalRuns).isEqualTo(1);
-  }
-
   private static Account account(String accountId) {
     return Account.newBuilder()
         .setResourceId(
@@ -117,13 +94,6 @@ class PointerGcSchedulerTest {
 
   private static final class RecordingPointerGc extends PointerGc {
     private final List<String> accountIds = new ArrayList<>();
-    private int globalRuns;
-
-    @Override
-    public Result runGlobalAccountPointers(long deadlineMs) {
-      globalRuns++;
-      return new Result(0, 0, 0, 0);
-    }
 
     @Override
     public Result runForAccount(String accountId, long deadlineMs, AccountScope.GcPermit permit) {

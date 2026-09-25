@@ -109,14 +109,6 @@ public class PointerGcScheduler {
 
     long tickStart = System.nanoTime();
     try {
-      var globalResult = gc.runGlobalAccountPointers(deadline);
-      gcMetrics.recordCollection(globalResult.scanned(), Tag.of(TagKey.RESULT, "global-scanned"));
-      gcMetrics.recordCollection(globalResult.deleted(), Tag.of(TagKey.RESULT, "global-deleted"));
-      gcMetrics.recordCollection(
-          globalResult.missingBlobs(), Tag.of(TagKey.RESULT, "missing-blobs"));
-      gcMetrics.recordCollection(
-          globalResult.staleSecondaries(), Tag.of(TagKey.RESULT, "stale-secondaries"));
-
       List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
       Collections.shuffle(allAccounts);
 
