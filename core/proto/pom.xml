@@ -72,6 +72,38 @@
     </resources>
     <plugins>
       <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-clean-plugin</artifactId>
+        <executions>
+          <!--
+            Wipe stale generated proto sources before each build. The Quarkus
+            generate-code goal rewrites files for messages still present in the
+            .proto sources, but leaves orphans behind when a message is removed
+            or renamed. Orphans then fail to compile against the freshly
+            generated outer class.
+          -->
+          <execution>
+            <id>clean-generated-proto-sources</id>
+            <phase>initialize</phase>
+            <goals>
+              <goal>clean</goal>
+            </goals>
+            <configuration>
+              <excludeDefaultDirectories>true</excludeDefaultDirectories>
+              <filesets>
+                <fileset>
+                  <directory>${project.build.directory}/generated-sources/grpc</directory>
+                </fileset>
+                <fileset>
+                  <directory>${project.build.directory}/generated-test-sources/test-grpc</directory>
+                </fileset>
+              </filesets>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <plugin>
         <groupId>io.quarkus</groupId>
         <artifactId>quarkus-maven-plugin</artifactId>
         <executions>
