@@ -18,23 +18,17 @@ package ai.floedb.floecat.service.query.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
-import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.cache.CaffeineStateCache;
+import ai.floedb.floecat.cache.StateCache;
 import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
-import ai.floedb.floecat.service.repo.model.Keys;
-import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
-import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.Collection;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
@@ -54,8 +48,6 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 @ApplicationScoped
 public class QueryContextStoreImpl implements QueryContextStore {
 
-  @Inject TableBlobReachabilityGuard reachabilityGuard;
-
   @ConfigProperty(name = "floecat.query.default-ttl-ms", defaultValue = "60000")
   long defaultTtlMs;
 
@@ -69,46 +61,21 @@ public class QueryContextStoreImpl implements QueryContextStore {
   long safetyExpiryMinutes;
 
   private final AtomicLong versionGen = new AtomicLong(1);
-  // Package-private and non-final so unit tests can substitute a controllable clock (e.g. to
-  // exercise resolving-pin grace expiry deterministically). Production uses the system clock.
+  // Package-private and non-final so unit tests can substitute a controllable clock. Production
+  // uses the system clock.
   Clock clock = Clock.systemUTC();
 
-  private Cache<String, QueryContext> cache;
-  private Cache<String, ScanSession> scanSessionCache;
+  private StateCache<String, QueryContext> cache;
+  private StateCache<String, ScanSession> scanSessionCache;
   private final Map<String, String> handleToQuery = new ConcurrentHashMap<>();
-
-  // Blobs of pins still being resolved, keyed by query id, held as transient GC roots from
-  // construction until the RPC releases them (after the pins are persisted into a context, which
-  // then roots them). Release is the primary bound; the grace is a fail-safe so a crashed/abandoned
-  // resolution cannot leak roots, and must exceed the longest resolve→persist so an in-flight slow
-  // RPC is never pruned before it releases. Pruned opportunistically on register (and on GC read),
-  // so the map is self-maintaining regardless of the blob-GC schedule.
-  @ConfigProperty(name = "floecat.query.resolving-pin-grace-ms", defaultValue = "600000")
-  long resolvingPinGraceMs;
-
-  private final Map<String, ResolvingPinBlobs> resolvingPinBlobs = new ConcurrentHashMap<>();
-
-  private record ResolvingPinBlobs(Map<String, Integer> uriCounts, long expiresAtMs) {
-    Set<String> uris() {
-      return uriCounts.keySet();
-    }
-  }
-
-  /** Test-only visibility into the resolving-root map size (bounds are behavior, not structure). */
-  int resolvingPinEntryCount() {
-    return resolvingPinBlobs.size();
-  }
 
   @PostConstruct
   void init() {
     cache =
-        Caffeine.newBuilder()
-            // A committed context is a durable GC root: while a query is ACTIVE its pinned blobs
-            // must survive, and CasBlobGc treats referencedPinBlobUris() as live roots. Size
-            // eviction would silently unroot a live query's pins under load and let GC delete a
-            // blob it is still reading. So ACTIVE contexts weigh 0 — they are bounded solely by
-            // the safety-expiry TTL (the intended bound, releasing an abandoned query's pins);
-            // only terminal contexts count toward the size cap.
+        CaffeineStateCache.<String, QueryContext>builder()
+            // Query contexts are an internal optimization. Snapshot retention is the safety
+            // boundary, so evicting an active context does not make immutable data collectible
+            // earlier or change the correctness contract.
             .maximumWeight(Math.max(1, maxSize))
             .weigher((String k, QueryContext ctx) -> ctx != null && ctx.isActive() ? 0 : 1)
             .expireAfterWrite(Duration.ofMinutes(Math.max(1, safetyExpiryMinutes)))
@@ -121,7 +88,7 @@ public class QueryContextStoreImpl implements QueryContextStore {
                 })
             .build();
     scanSessionCache =
-        Caffeine.newBuilder()
+        CaffeineStateCache.<String, ScanSession>builder()
             .maximumSize(Math.max(1, maxSize))
             .expireAfterWrite(Duration.ofMinutes(Math.max(1, safetyExpiryMinutes)))
             .recordStats()
@@ -141,17 +108,15 @@ public class QueryContextStoreImpl implements QueryContextStore {
     // committed pins into with a stale pre-pin version marked EXPIRED — losing the pins after
     // their transient resolving roots were already dropped, leaving the blobs rooted by neither.
     QueryContext ctx =
-        cache
-            .asMap()
-            .computeIfPresent(
-                queryId,
-                (k, cur) -> {
-                  if (clock.millis() > cur.getExpiresAtMs()
-                      && cur.getState() == QueryContext.State.ACTIVE) {
-                    return cur.asExpired(versionGen.incrementAndGet());
-                  }
-                  return cur;
-                });
+        cache.computeIfPresent(
+            queryId,
+            (k, cur) -> {
+              if (clock.millis() > cur.getExpiresAtMs()
+                  && cur.getState() == QueryContext.State.ACTIVE) {
+                return cur.asExpired(versionGen.incrementAndGet());
+              }
+              return cur;
+            });
     return Optional.ofNullable(ctx);
   }
 
@@ -162,13 +127,7 @@ public class QueryContextStoreImpl implements QueryContextStore {
 
   @Override
   public boolean putIfAbsent(QueryContext ctx) {
-    boolean inserted =
-        cache.asMap().compute(ctx.getQueryId(), (k, existing) -> existing != null ? existing : ctx)
-            == ctx;
-    if (inserted) {
-      // The stored context now roots its pins; drop their transient resolving registrations.
-      dropResolvingPinsRootedBy(ctx);
-    }
+    boolean inserted = cache.putIfAbsent(ctx.getQueryId(), ctx) == null;
     return inserted;
   }
 
@@ -177,25 +136,22 @@ public class QueryContextStoreImpl implements QueryContextStore {
     final long now = clock.millis();
 
     QueryContext updated =
-        cache
-            .asMap()
-            .computeIfPresent(
-                queryId,
-                (k, ctx) -> {
-                  if (ctx.getState() != QueryContext.State.ACTIVE) {
-                    // Leave a lazily-EXPIRED / ended context in place (removal is owned by the
-                    // GC/pin lifecycle, not this read-shaped renew); the method returns empty
-                    // below.
-                    return ctx;
-                  }
+        cache.computeIfPresent(
+            queryId,
+            (k, ctx) -> {
+              if (ctx.getState() != QueryContext.State.ACTIVE) {
+                // Leave a lazily-EXPIRED / ended context in place; the method returns empty
+                // below.
+                return ctx;
+              }
 
-                  long newExp = Math.max(ctx.getExpiresAtMs(), Math.max(now, requestedExpiresAtMs));
-                  if (newExp == ctx.getExpiresAtMs()) {
-                    return ctx;
-                  }
+              long newExp = Math.max(ctx.getExpiresAtMs(), Math.max(now, requestedExpiresAtMs));
+              if (newExp == ctx.getExpiresAtMs()) {
+                return ctx;
+              }
 
-                  return ctx.extendLease(newExp, versionGen.incrementAndGet());
-                });
+              return ctx.extendLease(newExp, versionGen.incrementAndGet());
+            });
     // A renew against a non-ACTIVE (lazily-EXPIRED) context must surface as NOT_FOUND, not a false
     // success carrying the stale lease — the caller treats empty as not-found.
     if (updated == null || updated.getState() != QueryContext.State.ACTIVE) {
@@ -209,23 +165,21 @@ public class QueryContextStoreImpl implements QueryContextStore {
     final long newExp = clock.millis() + endedGraceMs;
 
     return Optional.ofNullable(
-        cache
-            .asMap()
-            .computeIfPresent(
-                queryId,
-                (k, ctx) -> {
-                  if (ctx.getState() == QueryContext.State.ENDED_ABORT
-                      || ctx.getState() == QueryContext.State.ENDED_COMMIT) {
-                    return ctx;
-                  }
+        cache.computeIfPresent(
+            queryId,
+            (k, ctx) -> {
+              if (ctx.getState() == QueryContext.State.ENDED_ABORT
+                  || ctx.getState() == QueryContext.State.ENDED_COMMIT) {
+                return ctx;
+              }
 
-                  return ctx.end(commit, newExp, versionGen.incrementAndGet());
-                }));
+              return ctx.end(commit, newExp, versionGen.incrementAndGet());
+            }));
   }
 
   @Override
   public boolean delete(String queryId) {
-    QueryContext ctx = cache.asMap().remove(queryId);
+    QueryContext ctx = cache.remove(queryId);
     if (ctx != null) {
       cleanupScanHandles(ctx);
     }
@@ -237,201 +191,6 @@ public class QueryContextStoreImpl implements QueryContextStore {
     return cache.estimatedSize();
   }
 
-  @Override
-  public Set<String> referencedPinBlobUris() {
-    Set<String> uris = new HashSet<>();
-    // Pins still being resolved (transient roots) plus the pins of every committed context. A blob
-    // stays in the resolving set until well after it is persisted (the grace outlives the short
-    // resolve→persist), so there is no handoff gap between the two sets and their order does not
-    // matter. Expired resolving entries are pruned here, on the GC read path.
-    long now = clock.millis();
-    resolvingPinBlobs.values().removeIf(entry -> now > entry.expiresAtMs());
-    for (ResolvingPinBlobs entry : resolvingPinBlobs.values()) {
-      uris.addAll(entry.uris());
-    }
-    for (QueryContext ctx : cache.asMap().values()) {
-      addPinBlobUris(uris, ctx);
-    }
-    // Live scan streams froze a stats generation at initScan and read its manifest blob per
-    // generation-scoped page: the frozen manifest must survive the scan even after a replace-all
-    // superseded it (the generation's record blobs stay pointer-rooted via retention).
-    for (ScanSession session : scanSessionCache.asMap().values()) {
-      String frozen = session.statsGeneration();
-      if (frozen != null && !frozen.isEmpty()) {
-        uris.add(frozen);
-      }
-    }
-    return uris;
-  }
-
-  /**
-   * Add every immutable blob URI a table pin references to {@code uris}: the pinned root (the
-   * object all reads follow refs out of), plus the copied table/snapshot/constraints refs.
-   */
-  private static void addPinBlobUris(Set<String> uris, QueryContext ctx) {
-    uris.addAll(ai.floedb.floecat.service.query.QueryPins.gcRootUris(ctx.parseRelationPins("gc")));
-  }
-
-  @Override
-  public void registerResolvingPinBlobs(
-      String queryId, ResourceId tableId, Collection<String> blobUris) {
-    if (queryId == null || queryId.isEmpty() || blobUris == null) {
-      return;
-    }
-    Set<String> clean = new HashSet<>();
-    for (String uri : blobUris) {
-      addIfPresent(clean, uri);
-    }
-    if (clean.isEmpty()) {
-      return;
-    }
-    reachabilityGuard.publishing(
-        tableId,
-        () -> {
-          validatePinScope(tableId, clean);
-          registerResolvingPinBlobsGuarded(queryId, clean);
-          return null;
-        });
-  }
-
-  /** Validate URI ownership without probing immutable storage. The resolver creates these URIs. */
-  private void validatePinScope(ResourceId tableId, Set<String> roots) {
-    if (tableId == null) {
-      return;
-    }
-    String rootPrefix = Keys.tableRootBlobPrefix(tableId.getAccountId(), tableId.getId());
-    for (String uri : roots) {
-      if (uri.startsWith("/accounts/")
-          && uri.contains(Keys.SEG_TABLE_ROOT)
-          && !uri.startsWith(rootPrefix)) {
-        throw new BaseResourceRepository.CorruptionException(
-            "pinned table root belongs to a different table: " + uri);
-      }
-      Keys.GenerationKey generation = Keys.generationFromManifestBlobUri(uri);
-      if (generation != null
-          && !uri.equals(
-              Keys.snapshotTargetStatsManifestBlobUri(
-                  tableId.getAccountId(),
-                  tableId.getId(),
-                  generation.snapshotId(),
-                  generation.generationId()))) {
-        throw new BaseResourceRepository.CorruptionException(
-            "frozen stats generation belongs to a different table: " + uri);
-      }
-    }
-  }
-
-  private void registerResolvingPinBlobsGuarded(String queryId, Set<String> clean) {
-    // Registration is the only operation needed to close the resolve-to-commit window. CAS GC is
-    // account-scoped and cannot collect this account without its ownership permit; the table guard
-    // serializes this publication with the collector's delete proof. Immutable content is therefore
-    // read through the normal cache path, and a missing blob is reported by the read that needs it.
-    long now = clock.millis();
-    // Expiry pruning normally happens on the GC read path (referencedPinBlobUris), which the blob
-    // GC calls regularly — not per-pin here. But deployments can run with CAS blob GC disabled
-    // (e.g. the reconciler-executor profile), and entries from queries that fail before any commit
-    // are only ever released by expiry — so once the map holds more entries than there can be live
-    // queries, fall back to pruning here to keep it bounded without a GC schedule.
-    if (resolvingPinBlobs.size() >= maxSize) {
-      resolvingPinBlobs.values().removeIf(entry -> now > entry.expiresAtMs());
-    }
-    long expiresAt = now + resolvingPinGraceMs;
-    resolvingPinBlobs.merge(
-        queryId,
-        new ResolvingPinBlobs(counts(clean), expiresAt),
-        (existing, added) -> {
-          Map<String, Integer> merged = new java.util.HashMap<>(existing.uriCounts());
-          added.uriCounts().forEach((uri, count) -> merged.merge(uri, count, Integer::sum));
-          return new ResolvingPinBlobs(Map.copyOf(merged), added.expiresAtMs());
-        });
-  }
-
-  @Override
-  public void releaseResolvingPinBlobs(String queryId, Collection<String> blobUris) {
-    if (queryId == null || queryId.isEmpty() || blobUris == null) {
-      return;
-    }
-    Set<String> clean = new HashSet<>();
-    for (String uri : blobUris) {
-      addIfPresent(clean, uri);
-    }
-    if (clean.isEmpty()) {
-      return;
-    }
-    resolvingPinBlobs.computeIfPresent(
-        queryId,
-        (qid, entry) -> {
-          Map<String, Integer> remaining = new java.util.HashMap<>(entry.uriCounts());
-          for (String uri : clean) {
-            remaining.computeIfPresent(uri, (ignored, count) -> count <= 1 ? null : count - 1);
-          }
-          return remaining.isEmpty()
-              ? null
-              : new ResolvingPinBlobs(Map.copyOf(remaining), entry.expiresAtMs());
-        });
-  }
-
-  /**
-   * Drop transient resolving-pin roots that are now rooted by a just-committed context, so the
-   * lifecycle is bound to the pin commit rather than the fail-safe grace.
-   *
-   * <p>Called ONLY for a context that just won its {@code putIfAbsent} — at that moment it uniquely
-   * owns its query id, so touching the entry keyed by that id touches only its own registration.
-   * Keying on the query id (not the committing RPC's correlation id, which changes across
-   * BeginQuery/DescribeInputs/GetUserObjects) is what makes register and release agree, so a pin
-   * resolved on a later RPC is actually released on commit instead of lingering until the grace
-   * expires. It must NOT be called for a context that failed to insert: a rejected same-id context
-   * shares the incumbent's entry, and dropping by URI would unroot blobs the incumbent is still
-   * resolving — {@code CasBlobGc} could then delete a blob still in use. A rejected context's
-   * registration is instead left to the incumbent's own commit or the fail-safe grace (bounded, and
-   * the map is size-capped).
-   *
-   * <p>URI-precise within that entry, so a not-yet-committed URI (e.g. a later streaming chunk)
-   * stays protected, and the entry is dropped when it empties out.
-   */
-  private void dropResolvingPinsRootedBy(QueryContext committed) {
-    if (committed == null || resolvingPinBlobs.isEmpty()) {
-      return;
-    }
-    String queryId = committed.getQueryId();
-    if (queryId == null || queryId.isEmpty()) {
-      // No query id to match the resolving registration against; leave the transient roots to
-      // expire via the fail-safe grace rather than risk unrooting another query's shared blob.
-      return;
-    }
-    Set<String> rooted = new HashSet<>();
-    addPinBlobUris(rooted, committed);
-    if (rooted.isEmpty()) {
-      return;
-    }
-    resolvingPinBlobs.computeIfPresent(
-        queryId,
-        (cid, entry) -> {
-          if (entry.uris().stream().noneMatch(rooted::contains)) {
-            return entry;
-          }
-          Set<String> remaining = new HashSet<>(entry.uris());
-          remaining.removeAll(rooted);
-          return remaining.isEmpty()
-              ? null
-              : new ResolvingPinBlobs(counts(remaining), entry.expiresAtMs());
-        });
-  }
-
-  private static Map<String, Integer> counts(Collection<String> uris) {
-    Map<String, Integer> counts = new java.util.HashMap<>();
-    for (String uri : uris) {
-      counts.merge(uri, 1, Integer::sum);
-    }
-    return Map.copyOf(counts);
-  }
-
-  private static void addIfPresent(Set<String> uris, String uri) {
-    if (uri != null && !uri.isBlank()) {
-      uris.add(uri);
-    }
-  }
-
   /**
    * Overwrite an existing QueryContext with a new version.
    *
@@ -440,27 +199,22 @@ public class QueryContextStoreImpl implements QueryContextStore {
    */
   @Override
   public void replace(QueryContext ctx) {
-    cache.asMap().put(ctx.getQueryId(), ctx);
-    dropResolvingPinsRootedBy(ctx);
+    cache.put(ctx.getQueryId(), ctx);
   }
 
   @Override
   public Optional<QueryContext> update(String queryId, UnaryOperator<QueryContext> fn) {
     Optional<QueryContext> result =
         Optional.ofNullable(
-            cache
-                .asMap()
-                .computeIfPresent(
-                    queryId,
-                    (k, ctx) -> {
-                      QueryContext updated = fn.apply(ctx);
-                      if (updated == null || updated == ctx) {
-                        return ctx;
-                      }
-                      return updated.toBuilder().version(versionGen.incrementAndGet()).build();
-                    }));
-    // The updated context roots its pins; drop their transient resolving registrations.
-    result.ifPresent(this::dropResolvingPinsRootedBy);
+            cache.computeIfPresent(
+                queryId,
+                (k, ctx) -> {
+                  QueryContext updated = fn.apply(ctx);
+                  if (updated == null || updated == ctx) {
+                    return ctx;
+                  }
+                  return updated.toBuilder().version(versionGen.incrementAndGet()).build();
+                }));
     return result;
   }
 
@@ -495,7 +249,7 @@ public class QueryContextStoreImpl implements QueryContextStore {
             .isPresent();
     if (!present) {
       handleToQuery.remove(id);
-      scanSessionCache.invalidate(id);
+      scanSessionCache.remove(id);
       throw GrpcErrors.notFound(
           correlationId, QUERY_NOT_FOUND, Map.of("query_id", session.queryId()));
     }
@@ -528,16 +282,14 @@ public class QueryContextStoreImpl implements QueryContextStore {
     if (queryId == null) {
       return;
     }
-    cache
-        .asMap()
-        .computeIfPresent(
-            queryId,
-            (k, ctx) -> {
-              Set<String> updated = new HashSet<>(ctx.scanHandles());
-              updated.remove(handle.getId());
-              return ctx.toBuilder().scanHandles(updated).build();
-            });
-    scanSessionCache.invalidate(handle.getId());
+    cache.computeIfPresent(
+        queryId,
+        (k, ctx) -> {
+          Set<String> updated = new HashSet<>(ctx.scanHandles());
+          updated.remove(handle.getId());
+          return ctx.toBuilder().scanHandles(updated).build();
+        });
+    scanSessionCache.remove(handle.getId());
   }
 
   private Set<String> addScanHandle(Set<String> existing, String id) {
@@ -549,7 +301,7 @@ public class QueryContextStoreImpl implements QueryContextStore {
   private void cleanupScanHandles(QueryContext ctx) {
     for (String handle : ctx.scanHandles()) {
       handleToQuery.remove(handle);
-      scanSessionCache.invalidate(handle);
+      scanSessionCache.remove(handle);
     }
   }
 
@@ -557,5 +309,6 @@ public class QueryContextStoreImpl implements QueryContextStore {
   @Override
   public void close() {
     cache.invalidateAll();
+    scanSessionCache.invalidateAll();
   }
 }
