@@ -1835,7 +1835,8 @@ callbacks.</p>
 <p>The wire names <code>TablePin</code>, <code>RelationPinSet</code>, and related fields are compatibility names for a
 resolved snapshot selection. They freeze the immutable identities used by one query; they are not
 GC roots, leases, or ownership claims. Retention and durable reachability determine when the
-selected data may be collected.</p>
+selected data may be collected; an explicit delete or a later collection can make an already-
+selected snapshot unavailable.</p>
 <h2 id="principles">Principles<a class="headerlink" href="#principles" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Mutable edges resolve to immutable keys.</strong> A read first resolves a mutable pointer (resource ID
@@ -1886,7 +1887,7 @@ identity; they do not replace a value in an existing key.</p>
 <td>Per-query state</td>
 <td><code>QueryContextStore</code> and per-query memos</td>
 <td>Snapshot selections, expansion map, and scan/session bookkeeping keyed by query ID</td>
-<td>Rebuildable process-local optimization. Snapshot retention, not this state, provides GC safety.</td>
+<td>Rebuildable process-local optimization, not a GC root. If the selected snapshot is deleted or collected, the query receives the snapshot-unavailable error.</td>
 </tr>
 </tbody>
 </table>
@@ -2073,7 +2074,8 @@ KV, and mutations still run through <code>IndexedPointerStore</code> and keep th
 order a publish against a load. Otherwise the durable adapter is used automatically while an
 account index is loading and for operational keys.</p>
 <h2 id="deliberately-live-reads">Deliberately live reads<a class="headerlink" href="#deliberately-live-reads" title="Permanent link">&para;</a></h2>
-<p>Only operations whose result is a mutation or reclamation decision bypass the cache:</p>
+<p>Only reads that decide a mutation or reclamation, or whose emptiness is load-bearing, bypass the
+cache:</p>
 <table>
 <thead>
 <tr>
@@ -2107,9 +2109,8 @@ account index is loading and for operational keys.</p>
 </table>
 <p>Selected <strong>blob</strong> reads are not among them. The blob a query selection names is immutable and
 content-addressed, so a resident decode of it <em>is</em> the selected content rather than a stale view — the table,
-snapshot, schema, node and constraint loads all read through the cache. If a required value is not
-resident, the read path reports the existing resolved-snapshot read error and requests repair where that
-contract applies.</p>
+snapshot, schema, node and constraint loads all read through the cache. If the durable blob is missing,
+the read path reports the resolved-snapshot read error and requests repair where that contract applies.</p>
 <p>Nor is a selected read preceded by a probe of its root. A selection whose blobs still read is
 coherent whatever has happened to the live pointer meanwhile, and a probe could only report what
 the read that needs the blob reports anyway.</p>

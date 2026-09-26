@@ -2047,7 +2047,7 @@ or views. The graph provides:</p>
 │ gRPC RPCs  │ ---&gt; │ MetadataGraph APIs │ ---&gt; │ Repositories / RPCs   │
 │ (Query,    │      │  - resolve()       │      │  - Catalog/Table/View │
 │  Planner,  │      │  - catalog()/...   │      │  - Directory/Snapshot │
-│  Executors)│      │  - snapshotPinFor  │      │  - Storage backends   │
+│  Executors)│      │  - resolvedSnapshot│      │  - Storage backends   │
 └────────────┘      └────────────────────┘      └───────────────────────┘
 </code></pre></div>
 <h3 id="implementation-structure">Implementation Structure<a class="headerlink" href="#implementation-structure" title="Permanent link">&para;</a></h3>
@@ -2215,8 +2215,8 @@ exposes the Metadata Graph APIs that higher layers call. Key methods:</p>
 <td>Lists views below a prefix with next-page tokens and total counts.</td>
 </tr>
 <tr>
-<td><code>SnapshotPin snapshotPinFor(String cid, ResourceId tableId, SnapshotRef override, Optional&lt;Timestamp&gt; asOfDefault)</code></td>
-<td>Normalises snapshot selection (override → as-of → current).</td>
+<td><code>TablePin resolvedSnapshotFor(String cid, ResourceId tableId, SnapshotRef override, Optional&lt;Timestamp&gt; asOfDefault)</code></td>
+<td>Resolves and admits a snapshot selection (override → as-of → current).</td>
 </tr>
 </tbody>
 </table>
@@ -2280,11 +2280,11 @@ contents.</p>
 graph. Each chunk carries a header, batched relation resolutions (<code>RelationResolutions</code>) and a final
 summary, so planners can start binding as soon as the service resolves each relation. The service
 shares the same <code>QueryContext</code> as the other query RPCs and relies on <code>CatalogGraphView.resolve</code>,
-<code>snapshotPinFor</code>, and view metadata stored in <code>ViewNode</code> to produce canonical names, pruned schemas,
+<code>resolvedSnapshotFor</code>, and view metadata stored in <code>ViewNode</code> to produce canonical names, pruned schemas,
 and view definitions without issuing a second RPC batch.
 Resolved tables/views also go through <code>QueryInputResolver</code> so their snapshot selections are merged into
 <code>QueryContext</code> before the response hits the planner—<code>QueryScanService.InitScan</code> can therefore find
-the same pins later in the lifecycle. Builtins remain behind <code>GetSystemObjects</code>; the <code>information_schema</code>/<code>pg_catalog</code>
+the same selections later in the lifecycle. Builtins remain behind <code>GetSystemObjects</code>; the <code>information_schema</code>/<code>pg_catalog</code>
 relations are materialized in the engine-specific overlays for <code>_system</code> scans but do not appear in the RPC
 response to avoid exposing synthetic tables twice.
 Column decorations are surfaced per column via <code>RelationInfo.columns[*]</code> (<code>ColumnResult</code>), so a relation can

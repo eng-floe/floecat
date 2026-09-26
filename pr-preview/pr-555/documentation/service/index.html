@@ -2438,8 +2438,9 @@ can be replaced by injecting a custom implementation.</p>
 <p>External session header authentication is documented in
 <a href="../external-authentication/"><code>docs/external-authentication.md</code></a>.</p>
 <h3 id="query-lifecycle-service">Query Lifecycle Service<a class="headerlink" href="#query-lifecycle-service" title="Permanent link">&para;</a></h3>
-<p><code>QueryContextStore</code> is a shared state cache keyed by query ID. Each <code>QueryContext</code> tracks state,
-expiration, <code>PrincipalContext</code>, encoded <code>SnapshotSet</code>, and <code>ExpansionMap</code>.
+<p><code>QueryContextStore</code> is a process-local cache keyed by query ID. Each <code>QueryContext</code> tracks state,
+expiration, <code>PrincipalContext</code>, encoded <code>RelationPinSet</code>, and <code>ExpansionMap</code>. Scan handles serve only
+while their query is active.
 <code>QueryServiceImpl.beginQuery</code> resolves name or ID references via Directory/Snapshot/Table services,
 captures the selected snapshots, and stores the lease. Planners request connector file lists with <code>InitScan</code> (which
 returns table metadata and a scan handle), then consume <code>StreamDeleteFiles</code> followed by
@@ -2451,7 +2452,7 @@ currently reports <code>DeleteRef.all_deletes=true</code>; finer-grain delete re
 applicability logic is defined. The lease data (snapshots, expansion map, obligations) is returned to
 the caller inside the <code>QueryDescriptor</code>.</p>
 <h3 id="account-lifecycle">Account Lifecycle<a class="headerlink" href="#account-lifecycle" title="Permanent link">&para;</a></h3>
-<p><code>AccountScope</code> controls snapshot-resolution and collection admission. Pointer mutations use the
+<p><code>AccountScope</code> controls snapshot-resolution and mutation admission. Pointer mutations use the
 <code>PlanningPointerIndex.Ownership</code> seam, which is the single write-admission path. The default policy
 is process-local and serves every account.</p>
 <p>Managed Floe deployments get account exclusivity from routing plus the StatefulSet lifecycle
@@ -2465,18 +2466,32 @@ durable lifetime reservation.</p>
 <p>The extension points remain inside OSS Floecat. Deployments that need a different admission policy
 can bind their own <code>AccountScope</code> or <code>PlanningPointerIndex.Ownership</code> without
 changing query, cache, mutation or GC call sites.</p>
-<p>Pointer GC removes snapshot pointers after the configured retention plus grace period; CAS/blob GC
-then removes the now-unreferenced immutable payloads. Both collectors remain account-scoped and
-revalidate their existing permits before destructive batches. Snapshot manifests use Floecat's
-publication timestamp (<code>ingested_at</code>), not upstream event time: new snapshot resolutions fail
-with <code>MC_SNAPSHOT_TOO_OLD</code> after the visibility horizon, while an already-running query receives
-retryable <code>MC_SNAPSHOT_EXPIRED</code> once its grace period has elapsed. QueryContext and its resolved selections are therefore
-only in-process read optimizations, never GC roots. Transaction GC and reconcile-job GC remain
-separate collectors for their own durable key families.</p>
+<p>One retention policy covers every versioned catalog object: snapshots of a table, and table
+definitions, stats generations and constraints bundles. A version is kept while it is live or
+published within retention plus grace. Snapshot publication time is Floecat's <code>ingested_at</code>, never
+upstream event time; entries written before it existed fall back to the snapshot pointer, then to
+the snapshot blob's write time. Other artifacts use their blob's write time.</p>
+<p>The current snapshot stays selectable and readable as long as it remains live, however the
+selection is spelled (<code>CURRENT</code>, <code>AS OF</code>, or an explicit id). Any other new selection fails with
+<code>MC_SNAPSHOT_TOO_OLD</code> once it is past the visibility horizon. A query that
+already selected such a snapshot receives <code>MC_SNAPSHOT_EXPIRED</code> once it is past retention plus grace,
+or when its selected data is explicitly deleted or collected. Retrying may succeed if the selection
+is still current and a missing derived artifact is repaired, but callers must not assume that an
+explicit historical selection can be recreated. Both errors use <code>FAILED_PRECONDITION</code>; Core may discard and replan only when the
+original query semantics allow a new selection (for example, <code>CURRENT</code>), and must not silently
+replace an explicit snapshot or <code>AS OF</code> request. QueryContext and its resolved selections are
+in-process read optimizations, never GC roots.</p>
+<p>Retention is enforced in one place. Each pointer GC pass runs <code>SnapshotExpiry</code> first: a snapshot the
+policy no longer keeps is dropped the way <code>DeleteSnapshot</code> drops one, its pointers and those of its
+stats, index and constraints artifacts in one pointer transaction, then its root manifest entry.
+Once pruned, a request for it by id or <code>AS OF</code> finds no such snapshot, as in Iceberg. Pruning needs
+pointer GC; reclaiming the storage also needs CAS GC, which is plain reachability from the current
+roots and reclaims whatever the table no longer references. At most 500 snapshots per table are
+pruned per pass.</p>
 <p>Managed deployments must keep upstream data available for at least the configured snapshot retention
-period. Standalone OSS Floecat defaults to compatibility mode (<code>0s</code> retention); managed deployments
-must override it with their authoritative-cache policy. Setting retention to <code>0s</code> disables
-retention-based expiry and snapshot GC, so it is not an authoritative-cache production policy.</p>
+period. Standalone OSS Floecat defaults to <code>0s</code> retention, which keeps every snapshot; with CAS GC
+enabled, unreferenced definitions, stats generations and constraints become collectable after grace.
+Managed deployments must override retention with their authoritative-cache policy.</p>
 <h3 id="builtin-catalog-service">Builtin Catalog Service<a class="headerlink" href="#builtin-catalog-service" title="Permanent link">&para;</a></h3>
 <p><code>SystemObjectsLoader</code> reads immutable builtin catalogs (<code>&lt;engine_kind&gt;.pb[pbtxt]</code>) from the
 configured location, caches them by engine kind, and exposes them through
@@ -2485,13 +2500,13 @@ configured location, caches them by engine kind, and exposes them through
 <h3 id="gc-and-bootstrap">GC and Bootstrap<a class="headerlink" href="#gc-and-bootstrap" title="Permanent link">&para;</a></h3>
 <p><code>IdempotencyGc</code> runs on a configurable cadence (see <code>floecat.gc.*</code> config) and sweeps expired
 idempotency records in slices to avoid starvation. <code>CasBlobGc</code> performs a reachability-based sweep
-per account from durable pointers and current table-root chains. Manifest entries older than the
-configured retention plus grace period no longer root snapshot payloads; current entries and entries
-without publication metadata are retained conservatively. New snapshot resolutions fail with
-<code>MC_SNAPSHOT_TOO_OLD</code> after the visibility horizon, while an already-running query receives retryable <code>MC_SNAPSHOT_EXPIRED</code> once
-its grace period has elapsed. QueryContext snapshot selections are read optimizations, never GC roots. A retained
-account continuation is abandoned after
-<code>floecat.gc.cas.max-consecutive-continuation-ticks</code> so one large account cannot starve every other
+per account from durable pointers and current table-root chains. Deletes are fenced by
+<code>floecat.gc.cas.min-age-ms</code> and by retention plus grace, and any failed root-chain walk poisons the
+account's delete phase so nothing is deleted that pass. CAS GC is disabled by default
+(<code>FLOECAT_GC_CAS_ENABLED</code>). Every GC collector lists accounts through <code>OwnedAccounts</code>, so it
+collects only accounts the local replica owns (<code>PlanningPointerIndex.Ownership</code>) and a multi-replica
+deployment keeps each account's pointer index authoritative. A retained account continuation is
+abandoned after <code>floecat.gc.cas.max-consecutive-continuation-ticks</code> so one large account cannot starve every other
 account; raise that bound if the oldest-sweep-age metric shows a large account repeatedly restarting.
 Snapshot compatibility artifacts under <code>snapshots/&lt;id&gt;/compat/</code> are gateway-managed mutable
 artifacts, not CAS objects, and remain owned by explicit snapshot/table lifecycle cleanup rather
@@ -2565,7 +2580,7 @@ rows upserted after all batches have been consumed.</p>
 </tr>
 <tr>
 <td><code>floecat.query.resolver.max_parallel_inputs</code></td>
-<td>Per-request query-input pin-resolution fan-out. Defaults to <code>8</code>; values are clamped to <code>1</code>–<code>16</code>.</td>
+<td>Per-request query-input snapshot-selection fan-out. Defaults to <code>8</code>; values are clamped to <code>1</code>–<code>16</code>.</td>
 </tr>
 <tr>
 <td><code>floecat.query.metadata-io.max-concurrency</code></td>
@@ -2573,7 +2588,7 @@ rows upserted after all batches have been consumed.</p>
 </tr>
 <tr>
 <td><code>floecat.snapshot.retention</code> / <code>floecat.snapshot.retention-grace</code></td>
-<td>Visibility and GC horizons measured from Floecat publication time. OSS defaults are <code>0s</code> retention plus <code>7d</code> grace; managed deployments should override these values explicitly. <code>0s</code> disables retention expiry and snapshot GC.</td>
+<td>The retention policy for every versioned catalog object (see above). OSS defaults are <code>0s</code> retention and <code>7d</code> grace; managed deployments should override retention explicitly. <code>0s</code> keeps every snapshot.</td>
 </tr>
 <tr>
 <td><code>floecat.catalog.bundle.max_parallel_relations</code></td>
@@ -2589,7 +2604,7 @@ rows upserted after all batches have been consumed.</p>
 </tr>
 <tr>
 <td><code>floecat.gc.cas.*</code></td>
-<td>Cadence, page size, min-age, tick slice settings for CAS blob GC.</td>
+<td>Cadence, page size, min-age, tick slice settings for CAS blob GC. Unreferenced superseded blobs wait at least retention plus grace from their write time.</td>
 </tr>
 <tr>
 <td><code>floecat.gc.pointer.*</code></td>

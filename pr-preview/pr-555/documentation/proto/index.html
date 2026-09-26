@@ -2163,7 +2163,9 @@ engine release.</p>
   service-owned and is not part of <code>SnapshotSpec</code>. Its <code>format_version</code> must match the current
   capture-manifest contract; older references are rejected before their blobs are read.
   <code>SnapshotManifestEntry.reuse_stats_generation_ref</code> heads the compact stats generation used by
-  that manifest.</li>
+  that manifest.
+  Snapshot selections carry <code>TablePin.ingested_at</code> when their retention clock is needed; current
+  selections omit it because the live current snapshot is retained regardless of age.</li>
 <li><strong>External reusable-index compatibility</strong> – external planner and finalizer deployments must
   regenerate bindings for <code>ReusableArtifactIndexReference</code> format 1 and its immutable sorted-run,
   run-manifest, and block messages. The old trie-root representation has no compatibility reader.
