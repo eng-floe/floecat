@@ -114,12 +114,12 @@ public final class SnapshotSelections {
    *
    * <p>The table blob version is intentionally excluded. It tracks the MUTABLE current table
    * pointer (an explicit/AS_OF pin captures whatever the current table blob is at pin time — see
-   * {@code SnapshotHelper.resolvedPin}), so folding it into identity would make two references to
-   * the same immutable snapshot conflict merely because the table was ALTERed between them —
-   * resolution-order dependent, and the opposite of what first-touch is for. It is carried on the
-   * pin as first-touch provenance (used to read the resolved table snapshot blob and validate it),
-   * not as identity. Compatibility never rests on {@code original_as_of}; the stored pin is never
-   * mutated or upgraded.
+   * {@code SnapshotHelper.resolvedSnapshotFor}), so folding it into identity would make two
+   * references to the same immutable snapshot conflict merely because the table was ALTERed between
+   * them — resolution-order dependent, and the opposite of what first-touch is for. It is carried
+   * on the pin as first-touch provenance (used to read the resolved table snapshot blob and
+   * validate it), not as identity. Compatibility never rests on {@code original_as_of}; the stored
+   * pin is never mutated or upgraded.
    */
   static boolean compatible(TablePin existing, TablePin incoming) {
     PinKind kind = incoming.getPinKind();

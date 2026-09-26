@@ -46,6 +46,7 @@ import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
@@ -75,6 +76,7 @@ public class ScanBundleService {
   private final ServerSideFileIoPropertiesResolver fileIoPropertiesResolver;
   private final ResolvedSnapshotReadContract resolvedSnapshotReads;
   private final TableRootRepository roots;
+  private final TableBlobReachabilityGuard reachabilityGuard;
 
   @Inject
   public ScanBundleService(
@@ -83,13 +85,15 @@ public class ScanBundleService {
       StatsStore statsStore,
       ServerSideFileIoPropertiesResolver fileIoPropertiesResolver,
       ResolvedSnapshotReadContract resolvedSnapshotReads,
-      TableRootRepository roots) {
+      TableRootRepository roots,
+      TableBlobReachabilityGuard reachabilityGuard) {
     this.tables = tables;
     this.snapshots = snapshots;
     this.statsStore = statsStore;
     this.fileIoPropertiesResolver = fileIoPropertiesResolver;
     this.resolvedSnapshotReads = resolvedSnapshotReads;
     this.roots = roots;
+    this.reachabilityGuard = reachabilityGuard;
   }
 
   /** Compatibility constructor for embedded callers and focused tests. */
@@ -99,7 +103,8 @@ public class ScanBundleService {
       StatsStore statsStore,
       ServerSideFileIoPropertiesResolver fileIoPropertiesResolver,
       ResolvedSnapshotReadContract resolvedSnapshotReads) {
-    this(tables, snapshots, statsStore, fileIoPropertiesResolver, resolvedSnapshotReads, null);
+    this(
+        tables, snapshots, statsStore, fileIoPropertiesResolver, resolvedSnapshotReads, null, null);
   }
 
   /**
@@ -111,18 +116,16 @@ public class ScanBundleService {
    * schema fallback) reflect the selected state and do not drift with the current table pointer — a
    * scan survives a drop/unpublish of the current table — and an in-place UpdateSnapshot repointing
    * the (table, snapshot id) pointer to a new blob cannot drift the scan after the selection was
-   * built. Every selection captures both blob identities at construction, so a missing blob here is
-   * a catalog-integrity failure, not a fallback case.
+   * built. A missing snapshot blob means the selection was deleted or collected; a missing table
+   * blob the live root still owns is a catalog-integrity failure.
    */
   public InitData initScan(String correlationId, TablePin pin) {
     ResourceId tableId = pin.getTableId();
     long snapshotId = pin.getSnapshotId();
     long initStartedNanos = System.nanoTime();
     long tableStartedNanos = initStartedNanos;
-    // Cached reads: these blobs are immutable and content-addressed, so a resident decode IS the
-    // resolved snapshot content. requireResolved*'s contract is unchanged — a genuinely missing
-    // resolved snapshot blob
-    // still fails as catalog-integrity corruption at the point of the read.
+    // Cached reads: these blobs are immutable and content-addressed, so a resident decode is the
+    // selected content. A missing blob fails through requireResolved* at the point of the read.
     Table table =
         resolvedSnapshotReads.requireResolvedTableBlob(
             tables.getByBlobUri(pin.getTableBlobUri()),
@@ -138,13 +141,11 @@ public class ScanBundleService {
     StoreOperationSummary.nanos("snapshot_load", System.nanoTime() - snapshotStartedNanos);
 
     TableInfo info = buildTableInfo(table, snapshot, snapshotId);
-    // The scan streams its file list from the generation the RESOLVED root referenced, frozen on
+    // The scan streams its file list from the generation the resolved root referenced, frozen on
     // the
-    // selection at BeginQuery — NOT the live active generation. A re-stats/reconcile that published
-    // a new
-    // generation (and committed a new root) between BeginQuery and InitScan must not change what
-    // this selected scan reads; retention keeps the selected generation while its snapshot and
-    // replaced-version window allow. "No generation" is a real frozen state
+    // selection at BeginQuery, not the live active generation: a re-stats between BeginQuery and
+    // InitScan must not change what this scan reads. Retention keeps that generation as a replaced
+    // version. "No generation" is a real frozen state
     // (STATS_GENERATION_ABSENT — an empty scan, even if a first generation publishes mid-stream);
     // a store that tracks no generations at all is null (reads serve live state). Under the gate a
     // selectable snapshot is always finalized, so the selection carries its ref.
@@ -163,13 +164,14 @@ public class ScanBundleService {
       // Embedded compatibility wiring predates the live-root probe; preserve its repair behavior.
       return true;
     }
-    if (pin.getRootUri().isBlank() || pin.getTableBlobUri().isBlank()) {
+    if (pin.getTableBlobUri().isBlank()) {
       return false;
     }
     return roots
-        .pointerMetaForSafeConsistent(pin.getTableId())
-        .getBlobUri()
-        .equals(pin.getRootUri());
+        .get(pin.getTableId())
+        .filter(root -> root.hasDefinitionRef())
+        .map(root -> root.getDefinitionRef().getUri().equals(pin.getTableBlobUri()))
+        .orElse(false);
   }
 
   /**
@@ -200,13 +202,7 @@ public class ScanBundleService {
       return new StatsStore.StatsStorePage(List.of(), "");
     }
     try {
-      return statsStore.listTargetStatsInGeneration(
-          session.tableId(),
-          session.snapshotId(),
-          frozen,
-          Optional.of(StatsTargetType.FILE),
-          FILE_STATS_PAGE_SIZE,
-          pageToken);
+      return readStatsGeneration(session, frozen, pageToken);
     } catch (BaseResourceRepository.NotFoundException missing) {
       throw GrpcErrors.snapshotExpired(
           correlationId,
@@ -215,6 +211,22 @@ public class ScanBundleService {
               "table_id", session.tableId().getId(),
               "snapshot_id", Long.toString(session.snapshotId())));
     }
+  }
+
+  private StatsStore.StatsStorePage readStatsGeneration(
+      ScanSession session, String generationToken, String pageToken) {
+    java.util.function.Supplier<StatsStore.StatsStorePage> read =
+        () ->
+            statsStore.listTargetStatsInGeneration(
+                session.tableId(),
+                session.snapshotId(),
+                generationToken,
+                Optional.of(StatsTargetType.FILE),
+                FILE_STATS_PAGE_SIZE,
+                pageToken);
+    return reachabilityGuard == null
+        ? read.get()
+        : reachabilityGuard.reading(session.tableId(), read);
   }
 
   /** Streams delete batches, caching metadata for potential retries before completion. */

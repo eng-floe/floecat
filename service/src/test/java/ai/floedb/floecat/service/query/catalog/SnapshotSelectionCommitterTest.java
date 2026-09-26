@@ -351,11 +351,6 @@ class SnapshotSelectionCommitterTest {
     }
 
     @Override
-    public void replace(QueryContext ctx) {
-      delegate.replace(ctx);
-    }
-
-    @Override
     public ai.floedb.floecat.query.rpc.ScanHandle createScanSession(
         String correlationId, ai.floedb.floecat.service.query.impl.ScanSession session) {
       return delegate.createScanSession(correlationId, session);

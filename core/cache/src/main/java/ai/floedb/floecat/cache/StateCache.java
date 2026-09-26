@@ -30,12 +30,7 @@ public interface StateCache<K, V> extends AutoCloseable {
   /** Returns the existing value, or {@code null} when {@code value} was installed. */
   V putIfAbsent(K key, V value);
 
-  void put(K key, V value);
-
   V remove(K key);
-
-  /** Atomically computes a value; returning {@code null} removes the key. */
-  V compute(K key, java.util.function.BiFunction<? super K, ? super V, ? extends V> fn);
 
   /** Atomically computes an existing value; absent keys are left absent. */
   V computeIfPresent(K key, java.util.function.BiFunction<? super K, ? super V, ? extends V> fn);

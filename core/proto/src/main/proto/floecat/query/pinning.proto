@@ -107,22 +107,19 @@ message TablePin {
   google.protobuf.Timestamp last_requested_as_of = 10;
 
   /**
-   * Server-side location of the immutable table root this selection resolved through. The root is the
-   * single object all resolved reads follow refs out of: definition, snapshot manifest, stats
+   * Server-side location of the immutable table root this selection resolved through. The root is
+   * the single object all resolved reads follow refs out of: definition, snapshot manifest, stats
    * generations, constraints. Never sent to the planner.
    */
   string root_uri = 12;
 
-  // reserved 13: root_version. It existed only so the up-front selection probe could compare a captured
-  // root etag against a live HEAD. That probe is gone -- a resolved read now fails at the read that
-  // needs the blob -- and nothing else ever read the field. The Pointers cache carries a root
-  // version of its own, taken from the live pointer rather than copied onto the pin.
+  // 13 was root_version.
   reserved 13;
   reserved "root_version";
 
   /**
    * Floecat publication time of a selected snapshot that retention may expire. Absent when the
-   * snapshot was retained regardless of age at selection (current or one of the last replaced).
+   * snapshot was retained regardless of age at selection (the committed or queryable current).
    */
   google.protobuf.Timestamp ingested_at = 18;
 
@@ -138,10 +135,10 @@ message TablePin {
   /**
    * Ref (manifest blob URI) of the stats generation the selected root's manifest entry referenced,
    * frozen at construction. A scan streams its file list from THIS generation, so it reads exactly
-   * the generation the selected snapshot was finalized with — never a newer one a re-stats/reconcile
-   * published (and committed a new root for) between BeginQuery and InitScan. Retention keeps this
-   * generation eligible while the query runs; an expired read fails retryably. Unset for
-   * stores that do not track generations (the scan then serves live state). Server-side only.
+   * the generation the selected snapshot was finalized with — never a newer one a re-stats or
+   * reconcile published between BeginQuery and InitScan. Retention keeps this generation until
+   * its retention window ends; a read after it is collected fails with MC_SNAPSHOT_EXPIRED. Unset
+   * for stores that do not track generations (the scan then serves live state). Server-side only.
    */
   string stats_generation_ref_uri = 16;
 

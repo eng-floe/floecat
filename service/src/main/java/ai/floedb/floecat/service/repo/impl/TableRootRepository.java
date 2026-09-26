@@ -34,9 +34,7 @@ import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.InvalidProtocolBufferException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.util.HashSet;
 import java.util.Optional;
-import java.util.Set;
 
 /**
  * The per-table immutable {@link TableRoot} and its snapshot-manifest pages.
@@ -154,35 +152,6 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
       return Optional.empty();
     }
     return loadManifestPage(ref.getUri());
-  }
-
-  /**
-   * Verifies that every page a root is about to publish exists in live storage. The commit and CAS
-   * GC coordinate through {@code TableBlobReachabilityGuard}, so a successful validation cannot be
-   * invalidated by an ownerless-blob delete before the root pointer becomes visible.
-   */
-  public void requireManifestChainLive(ResourceId tableId, BlobRef head) {
-    String requiredPrefix =
-        Keys.snapshotManifestBlobPrefix(tableId.getAccountId(), tableId.getId());
-    BlobRef cursor = head;
-    Set<String> visited = new HashSet<>();
-    while (cursor != null && !cursor.getUri().isBlank()) {
-      String uri = cursor.getUri();
-      if (!uri.startsWith(requiredPrefix)) {
-        throw new BaseResourceRepository.CorruptionException(
-            "manifest page is outside table scope: " + uri);
-      }
-      if (!visited.add(uri)) {
-        throw new BaseResourceRepository.CorruptionException("manifest page cycle at " + uri);
-      }
-      SnapshotManifestPage page =
-          getManifestPageLive(cursor)
-              .orElseThrow(
-                  () ->
-                      new BaseResourceRepository.CorruptionException(
-                          "manifest page missing: " + uri));
-      cursor = page.hasPrevPageRef() ? page.getPrevPageRef() : null;
-    }
   }
 
   /**

@@ -23,10 +23,10 @@ public final class QueryContextStores {
   /** A store with sane test defaults (60s TTL, 100 entries). */
   public static QueryContextStoreImpl forTesting() {
     QueryContextStoreImpl store = new QueryContextStoreImpl();
-    store.defaultTtlMs = 60_000L;
     store.endedGraceMs = 15_000L;
     store.maxSize = 100L;
     store.safetyExpiryMinutes = 10L;
+    store.cacheExecutor = Runnable::run;
     store.init();
     return store;
   }
@@ -34,10 +34,10 @@ public final class QueryContextStores {
   /** As {@link #forTesting()} but with an explicit size cap (to exercise eviction weighting). */
   public static QueryContextStoreImpl forTesting(long maxSize) {
     QueryContextStoreImpl store = new QueryContextStoreImpl();
-    store.defaultTtlMs = 60_000L;
     store.endedGraceMs = 15_000L;
     store.maxSize = maxSize;
     store.safetyExpiryMinutes = 10L;
+    store.cacheExecutor = Runnable::run;
     store.init();
     return store;
   }

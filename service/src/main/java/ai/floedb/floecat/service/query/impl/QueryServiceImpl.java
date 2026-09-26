@@ -122,12 +122,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
                   authz.require(pc, "catalog.read");
 
-                  // TTL in ms
-                  final long ttlMs =
-                      (request.getTtlSeconds() > 0
-                              ? request.getTtlSeconds()
-                              : (int) (defaultTtlMs / 1000))
-                          * 1000L;
+                  final long ttlMs = leaseMs(request.getTtlSeconds());
 
                   // Default catalog scope of the query
                   if (!request.hasDefaultCatalogId()) {
@@ -191,7 +186,7 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
                           new IllegalStateException("query_id already exists: " + queryId));
                     }
                     // A server-generated query id collided — effectively impossible, but never
-                    // serve a context that was not the one that rooted its pins.
+                    // serve another query's context.
                     throw GrpcErrors.internal(
                         correlationId,
                         null,
@@ -239,16 +234,16 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
                   String queryId = mustNonEmpty(request.getQueryId(), "query_id", correlationId);
 
-                  long ttlMs =
-                      (request.getTtlSeconds() > 0
-                              ? request.getTtlSeconds()
-                              : (int) (defaultTtlMs / 1000))
-                          * 1000L;
+                  long ttlMs = leaseMs(request.getTtlSeconds());
 
                   long requestedExp = clock.millis() + ttlMs;
 
                   var updated = queryStore.extendLease(queryId, requestedExp);
                   if (updated.isEmpty()) {
+                    if (queryStore.get(queryId).filter(ctx -> !ctx.isActive()).isPresent()) {
+                      throw GrpcErrors.preconditionFailed(
+                          correlationId, QUERY_NOT_ACTIVE, Map.of("query_id", queryId));
+                    }
                     throw GrpcErrors.notFound(
                         correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId));
                   }
@@ -360,5 +355,11 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
     long s = Math.floorDiv(millis, 1000);
     int n = (int) ((millis % 1000) * 1_000_000);
     return Timestamp.newBuilder().setSeconds(s).setNanos(n).build();
+  }
+
+  /** The requested lease, or the default, capped to what the store can keep. */
+  private long leaseMs(int requestedTtlSeconds) {
+    long ttlMs = requestedTtlSeconds > 0 ? requestedTtlSeconds * 1000L : defaultTtlMs;
+    return Math.min(ttlMs, queryStore.maxLeaseMs());
   }
 }

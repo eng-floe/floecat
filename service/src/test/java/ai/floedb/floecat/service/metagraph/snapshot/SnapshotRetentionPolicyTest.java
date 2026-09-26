@@ -2,6 +2,16 @@
  * Copyright 2026 Yellowbrick Data, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package ai.floedb.floecat.service.metagraph.snapshot;
@@ -79,9 +89,6 @@ class SnapshotRetentionPolicyTest {
             () ->
                 new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ofDays(-1), Duration.ZERO))
         .isInstanceOf(IllegalArgumentException.class);
-    assertThatThrownBy(
-            () -> new SnapshotRetentionPolicy(Clock.systemUTC(), Duration.ZERO, Duration.ZERO, -1))
-        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -122,22 +129,25 @@ class SnapshotRetentionPolicyTest {
   }
 
   @Test
-  void protectsTheCurrentAndTheLastReplacedSnapshots() {
+  void underTheFinalizeGateProtectsTheSnapshotCurrentReadsServe() {
     var roots = new TableRootRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
     BlobRef head = null;
-    for (long id = 1; id <= 4; id++) {
-      head = SnapshotManifests.chain(roots, TABLE, head).upsert(entry(id));
+    for (long id = 1; id <= 3; id++) {
+      var entry = entry(id).toBuilder();
+      if (id == 1) {
+        entry.setStatsGenerationRef(BlobRef.newBuilder().setUri("s3://tbl/gen-1.pb"));
+      }
+      head = SnapshotManifests.chain(roots, TABLE, head).upsert(entry.build());
     }
-    // Entries are newest first: 4, 3, 2, 1. Snapshot 3 is current.
+    // Snapshot 3 is the committed current but unfinalized; CURRENT reads serve snapshot 1.
     TableRoot root =
         TableRoot.newBuilder().setCurrentSnapshotId(3L).setSnapshotManifestRef(head).build();
-    var chain = SnapshotManifests.chain(roots, null, head);
     var policy =
         new SnapshotRetentionPolicy(
-            Clock.fixed(NOW, java.time.ZoneOffset.UTC), Duration.ofDays(30), Duration.ZERO, 2);
+            Clock.fixed(NOW, java.time.ZoneOffset.UTC), Duration.ofDays(30), Duration.ZERO);
 
-    assertThat(policy.protectedSnapshotIds(chain, root, false))
-        .containsExactlyInAnyOrder(3L, 4L, 2L);
+    assertThat(policy.protectedSnapshotIds(SnapshotManifests.chain(roots, null, head), root, true))
+        .containsExactlyInAnyOrder(3L, 1L);
   }
 
   private static SnapshotManifestEntry entry(long id) {

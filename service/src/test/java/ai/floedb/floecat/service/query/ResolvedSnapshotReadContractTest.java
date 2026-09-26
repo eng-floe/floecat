@@ -67,7 +67,9 @@ class ResolvedSnapshotReadContractTest {
   void aMissingPinnedTableBlobRaisesInternalAndEnqueuesRepair() {
     assertThrows(
         StatusRuntimeException.class,
-        () -> contract.requireResolvedTableBlob(java.util.Optional.empty(), "corr", TABLE));
+        () ->
+            contract.requireResolvedTableBlob(
+                java.util.Optional.empty(), "corr", TABLE, () -> true));
     // The committed root names a blob no read can load; without a re-derived root every future
     // query fails identically, so the failure durably enqueues the table for repair.
     assertTrue(repairEnqueued(TABLE));
@@ -86,7 +88,9 @@ class ResolvedSnapshotReadContractTest {
   @Test
   void aPresentPinnedBlobUnwrapsWithoutRepair() {
     assertEquals(
-        "blob", contract.requireResolvedTableBlob(java.util.Optional.of("blob"), "corr", TABLE));
+        "blob",
+        contract.requireResolvedTableBlob(
+            java.util.Optional.of("blob"), "corr", TABLE, () -> true));
     assertFalse(repairEnqueued(TABLE));
   }
 

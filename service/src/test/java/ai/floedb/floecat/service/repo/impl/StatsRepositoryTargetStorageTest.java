@@ -2244,6 +2244,32 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void aGenerationBeingReclaimedReadsAsGoneBeforeItsManifestIs() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 778L;
+    var records =
+        java.util.List.of(
+            TargetStatsRecords.tableRecord(
+                TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(1L).build(), null));
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, records);
+    String frozen = statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, records);
+
+    // One blob delete per slice: the reclaim stops with records going and the manifest still there.
+    statsRepository.deleteUnreferencedGenerations(
+        TABLE_ID, uri -> false, System.currentTimeMillis(), 0L, 1, Long.MAX_VALUE);
+
+    assertThat(blobStore.get(frozen)).isNotNull();
+    assertThatThrownBy(
+            () ->
+                statsRepository.listTargetStatsInGeneration(
+                    TABLE_ID, snapshotId, frozen, java.util.Optional.empty(), 10, ""))
+        .isInstanceOf(BaseResourceRepository.NotFoundException.class);
+  }
+
+  @Test
   void generationGcKeepsTheActiveIndexGenerationWhenStatsHaveAdvanced() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     InMemoryBlobStore blobStore = new InMemoryBlobStore();

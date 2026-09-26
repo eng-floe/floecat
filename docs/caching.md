@@ -176,7 +176,8 @@ order a publish against a load. Otherwise the durable adapter is used automatica
 account index is loading and for operational keys.
 
 ## Deliberately live reads
-Only operations whose result is a mutation or reclamation decision bypass the cache:
+Only reads that decide a mutation or reclamation, or whose emptiness is load-bearing, bypass the
+cache:
 
 | Read | Site | Why it must be live |
 |------|------|---------------------|
@@ -187,9 +188,8 @@ Only operations whose result is a mutation or reclamation decision bypass the ca
 
 Selected **blob** reads are not among them. The blob a query selection names is immutable and
 content-addressed, so a resident decode of it *is* the selected content rather than a stale view — the table,
-snapshot, schema, node and constraint loads all read through the cache. If a required value is not
-resident, the read path reports the existing resolved-snapshot read error and requests repair where that
-contract applies.
+snapshot, schema, node and constraint loads all read through the cache. If the durable blob is missing,
+the read path reports the resolved-snapshot read error and requests repair where that contract applies.
 
 Nor is a selected read preceded by a probe of its root. A selection whose blobs still read is
 coherent whatever has happened to the live pointer meanwhile, and a probe could only report what

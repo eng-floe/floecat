@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
-import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -42,7 +41,7 @@ public class TransactionGcScheduler {
 
   private static final Logger LOG = Logger.getLogger(TransactionGcScheduler.class);
 
-  @Inject Provider<AccountRepository> accounts;
+  @Inject Provider<OwnedAccounts> accounts;
   @Inject Provider<TransactionGc> transactionGc;
   @Inject MeterRegistry registry;
 
@@ -118,7 +117,7 @@ public class TransactionGcScheduler {
       return;
     }
 
-    final AccountRepository accountRepo;
+    final OwnedAccounts accountRepo;
     final TransactionGc gc;
     try {
       accountRepo = accounts.get();

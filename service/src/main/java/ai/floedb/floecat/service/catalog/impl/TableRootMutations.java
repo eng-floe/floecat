@@ -69,13 +69,13 @@ public final class TableRootMutations {
       SnapshotManifestEntry entry,
       BlobRef definitionRef,
       boolean advance) {
-    return (current, retainLast) -> {
+    return current -> {
       TableRoot base = baseRoot(current, tableId, definitionRef);
       SnapshotManifests.Chain chain = SnapshotManifests.chain(roots, tableId, manifestHead(base));
       SnapshotManifestEntry merged =
           chain
               .findEntry(entry.getSnapshotId())
-              .map(existing -> replaceEntry(existing, entry, retainLast))
+              .map(existing -> preserveAuxRefs(existing, entry))
               .orElse(entry);
       boolean advanceNow = advance && shouldAdvance(chain, base, merged);
       if (advance && !advanceNow && !merged.hasUpstreamCreatedAt()) {
@@ -103,26 +103,32 @@ public final class TableRootMutations {
    */
   public static TableRootCommitter.RootMutator removeSnapshot(
       TableRootRepository roots, ResourceId tableId, long snapshotId) {
-    return (current, retainLast) -> {
+    return removeSnapshots(roots, tableId, Set.of(snapshotId));
+  }
+
+  /** Removes the entries of {@code snapshotIds} in one commit; see {@link #removeSnapshot}. */
+  public static TableRootCommitter.RootMutator removeSnapshots(
+      TableRootRepository roots, ResourceId tableId, Set<Long> snapshotIds) {
+    return current -> {
       if (current.isEmpty()) {
         return null; // nothing to remove
       }
       TableRoot base = current.get();
-      BlobRef head = manifestHead(base);
-      BlobRef newHead = SnapshotManifests.chain(roots, tableId, head).remove(snapshotId);
-      if (equalsRef(newHead, head)) {
-        return null; // id not present: no-op
+      SnapshotManifests.Chain chain = SnapshotManifests.chain(roots, tableId, manifestHead(base));
+      BlobRef head = chain.removeAll(snapshotIds);
+      if (equalsRef(head, manifestHead(base))) {
+        return null; // no id present: no-op
       }
       TableRoot.Builder next = base.toBuilder();
-      if (newHead == null) {
+      if (head == null) {
         next.clearSnapshotManifestRef();
       } else {
-        next.setSnapshotManifestRef(newHead);
+        next.setSnapshotManifestRef(head);
       }
-      if (base.hasCurrentSnapshotId() && base.getCurrentSnapshotId() == snapshotId) {
+      if (base.hasCurrentSnapshotId() && snapshotIds.contains(base.getCurrentSnapshotId())) {
         next.clearCurrentSnapshotId();
       }
-      refreshReusableSnapshotCandidates(next, SnapshotManifests.chain(roots, tableId, newHead));
+      refreshReusableSnapshotCandidates(next, chain.withHead(head));
       return next.build();
     };
   }
@@ -130,10 +136,10 @@ public final class TableRootMutations {
   /** Sets the immutable table-definition ref (DDL / property change). */
   public static TableRootCommitter.RootMutator setDefinition(
       ResourceId tableId, BlobRef definitionRef) {
-    return (current, retainLast) -> {
+    return current -> {
       TableRoot base = baseRoot(current, tableId, definitionRef);
       TableRoot.Builder next = base.toBuilder();
-      replaceDefinition(base, next, definitionRef, retainLast);
+      replaceDefinition(next, definitionRef);
       return next.build();
     };
   }
@@ -141,14 +147,14 @@ public final class TableRootMutations {
   /** Replaces a stale definition publication without disturbing any other root state. */
   public static TableRootCommitter.RootMutator replaceDefinitionIfMatches(
       BlobRef expectedDefinitionRef, BlobRef replacementDefinitionRef) {
-    return (current, retainLast) -> {
+    return current -> {
       if (current.isEmpty()
           || !current.get().hasDefinitionRef()
           || !current.get().getDefinitionRef().equals(expectedDefinitionRef)) {
         return null;
       }
       TableRoot.Builder replacement = current.get().toBuilder();
-      replaceDefinition(current.get(), replacement, replacementDefinitionRef, retainLast);
+      replaceDefinition(replacement, replacementDefinitionRef);
       return replacement.build();
     };
   }
@@ -235,11 +241,11 @@ public final class TableRootMutations {
       SnapshotManifestEntry currentEntry,
       Set<Long> liveSnapshotIds,
       java.util.function.LongFunction<SnapshotManifestEntry> entryLoader) {
-    return (current, retainLast) -> {
+    return current -> {
       TableRoot base = baseRoot(current, tableId, definitionRef);
       TableRoot.Builder next = base.toBuilder();
       if (definitionRef != null && !definitionRef.getUri().isEmpty()) {
-        replaceDefinition(base, next, definitionRef, retainLast);
+        replaceDefinition(next, definitionRef);
       }
 
       SnapshotManifests.Chain chain = SnapshotManifests.chain(roots, tableId, manifestHead(base));
@@ -251,7 +257,7 @@ public final class TableRootMutations {
         SnapshotManifestEntry merged =
             chain
                 .findEntry(currentEntry.getSnapshotId())
-                .map(existing -> replaceEntry(existing, currentEntry, retainLast))
+                .map(existing -> preserveAuxRefs(existing, currentEntry))
                 .orElse(currentEntry);
         head = chain.upsert(merged);
         committedCurrentId = merged.getSnapshotId();
@@ -300,12 +306,9 @@ public final class TableRootMutations {
                 toRemove.add(id);
               }
             });
-    BlobRef newHead = head;
-    for (long id : toRemove) {
-      newHead = chain.withHead(newHead).remove(id);
-      if (next.hasCurrentSnapshotId() && next.getCurrentSnapshotId() == id) {
-        next.clearCurrentSnapshotId();
-      }
+    BlobRef newHead = chain.withHead(head).removeAll(new java.util.HashSet<>(toRemove));
+    if (next.hasCurrentSnapshotId() && toRemove.contains(next.getCurrentSnapshotId())) {
+      next.clearCurrentSnapshotId();
     }
     if (entryLoader != null) {
       for (long id : liveSnapshotIds) {
@@ -340,7 +343,7 @@ public final class TableRootMutations {
       java.util.function.UnaryOperator<SnapshotManifestEntry> change,
       boolean advanceOnChange,
       Long committedCurrentSnapshotId) {
-    return (current, retainLast) -> {
+    return current -> {
       if (current.isEmpty()) {
         return null; // no root yet: nothing to attach the ref to
       }
@@ -350,8 +353,8 @@ public final class TableRootMutations {
       if (existing.isEmpty()) {
         return null; // snapshot unknown to the manifest: no-op
       }
-      SnapshotManifestEntry changed =
-          withSupersededRefs(existing.get(), change.apply(existing.get()), retainLast);
+      // The updater receives the complete existing entry, so an explicit clear remains a clear.
+      SnapshotManifestEntry changed = change.apply(existing.get());
       boolean entryChanged = !changed.equals(existing.get());
       boolean advanceNow =
           advanceOnChange
@@ -431,73 +434,13 @@ public final class TableRootMutations {
     return (a == null || b == null) ? a == b : a.equals(b);
   }
 
-  /** Replaces an entry in place: keeps what the incoming one omits and records replaced refs. */
-  private static SnapshotManifestEntry replaceEntry(
-      SnapshotManifestEntry existing, SnapshotManifestEntry incoming, int retainLast) {
-    return withSupersededRefs(existing, preserveAuxRefs(existing, incoming), retainLast);
-  }
-
-  private static SnapshotManifestEntry withSupersededRefs(
-      SnapshotManifestEntry existing, SnapshotManifestEntry next, int retainLast) {
-    List<BlobRef> stats =
-        supersede(
-            existing.getSupersededStatsGenerationRefsList(),
-            existing.hasStatsGenerationRef() ? existing.getStatsGenerationRef() : null,
-            next.hasStatsGenerationRef() ? next.getStatsGenerationRef() : null,
-            retainLast);
-    List<BlobRef> constraints =
-        supersede(
-            existing.getSupersededConstraintsRefsList(),
-            existing.hasConstraintsRef() ? existing.getConstraintsRef() : null,
-            next.hasConstraintsRef() ? next.getConstraintsRef() : null,
-            retainLast);
-    return next.toBuilder()
-        .clearSupersededStatsGenerationRefs()
-        .addAllSupersededStatsGenerationRefs(stats)
-        .clearSupersededConstraintsRefs()
-        .addAllSupersededConstraintsRefs(constraints)
-        .build();
-  }
-
-  private static void replaceDefinition(
-      TableRoot base, TableRoot.Builder next, BlobRef definitionRef, int retainLast) {
+  private static void replaceDefinition(TableRoot.Builder next, BlobRef definitionRef) {
     BlobRef live = definitionRef == null || definitionRef.getUri().isEmpty() ? null : definitionRef;
     if (live == null) {
       next.clearDefinitionRef();
     } else {
       next.setDefinitionRef(live);
     }
-    next.clearSupersededDefinitionRefs()
-        .addAllSupersededDefinitionRefs(
-            supersede(
-                base.getSupersededDefinitionRefsList(),
-                base.hasDefinitionRef() ? base.getDefinitionRef() : null,
-                live,
-                retainLast));
-  }
-
-  /**
-   * The replaced-version list after {@code replaced} gives way to {@code live}: newest first,
-   * without the live version, keeping at most {@code retainLast}.
-   */
-  private static List<BlobRef> supersede(
-      List<BlobRef> previous, BlobRef replaced, BlobRef live, int retainLast) {
-    List<BlobRef> candidates = new ArrayList<>();
-    if (replaced != null) {
-      candidates.add(replaced);
-    }
-    candidates.addAll(previous);
-    Set<String> seen = new java.util.HashSet<>();
-    if (live != null) {
-      seen.add(live.getUri());
-    }
-    List<BlobRef> kept = new ArrayList<>();
-    for (BlobRef ref : candidates) {
-      if (kept.size() < retainLast && !ref.getUri().isEmpty() && seen.add(ref.getUri())) {
-        kept.add(ref);
-      }
-    }
-    return kept;
   }
 
   private static SnapshotManifestEntry preserveAuxRefs(

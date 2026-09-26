@@ -101,6 +101,10 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                           correlationId(), QUERY_NOT_FOUND, java.util.Map.of("query_id", queryId));
                     }
                     var ctx = ctxOpt.get();
+                    if (!ctx.isActive()) {
+                      throw GrpcErrors.preconditionFailed(
+                          correlationId(), QUERY_NOT_ACTIVE, java.util.Map.of("query_id", queryId));
+                    }
 
                     var asOfDefault =
                         diagnostics.time(
@@ -135,8 +139,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     // not this call's candidate resolution — so a concurrent lazy resolver that
                     // pinned a different snapshot for a shared table can never make us describe a
                     // losing pin (an incompatible temporal intent still fails via the shared
-                    // conflict rule inside mergeSets). Committing pins before any blob read also
-                    // roots them before the schema read.
+                    // conflict rule inside mergeSets).
                     QueryContext committed =
                         diagnostics.time(
                             "query_context_pin_merge",
@@ -160,6 +163,10 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                                                 correlationId(),
                                                 QUERY_NOT_FOUND,
                                                 java.util.Map.of("query_id", queryId))));
+                    if (!committed.isActive()) {
+                      throw GrpcErrors.preconditionFailed(
+                          correlationId(), QUERY_NOT_ACTIVE, java.util.Map.of("query_id", queryId));
+                    }
 
                     RelationPinSet winnerPins = committed.parseSnapshotSelections(correlationId());
                     diagnostics.put("snapshot_pins", winnerPins.getPinsCount());
@@ -219,13 +226,10 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                     diagnostics.put("obligation_bytes", obligationsBytes.length);
 
                     // Store the derived expansion + obligations. Resolved selections were committed
-                    // above, so this is intentionally a separate update: expansion is only
-                    // read as diagnostics by GetQuery and obligations have no server-side reader,
-                    // so
-                    // a brief window where selections are committed but these are not is harmless.
-                    // Both
-                    // are
-                    // recomputed on every DescribeInputs, so a lost update self-heals.
+                    // above, so this is intentionally a separate update: expansion is only read as
+                    // diagnostics by GetQuery and obligations have no server-side reader, so a
+                    // brief window where selections are committed but these are not is harmless.
+                    // Both are recomputed on every DescribeInputs, so a lost update self-heals.
                     diagnostics.time(
                         "query_context_update",
                         () -> {
@@ -241,6 +245,12 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                             throw GrpcErrors.notFound(
                                 correlationId(),
                                 QUERY_NOT_FOUND,
+                                java.util.Map.of("query_id", queryId));
+                          }
+                          if (!result.orElseThrow().isActive()) {
+                            throw GrpcErrors.preconditionFailed(
+                                correlationId(),
+                                QUERY_NOT_ACTIVE,
                                 java.util.Map.of("query_id", queryId));
                           }
                         });

@@ -22,6 +22,7 @@ import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.BundleFailure;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
@@ -41,6 +42,7 @@ import ai.floedb.floecat.query.rpc.TargetStatsBundleHeader;
 import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
+import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -97,7 +99,7 @@ public class PlannerStatsBundleService {
       constraintPrunerFactory;
   private final Function<Set<String>, ConstraintPruner> constraintsOnlyPrunerFactory;
   private final TargetStatsLookup targetStatsLookup;
-  private final ResolvedSnapshotReadContract selections;
+  private final ResolvedSnapshotReadContract resolvedSnapshotReads;
   private final PlannerStatsRequestNormalizer requestNormalizer;
   private final int maxTables;
   private final int maxTargets;
@@ -115,7 +117,7 @@ public class PlannerStatsBundleService {
       ConstraintPrunerFactory constraintPrunerFactory,
       StatsOrchestrator statsOrchestrator,
       TableRepository tableRepository,
-      ResolvedSnapshotReadContract selections,
+      ResolvedSnapshotReadContract resolvedSnapshotReads,
       @ConfigProperty(name = "floecat.planner.stats.max-tables", defaultValue = "50") int maxTables,
       @ConfigProperty(name = "floecat.planner.stats.max-targets", defaultValue = "10000")
           int maxTargets,
@@ -128,7 +130,7 @@ public class PlannerStatsBundleService {
         constraintPrunerFactory::forRequest,
         constraintPrunerFactory::forConstraintsOnlyRequest,
         providerLookup(statsOrchestrator, tableRepository),
-        selections,
+        resolvedSnapshotReads,
         new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
   }
 
@@ -139,7 +141,7 @@ public class PlannerStatsBundleService {
       BiFunction<Set<String>, Map<String, Set<Long>>, ConstraintPruner> constraintPrunerFactory,
       Function<Set<String>, ConstraintPruner> constraintsOnlyPrunerFactory,
       TargetStatsLookup targetStatsLookup,
-      ResolvedSnapshotReadContract selections,
+      ResolvedSnapshotReadContract resolvedSnapshotReads,
       PlannerStatsLimits limits) {
     this.statsFactory = Objects.requireNonNull(statsFactory, "statsFactory");
     this.constraintProviderSupplier =
@@ -150,7 +152,8 @@ public class PlannerStatsBundleService {
     this.constraintsOnlyPrunerFactory =
         Objects.requireNonNull(constraintsOnlyPrunerFactory, "constraintsOnlyPrunerFactory");
     this.targetStatsLookup = Objects.requireNonNull(targetStatsLookup, "targetStatsLookup");
-    this.selections = Objects.requireNonNull(selections, "selections");
+    this.resolvedSnapshotReads =
+        Objects.requireNonNull(resolvedSnapshotReads, "resolvedSnapshotReads");
     this.maxTables = Math.max(1, limits.maxTables);
     this.maxTargets = Math.max(1, limits.maxTargets);
     this.maxResultsPerChunk = Math.max(1, limits.maxResultsPerChunk);
@@ -169,7 +172,7 @@ public class PlannerStatsBundleService {
       int maxTables,
       int maxTargets,
       int maxResultsPerChunk,
-      ResolvedSnapshotReadContract selections) {
+      ResolvedSnapshotReadContract resolvedSnapshotReads) {
     return new PlannerStatsBundleService(
         statsFactory,
         () -> ConstraintProvider.NONE,
@@ -177,7 +180,7 @@ public class PlannerStatsBundleService {
         RequestScopeConstraintPruner::new,
         RequestScopeConstraintPruner::forRequestedTablesOnly,
         providerLookup(orchestrator, tableRepository),
-        selections,
+        resolvedSnapshotReads,
         new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
   }
 
@@ -189,7 +192,7 @@ public class PlannerStatsBundleService {
       int maxTables,
       int maxTargets,
       int maxResultsPerChunk,
-      ResolvedSnapshotReadContract selections) {
+      ResolvedSnapshotReadContract resolvedSnapshotReads) {
     return new PlannerStatsBundleService(
         statsFactory,
         () -> constraintProvider == null ? ConstraintProvider.NONE : constraintProvider,
@@ -208,7 +211,7 @@ public class PlannerStatsBundleService {
           }
           return Map.copyOf(byTarget);
         },
-        selections,
+        resolvedSnapshotReads,
         new PlannerStatsLimits(maxTables, maxTargets, maxResultsPerChunk));
   }
 
@@ -260,7 +263,7 @@ public class PlannerStatsBundleService {
                       : ConstraintProvider.NONE);
       SnapshotSelectionLookup selectionLookup =
           diagnostics.time(
-              "pin_lookup_provider",
+              "selection_lookup_provider",
               () -> statsFactory.selectionLookupForQuery(ctx, correlationId));
       return Multi.createFrom()
           .<TargetStatsBundleChunk>deferred(
@@ -273,7 +276,7 @@ public class PlannerStatsBundleService {
                         selectionLookup,
                         constraintProvider,
                         constraintRepository,
-                        selections,
+                        resolvedSnapshotReads,
                         safeRequest.getIncludeConstraints(),
                         constraintPrunerFactory,
                         targetStatsLookup,
@@ -400,7 +403,7 @@ public class PlannerStatsBundleService {
           diagnostics.time("constraint_provider", constraintProviderSupplier::get);
       SnapshotSelectionLookup selectionLookup =
           diagnostics.time(
-              "pin_lookup_provider",
+              "selection_lookup_provider",
               () -> statsFactory.selectionLookupForQuery(ctx, correlationId));
       return Multi.createFrom()
           .<TableConstraintsBundleChunk>deferred(
@@ -413,7 +416,7 @@ public class PlannerStatsBundleService {
                         selectionLookup,
                         constraintProvider,
                         constraintRepository,
-                        selections,
+                        resolvedSnapshotReads,
                         constraintPruner,
                         maxResultsPerChunk,
                         servingPolicy,
@@ -533,7 +536,7 @@ public class PlannerStatsBundleService {
     private final SnapshotSelectionLookup selectionLookup;
     private final ConstraintProvider constraintProvider;
     private final ConstraintRepository constraintRepository;
-    private final ResolvedSnapshotReadContract selections;
+    private final ResolvedSnapshotReadContract resolvedSnapshotReads;
     private final boolean includeConstraints;
     private final ConstraintPruner constraintPruner;
     private final TargetStatsLookup targetStatsLookup;
@@ -565,7 +568,7 @@ public class PlannerStatsBundleService {
         SnapshotSelectionLookup selectionLookup,
         ConstraintProvider constraintProvider,
         ConstraintRepository constraintRepository,
-        ResolvedSnapshotReadContract selections,
+        ResolvedSnapshotReadContract resolvedSnapshotReads,
         boolean includeConstraints,
         BiFunction<Set<String>, Map<String, Set<Long>>, ConstraintPruner> constraintPrunerFactory,
         TargetStatsLookup targetStatsLookup,
@@ -583,7 +586,7 @@ public class PlannerStatsBundleService {
       this.selectionLookup = selectionLookup;
       this.constraintProvider = constraintProvider;
       this.constraintRepository = constraintRepository;
-      this.selections = selections;
+      this.resolvedSnapshotReads = resolvedSnapshotReads;
       this.includeConstraints = includeConstraints;
       this.targetStatsLookup = targetStatsLookup;
       this.maxResultsPerChunk = maxResultsPerChunk;
@@ -709,7 +712,7 @@ public class PlannerStatsBundleService {
       /* Drain pre-omitted (count-cap) targets first with explicit per-target status. */
       if (work.hasPreOmitted()) {
         TargetStatsResult omitted =
-            stampPinnedSnapshot(
+            stampResolvedSnapshot(
                 work, omittedByBudgetResult(work.tableId, work.peekPreOmitted().target()));
         work.nextPreOmitted(); /* advance before omitAllRemainingByBudget for correct count */
         omittedByBudget++;
@@ -767,6 +770,17 @@ public class PlannerStatsBundleService {
           }
         } catch (CancellationException e) {
           throw e;
+        } catch (StatusRuntimeException e) {
+          FloecatStatus status = FloecatStatus.fromThrowable(e);
+          if (status != null && status.errorCode() == ErrorCode.MC_SNAPSHOT_EXPIRED) {
+            // A selected snapshot cannot be substituted with live stats; the caller must restart
+            // the query from a fresh selection.
+            throw e;
+          }
+          result = buildErrorResult(tableId, target, snapshot.getAsLong(), e);
+          counter = TargetResultCounter.ERROR;
+          LOG.debugf(
+              e, "target stats RPC failed for %s snapshot %s", tableId, snapshot.getAsLong());
         } catch (RuntimeException e) {
           result = buildErrorResult(tableId, target, snapshot.getAsLong(), e);
           counter = TargetResultCounter.ERROR;
@@ -774,10 +788,10 @@ public class PlannerStatsBundleService {
               e, "target stats lookup failed for %s snapshot %s", tableId, snapshot.getAsLong());
         }
       }
-      result = stampPinnedSnapshot(work, result);
+      result = stampResolvedSnapshot(work, result);
       if (!tryCharge(result)) {
         TargetStatsResult omitted =
-            stampPinnedSnapshot(work, omittedByBudgetResult(tableId, target));
+            stampResolvedSnapshot(work, omittedByBudgetResult(tableId, target));
         /* Advance first so omitAllRemainingByBudget's remainingTargetCount() excludes
          * the current target (which we're already accounting for with omittedByBudget++). */
         work.advanceTarget();
@@ -860,7 +874,7 @@ public class PlannerStatsBundleService {
     private void loadTargetBatchTimed(TableWork work, long snapshotId) {
       selectionLookup
           .resolvedSelection(work.tableId)
-          .ifPresent(pin -> selections.requireReadable(correlationId, pin));
+          .ifPresent(pin -> resolvedSnapshotReads.requireReadable(correlationId, pin));
       try (var cancellationScope = PropagatedContext.bindCancellation(cancelled)) {
         diagnostics.time(
             "target_batch_lookup",
@@ -884,7 +898,7 @@ public class PlannerStatsBundleService {
                   resolveSnapshot(work),
                   selectionLookup.resolvedConstraintsRef(work.tableId),
                   selectionLookup.resolvedSelection(work.tableId),
-                  selections,
+                  resolvedSnapshotReads,
                   constraintRepository,
                   constraintProvider,
                   constraintPruner));
@@ -894,9 +908,9 @@ public class PlannerStatsBundleService {
      * The query's resolved snapshot for this table, resolved once and memoized on the work item.
      */
     private OptionalLong resolvedSnapshotFor(TableWork work) {
-      if (!work.pinResolved) {
+      if (!work.selectionResolved) {
         work.resolvedSnapshot = selectionLookup.resolvedSnapshotId(work.tableId);
-        work.pinResolved = true;
+        work.selectionResolved = true;
       }
       return work.resolvedSnapshot;
     }
@@ -932,7 +946,7 @@ public class PlannerStatsBundleService {
      * the served stats (snapshot_id) are behind the resolved snapshot. No-op when the table is not
      * pinned. Reuses the same memoized lookup as {@link #resolveSnapshot}.
      */
-    private TargetStatsResult stampPinnedSnapshot(TableWork work, TargetStatsResult result) {
+    private TargetStatsResult stampResolvedSnapshot(TableWork work, TargetStatsResult result) {
       OptionalLong pinned = resolvedSnapshotFor(work);
       return pinned.isEmpty()
           ? result
@@ -1043,7 +1057,7 @@ public class PlannerStatsBundleService {
     private final SnapshotSelectionLookup selectionLookup;
     private final ConstraintProvider constraintProvider;
     private final ConstraintRepository constraintRepository;
-    private final ResolvedSnapshotReadContract selections;
+    private final ResolvedSnapshotReadContract resolvedSnapshotReads;
     private final ConstraintPruner constraintPruner;
     private final int maxResultsPerChunk;
     private final PlannerConstraintServingPolicy servingPolicy;
@@ -1062,7 +1076,7 @@ public class PlannerStatsBundleService {
         SnapshotSelectionLookup selectionLookup,
         ConstraintProvider constraintProvider,
         ConstraintRepository constraintRepository,
-        ResolvedSnapshotReadContract selections,
+        ResolvedSnapshotReadContract resolvedSnapshotReads,
         ConstraintPruner constraintPruner,
         int maxResultsPerChunk,
         PlannerConstraintServingPolicy servingPolicy,
@@ -1074,7 +1088,7 @@ public class PlannerStatsBundleService {
       this.selectionLookup = selectionLookup;
       this.constraintProvider = constraintProvider;
       this.constraintRepository = constraintRepository;
-      this.selections = selections;
+      this.resolvedSnapshotReads = resolvedSnapshotReads;
       this.constraintPruner = constraintPruner;
       this.maxResultsPerChunk = maxResultsPerChunk;
       this.servingPolicy = servingPolicy;
@@ -1170,7 +1184,7 @@ public class PlannerStatsBundleService {
                   resolveSnapshotTimed(tableId),
                   selectionLookup.resolvedConstraintsRef(tableId),
                   selectionLookup.resolvedSelection(tableId),
-                  selections,
+                  resolvedSnapshotReads,
                   constraintRepository,
                   constraintProvider,
                   constraintPruner));
@@ -1209,8 +1223,8 @@ public class PlannerStatsBundleService {
    * ref the pin copied from its root entry — never the live pointer — so constraints are
    * deterministic for the query's lifetime: a pin with no ref stays constraint-free even if a
    * bundle appears mid-query, and an in-place constraints write never changes what a running query
-   * sees. System relations (no pins) resolve through the routed provider as before. A pinned bundle
-   * whose blob is gone is a catalog-integrity error, not a silent walk to live state.
+   * sees. System relations (no pins) resolve through the routed provider as before. A selected
+   * bundle whose blob is gone fails MC_SNAPSHOT_EXPIRED, never a silent walk to live state.
    */
   private static ConstraintResolution resolveConstraintResult(
       String correlationId,
@@ -1218,7 +1232,7 @@ public class PlannerStatsBundleService {
       OptionalLong snapshotId,
       Optional<SnapshotSelectionLookup.ResolvedConstraintsRef> pinnedRef,
       Optional<TablePin> selection,
-      ResolvedSnapshotReadContract selections,
+      ResolvedSnapshotReadContract resolvedSnapshotReads,
       ConstraintRepository constraintRepository,
       ConstraintProvider constraintProvider,
       ConstraintPruner constraintPruner) {
@@ -1230,7 +1244,7 @@ public class PlannerStatsBundleService {
     try {
       // Expiry belongs to the resolved selection, not to repository residency. Check before
       // loading the immutable bundle so a warm cache cannot keep an expired selection visible.
-      selection.ifPresent(pin -> selections.requireReadable(correlationId, pin));
+      selection.ifPresent(pin -> resolvedSnapshotReads.requireReadable(correlationId, pin));
       List<ConstraintDefinition> visible;
       String servedRefVersion;
       if (pinnedRef.isPresent()) {
@@ -1242,26 +1256,15 @@ public class PlannerStatsBundleService {
               "pinned constraints ref present but no ConstraintRepository is wired: "
                   + pinnedRef.get().uri());
         }
+        // Cached: constraint blobs are immutable and content-addressed, so a resident decode is
+        // the selected content. A missing blob was deleted or collected under the selection.
         Optional<SnapshotConstraints> bundle =
-            // Cached: pinned constraint blobs are immutable and content-addressed, so a resident
-            // decode is the resolved snapshot content rather than a stale view of it. What this
-            // gives up is
-            // DETECTION, not correctness: a swept blob whose decode is still resident serves the
-            // right bytes and logs nothing, so the warning below now fires on a miss rather than
-            // on every read. This leg reports no repair either way -- unlike the table and
-            // snapshot legs, which enqueue through ResolvedSnapshotReadContract.
             constraintRepository.getByBlobUri(tableId, pinnedRef.get().uri());
         if (bundle.isEmpty()) {
-          LOG.warnf(
-              "pinned constraints blob missing for %s snapshot %d: %s",
-              tableId.getId(), sidForLog, pinnedRef.get().uri());
-          return new ConstraintResolution(
-              constraintErrorResult(
-                  tableId,
-                  snapshotId,
-                  new IllegalStateException(
-                      "pinned constraints blob missing: " + pinnedRef.get().uri())),
-              ConstraintResolutionStatus.ERROR);
+          throw GrpcErrors.snapshotExpired(
+              correlationId,
+              null,
+              Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(sidForLog)));
         }
         visible = bundle.get().getConstraintsList();
         servedRefVersion = pinnedRef.get().version();
@@ -1330,7 +1333,13 @@ public class PlannerStatsBundleService {
               .build(),
           ConstraintResolutionStatus.FOUND);
     } catch (StatusRuntimeException e) {
-      throw e;
+      FloecatStatus status = FloecatStatus.fromThrowable(e);
+      if (status != null && status.errorCode() == ErrorCode.MC_SNAPSHOT_EXPIRED) {
+        throw e;
+      }
+      LOG.debugf(e, "constraint lookup failed for %s snapshot %d", tableId.getId(), sidForLog);
+      return new ConstraintResolution(
+          constraintErrorResult(tableId, snapshotId, e), ConstraintResolutionStatus.ERROR);
     } catch (RuntimeException e) {
       LOG.debugf(e, "constraint lookup failed for %s snapshot %d", tableId.getId(), sidForLog);
       return new ConstraintResolution(
@@ -1440,7 +1449,7 @@ public class PlannerStatsBundleService {
     /** The query's resolved snapshot for this table, resolved once and reused for stamping. */
     private OptionalLong resolvedSnapshot = OptionalLong.empty();
 
-    private boolean pinResolved = false;
+    private boolean selectionResolved = false;
 
     /** Cursor into preOmitted — independent of targetIndex. */
     private int preOmittedIndex = 0;

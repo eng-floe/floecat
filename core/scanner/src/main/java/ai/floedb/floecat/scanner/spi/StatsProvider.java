@@ -43,8 +43,8 @@ public interface StatsProvider {
   /**
    * Resolve table stats for a set of relations at once, warming any provider-side memoization so
    * later per-relation {@link #tableStats} calls are hits. The default resolves sequentially;
-   * implementations backed by remote reads should override to fetch in parallel. Never throws for a
-   * single table's failure — a missing entry means "not resolved".
+   * implementations backed by remote reads should override to fetch in parallel. Ordinary lookup
+   * failures become missing entries; a snapshot-expiry error remains visible to the caller.
    */
   default Map<ResourceId, Optional<TableStatsView>> tableStatsBatch(
       Collection<ResourceId> tableIds) {

@@ -24,7 +24,7 @@ The graph reads through the service-wide caching disciplines described in
 │ gRPC RPCs  │ ---> │ MetadataGraph APIs │ ---> │ Repositories / RPCs   │
 │ (Query,    │      │  - resolve()       │      │  - Catalog/Table/View │
 │  Planner,  │      │  - catalog()/...   │      │  - Directory/Snapshot │
-│  Executors)│      │  - snapshotPinFor  │      │  - Storage backends   │
+│  Executors)│      │  - resolvedSnapshot│      │  - Storage backends   │
 └────────────┘      └────────────────────┘      └───────────────────────┘
 ```
 
@@ -154,7 +154,7 @@ exposes the Metadata Graph APIs that higher layers call. Key methods:
 | `ResolveResult resolveTables(String cid, NameRef prefix, int limit, String token)` | Lists tables under a namespace prefix while enforcing Directory pagination contracts. |
 | `ResolveResult resolveViews(String cid, List<NameRef> list, int limit, String token)` | Resolves explicit view names, returning canonical `NameRef`s and resource IDs. |
 | `ResolveResult resolveViews(String cid, NameRef prefix, int limit, String token)` | Lists views below a prefix with next-page tokens and total counts. |
-| `SnapshotPin snapshotPinFor(String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault)` | Normalises snapshot selection (override → as-of → current). |
+| `TablePin resolvedSnapshotFor(String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault)` | Resolves and admits a snapshot selection (override → as-of → current). |
 
 ### Engine Hint Retrieval
 All tables and views participating in planning may embed engine‑specific hints. The Metadata Graph
@@ -217,11 +217,11 @@ contents.
 graph. Each chunk carries a header, batched relation resolutions (`RelationResolutions`) and a final
 summary, so planners can start binding as soon as the service resolves each relation. The service
 shares the same `QueryContext` as the other query RPCs and relies on `CatalogGraphView.resolve`,
-`snapshotPinFor`, and view metadata stored in `ViewNode` to produce canonical names, pruned schemas,
+`resolvedSnapshotFor`, and view metadata stored in `ViewNode` to produce canonical names, pruned schemas,
 and view definitions without issuing a second RPC batch.
 Resolved tables/views also go through `QueryInputResolver` so their snapshot selections are merged into
 `QueryContext` before the response hits the planner—`QueryScanService.InitScan` can therefore find
-the same pins later in the lifecycle. Builtins remain behind `GetSystemObjects`; the `information_schema`/`pg_catalog`
+the same selections later in the lifecycle. Builtins remain behind `GetSystemObjects`; the `information_schema`/`pg_catalog`
 relations are materialized in the engine-specific overlays for `_system` scans but do not appear in the RPC
 response to avoid exposing synthetic tables twice.
 Column decorations are surfaced per column via `RelationInfo.columns[*]` (`ColumnResult`), so a relation can

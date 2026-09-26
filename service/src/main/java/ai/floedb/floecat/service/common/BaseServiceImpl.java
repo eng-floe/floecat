@@ -111,25 +111,12 @@ public abstract class BaseServiceImpl {
    * {@link CancellationException} is discarded after its subscriber has already terminated.
    */
   protected <T> Uni<T> run(Supplier<T> body) {
-    return runCaptured(body);
-  }
-
-  private <T> Uni<T> runCaptured(Supplier<T> body) {
     GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
     // Read the resolved call context at method entry — before any executor hop — and carry it by
     // reference into the body. The captured io.grpc.Context alone is unreliable across the hop
     // (eng-floe/floecat#361).
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrNull();
     Context otelCtx = otelContextForBody(Context.current());
-    return Uni.createFrom()
-        .deferred(
-            () -> {
-              return runCaptured(body, grpcCtx, callCtx, otelCtx);
-            });
-  }
-
-  private <T> Uni<T> runCaptured(
-      Supplier<T> body, GrpcContextUtil grpcCtx, ResolvedCallContext callCtx, Context otelCtx) {
     return Uni.createFrom()
         .deferred(
             () -> {
@@ -263,22 +250,15 @@ public abstract class BaseServiceImpl {
   }
 
   protected <T> Uni<T> runWithRetry(Supplier<T> body) {
-    GrpcContextUtil grpcCtx = GrpcContextUtil.capture();
-    ResolvedCallContext callCtx = ResolvedCallContexts.currentOrNull();
-    Context otelCtx = otelContextForBody(Context.current());
-    return Uni.createFrom()
-        .deferred(
-            () -> {
-              return runCaptured(body, grpcCtx, callCtx, otelCtx)
-                  .onFailure(
-                      t ->
-                          t instanceof BaseResourceRepository.AbortRetryableException
-                              || t instanceof StorageAbortRetryableException)
-                  .retry()
-                  .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
-                  .withJitter(JITTER)
-                  .atMost(RETRIES);
-            });
+    return run(body)
+        .onFailure(
+            t ->
+                t instanceof BaseResourceRepository.AbortRetryableException
+                    || t instanceof StorageAbortRetryableException)
+        .retry()
+        .withBackOff(BACKOFF_MIN, BACKOFF_MAX)
+        .withJitter(JITTER)
+        .atMost(RETRIES);
   }
 
   protected <T> Uni<T> mapFailures(Uni<T> u, String corrId) {

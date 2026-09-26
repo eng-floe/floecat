@@ -16,7 +16,6 @@
 
 package ai.floedb.floecat.service.gc;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.common.rpc.Pointer;
@@ -28,9 +27,6 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import java.nio.charset.StandardCharsets;
-import java.time.Clock;
-import java.time.Duration;
-import java.time.Instant;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -55,8 +51,6 @@ class PointerGcTest {
   private void useBlobs(BlobStore store) {
     blobs = store;
     gc.blobStore = blobs;
-    gc.tableRootRepository =
-        new ai.floedb.floecat.service.repo.impl.TableRootRepository(pointers, blobs);
   }
 
   @AfterEach
@@ -74,94 +68,6 @@ class PointerGcTest {
     gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
 
     assertTrue(pointers.get(ptrKey).isEmpty());
-  }
-
-  @Test
-  void deletesLegacySnapshotPointerOnceBlobIsPastRetentionAndGrace() {
-    // A legacy entry carries no ingested_at; the snapshot blob's write time stands in for it.
-    useBlobs(new InMemoryBlobStore(Clock.offset(Clock.systemUTC(), Duration.ofDays(-3))));
-    String snapshotPointer = seedSnapshots(0, null);
-
-    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
-
-    assertTrue(pointers.get(snapshotPointer).isEmpty());
-  }
-
-  @Test
-  void keepsLegacySnapshotPointerWithRecentBlobWithoutRewritingIt() {
-    String snapshotPointer = seedSnapshots(0, null);
-    long version = pointers.get(snapshotPointer).orElseThrow().getVersion();
-
-    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
-
-    assertEquals(version, pointers.get(snapshotPointer).orElseThrow().getVersion());
-  }
-
-  @Test
-  void deletesSnapshotPointerPublishedBeforeRetentionAndGrace() {
-    String snapshotPointer = seedSnapshots(0, Instant.now().minus(Duration.ofDays(3)));
-
-    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
-
-    assertTrue(pointers.get(snapshotPointer).isEmpty());
-  }
-
-  @Test
-  void keepsTheLastReplacedSnapshotPointerRegardlessOfAge() {
-    String snapshotPointer = seedSnapshots(1, Instant.now().minus(Duration.ofDays(3)));
-
-    gc.runForAccount(ACCOUNT_ID, System.currentTimeMillis() + 5_000L);
-
-    assertTrue(pointers.get(snapshotPointer).isPresent());
-  }
-
-  /**
-   * Seeds snapshot 1 (by-id pointer returned) replaced by current snapshot 2, under 1d retention
-   * and 1d grace. {@code publishedAt} null leaves the entry without ingested_at.
-   */
-  private String seedSnapshots(int retainLast, Instant publishedAt) {
-    gc.retentionPolicy =
-        new ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy(
-            Clock.systemUTC(), Duration.ofDays(1), Duration.ofDays(1), retainLast);
-    var tableRid =
-        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-            .setAccountId(ACCOUNT_ID)
-            .setId(TABLE_ID)
-            .build();
-    String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
-    blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
-    putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
-    ai.floedb.floecat.catalog.rpc.BlobRef head = null;
-    for (long id = 1; id <= 2; id++) {
-      String snapshotBlob = Keys.snapshotBlobUri(ACCOUNT_ID, TABLE_ID, id, "sha-" + id);
-      blobs.put(snapshotBlob, "snapshot".getBytes(StandardCharsets.UTF_8), "text/plain");
-      putPointer(Keys.snapshotPointerById(ACCOUNT_ID, TABLE_ID, id), snapshotBlob);
-      var entry =
-          ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
-              .setSnapshotId(id)
-              .setSnapshotRef(
-                  ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri(snapshotBlob));
-      if (publishedAt != null) {
-        entry.setIngestedAt(
-            com.google.protobuf.util.Timestamps.fromMillis(publishedAt.toEpochMilli()));
-      }
-      head =
-          ai.floedb.floecat.service.repo.impl.SnapshotManifests.chain(
-                  gc.tableRootRepository, tableRid, head)
-              .upsert(entry.build());
-    }
-    String rootBlob = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-root");
-    blobs.put(
-        rootBlob,
-        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
-            .setTableId(tableRid)
-            .setCurrentSnapshotId(2L)
-            .setSnapshotManifestRef(head)
-            .build()
-            .toByteArray(),
-        "application/x-protobuf");
-    putPointer(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID), rootBlob);
-    return Keys.snapshotPointerById(ACCOUNT_ID, TABLE_ID, 1L);
   }
 
   @Test

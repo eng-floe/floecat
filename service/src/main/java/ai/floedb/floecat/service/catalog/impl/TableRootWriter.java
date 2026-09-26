@@ -105,8 +105,7 @@ public class TableRootWriter {
       }
       // Root currency tracks the committed current-snapshot selection immediately. Query readers
       // still require the selected manifest entry to carry a stats generation before selecting it,
-      // so
-      // logical Iceberg metadata can move current without exposing an unfinalized scan.
+      // so logical Iceberg metadata can move current without exposing an unfinalized scan.
       boolean advanceAtRegistration = true;
       committer.commit(
           tableId,
@@ -155,7 +154,12 @@ public class TableRootWriter {
 
   /** Removes a deleted snapshot's entry from the root manifest. */
   public void removeSnapshot(ResourceId tableId, long snapshotId) {
-    committer.commit(tableId, TableRootMutations.removeSnapshot(roots, tableId, snapshotId));
+    removeSnapshots(tableId, java.util.Set.of(snapshotId));
+  }
+
+  /** Removes several snapshots' entries from the root manifest in one commit. */
+  public void removeSnapshots(ResourceId tableId, java.util.Set<Long> snapshotIds) {
+    committer.commit(tableId, TableRootMutations.removeSnapshots(roots, tableId, snapshotIds));
   }
 
   /** Records the table's (possibly new) immutable definition blob on the root. */
@@ -205,7 +209,7 @@ public class TableRootWriter {
     try {
       committer.commit(
           tableId,
-          (current, retainLast) -> {
+          current -> {
             // Read the active generation INSIDE the mutator: concurrent activations race, and a
             // ref captured before a lost CAS could land last, leaving the root referencing a
             // superseded generation forever. Re-reading per attempt makes the last commit reflect
@@ -227,7 +231,7 @@ public class TableRootWriter {
                     .orElse(null);
             return TableRootMutations.setStatsGeneration(
                     roots, tableId, snapshotId, generationRef, committedCurrentSnapshotId)
-                .apply(current, retainLast);
+                .apply(current);
           });
       return Optional.ofNullable(committedGeneration.get()).filter(uri -> !uri.isBlank());
     } catch (RuntimeException publicationFailure) {
@@ -302,7 +306,7 @@ public class TableRootWriter {
           boolean[] converged = {true};
           committer.commit(
               tableId,
-              (current, retainLast) -> {
+              current -> {
                 // The committed families are re-read INSIDE the mutator: resync FORCES currency,
                 // so a lost CAS must not re-apply state captured before the winner's commit — it
                 // would resurrect stale currency or re-insert a concurrently deleted snapshot's
@@ -353,7 +357,7 @@ public class TableRootWriter {
                           }
                           return loaded;
                         })
-                    .apply(current, retainLast);
+                    .apply(current);
               });
           // A drop can race the commit: the committer persists synthesized history even on a
           // mutator no-op, so a definition-less root (built from lingering snapshot pointers

@@ -175,6 +175,7 @@ class SnapshotHelperTest {
             .setUpstreamCreatedAt(ts("2024-04-01T00:00:00Z"))
             .build();
     repository.put(tableId, snapshot);
+    commitEntry(tableId, 41L, "2024-04-01T00:00:00Z");
 
     String schema =
         helper.schemaJsonFor(
@@ -338,9 +339,7 @@ class SnapshotHelperTest {
     // Force a broken root: currency names a snapshot the manifest does not carry. Removal clears
     // currency in the same commit, so this state is a violated invariant, never a client state.
     committer.commit(
-        tableId,
-        (current, retainLast) ->
-            current.orElseThrow().toBuilder().setCurrentSnapshotId(999).build());
+        tableId, current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(999).build());
 
     assertThatThrownBy(() -> helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class)
@@ -465,12 +464,43 @@ class SnapshotHelperTest {
   }
 
   private void assertTooOld(ResourceId tableId, long snapshotId) {
-    assertThatThrownBy(() -> select(tableId, snapshotId))
+    assertTooOld(() -> select(tableId, snapshotId));
+  }
+
+  private static void assertTooOld(org.assertj.core.api.ThrowableAssert.ThrowingCallable call) {
+    assertThatThrownBy(call)
         .isInstanceOf(StatusRuntimeException.class)
         .satisfies(
             e ->
-                assertThat(((StatusRuntimeException) e).getStatus().getCode())
-                    .isEqualTo(io.grpc.Status.Code.FAILED_PRECONDITION));
+                assertThat(
+                        ai.floedb.floecat.service.error.impl.FloecatStatus.fromThrowable(e)
+                            .errorCode())
+                    .isEqualTo(ai.floedb.floecat.common.rpc.ErrorCode.MC_SNAPSHOT_TOO_OLD));
+  }
+
+  @Test
+  void schemaReadsAdmitSnapshotsLikeAQuery() {
+    ResourceId tableId = tableId("tbl");
+    commitThreeSnapshots(tableId, Timestamps.fromMillis(System.currentTimeMillis()));
+    for (long id = 5; id <= 7; id++) {
+      repository.put(
+          tableId,
+          Snapshot.newBuilder()
+              .setTableId(tableId)
+              .setSnapshotId(id)
+              .setSchemaJson("{\"fields\":[\"s" + id + "\"]}")
+              .build());
+    }
+    var table = TestNodes.tableNode(tableId, "{}");
+
+    assertThat(
+            helper.schemaJsonFor(
+                "corr", table, SnapshotRef.newBuilder().setSnapshotId(5).build(), () -> "{}"))
+        .contains("s5");
+    assertThat(
+            helper.schemaJsonFor(
+                "corr", table, SnapshotRef.newBuilder().setSnapshotId(6).build(), () -> "{}"))
+        .contains("s6");
   }
 
   @Test
@@ -479,23 +509,6 @@ class SnapshotHelperTest {
     commitThreeSnapshots(tableId, ts("2024-01-01T00:00:00Z"));
 
     assertTooOld(tableId, 5);
-  }
-
-  @Test
-  void theCurrentAndLastReplacedSnapshotsStaySelectableRegardlessOfAge() {
-    ResourceId tableId = tableId("tbl");
-    commitThreeSnapshots(tableId, ts("2024-01-01T00:00:00Z"));
-
-    assertThat(select(tableId, 7).hasIngestedAt()).isFalse();
-    assertThat(select(tableId, 6).hasIngestedAt()).isFalse();
-    TablePin asOfNow =
-        helper.resolvedSnapshotFor(
-            "corr",
-            tableId,
-            SnapshotRef.newBuilder().setAsOf(ts("2030-01-01T00:00:00Z")).build(),
-            Optional.empty());
-    assertThat(asOfNow.getSnapshotId()).isEqualTo(7);
-    assertThat(asOfNow.hasIngestedAt()).isFalse();
   }
 
   @Test
@@ -551,9 +564,17 @@ class SnapshotHelperTest {
   @Test
   void tablePinAsOfResolvesToThePredecessorEntry() {
     ResourceId tableId = tableId("tbl");
-    seedAndCommit(tableId, 11, "2024-02-01T00:00:00Z");
-    seedAndCommit(tableId, 12, "2024-03-01T00:00:00Z");
-    Timestamp asOf = ts("2024-02-15T00:00:00Z");
+    Instant now = Instant.now();
+    seedAndCommit(tableId, 11, now.minus(Duration.ofDays(2)).toString());
+    seedAndCommit(tableId, 12, now.minus(Duration.ofDays(1)).toString());
+    Timestamp asOf =
+        Timestamps.fromMillis(
+            now.minus(Duration.ofDays(1)).minus(Duration.ofHours(12)).toEpochMilli());
+
+    // This test exercises predecessor selection, not retention admission.
+    helper =
+        new SnapshotHelper(
+            repository, roots, null, pins, repairs, SnapshotRetentionPolicy.disabled());
 
     TablePin pin =
         helper.resolvedSnapshotFor(
@@ -598,6 +619,37 @@ class SnapshotHelperTest {
 
     assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_CURRENT);
     assertThat(pin.getSnapshotId()).isEqualTo(142);
+  }
+
+  @Test
+  void currentRemainsAdmissibleWhileAnOlderReplacedSnapshotExpires() {
+    ResourceId tableId = tableId("tbl");
+    commitThreeSnapshots(tableId, ts("2024-01-01T00:00:00Z"));
+
+    TablePin current =
+        helper.resolvedSnapshotFor(
+            "corr",
+            tableId,
+            SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build(),
+            Optional.empty());
+
+    assertThat(current.getSnapshotId()).isEqualTo(7);
+    assertThat(current.hasIngestedAt()).isFalse();
+
+    TablePin explicitCurrent = select(tableId, 7);
+    assertThat(explicitCurrent.getSnapshotId()).isEqualTo(7);
+    assertThat(explicitCurrent.hasIngestedAt()).isFalse();
+
+    TablePin asOfCurrent =
+        helper.resolvedSnapshotFor(
+            "corr",
+            tableId,
+            SnapshotRef.newBuilder().setAsOf(ts("2024-01-08T00:00:00Z")).build(),
+            Optional.empty());
+    assertThat(asOfCurrent.getSnapshotId()).isEqualTo(7);
+    assertThat(asOfCurrent.hasIngestedAt()).isFalse();
+
+    assertTooOld(tableId, 6);
   }
 
   @Test

@@ -40,16 +40,11 @@ import java.util.function.UnaryOperator;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
- * Caffeine-backed in-memory implementation of QueryContextStore.
- *
- * <p>Notes: - put() inserts only when absent — does NOT overwrite. - replace() overwrites existing
- * contexts, required for DescribeInputs(). - expiration logic is applied eagerly under get().
+ * Process-local QueryContextStore. put() inserts only when absent; update() changes a context
+ * atomically; get() applies the lazy lease expiry. Active contexts are never evicted by size.
  */
 @ApplicationScoped
 public class QueryContextStoreImpl implements QueryContextStore {
-
-  @ConfigProperty(name = "floecat.query.default-ttl-ms", defaultValue = "60000")
-  long defaultTtlMs;
 
   @ConfigProperty(name = "floecat.query.ended-grace-ms", defaultValue = "15000")
   long endedGraceMs;
@@ -60,14 +55,22 @@ public class QueryContextStoreImpl implements QueryContextStore {
   @ConfigProperty(name = "floecat.query.safety-expiry-minutes", defaultValue = "10")
   long safetyExpiryMinutes;
 
+  private static final Duration LEASE_MARGIN = Duration.ofSeconds(5);
+
+  /** Bounds the scans one active query can hold open. */
+  static final int MAX_OPEN_SCANS_PER_QUERY = 1024;
+
   private final AtomicLong versionGen = new AtomicLong(1);
   // Package-private and non-final so unit tests can substitute a controllable clock. Production
   // uses the system clock.
   Clock clock = Clock.systemUTC();
+  // Package-private so unit tests can run cache maintenance synchronously.
+  java.util.concurrent.Executor cacheExecutor = java.util.concurrent.ForkJoinPool.commonPool();
 
   private StateCache<String, QueryContext> cache;
-  private StateCache<String, ScanSession> scanSessionCache;
-  private final Map<String, String> handleToQuery = new ConcurrentHashMap<>();
+  // Scan sessions live exactly as long as their query: released when it ends, expires, or leaves
+  // the cache, never bounded on their own.
+  private final Map<String, ScanSession> scanSessions = new ConcurrentHashMap<>();
 
   @PostConstruct
   void init() {
@@ -79,7 +82,7 @@ public class QueryContextStoreImpl implements QueryContextStore {
             .maximumWeight(Math.max(1, maxSize))
             .weigher((String k, QueryContext ctx) -> ctx != null && ctx.isActive() ? 0 : 1)
             .expireAfterWrite(Duration.ofMinutes(Math.max(1, safetyExpiryMinutes)))
-            .recordStats()
+            .executor(cacheExecutor)
             .removalListener(
                 (String key, QueryContext ctx, RemovalCause cause) -> {
                   // A replaced context is the same query's next version, which keeps its handles.
@@ -88,36 +91,33 @@ public class QueryContextStoreImpl implements QueryContextStore {
                   }
                 })
             .build();
-    scanSessionCache =
-        CaffeineStateCache.<String, ScanSession>builder()
-            .maximumSize(Math.max(1, maxSize))
-            .expireAfterWrite(Duration.ofMinutes(Math.max(1, safetyExpiryMinutes)))
-            .recordStats()
-            .removalListener(
-                (String handle, ScanSession session, RemovalCause cause) -> {
-                  if (handle != null) {
-                    handleToQuery.remove(handle);
-                  }
-                })
-            .build();
   }
 
   @Override
   public Optional<QueryContext> get(String queryId) {
-    // The lazy ACTIVE→EXPIRED transition must be atomic with respect to concurrent writers. A
-    // read-then-put (as an earlier version did) could overwrite a context that update() had just
-    // committed resolved selections into with a stale pre-resolution version marked EXPIRED.
-    QueryContext ctx =
-        cache.computeIfPresent(
-            queryId,
-            (k, cur) -> {
-              if (clock.millis() > cur.getExpiresAtMs()
-                  && cur.getState() == QueryContext.State.ACTIVE) {
-                return cur.asExpired(versionGen.incrementAndGet());
-              }
-              return cur;
-            });
+    QueryContext ctx = cache.getIfPresent(queryId);
+    if (ctx != null && ctx.isActive() && clock.millis() > ctx.getExpiresAtMs()) {
+      // The lazy ACTIVE->EXPIRED transition is atomic with concurrent updates; a read that needs no
+      // transition leaves the entry, and its write time, alone.
+      ctx =
+          cache.computeIfPresent(
+              queryId,
+              (k, cur) ->
+                  cur.isActive() && clock.millis() > cur.getExpiresAtMs()
+                      ? cur.asExpired(versionGen.incrementAndGet())
+                      : cur);
+    }
+    if (ctx != null && !ctx.isActive()) {
+      cleanupScanHandles(ctx);
+    }
     return Optional.ofNullable(ctx);
+  }
+
+  @Override
+  public long maxLeaseMs() {
+    // Caffeine refreshes a context's write time only once a second has passed, so a lease stays a
+    // margin inside the safety expiry.
+    return Duration.ofMinutes(Math.max(1, safetyExpiryMinutes)).minus(LEASE_MARGIN).toMillis();
   }
 
   @Override
@@ -158,7 +158,11 @@ public class QueryContextStoreImpl implements QueryContextStore {
             });
     // A renew against a non-ACTIVE (lazily-EXPIRED) context must surface as NOT_FOUND, not a false
     // success carrying the stale lease — the caller treats empty as not-found.
-    if (updated == null || updated.getState() != QueryContext.State.ACTIVE) {
+    if (updated == null) {
+      return Optional.empty();
+    }
+    if (!updated.isActive()) {
+      cleanupScanHandles(updated);
       return Optional.empty();
     }
     return Optional.of(updated);
@@ -168,7 +172,7 @@ public class QueryContextStoreImpl implements QueryContextStore {
   public Optional<QueryContext> end(String queryId, boolean commit) {
     final long newExp = clock.millis() + endedGraceMs;
 
-    return Optional.ofNullable(
+    QueryContext ended =
         cache.computeIfPresent(
             queryId,
             (k, ctx) -> {
@@ -178,7 +182,12 @@ public class QueryContextStoreImpl implements QueryContextStore {
               }
 
               return ctx.end(commit, newExp, versionGen.incrementAndGet());
-            }));
+            });
+    if (ended != null) {
+      // An ended query serves no further scans.
+      cleanupScanHandles(ended);
+    }
+    return Optional.ofNullable(ended);
   }
 
   @Override
@@ -195,91 +204,106 @@ public class QueryContextStoreImpl implements QueryContextStore {
     return cache.estimatedSize();
   }
 
-  /**
-   * Overwrite an existing QueryContext with a new version.
-   *
-   * <p>This is used by DescribeInputs(), GetUserObjects(), etc., to store metadata filled later in
-   * the query lifecycle.
-   */
-  @Override
-  public void replace(QueryContext ctx) {
-    cache.put(ctx.getQueryId(), ctx);
-  }
-
   @Override
   public Optional<QueryContext> update(String queryId, UnaryOperator<QueryContext> fn) {
+    final long now = clock.millis();
     Optional<QueryContext> result =
         Optional.ofNullable(
             cache.computeIfPresent(
                 queryId,
                 (k, ctx) -> {
+                  // Keep both lifecycle checks in the atomic update seam. Callers must not mutate
+                  // a context that ended or expired after their preceding get().
+                  if (!ctx.isActive()) {
+                    return ctx;
+                  }
+                  if (now > ctx.getExpiresAtMs()) {
+                    return ctx.asExpired(versionGen.incrementAndGet());
+                  }
                   QueryContext updated = fn.apply(ctx);
                   if (updated == null || updated == ctx) {
                     return ctx;
                   }
                   return updated.toBuilder().version(versionGen.incrementAndGet()).build();
                 }));
+    if (result.isPresent() && !result.orElseThrow().isActive()) {
+      // Preserve the terminal context so callers can report QUERY_NOT_ACTIVE rather than
+      // collapsing an ended or expired query into QUERY_NOT_FOUND. Its scan handles are no longer
+      // usable, so release them as part of the transition.
+      cleanupScanHandles(result.orElseThrow());
+    }
     return result;
   }
 
   @Override
   public ScanHandle createScanSession(String correlationId, ScanSession session) {
     String id = UUID.randomUUID().toString();
-    ScanSession stored = session.toBuilder().handleId(id).build();
-    // Install the bookkeeping BEFORE attaching the handle to the context, so the eviction
-    // listener (which removes by these maps) can never fire on a handle that is in the context but
-    // not yet in the maps — that ordering would leak a handleToQuery + scanSessionCache entry. If
-    // the context is already gone, roll the bookkeeping back before failing.
-    handleToQuery.put(id, session.queryId());
-    scanSessionCache.put(id, stored);
-    boolean present =
+    // Register the session before attaching it, so a concurrent end or eviction that cleans the
+    // context's handles can always find it; only an active query takes a new scan.
+    scanSessions.put(id, session.withHandleId(id));
+    // Why the attach was refused, or null once attached.
+    io.grpc.StatusRuntimeException[] refused = {
+      GrpcErrors.notFound(correlationId, QUERY_NOT_FOUND, Map.of("query_id", session.queryId()))
+    };
+    Optional<QueryContext> updated =
         update(
-                session.queryId(),
-                ctx -> ctx.toBuilder().scanHandles(addScanHandle(ctx.scanHandles(), id)).build())
-            .isPresent();
-    if (!present) {
-      handleToQuery.remove(id);
-      scanSessionCache.remove(id);
-      throw GrpcErrors.notFound(
-          correlationId, QUERY_NOT_FOUND, Map.of("query_id", session.queryId()));
+            session.queryId(),
+            ctx -> {
+              if (ctx.scanHandles().size() >= MAX_OPEN_SCANS_PER_QUERY) {
+                refused[0] =
+                    GrpcErrors.preconditionFailed(
+                        correlationId,
+                        QUERY_SCAN_LIMIT,
+                        Map.of(
+                            "query_id",
+                            session.queryId(),
+                            "limit",
+                            Integer.toString(MAX_OPEN_SCANS_PER_QUERY)));
+                return ctx;
+              }
+              refused[0] = null;
+              return ctx.toBuilder().scanHandles(addScanHandle(ctx.scanHandles(), id)).build();
+            });
+    if (updated.isPresent() && !updated.orElseThrow().isActive()) {
+      refused[0] =
+          GrpcErrors.preconditionFailed(
+              correlationId, QUERY_NOT_ACTIVE, Map.of("query_id", session.queryId()));
+    }
+    if (refused[0] != null) {
+      scanSessions.remove(id);
+      throw refused[0];
     }
     return ScanHandle.newBuilder().setId(id).build();
   }
 
   @Override
   public Optional<ScanSession> getScanSession(ScanHandle handle) {
-    if (handle == null) {
+    ScanSession session = handle == null ? null : scanSessions.get(handle.getId());
+    if (session == null) {
       return Optional.empty();
     }
-    String queryId = handleToQuery.get(handle.getId());
-    if (queryId == null) {
+    // Through get() so an elapsed lease expires the query, releasing its scans.
+    QueryContext ctx = get(session.queryId()).orElse(null);
+    if (ctx == null || !ctx.isActive()) {
+      scanSessions.remove(handle.getId());
       return Optional.empty();
     }
-    QueryContext ctx = cache.getIfPresent(queryId);
-    if (ctx == null) {
-      handleToQuery.remove(handle.getId());
-      return Optional.empty();
-    }
-    return Optional.ofNullable(scanSessionCache.getIfPresent(handle.getId()));
+    return Optional.of(session);
   }
 
   @Override
   public void removeScanSession(ScanHandle handle) {
-    if (handle == null) {
-      return;
-    }
-    String queryId = handleToQuery.remove(handle.getId());
-    if (queryId == null) {
+    ScanSession session = handle == null ? null : scanSessions.remove(handle.getId());
+    if (session == null) {
       return;
     }
     cache.computeIfPresent(
-        queryId,
+        session.queryId(),
         (k, ctx) -> {
           Set<String> updated = new HashSet<>(ctx.scanHandles());
           updated.remove(handle.getId());
           return ctx.toBuilder().scanHandles(updated).build();
         });
-    scanSessionCache.remove(handle.getId());
   }
 
   private Set<String> addScanHandle(Set<String> existing, String id) {
@@ -288,10 +312,13 @@ public class QueryContextStoreImpl implements QueryContextStore {
     return Set.copyOf(updated);
   }
 
+  int openScanSessions() {
+    return scanSessions.size();
+  }
+
   private void cleanupScanHandles(QueryContext ctx) {
     for (String handle : ctx.scanHandles()) {
-      handleToQuery.remove(handle);
-      scanSessionCache.remove(handle);
+      scanSessions.remove(handle);
     }
   }
 
@@ -299,6 +326,6 @@ public class QueryContextStoreImpl implements QueryContextStore {
   @Override
   public void close() {
     cache.invalidateAll();
-    scanSessionCache.invalidateAll();
+    scanSessions.clear();
   }
 }

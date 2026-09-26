@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.gc;
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.service.telemetry.StorageUsageMetrics;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
@@ -52,8 +51,9 @@ public class CasBlobGcScheduler {
 
   private static final Logger LOG = Logger.getLogger(CasBlobGcScheduler.class);
 
-  @Inject Provider<AccountRepository> accounts;
+  @Inject Provider<OwnedAccounts> accounts;
   @Inject Provider<CasBlobGc> casBlobGc;
+
   @Inject Provider<StorageUsageMetrics> storageUsageMetrics;
   @Inject Observability observability;
 
@@ -144,7 +144,7 @@ public class CasBlobGcScheduler {
       return;
     }
 
-    final AccountRepository accountRepo;
+    final OwnedAccounts accountRepo;
     final CasBlobGc gc;
     try {
       accountRepo = accounts.get();
@@ -305,13 +305,14 @@ public class CasBlobGcScheduler {
   }
 
   private Account nextPagedAccount(
-      AccountRepository repo, int pageSize, long deadline, CasBlobGc gc, long now) {
+      OwnedAccounts repo, int pageSize, long deadline, CasBlobGc gc, long now) {
     while (System.currentTimeMillis() < deadline && !stopping) {
       if (accountPageIndex < accountPage.size()) {
         return accountPage.get(accountPageIndex);
       }
       StringBuilder next = new StringBuilder();
-      List<Account> page = repo.list(pageSize, accountToken, next);
+      List<Account> page =
+          repo.list(pageSize, accountToken, next, () -> stopping || System.currentTimeMillis() >= deadline);
       accountPage = List.copyOf(page);
       accountPageIndex = 0;
       accountPageNextToken = next.toString();

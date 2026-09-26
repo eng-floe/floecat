@@ -531,11 +531,6 @@ public final class UserObjectBundleTestSupport {
     }
 
     @Override
-    public void replace(QueryContext ctx) {
-      contexts.put(ctx.getQueryId(), ctx);
-    }
-
-    @Override
     public Optional<QueryContext> update(String queryId, UnaryOperator<QueryContext> fn) {
       QueryContext current = contexts.get(queryId);
       if (current == null) {

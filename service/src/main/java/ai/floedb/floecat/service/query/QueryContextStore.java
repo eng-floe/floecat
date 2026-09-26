@@ -25,8 +25,8 @@ import java.util.function.UnaryOperator;
 /**
  * Storage abstraction for server-side QueryContext.
  *
- * <p>Implementations must: - preserve immutability of QueryContext - ensure updates are monotonic
- * and consistent - never silently drop or overwrite contexts without explicit calls
+ * <p>Contexts are immutable values updated atomically. A context may be evicted once it is terminal
+ * or idle past {@link #maxLeaseMs}; an active query never outlives it.
  */
 public interface QueryContextStore extends AutoCloseable {
 
@@ -55,21 +55,18 @@ public interface QueryContextStore extends AutoCloseable {
   /** Return approximate cache size. */
   long size();
 
-  /**
-   * Replace an existing QueryContext with an updated version.
-   *
-   * <p>This is required for DescribeInputs(), GetUserObjects(), and other RPCs to populate: -
-   * expansionMap - obligations - additional metadata
-   *
-   * <p>Unlike put(), this MUST overwrite the existing context.
-   */
-  void replace(QueryContext ctx);
+  /** The longest lease a context can keep; requested leases are capped to it. */
+  default long maxLeaseMs() {
+    return Long.MAX_VALUE;
+  }
 
   /**
    * Atomically update a stored context, using the provided function.
    *
    * <p>If the function returns the same reference or throws, the store remains unchanged. The
-   * resulting context version is bumped automatically.
+   * resulting context version is bumped automatically. An expired active context is atomically
+   * transitioned to its terminal state without invoking the function and is returned so callers can
+   * distinguish {@code QUERY_NOT_ACTIVE} from a missing query.
    */
   Optional<QueryContext> update(String queryId, UnaryOperator<QueryContext> fn);
 

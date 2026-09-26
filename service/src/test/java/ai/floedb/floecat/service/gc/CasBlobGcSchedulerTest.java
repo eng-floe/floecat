@@ -58,7 +58,11 @@ class CasBlobGcSchedulerTest {
     gc.failAccountId = "acct-a";
 
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
-    scheduler.accounts = () -> accounts;
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.ALWAYS_OWNED);
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
@@ -95,7 +99,11 @@ class CasBlobGcSchedulerTest {
     gc.poisonAccountId = "acct-a";
     StorageUsageMetrics storageUsageMetrics = mock(StorageUsageMetrics.class);
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
-    scheduler.accounts = () -> accounts;
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.ALWAYS_OWNED);
     scheduler.casBlobGc = () -> gc;
     scheduler.observability = new TestObservability();
     scheduler.storageUsageMetrics = () -> storageUsageMetrics;
@@ -119,7 +127,11 @@ class CasBlobGcSchedulerTest {
         .thenReturn(List.of(account("acct-a"), account("acct-b"), account("acct-c")));
     RecordingGc gc = new RecordingGc();
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
-    scheduler.accounts = () -> accounts;
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.ALWAYS_OWNED);
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
@@ -137,6 +149,39 @@ class CasBlobGcSchedulerTest {
   }
 
   @Test
+  void tickCollectsOnlyTheAccountsThisReplicaOwns() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a"), account("acct-b"), account("acct-c")));
+    RecordingGc gc = new RecordingGc();
+    CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                (accountId, access) ->
+                    accountId.equals("acct-b")
+                        ? java.util.Optional.empty()
+                        : java.util.Optional.of(
+                            ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership
+                                .Permit.NOOP));
+    scheduler.casBlobGc = () -> gc;
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
+    scheduler.storageUsageMetrics = () -> new StorageUsageMetrics(observability);
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.cas.enabled", "true");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.cas.enabled");
+    }
+
+    assertEquals(List.of("acct-a", "acct-c"), gc.accountIds);
+  }
+
+  @Test
   void retainedContinuationIsNotAbandonedBeforeItCompletes() {
     AccountRepository accounts = mock(AccountRepository.class);
     when(accounts.list(anyInt(), anyString(), any()))
@@ -146,7 +191,11 @@ class CasBlobGcSchedulerTest {
             invocation -> Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
     CompletingContinuationGc gc = new CompletingContinuationGc();
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
-    scheduler.accounts = () -> accounts;
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.ALWAYS_OWNED);
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
@@ -175,7 +224,11 @@ class CasBlobGcSchedulerTest {
             invocation -> Optional.of(account(invocation.<ResourceId>getArgument(0).getId())));
     NeverCompletingContinuationGc gc = new NeverCompletingContinuationGc();
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
-    scheduler.accounts = () -> accounts;
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.ALWAYS_OWNED);
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;
@@ -213,7 +266,11 @@ class CasBlobGcSchedulerTest {
             });
     RecordingGc gc = new RecordingGc();
     CasBlobGcScheduler scheduler = new CasBlobGcScheduler();
-    scheduler.accounts = () -> accounts;
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.ALWAYS_OWNED);
     scheduler.casBlobGc = () -> gc;
     TestObservability observability = new TestObservability();
     scheduler.observability = observability;

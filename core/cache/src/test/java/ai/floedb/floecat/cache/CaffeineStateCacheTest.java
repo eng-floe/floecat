@@ -24,7 +24,7 @@ class CaffeineStateCacheTest {
     assertThat(cache.putIfAbsent("key", 2)).isEqualTo(1);
     assertThat(cache.computeIfPresent("key", (key, value) -> value + 1)).isEqualTo(2);
     assertThat(cache.getIfPresent("key")).isEqualTo(2);
-    assertThat(cache.compute("key", (key, value) -> null)).isNull();
+    assertThat(cache.remove("key")).isEqualTo(2);
     assertThat(cache.getIfPresent("key")).isNull();
   }
 
@@ -37,7 +37,7 @@ class CaffeineStateCacheTest {
             .expireAfterWrite(Duration.ofMillis(20))
             .build();
 
-    cache.put("key", "ab");
+    assertThat(cache.putIfAbsent("key", "ab")).isNull();
     assertThat(cache.getIfPresent("key")).isEqualTo("ab");
     Thread.sleep(40);
     assertThat(cache.getIfPresent("key")).isNull();

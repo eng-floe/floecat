@@ -31,7 +31,7 @@ interface SnapshotSelectionLookup {
   }
 
   /** Whether the resolved selection represents the live CURRENT snapshot. */
-  default boolean currentSnapshotIsPinned(ResourceId tableId) {
+  default boolean selectsCurrent(ResourceId tableId) {
     return false;
   }
 

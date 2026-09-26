@@ -21,7 +21,6 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
-import ai.floedb.floecat.service.error.impl.GeneratedErrorMessages;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -73,20 +72,6 @@ public class ResolvedSnapshotReadContract {
   }
 
   /**
-   * Unwrap a resolved-table-blob load, failing with the catalog-integrity error every resolved read
-   * uses when the blob is gone.
-   */
-  public <T> T requireResolvedTableBlob(
-      Optional<T> loaded, String correlationId, ResourceId tableId) {
-    return require(
-        loaded,
-        correlationId,
-        tableId,
-        QUERY_PINNED_TABLE_BLOB_MISSING,
-        Map.of("table_id", tableId.getId()));
-  }
-
-  /**
    * Reads a selected table definition. A missing blob is repaired only when {@code repairIfMissing}
    * says the live root still owns it; otherwise the selection lost it and reports the snapshot
    * unavailable. The probe runs only on a miss.
@@ -96,15 +81,8 @@ public class ResolvedSnapshotReadContract {
       String correlationId,
       ResourceId tableId,
       BooleanSupplier repairIfMissing) {
-    if (loaded.isPresent()) {
-      return loaded.orElseThrow();
-    }
-    if (repairIfMissing.getAsBoolean()) {
-      repairs.request(tableId);
-      throw GrpcErrors.internal(
-          correlationId, QUERY_PINNED_TABLE_BLOB_MISSING, Map.of("table_id", tableId.getId()));
-    }
-    throw GrpcErrors.snapshotExpired(correlationId, null, Map.of("table_id", tableId.getId()));
+    return tableBlob(
+        loaded, correlationId, tableId, Map.of("table_id", tableId.getId()), repairIfMissing);
   }
 
   public <T> T requireResolvedTableBlob(
@@ -113,19 +91,30 @@ public class ResolvedSnapshotReadContract {
       TablePin selection,
       BooleanSupplier repairIfMissing) {
     requireReadable(correlationId, selection);
+    return tableBlob(
+        loaded,
+        correlationId,
+        selection.getTableId(),
+        Map.of(
+            "table_id", selection.getTableId().getId(),
+            "snapshot_id", Long.toString(selection.getSnapshotId())),
+        repairIfMissing);
+  }
+
+  private <T> T tableBlob(
+      Optional<T> loaded,
+      String correlationId,
+      ResourceId tableId,
+      Map<String, String> payload,
+      BooleanSupplier repairIfMissing) {
     if (loaded.isPresent()) {
       return loaded.orElseThrow();
     }
     if (repairIfMissing.getAsBoolean()) {
-      repairs.request(selection.getTableId());
-      throw GrpcErrors.internal(
-          correlationId,
-          QUERY_PINNED_TABLE_BLOB_MISSING,
-          Map.of(
-              "table_id", selection.getTableId().getId(),
-              "snapshot_id", Long.toString(selection.getSnapshotId())));
+      repairs.request(tableId);
+      throw GrpcErrors.internal(correlationId, QUERY_PINNED_TABLE_BLOB_MISSING, payload);
     }
-    throw expired(correlationId, selection.getTableId(), selection.getSnapshotId());
+    throw GrpcErrors.snapshotExpired(correlationId, null, payload);
   }
 
   /** Snapshot-blob unwrap for sites without a selection: a missing blob is unavailable. */
@@ -148,21 +137,5 @@ public class ResolvedSnapshotReadContract {
         correlationId,
         null,
         Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
-  }
-
-  /**
-   * Legacy table-definition contract: a missing live definition is a repairable catalog failure.
-   */
-  private <T> T require(
-      Optional<T> loaded,
-      String correlationId,
-      ResourceId tableId,
-      GeneratedErrorMessages.MessageKey key,
-      Map<String, String> payload) {
-    return loaded.orElseThrow(
-        () -> {
-          repairs.request(tableId);
-          return GrpcErrors.internal(correlationId, key, payload);
-        });
   }
 }

@@ -22,10 +22,12 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.RelationStats;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
+import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -191,7 +193,7 @@ public final class StatsProviderFactory {
         return latestSnapshotTableStats(tableId);
       }
       Optional<StatsProvider.TableStatsView> pinnedStats =
-          selectionResolver.withPinnedSnapshot(
+          selectionResolver.withResolvedSnapshot(
               tableId, snapshotId -> safeTableStats(tableId, snapshotId));
       if (pinnedStats.isPresent()) {
         return pinnedStats;
@@ -218,6 +220,7 @@ public final class StatsProviderFactory {
                 } catch (java.util.concurrent.CancellationException e) {
                   throw e;
                 } catch (RuntimeException e) {
+                  rethrowSnapshotExpired(e);
                   return Optional.<StatsProvider.TableStatsView>empty();
                 }
               },
@@ -242,7 +245,7 @@ public final class StatsProviderFactory {
 
     @Override
     public Optional<StatsProvider.ColumnStatsView> columnStats(ResourceId tableId, long columnId) {
-      return selectionResolver.withPinnedSnapshot(
+      return selectionResolver.withResolvedSnapshot(
           tableId, snapshotId -> safeColumnStats(tableId, snapshotId, columnId));
     }
 
@@ -287,13 +290,13 @@ public final class StatsProviderFactory {
             .resolveTableFactsInGeneration(
                 request,
                 selectionResolver.resolvedStatsGenerationRef(tableId),
-                allowUnpinnedLatestSnapshotFallback
-                    || selectionResolver.currentSnapshotIsPinned(tableId))
+                allowUnpinnedLatestSnapshotFallback || selectionResolver.selectsCurrent(tableId))
             .map(
                 facts ->
                     new TableStatsViewImpl(
                         tableId, snapshotId, facts.rowCount(), facts.totalSizeBytes()));
       } catch (RuntimeException e) {
+        rethrowSnapshotExpired(e);
         LOG.debugf(e, "table stats lookup failed for %s snapshot %s", tableId, snapshotId);
         return Optional.empty();
       }
@@ -321,6 +324,7 @@ public final class StatsProviderFactory {
             .filter(TargetStatsRecord::hasScalar)
             .map(CachedStatsProvider::toColumnStatsView);
       } catch (RuntimeException e) {
+        rethrowSnapshotExpired(e);
         LOG.debugf(
             e,
             "column stats lookup failed for %s column %s snapshot %s",
@@ -328,6 +332,13 @@ public final class StatsProviderFactory {
             columnId,
             snapshotId);
         return Optional.empty();
+      }
+    }
+
+    private static void rethrowSnapshotExpired(RuntimeException failure) {
+      FloecatStatus status = FloecatStatus.fromThrowable(failure);
+      if (status != null && status.errorCode() == ErrorCode.MC_SNAPSHOT_EXPIRED) {
+        throw failure;
       }
     }
 

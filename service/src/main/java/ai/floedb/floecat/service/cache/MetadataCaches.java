@@ -108,9 +108,7 @@ public class MetadataCaches {
               + maxTotalHeapShare);
     }
     PlanningPointerIndex.Ownership ownership =
-        configuredOwnership.isUnsatisfied()
-            ? PlanningPointerIndex.Ownership.ALWAYS_OWNED
-            : configuredOwnership.get();
+        PlanningPointerIndex.Ownership.configured(configuredOwnership);
     Tag[] baseTags =
         new Tag[] {Tag.of(TagKey.COMPONENT, "service"), Tag.of(TagKey.OPERATION, "metadata-index")};
     long maxHeapBytes = Runtime.getRuntime().maxMemory();
@@ -167,7 +165,7 @@ public class MetadataCaches {
       CacheBudgetResolver budgets,
       Observability observability,
       LogicalSchemaMapper schemaMapper,
-      ResolvedSnapshotReadContract selections,
+      ResolvedSnapshotReadContract resolvedSnapshotReads,
       @ConfigProperty(name = "floecat.cache.object.enabled", defaultValue = "true")
           boolean enabled) {
     var metrics = metricsFor(CacheFamily.OBJECT, observability);
@@ -177,7 +175,7 @@ public class MetadataCaches {
             events(metrics),
             schemaMapper,
             enabled,
-            selections);
+            resolvedSnapshotReads);
     report(cache.family(), cache::entryCount, cache::bytes, budgets, metrics, cache.enabled());
     return cache;
   }

@@ -43,8 +43,21 @@ class PointerGcSchedulerTest {
     RecordingPointerGc gc = new RecordingPointerGc();
     TestObservability observability = new TestObservability();
     PointerGcScheduler scheduler = new PointerGcScheduler();
-    scheduler.accounts = () -> accounts;
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.ALWAYS_OWNED);
     scheduler.pointerGc = () -> gc;
+    scheduler.snapshotExpiry =
+        () ->
+            new SnapshotExpiry(
+                null,
+                null,
+                null,
+                null,
+                null,
+                ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
     scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.observability = observability;
     scheduler.initMeters();
@@ -67,8 +80,21 @@ class PointerGcSchedulerTest {
     RecordingPointerGc gc = new RecordingPointerGc();
     TestObservability observability = new TestObservability();
     PointerGcScheduler scheduler = new PointerGcScheduler();
-    scheduler.accounts = () -> accounts;
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.ALWAYS_OWNED);
     scheduler.pointerGc = () -> gc;
+    scheduler.snapshotExpiry =
+        () ->
+            new SnapshotExpiry(
+                null,
+                null,
+                null,
+                null,
+                null,
+                ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
     scheduler.credentialCleanup = () -> credentialCleanup();
     scheduler.observability = observability;
     scheduler.initMeters();
@@ -81,6 +107,47 @@ class PointerGcSchedulerTest {
     }
 
     assertThat(gc.accountIds).containsExactlyInAnyOrder("acct-a", "acct-b");
+  }
+
+  @Test
+  void tickCollectsOnlyTheAccountsThisReplicaOwns() {
+    AccountRepository accounts = mock(AccountRepository.class);
+    when(accounts.list(anyInt(), anyString(), any()))
+        .thenReturn(List.of(account("acct-a"), account("acct-b")));
+    RecordingPointerGc gc = new RecordingPointerGc();
+    PointerGcScheduler scheduler = new PointerGcScheduler();
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                (accountId, access) ->
+                    accountId.equals("acct-a")
+                        ? java.util.Optional.of(
+                            ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership
+                                .Permit.NOOP)
+                        : java.util.Optional.empty());
+    scheduler.pointerGc = () -> gc;
+    scheduler.snapshotExpiry =
+        () ->
+            new SnapshotExpiry(
+                null,
+                null,
+                null,
+                null,
+                null,
+                ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy.disabled());
+    scheduler.credentialCleanup = () -> credentialCleanup();
+    scheduler.observability = new TestObservability();
+    scheduler.initMeters();
+
+    System.setProperty("floecat.gc.pointer.enabled", "true");
+    try {
+      scheduler.tick();
+    } finally {
+      System.clearProperty("floecat.gc.pointer.enabled");
+    }
+
+    assertThat(gc.accountIds).containsExactly("acct-a");
   }
 
   private static Account account(String accountId) {

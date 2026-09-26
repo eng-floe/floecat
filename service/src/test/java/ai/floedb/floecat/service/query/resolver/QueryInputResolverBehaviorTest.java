@@ -14,6 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.NameRef;
+import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -24,13 +25,20 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
+import ai.floedb.floecat.service.query.impl.QueryContext;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
 import com.google.protobuf.Timestamp;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -38,6 +46,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 /** Contract coverage for input resolution after snapshot selection stopped being a GC root. */
 class QueryInputResolverBehaviorTest {
@@ -619,6 +628,403 @@ class QueryInputResolverBehaviorTest {
         .isInstanceOf(StatusRuntimeException.class)
         .extracting(error -> ((StatusRuntimeException) error).getStatus().getCode())
         .isEqualTo(io.grpc.Status.Code.FAILED_PRECONDITION);
+  }
+
+  @Test
+  void ambiguousNameFailsResolution() {
+    ScriptedGraph scripted = new ScriptedGraph();
+    NameRef ambiguous = name("cat", "ambiguous");
+    scripted.failName(ambiguous, new StatusRuntimeException(Status.INVALID_ARGUMENT));
+
+    assertThatThrownBy(
+            () ->
+                new QueryInputResolver(scripted)
+                    .resolveInputs(
+                        "cid",
+                        List.of(QueryInput.newBuilder().setName(ambiguous).build()),
+                        Optional.empty(),
+                        Optional.empty()))
+        .isInstanceOf(StatusRuntimeException.class)
+        .extracting(error -> ((StatusRuntimeException) error).getStatus().getCode())
+        .isEqualTo(Status.Code.INVALID_ARGUMENT);
+  }
+
+  @Test
+  void inputWithoutTargetIsInvalid() {
+    assertThatThrownBy(
+            () ->
+                resolver.resolveInputs(
+                    "cid",
+                    List.of(QueryInput.getDefaultInstance()),
+                    Optional.empty(),
+                    Optional.empty()))
+        .isInstanceOf(StatusRuntimeException.class)
+        .extracting(error -> ((StatusRuntimeException) error).getStatus().getCode())
+        .isEqualTo(Status.Code.INVALID_ARGUMENT);
+  }
+
+  @Test
+  void viewExplicitCurrentOverrideIgnoresAsOfDefaultForBaseSelections() {
+    ScriptedGraph scripted = new ScriptedGraph();
+    ResourceId view = viewId("view-explicit-current");
+    scripted.registerRelation(
+        view, viewNode(view, List.of(nameRef(TABLE)), List.of()), List.of(), name("cat", "v"));
+    scripted.setCurrentSnapshot(TABLE, 101L);
+    scripted.setAsOfSnapshot(TABLE, 555L);
+
+    var result =
+        new QueryInputResolver(scripted)
+            .resolveInputs(
+                "cid",
+                List.of(
+                    QueryInput.newBuilder()
+                        .setViewId(view)
+                        .setSnapshot(
+                            SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT))
+                        .build()),
+                Optional.of(Timestamp.newBuilder().setSeconds(202).build()),
+                Optional.empty());
+
+    assertThat(result.relationPinSet().getPinsCount()).isEqualTo(1);
+    assertThat(result.relationPinSet().getPins(0).getTablePin().getSnapshotId()).isEqualTo(101L);
+    assertThat(scripted.calls()).singleElement().satisfies(c -> assertThat(c.asOf()).isEmpty());
+  }
+
+  @Test
+  void asOfAndExplicitSelectionsOfTheSameSnapshotAreCompatible() {
+    ScriptedGraph scripted = new ScriptedGraph();
+    scripted.setAsOfSnapshot(TABLE, 700L);
+    Timestamp asOf = Timestamp.newBuilder().setSeconds(404).build();
+
+    var result =
+        new QueryInputResolver(scripted)
+            .resolveInputs(
+                "cid",
+                List.of(
+                    QueryInput.newBuilder()
+                        .setTableId(TABLE)
+                        .setSnapshot(SnapshotRef.newBuilder().setAsOf(asOf))
+                        .build(),
+                    QueryInput.newBuilder()
+                        .setTableId(TABLE)
+                        .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(700))
+                        .build()),
+                Optional.empty(),
+                Optional.empty());
+
+    assertThat(result.relationPinSet().getPinsCount()).isEqualTo(1);
+    TablePin pin = result.relationPinSet().getPins(0).getTablePin();
+    assertThat(pin.getTableId()).isEqualTo(TABLE);
+    assertThat(pin.getSnapshotId()).isEqualTo(700L);
+  }
+
+  @Test
+  void viewBaseConflictPrecedesFailureFromALaterBase() {
+    ScriptedGraph scripted = new ScriptedGraph();
+    ResourceId view = viewId("view-conflict-precedence");
+    scripted.registerRelation(
+        view,
+        viewNode(view, List.of(nameRef(TABLE), nameRef(OTHER_TABLE)), List.of()),
+        List.of(),
+        name("cat", "v"));
+    scripted.setAsOfSnapshot(TABLE, 999L);
+    scripted.failSnapshotFor(OTHER_TABLE);
+
+    assertThatThrownBy(
+            () ->
+                new QueryInputResolver(scripted)
+                    .resolveInputs(
+                        "cid",
+                        List.of(
+                            QueryInput.newBuilder()
+                                .setTableId(TABLE)
+                                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(888))
+                                .build(),
+                            QueryInput.newBuilder()
+                                .setViewId(view)
+                                .setSnapshot(
+                                    SnapshotRef.newBuilder()
+                                        .setAsOf(Timestamp.newBuilder().setSeconds(123)))
+                                .build()),
+                        Optional.empty(),
+                        Optional.empty()))
+        .isInstanceOf(StatusRuntimeException.class)
+        .extracting(error -> ((StatusRuntimeException) error).getStatus().getCode())
+        .isEqualTo(Status.Code.FAILED_PRECONDITION);
+  }
+
+  @Test
+  void explicitSnapshotIdReusesTheCommittedSelectionInsteadOfReResolving() {
+    ScriptedGraph scripted = new ScriptedGraph();
+    TablePin committed =
+        SnapshotTestSupport.blobBackedPin(TABLE, 777).toBuilder()
+            .setPinKind(PinKind.PIN_KIND_SNAPSHOT_ID)
+            .build();
+
+    TablePin pin =
+        resolveWithCommitted(
+            scripted,
+            committed,
+            QueryInput.newBuilder()
+                .setTableId(TABLE)
+                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(777))
+                .build());
+
+    assertThat(pin).isEqualTo(committed);
+    assertThat(scripted.calls()).isEmpty();
+  }
+
+  @Test
+  void asOfReusesTheCommittedSelectionInsteadOfReResolving() {
+    ScriptedGraph scripted = new ScriptedGraph();
+    Timestamp asOf = Timestamp.newBuilder().setSeconds(1_700_000_000L).build();
+    TablePin committed =
+        SnapshotTestSupport.blobBackedPin(TABLE, 555).toBuilder()
+            .setPinKind(PinKind.PIN_KIND_AS_OF)
+            .setOriginalAsOf(asOf)
+            .build();
+
+    TablePin pin =
+        resolveWithCommitted(
+            scripted,
+            committed,
+            QueryInput.newBuilder()
+                .setTableId(TABLE)
+                .setSnapshot(SnapshotRef.newBuilder().setAsOf(asOf))
+                .build());
+
+    assertThat(pin.getSnapshotId()).isEqualTo(555);
+    assertThat(scripted.calls()).isEmpty();
+  }
+
+  @Test
+  void restatingADifferentSnapshotIdStillReResolves() {
+    ScriptedGraph scripted = new ScriptedGraph();
+    TablePin committed =
+        SnapshotTestSupport.blobBackedPin(TABLE, 100).toBuilder()
+            .setPinKind(PinKind.PIN_KIND_SNAPSHOT_ID)
+            .build();
+
+    TablePin pin =
+        resolveWithCommitted(
+            scripted,
+            committed,
+            QueryInput.newBuilder()
+                .setTableId(TABLE)
+                .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(200))
+                .build());
+
+    assertThat(pin.getSnapshotId()).isEqualTo(200);
+    assertThat(scripted.calls()).hasSize(1);
+  }
+
+  @Test
+  void currentSnapshotWaiterRetriesWhenSharedHolderRetiresBeforeValidation() {
+    ScriptedGraph scripted = new ScriptedGraph();
+    scripted.setCurrentSnapshot(TABLE, 30L);
+    AtomicBoolean retireBeforeValidation = new AtomicBoolean(true);
+    // Drops the published holder between the waiter's await and its published-entry check.
+    var entries =
+        new ConcurrentHashMap<ResourceId, CompletableFuture<TablePin>>() {
+          @Override
+          public CompletableFuture<TablePin> get(Object key) {
+            if (TABLE.equals(key) && retireBeforeValidation.compareAndSet(true, false)) {
+              super.remove(key);
+              return null;
+            }
+            return super.get(key);
+          }
+        };
+    entries.put(
+        TABLE, CompletableFuture.completedFuture(SnapshotTestSupport.blobBackedPin(TABLE, 20L)));
+
+    var result =
+        new QueryInputResolver(scripted)
+            .resolveInputs(
+                "q",
+                "cid",
+                List.of(QueryInput.newBuilder().setTableId(TABLE).build()),
+                Optional.empty(),
+                Optional.empty(),
+                new QueryInputResolver.SnapshotSelectionMemo(entries),
+                null);
+
+    assertThat(result.relationPinSet().getPins(0).getTablePin().getSnapshotId()).isEqualTo(30L);
+    assertThat(scripted.calls()).hasSize(1);
+    assertThat(entries).containsKey(TABLE);
+  }
+
+  @Test
+  void concurrentMemoEvictsSelectionsOwnedByAFailedResolution() {
+    ScriptedGraph scripted = new ScriptedGraph();
+    scripted.failSnapshotFor(OTHER_TABLE);
+    var memo = new QueryInputResolver.SnapshotSelectionMemo();
+
+    assertThatThrownBy(
+            () ->
+                new QueryInputResolver(scripted)
+                    .resolveInputs(
+                        "q",
+                        "cid",
+                        List.of(
+                            QueryInput.newBuilder().setTableId(TABLE).build(),
+                            QueryInput.newBuilder().setTableId(OTHER_TABLE).build()),
+                        Optional.empty(),
+                        Optional.empty(),
+                        memo,
+                        null))
+        .isInstanceOf(StatusRuntimeException.class);
+
+    assertThat(memo.entries()).isEmpty();
+  }
+
+  @Test
+  void failedResolutionPreservesMemoEntriesOwnedByAnEarlierCall() {
+    ScriptedGraph scripted = new ScriptedGraph();
+    scripted.failSnapshotFor(OTHER_TABLE);
+    QueryInputResolver memoResolver = new QueryInputResolver(scripted);
+    var memo = new QueryInputResolver.SnapshotSelectionMemo();
+    QueryInput cached = QueryInput.newBuilder().setTableId(TABLE).build();
+
+    memoResolver.resolveInputs(
+        "q", "cid-first", List.of(cached), Optional.empty(), Optional.empty(), memo, null);
+    CompletableFuture<TablePin> existing = memo.entries().get(TABLE);
+
+    assertThatThrownBy(
+            () ->
+                memoResolver.resolveInputs(
+                    "q",
+                    "cid-second",
+                    List.of(cached, QueryInput.newBuilder().setTableId(OTHER_TABLE).build()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    memo,
+                    null))
+        .isInstanceOf(StatusRuntimeException.class);
+
+    assertThat(memo.entries()).containsOnlyKeys(TABLE);
+    assertThat(memo.entries().get(TABLE)).isSameAs(existing);
+  }
+
+  /** Resolves {@code input} for a query whose context already committed {@code committed}. */
+  private static TablePin resolveWithCommitted(
+      FakeCatalogGraphView graph, TablePin committed, QueryInput input) {
+    QueryContext ctx =
+        QueryContext.newActive(
+            "q-committed",
+            PrincipalContext.newBuilder().setAccountId("acct").build(),
+            new byte[0],
+            SnapshotTestSupport.relationPins(committed).toByteArray(),
+            new byte[0],
+            new byte[0],
+            60_000L,
+            1L,
+            ResourceId.getDefaultInstance());
+    QueryContextStore store = Mockito.mock(QueryContextStore.class);
+    Mockito.when(store.get("q-committed")).thenReturn(Optional.of(ctx));
+    return new QueryInputResolver(graph, store)
+        .resolveInputs(
+            "q-committed",
+            "cid",
+            List.of(input),
+            Optional.empty(),
+            Optional.empty(),
+            new QueryInputResolver.SnapshotSelectionMemo(),
+            null)
+        .relationPinSet()
+        .getPins(0)
+        .getTablePin();
+  }
+
+  /** Concurrent graph with scripted snapshot ids and failures; records each snapshot lookup. */
+  private static final class ScriptedGraph extends FakeCatalogGraphView {
+    record SnapshotCall(ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOf) {}
+
+    private final Map<ResourceId, Long> currentSnapshots = new ConcurrentHashMap<>();
+    private final Map<ResourceId, Long> asOfSnapshots = new ConcurrentHashMap<>();
+    private final Set<ResourceId> failingSnapshots = ConcurrentHashMap.newKeySet();
+    private final Map<NameRef, RuntimeException> nameFailures = new ConcurrentHashMap<>();
+    private final List<SnapshotCall> calls = new CopyOnWriteArrayList<>();
+
+    ScriptedGraph() {
+      registerTable(TABLE, List.of(), name("cat", "table"));
+      registerTable(OTHER_TABLE, List.of(), name("cat", "other"));
+    }
+
+    void setCurrentSnapshot(ResourceId id, long snapshotId) {
+      currentSnapshots.put(id, snapshotId);
+    }
+
+    void setAsOfSnapshot(ResourceId id, long snapshotId) {
+      asOfSnapshots.put(id, snapshotId);
+    }
+
+    void failSnapshotFor(ResourceId id) {
+      failingSnapshots.add(id);
+    }
+
+    void failName(NameRef ref, RuntimeException failure) {
+      nameFailures.put(ref, failure);
+    }
+
+    List<SnapshotCall> calls() {
+      return calls;
+    }
+
+    @Override
+    public boolean supportsConcurrentResolution() {
+      return true;
+    }
+
+    @Override
+    public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
+      RuntimeException failure = nameFailures.get(ref);
+      if (failure != null) {
+        throw failure;
+      }
+      return super.resolveName(correlationId, ref);
+    }
+
+    @Override
+    public TablePin resolvedSnapshotFor(
+        String correlationId,
+        ResourceId tableId,
+        SnapshotRef override,
+        Optional<Timestamp> asOfDefault) {
+      if (failingSnapshots.contains(tableId)) {
+        throw new StatusRuntimeException(Status.NOT_FOUND);
+      }
+      calls.add(new SnapshotCall(tableId, override, asOfDefault));
+      TablePin pin = super.resolvedSnapshotFor(correlationId, tableId, override, asOfDefault);
+      Long scripted =
+          switch (pin.getPinKind()) {
+            case PIN_KIND_CURRENT -> currentSnapshots.get(tableId);
+            case PIN_KIND_AS_OF -> asOfSnapshots.get(tableId);
+            default -> null;
+          };
+      if (scripted == null) {
+        return pin;
+      }
+      TablePin.Builder rebuilt =
+          SnapshotTestSupport.blobBackedPin(tableId, scripted).toBuilder()
+              .setPinKind(pin.getPinKind());
+      if (pin.hasOriginalAsOf()) {
+        rebuilt.setOriginalAsOf(pin.getOriginalAsOf());
+      }
+      return rebuilt.build();
+    }
+  }
+
+  private static ResourceId viewId(String id) {
+    return ResourceId.newBuilder()
+        .setAccountId("acct")
+        .setId(id)
+        .setKind(ResourceKind.RK_VIEW)
+        .build();
+  }
+
+  private static NameRef nameRef(ResourceId id) {
+    return NameRef.newBuilder().setResourceId(id).build();
   }
 
   private static ViewNode viewNode(ResourceId id, List<NameRef> bases, List<String> searchPath) {

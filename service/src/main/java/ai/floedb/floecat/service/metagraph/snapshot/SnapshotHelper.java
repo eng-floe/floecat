@@ -46,9 +46,8 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Centralized snapshot handling ----------------------------------------- - Snapshot override
- * resolution - AS OF timestamp fallback - Default "CURRENT" snapshot semantics - Schema resolution
- * based on effective snapshot
+ * Resolves snapshot selections (explicit id, AS OF, CURRENT) through the table root, admits them
+ * under the retention policy, and resolves the schema of the selected snapshot.
  */
 @ApplicationScoped
 public class SnapshotHelper {
@@ -56,32 +55,32 @@ public class SnapshotHelper {
   private final SnapshotRepository snapshots;
   private final TableRootRepository roots;
   private final StatsStore statsStore;
-  private final ResolvedSnapshotReadContract pins;
+  private final ResolvedSnapshotReadContract resolvedSnapshotReads;
   private final RootRepairRequests repairs;
   private final SnapshotRetentionPolicy retention;
 
   /**
    * Snapshot selections are built from a just-read root blob, so construction performs no extra
    * validation round-trip; a vanished blob surfaces at the read that needs it, through the {@link
-   * ResolvedSnapshotReadContract}. {@code pins} serves the resolved snapshot schema read here;
-   * {@code repairs} reports a broken root observed while BUILDING a pin, which happens before any
-   * pinned read exists for that contract to unwrap. Both reach the same repair queue, which is the
-   * container's doing rather than this constructor's: {@code RootRepairRequests} is
-   * application-scoped, so the instance inside {@code pins} and the one passed here are the same
-   * bean.
+   * ResolvedSnapshotReadContract}. {@code resolvedSnapshotReads} serves the resolved snapshot
+   * schema read here; {@code repairs} reports a broken root observed while BUILDING a pin, which
+   * happens before any pinned read exists for that contract to unwrap. Both reach the same repair
+   * queue, which is the container's doing rather than this constructor's: {@code
+   * RootRepairRequests} is application-scoped, so the instance inside {@code resolvedSnapshotReads}
+   * and the one passed here are the same bean.
    */
   @Inject
   public SnapshotHelper(
       SnapshotRepository snapshots,
       TableRootRepository roots,
       StatsStore statsStore,
-      ResolvedSnapshotReadContract pins,
+      ResolvedSnapshotReadContract resolvedSnapshotReads,
       RootRepairRequests repairs,
       SnapshotRetentionPolicy retention) {
     this.snapshots = snapshots;
     this.roots = roots;
     this.statsStore = statsStore;
-    this.pins = pins;
+    this.resolvedSnapshotReads = resolvedSnapshotReads;
     this.repairs = repairs;
     this.retention = retention;
   }
@@ -91,9 +90,15 @@ public class SnapshotHelper {
       SnapshotRepository snapshots,
       TableRootRepository roots,
       StatsStore statsStore,
-      ResolvedSnapshotReadContract pins,
+      ResolvedSnapshotReadContract resolvedSnapshotReads,
       RootRepairRequests repairs) {
-    this(snapshots, roots, statsStore, pins, repairs, SnapshotRetentionPolicy.disabled());
+    this(
+        snapshots,
+        roots,
+        statsStore,
+        resolvedSnapshotReads,
+        repairs,
+        SnapshotRetentionPolicy.disabled());
   }
 
   /**
@@ -135,9 +140,8 @@ public class SnapshotHelper {
 
     // A SPECIAL selector other than SS_CURRENT (e.g. an as-yet-unimplemented "oldest"/"first") has
     // no defined snapshot resolution. Reject it rather than silently selecting CURRENT, which would
-    // hide
-    // the unsupported request behind a plausible-looking result. SS_CURRENT falls through to the
-    // CURRENT path below.
+    // hide the unsupported request behind a plausible-looking result. SS_CURRENT falls through to
+    // the CURRENT path below.
     if (override != null
         && override.getWhichCase() == SnapshotRef.WhichCase.SPECIAL
         && override.getSpecial() != SpecialSnapshot.SS_CURRENT) {
@@ -281,7 +285,6 @@ public class SnapshotHelper {
       TableRoot root,
       MutationMeta rootMeta,
       Timestamp originalAsOf) {
-    Timestamp expiresFrom = admit(cid, tableId, root, entry, pinKind == PinKind.PIN_KIND_CURRENT);
     if (!root.hasDefinitionRef() || root.getDefinitionRef().getUri().isEmpty()) {
       // A root without a definition ref is a broken invariant every query trips over: report the
       // table for the resync re-drive (which re-derives the definition ref from committed state).
@@ -292,8 +295,8 @@ public class SnapshotHelper {
     if (!entry.hasSnapshotRef() || entry.getSnapshotRef().getUri().isEmpty()) {
       // Every writer records a snapshot ref with the entry; its absence is a broken root
       // invariant. Failing here names the real problem instead of selecting an empty URI that a
-      // downstream requireResolvedSnapshotBlob would report as a generic internal error — and the
-      // repair report gives the re-drive a chance to rebuild the manifest entry.
+      // downstream read would report as an unavailable snapshot — and the repair report gives the
+      // re-drive a chance to rebuild the manifest entry.
       repairs.request(tableId);
       throw GrpcErrors.internal(
           cid,
@@ -302,6 +305,7 @@ public class SnapshotHelper {
               "table_id", tableId.getId(),
               "snapshot_id", Long.toString(entry.getSnapshotId())));
     }
+    Timestamp expiresFrom = admit(cid, tableId, root, entry);
     TablePin.Builder pin =
         TablePin.newBuilder()
             .setTableId(tableId)
@@ -338,16 +342,12 @@ public class SnapshotHelper {
   /**
    * Admits a new selection of {@code entry}, failing {@code MC_SNAPSHOT_TOO_OLD} past the
    * visibility horizon. Returns the publication time the selection later expires by, or null when
-   * retention keeps the snapshot regardless of age (a current or one of the last replaced ones).
+   * retention keeps the snapshot regardless of age (the committed or queryable current).
    */
   private Timestamp admit(
-      String cid,
-      ResourceId tableId,
-      TableRoot root,
-      SnapshotManifestEntry entry,
-      boolean currentSelection) {
+      String cid, ResourceId tableId, TableRoot root, SnapshotManifestEntry entry) {
     if (!retention.isRetentionEnabled()
-        || currentSelection
+        || root.hasCurrentSnapshotId() && root.getCurrentSnapshotId() == entry.getSnapshotId()
         || retention
             .protectedSnapshotIds(
                 SnapshotManifests.chain(roots, null, manifestHead(root)), root, gateOnFinalize())
@@ -407,7 +407,7 @@ public class SnapshotHelper {
           // Cached: the blob a selection names is immutable and content-addressed, so a resident
           // decode IS the resolved snapshot content. Emptiness still fails through
           // requireResolved*.
-          pins.requireResolvedSnapshotBlob(loaded, cid, tbl.id());
+          resolvedSnapshotReads.requireResolvedSnapshotBlob(loaded, cid, tbl.id());
       return snap.getSchemaJson().isBlank() ? supplier.get() : snap.getSchemaJson();
     }
 
@@ -415,21 +415,18 @@ public class SnapshotHelper {
       return supplier.get();
     }
 
-    Snapshot snap = resolveSnapshot(cid, tbl.id(), ref);
-    if (snap != null) {
-      TableRoot root = loadRoot(roots.pointerMetaForSafe(tbl.id()));
-      if (root != null) {
-        SnapshotManifests.findEntry(roots, manifestHead(root), snap.getSnapshotId())
-            .ifPresent(
-                entry ->
-                    admit(
-                        cid,
-                        tbl.id(),
-                        root,
-                        entry,
-                        ref.getWhichCase() == SnapshotRef.WhichCase.SPECIAL
-                            && ref.getSpecial() == SpecialSnapshot.SS_CURRENT));
-      }
+    boolean current =
+        ref.getWhichCase() == SnapshotRef.WhichCase.SPECIAL
+            && ref.getSpecial() == SpecialSnapshot.SS_CURRENT;
+    Snapshot snap;
+    if (retention.isRetentionEnabled() && !current) {
+      // Retention applies the query selection rule, so resolve and admit like a query does.
+      TablePin selection = resolvedSnapshotFor(cid, tbl.id(), ref, Optional.empty());
+      snap =
+          resolvedSnapshotReads.requireResolvedSnapshotBlob(
+              snapshots.getByBlobUri(selection.getSnapshotBlobUri()), cid, selection);
+    } else {
+      snap = resolveSnapshot(cid, tbl.id(), ref);
     }
 
     if (snap == null || snap.getSchemaJson().isBlank()) {

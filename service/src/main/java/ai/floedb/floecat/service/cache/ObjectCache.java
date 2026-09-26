@@ -69,7 +69,7 @@ public final class ObjectCache {
 
   private final MemoryCache<Key, Value> entries;
   private final LogicalSchemaMapper schemaMapper;
-  private final ResolvedSnapshotReadContract selections;
+  private final ResolvedSnapshotReadContract resolvedSnapshotReads;
   private final boolean enabled;
 
   ObjectCache(long maxBytes, CacheEvents events, boolean enabled) {
@@ -91,12 +91,13 @@ public final class ObjectCache {
       CacheEvents events,
       LogicalSchemaMapper schemaMapper,
       boolean enabled,
-      ResolvedSnapshotReadContract selections) {
+      ResolvedSnapshotReadContract resolvedSnapshotReads) {
     this.entries =
         new CaffeineMemoryCache<>(
             CacheFamily.OBJECT, maxBytes, ObjectCache::estimatedKeyBytes, events);
     this.schemaMapper = Objects.requireNonNull(schemaMapper, "schemaMapper");
-    this.selections = Objects.requireNonNull(selections, "selections");
+    this.resolvedSnapshotReads =
+        Objects.requireNonNull(resolvedSnapshotReads, "resolvedSnapshotReads");
     this.enabled = enabled;
   }
 
@@ -157,7 +158,7 @@ public final class ObjectCache {
     Objects.requireNonNull(pin, "pin");
     Objects.requireNonNull(graphView, "graphView");
     // Expiry belongs to the selection, not to cache residency.
-    selections.requireReadable(correlationId, pin);
+    resolvedSnapshotReads.requireReadable(correlationId, pin);
     String schemaScope = resolvedSnapshotSchemaScope(pin);
     String identity =
         Hashing.sha256Hex(

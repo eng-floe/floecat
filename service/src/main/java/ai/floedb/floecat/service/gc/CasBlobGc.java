@@ -16,9 +16,7 @@
 
 package ai.floedb.floecat.service.gc;
 
-import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
-import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -26,10 +24,8 @@ import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
-import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
-import ai.floedb.floecat.service.repo.impl.SnapshotManifests;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -61,13 +57,13 @@ import org.eclipse.microprofile.config.ConfigProvider;
 import org.jboss.logging.Logger;
 
 /**
- * Sweeps unreferenced CAS blobs per account. Roots come from durable pointers and retention-aware
- * table-root manifests. Query contexts are process-local optimizations only and are never required
- * for reachability or GC safety.
+ * Sweeps unreferenced CAS blobs per account. Roots come from durable pointers and current table
+ * roots; retention acts by pruning expired snapshots from the root ({@link SnapshotExpiry}), so
+ * this sweep is plain reachability. Query contexts are never GC roots.
  *
- * <p>Account ownership remains the single-writer assumption for publication and GC. The sweep is
- * safe across replicas when Core routes one account to one Floecat owner; it does not require
- * Floecat-to-Floecat communication or a shared query-selection registry.
+ * <p>Account ownership is the single-writer assumption for publication and GC: the scheduler
+ * collects only accounts this replica owns ({@link OwnedAccounts}), and every publisher of those
+ * accounts' table references must share this process's {@link TableBlobReachabilityGuard}.
  *
  * <p>Defense in depth: independent of how the referenced set was computed, the delete phase
  * re-reads each candidate's OWNING pointer ({@link Keys#ownerPointerKeyForBlob}) immediately before
@@ -846,8 +842,8 @@ public class CasBlobGc {
         // This MUST happen before the generation reclaim below — a generation the current root
         // still
         // references is protected even when the live active pointer has already moved past it (the
-        // finalize's pointer flip and root commit are not atomic). Superseded root chains that
-        // are outside the retention window are unreferenced and swept below.
+        // finalize's pointer flip and root commit are not atomic). Superseded root chains are
+        // unreferenced and swept below.
         var rootPtr = durablePointers.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
         if (rootPtr != null && !rootPtr.getBlobUri().isBlank()) {
           pointersScanned++;
@@ -858,8 +854,7 @@ public class CasBlobGc {
         }
 
         // Reclaim superseded stats generations BEFORE collecting stats pointers as roots, so a
-        // doomed generation's record blobs are swept in this same pass. On a miss the predicate
-        // re-marks durable table roots, including the generation manifests their entries reference.
+        // doomed generation's record blobs are swept in this same pass.
         var rid =
             ResourceId.newBuilder()
                 .setAccountId(accountId)
@@ -884,16 +879,10 @@ public class CasBlobGc {
             StatsRepository.GenerationGcResult generationGc =
                 statsRepository.deleteUnreferencedGenerations(
                     rid,
-                    manifestUri -> {
-                      if (pass.tableWalkFailures[0] > 0) {
-                        return true; // an incomplete walk makes protection unknowable
-                      }
-                      String normalized = normalizeKey(manifestUri);
-                      if (tableReferenced.mightContain(normalized)) {
-                        return true;
-                      }
-                      return false;
-                    },
+                    // An incomplete walk makes protection unknowable.
+                    manifestUri ->
+                        pass.tableWalkFailures[0] > 0
+                            || tableReferenced.mightContain(normalizeKey(manifestUri)),
                     nowMs,
                     supersededArtifactMinAgeMs,
                     remainingGenerationBlobDeletes,
@@ -973,8 +962,7 @@ public class CasBlobGc {
       pass.phase = Phase.ACCOUNT_SWEEP;
     }
 
-    // The retention-aware current-root walk is the complete query-object root set. Delete passes
-    // may re-mark durable publication state per page, but never consult query memory.
+    // The current-root walk is the complete root set; query memory is never one.
 
     int blobsScanned = 0;
     int blobsDeleted = 0;
@@ -1146,9 +1134,8 @@ public class CasBlobGc {
       TableBlobReachabilityGuard.Proof proof,
       java.util.function.BooleanSupplier isProtected,
       java.util.function.BooleanSupplier claim) {
-    // Protection can expand a newly published root chain through remote blob reads. Do that while
-    // retaining the epoch proof but before taking the table write lock. If publication
-    // overlaps the scan, the guarded epoch check rejects the claim and the caller re-marks.
+    // If publication overlaps the protection check, the guarded epoch check rejects the claim and
+    // the caller re-marks.
     if (isProtected.getAsBoolean()) {
       return new TableBlobReachabilityGuard.GuardedResult<>(false, false);
     }
@@ -1334,14 +1321,8 @@ public class CasBlobGc {
           state.deleteIndex++;
           continue;
         }
-        // Keep remote reachability reads outside the publication lock. The proof epoch below
-        // invalidates this decision if a publisher or metadata resolver overlaps the reads.
-        if (keepIfDurablyReferenced(normalized, referenced, walkFailures)) {
-          if (walkFailures[0] > 0) {
-            return new DeleteResult(0, state.deleted, 0, true);
-          }
-          state.deleteIndex++;
-          continue;
+        if (walkFailures[0] > 0) {
+          return new DeleteResult(0, state.deleted, 0, true);
         }
         // Serialize only the irreversible version-targeted delete. Holding the table lock for the
         // whole candidate page can otherwise stall commits and snapshot-selection work for nearly
@@ -1595,11 +1576,9 @@ public class CasBlobGc {
       }
       String accountId = root.getTableId().getAccountId();
       String tableId = root.getTableId().getId();
-      Set<Long> protectedSnapshotIds = protectedSnapshotIds(root);
       if (root.hasDefinitionRef() && !root.getDefinitionRef().getUri().isBlank()) {
         referenced.add(normalizeKey(root.getDefinitionRef().getUri()));
       }
-      markAll(referenced, root.getSupersededDefinitionRefsList());
       var pageRef = root.hasSnapshotManifestRef() ? root.getSnapshotManifestRef() : null;
       boolean resumingPage =
           resumable && continuation.traversal.chainEntryIndexes.containsKey(chainKey);
@@ -1643,19 +1622,6 @@ public class CasBlobGc {
         for (int entryIndex = entryStart; entryIndex < page.getEntriesCount(); entryIndex++) {
           checkDeadline();
           var entry = page.getEntries(entryIndex);
-          boolean retainEntry =
-              !retentionPolicy.isRetentionEnabled()
-                  || protectedSnapshotIds.contains(entry.getSnapshotId())
-                  || !retentionPolicy.expired(
-                      SnapshotRetentionPolicy.publishedAt(
-                              root.getTableId(), entry, pointerStore, blobStore)
-                          .orElse(null));
-          if (!retainEntry) {
-            if (resumable) {
-              continuation.traversal.chainEntryIndexes.put(chainKey, entryIndex + 1);
-            }
-            continue;
-          }
           if (entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isBlank()) {
             referenced.add(normalizeKey(entry.getSnapshotRef().getUri()));
             if (!rootSnapshotReusableArtifactIndex(
@@ -1686,11 +1652,6 @@ public class CasBlobGc {
           if (entry.hasConstraintsRef() && !entry.getConstraintsRef().getUri().isBlank()) {
             referenced.add(normalizeKey(entry.getConstraintsRef().getUri()));
           }
-          for (var ref : entry.getSupersededStatsGenerationRefsList()) {
-            referenced.add(normalizeKey(ref.getUri()));
-            rememberTableGeneration(referenced, ref.getUri());
-          }
-          markAll(referenced, entry.getSupersededConstraintsRefsList());
           if (resumable) {
             continuation.traversal.chainEntryIndexes.put(chainKey, entryIndex + 1);
           }
@@ -1719,30 +1680,6 @@ public class CasBlobGc {
     } finally {
       if (!resumable) {
         walkedPages.close();
-      }
-    }
-  }
-
-  /** Snapshots retention keeps regardless of age; empty when retention is off (all are kept). */
-  private Set<Long> protectedSnapshotIds(TableRoot root) {
-    if (!retentionPolicy.isRetentionEnabled()) {
-      return Set.of();
-    }
-    return readChainObject(
-            "protected snapshots of root manifest " + root.getSnapshotManifestRef().getUri(),
-            () ->
-                Optional.of(
-                    retentionPolicy.protectedSnapshotIds(
-                        SnapshotManifests.chain(tableRootRepo, null, root.getSnapshotManifestRef()),
-                        root,
-                        StatsVisibilityGate.gateOnFinalize(statsRepository))))
-        .orElseThrow();
-  }
-
-  private static void markAll(ReferenceIndex referenced, List<BlobRef> refs) {
-    for (BlobRef ref : refs) {
-      if (!ref.getUri().isBlank()) {
-        referenced.add(normalizeKey(ref.getUri()));
       }
     }
   }
@@ -2085,7 +2022,7 @@ public class CasBlobGc {
           observer.accept(p);
         }
         if (tableIds != null) {
-          String id = decodeSuffix(prefix, p.getKey());
+          String id = Keys.idAfterPrefix(prefix, p.getKey());
           if (id != null && !id.isBlank()) {
             continuation.addTableId(id);
           }
@@ -2121,7 +2058,7 @@ public class CasBlobGc {
 
   private void rememberDirectIndexArtifactGeneration(
       String accountId, String tableId, String snapshotPointerPrefix, Pointer snapshotPointer) {
-    String encodedSnapshotId = decodeSuffix(snapshotPointerPrefix, snapshotPointer.getKey());
+    String encodedSnapshotId = Keys.idAfterPrefix(snapshotPointerPrefix, snapshotPointer.getKey());
     if (encodedSnapshotId == null || encodedSnapshotId.indexOf('/') >= 0) {
       return;
     }
@@ -2316,13 +2253,9 @@ public class CasBlobGc {
                 "cas gc skipped %s: no derivable owner pointer and no deferral in this pass", key);
             continue;
           }
-          // Final guard before the irreversible delete: re-check durable reachability after the
-          // mark; an incomplete walk aborts the pass because reachability is unprovable.
-          if (keepIfDurablyReferenced(normalized, referenced, walkFailures)) {
-            if (walkFailures[0] > 0) {
-              return progress.result(true);
-            }
-            continue;
+          // An incomplete walk makes reachability unprovable: abort before the delete.
+          if (walkFailures[0] > 0) {
+            return progress.result(true);
           }
           // Delete exactly the version this pass age-checked: the fences above are still stale
           // reads — a writer can re-PUT the blob and CAS its pointer between them and this delete
@@ -2371,12 +2304,6 @@ public class CasBlobGc {
     }
 
     return progress.result(false);
-  }
-
-  /** Rechecks durable reachability immediately before an irreversible delete. */
-  private boolean keepIfDurablyReferenced(
-      String normalizedKey, ReferenceIndex referenced, int[] walkFailures) {
-    return walkFailures[0] > 0 || referenced.mightContain(normalizedKey);
   }
 
   /** Whether the given owner pointer currently references exactly this normalized blob key. */
@@ -2474,17 +2401,6 @@ public class CasBlobGc {
       candidates.clear();
       matched.clear();
     }
-  }
-
-  private static String decodeSuffix(String prefix, String fullKey) {
-    if (fullKey == null || !fullKey.startsWith(prefix)) {
-      return null;
-    }
-    String suffix = fullKey.substring(prefix.length());
-    if (suffix.isBlank()) {
-      return null;
-    }
-    return URLDecoder.decode(suffix, StandardCharsets.UTF_8);
   }
 
   private static String normalizeKey(String key) {

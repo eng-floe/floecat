@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query.catalog;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -45,6 +46,7 @@ import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.PropagatedContext;
+import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.SnapshotSelections;
@@ -634,9 +636,8 @@ public class UserObjectBundleService {
           // this termination callback returns. Emit while it is still recording.
           publishClaimedTelemetrySafely("cancelled");
         }
-        // Pending snapshot selections are query-local values; retention, rather than cancellation
-        // cleanup, owns
-        // the lifetime of their immutable snapshot data.
+        // Pending snapshot selections are query-local values; retention, not cancellation cleanup,
+        // owns the lifetime of their immutable snapshot data.
       }
     }
 
@@ -879,7 +880,8 @@ public class UserObjectBundleService {
      * Warm the resolved table snapshot stats for this chunk's FOUND tables in one batched, parallel
      * read after the pin committer. The returned immutable lookup is carried into relation assembly
      * so worker tasks never re-enter the request-affine stats provider. Views carry no table stats
-     * and are skipped. A batch failure is best-effort and leaves stats absent for this chunk.
+     * and are skipped. Ordinary provider failures are best-effort; snapshot expiry remains visible
+     * to the caller.
      */
     private Map<ResourceId, Optional<StatsProvider.TableStatsView>> warmChunkStats(
         List<PendingItem> chunkItems) {
@@ -905,6 +907,10 @@ public class UserObjectBundleService {
       } catch (java.util.concurrent.CancellationException e) {
         throw e;
       } catch (RuntimeException e) {
+        FloecatStatus status = FloecatStatus.fromThrowable(e);
+        if (status != null && status.errorCode() == ErrorCode.MC_SNAPSHOT_EXPIRED) {
+          throw e;
+        }
         LOG.debugf(
             e,
             "stats batch warm failed query_id=%s; this chunk will omit table stats",

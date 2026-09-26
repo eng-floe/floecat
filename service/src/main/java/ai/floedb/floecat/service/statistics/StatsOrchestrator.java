@@ -224,7 +224,7 @@ public class StatsOrchestrator {
       java.util.function.Supplier<Optional<ObjectCache.SnapshotFacts>> loadExact =
           () ->
               plannerResolver
-                  .resolveSnapshotnedFromStore(request, pinned.get())
+                  .resolveSelectedGenerationFromStore(request, pinned.get())
                   .filter(TargetStatsRecord::hasTable)
                   .map(StatsOrchestrator::snapshotFacts);
       Optional<ObjectCache.SnapshotFacts> exact =

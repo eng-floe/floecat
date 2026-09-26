@@ -121,6 +121,10 @@ public class QuerySystemScanServiceImpl extends BaseServiceImpl implements Query
             correlationIdHolder.get(), QUERY_NOT_FOUND, Map.of("query_id", queryId));
       }
       var queryCtx = ctxOpt.get();
+      if (!queryCtx.isActive()) {
+        throw GrpcErrors.preconditionFailed(
+            correlationIdHolder.get(), QUERY_NOT_ACTIVE, Map.of("query_id", queryId));
+      }
 
       if (!request.hasTableId()) {
         throw GrpcErrors.invalidArgument(

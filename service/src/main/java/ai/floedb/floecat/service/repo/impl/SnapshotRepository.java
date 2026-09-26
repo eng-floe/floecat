@@ -44,6 +44,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Clock;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.LockSupport;
@@ -212,7 +213,6 @@ public class SnapshotRepository {
     // the service layer (SnapshotServiceImpl.updateSnapshot → CurrentSnapshotPointerService),
     // which re-upserts the root entry after advancing. This keeps root publication and the
     // current-snapshot selection in one atomic service-level operation.
-    // advance (it saw the pointer already moved → UNCHANGED → no publish).
     return repo.update(snapshot, expectedPointerVersion);
   }
 
@@ -225,16 +225,86 @@ public class SnapshotRepository {
     return deleted;
   }
 
-  public boolean deleteWithPrecondition(
-      ResourceId tableId, long snapshotId, long expectedPointerVersion) {
-    boolean deleted =
-        repo.deleteWithPrecondition(
-            new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId),
-            expectedPointerVersion);
-    if (deleted) {
-      deleteCurrentPointerIfCurrent(tableId, snapshotId);
+  /**
+   * Deletes a snapshot together with the pointers of its artifacts (active stats and index
+   * generations, index capture manifest, constraints) in one pointer transaction, so the collectors
+   * reclaim their payloads once the root drops the entry. An artifact pointer absent now must stay
+   * absent, and every pointer in {@code unchanged} must still hold its version (0: absent). Returns
+   * false when the snapshot or one of those pointers moved; artifacts changing under the delete are
+   * re-read and retried.
+   */
+  public boolean deleteWithArtifacts(
+      ResourceId tableId,
+      long snapshotId,
+      long expectedPointerVersion,
+      Map<String, Long> unchanged) {
+    SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
+    for (int attempt = 0; attempt < 4; attempt++) {
+      Map<String, Long> required = new java.util.HashMap<>();
+      java.util.Set<String> absent = new java.util.HashSet<>();
+      unchanged.forEach(
+          (pointer, version) -> {
+            if (version == 0L) {
+              absent.add(pointer);
+            } else {
+              required.put(pointer, version);
+            }
+          });
+      Map<String, Long> artifacts = new java.util.LinkedHashMap<>();
+      for (String artifact : artifactPointers(tableId, snapshotId)) {
+        pointerStore
+            .get(artifact)
+            .ifPresentOrElse(
+                p -> artifacts.put(artifact, p.getVersion()), () -> absent.add(artifact));
+      }
+      if (repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+          key,
+          expectedPointerVersion,
+          new GenericResourceRepository.PointerConditions(required, absent, Map.of()),
+          artifacts)) {
+        deleteCurrentPointerIfCurrent(tableId, snapshotId);
+        return true;
+      }
+      if (repo.pointerMetaForSafe(key).getPointerVersion() != expectedPointerVersion
+          || unchanged.entrySet().stream()
+              .anyMatch(
+                  e ->
+                      pointerStore.get(e.getKey()).map(Pointer::getVersion).orElse(0L)
+                          != e.getValue())) {
+        return false;
+      }
     }
-    return deleted;
+    throw new StorageAbortRetryableException(
+        "snapshot artifacts changed repeatedly while deleting snapshot " + snapshotId);
+  }
+
+  /**
+   * Deletes a snapshot retention let go of, with its artifacts, unless it is the committed current:
+   * a rollback can make any snapshot current, so the delete requires the current pointer to be the
+   * one read here. Returns true when the snapshot is gone.
+   */
+  public boolean deleteUnlessCurrent(ResourceId tableId, long snapshotId) {
+    long version = metaForSafeConsistent(tableId, snapshotId).getPointerVersion();
+    if (version == 0L) {
+      return true;
+    }
+    String currentKey = Keys.currentSnapshotPointerByTable(tableId.getAccountId(), tableId.getId());
+    long currentVersion = pointerStore.get(currentKey).map(Pointer::getVersion).orElse(0L);
+    if (currentPointerRepo.get(tableId).map(c -> c.getSnapshotId() == snapshotId).orElse(false)) {
+      return false;
+    }
+    return deleteWithArtifacts(tableId, snapshotId, version, Map.of(currentKey, currentVersion));
+  }
+
+  private static List<String> artifactPointers(ResourceId tableId, long snapshotId) {
+    String account = tableId.getAccountId();
+    String table = tableId.getId();
+    return List.of(
+        Keys.snapshotTargetStatsManifestPointer(account, table, snapshotId),
+        Keys.snapshotIndexArtifactActiveGenerationPointer(account, table, snapshotId),
+        Keys.snapshotIndexArtifactCaptureManifestPointer(account, table, snapshotId),
+        Keys.snapshotConstraintsPointer(account, table, snapshotId),
+        Keys.snapshotConstraintsStatsPointer(account, table, snapshotId));
   }
 
   public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {

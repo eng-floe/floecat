@@ -28,12 +28,10 @@ import java.util.function.LongFunction;
 /**
  * Resolves the resolved snapshot id for the stats/constraints path from the query context.
  *
- * <p>This intentionally consumes only the snapshot id, not the full pin blob identity: a table pin
- * is validated (its immutable table and snapshot blobs confirmed present at the captured versions)
- * once, when it is created, and every selection is blob-backed. Snapshot retention is the GC safety
- * boundary; query state is only a local optimization. Stats are best-effort and may be stale, so
- * the hot stats path does not re-run per-read blob validation; the snapshot id alone scopes the
- * lookup coherently.
+ * <p>This intentionally consumes only the snapshot id, not the full selection's blob identity:
+ * every selection comes out of one immutable root, and its reads fail where a blob is gone.
+ * Snapshot retention is the GC safety boundary; query state is only a local optimization. The
+ * snapshot id alone scopes the stats lookup coherently.
  */
 final class SnapshotSelectionResolver implements SnapshotSelectionLookup {
 
@@ -97,7 +95,7 @@ final class SnapshotSelectionResolver implements SnapshotSelectionLookup {
 
   /** Whether this pin represents the current SQL view rather than retained history. */
   @Override
-  public boolean currentSnapshotIsPinned(ResourceId tableId) {
+  public boolean selectsCurrent(ResourceId tableId) {
     QueryContext ctx = liveContext();
     if (ctx == null) {
       return false;
@@ -107,7 +105,7 @@ final class SnapshotSelectionResolver implements SnapshotSelectionLookup {
         .orElse(false);
   }
 
-  <T> Optional<T> withPinnedSnapshot(
+  <T> Optional<T> withResolvedSnapshot(
       ResourceId tableId, LongFunction<Optional<T>> snapshotScopedLookup) {
     QueryContext ctx = liveContext();
     if (ctx == null) {

@@ -60,8 +60,9 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
 
   @Override
   /**
-   * Handles the stream initialization RPC: validates the query/table, ensures the snapshot is
-   * pinned, and creates a server-side scan session that captures pruning hints + batch knobs.
+   * Handles the stream initialization RPC: validates the query/table, requires its resolved
+   * snapshot selection, and creates a server-side scan session that captures pruning hints + batch
+   * knobs.
    */
   public Uni<InitScanResponse> initScan(InitScanRequest request) {
     var L = LogHelper.start(LOG, "InitScan");
@@ -82,10 +83,13 @@ public class QueryScanServiceImpl extends BaseServiceImpl implements QueryScanSe
                           () ->
                               GrpcErrors.notFound(
                                   correlationId, QUERY_NOT_FOUND, Map.of("query_id", queryId)));
+              if (!ctx.isActive()) {
+                throw GrpcErrors.preconditionFailed(
+                    correlationId, QUERY_NOT_ACTIVE, Map.of("query_id", queryId));
+              }
               ResourceId tableId = request.getTableId();
-              // Build scan metadata from the pinned identity; fail hard on a bad resolved snapshot
-              // blob rather
-              // than initializing a scan against drifted current catalog state.
+              // Build scan metadata from the resolved selection; fail on a bad selected blob rather
+              // than scanning drifted current catalog state.
               var pin = ctx.requireResolvedSnapshot(tableId, correlationId);
               var initData = scanBundles.initScan(correlationId, pin);
               var session =

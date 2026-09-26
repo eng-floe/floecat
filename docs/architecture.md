@@ -103,7 +103,7 @@ The following modules compose the system (see linked docs for deep dives):
    and optional query leases before hitting service implementations.
 4. **Repositories** translate RPCs into pointer/blob mutations, enforce optimistic concurrency, and
    update idempotency records.
-5. **Query lifecycle RPCs** hand planners lease descriptors (snapshot selections, obligations) plus any
+5. **Query lifecycle RPCs** hand planners query descriptors (snapshot selections, obligations) plus any
    connector-provided scan metadata needed before execution.
 
 ## Consistency Model (Current)

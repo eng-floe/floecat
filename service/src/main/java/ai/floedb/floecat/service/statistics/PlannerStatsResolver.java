@@ -293,14 +293,31 @@ final class PlannerStatsResolver {
     return new Resolution(out, List.copyOf(afterFill), diagnostics, pinnedGeneration);
   }
 
-  /** Reads only the pinned generation, treating an unreadable frozen manifest as a miss. */
-  Optional<TargetStatsRecord> resolveSnapshotnedFromStore(
+  /** A selected generation that was collected: the selection's data is gone. */
+  private static io.grpc.StatusRuntimeException generationCollected(
+      StatsCaptureRequest request, StatsStore.GenerationUnavailableException cause) {
+    LOG.debugf(cause, "selected stats generation collected for %s", storageId(request));
+    return ai.floedb.floecat.service.error.impl.GrpcErrors.snapshotExpired(
+        request.correlationId(),
+        null,
+        Map.of(
+            "table_id", request.tableId().getId(),
+            "snapshot_id", Long.toString(request.snapshotId())));
+  }
+
+  /**
+   * Reads only the selected generation. A collected generation fails the selection; a corrupt or
+   * otherwise unreadable manifest reads as a miss.
+   */
+  Optional<TargetStatsRecord> resolveSelectedGenerationFromStore(
       StatsCaptureRequest request, String pinnedGeneration) {
     try {
       return statsStore.getTargetStatsInGeneration(
           request.tableId(), request.snapshotId(), pinnedGeneration, request.target());
     } catch (BaseResourceRepository.AbortRetryableException | StorageAbortRetryableException e) {
       throw e;
+    } catch (StatsStore.GenerationUnavailableException e) {
+      throw generationCollected(request, e);
     } catch (RuntimeException e) {
       // A frozen manifest may be temporarily unreadable even though the live generation is still
       // available. Treat that generation as a miss; callers can then use the normal newest ladder.
@@ -312,10 +329,10 @@ final class PlannerStatsResolver {
 
   /**
    * Store rungs of the single-target planner lookup: the pinned generation for the resolved
-   * snapshot (query-consistent; a pinned read failure falls through rather than failing the
-   * lookup), then the newest (live active) generation only to fill a target the pinned generation
-   * lacks. Empty means no store rung could serve; the caller decides whether to capture. Only the
-   * immutable pinned rung is cached; the live/newest rung is always read through.
+   * snapshot (query-consistent; a collected generation fails the selection, any other read failure
+   * falls through), then the newest (live active) generation only to fill a target the pinned
+   * generation lacks. Empty means no store rung could serve; the caller decides whether to capture.
+   * Only the immutable pinned rung is cached; the live/newest rung is always read through.
    */
   Optional<TargetStatsRecord> resolveSingleFromStore(
       StatsCaptureRequest request, Optional<String> pinnedGenerationToken) {
@@ -331,7 +348,7 @@ final class PlannerStatsResolver {
                 request.snapshotId(),
                 pinnedGeneration,
                 storageId(request),
-                () -> resolveSnapshotnedFromStore(request, pinnedGeneration));
+                () -> resolveSelectedGenerationFromStore(request, pinnedGeneration));
     if (primary.isPresent()) {
       return primary;
     }
@@ -446,21 +463,19 @@ final class PlannerStatsResolver {
       return java.util.Collections.unmodifiableMap(out);
     } catch (BaseResourceRepository.AbortRetryableException | StorageAbortRetryableException e) {
       throw e;
-    } catch (StatsStore.GenerationUnavailableException generationError) {
+    } catch (BaseResourceRepository.CorruptionException corruption) {
       LOG.debugf(
-          generationError,
-          "planner stats generation unavailable table=%s snapshot=%s; skipping target isolation",
+          corruption,
+          "stats batch is corrupt for table=%s snapshot=%s; treating as a miss",
           tableId,
           snapshotId);
       Map<String, StatsResolutionResult> out = new LinkedHashMap<>();
-      String message =
-          generationError.getMessage() == null
-              ? "stats generation unavailable"
-              : generationError.getMessage();
       for (StatsCaptureRequest request : requests) {
-        out.put(storageId(request), StatsResolutionResult.failed(message));
+        out.put(storageId(request), StatsResolutionResult.skipped("batch_store_miss"));
       }
       return java.util.Collections.unmodifiableMap(out);
+    } catch (StatsStore.GenerationUnavailableException generationError) {
+      throw generationCollected(requests.get(0), generationError);
     } catch (RuntimeException batchError) {
       if (requests.size() == 1) {
         return readPlannerTargetIsolated(

@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.account.rpc.Account;
-import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
@@ -46,7 +45,7 @@ import org.jboss.logging.Logger;
 public class ReconcileJobGcScheduler {
   private static final Logger LOG = Logger.getLogger(ReconcileJobGcScheduler.class);
 
-  @Inject Provider<AccountRepository> accounts;
+  @Inject Provider<OwnedAccounts> accounts;
   @Inject Provider<ReconcileJobGc> reconcileJobGc;
   @Inject Observability observability;
 
@@ -143,7 +142,7 @@ public class ReconcileJobGcScheduler {
       return;
     }
 
-    final AccountRepository accountRepo;
+    final OwnedAccounts accountRepo;
     final ReconcileJobGc gc;
     try {
       accountRepo = accounts.get();

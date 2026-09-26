@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.SnapshotRef;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.query.rpc.*;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
+import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import io.grpc.Status;
@@ -75,6 +76,7 @@ class QueryServiceIT {
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
+  @Inject QueryContextStore queryContexts;
 
   String catalogPrefix = this.getClass().getSimpleName() + "_";
 
@@ -82,6 +84,28 @@ class QueryServiceIT {
   void resetStores() {
     resetter.wipeAll();
     seeder.seedData();
+  }
+
+  @Test
+  void leasesAreCappedToTheContextSafetyExpiry() {
+    var cat = TestSupport.createCatalog(catalog, catalogPrefix + "lease", "");
+    long cap = System.currentTimeMillis() + queryContexts.maxLeaseMs() + 5_000L;
+
+    var begin =
+        queries.beginQuery(
+            BeginQueryRequest.newBuilder()
+                .setDefaultCatalogId(cat.getResourceId())
+                .setTtlSeconds(3_600)
+                .build());
+    var renew =
+        queries.renewQuery(
+            RenewQueryRequest.newBuilder()
+                .setQueryId(begin.getQuery().getQueryId())
+                .setTtlSeconds(3_600)
+                .build());
+
+    assertTrue(com.google.protobuf.util.Timestamps.toMillis(begin.getQuery().getExpiresAt()) < cap);
+    assertTrue(com.google.protobuf.util.Timestamps.toMillis(renew.getExpiresAt()) < cap);
   }
 
   /** Verifies BeginQuery, DescribeInputs, RenewQuery, and EndQuery lifecycle behavior. */

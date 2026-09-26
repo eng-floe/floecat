@@ -46,7 +46,7 @@ import org.jboss.logging.Logger;
  * selection-collect / selection-commit timers into the shared request {@link TimingAccumulator}.
  *
  * <p>Snapshot selections are accumulated here before they are written to the process-local query
- * context. They are not GC roots; retention-aware durable reachability owns object lifetime.
+ * context. They are not GC roots; retention and durable reachability own object lifetime.
  */
 final class SnapshotSelectionCommitter {
 
@@ -275,6 +275,10 @@ final class SnapshotSelectionCommitter {
       LOG.warnf("Failed to commit chunk pins query_id=%s query context missing", ctx.getQueryId());
       throw GrpcErrors.notFound(
           correlationId, QUERY_NOT_FOUND, Map.of("query_id", ctx.getQueryId()));
+    }
+    if (!updated.orElseThrow().isActive()) {
+      throw GrpcErrors.preconditionFailed(
+          correlationId, QUERY_NOT_ACTIVE, Map.of("query_id", ctx.getQueryId()));
     }
     if (LOG.isDebugEnabled()) {
       LOG.debugf("Committed chunk pins query_id=%s", ctx.getQueryId());

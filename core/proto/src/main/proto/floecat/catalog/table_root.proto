@@ -74,8 +74,8 @@ message TableRoot {
    */
   repeated SnapshotManifestEntry reusable_snapshot_candidates = 7;
 
-  /** The last replaced table definitions, newest first; retained like replaced snapshots. */
-  repeated BlobRef superseded_definition_refs = 8;
+  reserved 8;
+  reserved "superseded_definition_refs";
 }
 
 /** One snapshot's complete state as of the owning root's commit. */
@@ -116,11 +116,8 @@ message SnapshotManifestEntry {
   /** Floecat publication time; unlike upstream_created_at this is the retention clock. */
   google.protobuf.Timestamp ingested_at = 8;
 
-  /** The last replaced stats generations, newest first; retained like replaced snapshots. */
-  repeated BlobRef superseded_stats_generation_refs = 9;
-
-  /** The last replaced constraints bundles, newest first; retained like replaced snapshots. */
-  repeated BlobRef superseded_constraints_refs = 10;
+  reserved 9, 10;
+  reserved "superseded_stats_generation_refs", "superseded_constraints_refs";
 }
 
 /**

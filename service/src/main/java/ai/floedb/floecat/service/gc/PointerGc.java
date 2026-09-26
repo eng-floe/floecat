@@ -16,15 +16,7 @@
 
 package ai.floedb.floecat.service.gc;
 
-import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
-import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.common.rpc.ResourceId;
-import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
-import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
-import ai.floedb.floecat.service.repo.impl.SnapshotManifests;
-import ai.floedb.floecat.service.repo.impl.StatsRepository;
-import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -38,21 +30,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.function.Predicate;
 import org.eclipse.microprofile.config.ConfigProvider;
-import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class PointerGc {
 
-  private static final Logger LOG = Logger.getLogger(PointerGc.class);
-
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
-  @Inject SnapshotRetentionPolicy retentionPolicy = SnapshotRetentionPolicy.disabled();
-  @Inject TableRootRepository tableRootRepository;
-  @Inject StatsRepository statsRepository;
 
   public record Result(int scanned, int deleted, int missingBlobs, int staleSecondaries) {}
 
@@ -306,17 +291,7 @@ public class PointerGc {
       }
       String snapshotsById = Keys.snapshotPointerByIdPrefix(accountId, tableId);
       Result snapshotById =
-          scanPrefix(
-              snapshotsById,
-              pageSize,
-              deadlineMs,
-              blobCache,
-              p -> true,
-              nowMs,
-              minAgeMs,
-              retentionPolicy.isRetentionEnabled()
-                  ? expiredSnapshotPointers(accountId, tableId)
-                  : null);
+          scanPrefix(snapshotsById, pageSize, deadlineMs, blobCache, p -> true, nowMs, minAgeMs);
       scanned += snapshotById.scanned;
       deleted += snapshotById.deleted;
       missingBlobs += snapshotById.missingBlobs;
@@ -357,18 +332,6 @@ public class PointerGc {
       Predicate<Pointer> filter,
       long nowMs,
       long minAgeMs) {
-    return scanPrefix(prefix, pageSize, deadlineMs, blobCache, filter, nowMs, minAgeMs, null);
-  }
-
-  private Result scanPrefix(
-      String prefix,
-      int pageSize,
-      long deadlineMs,
-      Map<String, Boolean> blobCache,
-      Predicate<Pointer> filter,
-      long nowMs,
-      long minAgeMs,
-      Predicate<Pointer> deletePredicate) {
     String token = "";
     int scanned = 0;
     int deleted = 0;
@@ -394,12 +357,6 @@ public class PointerGc {
         }
 
         scanned++;
-        if (deletePredicate != null && deletePredicate.test(p)) {
-          if (pointerStore.compareAndDelete(p.getKey(), p.getVersion())) {
-            deleted++;
-          }
-          continue;
-        }
         if (!PointerReferences.isBlobPointer(p)) {
           continue;
         }
@@ -463,63 +420,13 @@ public class PointerGc {
     return new Result(scanned, deleted, missingBlobs, staleSecondaries);
   }
 
-  /**
-   * By-id snapshot pointers whose manifest entry retention no longer keeps. A pointer without an
-   * entry, or a table whose root cannot be read, is kept.
-   */
-  private Predicate<Pointer> expiredSnapshotPointers(String accountId, String tableId) {
-    try {
-      return expiredSnapshotPointersOrThrow(accountId, tableId);
-    } catch (RuntimeException e) {
-      LOG.warnf(e, "pointer gc keeps snapshot pointers of table %s: root unreadable", tableId);
-      return p -> false;
-    }
-  }
-
-  private Predicate<Pointer> expiredSnapshotPointersOrThrow(String accountId, String tableId) {
-    var rootPointer = pointerStore.get(Keys.tableRootByTable(accountId, tableId)).orElse(null);
-    TableRoot root =
-        rootPointer == null || rootPointer.getBlobUri().isBlank()
-            ? null
-            : tableRootRepository.getByBlobUri(rootPointer.getBlobUri()).orElse(null);
-    if (root == null) {
-      return p -> false;
-    }
-    var chain = SnapshotManifests.chain(tableRootRepository, null, root.getSnapshotManifestRef());
-    Set<Long> protectedIds =
-        retentionPolicy.protectedSnapshotIds(
-            chain, root, StatsVisibilityGate.gateOnFinalize(statsRepository));
-    ResourceId tableRid = ResourceId.newBuilder().setAccountId(accountId).setId(tableId).build();
-    Map<Long, SnapshotManifestEntry> entries = new HashMap<>();
-    chain.forEachEntry(entry -> entries.put(entry.getSnapshotId(), entry));
-    return p -> {
-      long snapshotId = snapshotId(p.getKey());
-      SnapshotManifestEntry entry = entries.get(snapshotId);
-      return entry != null
-          && !protectedIds.contains(snapshotId)
-          && retentionPolicy.expired(
-              SnapshotRetentionPolicy.publishedAt(tableRid, entry, pointerStore, blobStore)
-                  .orElse(null));
-    };
-  }
-
-  private long snapshotId(String key) {
-    int slash = key == null ? -1 : key.lastIndexOf('/');
-    if (slash < 0) return Long.MIN_VALUE;
-    try {
-      return Long.parseLong(key.substring(slash + 1));
-    } catch (NumberFormatException e) {
-      return Long.MIN_VALUE;
-    }
-  }
-
   private void collectIds(String prefix, int pageSize, List<String> out) {
     String token = "";
     while (true) {
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       for (Pointer p : pointers) {
-        String id = decodeSuffix(prefix, p.getKey());
+        String id = Keys.idAfterPrefix(prefix, p.getKey());
         if (id != null && !id.isBlank()) {
           out.add(id);
         }
@@ -602,17 +509,6 @@ public class PointerGc {
     }
 
     return null;
-  }
-
-  private static String decodeSuffix(String prefix, String fullKey) {
-    if (fullKey == null || !fullKey.startsWith(prefix)) {
-      return null;
-    }
-    String suffix = fullKey.substring(prefix.length());
-    if (suffix.isBlank()) {
-      return null;
-    }
-    return decode(suffix);
   }
 
   private static String decode(String value) {

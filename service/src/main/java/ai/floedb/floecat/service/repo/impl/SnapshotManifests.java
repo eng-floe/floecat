@@ -172,20 +172,18 @@ public final class SnapshotManifests {
       }
     }
 
-    /** The ids of the newest {@code limit} entries not matching {@code skip}, newest first. */
-    public List<Long> newestIds(int limit, java.util.function.LongPredicate skip) {
-      List<Long> ids = new ArrayList<>(Math.max(0, limit));
+    /** Visits entries until the predicate returns false. */
+    public void forEachEntryWhile(java.util.function.Predicate<SnapshotManifestEntry> visitor) {
       BlobRef cursor = head;
-      while (ids.size() < limit && isPresent(cursor)) {
+      while (isPresent(cursor)) {
         SnapshotManifestPage page = page(cursor);
-        for (SnapshotManifestEntry e : page.getEntriesList()) {
-          if (ids.size() < limit && !skip.test(e.getSnapshotId())) {
-            ids.add(e.getSnapshotId());
+        for (SnapshotManifestEntry entry : page.getEntriesList()) {
+          if (!visitor.test(entry)) {
+            return;
           }
         }
         cursor = page.hasPrevPageRef() ? page.getPrevPageRef() : null;
       }
-      return ids;
     }
 
     /**
@@ -272,6 +270,57 @@ public final class SnapshotManifests {
         cursor = page.hasPrevPageRef() ? page.getPrevPageRef() : null;
       }
       return head;
+    }
+
+    /**
+     * Removes the entries for {@code snapshotIds} in one walk, rewriting each page at most once;
+     * see {@link #remove}.
+     */
+    public BlobRef removeAll(java.util.Set<Long> snapshotIds) {
+      if (snapshotIds.isEmpty()) {
+        return head;
+      }
+      List<SnapshotManifestPage> walked = new ArrayList<>();
+      java.util.Set<Long> remaining = new java.util.HashSet<>(snapshotIds);
+      int oldestHit = -1;
+      BlobRef cursor = head;
+      while (isPresent(cursor)) {
+        SnapshotManifestPage page = page(cursor);
+        walked.add(page);
+        int remainingBefore = remaining.size();
+        page.getEntriesList().stream()
+            .map(SnapshotManifestEntry::getSnapshotId)
+            .forEach(remaining::remove);
+        if (remaining.size() < remainingBefore) {
+          oldestHit = walked.size() - 1;
+        }
+        // Once every requested entry has been found, older pages cannot affect the result.
+        if (remaining.isEmpty()) {
+          break;
+        }
+        cursor = page.hasPrevPageRef() ? page.getPrevPageRef() : null;
+      }
+      if (oldestHit < 0) {
+        return head;
+      }
+      SnapshotManifestPage oldest = walked.get(oldestHit);
+      BlobRef prev = oldest.hasPrevPageRef() ? oldest.getPrevPageRef() : null;
+      for (int i = oldestHit; i >= 0; i--) {
+        SnapshotManifestPage.Builder b = walked.get(i).toBuilder().clearEntries();
+        walked.get(i).getEntriesList().stream()
+            .filter(e -> !snapshotIds.contains(e.getSnapshotId()))
+            .forEach(b::addEntries);
+        if (b.getEntriesCount() == 0) {
+          continue; // emptied: collapsed out
+        }
+        if (prev == null) {
+          b.clearPrevPageRef();
+        } else {
+          b.setPrevPageRef(prev);
+        }
+        prev = put(b.build());
+      }
+      return prev;
     }
 
     /**

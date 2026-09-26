@@ -49,18 +49,8 @@ public final class CaffeineStateCache<K, V> implements StateCache<K, V> {
   }
 
   @Override
-  public void put(K key, V value) {
-    entries.put(Objects.requireNonNull(key, "key"), Objects.requireNonNull(value, "value"));
-  }
-
-  @Override
   public V remove(K key) {
     return entries.asMap().remove(Objects.requireNonNull(key, "key"));
-  }
-
-  @Override
-  public V compute(K key, java.util.function.BiFunction<? super K, ? super V, ? extends V> fn) {
-    return entries.asMap().compute(Objects.requireNonNull(key, "key"), fn);
   }
 
   @Override
@@ -85,7 +75,7 @@ public final class CaffeineStateCache<K, V> implements StateCache<K, V> {
     private Weigher<? super K, ? super V> weigher;
     private Duration expireAfterWrite;
     private RemovalListener<? super K, ? super V> removalListener;
-    private boolean recordStats;
+    private java.util.concurrent.Executor executor;
 
     public Builder<K, V> maximumSize(long maximumSize) {
       if (maximumSize <= 0) {
@@ -126,8 +116,9 @@ public final class CaffeineStateCache<K, V> implements StateCache<K, V> {
       return this;
     }
 
-    public Builder<K, V> recordStats() {
-      this.recordStats = true;
+    /** Runs maintenance and removal notifications; tests pass {@code Runnable::run}. */
+    public Builder<K, V> executor(java.util.concurrent.Executor executor) {
+      this.executor = Objects.requireNonNull(executor, "executor");
       return this;
     }
 
@@ -147,11 +138,11 @@ public final class CaffeineStateCache<K, V> implements StateCache<K, V> {
       if (expireAfterWrite != null) {
         builder.expireAfterWrite(expireAfterWrite);
       }
-      if (recordStats) {
-        builder.recordStats();
-      }
       if (removalListener != null) {
         builder.removalListener((RemovalListener<Object, Object>) removalListener);
+      }
+      if (executor != null) {
+        builder.executor(executor);
       }
       return new CaffeineStateCache<>((Cache<K, V>) builder.build());
     }

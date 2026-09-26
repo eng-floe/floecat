@@ -35,9 +35,9 @@ import java.util.function.Supplier;
  * bounded by concurrent work rather than table cardinality. A retained proof keeps its exact table
  * entry alive across deadline continuations; unrelated tables never cause false invalidations.
  *
- * <p>The guard is intentionally process-local, matching CAS GC's existing single-node safety
- * contract: every service process that can publish table references must use the same guard while
- * publishing table metadata and while CAS GC proves and deletes that metadata.
+ * <p>The guard is process-local: every service process that can publish an account's table
+ * references must use the same guard while publishing and while CAS GC proves and deletes that
+ * metadata. CAS GC collects an account only on the replica that owns it.
  */
 @ApplicationScoped
 public class TableBlobReachabilityGuard {
@@ -68,6 +68,23 @@ public class TableBlobReachabilityGuard {
       return publication.get();
     } finally {
       entry.epoch.incrementAndGet();
+      entry.lock.readLock().unlock();
+      release(key, entry);
+    }
+  }
+
+  /** Runs a table-scoped read while generation reclamation is excluded. */
+  public <T> T reading(ResourceId tableId, Supplier<T> read) {
+    return reading(tableId.getAccountId(), tableId.getId(), read);
+  }
+
+  public <T> T reading(String accountId, String tableId, Supplier<T> read) {
+    TableKey key = new TableKey(accountId, tableId);
+    Entry entry = acquire(key);
+    entry.lock.readLock().lock();
+    try {
+      return read.get();
+    } finally {
       entry.lock.readLock().unlock();
       release(key, entry);
     }

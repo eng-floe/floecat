@@ -2,6 +2,16 @@
  * Copyright 2026 Yellowbrick Data, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package ai.floedb.floecat.service.metagraph.snapshot;
@@ -28,9 +38,9 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 /**
  * The one retention policy for every versioned catalog object: snapshots of a table, and table
- * definitions, stats generations, and constraints bundles. A version is kept while it is live, one
- * of the last {@code retainLast} versions it replaced, or published within retention plus grace.
- * Zero retention keeps every snapshot; replaced artifacts still age out after grace.
+ * definitions, stats generations, and constraints bundles. A version is kept while it is live or
+ * published within retention plus grace. Zero retention keeps every snapshot; unreferenced
+ * artifacts still age out after grace.
  */
 @ApplicationScoped
 public final class SnapshotRetentionPolicy {
@@ -38,28 +48,21 @@ public final class SnapshotRetentionPolicy {
   private final Clock clock;
   private final Duration retention;
   private final Duration grace;
-  private final int retainLast;
 
   @Inject
   public SnapshotRetentionPolicy(
       @ConfigProperty(name = "floecat.snapshot.retention") Duration retention,
-      @ConfigProperty(name = "floecat.snapshot.retention-grace") Duration grace,
-      @ConfigProperty(name = "floecat.snapshot.retain-last", defaultValue = "1") int retainLast) {
-    this(Clock.systemUTC(), retention, grace, retainLast);
+      @ConfigProperty(name = "floecat.snapshot.retention-grace") Duration grace) {
+    this(Clock.systemUTC(), retention, grace);
   }
 
   public SnapshotRetentionPolicy(Clock clock, Duration retention, Duration grace) {
-    this(clock, retention, grace, 1);
-  }
-
-  public SnapshotRetentionPolicy(Clock clock, Duration retention, Duration grace, int retainLast) {
-    if (retention.isNegative() || grace.isNegative() || retainLast < 0) {
-      throw new IllegalArgumentException("snapshot retention, grace, and retain-last must be >= 0");
+    if (retention.isNegative() || grace.isNegative()) {
+      throw new IllegalArgumentException("snapshot retention and grace must be >= 0");
     }
     this.clock = clock;
     this.retention = retention;
     this.grace = grace;
-    this.retainLast = retainLast;
   }
 
   /** Retention off, for instances built without CDI. */
@@ -72,21 +75,16 @@ public final class SnapshotRetentionPolicy {
     return !retention.isZero();
   }
 
-  /** How many replaced versions are kept regardless of age. */
-  public int retainLast() {
-    return retainLast;
-  }
-
-  /** Minimum age of a replaced artifact that nothing retained references any more. */
+  /** Age after which an unreachable artifact may be collected. */
   public long retentionAndGraceMillis() {
     return retention.plus(grace).toMillis();
   }
 
-  /** Snapshots kept regardless of age: the current ones and the last {@code retainLast} others. */
+  /** Snapshots kept regardless of age: the committed and queryable current snapshots. */
   public Set<Long> protectedSnapshotIds(
       SnapshotManifests.Chain chain, TableRoot root, boolean gateOnFinalize) {
     var current = SnapshotManifests.currentSnapshots(chain, root, gateOnFinalize);
-    Set<Long> ids = new HashSet<>(chain.newestIds(retainLast, current::contains));
+    Set<Long> ids = new HashSet<>();
     current.committed().ifPresent(e -> ids.add(e.getSnapshotId()));
     current.queryable().ifPresent(e -> ids.add(e.getSnapshotId()));
     return ids;
@@ -131,15 +129,15 @@ public final class SnapshotRetentionPolicy {
         && before(publishedAt, clock.instant().minus(retention).minus(grace));
   }
 
+  /**
+   * Whether GC may drop a snapshot retention does not protect: past retention plus grace, or with
+   * no publication record and no blob left to date it by.
+   */
+  public boolean collectable(Optional<Timestamp> publishedAt) {
+    return isRetentionEnabled() && publishedAt.map(this::expired).orElse(true);
+  }
+
   private static boolean before(Timestamp publishedAt, Instant cutoff) {
     return Timestamps.toMillis(publishedAt) < cutoff.toEpochMilli();
-  }
-
-  Duration retention() {
-    return retention;
-  }
-
-  Duration grace() {
-    return grace;
   }
 }

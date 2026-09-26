@@ -42,9 +42,8 @@ public final class ScanSession {
   private final ResourceId tableId;
   private final long snapshotId;
   // Opaque token of the stats generation the RESOLVED root referenced, frozen at initScan, or null
-  // when the store tracks none. File streaming reads this one immutable generation keyspace to
-  // completion: superseded generations are RETAINED (replaceAllStatsForSnapshot no longer deletes
-  // them), so the scan stays deterministic at the frozen pointer with no per-page re-check.
+  // when the store tracks none. File streaming reads this one immutable generation keyspace; each
+  // page first checks the selection is still readable under retention.
   private final String statsGeneration;
   private final TablePin selection;
   private final TableInfo tableInfo;
@@ -67,7 +66,7 @@ public final class ScanSession {
     this.tableId = builder.tableId;
     this.snapshotId = builder.snapshotId;
     this.statsGeneration = builder.statsGeneration;
-    this.selection = builder.selection;
+    this.selection = java.util.Objects.requireNonNull(builder.selection, "selection");
     this.tableInfo = builder.tableInfo;
     this.includeColumnStats = builder.includeColumnStats;
     this.excludePartitionDataJson = builder.excludePartitionDataJson;
@@ -253,10 +252,10 @@ public final class ScanSession {
     return new Builder();
   }
 
-  /** Returns a builder initialized with every field of this session. */
-  public Builder toBuilder() {
+  /** Returns a copy of this session with a different handle id. */
+  public ScanSession withHandleId(String newHandleId) {
     return new Builder()
-        .handleId(handleId)
+        .handleId(newHandleId)
         .queryId(queryId)
         .tableId(tableId)
         .snapshotId(snapshotId)
@@ -268,7 +267,8 @@ public final class ScanSession {
         .targetBatchItems(targetBatchItems)
         .targetBatchBytes(targetBatchBytes)
         .requiredColumns(requiredColumns)
-        .predicates(predicates);
+        .predicates(predicates)
+        .build();
   }
 
   public static final class Builder {
