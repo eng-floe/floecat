@@ -312,7 +312,11 @@ public class CasBlobGcScheduler {
       }
       StringBuilder next = new StringBuilder();
       List<Account> page =
-          repo.list(pageSize, accountToken, next, () -> stopping || System.currentTimeMillis() >= deadline);
+          repo.list(
+              pageSize,
+              accountToken,
+              next,
+              () -> stopping || System.currentTimeMillis() >= deadline);
       accountPage = List.copyOf(page);
       accountPageIndex = 0;
       accountPageNextToken = next.toString();

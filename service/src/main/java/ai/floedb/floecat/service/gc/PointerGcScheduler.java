@@ -125,8 +125,7 @@ public class PointerGcScheduler {
       // remaining tick. Starting the clock here prevents credential/global work from consuming
       // the entire expiry budget before the retention pass begins.
       long expiryStart = System.currentTimeMillis();
-      long expiryDeadline =
-          Math.min(deadline, expiryStart + Math.max(1L, maxTickMillis / 2L));
+      long expiryDeadline = Math.min(deadline, expiryStart + Math.max(1L, maxTickMillis / 2L));
 
       for (var account : allAccounts) {
         if (System.currentTimeMillis() >= deadline || stopping) {
