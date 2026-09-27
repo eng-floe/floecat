@@ -14,14 +14,20 @@ import ai.floedb.floecat.catalog.rpc.CompleteOwnerPublicationResponse;
 import ai.floedb.floecat.catalog.rpc.OwnerPublicationManifestRef;
 import ai.floedb.floecat.catalog.rpc.OwnerPublicationService;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.catalog.rpc.SnapshotSpec;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.CaptureOutput;
 import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
+import ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndex;
+import ai.floedb.floecat.reconciler.rpc.ExternalManifestDomain;
+import ai.floedb.floecat.reconciler.rpc.OwnerArtifactObjectReference;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
-import ai.floedb.floecat.reconciler.rpc.StatsObjectDescriptor;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.service.catalog.impl.CurrentSnapshotPointerService;
 import ai.floedb.floecat.service.catalog.impl.surface.CatalogSurfaceWritePolicy;
@@ -35,6 +41,7 @@ import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.RolePermissions;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
@@ -45,14 +52,19 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
 import jakarta.inject.Inject;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
@@ -64,11 +76,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
   static final String OWNER_GENERATION_PREFIX = "owner-";
   static final String EXECUTOR_SEGMENT = "worker-uploads/";
   static final String OWNER_SEGMENT = "finalizer-outputs/";
-  static final int MAX_AGGREGATE_REFERENCES = 100_000;
-  // A single family at this cardinality fits below the independent 64 MiB encoded-manifest cap;
-  // combinations remain bounded by that cap and report manifest_bytes explicitly.
-  static final int MAX_FILE_STAT_REFERENCES = 100_000;
-  static final int MAX_INDEX_REFERENCES = 100_000;
   static final long MAX_MANIFEST_BYTES = 64L * 1024L * 1024L;
 
   private static final Logger LOG = Logger.getLogger(OwnerPublicationService.class);
@@ -81,6 +88,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
   @Inject CurrentSnapshotPointerService currentSnapshots;
   @Inject CatalogGraphView graphView;
   @Inject BlobStore blobStore;
+  @Inject OwnerReuseLeaseRepository reuseLeases;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
 
@@ -95,6 +103,21 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
 
   @ConfigProperty(name = "floecat.storage.aws.s3.path-style-access", defaultValue = "true")
   boolean storageAwsPathStyleAccess;
+
+  @ConfigProperty(
+      name = "floecat.owner-publication.registration-batch-bytes",
+      defaultValue = "8388608")
+  int registrationBatchBytes;
+
+  @ConfigProperty(
+      name = "floecat.owner-publication.registration-batch-objects",
+      defaultValue = "10000")
+  int registrationBatchObjects;
+
+  @ConfigProperty(
+      name = "floecat.owner-publication.registration-batch-targets",
+      defaultValue = "10000")
+  int registrationBatchTargets;
 
   @Override
   public Uni<BeginOwnerPublicationResponse> beginOwnerPublication(
@@ -116,6 +139,39 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                   // fail every publication that did not know about this repository detail. This
                   // call also repairs a Begin retry interrupted after reserving the generation.
                   statsStore.prepareStatsGenerationManifest(tableId, snapshotId, generationId);
+                  boolean reuseSourceLeased = false;
+                  SnapshotReuseManifestRef source = null;
+                  if (request.hasReuseSourceSnapshotId()) {
+                    source =
+                        snapshots
+                            .getByIdConsistent(tableId, request.getReuseSourceSnapshotId())
+                            .filter(Snapshot::hasReuseManifestRef)
+                            .map(Snapshot::getReuseManifestRef)
+                            .filter(
+                                reference ->
+                                    reference.getKind() == SnapshotReuseManifestKind.SRMK_OWNER_V2)
+                            .orElse(null);
+                    if (source != null) {
+                      reuseSourceLeased = true;
+                    }
+                  }
+                  // Every publication leases the reusable namespace before returning upload
+                  // prefixes. A reuse source additionally roots its exact capture manifest.
+                  long leaseExpiresAt;
+                  try {
+                    leaseExpiresAt =
+                        reuseLeases.acquire(
+                            tableId,
+                            generationId,
+                            Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
+                                tableId.getAccountId(), tableId.getId(), snapshotId),
+                            source);
+                  } catch (OwnerReuseLeaseRepository.LeaseContinuityException error) {
+                    throw GrpcErrors.preconditionFailed(
+                        correlationId(),
+                        GeneratedErrorMessages.MessageKey.PUBLICATION_NOT_BEGUN,
+                        Map.of("publication_id", generationId));
+                  }
                   return BeginOwnerPublicationResponse.newBuilder()
                       .setPublicationId(generationId)
                       .setGenerationId(generationId)
@@ -126,6 +182,11 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                       .setManifestObjectPrefix(
                           Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
                               tableId.getAccountId(), tableId.getId(), snapshotId))
+                      .setReusableObjectPrefix(
+                          Keys.tableReusableArtifactBlobPrefix(
+                              tableId.getAccountId(), tableId.getId()))
+                      .setReuseSourceLeased(reuseSourceLeased)
+                      .setReuseLeaseExpiresAtEpochMs(leaseExpiresAt)
                       .setArtifactStorageUriRoot("s3://" + requireBlobBucket())
                       .putArtifactStorageProperties("s3.region", storageAwsRegion)
                       .putArtifactStorageProperties(
@@ -197,7 +258,9 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
           Map.of(
               "field", "manifest.manifest_bytes", "max_bytes", Long.toString(MAX_MANIFEST_BYTES)));
     }
-    byte[] manifestBytes = blobStore.get(manifestUri);
+    byte[] manifestBytes =
+        blobStore.getRangeAtMost(
+            manifestUri, 0L, Math.toIntExact(descriptor.getManifestBytes() + 1L));
     if (manifestBytes == null
         || manifestBytes.length != descriptor.getManifestBytes()
         || !MessageDigest.isEqual(digest, sha256(manifestBytes))
@@ -219,60 +282,188 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "manifest"));
     }
     validateManifest(tableId, snapshotId, publication, descriptor, manifest);
-    requireReferenceCount(
-        "manifest.final_stats", manifest.getFinalStatsCount(), MAX_AGGREGATE_REFERENCES, false);
-    requireReferenceCount(
-        "manifest.file_stats", manifest.getFileStatsCount(), MAX_FILE_STAT_REFERENCES, true);
-    requireReferenceCount(
-        "manifest.index_artifacts", manifest.getIndexArtifactsCount(), MAX_INDEX_REFERENCES, true);
-
-    List<StatsStore.PrewrittenTargetStatsReference> aggregateStats =
-        statsReferences(
-            generationPrefix(tableId, snapshotId, generationId) + OWNER_SEGMENT,
-            manifest.getFinalStatsList());
-    List<StatsStore.PrewrittenTargetStatsReference> fileStats =
-        statsReferences(
-            generationPrefix(tableId, snapshotId, generationId) + EXECUTOR_SEGMENT,
-            manifest.getFileStatsList());
-    if (aggregateStats.stream()
-            .anyMatch(value -> !isAggregateTargetStorageId(value.targetStorageId()))
-        || fileStats.stream()
-            .anyMatch(value -> !isFileStatsTargetStorageId(value.targetStorageId()))) {
+    SnapshotReuseManifestRef reuseManifestRef =
+        SnapshotReuseManifestRef.newBuilder()
+            .setFormatVersion(1)
+            .setKind(SnapshotReuseManifestKind.SRMK_OWNER_V2)
+            .setUri(manifestUri)
+            .setPayloadBytes(descriptor.getManifestBytes())
+            .setPayloadSha256(descriptor.getManifestSha256())
+            .setStatsGenerationManifestUri(
+                Keys.snapshotTargetStatsManifestBlobUri(
+                    tableId.getAccountId(), tableId.getId(), snapshotId, generationId))
+            .build();
+    snapshot = snapshot.toBuilder().setReuseManifestRef(reuseManifestRef).build();
+    if (manifest.getOwnerAggregateStatsRecordCount() == 0L) {
       throw invalidManifest();
     }
-    List<StatsStore.PrewrittenTargetStatsReference> allStats =
-        new ArrayList<>(aggregateStats.size() + fileStats.size());
-    allStats.addAll(aggregateStats);
-    allStats.addAll(fileStats);
     boolean publishesIndexes =
         requests(manifest.getCapturePolicy(), CaptureOutput.CO_PARQUET_PAGE_INDEX);
-    List<IndexArtifactRepository.PrewrittenIndexArtifactReference> indexReferences =
-        publishesIndexes
-            ? indexReferences(
-                generationPrefix(tableId, snapshotId, generationId) + EXECUTOR_SEGMENT,
-                manifest.getIndexArtifactsList())
-            : List.of();
-    // Index wrappers are protected alongside the stats payloads: both families are Owner-written
-    // objects under this generation's prefix, and GC must not reclaim either between the upload
-    // and the activation that roots them.
-    List<StatsStore.PrewrittenStatsObject> protectedObjects =
-        protectedObjects(allStats, indexReferences);
-    boolean retry =
-        statsStore.validatePreparedStatsGenerationRetry(
-            tableId, snapshotId, generationId, allStats);
-    if (!retry) {
-      statsStore.protectPrewrittenStatsObjectsInGeneration(
-          tableId, snapshotId, generationId, generationId, protectedObjects);
+    var registration = manifest.getOwnerArtifactRegistrationManifest();
+    var coverage = manifest.getReusableCoverageManifest();
+    String manifestIdentity =
+        HexFormat.of().formatHex(descriptor.getManifestSha256().toByteArray());
+    OwnerReuseLeaseRepository.RegistrationProgress progress =
+        reuseLeases.progress(tableId, generationId, manifestIdentity);
+    if (progress.equals(OwnerReuseLeaseRepository.RegistrationProgress.initial())
+        && !request.getCompletionCursor().isEmpty()
+        && publicationAlreadyCommitted(
+            tableId, snapshotId, generationId, snapshot, reuseManifestRef)) {
+      return completedResponse(manifest, manifestIdentity, progress, true, 0L);
     }
+    validateCompletionCursor(request.getCompletionCursor(), manifestIdentity, progress);
+    // Replace the source-generation lease with the completed generation's manifest before any
+    // reusable objects are registered. The manifest roots each coverage-addressed file-stat and
+    // sidecar object as one unit, avoiding one transient protection pointer per source file while
+    // still closing the upload-to-activation GC window.
+    long leaseExpiresAt;
+    try {
+      leaseExpiresAt = reuseLeases.renew(tableId, generationId, reuseManifestRef);
+    } catch (OwnerReuseLeaseRepository.LeaseContinuityException error) {
+      if (publicationAlreadyCommitted(
+          tableId, snapshotId, generationId, snapshot, reuseManifestRef)) {
+        return completedResponse(manifest, manifestIdentity, progress, true, 0L);
+      }
+      throw GrpcErrors.preconditionFailed(
+          correlationId(),
+          GeneratedErrorMessages.MessageKey.PUBLICATION_NOT_BEGUN,
+          Map.of("publication_id", generationId));
+    }
+    if (progress.registrationChunk() < registration.getCommitmentIndex().getChunkCount()) {
+      OwnerArtifactRegistrationManifest.Batch batch;
+      ExternalManifestCommitmentIndex commitments;
+      try {
+        commitments =
+            ExternalManifestCommitments.load(
+                blobStore,
+                registration.getCommitmentIndex(),
+                ExternalManifestDomain.EMD_OWNER_ARTIFACT_REGISTRATION,
+                tableId.getAccountId(),
+                tableId.getId(),
+                snapshotId,
+                registration.getPayloadBytes(),
+                registration.getObjectCount(),
+                registration.getFileStatsTargetCount(),
+                registration.getIndexTargetCount(),
+                registration.getAggregateStatsTargetCount(),
+                0,
+                registrationBatchBytes,
+                registrationBatchObjects,
+                registrationBatchTargets);
+        batch =
+            OwnerArtifactRegistrationManifest.readChunk(
+                blobStore,
+                registration,
+                progress.registrationChunk(),
+                commitments.getChunks(Math.toIntExact(progress.registrationChunk())));
+      } catch (IllegalArgumentException error) {
+        throw invalidManifest();
+      }
+      OwnerReuseLeaseRepository.RegistrationProgress nextProgress;
+      try {
+        if (!progress.lastTarget().isEmpty()
+            && !batch.firstTarget().isEmpty()
+            && OwnerArtifactRegistrationManifest.compareUtf8Unsigned(
+                    progress.lastTarget(), batch.firstTarget())
+                >= 0) {
+          throw new IllegalArgumentException("registration targets are not globally sorted");
+        }
+        nextProgress =
+            new OwnerReuseLeaseRepository.RegistrationProgress(
+                progress.registrationChunk() + 1L,
+                progress.coverageChunk(),
+                progress.coverageRecordCount(),
+                Math.addExact(progress.objectCount(), batch.objectCount()),
+                Math.addExact(progress.fileStatsTargetCount(), batch.fileStatsTargetCount()),
+                Math.addExact(progress.indexTargetCount(), batch.indexTargetCount()),
+                Math.addExact(
+                    progress.aggregateStatsTargetCount(), batch.aggregateStatsTargetCount()),
+                batch.lastTarget().isEmpty() ? progress.lastTarget() : batch.lastTarget(),
+                progress.lastCoverageId(),
+                progress.sawExternalSidecar());
+        if (nextProgress.registrationChunk() == registration.getCommitmentIndex().getChunkCount()) {
+          requireRegistrationTotals(registration, nextProgress);
+        }
+      } catch (ArithmeticException | IllegalArgumentException error) {
+        throw invalidManifest();
+      }
+      registerOwnerArtifactBatch(
+          tableId, snapshotId, generationId, publishesIndexes, batch.objects());
+      reuseLeases.advanceProgress(tableId, generationId, manifestIdentity, progress, nextProgress);
+      if (nextProgress.registrationChunk() < registration.getCommitmentIndex().getChunkCount()
+          || coverage.getCommitmentIndex().getChunkCount() > 0L) {
+        return pendingCompletion(manifest, manifestIdentity, nextProgress, leaseExpiresAt);
+      }
+      progress = nextProgress;
+    }
+
+    if (progress.coverageChunk() < coverage.getCommitmentIndex().getChunkCount()) {
+      ReusableCoverageManifest.Batch batch;
+      try {
+        ExternalManifestCommitmentIndex commitments =
+            ExternalManifestCommitments.load(
+                blobStore,
+                coverage.getCommitmentIndex(),
+                ExternalManifestDomain.EMD_REUSABLE_COVERAGE,
+                tableId.getAccountId(),
+                tableId.getId(),
+                snapshotId,
+                coverage.getPayloadBytes(),
+                coverage.getEntryCount(),
+                0L,
+                0L,
+                0L,
+                ReusableCoverageManifest.RECORD_BYTES,
+                registrationBatchBytes,
+                registrationBatchBytes / ReusableCoverageManifest.RECORD_BYTES,
+                0);
+        batch =
+            ReusableCoverageManifest.readCommittedChunk(
+                blobStore,
+                coverage,
+                commitments.getChunks(Math.toIntExact(progress.coverageChunk())));
+      } catch (IllegalArgumentException error) {
+        throw invalidManifest();
+      }
+      if (!progress.lastCoverageId().isEmpty()
+          && Arrays.compareUnsigned(
+                  progress.lastCoverageId().toByteArray(), batch.firstCoverageId())
+              >= 0) {
+        throw invalidManifest();
+      }
+      OwnerReuseLeaseRepository.RegistrationProgress nextProgress;
+      try {
+        nextProgress =
+            new OwnerReuseLeaseRepository.RegistrationProgress(
+                progress.registrationChunk(),
+                Math.addExact(progress.coverageChunk(), 1L),
+                Math.addExact(progress.coverageRecordCount(), batch.recordCount()),
+                progress.objectCount(),
+                progress.fileStatsTargetCount(),
+                progress.indexTargetCount(),
+                progress.aggregateStatsTargetCount(),
+                progress.lastTarget(),
+                com.google.protobuf.ByteString.copyFrom(batch.lastCoverageId()),
+                progress.sawExternalSidecar() || batch.sawExternalSidecar());
+      } catch (ArithmeticException error) {
+        throw invalidManifest();
+      }
+      if (nextProgress.coverageChunk() == coverage.getCommitmentIndex().getChunkCount()) {
+        requireCoverageTotals(coverage, nextProgress);
+      }
+      reuseLeases.advanceProgress(tableId, generationId, manifestIdentity, progress, nextProgress);
+      return pendingCompletion(manifest, manifestIdentity, nextProgress, leaseExpiresAt);
+    }
+
+    // Keep these checks at the activation boundary as a final invariant. In particular, a
+    // malformed descriptor must never bypass them by declaring no chunks.
+    requireRegistrationTotals(registration, progress);
+    requireCoverageTotals(coverage, progress);
+
+    statsStore.validatePreparedStatsGenerationRetry(tableId, snapshotId, generationId, List.of());
 
     IndexArtifactRepository.PreparedActivation preparedIndexes = null;
     if (publishesIndexes) {
-      indexes.registerTrustedOwnerIndexArtifactReferencesInGeneration(
-          tableId,
-          snapshotId,
-          generationId,
-          generationPrefix(tableId, snapshotId, generationId) + EXECUTOR_SEGMENT,
-          indexReferences);
       var predecessor =
           indexes.captureGenerationInput(tableId, snapshotId, List.of()).predecessor();
       preparedIndexes =
@@ -290,13 +481,25 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     Snapshot publishedSnapshot = snapshot;
     var existingSnapshot = snapshots.getByIdConsistent(tableId, snapshotId);
     if (existingSnapshot.isPresent()) {
-      if (!sameOwnerSnapshot(existingSnapshot.get(), snapshot)) {
+      if (!sameOwnerSnapshot(existingSnapshot.get(), snapshot)
+          || (existingSnapshot.get().hasReuseManifestRef()
+              && !existingSnapshot.get().getReuseManifestRef().equals(reuseManifestRef))) {
         throw GrpcErrors.preconditionFailed(
             correlationId(),
             GeneratedErrorMessages.MessageKey.PUBLICATION_SNAPSHOT_CONFLICT,
             Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
       }
-      publishedSnapshot = existingSnapshot.get();
+      try {
+        var preparedSnapshot =
+            snapshots.prepareReuseManifestPublication(tableId, snapshotId, reuseManifestRef);
+        publishedSnapshot = preparedSnapshot.snapshot();
+        publicationUpdates.addAll(preparedSnapshot.pointerUpdates());
+      } catch (BaseResourceRepository.NameConflictException error) {
+        throw GrpcErrors.preconditionFailed(
+            correlationId(),
+            GeneratedErrorMessages.MessageKey.PUBLICATION_SNAPSHOT_CONFLICT,
+            Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
+      }
     } else {
       publicationUpdates.addAll(snapshots.prepareCreatePublicationUpdates(snapshot));
     }
@@ -307,23 +510,202 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
         persistence.prepareStatsGenerationForPublication(tableId, snapshotId, generationId, false);
     boolean activated =
         persistence.publishPreparedStatsGeneration(
-            tableId, snapshotId, generationId, allStats, predecessor, publicationFence);
+            tableId, snapshotId, generationId, List.of(), predecessor, publicationFence);
     if (activated) {
       if (preparedIndexes != null) {
         indexes.completePreparedGenerationActivation(tableId, snapshotId, preparedIndexes);
       }
       persistence.clearPrewrittenArtifactProtections(tableId, snapshotId, generationId);
-      // publishPreparedStatsGeneration already committed the activated generation onto the table
-      // root, and maybeAdvance re-commits it when the current-snapshot pointer moves onto this
-      // snapshot. No third commit is needed here.
+      // The publication fence committed both a new snapshot and an existing snapshot's reuse-root
+      // update atomically with stats/index activation. maybeAdvance re-commits the activated
+      // generation when the current-snapshot pointer moves onto this snapshot.
       currentSnapshots.maybeAdvance(tableId, publishedSnapshot, correlationId());
+      reuseLeases.release(tableId, generationId);
     }
+    return completedResponse(manifest, manifestIdentity, progress, activated, leaseExpiresAt);
+  }
+
+  private CompleteOwnerPublicationResponse pendingCompletion(
+      SnapshotCaptureManifest manifest,
+      String manifestIdentity,
+      OwnerReuseLeaseRepository.RegistrationProgress progress,
+      long leaseExpiresAt) {
     return CompleteOwnerPublicationResponse.newBuilder()
-        .setAggregateStatsPublished(aggregateStats.size())
-        .setFileStatsPublished(fileStats.size())
-        .setIndexArtifactsPublished(manifest.getIndexArtifactsCount())
-        .setActivated(activated)
+        .setAggregateStatsPublished(manifest.getOwnerAggregateStatsRecordCount())
+        .setFileStatsPublished(manifest.getOwnerFileStatsRecordCount())
+        .setIndexArtifactsPublished(manifest.getOwnerIndexArtifactCount())
+        .setActivated(false)
+        .setNextCompletionCursor(completionCursor(manifestIdentity, progress))
+        .setReuseLeaseExpiresAtEpochMs(leaseExpiresAt)
         .build();
+  }
+
+  private CompleteOwnerPublicationResponse completedResponse(
+      SnapshotCaptureManifest manifest,
+      String manifestIdentity,
+      OwnerReuseLeaseRepository.RegistrationProgress progress,
+      boolean activated,
+      long leaseExpiresAt) {
+    return CompleteOwnerPublicationResponse.newBuilder()
+        .setAggregateStatsPublished(manifest.getOwnerAggregateStatsRecordCount())
+        .setFileStatsPublished(manifest.getOwnerFileStatsRecordCount())
+        .setIndexArtifactsPublished(manifest.getOwnerIndexArtifactCount())
+        .setActivated(activated)
+        .setNextCompletionCursor(completionCursor(manifestIdentity, progress))
+        .setReuseLeaseExpiresAtEpochMs(activated ? 0L : leaseExpiresAt)
+        .build();
+  }
+
+  private boolean publicationAlreadyCommitted(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      Snapshot expectedSnapshot,
+      SnapshotReuseManifestRef reuseManifestRef) {
+    Optional<Snapshot> stored = snapshots.getByIdConsistent(tableId, snapshotId);
+    if (stored.isEmpty()
+        || !sameOwnerSnapshot(stored.orElseThrow(), expectedSnapshot)
+        || !stored.orElseThrow().hasReuseManifestRef()
+        || !stored.orElseThrow().getReuseManifestRef().equals(reuseManifestRef)) {
+      return false;
+    }
+    return statsStore.validatePreparedStatsGenerationRetry(
+        tableId, snapshotId, generationId, List.of());
+  }
+
+  private void validateCompletionCursor(
+      String requested,
+      String manifestIdentity,
+      OwnerReuseLeaseRepository.RegistrationProgress progress) {
+    if (progress.equals(OwnerReuseLeaseRepository.RegistrationProgress.initial())) {
+      if (!requested.isEmpty()) {
+        throw GrpcErrors.invalidArgument(
+            correlationId(), null, Map.of("field", "completion_cursor"));
+      }
+      return;
+    }
+    String current = completionCursor(manifestIdentity, progress);
+    OwnerReuseLeaseRepository.RegistrationProgress predecessor;
+    if (progress.coverageChunk() > 0L) {
+      predecessor =
+          new OwnerReuseLeaseRepository.RegistrationProgress(
+              progress.registrationChunk(),
+              progress.coverageChunk() - 1L,
+              progress.coverageRecordCount(),
+              progress.objectCount(),
+              progress.fileStatsTargetCount(),
+              progress.indexTargetCount(),
+              progress.aggregateStatsTargetCount(),
+              progress.lastTarget(),
+              progress.lastCoverageId(),
+              progress.sawExternalSidecar());
+    } else {
+      predecessor =
+          new OwnerReuseLeaseRepository.RegistrationProgress(
+              progress.registrationChunk() - 1L,
+              0L,
+              progress.coverageRecordCount(),
+              progress.objectCount(),
+              progress.fileStatsTargetCount(),
+              progress.indexTargetCount(),
+              progress.aggregateStatsTargetCount(),
+              progress.lastTarget(),
+              progress.lastCoverageId(),
+              progress.sawExternalSidecar());
+    }
+    String previous =
+        predecessor.registrationChunk() == 0L && predecessor.coverageChunk() == 0L
+            ? ""
+            : completionCursor(manifestIdentity, predecessor);
+    if (!MessageDigest.isEqual(
+            requested.getBytes(StandardCharsets.UTF_8), current.getBytes(StandardCharsets.UTF_8))
+        && !MessageDigest.isEqual(
+            requested.getBytes(StandardCharsets.UTF_8),
+            previous.getBytes(StandardCharsets.UTF_8))) {
+      throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "completion_cursor"));
+    }
+  }
+
+  private static String completionCursor(
+      String manifestIdentity, OwnerReuseLeaseRepository.RegistrationProgress progress) {
+    byte[] digest =
+        sha256(
+            ("owner-complete-v1\n"
+                    + manifestIdentity
+                    + "\n"
+                    + Long.toUnsignedString(progress.registrationChunk())
+                    + "\n"
+                    + Long.toUnsignedString(progress.coverageChunk()))
+                .getBytes(StandardCharsets.UTF_8));
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(digest);
+  }
+
+  private void requireRegistrationTotals(
+      ai.floedb.floecat.reconciler.rpc.OwnerArtifactRegistrationManifestRef descriptor,
+      OwnerReuseLeaseRepository.RegistrationProgress progress) {
+    if (progress.objectCount() != descriptor.getObjectCount()
+        || progress.fileStatsTargetCount() != descriptor.getFileStatsTargetCount()
+        || progress.indexTargetCount() != descriptor.getIndexTargetCount()
+        || progress.aggregateStatsTargetCount() != descriptor.getAggregateStatsTargetCount()) {
+      throw invalidManifest();
+    }
+  }
+
+  private void requireCoverageTotals(
+      ai.floedb.floecat.reconciler.rpc.ReusableCoverageManifestRef descriptor,
+      OwnerReuseLeaseRepository.RegistrationProgress progress) {
+    if (progress.coverageRecordCount() != descriptor.getEntryCount()
+        || progress.sawExternalSidecar()
+            != (descriptor.getExternalSidecarStorageSha256().size() == 32)) {
+      throw invalidManifest();
+    }
+  }
+
+  private void registerOwnerArtifactBatch(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      boolean publishesIndexes,
+      List<OwnerArtifactObjectReference> objects) {
+    OwnerArtifactReferences references =
+        ownerArtifactReferences(
+            generationPrefix(tableId, snapshotId, generationId) + OWNER_SEGMENT,
+            Keys.tableReusableArtifactBlobPrefix(tableId.getAccountId(), tableId.getId()),
+            generationPrefix(tableId, snapshotId, generationId) + EXECUTOR_SEGMENT,
+            publishesIndexes,
+            objects);
+    List<StatsStore.PrewrittenTargetStatsReference> aggregateStats = references.aggregateStats();
+    List<StatsStore.PrewrittenTargetStatsReference> fileStats = references.fileStats();
+    if (aggregateStats.stream()
+            .anyMatch(value -> !isAggregateTargetStorageId(value.targetStorageId()))
+        || fileStats.stream()
+            .anyMatch(value -> !isFileStatsTargetStorageId(value.targetStorageId()))) {
+      throw invalidManifest();
+    }
+    List<StatsStore.PrewrittenTargetStatsReference> stats =
+        new ArrayList<>(aggregateStats.size() + fileStats.size());
+    stats.addAll(aggregateStats);
+    stats.addAll(fileStats);
+    if (!stats.isEmpty()) {
+      statsStore.registerPrewrittenStatsReferencesInGeneration(
+          tableId, snapshotId, generationId, stats);
+    }
+    List<IndexArtifactRepository.PrewrittenIndexArtifactReference> indexReferences =
+        references.indexes();
+    List<StatsStore.PrewrittenStatsObject> protections =
+        protectedObjects(aggregateStats, indexReferences);
+    if (!protections.isEmpty()) {
+      statsStore.protectPrewrittenStatsObjectsInGeneration(
+          tableId, snapshotId, generationId, generationId, protections);
+    }
+    if (!indexReferences.isEmpty()) {
+      indexes.registerTrustedOwnerIndexArtifactReferencesInGeneration(
+          tableId,
+          snapshotId,
+          generationId,
+          generationPrefix(tableId, snapshotId, generationId) + EXECUTOR_SEGMENT,
+          indexReferences);
+    }
   }
 
   private Snapshot publicationSnapshot(
@@ -385,7 +767,15 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       PublicationId publication,
       OwnerPublicationManifestRef descriptor,
       SnapshotCaptureManifest manifest) {
-    if (manifest.getFormatVersion() != 1
+    long fileStatsCount = manifest.getOwnerFileStatsRecordCount();
+    long aggregateStatsCount = manifest.getOwnerAggregateStatsRecordCount();
+    if (fileStatsCount < 0L
+        || aggregateStatsCount < 0L
+        || manifest.getOwnerIndexArtifactCount() < 0L
+        || descriptor.getStatsRecordCount() < 0L
+        || descriptor.getIndexArtifactCount() < 0L
+        || fileStatsCount > Long.MAX_VALUE - aggregateStatsCount
+        || manifest.getFormatVersion() != 1
         || !manifest.hasCapturePolicy()
         || !tableId.getAccountId().equals(manifest.getAccountId())
         || !tableId.getId().equals(manifest.getTableId())
@@ -394,15 +784,56 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
         || !tableId.getAccountId().equals(descriptor.getAccountId())
         || !tableId.getId().equals(descriptor.getTableId())
         || snapshotId != descriptor.getSnapshotId()
-        || manifest.getFileStatsCount() != manifest.getFileStatsRecordCount()
-        || manifest.getFinalStatsCount() != manifest.getFinalStatsRecordCount()
-        || manifest.getIndexArtifactsCount() != manifest.getIndexArtifactCount()
-        || descriptor.getStatsRecordCount()
-            != manifest.getFileStatsCount() + manifest.getFinalStatsCount()
-        || descriptor.getIndexArtifactCount() != manifest.getIndexArtifactsCount()) {
+        || !manifest.hasOwnerArtifactRegistrationManifest()
+        || descriptor.getStatsRecordCount() != fileStatsCount + aggregateStatsCount
+        || descriptor.getIndexArtifactCount() != manifest.getOwnerIndexArtifactCount()
+        || manifest.getFileStatsCount() != 0
+        || manifest.getIndexArtifactsCount() != 0
+        || manifest.getFinalStatsCount() != 0
+        || manifest.getOwnerArtifactObjectsCount() != 0) {
       throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "manifest"));
     }
     validateCapturePolicy(publication, manifest);
+    validateReusableCoverageManifestDescriptor(tableId, manifest);
+    validateRegistrationManifestDescriptor(tableId, manifest);
+  }
+
+  private void validateRegistrationManifestDescriptor(
+      ResourceId tableId, SnapshotCaptureManifest manifest) {
+    var descriptor = manifest.getOwnerArtifactRegistrationManifest();
+    if (descriptor.getFormatVersion() != OwnerArtifactRegistrationManifest.FORMAT_VERSION
+        || descriptor.getPayloadBytes() < OwnerArtifactRegistrationManifest.CHUNK_HEADER_BYTES
+        || descriptor.getPayloadSha256().size() != 32
+        || !descriptor.hasCommitmentIndex()
+        || descriptor.getObjectCount() <= 0L
+        || descriptor.getFileStatsTargetCount() < 0L
+        || descriptor.getIndexTargetCount() < 0L
+        || descriptor.getAggregateStatsTargetCount() < 0L
+        || !OwnerArtifactRegistrationManifest.hasContentAddressedUri(
+            descriptor, tableId.getAccountId(), tableId.getId(), manifest.getSnapshotId())
+        || descriptor.getFileStatsTargetCount() != manifest.getOwnerFileStatsRecordCount()
+        || descriptor.getIndexTargetCount() != manifest.getOwnerIndexArtifactCount()
+        || descriptor.getAggregateStatsTargetCount()
+            != manifest.getOwnerAggregateStatsRecordCount()) {
+      throw invalidManifest();
+    }
+  }
+
+  private void validateReusableCoverageManifestDescriptor(
+      ResourceId tableId, SnapshotCaptureManifest manifest) {
+    if (manifest.getManifestKind() != SnapshotCaptureManifestKind.SCMK_OWNER_V2
+        || !manifest.hasReusableCoverageManifest()) {
+      throw invalidManifest();
+    }
+    var descriptor = manifest.getReusableCoverageManifest();
+    String requiredPrefix =
+        Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
+            tableId.getAccountId(), tableId.getId(), manifest.getSnapshotId());
+    if (!descriptor.hasCommitmentIndex()
+        || !ReusableCoverageManifest.hasValidDescriptor(descriptor)
+        || !ReusableCoverageManifest.hasContentAddressedUri(descriptor, requiredPrefix)) {
+      throw invalidManifest();
+    }
   }
 
   private void validateCapturePolicy(PublicationId publication, SnapshotCaptureManifest manifest) {
@@ -423,12 +854,12 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     boolean indexes = requests(policy, CaptureOutput.CO_PARQUET_PAGE_INDEX);
     if (fileStats != publication.publishFileStats()
         || indexes != publication.publishIndexes()
-        || (!fileStats && manifest.getFileStatsCount() != 0)
+        || (!fileStats && manifest.getOwnerFileStatsRecordCount() != 0)
         || (fileStats
             && manifest.getSourceFileCount() > 0
-            && manifest.getFileStatsCount() < manifest.getSourceFileCount())
-        || (!indexes && manifest.getIndexArtifactsCount() != 0)
-        || (indexes && manifest.getIndexArtifactsCount() != manifest.getSourceFileCount())) {
+            && manifest.getOwnerFileStatsRecordCount() < manifest.getSourceFileCount())
+        || (!indexes && manifest.getOwnerIndexArtifactCount() != 0)
+        || (indexes && manifest.getOwnerIndexArtifactCount() != manifest.getSourceFileCount())) {
       throw invalidManifest();
     }
     Set<String> selectors = new HashSet<>();
@@ -452,6 +883,97 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
 
   private static boolean requests(CapturePolicy policy, CaptureOutput output) {
     return policy.getOutputsList().contains(output);
+  }
+
+  private record OwnerArtifactReferences(
+      List<StatsStore.PrewrittenTargetStatsReference> aggregateStats,
+      List<StatsStore.PrewrittenTargetStatsReference> fileStats,
+      List<IndexArtifactRepository.PrewrittenIndexArtifactReference> indexes) {}
+
+  private OwnerArtifactReferences ownerArtifactReferences(
+      String aggregatePrefix,
+      String reusablePrefix,
+      String indexPrefix,
+      boolean publishesIndexes,
+      List<OwnerArtifactObjectReference> objects) {
+    LinkedHashMap<String, StatsStore.PrewrittenTargetStatsReference> aggregate =
+        new LinkedHashMap<>();
+    LinkedHashMap<String, StatsStore.PrewrittenTargetStatsReference> files = new LinkedHashMap<>();
+    LinkedHashMap<String, IndexArtifactRepository.PrewrittenIndexArtifactReference> indexes =
+        new LinkedHashMap<>();
+    for (OwnerArtifactObjectReference object : objects) {
+      validateOwnerObject(object);
+      if (object.getAggregateStatsTargetStorageIdsCount() > 0) {
+        if (object.getFileStatsTargetStorageIdsCount() != 0
+            || object.getIndexTargetStorageIdsCount() != 0
+            || !object.getPayloadUri().startsWith(aggregatePrefix)) {
+          throw invalidManifest();
+        }
+        for (String target : object.getAggregateStatsTargetStorageIdsList()) {
+          if (!isAggregateTargetStorageId(target)
+              || aggregate.putIfAbsent(target, statsReference(target, object)) != null) {
+            throw invalidManifest();
+          }
+        }
+      } else if (object.getFileStatsTargetStorageIdsCount() > 0) {
+        if (object.getIndexTargetStorageIdsCount() != 0
+            || !Keys.isOwnerReusableArtifactBlobUri(
+                reusablePrefix, "statistics/files", ".pb", object.getPayloadUri())) {
+          throw invalidManifest();
+        }
+        for (String target : object.getFileStatsTargetStorageIdsList()) {
+          if (!isFileStatsTargetStorageId(target)
+              || files.putIfAbsent(target, statsReference(target, object)) != null) {
+            throw invalidManifest();
+          }
+        }
+      } else if (publishesIndexes) {
+        if (!object.getPayloadUri().startsWith(indexPrefix)
+            || !ReusableArtifactBundleUris.isBundleUri(object.getPayloadUri())
+            || !ReusableArtifactBundleUris.matchesDigest(
+                object.getPayloadUri(), object.getPayloadSha256().toByteArray())) {
+          throw invalidManifest();
+        }
+        for (String target : object.getIndexTargetStorageIdsList()) {
+          var reference =
+              new IndexArtifactRepository.PrewrittenIndexArtifactReference(
+                  target,
+                  object.getPayloadUri(),
+                  object.getPayloadBytes(),
+                  object.getPayloadSha256().toByteArray());
+          if (!target.startsWith("file:")
+              || target.length() == "file:".length()
+              || indexes.putIfAbsent(target, reference) != null) {
+            throw invalidManifest();
+          }
+        }
+      }
+    }
+    List<StatsStore.PrewrittenTargetStatsReference> sortedFiles = new ArrayList<>(files.values());
+    sortedFiles.sort(
+        Comparator.comparing(StatsStore.PrewrittenTargetStatsReference::targetStorageId));
+    return new OwnerArtifactReferences(
+        List.copyOf(aggregate.values()), List.copyOf(sortedFiles), List.copyOf(indexes.values()));
+  }
+
+  private static StatsStore.PrewrittenTargetStatsReference statsReference(
+      String target, OwnerArtifactObjectReference object) {
+    return new StatsStore.PrewrittenTargetStatsReference(
+        target,
+        object.getPayloadUri(),
+        object.getPayloadBytes(),
+        object.getPayloadSha256().toByteArray());
+  }
+
+  private void validateOwnerObject(OwnerArtifactObjectReference object) {
+    if (object.getPayloadUri().isBlank()
+        || object.getPayloadBytes() == 0
+        || object.getPayloadSha256().size() != 32
+        || (object.getFileStatsTargetStorageIdsCount() == 0
+            && object.getIndexTargetStorageIdsCount() == 0
+            && object.getAggregateStatsTargetStorageIdsCount() == 0)) {
+      throw invalidManifest();
+    }
   }
 
   private RuntimeException invalidManifest() {
@@ -480,59 +1002,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
               reference.blobUri(), reference.blobBytes(), reference.blobSha256()));
     }
     return List.copyOf(unique.values());
-  }
-
-  private List<StatsStore.PrewrittenTargetStatsReference> statsReferences(
-      String prefix, List<StatsObjectDescriptor> values) {
-    LinkedHashMap<String, StatsStore.PrewrittenTargetStatsReference> unique = new LinkedHashMap<>();
-    for (StatsObjectDescriptor value : values) {
-      validateReference(prefix, value);
-      var reference =
-          new StatsStore.PrewrittenTargetStatsReference(
-              value.getTargetStorageId(),
-              value.getPayloadUri(),
-              value.getPayloadBytes(),
-              value.getPayloadSha256().toByteArray());
-      if (unique.putIfAbsent(value.getTargetStorageId(), reference) != null) {
-        throw invalidManifest();
-      }
-    }
-    List<StatsStore.PrewrittenTargetStatsReference> result = new ArrayList<>(unique.values());
-    result.sort(Comparator.comparing(StatsStore.PrewrittenTargetStatsReference::targetStorageId));
-    return List.copyOf(result);
-  }
-
-  private List<IndexArtifactRepository.PrewrittenIndexArtifactReference> indexReferences(
-      String prefix, List<StatsObjectDescriptor> values) {
-    LinkedHashMap<String, IndexArtifactRepository.PrewrittenIndexArtifactReference> unique =
-        new LinkedHashMap<>();
-    for (StatsObjectDescriptor value : values) {
-      validateReference(prefix, value);
-      if (!value.getTargetStorageId().startsWith("file:")
-          || value.getTargetStorageId().length() == "file:".length()) {
-        throw invalidManifest();
-      }
-      var reference =
-          new IndexArtifactRepository.PrewrittenIndexArtifactReference(
-              value.getTargetStorageId(),
-              value.getPayloadUri(),
-              value.getPayloadBytes(),
-              value.getPayloadSha256().toByteArray());
-      if (unique.putIfAbsent(value.getTargetStorageId(), reference) != null) {
-        throw invalidManifest();
-      }
-    }
-    return List.copyOf(unique.values());
-  }
-
-  private void validateReference(String prefix, StatsObjectDescriptor value) {
-    if (value.getTargetStorageId().isBlank()
-        || value.getPayloadUri().isBlank()
-        || !value.getPayloadUri().startsWith(prefix)
-        || value.getPayloadBytes() == 0) {
-      throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "references"));
-    }
-    requireDigest(value.getPayloadSha256().toByteArray(), "payload_sha256");
   }
 
   private static boolean isAggregateTargetStorageId(String value) {
@@ -654,13 +1123,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
   private void requireDigest(byte[] digest, String field) {
     if (digest.length != 32) {
       throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", field));
-    }
-  }
-
-  private void requireReferenceCount(String field, int count, int maximum, boolean emptyAllowed) {
-    if ((!emptyAllowed && count == 0) || count > maximum) {
-      throw GrpcErrors.invalidArgument(
-          correlationId(), null, Map.of("field", field, "max_count", Integer.toString(maximum)));
     }
   }
 

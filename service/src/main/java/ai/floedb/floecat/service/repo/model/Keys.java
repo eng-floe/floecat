@@ -935,6 +935,61 @@ public final class Keys {
     return tableBlobPrefix(accountId, tableId) + "target-stats/";
   }
 
+  /** Immutable statistics and sidecars shared by Owner-managed capture generations. */
+  public static String tableReusableArtifactBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "reusable-artifacts/";
+  }
+
+  /** Canonical managed Owner-v2 reusable artifact URI, addressed by coverage identity. */
+  public static String ownerReusableArtifactBlobUri(
+      String reusablePrefix, String familyDirectory, String coverageHex, String suffix) {
+    return req("reusable_prefix", reusablePrefix)
+        + req("family_directory", familyDirectory)
+        + "/"
+        + req("coverage_sha256", coverageHex)
+        + req("suffix", suffix);
+  }
+
+  /** Whether a URI is the canonical managed Owner-v2 object for a SHA-256 coverage identity. */
+  public static boolean isOwnerReusableArtifactBlobUri(
+      String reusablePrefix, String familyDirectory, String suffix, String uri) {
+    if (uri == null) {
+      return false;
+    }
+    String prefix =
+        req("reusable_prefix", reusablePrefix) + req("family_directory", familyDirectory) + "/";
+    String requiredSuffix = req("suffix", suffix);
+    if (!uri.startsWith(prefix) || !uri.endsWith(requiredSuffix)) {
+      return false;
+    }
+    String coverageHex = uri.substring(prefix.length(), uri.length() - requiredSuffix.length());
+    return coverageHex.length() == 64
+        && coverageHex
+            .chars()
+            .allMatch(value -> value >= '0' && value <= '9' || value >= 'a' && value <= 'f');
+  }
+
+  public static String tableOwnerReuseLeasePointerPrefix(String accountId, String tableId) {
+    return String.format(
+        "/accounts/%s/tables/%s/owner-reuse-leases/",
+        encode(req("account_id", accountId)), encode(req("table_id", tableId)));
+  }
+
+  public static String tableOwnerReuseLeasePointer(
+      String accountId, String tableId, String publicationId) {
+    return tableOwnerReuseLeasePointerPrefix(accountId, tableId)
+        + encode(req("publication_id", publicationId));
+  }
+
+  public static String tableOwnerPublicationProgressPointer(
+      String accountId, String tableId, String publicationId) {
+    return String.format(
+        "/accounts/%s/tables/%s/owner-publication-progress/%s",
+        encode(req("account_id", accountId)),
+        encode(req("table_id", tableId)),
+        encode(req("publication_id", publicationId)));
+  }
+
   public static String snapshotIndexArtifactDirectoryPointer(
       String accountId, String tableId, long snapshotId) {
     return String.format(
@@ -967,6 +1022,37 @@ public final class Keys {
     return snapshotIndexArtifactCaptureManifestBlobPrefix(accountId, tableId, snapshotId)
         + encode(req("sha256", sha256))
         + ".pb";
+  }
+
+  public static String snapshotOwnerRegistrationManifestBlobUri(
+      String accountId, String tableId, long snapshotId, String sha256) {
+    return snapshotIndexArtifactCaptureManifestBlobPrefix(accountId, tableId, snapshotId)
+        + "registration-"
+        + encode(req("sha256", sha256))
+        + ".bin";
+  }
+
+  public static String snapshotOwnerManifestCommitmentIndexBlobUri(
+      String accountId, String tableId, long snapshotId, String domain, String sha256) {
+    return snapshotIndexArtifactCaptureManifestBlobPrefix(accountId, tableId, snapshotId)
+        + "commitment-"
+        + encode(req("domain", domain))
+        + "-"
+        + encode(req("sha256", sha256))
+        + ".pb";
+  }
+
+  public static String ownerPublicationLeaseBlobUri(
+      String accountId, String tableId, String publicationId, String sha256) {
+    return tableOwnerPublicationLeaseBlobPrefix(accountId, tableId)
+        + encode(req("publication_id", publicationId))
+        + "/"
+        + encode(req("sha256", sha256))
+        + ".pb";
+  }
+
+  public static String tableOwnerPublicationLeaseBlobPrefix(String accountId, String tableId) {
+    return tableBlobPrefix(accountId, tableId) + "owner-publication-leases/";
   }
 
   public static String snapshotIndexArtifactGenerationPrefix(
@@ -2257,6 +2343,17 @@ public final class Keys {
           }
           return null;
         }
+      case "reusable-artifacts":
+        // These coverage-addressed objects intentionally have no single owner pointer. GC must
+        // therefore defer them to its remark-proven candidate pass, where Owner publication
+        // namespace leases are checked before deletion. Do not add an owner here without moving
+        // that lease check onto the primary sweep as well.
+        return null;
+      case "owner-publication-leases":
+        // owner-publication-leases/<publication_id>/<sha>.pb
+        return seg.length == 7
+            ? tableOwnerReuseLeasePointer(account, table, percentDecode(seg[5]))
+            : null;
       default:
         return null;
     }

@@ -52,6 +52,13 @@ message SnapshotReuseManifestRef {
   // Identifies the capture-manifest contract before the manifest object is fetched. References
   // written before this field existed have version zero and are deliberately not reusable.
   uint32 format_version = 5;
+  SnapshotReuseManifestKind kind = 6;
+}
+
+enum SnapshotReuseManifestKind {
+  SRMK_UNSPECIFIED = 0;
+  SRMK_RECONCILER = 1;
+  SRMK_OWNER_V2 = 2;
 }
 
 message CurrentSnapshotPointer {

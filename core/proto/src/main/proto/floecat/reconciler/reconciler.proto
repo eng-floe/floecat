@@ -359,6 +359,77 @@ message ReusableArtifactBundlePayload {
   repeated ai.floedb.floecat.catalog.IndexArtifactRecord index_artifacts = 3;
 }
 
+// Trusted Owner-v2 registration for one immutable object. Floecat registers the logical targets
+// below without reading or validating the payload; the authenticated Owner is the content trust
+// boundary. An individual file-stat object has one stats target. A publication bundle may carry
+// many index targets using ReusableArtifactBundlePayload.
+message OwnerArtifactObjectReference {
+  string payload_uri = 1;
+  uint64 payload_bytes = 2;
+  bytes payload_sha256 = 3;
+  repeated string file_stats_target_storage_ids = 4;
+  repeated string index_target_storage_ids = 5;
+  repeated string aggregate_stats_target_storage_ids = 6;
+}
+
+enum ExternalManifestDomain {
+  EMD_UNSPECIFIED = 0;
+  EMD_OWNER_ARTIFACT_REGISTRATION = 1;
+  EMD_REUSABLE_COVERAGE = 2;
+}
+
+// One independently verifiable, record-aligned range in an external manifest payload.
+message ExternalManifestChunkCommitment {
+  uint64 payload_offset = 1;
+  uint64 payload_bytes = 2;
+  uint64 record_count = 3;
+  bytes payload_sha256 = 4;
+  uint64 file_stats_target_count = 5;
+  uint64 index_target_count = 6;
+  uint64 aggregate_stats_target_count = 7;
+}
+
+// Small content-addressed index that commits every byte of a large external manifest without
+// requiring Floecat to hash the complete object in one RPC. Chunks are contiguous and ordered.
+message ExternalManifestCommitmentIndex {
+  uint32 format_version = 1;
+  ExternalManifestDomain domain = 2;
+  uint64 payload_bytes = 3;
+  uint64 record_count = 4;
+  uint64 chunk_size_limit = 5;
+  repeated ExternalManifestChunkCommitment chunks = 6;
+  uint64 file_stats_target_count = 7;
+  uint64 index_target_count = 8;
+  uint64 aggregate_stats_target_count = 9;
+  uint32 fixed_record_bytes = 10;
+}
+
+message ExternalManifestCommitmentIndexRef {
+  uint32 format_version = 1;
+  ExternalManifestDomain domain = 2;
+  string uri = 3;
+  uint64 payload_bytes = 4;
+  bytes payload_sha256 = 5;
+  uint64 chunk_count = 6;
+}
+
+// External, sequential registration input for Owner-v2 publication. Each committed chunk has its
+// own header followed by length-prefixed OwnerArtifactObjectReference records sorted by unsigned
+// UTF-8 target id. Floecat verifies one bounded chunk per Complete call.
+message OwnerArtifactRegistrationManifestRef {
+  uint32 format_version = 1;
+  string uri = 2;
+  uint64 payload_bytes = 3;
+  // Informational whole-payload digest. Bounded verification and URI identity are defined by the
+  // commitment index, so Floecat never rereads the complete payload to validate this field.
+  bytes payload_sha256 = 4;
+  uint64 object_count = 5;
+  uint64 file_stats_target_count = 6;
+  uint64 index_target_count = 7;
+  uint64 aggregate_stats_target_count = 8;
+  ExternalManifestCommitmentIndexRef commitment_index = 9;
+}
+
 // The payload descriptor plus its lightweight manifest-resident compatibility index.
 message ReusableArtifactBundleReference {
   StatsObjectDescriptor artifact = 1;
@@ -488,6 +559,40 @@ message FileGroupResultPayload {
   ReusableArtifactBundleReference reusable_artifact_bundle = 23;
 }
 
+// One snapshot-independent Executor artifact that satisfies a v2 coverage obligation. The
+// enclosing capture manifest is the complete durable reuse state for its generation; there is no
+// separate checkpoint or append-only index for Owner-managed v2 captures.
+enum ReusableOutputFamily {
+  ROF_UNSPECIFIED = 0;
+  ROF_PLANNER_STATISTICS = 1;
+  ROF_FILE_RANGE_SIDECAR = 2;
+  ROF_PAGE_GROUP_RANGE_SIDECAR = 3;
+  ROF_FILE_STATISTICS = 5;
+}
+
+enum SnapshotCaptureManifestKind {
+  SCMK_UNSPECIFIED = 0;
+  SCMK_RECONCILER = 1;
+  SCMK_OWNER_V2 = 2;
+}
+
+// Descriptor for the external fixed-record reuse manifest. Committed chunks consist only of
+// sorted 80-byte records and align on record boundaries.
+message ReusableCoverageManifestRef {
+  uint32 format_version = 1;
+  string uri = 2;
+  uint64 payload_bytes = 3;
+  // Whole-payload digest for the reconciler layout. Owner-v2 bounded verification and URI identity
+  // use commitment_index instead and do not reread the complete payload.
+  bytes payload_sha256 = 4;
+  uint64 entry_count = 5;
+  uint32 record_bytes = 6;
+  // SHA-256 of the canonical table-level external-sidecar prefix. Present exactly when records
+  // use external sidecar storage, so a changed prefix deterministically disables their reuse.
+  bytes external_sidecar_storage_sha256 = 7;
+  ExternalManifestCommitmentIndexRef commitment_index = 8;
+}
+
 // Immutable publication unit produced by the snapshot-finalize executor after it has verified all
 // child artifacts. File stats and index-wrapper mappings are staged by bounded file-group commits
 // and represented here only by group descriptors and counts. Aggregate stats produced by the
@@ -536,10 +641,24 @@ message SnapshotCaptureManifest {
   // Set by OwnerPublicationService clients whose generation is not backed by a reconcile job.
   // Legacy scheduler manifests leave this empty and continue deriving full-rescan-<parent_job_id>.
   string publication_generation_id = 33;
-  // Owner-managed publication keeps the existing one-record-per-object artifact layout. These
-  // references live in the object-store manifest rather than the Complete RPC.
+  // Legacy reconciler artifact descriptors. Owner-v2 leaves these empty and externalizes its
+  // registration stream below so the compact capture manifest remains cheap to fetch and parse.
   repeated StatsObjectDescriptor file_stats = 34;
   repeated StatsObjectDescriptor index_artifacts = 35;
+  // Complete current reusable state for an Owner-managed v2 generation. The referenced records
+  // are sorted by coverage ID; snapshot-bound index wrappers are regenerated.
+  ReusableCoverageManifestRef reusable_coverage_manifest = 36;
+  SnapshotCaptureManifestKind manifest_kind = 37;
+  // Deprecated inline Owner-v2 registration shape. Production rejects it; registration is
+  // externalized below so neither the gRPC request nor this synchronously-read manifest scales
+  // with the number of files.
+  repeated OwnerArtifactObjectReference owner_artifact_objects = 38;
+  // Owner-v2 uses this external descriptor instead of owner_artifact_objects. Counts are uint64 so
+  // publication has no protocol-level record ceiling.
+  OwnerArtifactRegistrationManifestRef owner_artifact_registration_manifest = 39;
+  uint64 owner_file_stats_record_count = 40;
+  uint64 owner_index_artifact_count = 41;
+  uint64 owner_aggregate_stats_record_count = 42;
 }
 
 // Compact reference to a committed SnapshotCaptureManifest at the URI allocated for this fenced

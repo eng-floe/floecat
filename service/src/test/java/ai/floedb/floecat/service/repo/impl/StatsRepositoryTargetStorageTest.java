@@ -226,6 +226,109 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
+  void ownerReusableFileStatisticsMaterializeEverySnapshotIdentityOnRead() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    StatsRepository repository =
+        new StatsRepository(
+            pointers, blobs, DiskBlobCacheTestSupport.create(tempDir.resolve("owner-reuse")));
+    long snapshotId = 99L;
+    String generationId = "owner-generation";
+    String path = "s3://bucket/file.parquet";
+    TargetStatsRecord neutral =
+        TargetStatsRecord.newBuilder()
+            .setTableId(TABLE_ID)
+            .setSnapshotId(0)
+            .setTarget(StatsTargetIdentity.fileTarget(path))
+            .setFile(
+                FileTargetStats.newBuilder()
+                    .setTableId(TABLE_ID)
+                    .setSnapshotId(0)
+                    .setFilePath(path)
+                    .addColumns(
+                        FileColumnStats.newBuilder()
+                            .setColumnId(1)
+                            .setScalar(
+                                ScalarStats.newBuilder()
+                                    .setUpstream(UpstreamStamp.newBuilder().setCommitRef(""))))
+                    .addColumns(FileColumnStats.newBuilder().setColumnId(2))
+                    .addColumns(
+                        FileColumnStats.newBuilder()
+                            .setColumnId(3)
+                            .setScalar(ScalarStats.newBuilder())))
+            .putProperties("floedb.floescan.snapshot-neutral-measurement", "v1")
+            .build();
+    byte[] payload = neutral.toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(payload));
+    String uri =
+        Keys.tableReusableArtifactBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId())
+            + "statistics/files/"
+            + "01".repeat(32)
+            + ".pb";
+    blobs.put(uri, payload, "application/x-protobuf");
+    var reference =
+        new StatsStore.PrewrittenTargetStatsReference(
+            StatsTargetIdentity.storageId(neutral.getTarget()), uri, payload.length, digest);
+    StatsStore.StatsGenerationPredecessor predecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    prewriteStatsGenerationManifest(blobs, snapshotId, generationId);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(reference), predecessor, null);
+
+    TargetStatsRecord materialized =
+        repository.getTargetStats(TABLE_ID, snapshotId, neutral.getTarget()).orElseThrow();
+    assertThat(materialized.getSnapshotId()).isEqualTo(snapshotId);
+    assertThat(materialized.getFile().getSnapshotId()).isEqualTo(snapshotId);
+    assertThat(materialized.getFile().getColumns(0).getScalar().getUpstream().getCommitRef())
+        .isEqualTo(Long.toString(snapshotId));
+    assertThat(materialized.getFile().getColumns(1).hasScalar()).isFalse();
+    assertThat(materialized.getFile().getColumns(2).getScalar().hasUpstream()).isFalse();
+    assertThat(materialized.getPropertiesMap())
+        .doesNotContainKey("floedb.floescan.snapshot-neutral-measurement");
+  }
+
+  @Test
+  void ownerReusableStatisticsWithUnsetValueStillMaterializeTheV1Envelope() {
+    InMemoryPointerStore pointers = new InMemoryPointerStore();
+    InMemoryBlobStore blobs = new InMemoryBlobStore();
+    StatsRepository repository = new StatsRepository(pointers, blobs);
+    long snapshotId = 100L;
+    String generationId = "owner-generation-unset-value";
+    String path = "s3://bucket/unset.parquet";
+    TargetStatsRecord neutral =
+        TargetStatsRecord.newBuilder()
+            .setTableId(TABLE_ID)
+            .setSnapshotId(0)
+            .setTarget(StatsTargetIdentity.fileTarget(path))
+            .putProperties("floedb.floescan.snapshot-neutral-measurement", "v1")
+            .build();
+    byte[] payload = neutral.toByteArray();
+    byte[] digest = HexFormat.of().parseHex(Hashing.sha256Hex(payload));
+    String uri =
+        Keys.tableReusableArtifactBlobPrefix(TABLE_ID.getAccountId(), TABLE_ID.getId())
+            + "statistics/files/"
+            + "02".repeat(32)
+            + ".pb";
+    blobs.put(uri, payload, "application/x-protobuf");
+    var reference =
+        new StatsStore.PrewrittenTargetStatsReference(
+            StatsTargetIdentity.storageId(neutral.getTarget()), uri, payload.length, digest);
+    var predecessor =
+        repository.prepareStatsGenerationForPublication(TABLE_ID, snapshotId, generationId, false);
+    prewriteStatsGenerationManifest(blobs, snapshotId, generationId);
+    repository.publishPreparedStatsGeneration(
+        TABLE_ID, snapshotId, generationId, List.of(reference), predecessor, null);
+
+    TargetStatsRecord materialized =
+        repository.getTargetStats(TABLE_ID, snapshotId, neutral.getTarget()).orElseThrow();
+
+    assertThat(materialized.getSnapshotId()).isEqualTo(snapshotId);
+    assertThat(materialized.getValueCase()).isEqualTo(TargetStatsRecord.ValueCase.VALUE_NOT_SET);
+    assertThat(materialized.getPropertiesMap())
+        .doesNotContainKey("floedb.floescan.snapshot-neutral-measurement");
+  }
+
+  @Test
   void bundledStatsReferenceRejectsUriThatDoesNotMatchDigest() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());

@@ -43,6 +43,23 @@ public interface BlobStore {
         bytes, Math.toIntExact(offset), Math.toIntExact(offset + length));
   }
 
+  /** Reads at most {@code length} bytes from {@code offset}, allowing a short result at EOF. */
+  default byte[] getRangeAtMost(String uri, long offset, int length) {
+    if (offset < 0L || length < 0) {
+      throw new IllegalArgumentException("blob range is invalid");
+    }
+    byte[] bytes = get(uri);
+    if (bytes == null) {
+      return null;
+    }
+    if (offset > bytes.length) {
+      throw new IllegalArgumentException("blob range starts beyond the object");
+    }
+    int start = Math.toIntExact(offset);
+    int end = Math.toIntExact(Math.min((long) bytes.length, Math.addExact(offset, length)));
+    return java.util.Arrays.copyOfRange(bytes, start, end);
+  }
+
   void put(String uri, byte[] bytes, String contentType);
 
   /**

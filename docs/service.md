@@ -451,6 +451,8 @@ Notable `application.properties` keys:
 | `floecat.snapshot.retention` / `floecat.snapshot.retention-grace` | The retention policy for every versioned catalog object (see above). OSS defaults are `0s` retention and `7d` grace; managed deployments should override retention explicitly. `0s` keeps every snapshot. |
 | `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for GetUserObjects. Defaults to `8`. |
 | `floecat.catalog.bundle.max_parallel_stats_warms` | Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to `16`; clamped to `>= 1`. |
+| `floecat.owner-publication.registration-batch-*` | Bounds one Owner `Complete` call by committed external-manifest bytes and, for registration chunks, objects and target-pointer writes. Defaults to 8 MiB, 10,000 objects, and 10,000 targets; tune downward if the caller's 120-second RPC deadline requires it. |
+| `floecat.owner-publication.reuse-lease-ttl-ms` | Renewable GC lease for an in-flight Owner publication. Defaults to 24 hours. |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
 | `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. Unreferenced superseded blobs wait at least retention plus grace from their write time. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |

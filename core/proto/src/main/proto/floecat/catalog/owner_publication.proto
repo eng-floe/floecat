@@ -19,8 +19,26 @@ message OwnerPublicationManifestRef {
   string manifest_uri = 4;
   uint64 manifest_bytes = 5;
   bytes manifest_sha256 = 6;
-  uint32 stats_record_count = 7;
-  uint32 index_artifact_count = 8;
+  uint64 stats_record_count = 7;
+  uint64 index_artifact_count = 8;
+}
+
+// Small immutable GC root for one in-flight Owner publication. The namespaces protect objects
+// uploaded after Begin; exact capture manifests protect the source reuse state and, after Complete
+// seals the publication, the successor coverage manifest until activation.
+message OwnerPublicationLease {
+  uint32 format_version = 1;
+  string account_id = 2;
+  string table_id = 3;
+  string publication_id = 4;
+  string reusable_namespace_prefix = 5;
+  repeated string protected_capture_manifest_uris = 6;
+  // Begin and each Complete attempt renew this deadline. GC ignores an expired lease, so an
+  // abandoned publication cannot pin the table's reusable namespace indefinitely.
+  uint64 expires_at_epoch_ms = 7;
+  // Snapshot-scoped upload namespace returned by Begin. It protects the capture manifest,
+  // registration payload, and commitment indexes before their exact names are known to Floecat.
+  repeated string protected_capture_manifest_prefixes = 8;
 }
 
 message BeginOwnerPublicationRequest {
@@ -31,6 +49,10 @@ message BeginOwnerPublicationRequest {
   string owner_generation_id = 5;
   bool publish_file_stats = 6;
   bool publish_indexes = 7;
+  // Previous finalized snapshot selected as this generation's reuse basis. From Begin until
+  // activation, Floecat leases both the table's reusable-object namespace and the exact source or
+  // successor capture manifest so concurrent GC cannot retire inputs or in-flight uploads.
+  optional int64 reuse_source_snapshot_id = 8;
 }
 
 message BeginOwnerPublicationResponse {
@@ -51,6 +73,12 @@ message BeginOwnerPublicationResponse {
   // blob-store keys relative to this URI. Authentication is supplied by the service workload.
   string artifact_storage_uri_root = 6;
   map<string, string> artifact_storage_properties = 7;
+  // Table-scoped prefix for immutable reusable statistics and managed sidecars.
+  string reusable_object_prefix = 8;
+  // True only when the publication lease also protects the requested Owner-v2 reuse source.
+  bool reuse_source_leased = 9;
+  // Retry Begin or call Complete before this time to renew GC protection while uploading.
+  uint64 reuse_lease_expires_at_epoch_ms = 10;
 }
 
 message CompleteOwnerPublicationRequest {
@@ -67,6 +95,9 @@ message CompleteOwnerPublicationRequest {
   // the deterministic publication capability without retaining mutable reservation state.
   string owner_id = 6;
   string owner_generation_id = 7;
+  // Opaque phase/chunk cursor returned by the preceding bounded call. Empty starts completion.
+  // Repeating the immediately preceding cursor is safe after a lost response.
+  string completion_cursor = 8;
 }
 
 message CompleteOwnerPublicationResponse {
@@ -74,6 +105,12 @@ message CompleteOwnerPublicationResponse {
   uint64 file_stats_published = 2;
   uint64 index_artifacts_published = 3;
   bool activated = 4;
+  // Opaque cursor to send on the next Complete call. When activated is false, Floecat has durably
+  // verified one bounded manifest chunk and deliberately returned before consuming the deadline.
+  string next_completion_cursor = 5;
+  // Renewed GC-protection deadline for this Complete attempt. Zero is returned only after an
+  // activated publication has released its lease.
+  uint64 reuse_lease_expires_at_epoch_ms = 6;
 }
 
 service OwnerPublicationService {

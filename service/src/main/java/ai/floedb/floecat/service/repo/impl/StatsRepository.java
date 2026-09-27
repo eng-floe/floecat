@@ -82,6 +82,8 @@ public class StatsRepository implements StatsStore {
   private static final String GENERATION_PUBLISHED = "PUBLISHED";
   private static final String GENERATION_DELETING = "DELETING";
   private static final String GENERATION_DELETED = "DELETED";
+  private static final String SNAPSHOT_NEUTRAL_MEASUREMENT_PROPERTY =
+      "floedb.floescan.snapshot-neutral-measurement";
   private static final long DEFAULT_DELETED_GENERATION_FENCE_RETENTION_MS =
       7L * 24L * 60L * 60L * 1000L;
 
@@ -467,17 +469,22 @@ public class StatsRepository implements StatsStore {
           value != null
               && value.blobUri() != null
               && ReusableArtifactBundleUris.isBundleUri(value.blobUri());
+      boolean ownerReusableFileStats =
+          value != null
+              && value.blobUri() != null
+              && isOwnerReusableFileStatsUri(tableId, value.blobUri());
       if (value == null
           || value.targetStorageId() == null
           || value.targetStorageId().isBlank()
           || value.blobUri() == null
-          || !value.blobUri().startsWith(requiredPrefix)
+          || (!value.blobUri().startsWith(requiredPrefix) && !ownerReusableFileStats)
           || value.blobBytes() <= 0L
           || value.blobSha256() == null
           || value.blobSha256().length != 32
           || (bundled
               && !ReusableArtifactBundleUris.matchesDigest(value.blobUri(), value.blobSha256()))
           || (!bundled
+              && !ownerReusableFileStats
               && !value
                   .blobUri()
                   .endsWith(
@@ -502,6 +509,14 @@ public class StatsRepository implements StatsStore {
     }
     writes.addAll(uniqueWrites.values());
     return writes;
+  }
+
+  private static boolean isOwnerReusableFileStatsUri(ResourceId tableId, String uri) {
+    return Keys.isOwnerReusableArtifactBlobUri(
+        Keys.tableReusableArtifactBlobPrefix(tableId.getAccountId(), tableId.getId()),
+        "statistics/files",
+        ".pb",
+        uri);
   }
 
   @Override
@@ -718,7 +733,8 @@ public class StatsRepository implements StatsStore {
       boolean bundled = object != null && ReusableArtifactBundleUris.isBundleUri(object.blobUri());
       if (object == null
           || object.blobUri() == null
-          || !object.blobUri().startsWith(requiredBlobPrefix)
+          || (!object.blobUri().startsWith(requiredBlobPrefix)
+              && !isOwnerReusableFileStatsUri(tableId, object.blobUri()))
           || object.blobBytes() <= 0L
           || object.blobSha256() == null
           || object.blobSha256().length != 32
@@ -2083,8 +2099,47 @@ public class StatsRepository implements StatsStore {
 
   private static TargetStatsRecord rebindRecord(
       TargetStatsRecord record, ResourceId tableId, long snapshotId) {
-    if (record == null
-        || (snapshotId == record.getSnapshotId() && tableId.equals(record.getTableId()))) {
+    if (record == null) {
+      return record;
+    }
+    String neutral = record.getPropertiesMap().get(SNAPSHOT_NEUTRAL_MEASUREMENT_PROPERTY);
+    if (neutral != null) {
+      if (!"v1".equals(neutral)) {
+        throw new BaseResourceRepository.CorruptionException(
+            "unsupported snapshot-neutral statistics measurement", null);
+      }
+      TargetStatsRecord.Builder builder = record.toBuilder();
+      builder
+          .setTableId(tableId)
+          .setSnapshotId(snapshotId)
+          .removeProperties(SNAPSHOT_NEUTRAL_MEASUREMENT_PROPERTY);
+      String commitRef = Long.toString(snapshotId);
+      if (builder.hasFile()) {
+        var file = builder.getFile().toBuilder().setTableId(tableId).setSnapshotId(snapshotId);
+        for (int index = 0; index < file.getColumnsCount(); index++) {
+          var column = file.getColumns(index).toBuilder();
+          if (column.hasScalar() && column.getScalar().hasUpstream()) {
+            column.setScalar(
+                column.getScalar().toBuilder()
+                    .setUpstream(
+                        column.getScalar().getUpstream().toBuilder().setCommitRef(commitRef)));
+            file.setColumns(index, column);
+          }
+        }
+        builder.setFile(file);
+      } else if (builder.hasTable() && builder.getTable().hasUpstream()) {
+        builder.setTable(
+            builder.getTable().toBuilder()
+                .setUpstream(builder.getTable().getUpstream().toBuilder().setCommitRef(commitRef)));
+      } else if (builder.hasScalar() && builder.getScalar().hasUpstream()) {
+        builder.setScalar(
+            builder.getScalar().toBuilder()
+                .setUpstream(
+                    builder.getScalar().getUpstream().toBuilder().setCommitRef(commitRef)));
+      }
+      return builder.build();
+    }
+    if (snapshotId == record.getSnapshotId() && tableId.equals(record.getTableId())) {
       return record;
     }
     return record.toBuilder().setTableId(tableId).setSnapshotId(snapshotId).build();

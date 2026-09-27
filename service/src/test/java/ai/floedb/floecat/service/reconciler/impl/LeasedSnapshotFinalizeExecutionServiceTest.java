@@ -594,6 +594,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
             eq(
                 SnapshotReuseManifestRef.newBuilder()
                     .setFormatVersion(1)
+                    .setKind(
+                        ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind.SRMK_RECONCILER)
                     .setUri(durableManifestUri)
                     .setPayloadBytes(durableManifestBytes.length)
                     .setPayloadSha256(ByteString.copyFrom(sha256(durableManifestBytes)))

@@ -105,7 +105,8 @@ class CasBlobGcSchedulerTest {
                 accounts,
                 ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.ALWAYS_OWNED);
     scheduler.casBlobGc = () -> gc;
-    scheduler.observability = new TestObservability();
+    TestObservability observability = new TestObservability();
+    scheduler.observability = observability;
     scheduler.storageUsageMetrics = () -> storageUsageMetrics;
     scheduler.initMeters();
 
@@ -118,6 +119,7 @@ class CasBlobGcSchedulerTest {
 
     verify(storageUsageMetrics, never())
         .recordGcEstimate(anyString(), anyInt(), anyLong(), anyInt(), anyInt());
+    assertEquals(3L, observability.gauge(ServiceMetrics.Gc.CAS_POISONED_TABLES).get().longValue());
   }
 
   @Test
@@ -312,7 +314,7 @@ class CasBlobGcSchedulerTest {
         throw new RuntimeException("simulated storage fault");
       }
       if (accountId.equals(poisonAccountId)) {
-        return new Result(99, 999L, 1, 2, 0, 0, 0, 0, 0, true, false, false);
+        return new Result(99, 999L, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, true, false, false);
       }
       return new Result(2, 11L, 1, 2, 0, 0, 0, 0, 0, false, false, false);
     }

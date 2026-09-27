@@ -67,6 +67,7 @@ public class CasBlobGcScheduler {
   // climbs — the direct "GC is falling behind on this account" signal.
   private final Map<String, Long> lastCleanSweepMs = new ConcurrentHashMap<>();
   private final AtomicInteger poisonedAccountsLastTick = new AtomicInteger(0);
+  private final AtomicInteger poisonedTablesLastTick = new AtomicInteger(0);
   private final AtomicInteger deleteUnsupportedAccountsLastTick = new AtomicInteger(0);
   private ScheduledTaskMetrics taskMetrics;
   private String continuationAccountId = "";
@@ -96,6 +97,12 @@ public class CasBlobGcScheduler {
         ServiceMetrics.Gc.CAS_POISONED_ACCOUNTS,
         () -> (double) poisonedAccountsLastTick.get(),
         "Accounts whose CAS GC delete phase was poisoned in the last tick",
+        Tag.of(TagKey.COMPONENT, "service"),
+        Tag.of(TagKey.OPERATION, "gc_cas"));
+    observability.gauge(
+        ServiceMetrics.Gc.CAS_POISONED_TABLES,
+        () -> (double) poisonedTablesLastTick.get(),
+        "Tables whose CAS GC root walk was poisoned in the last tick",
         Tag.of(TagKey.COMPONENT, "service"),
         Tag.of(TagKey.OPERATION, "gc_cas"));
     observability.gauge(
@@ -173,6 +180,7 @@ public class CasBlobGcScheduler {
 
     long tickStart = System.nanoTime();
     int poisonedThisTick = 0;
+    int poisonedTablesThisTick = 0;
     int deleteUnsupportedThisTick = 0;
     try {
       while (System.currentTimeMillis() < deadline && !stopping) {
@@ -227,6 +235,7 @@ public class CasBlobGcScheduler {
           continue;
         }
         boolean discoveryCycleComplete = fromPage && advanceAccountCursor(gc);
+        poisonedTablesThisTick += result.poisonedTables();
         if (result.deletesUnsupported()) {
           // Fail-closed skip (store cannot delete by immutable version): nothing was collected,
           // so the account's backlog age must keep climbing, exactly like a poisoned sweep.
@@ -266,6 +275,13 @@ public class CasBlobGcScheduler {
             result.referenceIndexEstimatedFalsePositivePpb(),
             Tag.of(TagKey.RESULT, "reference-index-estimated-fpp-ppb"));
         gcMetrics.recordCollection(result.tablesScanned(), Tag.of(TagKey.RESULT, "tables-scanned"));
+        gcMetrics.recordCollection(
+            result.ownerReuseLeasesScanned(), Tag.of(TagKey.RESULT, "owner-reuse-leases-scanned"));
+        gcMetrics.recordCollection(
+            result.ownerReuseLeasesMissing(), Tag.of(TagKey.RESULT, "owner-reuse-leases-missing"));
+        gcMetrics.recordCollection(
+            result.ownerReuseLeasesMalformed(),
+            Tag.of(TagKey.RESULT, "owner-reuse-leases-malformed"));
         gcMetrics.recordPause(
             Duration.ofNanos(System.nanoTime() - accountStart),
             Tag.of(TagKey.RESULT, "account-run"));
@@ -296,6 +312,7 @@ public class CasBlobGcScheduler {
       }
     } finally {
       poisonedAccountsLastTick.set(poisonedThisTick);
+      poisonedTablesLastTick.set(poisonedTablesThisTick);
       deleteUnsupportedAccountsLastTick.set(deleteUnsupportedThisTick);
       gcMetrics.recordPause(
           Duration.ofNanos(System.nanoTime() - tickStart), Tag.of(TagKey.RESULT, "tick"));

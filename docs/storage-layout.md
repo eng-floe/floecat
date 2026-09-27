@@ -46,6 +46,10 @@ Table, snapshot, stats, constraints, and index blobs:
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/{generation_id}/index-artifacts/{target_id_sha256}/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/direct/index-sidecars/{target_id}/{sha}.parquet
 /accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/index-artifacts/capture-manifests/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/index-artifacts/capture-manifests/registration-{sha}.bin
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/index-artifacts/capture-manifests/commitment-{registration|coverage}-{sha}.pb
+/accounts/{account_id}/tables/{table_id}/reusable-artifacts/{family}/{coverage_sha256}{.pb|.parquet}
+/accounts/{account_id}/tables/{table_id}/owner-publication-leases/{publication_id}/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/constraints/{snapshot_id:019d}/{sha}.pb
 ```
 
@@ -108,6 +112,8 @@ Catalog hierarchy, lookup indexes, and maintenance markers:
 /accounts/{account_id}/namespaces/{namespace_id}/markers/relations
 /accounts/{account_id}/gc/cas/generation-cursor
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
+/accounts/{account_id}/tables/{table_id}/owner-reuse-leases/{publication_id}
+/accounts/{account_id}/tables/{table_id}/owner-publication-progress/{publication_id}
 ```
 
 A catalog carries a `markers/children` marker versioning its set of namespaces. Every writer that

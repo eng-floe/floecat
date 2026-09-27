@@ -68,6 +68,16 @@ public final class ObservedBlobStore implements BlobStore {
   }
 
   @Override
+  public byte[] getRangeAtMost(String uri, long offset, int length) {
+    return observe(
+        Operation.GET_RANGE,
+        1,
+        Collections.singletonList(uri),
+        () -> delegate.getRangeAtMost(uri, offset, length),
+        ObservedBlobStore::bytes);
+  }
+
+  @Override
   public void put(String uri, byte[] bytes, String contentType) {
     delegate.put(uri, bytes, contentType);
   }
