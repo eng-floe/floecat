@@ -83,7 +83,7 @@ class OwnerReuseLeaseRepositoryTest {
     var initial = OwnerReuseLeaseRepository.RegistrationProgress.initial();
     var complete =
         new OwnerReuseLeaseRepository.RegistrationProgress(
-            1L, 0L, 0L, 2L, 3L, 4L, 5L, "table", ByteString.EMPTY, false);
+            1L, 0L, 0L, 2L, 3L, 4L, 5L, ByteString.EMPTY, false);
     assertThat(repository.progress(TABLE, PUBLICATION, "aa")).isEqualTo(initial);
 
     repository.advanceProgress(TABLE, PUBLICATION, "aa", initial, complete);
@@ -94,7 +94,7 @@ class OwnerReuseLeaseRepositoryTest {
         .isInstanceOf(IllegalArgumentException.class);
     var later =
         new OwnerReuseLeaseRepository.RegistrationProgress(
-            2L, 0L, 0L, 3L, 4L, 5L, 6L, "table2", ByteString.EMPTY, false);
+            2L, 0L, 0L, 3L, 4L, 5L, 6L, ByteString.EMPTY, false);
     assertThatThrownBy(() -> repository.advanceProgress(TABLE, PUBLICATION, "aa", initial, later))
         .isInstanceOf(RuntimeException.class);
   }
@@ -105,7 +105,7 @@ class OwnerReuseLeaseRepositoryTest {
     var initial = OwnerReuseLeaseRepository.RegistrationProgress.initial();
     var complete =
         new OwnerReuseLeaseRepository.RegistrationProgress(
-            1L, 0L, 0L, 2L, 3L, 4L, 5L, "table", ByteString.EMPTY, false);
+            1L, 0L, 0L, 2L, 3L, 4L, 5L, ByteString.EMPTY, false);
     repository.advanceProgress(TABLE, PUBLICATION, "aa", initial, complete);
 
     repository.release(TABLE, PUBLICATION);
@@ -128,7 +128,7 @@ class OwnerReuseLeaseRepositoryTest {
         "aa",
         OwnerReuseLeaseRepository.RegistrationProgress.initial(),
         new OwnerReuseLeaseRepository.RegistrationProgress(
-            1L, 0L, 0L, 1L, 0L, 0L, 1L, "table", ByteString.EMPTY, false));
+            1L, 0L, 0L, 1L, 0L, 0L, 1L, ByteString.EMPTY, false));
     now.set(1_100L);
 
     assertThatThrownBy(() -> repository.renew(TABLE, PUBLICATION, null))

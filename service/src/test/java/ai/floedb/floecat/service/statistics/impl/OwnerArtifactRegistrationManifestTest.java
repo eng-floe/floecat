@@ -7,13 +7,13 @@ package ai.floedb.floecat.service.statistics.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.reconciler.rpc.ExternalManifestChunkCommitment;
+import ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndex;
 import ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndexRef;
 import ai.floedb.floecat.reconciler.rpc.ExternalManifestDomain;
 import ai.floedb.floecat.reconciler.rpc.OwnerArtifactObjectReference;
@@ -33,7 +33,7 @@ class OwnerArtifactRegistrationManifestTest {
 
   @Test
   void readsAndValidatesOneCommittedChunkWithOneRangeGet() throws Exception {
-    byte[] payload = chunk(0L, List.of(object("column-0000000000000000001"), object("table")));
+    byte[] payload = chunk(0L, List.of(object("table"), object("column-0000000000000000001")));
     BlobStore blobs = mock(BlobStore.class);
     when(blobs.getRange(URI, 0L, payload.length)).thenReturn(payload);
     var commitment = commitment(payload, 2L, 2L);
@@ -43,8 +43,6 @@ class OwnerArtifactRegistrationManifestTest {
 
     assertEquals(2L, batch.objectCount());
     assertEquals(2L, batch.aggregateStatsTargetCount());
-    assertEquals("column-0000000000000000001", batch.firstTarget());
-    assertEquals("table", batch.lastTarget());
     verify(blobs).getRange(URI, 0L, payload.length);
   }
 
@@ -63,12 +61,6 @@ class OwnerArtifactRegistrationManifestTest {
         () ->
             OwnerArtifactRegistrationManifest.readChunk(
                 blobs, descriptor(payload, 1L), 0L, commitment));
-  }
-
-  @Test
-  void comparesTargetIdsByUnsignedUtf8Bytes() {
-    assertTrue(OwnerArtifactRegistrationManifest.compareUtf8Unsigned("\uE000", "\uD800\uDC00") < 0);
-    assertTrue(OwnerArtifactRegistrationManifest.compareUtf8Unsigned("\uD800\uDC00", "\uE000") > 0);
   }
 
   @Test
@@ -107,6 +99,53 @@ class OwnerArtifactRegistrationManifestTest {
                 10,
                 10));
     verifyNoInteractions(blobs);
+  }
+
+  @Test
+  void acceptsAZeroChunkCoverageCommitment() throws Exception {
+    BlobStore blobs = mock(BlobStore.class);
+    byte[] index =
+        ExternalManifestCommitmentIndex.newBuilder()
+            .setFormatVersion(1)
+            .setDomain(ExternalManifestDomain.EMD_REUSABLE_COVERAGE)
+            .setChunkSizeLimit(OwnerArtifactRegistrationManifest.DEFAULT_READ_BYTES)
+            .setFixedRecordBytes(ReusableCoverageManifest.RECORD_BYTES)
+            .build()
+            .toByteArray();
+    byte[] digest = MessageDigest.getInstance("SHA-256").digest(index);
+    String uri =
+        Keys.snapshotOwnerManifestCommitmentIndexBlobUri(
+            "acct", "table", 42L, "coverage", java.util.HexFormat.of().formatHex(digest));
+    var reference =
+        ExternalManifestCommitmentIndexRef.newBuilder()
+            .setFormatVersion(1)
+            .setDomain(ExternalManifestDomain.EMD_REUSABLE_COVERAGE)
+            .setUri(uri)
+            .setPayloadBytes(index.length)
+            .setPayloadSha256(ByteString.copyFrom(digest))
+            .build();
+    when(blobs.get(uri)).thenReturn(index);
+
+    var loaded =
+        ExternalManifestCommitments.load(
+            blobs,
+            reference,
+            ExternalManifestDomain.EMD_REUSABLE_COVERAGE,
+            "acct",
+            "table",
+            42L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            ReusableCoverageManifest.RECORD_BYTES,
+            OwnerArtifactRegistrationManifest.DEFAULT_READ_BYTES,
+            OwnerArtifactRegistrationManifest.DEFAULT_READ_BYTES
+                / ReusableCoverageManifest.RECORD_BYTES,
+            0);
+
+    assertEquals(0, loaded.getChunksCount());
   }
 
   private static OwnerArtifactObjectReference object(String target) {

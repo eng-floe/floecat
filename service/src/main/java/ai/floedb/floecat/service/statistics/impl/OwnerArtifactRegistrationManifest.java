@@ -36,9 +36,7 @@ final class OwnerArtifactRegistrationManifest {
       long objectCount,
       long fileStatsTargetCount,
       long indexTargetCount,
-      long aggregateStatsTargetCount,
-      String firstTarget,
-      String lastTarget) {}
+      long aggregateStatsTargetCount) {}
 
   private OwnerArtifactRegistrationManifest() {}
 
@@ -95,8 +93,6 @@ final class OwnerArtifactRegistrationManifest {
     long actualFileTargets = 0L;
     long actualIndexTargets = 0L;
     long actualAggregateTargets = 0L;
-    String firstTarget = "";
-    String lastTarget = "";
     while (records.hasRemaining()) {
       if (records.remaining() < Integer.BYTES) {
         throw new IllegalArgumentException("truncated Owner registration record length");
@@ -120,21 +116,6 @@ final class OwnerArtifactRegistrationManifest {
           Math.addExact(actualIndexTargets, object.getIndexTargetStorageIdsCount());
       actualAggregateTargets =
           Math.addExact(actualAggregateTargets, object.getAggregateStatsTargetStorageIdsCount());
-      List<String> targets = new ArrayList<>();
-      targets.addAll(object.getAggregateStatsTargetStorageIdsList());
-      targets.addAll(object.getFileStatsTargetStorageIdsList());
-      targets.addAll(object.getIndexTargetStorageIdsList());
-      for (String target : targets) {
-        if (target.isBlank()
-            || (!lastTarget.isEmpty() && compareUtf8Unsigned(lastTarget, target) >= 0)) {
-          throw new IllegalArgumentException(
-              "Owner registration manifest targets are not strictly sorted");
-        }
-        if (firstTarget.isEmpty()) {
-          firstTarget = target;
-        }
-        lastTarget = target;
-      }
     }
     if (objects.size() != objectCount
         || actualFileTargets != fileTargets
@@ -143,18 +124,7 @@ final class OwnerArtifactRegistrationManifest {
       throw new IllegalArgumentException("Owner registration chunk totals mismatch");
     }
     return new Batch(
-        List.copyOf(objects),
-        objectCount,
-        fileTargets,
-        indexTargets,
-        aggregateTargets,
-        firstTarget,
-        lastTarget);
-  }
-
-  static int compareUtf8Unsigned(String left, String right) {
-    return Arrays.compareUnsigned(
-        left.getBytes(StandardCharsets.UTF_8), right.getBytes(StandardCharsets.UTF_8));
+        List.copyOf(objects), objectCount, fileTargets, indexTargets, aggregateTargets);
   }
 
   static void validateDescriptor(OwnerArtifactRegistrationManifestRef descriptor) {

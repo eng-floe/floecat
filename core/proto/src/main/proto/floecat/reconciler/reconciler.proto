@@ -414,8 +414,8 @@ message ExternalManifestCommitmentIndexRef {
 }
 
 // External, sequential registration input for Owner-v2 publication. Each committed chunk has its
-// own header followed by length-prefixed OwnerArtifactObjectReference records sorted by unsigned
-// UTF-8 target id. Floecat verifies one bounded chunk per Complete call.
+// own header followed by length-prefixed OwnerArtifactObjectReference records. Floecat verifies
+// one bounded chunk per Complete call.
 message OwnerArtifactRegistrationManifestRef {
   uint32 format_version = 1;
   string uri = 2;
@@ -582,8 +582,8 @@ message ReusableCoverageManifestRef {
   uint32 format_version = 1;
   string uri = 2;
   uint64 payload_bytes = 3;
-  // Whole-payload digest for the reconciler layout. Owner-v2 bounded verification and URI identity
-  // use commitment_index instead and do not reread the complete payload.
+  // Informational whole-payload digest. Bounded verification and URI identity use
+  // commitment_index, so Floecat does not reread the complete payload.
   bytes payload_sha256 = 4;
   uint64 entry_count = 5;
   uint32 record_bytes = 6;

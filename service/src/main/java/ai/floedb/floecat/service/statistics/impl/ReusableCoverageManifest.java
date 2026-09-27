@@ -16,8 +16,6 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.function.Consumer;
@@ -26,11 +24,7 @@ import java.util.function.LongConsumer;
 /** Reader for the Owner v2 sorted, fixed-width reusable coverage manifest. */
 public final class ReusableCoverageManifest {
   public static final int FORMAT_VERSION = 1;
-  public static final int HEADER_BYTES = 32;
   public static final int RECORD_BYTES = 80;
-  private static final byte[] MAGIC =
-      "FLRUSE01".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-  private static final int RECORDS_PER_READ = (8 * 1024 * 1024) / RECORD_BYTES;
   private static final int STORAGE_MANAGED = 0;
   private static final int STORAGE_EXTERNAL_SIDECAR = 1;
 
@@ -54,11 +48,6 @@ public final class ReusableCoverageManifest {
 
   private ReusableCoverageManifest() {}
 
-  public static void walk(
-      BlobStore blobs, ReusableCoverageManifestRef descriptor, Consumer<Record> consumer) {
-    walk(blobs, descriptor, 0L, consumer, ignored -> {}, true);
-  }
-
   public static void walkTrusted(
       BlobStore blobs,
       ReusableCoverageManifestRef descriptor,
@@ -68,12 +57,8 @@ public final class ReusableCoverageManifest {
       String accountId,
       String tableId,
       long snapshotId) {
-    if (descriptor.hasCommitmentIndex()) {
-      walkCommitted(
-          blobs, descriptor, firstRecord, consumer, chunkComplete, accountId, tableId, snapshotId);
-      return;
-    }
-    walk(blobs, descriptor, firstRecord, consumer, chunkComplete, false);
+    walkCommitted(
+        blobs, descriptor, firstRecord, consumer, chunkComplete, accountId, tableId, snapshotId);
   }
 
   private static void walkCommitted(
@@ -166,106 +151,9 @@ public final class ReusableCoverageManifest {
         sawExternalSidecar);
   }
 
-  private static void walk(
-      BlobStore blobs,
-      ReusableCoverageManifestRef descriptor,
-      long firstRecord,
-      Consumer<Record> consumer,
-      LongConsumer chunkComplete,
-      boolean verifyDigest) {
-    validateDescriptor(descriptor);
-    if (firstRecord < 0L || firstRecord > descriptor.getEntryCount()) {
-      throw new IllegalArgumentException("reusable coverage manifest cursor is invalid");
-    }
-    MessageDigest digest = verifyDigest ? sha256() : null;
-    byte[] header = blobs.getRange(descriptor.getUri(), 0L, HEADER_BYTES);
-    if (header == null || header.length != HEADER_BYTES) {
-      throw new IllegalArgumentException("reusable coverage manifest header is unreadable");
-    }
-    if (digest != null) {
-      digest.update(header);
-    }
-    ByteBuffer head = ByteBuffer.wrap(header).order(ByteOrder.BIG_ENDIAN);
-    byte[] magic = new byte[8];
-    head.get(magic);
-    int version = head.getInt();
-    int recordBytes = head.getInt();
-    long entryCount = head.getLong();
-    long flags = head.getLong();
-    if (!Arrays.equals(magic, MAGIC)
-        || version != FORMAT_VERSION
-        || recordBytes != RECORD_BYTES
-        || entryCount != descriptor.getEntryCount()
-        || flags != 0L) {
-      throw new IllegalArgumentException("invalid reusable coverage manifest header");
-    }
-    byte[] prior = null;
-    boolean sawExternalSidecar = false;
-    long first = firstRecord;
-    while (first < entryCount) {
-      int count = (int) Math.min(RECORDS_PER_READ, entryCount - first);
-      long offset = HEADER_BYTES + Math.multiplyExact(first, (long) RECORD_BYTES);
-      byte[] chunk = blobs.getRange(descriptor.getUri(), offset, count * RECORD_BYTES);
-      if (chunk == null || chunk.length != count * RECORD_BYTES) {
-        throw new IllegalArgumentException("reusable coverage manifest record range is unreadable");
-      }
-      if (digest != null) {
-        digest.update(chunk);
-      }
-      ByteBuffer records = ByteBuffer.wrap(chunk).order(ByteOrder.BIG_ENDIAN);
-      for (int index = 0; index < count; index++) {
-        byte[] coverage = new byte[32];
-        byte[] payloadDigest = new byte[32];
-        records.get(coverage);
-        records.get(payloadDigest);
-        long payloadBytes = records.getLong();
-        ReusableOutputFamily family = ReusableOutputFamily.forNumber(records.getInt());
-        int storageSpace = records.getInt();
-        if (prior != null && Arrays.compareUnsigned(prior, coverage) >= 0) {
-          throw new IllegalArgumentException("reusable coverage manifest is not strictly sorted");
-        }
-        if (payloadBytes <= 0L
-            || (storageSpace != STORAGE_MANAGED && storageSpace != STORAGE_EXTERNAL_SIDECAR)
-            || (family != ReusableOutputFamily.ROF_PLANNER_STATISTICS
-                && family != ReusableOutputFamily.ROF_FILE_STATISTICS
-                && family != ReusableOutputFamily.ROF_FILE_RANGE_SIDECAR
-                && family != ReusableOutputFamily.ROF_PAGE_GROUP_RANGE_SIDECAR)) {
-          throw new IllegalArgumentException("invalid reusable coverage manifest record");
-        }
-        boolean sidecar =
-            family == ReusableOutputFamily.ROF_FILE_RANGE_SIDECAR
-                || family == ReusableOutputFamily.ROF_PAGE_GROUP_RANGE_SIDECAR;
-        if (storageSpace == STORAGE_EXTERNAL_SIDECAR && !sidecar) {
-          throw new IllegalArgumentException("only sidecars may use external reusable storage");
-        }
-        if (storageSpace == STORAGE_EXTERNAL_SIDECAR
-            && descriptor.getExternalSidecarStorageSha256().size() != 32) {
-          throw new IllegalArgumentException("external sidecar storage identity is missing");
-        }
-        sawExternalSidecar |= storageSpace == STORAGE_EXTERNAL_SIDECAR;
-        prior = coverage;
-        consumer.accept(new Record(coverage, family, payloadBytes, payloadDigest, storageSpace));
-      }
-      first += count;
-      chunkComplete.accept(first);
-    }
-    if (digest != null
-        && !MessageDigest.isEqual(digest.digest(), descriptor.getPayloadSha256().toByteArray())) {
-      throw new IllegalArgumentException("reusable coverage manifest digest mismatch");
-    }
-    if (firstRecord == 0L
-        && sawExternalSidecar != (descriptor.getExternalSidecarStorageSha256().size() == 32)) {
-      throw new IllegalArgumentException(
-          "external sidecar storage identity does not match records");
-    }
-  }
-
   public static boolean hasContentAddressedUri(
       ReusableCoverageManifestRef descriptor, String requiredPrefix) {
-    byte[] identity =
-        descriptor.hasCommitmentIndex()
-            ? descriptor.getCommitmentIndex().getPayloadSha256().toByteArray()
-            : descriptor.getPayloadSha256().toByteArray();
+    byte[] identity = descriptor.getCommitmentIndex().getPayloadSha256().toByteArray();
     return descriptor
         .getUri()
         .equals(requiredPrefix + "reuse-" + HexFormat.of().formatHex(identity) + ".bin");
@@ -303,10 +191,9 @@ public final class ReusableCoverageManifest {
   }
 
   private static void validateDescriptor(ReusableCoverageManifestRef descriptor) {
-    long expected =
-        (descriptor.hasCommitmentIndex() ? 0L : HEADER_BYTES)
-            + Math.multiplyExact(descriptor.getEntryCount(), (long) RECORD_BYTES);
+    long expected = Math.multiplyExact(descriptor.getEntryCount(), (long) RECORD_BYTES);
     if (descriptor.getFormatVersion() != FORMAT_VERSION
+        || !descriptor.hasCommitmentIndex()
         || descriptor.getRecordBytes() != RECORD_BYTES
         || descriptor.getPayloadBytes() != expected
         || descriptor.getPayloadSha256().size() != 32
@@ -344,13 +231,5 @@ public final class ReusableCoverageManifest {
       throw new IllegalArgumentException("external sidecar storage identity is missing");
     }
     return new Record(coverage, family, payloadBytes, payloadDigest, storageSpace);
-  }
-
-  private static MessageDigest sha256() {
-    try {
-      return MessageDigest.getInstance("SHA-256");
-    } catch (NoSuchAlgorithmException error) {
-      throw new IllegalStateException("SHA-256 unavailable", error);
-    }
   }
 }

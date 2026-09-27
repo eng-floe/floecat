@@ -187,6 +187,9 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                               tableId.getAccountId(), tableId.getId()))
                       .setReuseSourceLeased(reuseSourceLeased)
                       .setReuseLeaseExpiresAtEpochMs(leaseExpiresAt)
+                      .setExternalManifestChunkMaxBytes(registrationBatchBytes)
+                      .setRegistrationChunkMaxObjects(registrationBatchObjects)
+                      .setRegistrationChunkMaxTargets(registrationBatchTargets)
                       .setArtifactStorageUriRoot("s3://" + requireBlobBucket())
                       .putArtifactStorageProperties("s3.region", storageAwsRegion)
                       .putArtifactStorageProperties(
@@ -361,13 +364,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       }
       OwnerReuseLeaseRepository.RegistrationProgress nextProgress;
       try {
-        if (!progress.lastTarget().isEmpty()
-            && !batch.firstTarget().isEmpty()
-            && OwnerArtifactRegistrationManifest.compareUtf8Unsigned(
-                    progress.lastTarget(), batch.firstTarget())
-                >= 0) {
-          throw new IllegalArgumentException("registration targets are not globally sorted");
-        }
         nextProgress =
             new OwnerReuseLeaseRepository.RegistrationProgress(
                 progress.registrationChunk() + 1L,
@@ -378,7 +374,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                 Math.addExact(progress.indexTargetCount(), batch.indexTargetCount()),
                 Math.addExact(
                     progress.aggregateStatsTargetCount(), batch.aggregateStatsTargetCount()),
-                batch.lastTarget().isEmpty() ? progress.lastTarget() : batch.lastTarget(),
                 progress.lastCoverageId(),
                 progress.sawExternalSidecar());
         if (nextProgress.registrationChunk() == registration.getCommitmentIndex().getChunkCount()) {
@@ -442,7 +437,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                 progress.fileStatsTargetCount(),
                 progress.indexTargetCount(),
                 progress.aggregateStatsTargetCount(),
-                progress.lastTarget(),
                 com.google.protobuf.ByteString.copyFrom(batch.lastCoverageId()),
                 progress.sawExternalSidecar() || batch.sawExternalSidecar());
       } catch (ArithmeticException error) {
@@ -596,7 +590,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
               progress.fileStatsTargetCount(),
               progress.indexTargetCount(),
               progress.aggregateStatsTargetCount(),
-              progress.lastTarget(),
               progress.lastCoverageId(),
               progress.sawExternalSidecar());
     } else {
@@ -609,7 +602,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
               progress.fileStatsTargetCount(),
               progress.indexTargetCount(),
               progress.aggregateStatsTargetCount(),
-              progress.lastTarget(),
               progress.lastCoverageId(),
               progress.sawExternalSidecar());
     }

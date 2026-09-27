@@ -83,6 +83,15 @@ class OwnerPublicationServiceImplTest {
     assertTrue(response.getManifestObjectPrefix().endsWith("/index-artifacts/capture-manifests/"));
     assertTrue(response.getReusableObjectPrefix().endsWith("/reusable-artifacts/"));
     assertTrue(response.getReuseLeaseExpiresAtEpochMs() > 0L);
+    assertEquals(
+        OwnerArtifactRegistrationManifest.DEFAULT_READ_BYTES,
+        response.getExternalManifestChunkMaxBytes());
+    assertEquals(
+        OwnerArtifactRegistrationManifest.DEFAULT_MAX_OBJECTS,
+        response.getRegistrationChunkMaxObjects());
+    assertEquals(
+        OwnerArtifactRegistrationManifest.DEFAULT_MAX_TARGETS,
+        response.getRegistrationChunkMaxTargets());
     verify(service.statsStore)
         .beginStatsGeneration(tableId(), SNAPSHOT, response.getGenerationId());
     verify(service.statsStore)
@@ -743,8 +752,7 @@ class OwnerPublicationServiceImplTest {
                 0L,
                 Math.toIntExact(request.getManifest().getManifestBytes() + 1L)));
     when(service.reuseLeases.progress(any(), anyString(), anyString()))
-        .thenReturn(
-            completedProgress(storedManifest.getOwnerArtifactRegistrationManifest(), "table"));
+        .thenReturn(completedProgress(storedManifest.getOwnerArtifactRegistrationManifest()));
 
     var response = service.completeOwnerPublication(request).await().indefinitely();
 
@@ -1081,7 +1089,7 @@ class OwnerPublicationServiceImplTest {
   }
 
   private static OwnerReuseLeaseRepository.RegistrationProgress completedProgress(
-      OwnerArtifactRegistrationManifestRef descriptor, String lastTarget) {
+      OwnerArtifactRegistrationManifestRef descriptor) {
     return new OwnerReuseLeaseRepository.RegistrationProgress(
         descriptor.getCommitmentIndex().getChunkCount(),
         0L,
@@ -1090,7 +1098,6 @@ class OwnerPublicationServiceImplTest {
         descriptor.getFileStatsTargetCount(),
         descriptor.getIndexTargetCount(),
         descriptor.getAggregateStatsTargetCount(),
-        lastTarget,
         ByteString.EMPTY,
         false);
   }

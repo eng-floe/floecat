@@ -19,7 +19,6 @@ import ai.floedb.floecat.types.Hashing;
 import com.google.protobuf.ByteString;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.TreeSet;
 import java.util.function.LongSupplier;
@@ -44,11 +43,10 @@ public class OwnerReuseLeaseRepository {
       long fileStatsTargetCount,
       long indexTargetCount,
       long aggregateStatsTargetCount,
-      String lastTarget,
       ByteString lastCoverageId,
       boolean sawExternalSidecar) {
     static RegistrationProgress initial() {
-      return new RegistrationProgress(0L, 0L, 0L, 0L, 0L, 0L, 0L, "", ByteString.EMPTY, false);
+      return new RegistrationProgress(0L, 0L, 0L, 0L, 0L, 0L, 0L, ByteString.EMPTY, false);
     }
   }
 
@@ -265,10 +263,10 @@ public class OwnerReuseLeaseRepository {
       throw new IllegalArgumentException("Owner publication manifest changed while resuming");
     }
     String[] fields = progress.getBlobUri().substring(prefix.length()).split(":", -1);
-    if (fields.length != 10) {
+    if (fields.length != 9) {
       throw new IllegalArgumentException("Owner publication progress is malformed");
     }
-    if (!fields[9].equals("true") && !fields[9].equals("false")) {
+    if (!fields[8].equals("true") && !fields[8].equals("false")) {
       throw new IllegalArgumentException("Owner publication progress is malformed");
     }
     try {
@@ -280,9 +278,8 @@ public class OwnerReuseLeaseRepository {
           Long.parseUnsignedLong(fields[4]),
           Long.parseUnsignedLong(fields[5]),
           Long.parseUnsignedLong(fields[6]),
-          new String(Base64.getUrlDecoder().decode(fields[7]), StandardCharsets.UTF_8),
-          ByteString.copyFrom(Base64.getUrlDecoder().decode(fields[8])),
-          Boolean.parseBoolean(fields[9]));
+          ByteString.copyFrom(Base64.getUrlDecoder().decode(fields[7])),
+          Boolean.parseBoolean(fields[8]));
     } catch (IllegalArgumentException error) {
       throw new IllegalArgumentException("Owner publication progress is malformed", error);
     }
@@ -339,16 +336,10 @@ public class OwnerReuseLeaseRepository {
                   + ":"
                   + Base64.getUrlEncoder()
                       .withoutPadding()
-                      .encodeToString(nextProgress.lastTarget().getBytes(StandardCharsets.UTF_8)),
+                      .encodeToString(nextProgress.lastCoverageId().toByteArray()),
               version);
       String marker = next.getBlobUri();
-      marker +=
-          ":"
-              + Base64.getUrlEncoder()
-                  .withoutPadding()
-                  .encodeToString(nextProgress.lastCoverageId().toByteArray())
-              + ":"
-              + nextProgress.sawExternalSidecar();
+      marker += ":" + nextProgress.sawExternalSidecar();
       next = PointerReferences.opaqueMarkerPointer(key, marker, version);
       if (pointers.compareAndSet(key, current == null ? 0L : current.getVersion(), next)) {
         return;

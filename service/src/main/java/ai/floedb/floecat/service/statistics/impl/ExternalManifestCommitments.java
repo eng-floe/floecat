@@ -147,7 +147,8 @@ final class ExternalManifestCommitments {
         || reference.getPayloadBytes() <= 0L
         || reference.getPayloadBytes() > MAX_INDEX_BYTES
         || reference.getPayloadSha256().size() != 32
-        || reference.getChunkCount() <= 0L
+        || (reference.getChunkCount() == 0L
+            && domain != ExternalManifestDomain.EMD_REUSABLE_COVERAGE)
         || reference.getChunkCount() > MAX_CHUNKS
         || !expected.equals(reference.getUri())) {
       throw new IllegalArgumentException("invalid external manifest commitment index descriptor");

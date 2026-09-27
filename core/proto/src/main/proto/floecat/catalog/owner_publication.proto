@@ -79,6 +79,12 @@ message BeginOwnerPublicationResponse {
   bool reuse_source_leased = 9;
   // Retry Begin or call Complete before this time to renew GC protection while uploading.
   uint64 reuse_lease_expires_at_epoch_ms = 10;
+  // Bounded external-manifest limits selected by Floecat for this publication. The Owner must
+  // construct both registration and reusable-coverage chunks no larger than the byte limit;
+  // registration chunks must also respect the object and target limits.
+  uint64 external_manifest_chunk_max_bytes = 11;
+  uint64 registration_chunk_max_objects = 12;
+  uint64 registration_chunk_max_targets = 13;
 }
 
 message CompleteOwnerPublicationRequest {
