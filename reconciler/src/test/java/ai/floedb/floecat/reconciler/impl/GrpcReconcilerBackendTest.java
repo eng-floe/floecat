@@ -48,10 +48,12 @@ import ai.floedb.floecat.catalog.rpc.GetTableResponse;
 import ai.floedb.floecat.catalog.rpc.GetViewResponse;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogResponse;
-import ai.floedb.floecat.catalog.rpc.LookupTableByRefResponse;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
+import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationResult;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
@@ -279,8 +281,9 @@ class GrpcReconcilerBackendTest {
             .setId("tbl")
             .build();
 
-    when(backend.directory.lookupTableByRef(any()))
-        .thenReturn(LookupTableByRefResponse.getDefaultInstance());
+    backend.relation = mock(RelationServiceGrpc.RelationServiceBlockingStub.class);
+    when(backend.relation.withInterceptors(any())).thenReturn(backend.relation);
+    when(backend.relation.resolveRelations(any())).thenReturn(relationNotFound());
     when(backend.namespace.getNamespace(any()))
         .thenReturn(
             GetNamespaceResponse.newBuilder()
@@ -572,8 +575,9 @@ class GrpcReconcilerBackendTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId("tbl-1")
             .build();
-    when(backend.directory.lookupTableByRef(any()))
-        .thenReturn(LookupTableByRefResponse.newBuilder().setResourceId(tableId).build());
+    backend.relation = mock(RelationServiceGrpc.RelationServiceBlockingStub.class);
+    when(backend.relation.withInterceptors(any())).thenReturn(backend.relation);
+    when(backend.relation.resolveRelations(any())).thenReturn(relationResponse(tableId));
 
     Optional<ResourceId> resolved =
         backend.lookupTable(
@@ -591,8 +595,9 @@ class GrpcReconcilerBackendTest {
     backend.directory =
         mock(ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc.DirectoryServiceBlockingStub.class);
     when(backend.directory.withInterceptors(any())).thenReturn(backend.directory);
-    when(backend.directory.lookupTableByRef(any()))
-        .thenReturn(LookupTableByRefResponse.getDefaultInstance());
+    backend.relation = mock(RelationServiceGrpc.RelationServiceBlockingStub.class);
+    when(backend.relation.withInterceptors(any())).thenReturn(backend.relation);
+    when(backend.relation.resolveRelations(any())).thenReturn(relationNotFound());
 
     Optional<ResourceId> resolved =
         backend.lookupTable(
@@ -726,8 +731,9 @@ class GrpcReconcilerBackendTest {
     when(backend.directory.withInterceptors(any())).thenReturn(backend.directory);
     when(backend.namespace.withInterceptors(any())).thenReturn(backend.namespace);
     when(backend.table.withInterceptors(any())).thenReturn(backend.table);
-    when(backend.directory.lookupTableByRef(any()))
-        .thenReturn(LookupTableByRefResponse.getDefaultInstance());
+    backend.relation = mock(RelationServiceGrpc.RelationServiceBlockingStub.class);
+    when(backend.relation.withInterceptors(any())).thenReturn(backend.relation);
+    when(backend.relation.resolveRelations(any())).thenReturn(relationNotFound());
 
     ResourceId namespaceId =
         ResourceId.newBuilder()
@@ -783,8 +789,8 @@ class GrpcReconcilerBackendTest {
                 "tbl"));
 
     assertThat(resolved).isEqualTo(createdTableId);
-    verify(backend.directory).withInterceptors(any());
-    verify(backend.directory).lookupTableByRef(any());
+    verify(backend.relation).withInterceptors(any());
+    verify(backend.relation).resolveRelations(any());
     verifyNoMoreInteractions(backend.directory);
   }
 
@@ -1182,8 +1188,9 @@ class GrpcReconcilerBackendTest {
                         .setDisplayName("analytics")
                         .build())
                 .build());
-    when(backend.directory.resolveView(any()))
-        .thenReturn(ResolveViewResponse.newBuilder().setResourceId(viewId).build());
+    backend.relation = mock(RelationServiceGrpc.RelationServiceBlockingStub.class);
+    when(backend.relation.withInterceptors(any())).thenReturn(backend.relation);
+    when(backend.relation.resolveRelations(any())).thenReturn(relationResponse(viewId));
     when(backend.view.getView(any()))
         .thenReturn(GetViewResponse.newBuilder().setView(existing).build());
     when(backend.view.updateView(any()))
@@ -1420,6 +1427,28 @@ class GrpcReconcilerBackendTest {
         .setTarget(
             StatsTarget.newBuilder()
                 .setFile(FileStatsTarget.newBuilder().setFilePath(filePath).build())
+                .build())
+        .build();
+  }
+
+  private static ResolveRelationsResponse relationResponse(ResourceId id) {
+    return ResolveRelationsResponse.newBuilder()
+        .addResults(
+            ResolveRelationResult.newBuilder()
+                .setRelation(Relation.newBuilder().setResourceId(id).build())
+                .build())
+        .build();
+  }
+
+  private static ResolveRelationsResponse relationNotFound() {
+    return ResolveRelationsResponse.newBuilder()
+        .addResults(
+            ResolveRelationResult.newBuilder()
+                .setError(
+                    Error.newBuilder()
+                        .setCode(ErrorCode.MC_NOT_FOUND)
+                        .setMessage("relation not found")
+                        .build())
                 .build())
         .build();
   }
