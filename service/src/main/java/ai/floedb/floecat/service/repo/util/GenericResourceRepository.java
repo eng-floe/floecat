@@ -269,9 +269,8 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
 
   /**
    * Cache-bypassing variant of {@link #getByBlobUri} for reads whose EMPTINESS is load-bearing —
-   * integrity detectors like the resolving-pin root guard in {@code QueryContextStoreImpl} and the
-   * dangling-pointer verdict in {@code NodeLoader.reload}, where a missing blob must fail loudly
-   * rather than be masked by a still-resident decode.
+   * integrity detectors like the dangling-pointer verdict in {@code NodeLoader.reload}, where a
+   * missing blob must fail loudly rather than be masked by a still-resident decode.
    */
   public Optional<T> getByBlobUriLive(String blobUri) {
     return getByBlobUriDecodedFresh(blobUri);
@@ -905,18 +904,33 @@ public class GenericResourceRepository<T, K extends ResourceKey> extends BaseRes
   }
 
   private Pointer reserve(String key, String blobUri, T value, long blobBytes) {
+    Timestamp ingestedAt =
+        schema.pointerIngestedAtFromValue == null
+            ? null
+            : schema.pointerIngestedAtFromValue.apply(value);
     if (schema.resourceIdFromValue != null && value != null) {
       var rid = schema.resourceIdFromValue.apply(value);
       var dn = schema.displayNameFromValue.apply(value);
       if (rid != null && !rid.getId().isEmpty()) {
-        return blobBytes >= 0L
-            ? PointerReferences.blobPointer(key, blobUri, 1L, rid, dn != null ? dn : "", blobBytes)
-            : PointerReferences.blobPointer(key, blobUri, 1L, rid, dn != null ? dn : "");
+        Pointer.Builder builder =
+            blobBytes >= 0L
+                ? PointerReferences.blobPointer(
+                    key, blobUri, 1L, rid, dn != null ? dn : "", blobBytes)
+                    .toBuilder()
+                : PointerReferences.blobPointer(key, blobUri, 1L, rid, dn != null ? dn : "")
+                    .toBuilder();
+        return withIngestedAt(builder, ingestedAt);
       }
     }
-    return blobBytes >= 0L
-        ? PointerReferences.blobPointer(key, blobUri, 1L, blobBytes)
-        : PointerReferences.blobPointer(key, blobUri, 1L);
+    Pointer.Builder builder =
+        blobBytes >= 0L
+            ? PointerReferences.blobPointer(key, blobUri, 1L, blobBytes).toBuilder()
+            : PointerReferences.blobPointer(key, blobUri, 1L).toBuilder();
+    return withIngestedAt(builder, ingestedAt);
+  }
+
+  private Pointer withIngestedAt(Pointer.Builder builder, Timestamp ingestedAt) {
+    return ingestedAt == null ? builder.build() : builder.setIngestedAt(ingestedAt).build();
   }
 
   /**

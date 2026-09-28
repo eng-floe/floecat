@@ -106,6 +106,20 @@ class GrpcErrorsTest {
   }
 
   @Test
+  void snapshotTooOldUsesDistinctRetryableErrorCode() {
+    StatusRuntimeException ex = GrpcErrors.snapshotTooOld("corr-id", Map.of("table_id", "t1"));
+
+    Status statusProto = StatusProto.fromThrowable(ex);
+    assertNotNull(statusProto);
+    assertEquals(io.grpc.Status.Code.FAILED_PRECONDITION.value(), statusProto.getCode());
+
+    FloecatStatus floecatStatus = FloecatStatus.fromThrowable(ex);
+    assertNotNull(floecatStatus);
+    assertEquals(ErrorCode.MC_SNAPSHOT_TOO_OLD, floecatStatus.errorCode());
+    assertEquals("t1", floecatStatus.params().get("table_id"));
+  }
+
+  @Test
   void unimplementedUsesGeneratedMessageKeyAndCanonicalCode() {
     StatusRuntimeException ex =
         GrpcErrors.unimplemented(

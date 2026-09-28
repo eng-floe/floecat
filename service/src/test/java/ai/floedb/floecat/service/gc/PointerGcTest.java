@@ -17,13 +17,8 @@
 package ai.floedb.floecat.service.gc;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
@@ -48,13 +43,14 @@ class PointerGcTest {
   @BeforeEach
   void setUp() {
     pointers = new InMemoryPointerStore();
-    blobs = new InMemoryBlobStore();
     gc = new PointerGc();
     gc.pointerStore = pointers;
+    useBlobs(new InMemoryBlobStore());
+  }
+
+  private void useBlobs(BlobStore store) {
+    blobs = store;
     gc.blobStore = blobs;
-    gc.credentialCleanup = mock(CatalogIntegrationCredentialCleanup.class);
-    when(gc.credentialCleanup.drain(anyLong(), anyInt()))
-        .thenReturn(new CatalogIntegrationCredentialCleanup.Result(0, 0));
   }
 
   @AfterEach
@@ -100,6 +96,15 @@ class PointerGcTest {
     String tableBlob = Keys.tableBlobUri(ACCOUNT_ID, TABLE_ID, "sha-table");
     blobs.put(tableBlob, "table".getBytes(StandardCharsets.UTF_8), "text/plain");
     putPointer(Keys.tablePointerById(ACCOUNT_ID, TABLE_ID), tableBlob);
+    String rootBlob = Keys.tableRootBlobUri(ACCOUNT_ID, TABLE_ID, "sha-root");
+    blobs.put(
+        rootBlob,
+        ai.floedb.floecat.catalog.rpc.TableRoot.newBuilder()
+            .setCurrentSnapshotId(7L)
+            .build()
+            .toByteArray(),
+        "application/x-protobuf");
+    putPointer(Keys.tableRootByTable(ACCOUNT_ID, TABLE_ID), rootBlob);
 
     long snapshotId = 7L;
     String generationId = "gen-1";
@@ -156,6 +161,10 @@ class PointerGcTest {
 
   private void putPointer(String key, String blobUri) {
     Pointer ptr = PointerReferences.blobPointer(key, blobUri, 1L);
-    pointers.compareAndSet(key, 0L, ptr);
+    putPointer(key, ptr);
+  }
+
+  private void putPointer(String key, Pointer pointer) {
+    pointers.compareAndSet(key, 0L, pointer);
   }
 }

@@ -369,6 +369,29 @@ public class PointerStoreEntityContractTest extends AbstractEntityTest<Pointer> 
   }
 
   @Test
+  void ingestedAt_round_trips_through_pointer_attributes() {
+    String key = "/accounts/by-id/6/tables/t/snapshots/1";
+    Pointer pointer =
+        Pointer.newBuilder()
+            .setKey(key)
+            .setBlobUri("s3://b/snapshot")
+            .setIngestedAt(Timestamps.fromMillis(1234000L))
+            .build();
+    assertTrue(pointers.compareAndSet(key, 0L, pointer).await().indefinitely());
+
+    KvStore.Record record =
+        pointers
+            .getKvStore()
+            .get(PointerStoreEntity._testKey(key))
+            .await()
+            .indefinitely()
+            .orElseThrow();
+    assertEquals(AttrValue.of("1234"), record.attrs().get(PointerStoreEntity.ATTR_INGESTED_AT));
+    Pointer decoded = pointers.decode(record);
+    assertEquals(1234000L, Timestamps.toMillis(decoded.getIngestedAt()));
+  }
+
+  @Test
   void decode_sets_expiresAt_from_ATTR_EXPIRES_AT() {
     KvStore.Record rec =
         new KvStore.Record(

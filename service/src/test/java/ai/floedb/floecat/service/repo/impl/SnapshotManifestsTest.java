@@ -16,10 +16,17 @@
 package ai.floedb.floecat.service.repo.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
@@ -30,6 +37,7 @@ import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -136,6 +144,50 @@ class SnapshotManifestsTest {
   void removeOfAnAbsentIdReturnsTheHeadUnchanged() {
     BlobRef head = SnapshotManifests.upsert(roots, TABLE, null, entry(1, "s3://t/snap-1.pb"));
     assertEquals(head, SnapshotManifests.remove(roots, TABLE, head, 99));
+  }
+
+  @Test
+  void removeAllFindsAndRemovesIdsAcrossManifestPages() {
+    BlobRef head = null;
+    int total = SnapshotManifests.PAGE_ENTRY_BOUND + 5;
+    for (long id = 1; id <= total; id++) {
+      head = SnapshotManifests.upsert(roots, TABLE, head, entry(id, "s3://t/snap-" + id + ".pb"));
+    }
+
+    BlobRef updated =
+        SnapshotManifests.chain(roots, TABLE, head).removeAll(Set.of(1L, (long) total));
+    List<Long> remaining = new ArrayList<>();
+    SnapshotManifests.forEachEntry(roots, updated, e -> remaining.add(e.getSnapshotId()));
+
+    assertEquals(total - 2, remaining.size());
+    assertFalse(remaining.contains(1L));
+    assertFalse(remaining.contains((long) total));
+    assertEquals((long) total - 1, remaining.get(0));
+  }
+
+  @Test
+  void removeAllDoesNotRewritePagesForAnAlreadyMissingId() {
+    InMemoryBlobStore blobs = spy(new InMemoryBlobStore());
+    TableRootRepository countedRoots = new TableRootRepository(new InMemoryPointerStore(), blobs);
+    BlobRef head = null;
+    int total = SnapshotManifests.PAGE_ENTRY_BOUND + 5;
+    for (long id = 1; id <= total; id++) {
+      head =
+          SnapshotManifests.upsert(
+              countedRoots, TABLE, head, entry(id, "s3://t/snap-" + id + ".pb"));
+    }
+    reset(blobs);
+
+    BlobRef originalPrevious =
+        countedRoots.getManifestPageLive(head).orElseThrow().getPrevPageRef();
+    BlobRef updated =
+        SnapshotManifests.chain(countedRoots, TABLE, head).removeAll(Set.of((long) total, 999L));
+    assertNotEquals(head, updated);
+    assertTrue(SnapshotManifests.findEntry(countedRoots, updated, total).isEmpty());
+    assertTrue(SnapshotManifests.findEntry(countedRoots, updated, 1L).isPresent());
+    assertEquals(
+        originalPrevious, countedRoots.getManifestPageLive(updated).orElseThrow().getPrevPageRef());
+    verify(blobs, times(1)).put(anyString(), any(byte[].class), anyString());
   }
 
   @Test

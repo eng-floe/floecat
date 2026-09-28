@@ -79,6 +79,8 @@ class TransactionCommitSnapshotSupportTest {
         "s3://floecat/iceberg/trino_fmt_v1_smoke/metadata/00002-materialized.metadata.json",
         snapshot.getMetadataLocation());
     assertTrue(snapshot.hasMetadataLocation());
+    // Retention counts from Floecat publication, so gateway commits must stamp it.
+    assertTrue(snapshot.hasIngestedAt());
     var currentPointerChange = result.txChanges().get(2);
     assertEquals(
         "/accounts/acct-1/tables/tbl-1/snapshots/current",

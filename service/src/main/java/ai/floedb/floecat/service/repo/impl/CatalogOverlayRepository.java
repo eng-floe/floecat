@@ -277,6 +277,11 @@ public class CatalogOverlayRepository {
     return repo.metaForSafe(key(overlayId));
   }
 
+  /** Pointer metadata without a blob HEAD for fence checks. */
+  public MutationMeta pointerMetaForSafe(ResourceId overlayId) {
+    return repo.pointerMetaForSafe(key(overlayId));
+  }
+
   private static CatalogOverlayKey key(ResourceId id) {
     return new CatalogOverlayKey(id.getAccountId(), id.getId());
   }

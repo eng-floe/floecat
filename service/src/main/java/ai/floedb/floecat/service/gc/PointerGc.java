@@ -17,7 +17,6 @@
 package ai.floedb.floecat.service.gc;
 
 import ai.floedb.floecat.common.rpc.Pointer;
-import ai.floedb.floecat.service.integration.CatalogIntegrationCredentialCleanup;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.storage.spi.BlobStore;
@@ -39,10 +38,14 @@ public class PointerGc {
 
   @Inject PointerStore pointerStore;
   @Inject BlobStore blobStore;
-  @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
 
   public record Result(int scanned, int deleted, int missingBlobs, int staleSecondaries) {}
 
+  /**
+   * Account directory pointers are global control-plane indexes, not child data owned by one
+   * account pass. Keep their historical global sweep so orphaned by-id and by-name rows left by a
+   * crash or partial account deletion are still reclaimed.
+   */
   public Result runGlobalAccountPointers(long deadlineMs) {
     int pageSize =
         ConfigProvider.getConfig()
@@ -54,17 +57,6 @@ public class PointerGc {
             .orElse(30_000L);
     long nowMs = System.currentTimeMillis();
     Map<String, Boolean> blobCache = new HashMap<>();
-
-    int scanned = 0;
-    int deleted = 0;
-    int missingBlobs = 0;
-    int staleSecondaries = 0;
-
-    CatalogIntegrationCredentialCleanup.Result credentialResult =
-        credentialCleanup.drain(deadlineMs, pageSize);
-    scanned += credentialResult.scanned();
-    deleted += credentialResult.deleted();
-
     Result byId =
         scanPrefix(
             Keys.accountPointerByIdPrefix(),
@@ -74,11 +66,6 @@ public class PointerGc {
             p -> true,
             nowMs,
             minAgeMs);
-    scanned += byId.scanned;
-    deleted += byId.deleted;
-    missingBlobs += byId.missingBlobs;
-    staleSecondaries += byId.staleSecondaries;
-
     Result byName =
         scanPrefix(
             Keys.accountPointerByNamePrefix(),
@@ -88,12 +75,11 @@ public class PointerGc {
             p -> true,
             nowMs,
             minAgeMs);
-    scanned += byName.scanned;
-    deleted += byName.deleted;
-    missingBlobs += byName.missingBlobs;
-    staleSecondaries += byName.staleSecondaries;
-
-    return new Result(scanned, deleted, missingBlobs, staleSecondaries);
+    return new Result(
+        byId.scanned + byName.scanned,
+        byId.deleted + byName.deleted,
+        byId.missingBlobs + byName.missingBlobs,
+        byId.staleSecondaries + byName.staleSecondaries);
   }
 
   public Result runForAccount(String accountId, long deadlineMs) {
@@ -440,7 +426,7 @@ public class PointerGc {
       StringBuilder next = new StringBuilder();
       List<Pointer> pointers = pointerStore.listPointersByPrefix(prefix, pageSize, token, next);
       for (Pointer p : pointers) {
-        String id = decodeSuffix(prefix, p.getKey());
+        String id = Keys.idAfterPrefix(prefix, p.getKey());
         if (id != null && !id.isBlank()) {
           out.add(id);
         }
@@ -523,17 +509,6 @@ public class PointerGc {
     }
 
     return null;
-  }
-
-  private static String decodeSuffix(String prefix, String fullKey) {
-    if (fullKey == null || !fullKey.startsWith(prefix)) {
-      return null;
-    }
-    String suffix = fullKey.substring(prefix.length());
-    if (suffix.isBlank()) {
-      return null;
-    }
-    return decode(suffix);
   }
 
   private static String decode(String value) {

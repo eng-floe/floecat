@@ -1402,14 +1402,15 @@ class StatsOrchestratorTest {
     // The pinned-generation batch read succeeds the first time (priming the cache with a
     // scalar-only record) then throws — the frozen manifest becomes unreadable between queries.
     RuntimeException manifestGone =
-        new RuntimeException("frozen stats generation manifest missing for snapshot 42");
-    java.util.concurrent.atomic.AtomicInteger pinnedReads =
+        new ai.floedb.floecat.service.repo.util.BaseResourceRepository.CorruptionException(
+            "frozen stats generation manifest corrupt for snapshot 42");
+    java.util.concurrent.atomic.AtomicInteger resolvedSnapshotReads =
         new java.util.concurrent.atomic.AtomicInteger();
     when(store.getTargetStatsBatchInGeneration(
             req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
         .thenAnswer(
             inv -> {
-              if (pinnedReads.getAndIncrement() == 0) {
+              if (resolvedSnapshotReads.getAndIncrement() == 0) {
                 return Map.of(storageId, Optional.of(columnRecord(req, 1L)));
               }
               throw manifestGone;
@@ -1500,7 +1501,8 @@ class StatsOrchestratorTest {
     // The frozen manifest is unreadable: every pinned-generation read throws (batch and the
     // per-target isolation retry alike), so the primary read resolves to FAILED.
     RuntimeException manifestGone =
-        new RuntimeException("frozen stats generation manifest missing for snapshot 42");
+        new ai.floedb.floecat.service.repo.util.BaseResourceRepository.CorruptionException(
+            "frozen stats generation manifest corrupt for snapshot 42");
     when(store.getTargetStatsBatchInGeneration(
             req.tableId(), req.snapshotId(), "gen-pinned", List.of(req.target())))
         .thenThrow(manifestGone);
@@ -1533,7 +1535,8 @@ class StatsOrchestratorTest {
     when(store.getTargetStatsInGeneration(
             req.tableId(), req.snapshotId(), "gen-pinned", req.target()))
         .thenThrow(
-            new RuntimeException("frozen stats generation manifest missing for snapshot 42"));
+            new ai.floedb.floecat.service.repo.util.BaseResourceRepository.CorruptionException(
+                "frozen stats generation manifest corrupt for snapshot 42"));
     when(store.getTargetStats(req.tableId(), req.snapshotId(), req.target()))
         .thenReturn(Optional.of(columnRecord(req, 10L)));
 
@@ -1596,7 +1599,7 @@ class StatsOrchestratorTest {
   }
 
   @Test
-  void resolvePlannerBatch_generationFailureFallsThroughOnceWithoutTargetIsolation() {
+  void resolvePlannerBatch_aCollectedSelectedGenerationFailsTheSelection() {
     StatsStore store = Mockito.mock(StatsStore.class);
     StatsOrchestrator o =
         orchestrator(
@@ -1625,15 +1628,18 @@ class StatsOrchestratorTest {
             requests.get(0).tableId(), requests.get(0).snapshotId(), targets))
         .thenReturn(newest);
 
-    Map<String, StatsResolutionResult> result =
-        o.resolvePlannerBatchInGeneration(requests, Optional.of("gen-pinned"), Long.MAX_VALUE);
+    var failure =
+        org.junit.jupiter.api.Assertions.assertThrows(
+            io.grpc.StatusRuntimeException.class,
+            () ->
+                o.resolvePlannerBatchInGeneration(
+                    requests, Optional.of("gen-pinned"), Long.MAX_VALUE));
 
-    assertThat(result.values()).allMatch(StatsResolutionResult::hasStats);
-    verify(store, Mockito.times(1))
-        .getTargetStatsBatchInGeneration(
-            requests.get(0).tableId(), requests.get(0).snapshotId(), "gen-pinned", targets);
+    assertThat(
+            ai.floedb.floecat.service.error.impl.FloecatStatus.fromThrowable(failure).errorCode())
+        .isEqualTo(ai.floedb.floecat.common.rpc.ErrorCode.MC_SNAPSHOT_EXPIRED);
     verify(store, never()).getTargetStatsInGeneration(any(), anyLong(), anyString(), any());
-    verify(store, Mockito.times(1))
+    verify(store, never())
         .getTargetStatsBatch(requests.get(0).tableId(), requests.get(0).snapshotId(), targets);
   }
 

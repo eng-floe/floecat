@@ -32,7 +32,7 @@ import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.metagraph.overlay.user.UserGraph.SchemaResolution;
-import ai.floedb.floecat.service.query.PinnedReadContract;
+import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.repo.impl.SnapshotManifests;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -46,9 +46,8 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Centralized snapshot handling ----------------------------------------- - Snapshot override
- * resolution - AS OF timestamp fallback - Default "CURRENT" snapshot semantics - Schema resolution
- * based on effective snapshot
+ * Resolves snapshot selections (explicit id, AS OF, CURRENT) through the table root, admits them
+ * under the retention policy, and resolves the schema of the selected snapshot.
  */
 @ApplicationScoped
 public class SnapshotHelper {
@@ -56,30 +55,50 @@ public class SnapshotHelper {
   private final SnapshotRepository snapshots;
   private final TableRootRepository roots;
   private final StatsStore statsStore;
-  private final PinnedReadContract pins;
+  private final ResolvedSnapshotReadContract resolvedSnapshotReads;
   private final RootRepairRequests repairs;
+  private final SnapshotRetentionPolicy retention;
 
   /**
-   * Pins are built from a just-read root blob, so construction performs no extra validation
-   * round-trip; a vanished blob surfaces at the read that needs it, through the {@link
-   * PinnedReadContract}. {@code pins} serves the pinned schema read here; {@code repairs} reports a
-   * broken root observed while BUILDING a pin, which happens before any pinned read exists for that
-   * contract to unwrap. Both reach the same repair queue, which is the container's doing rather
-   * than this constructor's: {@code RootRepairRequests} is application-scoped, so the instance
-   * inside {@code pins} and the one passed here are the same bean.
+   * Snapshot selections are built from a just-read root blob, so construction performs no extra
+   * validation round-trip; a vanished blob surfaces at the read that needs it, through the {@link
+   * ResolvedSnapshotReadContract}. {@code resolvedSnapshotReads} serves the resolved snapshot
+   * schema read here; {@code repairs} reports a broken root observed while BUILDING a pin, which
+   * happens before any pinned read exists for that contract to unwrap. Both reach the same repair
+   * queue, which is the container's doing rather than this constructor's: {@code
+   * RootRepairRequests} is application-scoped, so the instance inside {@code resolvedSnapshotReads}
+   * and the one passed here are the same bean.
    */
   @Inject
   public SnapshotHelper(
       SnapshotRepository snapshots,
       TableRootRepository roots,
       StatsStore statsStore,
-      PinnedReadContract pins,
-      RootRepairRequests repairs) {
+      ResolvedSnapshotReadContract resolvedSnapshotReads,
+      RootRepairRequests repairs,
+      SnapshotRetentionPolicy retention) {
     this.snapshots = snapshots;
     this.roots = roots;
     this.statsStore = statsStore;
-    this.pins = pins;
+    this.resolvedSnapshotReads = resolvedSnapshotReads;
     this.repairs = repairs;
+    this.retention = retention;
+  }
+
+  /** Compatibility constructor for embedded graph builders and focused tests. */
+  public SnapshotHelper(
+      SnapshotRepository snapshots,
+      TableRootRepository roots,
+      StatsStore statsStore,
+      ResolvedSnapshotReadContract resolvedSnapshotReads,
+      RootRepairRequests repairs) {
+    this(
+        snapshots,
+        roots,
+        statsStore,
+        resolvedSnapshotReads,
+        repairs,
+        SnapshotRetentionPolicy.disabled());
   }
 
   /**
@@ -93,18 +112,18 @@ public class SnapshotHelper {
   }
 
   // ----------------------------------------------------------------------
-  // Snapshot pinning
+  // Snapshot selection
   // ----------------------------------------------------------------------
 
   /**
    * Build the coherent {@link TablePin} for one table by resolving through the table's immutable
    * root — the single object that names the definition blob, every snapshot's blob identity, and
-   * the current-snapshot selection. This is the pin the query context stores and downstream reads
-   * reuse.
+   * the current-snapshot selection. The query context stores this resolved selection and downstream
+   * reads reuse it.
    *
    * <ul>
-   *   <li>CURRENT pins the root's {@code current_snapshot_id}; a table with no current snapshot is
-   *       NOT_FOUND.
+   *   <li>CURRENT selects the root's {@code current_snapshot_id}; a table with no current snapshot
+   *       is NOT_FOUND.
    *   <li>Explicit {@code snapshot_id} resolves against the root's snapshot manifest (user error
    *       when the snapshot is unknown).
    *   <li>{@code AS_OF} resolves once to the manifest entry with the greatest {@code
@@ -116,13 +135,13 @@ public class SnapshotHelper {
    * snapshot, stats, constraints) state is coherent by construction — there is no cross-pointer
    * pair to keep in step. Tables without a published root are unsupported and fail closed.
    */
-  public TablePin tablePinFor(
+  public TablePin resolvedSnapshotFor(
       String cid, ResourceId tableId, SnapshotRef override, Optional<Timestamp> asOfDefault) {
 
     // A SPECIAL selector other than SS_CURRENT (e.g. an as-yet-unimplemented "oldest"/"first") has
-    // no defined pin resolution. Reject it rather than silently pinning CURRENT, which would hide
-    // the unsupported request behind a plausible-looking result. SS_CURRENT falls through to the
-    // CURRENT path below.
+    // no defined snapshot resolution. Reject it rather than silently selecting CURRENT, which would
+    // hide the unsupported request behind a plausible-looking result. SS_CURRENT falls through to
+    // the CURRENT path below.
     if (override != null
         && override.getWhichCase() == SnapshotRef.WhichCase.SPECIAL
         && override.getSpecial() != SpecialSnapshot.SS_CURRENT) {
@@ -133,7 +152,7 @@ public class SnapshotHelper {
     // Steady state is one pointer read + one blob read: the root pointer names the blob, and the
     // blob at that URI is immutable. Rootless tables are unsupported and fail through the normal
     // per-pin-kind NOT_FOUND handling below.
-    MutationMeta rootMeta = roots.metaForSafe(tableId);
+    MutationMeta rootMeta = roots.pointerMetaForSafe(tableId);
     TableRoot root = loadRoot(rootMeta);
     if (root == null && rootMeta != null && !rootMeta.getBlobUri().isEmpty()) {
       // The root was superseded and its blob swept between the pointer read and the blob read —
@@ -141,7 +160,7 @@ public class SnapshotHelper {
       // The retry reads past the cache, which would otherwise hand back the same dead URI.
       // Still null after the retry means the re-read pointer is also unreadable (corruption, or a
       // pathological second race): fall through to the per-pin-kind not-found handling below.
-      rootMeta = roots.metaForSafeConsistent(tableId);
+      rootMeta = roots.pointerMetaForSafeConsistent(tableId);
       root = loadRoot(rootMeta);
       if (root == null && rootMeta != null && !rootMeta.getBlobUri().isEmpty()) {
         // The re-read pointer still names an unreadable blob (a vanished pointer would be a
@@ -174,7 +193,8 @@ public class SnapshotHelper {
             QUERY_SNAPSHOT_NOT_FINALIZED,
             Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
       }
-      return pinFromEntry(cid, tableId, PinKind.PIN_KIND_SNAPSHOT_ID, entry, root, rootMeta, null);
+      return snapshotFromEntry(
+          cid, tableId, PinKind.PIN_KIND_SNAPSHOT_ID, entry, root, rootMeta, null);
     }
 
     Timestamp asOf =
@@ -192,7 +212,7 @@ public class SnapshotHelper {
                               "as_of",
                                   Instant.ofEpochSecond(asOf.getSeconds(), asOf.getNanos())
                                       .toString())));
-      return pinFromEntry(cid, tableId, PinKind.PIN_KIND_AS_OF, entry, root, rootMeta, asOf);
+      return snapshotFromEntry(cid, tableId, PinKind.PIN_KIND_AS_OF, entry, root, rootMeta, asOf);
     }
 
     // CURRENT: the root's current_snapshot_id is the authoritative selection. A table with no
@@ -203,37 +223,29 @@ public class SnapshotHelper {
           cid, QUERY_TABLE_NO_QUERYABLE_SNAPSHOT, Map.of("table_id", tableId.getId()));
     }
     long currentId = root.getCurrentSnapshotId();
-    SnapshotManifestEntry entry =
-        SnapshotManifests.findEntry(roots, manifestHead(root), currentId)
-            .orElseThrow(
-                // Currency pointing at a snapshot the manifest does not carry is a broken root
-                // invariant (removal clears currency in the same commit), never a client state —
-                // report the table for the resync re-drive to re-derive its root.
-                () -> {
-                  repairs.request(tableId);
-                  return GrpcErrors.internal(
-                      cid,
-                      QUERY_PINNED_SNAPSHOT_BLOB_MISSING,
-                      Map.of(
-                          "table_id", tableId.getId(),
-                          "snapshot_id", Long.toString(currentId)));
-                });
-    if (gateOnFinalize() && !entry.hasStatsGenerationRef()) {
-      // Committed currency can move before the generation publishes. Rather than reporting no
-      // current for the whole append->finalize window, pin the newest FINALIZED snapshot at or
-      // before the committed current — snapshot isolation on the latest fully-queryable state,
-      // consistent with metadata surfaces (getCommittedCurrent*) still exposing the committed id.
-      // NOT_FOUND only when nothing at or before it is finalized yet (pre-first-finalize).
-      entry =
-          SnapshotManifests.latestQueryableCurrent(roots, manifestHead(root), entry)
-              .orElseThrow(
-                  () ->
-                      GrpcErrors.notFound(
-                          cid,
-                          QUERY_TABLE_NO_QUERYABLE_SNAPSHOT,
-                          Map.of("table_id", tableId.getId())));
+    var current = SnapshotManifests.currentSnapshots(roots, root, gateOnFinalize());
+    if (current.committed().isEmpty()) {
+      // Currency pointing at a snapshot the manifest does not carry is a broken root invariant
+      // (removal clears currency in the same commit), never a client state — report the table for
+      // the resync re-drive to re-derive its root.
+      repairs.request(tableId);
+      throw GrpcErrors.internal(
+          cid,
+          QUERY_PINNED_SNAPSHOT_BLOB_MISSING,
+          Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(currentId)));
     }
-    return pinFromEntry(cid, tableId, PinKind.PIN_KIND_CURRENT, entry, root, rootMeta, null);
+    // Under the finalize gate an unfinalized current is served as the newest finalized snapshot at
+    // or before it; NOT_FOUND only when nothing is finalized yet.
+    SnapshotManifestEntry entry =
+        current
+            .queryable()
+            .orElseThrow(
+                () ->
+                    GrpcErrors.notFound(
+                        cid,
+                        QUERY_TABLE_NO_QUERYABLE_SNAPSHOT,
+                        Map.of("table_id", tableId.getId())));
+    return snapshotFromEntry(cid, tableId, PinKind.PIN_KIND_CURRENT, entry, root, rootMeta, null);
   }
 
   private TableRoot loadRoot(MutationMeta rootMeta) {
@@ -263,9 +275,9 @@ public class SnapshotHelper {
    * fails as a catalog-integrity error rather than walking to the live pointer. No validation HEAD
    * happens here: every leg was just read out of the root blob at exactly the pinned version, and a
    * leg that later turns out to be gone fails at the read that needs it, through the {@link
-   * PinnedReadContract}.
+   * ResolvedSnapshotReadContract}.
    */
-  private TablePin pinFromEntry(
+  private TablePin snapshotFromEntry(
       String cid,
       ResourceId tableId,
       PinKind pinKind,
@@ -282,9 +294,9 @@ public class SnapshotHelper {
     }
     if (!entry.hasSnapshotRef() || entry.getSnapshotRef().getUri().isEmpty()) {
       // Every writer records a snapshot ref with the entry; its absence is a broken root
-      // invariant. Failing here names the real problem instead of pinning an empty URI that a
-      // downstream requirePinnedSnapshotBlob would report as a generic internal error — and the
-      // repair report gives the re-drive a chance to rebuild the manifest entry.
+      // invariant. Failing here names the real problem instead of selecting an empty URI that a
+      // downstream read would report as an unavailable snapshot — and the repair report gives the
+      // re-drive a chance to rebuild the manifest entry.
       repairs.request(tableId);
       throw GrpcErrors.internal(
           cid,
@@ -293,6 +305,7 @@ public class SnapshotHelper {
               "table_id", tableId.getId(),
               "snapshot_id", Long.toString(entry.getSnapshotId())));
     }
+    Timestamp expiresFrom = admit(cid, tableId, root, entry);
     TablePin.Builder pin =
         TablePin.newBuilder()
             .setTableId(tableId)
@@ -307,12 +320,15 @@ public class SnapshotHelper {
             // entries (the token then falls back to snapshot_blob_version — correct, cold on
             // ingest).
             .setSchemaFingerprint(entry.getSchemaFingerprint());
+    if (expiresFrom != null) {
+      pin.setIngestedAt(expiresFrom);
+    }
     if (entry.hasConstraintsRef()) {
       pin.setConstraintsRefUri(entry.getConstraintsRef().getUri())
           .setConstraintsRefVersion(entry.getConstraintsRef().getVersion());
     }
     if (entry.hasStatsGenerationRef()) {
-      // Freeze the generation the pinned root referenced so the scan's file list matches the pin,
+      // Freeze the generation the resolved root referenced so the scan's file list matches the pin,
       // not whatever a later finalize made live between BeginQuery and InitScan. Under the gate a
       // pinnable snapshot is always finalized, so this ref is always present here.
       pin.setStatsGenerationRefUri(entry.getStatsGenerationRef().getUri());
@@ -321,6 +337,32 @@ public class SnapshotHelper {
       pin.setOriginalAsOf(originalAsOf);
     }
     return pin.build();
+  }
+
+  /**
+   * Admits a new selection of {@code entry}, failing {@code MC_SNAPSHOT_TOO_OLD} past the
+   * visibility horizon. Returns the publication time the selection later expires by, or null when
+   * retention keeps the snapshot regardless of age (the committed or queryable current).
+   */
+  private Timestamp admit(
+      String cid, ResourceId tableId, TableRoot root, SnapshotManifestEntry entry) {
+    if (!retention.isRetentionEnabled()
+        || root.hasCurrentSnapshotId() && root.getCurrentSnapshotId() == entry.getSnapshotId()
+        || retention
+            .protectedSnapshotIds(
+                SnapshotManifests.chain(roots, null, manifestHead(root)), root, gateOnFinalize())
+            .contains(entry.getSnapshotId())) {
+      return null;
+    }
+    Timestamp publishedAt = snapshots.publishedAt(tableId, entry).orElse(null);
+    if (!retention.visible(publishedAt)) {
+      throw GrpcErrors.snapshotTooOld(
+          cid,
+          Map.of(
+              "table_id", tableId.getId(),
+              "snapshot_id", Long.toString(entry.getSnapshotId())));
+    }
+    return publishedAt;
   }
 
   // ----------------------------------------------------------------------
@@ -345,8 +387,8 @@ public class SnapshotHelper {
   }
 
   /**
-   * Schema JSON for a table, preferring the pinned snapshot blob. When {@code snapshotBlobUri}
-   * names a pinned snapshot blob, the schema is read from that immutable, content-addressed blob
+   * Schema JSON for a table, preferring the resolved snapshot blob. When {@code snapshotBlobUri}
+   * names a resolved snapshot blob, the schema is read from that immutable, content-addressed blob
    * directly ({@code getByBlobUri}) — never re-hydrated through {@link #resolveSnapshot}, which
    * reads the live {@code (table, snapshot id)} pointer that an in-place {@code UpdateSnapshot} can
    * repoint to a new blob after the pin was built. Empty uri keeps the legacy behaviour of
@@ -360,11 +402,12 @@ public class SnapshotHelper {
       java.util.function.Supplier<String> supplier) {
 
     if (snapshotBlobUri != null && !snapshotBlobUri.isEmpty()) {
+      var loaded = snapshots.getByBlobUri(snapshotBlobUri);
       Snapshot snap =
-          pins.requirePinnedSnapshotBlob(
-              // Cached: the blob a pin names is immutable and content-addressed, so a resident
-              // decode IS the pinned content. Emptiness still fails through requirePinned*.
-              snapshots.getByBlobUri(snapshotBlobUri), cid, tbl.id());
+          // Cached: the blob a selection names is immutable and content-addressed, so a resident
+          // decode IS the resolved snapshot content. Emptiness still fails through
+          // requireResolved*.
+          resolvedSnapshotReads.requireResolvedSnapshotBlob(loaded, cid, tbl.id());
       return snap.getSchemaJson().isBlank() ? supplier.get() : snap.getSchemaJson();
     }
 
@@ -372,7 +415,19 @@ public class SnapshotHelper {
       return supplier.get();
     }
 
-    Snapshot snap = resolveSnapshot(cid, tbl.id(), ref);
+    boolean current =
+        ref.getWhichCase() == SnapshotRef.WhichCase.SPECIAL
+            && ref.getSpecial() == SpecialSnapshot.SS_CURRENT;
+    Snapshot snap;
+    if (retention.isRetentionEnabled() && !current) {
+      // Retention applies the query selection rule, so resolve and admit like a query does.
+      TablePin selection = resolvedSnapshotFor(cid, tbl.id(), ref, Optional.empty());
+      snap =
+          resolvedSnapshotReads.requireResolvedSnapshotBlob(
+              snapshots.getByBlobUri(selection.getSnapshotBlobUri()), cid, selection);
+    } else {
+      snap = resolveSnapshot(cid, tbl.id(), ref);
+    }
 
     if (snap == null || snap.getSchemaJson().isBlank()) {
       return supplier.get();

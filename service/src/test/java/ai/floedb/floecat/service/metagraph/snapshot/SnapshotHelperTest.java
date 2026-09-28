@@ -20,6 +20,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.BlobRef;
@@ -37,7 +40,7 @@ import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.catalog.impl.TableRootMutations;
-import ai.floedb.floecat.service.query.PinnedReadContract;
+import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
@@ -47,7 +50,10 @@ import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import com.google.protobuf.Timestamp;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.StatusRuntimeException;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -61,7 +67,7 @@ class SnapshotHelperTest {
   private TableRootRepository roots;
   private TableRootCommitter committer;
   private InMemoryPointerStore repairPointers;
-  private PinnedReadContract pins;
+  private ResolvedSnapshotReadContract pins;
   private RootRepairRequests repairs;
 
   @BeforeEach
@@ -77,8 +83,16 @@ class SnapshotHelperTest {
     // observations durably enqueue the table for the resync re-drive and which do not.
     repairPointers = new InMemoryPointerStore();
     repairs = new RootRepairRequests(new RootResyncQueue(repairPointers));
-    pins = new PinnedReadContract(repairs);
-    helper = new SnapshotHelper(repository, roots, null, pins, repairs);
+    pins = new ResolvedSnapshotReadContract(repairs);
+    helper =
+        new SnapshotHelper(
+            repository,
+            roots,
+            null,
+            pins,
+            repairs,
+            new SnapshotRetentionPolicy(
+                Clock.systemUTC(), Duration.ofDays(30), Duration.ofDays(7)));
   }
 
   private boolean repairEnqueued(ResourceId tableId) {
@@ -161,6 +175,7 @@ class SnapshotHelperTest {
             .setUpstreamCreatedAt(ts("2024-04-01T00:00:00Z"))
             .build();
     repository.put(tableId, snapshot);
+    commitEntry(tableId, 41L, "2024-04-01T00:00:00Z");
 
     String schema =
         helper.schemaJsonFor(
@@ -170,6 +185,31 @@ class SnapshotHelperTest {
             () -> "{}");
 
     assertThat(schema).contains("fields");
+  }
+
+  @Test
+  void schemaJsonKeepsACurrentSnapshotWithoutPublicationMetadataVisible() {
+    ResourceId tableId = tableId("tbl");
+    // CURRENT remains readable even after its publication time is outside the history horizon.
+    repository.put(
+        tableId,
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(41L)
+            .setSchemaJson("{\"fields\":[\"current\"]}")
+            .setUpstreamCreatedAt(ts("2024-04-01T00:00:00Z"))
+            .setIngestedAt(ts("2024-04-01T00:00:00Z"))
+            .build());
+    commitEntry(tableId, 41L, "2024-04-01T00:00:00Z");
+
+    String schema =
+        helper.schemaJsonFor(
+            "corr",
+            TestNodes.tableNode(tableId, "{}"),
+            SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build(),
+            () -> "{}");
+
+    assertThat(schema).contains("current");
   }
 
   @Test
@@ -236,7 +276,7 @@ class SnapshotHelperTest {
     ResourceId tableId = tableId("tbl");
     seedAndCommit(tableId, 142, "2024-05-01T00:00:00Z");
 
-    TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
+    TablePin pin = helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty());
 
     assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_CURRENT);
     assertThat(pin.getSnapshotId()).isEqualTo(142);
@@ -252,7 +292,13 @@ class SnapshotHelperTest {
   void tablePinCurrentFailsNotFoundWhenTableHasNoCurrentSnapshot() {
     ResourceId tableId = tableId("tbl");
     // No root at all (fresh table with no trace): an expected, client-reachable state.
-    assertThatThrownBy(() -> helper.tablePinFor("corr", tableId, null, Optional.empty()))
+    assertThatThrownBy(
+            () ->
+                helper.resolvedSnapshotFor(
+                    "corr",
+                    tableId,
+                    SnapshotRef.newBuilder().setSnapshotId(5).build(),
+                    Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class)
         .satisfies(
             e -> {
@@ -276,7 +322,7 @@ class SnapshotHelperTest {
             tableId,
             BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build()));
 
-    assertThatThrownBy(() -> helper.tablePinFor("corr", tableId, null, Optional.empty()))
+    assertThatThrownBy(() -> helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class)
         .satisfies(
             e ->
@@ -295,7 +341,7 @@ class SnapshotHelperTest {
     committer.commit(
         tableId, current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(999).build());
 
-    assertThatThrownBy(() -> helper.tablePinFor("corr", tableId, null, Optional.empty()))
+    assertThatThrownBy(() -> helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class)
         .satisfies(
             e ->
@@ -333,7 +379,7 @@ class SnapshotHelperTest {
             BlobRef.newBuilder().setUri("s3://tbl/table-v1.pb").setVersion("etag-t1").build(),
             true));
 
-    TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
+    TablePin pin = helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty());
 
     assertThat(pin.getTableBlobUri()).isEqualTo("s3://tbl/table-v1.pb");
     assertThat(pin.getTableBlobVersion()).isEqualTo("etag-t1");
@@ -343,7 +389,7 @@ class SnapshotHelperTest {
   void tablePinCarriesTheRootsRefsWithoutPerBlobReValidation() {
     // The pin copies its refs out of the immutable root it just read; the single root leg is the
     // integrity contract, and a read that later loads a vanished copied blob fails loudly via
-    // requirePinned*. Construction therefore succeeds even when a copied blob is unreadable.
+    // requireResolved*. Construction therefore succeeds even when a copied blob is unreadable.
     ResourceId tableId = tableId("tbl");
     seedSnapshot(tableId, 142, "2024-05-01T00:00:00Z");
     committer.commit(
@@ -360,7 +406,7 @@ class SnapshotHelperTest {
             BlobRef.newBuilder().setUri("s3://tbl/gone.pb").setVersion("etag-x").build(),
             true));
 
-    TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
+    TablePin pin = helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty());
 
     assertThat(pin.getTableBlobUri()).isEqualTo("s3://tbl/gone.pb");
     assertThat(pin.getRootUri()).isNotEmpty();
@@ -372,7 +418,7 @@ class SnapshotHelperTest {
     seedAndCommit(tableId, 5, "2024-01-01T00:00:00Z");
 
     TablePin pin =
-        helper.tablePinFor(
+        helper.resolvedSnapshotFor(
             "corr", tableId, SnapshotRef.newBuilder().setSnapshotId(5).build(), Optional.empty());
 
     assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_SNAPSHOT_ID);
@@ -384,6 +430,118 @@ class SnapshotHelperTest {
     assertThat(pin.getRootUri()).isNotEmpty();
   }
 
+  /** Commits snapshots 5, 6 and 7 (current), each published at {@code ingestedAt}. */
+  private void commitThreeSnapshots(ResourceId tableId, Timestamp ingestedAt) {
+    for (long id = 5; id <= 7; id++) {
+      var entry =
+          SnapshotManifestEntry.newBuilder()
+              .setSnapshotId(id)
+              .setSnapshotRef(
+                  BlobRef.newBuilder()
+                      .setUri("s3://" + tableId.getId() + "/snap-" + id + ".pb")
+                      .setVersion("etag-s" + id))
+              .setUpstreamCreatedAt(ts("2024-01-0" + id + "T00:00:00Z"));
+      if (ingestedAt != null) {
+        entry.setIngestedAt(ingestedAt);
+      }
+      committer.commit(
+          tableId,
+          TableRootMutations.upsertSnapshot(
+              roots,
+              tableId,
+              entry.build(),
+              BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
+              true));
+    }
+  }
+
+  private TablePin select(ResourceId tableId, long snapshotId) {
+    return helper.resolvedSnapshotFor(
+        "corr",
+        tableId,
+        SnapshotRef.newBuilder().setSnapshotId(snapshotId).build(),
+        Optional.empty());
+  }
+
+  private void assertTooOld(ResourceId tableId, long snapshotId) {
+    assertTooOld(() -> select(tableId, snapshotId));
+  }
+
+  private static void assertTooOld(org.assertj.core.api.ThrowableAssert.ThrowingCallable call) {
+    assertThatThrownBy(call)
+        .isInstanceOf(StatusRuntimeException.class)
+        .satisfies(
+            e ->
+                assertThat(
+                        ai.floedb.floecat.service.error.impl.FloecatStatus.fromThrowable(e)
+                            .errorCode())
+                    .isEqualTo(ai.floedb.floecat.common.rpc.ErrorCode.MC_SNAPSHOT_TOO_OLD));
+  }
+
+  @Test
+  void schemaReadsAdmitSnapshotsLikeAQuery() {
+    ResourceId tableId = tableId("tbl");
+    commitThreeSnapshots(tableId, Timestamps.fromMillis(System.currentTimeMillis()));
+    for (long id = 5; id <= 7; id++) {
+      repository.put(
+          tableId,
+          Snapshot.newBuilder()
+              .setTableId(tableId)
+              .setSnapshotId(id)
+              .setSchemaJson("{\"fields\":[\"s" + id + "\"]}")
+              .build());
+    }
+    var table = TestNodes.tableNode(tableId, "{}");
+
+    assertThat(
+            helper.schemaJsonFor(
+                "corr", table, SnapshotRef.newBuilder().setSnapshotId(5).build(), () -> "{}"))
+        .contains("s5");
+    assertThat(
+            helper.schemaJsonFor(
+                "corr", table, SnapshotRef.newBuilder().setSnapshotId(6).build(), () -> "{}"))
+        .contains("s6");
+  }
+
+  @Test
+  void tablePinRejectsSnapshotsOutsideVisibilityRetention() {
+    ResourceId tableId = tableId("tbl");
+    commitThreeSnapshots(tableId, ts("2024-01-01T00:00:00Z"));
+
+    assertTooOld(tableId, 5);
+  }
+
+  @Test
+  void aVisibleHistoricalSelectionCarriesThePublicationTimeItExpiresBy() {
+    ResourceId tableId = tableId("tbl");
+    Timestamp recent = Timestamps.fromMillis(System.currentTimeMillis());
+    commitThreeSnapshots(tableId, recent);
+
+    assertThat(select(tableId, 5).getIngestedAt()).isEqualTo(recent);
+  }
+
+  @Test
+  void legacyManifestEntryWhosePayloadWasCollectedIsTooOld() {
+    ResourceId tableId = tableId("tbl-collected");
+    commitThreeSnapshots(tableId, null);
+
+    assertTooOld(tableId, 5);
+  }
+
+  @Test
+  void disabledRetentionSkipsThePublicationTimeLookup() {
+    ResourceId tableId = tableId("tbl");
+    seedAndCommit(tableId, 5, "2024-01-01T00:00:00Z");
+    var spied = spy(repository);
+    var disabled =
+        new SnapshotHelper(spied, roots, null, pins, repairs, SnapshotRetentionPolicy.disabled());
+
+    disabled.resolvedSnapshotFor(
+        "corr", tableId, SnapshotRef.newBuilder().setSnapshotId(5).build(), Optional.empty());
+
+    verify(spied, never()).publishedAt(any(), any());
+  }
+
   @Test
   void tablePinExplicitSnapshotIdNotFoundFails() {
     ResourceId tableId = tableId("tbl");
@@ -391,7 +549,7 @@ class SnapshotHelperTest {
 
     assertThatThrownBy(
             () ->
-                helper.tablePinFor(
+                helper.resolvedSnapshotFor(
                     "corr",
                     tableId,
                     SnapshotRef.newBuilder().setSnapshotId(404).build(),
@@ -406,12 +564,20 @@ class SnapshotHelperTest {
   @Test
   void tablePinAsOfResolvesToThePredecessorEntry() {
     ResourceId tableId = tableId("tbl");
-    seedAndCommit(tableId, 11, "2024-02-01T00:00:00Z");
-    seedAndCommit(tableId, 12, "2024-03-01T00:00:00Z");
-    Timestamp asOf = ts("2024-02-15T00:00:00Z");
+    Instant now = Instant.now();
+    seedAndCommit(tableId, 11, now.minus(Duration.ofDays(2)).toString());
+    seedAndCommit(tableId, 12, now.minus(Duration.ofDays(1)).toString());
+    Timestamp asOf =
+        Timestamps.fromMillis(
+            now.minus(Duration.ofDays(1)).minus(Duration.ofHours(12)).toEpochMilli());
+
+    // This test exercises predecessor selection, not retention admission.
+    helper =
+        new SnapshotHelper(
+            repository, roots, null, pins, repairs, SnapshotRetentionPolicy.disabled());
 
     TablePin pin =
-        helper.tablePinFor(
+        helper.resolvedSnapshotFor(
             "corr", tableId, SnapshotRef.newBuilder().setAsOf(asOf).build(), Optional.empty());
 
     assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_AS_OF);
@@ -430,7 +596,7 @@ class SnapshotHelperTest {
 
     assertThatThrownBy(
             () ->
-                helper.tablePinFor(
+                helper.resolvedSnapshotFor(
                     "corr",
                     tableId,
                     SnapshotRef.newBuilder().setAsOf(ts("2024-01-01T00:00:00Z")).build(),
@@ -445,7 +611,7 @@ class SnapshotHelperTest {
     seedAndCommit(tableId, 142, "2024-05-01T00:00:00Z");
 
     TablePin pin =
-        helper.tablePinFor(
+        helper.resolvedSnapshotFor(
             "corr",
             tableId,
             SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build(),
@@ -453,6 +619,37 @@ class SnapshotHelperTest {
 
     assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_CURRENT);
     assertThat(pin.getSnapshotId()).isEqualTo(142);
+  }
+
+  @Test
+  void currentRemainsAdmissibleWhileAnOlderReplacedSnapshotExpires() {
+    ResourceId tableId = tableId("tbl");
+    commitThreeSnapshots(tableId, ts("2024-01-01T00:00:00Z"));
+
+    TablePin current =
+        helper.resolvedSnapshotFor(
+            "corr",
+            tableId,
+            SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_CURRENT).build(),
+            Optional.empty());
+
+    assertThat(current.getSnapshotId()).isEqualTo(7);
+    assertThat(current.hasIngestedAt()).isFalse();
+
+    TablePin explicitCurrent = select(tableId, 7);
+    assertThat(explicitCurrent.getSnapshotId()).isEqualTo(7);
+    assertThat(explicitCurrent.hasIngestedAt()).isFalse();
+
+    TablePin asOfCurrent =
+        helper.resolvedSnapshotFor(
+            "corr",
+            tableId,
+            SnapshotRef.newBuilder().setAsOf(ts("2024-01-08T00:00:00Z")).build(),
+            Optional.empty());
+    assertThat(asOfCurrent.getSnapshotId()).isEqualTo(7);
+    assertThat(asOfCurrent.hasIngestedAt()).isFalse();
+
+    assertTooOld(tableId, 6);
   }
 
   @Test
@@ -475,7 +672,7 @@ class SnapshotHelperTest {
             BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build(),
             true));
 
-    TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
+    TablePin pin = helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty());
 
     assertThat(pin.getConstraintsRefUri()).isEqualTo("s3://tbl/constraints-7.pb");
     assertThat(pin.getConstraintsRefVersion()).isEqualTo("etag-c7");
@@ -483,7 +680,8 @@ class SnapshotHelperTest {
     // A pin over an entry with no bundle stays deterministically constraint-free.
     ResourceId bare = tableId("tbl-bare");
     seedAndCommit(bare, 3, "2024-05-01T00:00:00Z");
-    assertThat(helper.tablePinFor("corr", bare, null, Optional.empty()).getConstraintsRefUri())
+    assertThat(
+            helper.resolvedSnapshotFor("corr", bare, null, Optional.empty()).getConstraintsRefUri())
         .isEmpty();
   }
 
@@ -494,7 +692,7 @@ class SnapshotHelperTest {
     ResourceId tableId = tableId("tbl");
     assertThatThrownBy(
             () ->
-                helper.tablePinFor(
+                helper.resolvedSnapshotFor(
                     "corr",
                     tableId,
                     SnapshotRef.newBuilder().setSpecial(SpecialSnapshot.SS_UNSPECIFIED).build(),
@@ -524,7 +722,7 @@ class SnapshotHelperTest {
 
     assertThatThrownBy(
             () ->
-                helper.tablePinFor(
+                helper.resolvedSnapshotFor(
                     "corr",
                     tableId,
                     SnapshotRef.newBuilder().setSnapshotId(9).build(),
@@ -563,7 +761,7 @@ class SnapshotHelperTest {
             null,
             true)); // advance=true → committed current = 12, unfinalized
 
-    TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
+    TablePin pin = helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty());
 
     assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_CURRENT);
     assertThat(pin.getSnapshotId()).isEqualTo(11L);
@@ -600,7 +798,7 @@ class SnapshotHelperTest {
     // it is just not query-ready yet.
     assertThatThrownBy(
             () ->
-                helper.tablePinFor(
+                helper.resolvedSnapshotFor(
                     "corr",
                     tableId,
                     SnapshotRef.newBuilder().setSnapshotId(12).build(),
@@ -613,7 +811,7 @@ class SnapshotHelperTest {
 
     // AS_OF after 12's upstream time still resolves to 11 — the newest FINALIZED entry.
     TablePin asOf =
-        helper.tablePinFor(
+        helper.resolvedSnapshotFor(
             "corr",
             tableId,
             SnapshotRef.newBuilder().setAsOf(ts("2024-04-01T00:00:00Z")).build(),
@@ -621,7 +819,7 @@ class SnapshotHelperTest {
     assertThat(asOf.getSnapshotId()).isEqualTo(11);
 
     // CURRENT serves the finalized snapshot (12 never advanced currency at registration).
-    TablePin current = helper.tablePinFor("corr", tableId, null, Optional.empty());
+    TablePin current = helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty());
     assertThat(current.getSnapshotId()).isEqualTo(11);
   }
 
@@ -643,7 +841,8 @@ class SnapshotHelperTest {
 
   @Test
   void aRootSupersededBetweenThePointerAndBlobReadsIsReFollowedOnce() {
-    // GC can sweep a superseded root blob between tablePinFor's pointer read and its blob read;
+    // GC can sweep a superseded root blob between resolvedSnapshotFor's pointer read and its blob
+    // read;
     // the pointer has necessarily moved on, so the helper must re-follow it once instead of
     // failing a pin on a live table.
     var ptr = new InMemoryPointerStore();
@@ -678,7 +877,7 @@ class SnapshotHelperTest {
             true));
     var flakyHelper = new SnapshotHelper(repository, flakyRoots, null, pins, repairs);
 
-    TablePin pin = flakyHelper.tablePinFor("corr", table, null, Optional.empty());
+    TablePin pin = flakyHelper.resolvedSnapshotFor("corr", table, null, Optional.empty());
 
     assertThat(pin.getSnapshotId()).isEqualTo(11);
     // The one-shot re-follow recovered, so nothing was enqueued for the resync re-drive.
@@ -717,7 +916,7 @@ class SnapshotHelperTest {
             true));
     var deadHelper = new SnapshotHelper(repository, deadRoots, null, pins, repairs);
 
-    assertThatThrownBy(() -> deadHelper.tablePinFor("corr", table, null, Optional.empty()))
+    assertThatThrownBy(() -> deadHelper.resolvedSnapshotFor("corr", table, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class);
     assertThat(repairEnqueued(table)).isTrue();
   }
@@ -725,7 +924,7 @@ class SnapshotHelperTest {
   @Test
   void anEntryWithoutASnapshotRefFailsThePinWithThePreciseError() {
     // Every writer records a snapshot ref; an entry without one is a broken root invariant. The
-    // pin must fail naming that, not construct an empty-URI pin that requirePinnedSnapshotBlob
+    // pin must fail naming that, not construct an empty-URI pin that requireResolvedSnapshotBlob
     // would later report as a generic internal error.
     ResourceId table = tableId("tbl-no-snap-ref");
     var localCommitter = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
@@ -743,7 +942,7 @@ class SnapshotHelperTest {
             true));
     var localHelper = new SnapshotHelper(repository, roots, null, pins, repairs);
 
-    assertThatThrownBy(() -> localHelper.tablePinFor("corr", table, null, Optional.empty()))
+    assertThatThrownBy(() -> localHelper.resolvedSnapshotFor("corr", table, null, Optional.empty()))
         .hasMessageContaining("INTERNAL");
     // A broken root invariant: the table is durably enqueued for the resync re-drive.
     assertThat(repairEnqueued(table)).isTrue();
@@ -766,7 +965,7 @@ class SnapshotHelperTest {
     var root = roots.get(tableId).orElseThrow();
     org.junit.jupiter.api.Assertions.assertEquals(
         7L, root.getCurrentSnapshotId(), "currency stays on 7 after generation removal");
-    assertThatThrownBy(() -> helper.tablePinFor("corr", tableId, null, Optional.empty()))
+    assertThatThrownBy(() -> helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty()))
         .hasMessageContaining("NOT_FOUND");
   }
 
@@ -786,7 +985,7 @@ class SnapshotHelperTest {
     // lists nothing.
     commitFinalizedEntry(tableId, 3, "2024-02-01T00:00:00Z", "s3://tbl/stats/3/empty-gen.pb");
 
-    TablePin pin = helper.tablePinFor("corr", tableId, null, Optional.empty());
+    TablePin pin = helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty());
 
     assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_CURRENT);
     assertThat(pin.getSnapshotId()).isEqualTo(3L);

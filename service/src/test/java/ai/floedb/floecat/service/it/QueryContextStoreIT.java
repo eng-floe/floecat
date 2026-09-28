@@ -20,31 +20,23 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.query.rpc.ScanHandle;
+import ai.floedb.floecat.query.rpc.TableInfo;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.query.impl.QueryContextStoreImpl;
+import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
 import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.junit.QuarkusTestProfile;
 import jakarta.inject.Inject;
 import java.time.Clock;
-import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class QueryContextStoreIT {
-  public static class StoreTestProfile implements QuarkusTestProfile {
-    @Override
-    public Map<String, String> getConfigOverrides() {
-      return Map.of(
-          "floecat.query.default-ttl-ms", "100",
-          "floecat.query.ended-grace-ms", "80",
-          "floecat.query.max-size", "1000");
-    }
-  }
-
   @Inject QueryContextStoreImpl store;
 
   private final Clock clock = Clock.systemUTC();
@@ -137,6 +129,16 @@ class QueryContextStoreIT {
   }
 
   @Test
+  void queryNoExtendIfLazilyExpired() throws Exception {
+    String queryId = "q-extend-expired";
+    store.put(newQuery(queryId, 20));
+    Thread.sleep(40);
+
+    assertTrue(store.extendLease(queryId, clock.millis() + 10_000).isEmpty());
+    assertEquals(QueryContext.State.EXPIRED, store.get(queryId).orElseThrow().getState());
+  }
+
+  @Test
   void queryEndCommit() {
     String queryId = "q-end-1";
     var ctx = newQuery(queryId, 100);
@@ -158,5 +160,29 @@ class QueryContextStoreIT {
 
     assertTrue(store.delete(queryId));
     assertTrue(store.get(queryId).isEmpty());
+  }
+
+  @Test
+  void scanSessionHandlePreservesResolvedSnapshotMetadata() {
+    String queryId = "q-scan-session";
+    store.put(newQuery(queryId, 500));
+
+    var session =
+        ScanSession.builder()
+            .queryId(queryId)
+            .tableId(ResourceId.newBuilder().setId("table-1").build())
+            .snapshotId(42L)
+            .statsGeneration("stats-42")
+            .selection(TablePin.newBuilder().setSnapshotId(42L).build())
+            .tableInfo(TableInfo.getDefaultInstance())
+            .targetBatchItems(100)
+            .targetBatchBytes(1024)
+            .build();
+    ScanHandle handle = store.createScanSession("it", session);
+
+    var stored = store.getScanSession(handle).orElseThrow();
+    assertEquals(42L, stored.snapshotId());
+    assertEquals("stats-42", stored.statsGeneration());
+    assertEquals(42L, stored.selection().getSnapshotId());
   }
 }

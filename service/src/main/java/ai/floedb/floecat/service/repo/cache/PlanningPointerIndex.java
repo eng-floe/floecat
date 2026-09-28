@@ -85,6 +85,11 @@ public final class PlanningPointerIndex {
     }
 
     Optional<Permit> acquire(String accountId, Access access);
+
+    /** The deployment's bound ownership, or {@link #ALWAYS_OWNED} when none is bound. */
+    static Ownership configured(jakarta.enterprise.inject.Instance<Ownership> bound) {
+      return bound.isUnsatisfied() ? ALWAYS_OWNED : bound.get();
+    }
   }
 
   /**

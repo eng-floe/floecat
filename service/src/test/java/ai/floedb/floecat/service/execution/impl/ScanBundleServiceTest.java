@@ -31,6 +31,7 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.PinKind;
@@ -38,7 +39,9 @@ import ai.floedb.floecat.query.rpc.TableInfo;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.RootRepairRequests;
 import ai.floedb.floecat.service.catalog.impl.RootResyncQueue;
-import ai.floedb.floecat.service.query.PinnedReadContract;
+import ai.floedb.floecat.service.error.impl.FloecatStatus;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
+import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
@@ -47,6 +50,10 @@ import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsStore.StatsStorePage;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import com.google.protobuf.util.Timestamps;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
@@ -91,9 +98,11 @@ class ScanBundleServiceTest {
     // A real repair pipeline over an in-memory store: initScan's missing-pinned-blob failures
     // must durably enqueue the table for the resync re-drive, and tests assert the marker.
     repairPointers = new InMemoryPointerStore();
-    PinnedReadContract pinnedReads =
-        new PinnedReadContract(new RootRepairRequests(new RootResyncQueue(repairPointers)));
-    service = new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver, pinnedReads);
+    ResolvedSnapshotReadContract resolvedSnapshotReads =
+        new ResolvedSnapshotReadContract(
+            new RootRepairRequests(new RootResyncQueue(repairPointers)));
+    service =
+        new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver, resolvedSnapshotReads);
   }
 
   private boolean repairEnqueued(ResourceId tableId) {
@@ -146,23 +155,43 @@ class ScanBundleServiceTest {
   }
 
   @Test
-  void initScanFailsWhenPinnedTableBlobMissingAndEnqueuesRepair() {
+  void initScanRepairsWhenResolvedTableBlobMissing() {
     when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.empty());
 
     assertThrows(io.grpc.StatusRuntimeException.class, () -> service.initScan("corr", PIN));
-    // The pinned root names a table blob no read can load: without a re-derived root every
-    // future scan fails the same way, so the failure durably enqueues the table for repair.
+    // The selected table definition is a catalog root, so a missing blob is queued for repair.
     assertTrue(repairEnqueued(TABLE_ID));
   }
 
   @Test
-  void initScanFailsWhenPinnedSnapshotBlobMissingAndEnqueuesRepair() {
+  void initScanFailsWhenPinnedSnapshotBlobMissingWithoutRepairingTheTable() {
     when(tableRepo.getByBlobUri(TABLE_BLOB_URI))
         .thenReturn(Optional.of(Table.newBuilder().setResourceId(TABLE_ID).build()));
     when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI)).thenReturn(Optional.empty());
 
     assertThrows(io.grpc.StatusRuntimeException.class, () -> service.initScan("corr", PIN));
-    assertTrue(repairEnqueued(TABLE_ID));
+    assertFalse(repairEnqueued(TABLE_ID));
+  }
+
+  @Test
+  void initScanMapsAnExpiredSelectionToSnapshotExpired() {
+    var expiredReads =
+        new ResolvedSnapshotReadContract(
+            new RootRepairRequests(new RootResyncQueue(new InMemoryPointerStore())),
+            new SnapshotRetentionPolicy(
+                Clock.fixed(Instant.ofEpochMilli(1_000L), ZoneOffset.UTC),
+                java.time.Duration.ofMillis(1),
+                java.time.Duration.ZERO));
+    var expiredService =
+        new ScanBundleService(tableRepo, snapshotRepo, statsStore, resolver, expiredReads);
+    TablePin expiredPin = PIN.toBuilder().setIngestedAt(Timestamps.fromMillis(0L)).build();
+
+    var failure =
+        assertThrows(
+            io.grpc.StatusRuntimeException.class,
+            () -> expiredService.initScan("corr", expiredPin));
+
+    assertEquals(ErrorCode.MC_SNAPSHOT_EXPIRED, FloecatStatus.fromThrowable(failure).errorCode());
   }
 
   private static ScanSession session(String statsGeneration) {
@@ -172,6 +201,7 @@ class ScanBundleServiceTest {
         .tableId(TABLE_ID)
         .snapshotId(42L)
         .statsGeneration(statsGeneration)
+        .selection(TablePin.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build())
         .tableInfo(TableInfo.getDefaultInstance())
         .targetBatchItems(10)
         .targetBatchBytes(1 << 20)

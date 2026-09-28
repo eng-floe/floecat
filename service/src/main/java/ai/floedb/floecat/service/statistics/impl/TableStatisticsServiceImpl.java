@@ -288,11 +288,13 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                       // active-generation pointer is written on the FIRST record (by
                       // ensureActiveGeneration), so listTargetStats / planner stats / the stale
                       // index can already read the in-progress generation. What the root commit
-                      // gates is PINNED-query visibility (and, under the gate, the snapshot's
-                      // finalization): only a committed generation resolves through a pin.
+                      // gates resolved-query visibility (and, under the gate, the snapshot's
+                      // finalization): only a committed generation is selected.
                       // Committing per-chunk would therefore expose a half-written generation to
-                      // pinned reads. A stream that fails mid-way leaves the generation un-rooted:
-                      // pinned queries keep resolving the previous one, and the live-active pointer
+                      // resolved reads. A stream that fails mid-way leaves the generation
+                      // un-rooted:
+                      // existing queries keep resolving the previous one, and the live-active
+                      // pointer
                       // protects the partial write from GC until a retry completes.
                       StreamState finalState = state.get();
                       if (rootWriter != null

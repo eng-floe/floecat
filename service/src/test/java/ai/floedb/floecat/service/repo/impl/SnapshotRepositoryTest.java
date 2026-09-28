@@ -82,6 +82,36 @@ class SnapshotRepositoryTest {
   }
 
   @Test
+  void deletingASnapshotReleasesItsArtifactPointersInTheSameCommit() {
+    ResourceId table =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("tbl")
+            .setKind(ResourceKind.RK_TABLE)
+            .build();
+    snapshotRepo.create(Snapshot.newBuilder().setTableId(table).setSnapshotId(7L).build());
+    java.util.List<String> artifacts =
+        java.util.List.of(
+            Keys.snapshotTargetStatsManifestPointer("acct", "tbl", 7L),
+            Keys.snapshotIndexArtifactCaptureManifestPointer("acct", "tbl", 7L),
+            Keys.snapshotConstraintsPointer("acct", "tbl", 7L));
+    for (String key : artifacts) {
+      ptr.compareAndSet(
+          key,
+          0L,
+          ai.floedb.floecat.service.repo.model.PointerReferences.blobPointer(key, "s3://x", 1L));
+    }
+    long version = snapshotRepo.metaForSafe(table, 7L).getPointerVersion();
+
+    assertTrue(snapshotRepo.deleteWithArtifacts(table, 7L, version, java.util.Map.of()));
+
+    assertTrue(snapshotRepo.getById(table, 7L).isEmpty());
+    for (String key : artifacts) {
+      assertTrue(ptr.get(key).isEmpty(), key);
+    }
+  }
+
+  @Test
   void snapshotRepoCreateSnapshot() {
     String account = TestSupport.createAccountId(TestSupport.DEFAULT_SEED_ACCOUNT).getId();
     String catalogId = UUID.randomUUID().toString();

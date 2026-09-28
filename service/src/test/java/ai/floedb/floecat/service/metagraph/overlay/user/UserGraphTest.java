@@ -493,7 +493,7 @@ class UserGraphTest {
     commitRootEntry(tableId, 42, 50, "s3://tbl-override/table.pb");
 
     TablePin pin =
-        graph.tablePinFor(
+        graph.resolvedSnapshotFor(
             "corr", tableId, SnapshotRef.newBuilder().setSnapshotId(42).build(), Optional.empty());
     assertThat(pin.getPinKind()).isEqualTo(PinKind.PIN_KIND_SNAPSHOT_ID);
     assertThat(pin.getSnapshotId()).isEqualTo(42);
@@ -502,7 +502,7 @@ class UserGraphTest {
 
     Timestamp ts = Timestamp.newBuilder().setSeconds(123).build();
     TablePin pinTs =
-        graph.tablePinFor(
+        graph.resolvedSnapshotFor(
             "corr", tableId, SnapshotRef.newBuilder().setAsOf(ts).build(), Optional.empty());
     assertThat(pinTs.getPinKind()).isEqualTo(PinKind.PIN_KIND_AS_OF);
     assertThat(pinTs.getOriginalAsOf()).isEqualTo(ts);
@@ -524,7 +524,7 @@ class UserGraphTest {
             .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(200))
             .build());
     commitRootEntry(tableId, 100, 200, "s3://tbl-default/table.pb");
-    TablePin defaultPin = graph.tablePinFor("corr", tableId, null, Optional.of(defaultTs));
+    TablePin defaultPin = graph.resolvedSnapshotFor("corr", tableId, null, Optional.of(defaultTs));
     assertThat(defaultPin.getPinKind()).isEqualTo(PinKind.PIN_KIND_AS_OF);
     assertThat(defaultPin.getOriginalAsOf()).isEqualTo(defaultTs);
     assertThat(defaultPin.getSnapshotId()).isEqualTo(100);
@@ -539,7 +539,7 @@ class UserGraphTest {
             .setUpstreamCreatedAt(Timestamp.newBuilder().setSeconds(300))
             .build());
     commitRootEntry(tableId, 9999, 300, "s3://tbl-default/table.pb");
-    TablePin current = graph.tablePinFor("corr", tableId, null, Optional.empty());
+    TablePin current = graph.resolvedSnapshotFor("corr", tableId, null, Optional.empty());
     assertThat(current.getPinKind()).isEqualTo(PinKind.PIN_KIND_CURRENT);
     assertThat(current.getSnapshotId()).isEqualTo(9999);
     assertThat(current.getTableBlobUri()).isEqualTo("s3://tbl-default/table.pb");

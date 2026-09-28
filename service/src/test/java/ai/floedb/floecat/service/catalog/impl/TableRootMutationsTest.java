@@ -75,6 +75,21 @@ class TableRootMutationsTest {
   }
 
   @Test
+  void removeSnapshotsDropsSeveralEntriesInOneCommit() {
+    for (long id = 1; id <= 3; id++) {
+      commit(TableRootMutations.upsertSnapshot(roots, TABLE, entry(id, id * 1_000), null, true));
+    }
+
+    TableRoot root =
+        commit(TableRootMutations.removeSnapshots(roots, TABLE, java.util.Set.of(1L, 2L)));
+
+    assertEquals(3L, root.getCurrentSnapshotId());
+    assertTrue(SnapshotManifests.findEntry(roots, root.getSnapshotManifestRef(), 1).isEmpty());
+    assertTrue(SnapshotManifests.findEntry(roots, root.getSnapshotManifestRef(), 2).isEmpty());
+    assertTrue(SnapshotManifests.findEntry(roots, root.getSnapshotManifestRef(), 3).isPresent());
+  }
+
+  @Test
   void firstSnapshotBecomesCurrentAndCreatesTheRoot() {
     TableRoot root =
         commit(

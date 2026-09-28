@@ -38,7 +38,16 @@ import java.util.concurrent.ConcurrentHashMap;
 @IfBuildProperty(name = "floecat.blob", stringValue = "memory")
 public class InMemoryBlobStore implements BlobStore {
   final String TAG_CONTENT_TYPE = "contentType";
-  private final Clock clock = Clock.systemUTC();
+  private final Clock clock;
+
+  public InMemoryBlobStore() {
+    this(Clock.systemUTC());
+  }
+
+  /** Stamps blob headers with {@code clock}. */
+  public InMemoryBlobStore(Clock clock) {
+    this.clock = clock;
+  }
 
   private static final class Blob {
     final byte[] data;

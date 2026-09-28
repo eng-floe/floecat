@@ -161,6 +161,8 @@ Each repository extends `BaseResourceRepository<T>`:
 - Reserves pointer keys via CAS before writing blobs.
 - Writes blobs with checksum verification (`sha256B64`).
 - Maintains `MutationMeta` (pointer key, blob URI, pointer version, ETag, timestamp).
+- For immutable CAS blobs, the ETag is derived from the hash in the URI; mutable and legacy blobs
+  retain the `HEAD` fallback so their RPC and precondition semantics do not change.
 - Provides convenience accessors such as `getByName`, `getById`, `list`, and `metaForSafe`.
 - Deletes tolerate missing blobs when cleaning up pointers, so skewed pointer/blob states can still be removed safely.
 
@@ -311,10 +313,11 @@ External session header authentication is documented in
 [`docs/external-authentication.md`](external-authentication.md).
 
 ### Query Lifecycle Service
-`QueryContextStore` is a Caffeine cache keyed by query ID. Each `QueryContext` tracks state,
-expiration, `PrincipalContext`, encoded `SnapshotSet`, and `ExpansionMap`.
+`QueryContextStore` is a process-local cache keyed by query ID. Each `QueryContext` tracks state,
+expiration, `PrincipalContext`, encoded `RelationPinSet`, and `ExpansionMap`. Scan handles serve only
+while their query is active.
 `QueryServiceImpl.beginQuery` resolves name or ID references via Directory/Snapshot/Table services,
-pins snapshots, and stores the lease. Planners request connector file lists with `InitScan` (which
+captures the selected snapshots, and stores the lease. Planners request connector file lists with `InitScan` (which
 returns table metadata and a scan handle), then consume `StreamDeleteFiles` followed by
 `StreamDataFiles`, and finally call `CloseScan` when done. Ordering is strict: `StreamDeleteFiles`
 must be fully consumed before `StreamDataFiles` begins, otherwise the server rejects the data stream
@@ -323,6 +326,55 @@ so `CloseScan` is best-effort but still recommended to tidy server resources soo
 currently reports `DeleteRef.all_deletes=true`; finer-grain delete references will come later once the
 applicability logic is defined. The lease data (snapshots, expansion map, obligations) is returned to
 the caller inside the `QueryDescriptor`.
+
+### Account Lifecycle
+`AccountScope` controls snapshot-resolution and mutation admission. Pointer mutations use the
+`PlanningPointerIndex.Ownership` seam, which is the single write-admission path. The default policy
+is process-local and serves every account.
+
+Managed Floe deployments get account exclusivity from routing plus the StatefulSet lifecycle
+contract: a given account is served by one Floecat owner. Floecat therefore does not write
+ownership records, recover assignments from KV, or fence every durable write. Process-local query
+contexts and resolved snapshot selections are optimizations only; retention is the snapshot-GC
+safety mechanism.
+
+The protocol still calls these selections `TablePin` and `RelationPinSet` for compatibility. In
+the current model, “pin” means “resolved snapshot selection”; it does not mean a GC root or a
+durable lifetime reservation.
+
+The extension points remain inside OSS Floecat. Deployments that need a different admission policy
+can bind their own `AccountScope` or `PlanningPointerIndex.Ownership` without
+changing query, cache, mutation or GC call sites.
+
+One retention policy covers every versioned catalog object: snapshots of a table, and table
+definitions, stats generations and constraints bundles. A version is kept while it is live or
+published within retention plus grace. Snapshot publication time is Floecat's `ingested_at`, never
+upstream event time; entries written before it existed fall back to the snapshot pointer, then to
+the snapshot blob's write time. Other artifacts use their blob's write time.
+
+The current snapshot stays selectable and readable as long as it remains live, however the
+selection is spelled (`CURRENT`, `AS OF`, or an explicit id). Any other new selection fails with
+`MC_SNAPSHOT_TOO_OLD` once it is past the visibility horizon. A query that
+already selected such a snapshot receives `MC_SNAPSHOT_EXPIRED` once it is past retention plus grace,
+or when its selected data is explicitly deleted or collected. Retrying may succeed if the selection
+is still current and a missing derived artifact is repaired, but callers must not assume that an
+explicit historical selection can be recreated. Both errors use `FAILED_PRECONDITION`; Core may discard and replan only when the
+original query semantics allow a new selection (for example, `CURRENT`), and must not silently
+replace an explicit snapshot or `AS OF` request. QueryContext and its resolved selections are
+in-process read optimizations, never GC roots.
+
+Retention is enforced in one place. Each pointer GC pass runs `SnapshotExpiry` first: a snapshot the
+policy no longer keeps is dropped the way `DeleteSnapshot` drops one, its pointers and those of its
+stats, index and constraints artifacts in one pointer transaction, then its root manifest entry.
+Once pruned, a request for it by id or `AS OF` finds no such snapshot, as in Iceberg. Pruning needs
+pointer GC; reclaiming the storage also needs CAS GC, which is plain reachability from the current
+roots and reclaims whatever the table no longer references. At most 500 snapshots per table are
+pruned per pass.
+
+Managed deployments must keep upstream data available for at least the configured snapshot retention
+period. Standalone OSS Floecat defaults to `0s` retention, which keeps every snapshot; with CAS GC
+enabled, unreferenced definitions, stats generations and constraints become collectable after grace.
+Managed deployments must override retention with their authoritative-cache policy.
 
 ### Builtin Catalog Service
 `SystemObjectsLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the
@@ -333,17 +385,13 @@ configured location, caches them by engine kind, and exposes them through
 ### GC and Bootstrap
 `IdempotencyGc` runs on a configurable cadence (see `floecat.gc.*` config) and sweeps expired
 idempotency records in slices to avoid starvation. `CasBlobGc` performs a reachability-based sweep
-per account: the referenced set is built from live pointers, the pin roots of live query contexts,
-and the chains walked out of current table roots (root blob, manifest pages, and every
-definition/snapshot/generation-manifest/constraints blob they reference). A pinned root protects
-its whole chain, so pinned blobs stay readable for the query's lifetime. Deletes are fenced by a
-30 s min-age (`floecat.gc.cas.min-age-ms`, age since the blob was written), and any failed
-root-chain walk poisons the account's delete phase — the referenced set is untrustworthy, so
-nothing is deleted that pass (fail closed). CAS GC is disabled by default because query pin roots
-are process-local. In a multi-replica deployment, enable `FLOECAT_GC_CAS_ENABLED=true` on exactly
-one designated control-plane replica only when all live query contexts are visible to that replica;
-otherwise leave it disabled. A retained account continuation is abandoned after
-`floecat.gc.cas.max-consecutive-continuation-ticks` so one large account cannot starve every other
+per account from durable pointers and current table-root chains. Deletes are fenced by
+`floecat.gc.cas.min-age-ms` and by retention plus grace, and any failed root-chain walk poisons the
+account's delete phase so nothing is deleted that pass. CAS GC is disabled by default
+(`FLOECAT_GC_CAS_ENABLED`). Every GC collector lists accounts through `OwnedAccounts`, so it
+collects only accounts the local replica owns (`PlanningPointerIndex.Ownership`) and a multi-replica
+deployment keeps each account's pointer index authoritative. A retained account continuation is
+abandoned after `floecat.gc.cas.max-consecutive-continuation-ticks` so one large account cannot starve every other
 account; raise that bound if the oldest-sweep-age metric shows a large account repeatedly restarting.
 Snapshot compatibility artifacts under `snapshots/<id>/compat/` are gateway-managed mutable
 artifacts, not CAS objects, and remain owned by explicit snapshot/table lifecycle cleanup rather
@@ -393,16 +441,18 @@ Notable `application.properties` keys:
 | Property | Purpose |
 |----------|---------|
 | `quarkus.grpc.server.*` | Port, HTTP2, plaintext/reflection toggles. |
+| `quarkus.management.*` | Private management listener for health and operational endpoints. |
 | `quarkus.grpc.clients.floecat.*` | Loopback client config for internal RPC calls. |
 | `floecat.seed.enabled` | Enable demo data seeding. |
 | `floecat.kv` / `floecat.blob` | Select pointer/blob store implementation (`memory`, `dynamodb`, `s3`). |
 | `floecat.query.*` | Default TTL, grace period, max cache size, safety expiry for query contexts. |
-| `floecat.query.resolver.max_parallel_inputs` | Per-request query-input pin-resolution fan-out. Defaults to `8`; values are clamped to `1`–`16`. |
+| `floecat.query.resolver.max_parallel_inputs` | Per-request query-input snapshot-selection fan-out. Defaults to `8`; values are clamped to `1`–`16`. |
 | `floecat.query.metadata-io.max-concurrency` | Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use `64`; present malformed, blank, or out-of-range values fail startup. |
+| `floecat.snapshot.retention` / `floecat.snapshot.retention-grace` | The retention policy for every versioned catalog object (see above). OSS defaults are `0s` retention and `7d` grace; managed deployments should override retention explicitly. `0s` keeps every snapshot. |
 | `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for GetUserObjects. Defaults to `8`. |
 | `floecat.catalog.bundle.max_parallel_stats_warms` | Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to `16`; clamped to `>= 1`. |
 | `floecat.gc.idempotency.*` | Cadence, page size, batch limit, slice duration for idempotency GC. |
-| `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. |
+| `floecat.gc.cas.*` | Cadence, page size, min-age, tick slice settings for CAS blob GC. Unreferenced superseded blobs wait at least retention plus grace from their write time. |
 | `floecat.gc.pointer.*` | Cadence, page size, min-age, tick slice settings for pointer GC. |
 | `floecat.gc.reconcile-jobs.*` | Cadence, retention, and slice settings for durable reconcile-job GC. Finished terminal jobs default to 24 h retention. |
 | `floecat.reconciler.worker-affinity` | Exact job-tree contract cohort shared by a control plane and its executor fleet (default `reconciler-v1`). |
@@ -425,7 +475,7 @@ Extension points:
   additional connector metadata via the `QueryScanService` streaming RPCs / `ScanBundleService` on the query
   path. Reconcile planning/execution does not use `ScanBundleService`; it goes through
   `FloecatConnector` directly. `BeginQuery` optionally accepts a client-specified `query_id` plus
-  `common.QueryInput` records so lifecycle can pre-pin snapshots/expansions for deterministic
+  `common.QueryInput` records so lifecycle can resolve snapshots/expansions up front for deterministic
   replay.
 
 Secrets Manager integration (tags + optional per-account assume-role) is documented in

@@ -22,6 +22,7 @@ import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.cache.CacheFamily;
 import ai.floedb.floecat.cache.DiskBlobCache;
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
+import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
@@ -107,9 +108,7 @@ public class MetadataCaches {
               + maxTotalHeapShare);
     }
     PlanningPointerIndex.Ownership ownership =
-        configuredOwnership.isUnsatisfied()
-            ? PlanningPointerIndex.Ownership.ALWAYS_OWNED
-            : configuredOwnership.get();
+        PlanningPointerIndex.Ownership.configured(configuredOwnership);
     Tag[] baseTags =
         new Tag[] {Tag.of(TagKey.COMPONENT, "service"), Tag.of(TagKey.OPERATION, "metadata-index")};
     long maxHeapBytes = Runtime.getRuntime().maxMemory();
@@ -166,12 +165,17 @@ public class MetadataCaches {
       CacheBudgetResolver budgets,
       Observability observability,
       LogicalSchemaMapper schemaMapper,
+      ResolvedSnapshotReadContract resolvedSnapshotReads,
       @ConfigProperty(name = "floecat.cache.object.enabled", defaultValue = "true")
           boolean enabled) {
     var metrics = metricsFor(CacheFamily.OBJECT, observability);
     var cache =
         new ObjectCache(
-            budgets.bytesFor(CacheFamily.OBJECT), events(metrics), schemaMapper, enabled);
+            budgets.bytesFor(CacheFamily.OBJECT),
+            events(metrics),
+            schemaMapper,
+            enabled,
+            resolvedSnapshotReads);
     report(cache.family(), cache::entryCount, cache::bytes, budgets, metrics, cache.enabled());
     return cache;
   }

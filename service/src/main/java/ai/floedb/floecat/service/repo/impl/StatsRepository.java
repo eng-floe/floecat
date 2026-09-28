@@ -28,6 +28,7 @@ import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundles;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.model.BlobRefs;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
@@ -95,8 +96,8 @@ public class StatsRepository implements StatsStore {
 
   /**
    * Serializes only the final liveness recheck and lifecycle claim with table publishers. Once the
-   * claim changes the generation to {@code DELETING}, publication and new query pins fail closed,
-   * so the caller can release the guard before performing remote blob and pointer I/O.
+   * claim changes the generation to {@code DELETING}, publication and new snapshot selections fail
+   * closed, so the caller can release the guard before performing remote blob and pointer I/O.
    */
   @FunctionalInterface
   public interface GenerationGcClaimGuard {
@@ -216,34 +217,6 @@ public class StatsRepository implements StatsStore {
       throw new BaseResourceRepository.AbortRetryableException(
           "stats generation manifest read retryable: " + uri);
     }
-  }
-
-  /**
-   * Fails closed unless a frozen generation manifest is live, content-valid, and still published.
-   * Query-pin registration calls this while holding the table reachability guard shared with GC
-   * generation reclamation.
-   */
-  public Keys.GenerationKey requirePublishedGenerationLive(ResourceId tableId, String manifestUri) {
-    Keys.GenerationKey generation = Keys.generationFromManifestBlobUri(manifestUri);
-    if (generation == null
-        || !manifestUri.equals(
-            Keys.snapshotTargetStatsManifestBlobUri(
-                tableId.getAccountId(),
-                tableId.getId(),
-                generation.snapshotId(),
-                generation.generationId()))) {
-      throw new BaseResourceRepository.CorruptionException(
-          "frozen stats generation belongs to a different table: " + manifestUri);
-    }
-    String lifecycle =
-        generationLifecycleState(tableId, generation.snapshotId(), generation.generationId());
-    String storedGeneration = loadGenerationId(manifestUri).orElse("");
-    if (!GENERATION_PUBLISHED.equals(lifecycle)
-        || !generation.generationId().equals(storedGeneration)) {
-      throw new BaseResourceRepository.CorruptionException(
-          "frozen stats generation is unavailable: " + manifestUri);
-    }
-    return generation;
   }
 
   @Override
@@ -893,16 +866,26 @@ public class StatsRepository implements StatsStore {
   @Override
   public Optional<TargetStatsRecord> getTargetStatsInGeneration(
       ResourceId tableId, long snapshotId, String generationToken, StatsTarget target) {
-    return readGenerationIdForFrozenToken(snapshotId, generationToken)
-        .flatMap(generationId -> getTargetStatsFromChain(tableId, snapshotId, generationId, target))
+    return readGenerationIdForFrozenToken(tableId, snapshotId, generationToken)
+        .flatMap(
+            generationId -> {
+              Optional<TargetStatsRecord> result =
+                  getTargetStatsFromChain(tableId, snapshotId, generationId, target);
+              ensureGenerationWasNotReclaimed(tableId, snapshotId, generationId);
+              return result;
+            })
         .map(record -> rebindRecord(record, tableId, snapshotId));
   }
 
   @Override
   public Map<String, Optional<TargetStatsRecord>> getTargetStatsBatchInGeneration(
       ResourceId tableId, long snapshotId, String generationToken, List<StatsTarget> targets) {
-    return getTargetStatsBatchInResolvedGeneration(
-        tableId, snapshotId, targets, readGenerationIdForFrozenToken(snapshotId, generationToken));
+    Optional<String> generationId =
+        readGenerationIdForFrozenToken(tableId, snapshotId, generationToken);
+    Map<String, Optional<TargetStatsRecord>> result =
+        getTargetStatsBatchInResolvedGeneration(tableId, snapshotId, targets, generationId);
+    generationId.ifPresent(id -> ensureGenerationWasNotReclaimed(tableId, snapshotId, id));
+    return result;
   }
 
   private Map<String, Optional<TargetStatsRecord>> getTargetStatsBatchInResolvedGeneration(
@@ -990,23 +973,43 @@ public class StatsRepository implements StatsStore {
         : targetStatsStorage.getReferenced(pointerKey, entry.getArtifact().getPayloadUri());
   }
 
-  private Optional<String> readGenerationIdForFrozenToken(long snapshotId, String generationToken) {
+  /**
+   * The generation a frozen token names. A missing manifest, or one reclamation is deleting, is
+   * unavailable; a corrupt manifest propagates as corruption so planners can treat it as a miss.
+   */
+  private Optional<String> readGenerationIdForFrozenToken(
+      ResourceId tableId, long snapshotId, String generationToken) {
     if (generationToken == null || generationToken.isBlank()) {
       return Optional.empty();
     }
-    String unavailableMessage =
-        "frozen stats generation manifest unavailable for snapshot "
-            + snapshotId
-            + ": "
-            + generationToken;
-    try {
-      return Optional.of(
-          loadGenerationId(generationToken)
-              .orElseThrow(
-                  () -> new StatsStore.GenerationUnavailableException(unavailableMessage)));
-    } catch (BaseResourceRepository.CorruptionException e) {
-      throw new StatsStore.GenerationUnavailableException(unavailableMessage, e);
+    return Optional.of(
+        resolveFrozenGeneration(tableId, snapshotId, generationToken)
+            .orElseThrow(
+                () ->
+                    new StatsStore.GenerationUnavailableException(
+                        frozenGenerationUnavailableMessage(snapshotId, generationToken))));
+  }
+
+  private Optional<String> resolveFrozenGeneration(
+      ResourceId tableId, long snapshotId, String generationToken) {
+    return loadGenerationId(generationToken)
+        .filter(id -> !isGenerationDeletionInProgress(tableId, snapshotId, id));
+  }
+
+  private void ensureGenerationWasNotReclaimed(
+      ResourceId tableId, long snapshotId, String generationId) {
+    if (isGenerationDeletionInProgress(tableId, snapshotId, generationId)) {
+      throw new StatsStore.GenerationUnavailableException(
+          frozenGenerationUnavailableMessage(snapshotId, generationId));
     }
+  }
+
+  private static String frozenGenerationUnavailableMessage(
+      long snapshotId, String generationToken) {
+    return "frozen stats generation manifest unavailable for snapshot "
+        + snapshotId
+        + ": "
+        + generationToken;
   }
 
   @Override
@@ -1037,8 +1040,7 @@ public class StatsRepository implements StatsStore {
   /**
    * Generation-scoped list: the token is the generation manifest blob URI captured from {@link
    * #activeStatsGeneration}; its immutable blob names the generation whose keyspace is read. A
-   * missing manifest is a broken retention invariant (frozen generations are retained while
-   * referenced) and fails loudly rather than falling back to the live generation.
+   * missing manifest is reported as unavailable rather than falling back to the live generation.
    */
   @Override
   public StatsStorePage listTargetStatsInGeneration(
@@ -1048,14 +1050,15 @@ public class StatsRepository implements StatsStore {
       Optional<StatsTargetType> targetType,
       int limit,
       String pageToken) {
-    // A missing frozen manifest is the broken-retention invariant this wants to surface loudly —
-    // this per-page read IS the scan's retention guard, so it deliberately BYPASSES the decoded
-    // cache: a cached generation id would keep a scan paging "successfully" over a reclaimed
+    // A missing frozen manifest must surface loudly: this per-page read IS the scan's retention
+    // guard, so it deliberately BYPASSES the decoded cache. A cached generation id would keep a
+    // scan paging "successfully" over a reclaimed
     // generation (empty pages = silently truncated results) for the cache's lifetime, exactly when
     // the guard must fire. The write-through/cached path serves the active-generation read below,
     // whose freshness is governed by its live pointer instead.
+    // A generation reclamation is deleting reads as gone: its records go before its manifest.
     String generationId =
-        loadGenerationId(generationToken)
+        resolveFrozenGeneration(tableId, snapshotId, generationToken)
             .orElseThrow(
                 () ->
                     new BaseResourceRepository.NotFoundException(
@@ -1063,7 +1066,13 @@ public class StatsRepository implements StatsStore {
                             + snapshotId
                             + ": "
                             + generationToken));
-    return listInGeneration(tableId, snapshotId, generationId, targetType, limit, pageToken);
+    StatsStorePage page =
+        listInGeneration(tableId, snapshotId, generationId, targetType, limit, pageToken);
+    if (isGenerationDeletionInProgress(tableId, snapshotId, generationId)) {
+      throw new BaseResourceRepository.NotFoundException(
+          "frozen stats generation was reclaimed during read for snapshot " + snapshotId);
+    }
+    return page;
   }
 
   private StatsStorePage listInGeneration(
@@ -2121,15 +2130,15 @@ public class StatsRepository implements StatsStore {
 
   /**
    * GC hook: reclaim this table's superseded stats generations. A generation survives while any of
-   * these hold — its manifest blob URI is protected (referenced by a retained or pinned table root,
-   * or frozen by a live scan stream), it is the snapshot's LIVE active generation (the
-   * creation-window safeguard: a just-activated generation whose root commit has not landed), its
-   * manifest blob does not exist yet (an in-flight replace writes records before publishing), or
-   * its manifest blob is younger than {@code minAgeMs} — the publish→flip window: the manifest is
-   * written BEFORE the active pointer flips and before the root commit references it, so during
-   * that instant a brand-new generation is neither live nor rooted and only its age protects it
-   * (the same guard the blob sweep applies). Everything else — record pointers, record blobs, and
-   * the manifest blob — is deleted. Returns the number of generations reclaimed.
+   * these hold — its manifest blob URI is protected (referenced by a retained table root), it is
+   * the snapshot's LIVE active generation (the creation-window safeguard: a just-activated
+   * generation whose root commit has not landed), its manifest blob does not exist yet (an
+   * in-flight replace writes records before publishing), or its manifest blob is younger than
+   * {@code minAgeMs} — the publish→flip window: the manifest is written BEFORE the active pointer
+   * flips and before the root commit references it, so during that instant a brand-new generation
+   * is neither live nor rooted and only its age protects it (the same guard the blob sweep
+   * applies). Everything else — record pointers, record blobs, and the manifest blob — is deleted.
+   * Returns the number of generations reclaimed.
    */
   public int deleteUnreferencedGenerations(
       ResourceId tableId,
@@ -2337,10 +2346,10 @@ public class StatsRepository implements StatsStore {
         if (isProtectedManifestUri.test(manifestUri)
             || manifestUri.equals(activeStatsGenerationConsistent(tableId, snapshotId).orElse(""))
             || isActiveIndexGeneration(tableId, snapshotId, generationId)) {
-          // A late pin/root can appear between bounded deletion slices, after an earlier slice has
-          // already removed blobs or pointers. Restoring PUBLISHED here would expose that partial
-          // generation as healthy. Keep the terminal claim in place and retry reclamation after the
-          // protection disappears; DELETING prevents writers from reviving the keyspace.
+          // A late root reference can appear between bounded deletion slices, after an earlier
+          // slice has already removed blobs or pointers. Restoring PUBLISHED here would expose that
+          // partial generation as healthy. Keep the terminal claim in place and retry reclamation
+          // after the protection disappears; DELETING prevents writers from reviving the keyspace.
           continuation.candidateIndex++;
           continue;
         }
@@ -2940,6 +2949,16 @@ public class StatsRepository implements StatsStore {
     @Override
     protected boolean referencedBlobImmutable(String pointerKey, String blobUri) {
       return ReusableArtifactBundleUris.isBundleUri(blobUri) || isExactTargetStatsBlobUri(blobUri);
+    }
+
+    @Override
+    protected Optional<String> immutableBlobEtag(String pointerKey, String blobUri) {
+      // Legacy target-stat URIs contain only the logical identity, not the serialized-body hash.
+      // Keep their HEAD fallback; only the exact identity form can provide the body ETag locally.
+      if (isExactTargetStatsBlobUri(blobUri) || ReusableArtifactBundleUris.isBundleUri(blobUri)) {
+        return BlobRefs.etagFromCasUri(blobUri);
+      }
+      return Optional.empty();
     }
 
     @Override

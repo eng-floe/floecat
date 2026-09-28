@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.repo.model;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
+import com.google.protobuf.Timestamp;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Function;
@@ -44,6 +45,9 @@ public final class ResourceSchema<T, K extends ResourceKey> {
   // mutation can persist against a system object. See GenericResourceRepository#guardSystemObject.
   public final Function<K, ResourceId> resourceIdFromKey;
 
+  // Optional metadata copied into pointer values. Currently used only by snapshot pointers.
+  public final Function<T, Timestamp> pointerIngestedAtFromValue;
+
   private ResourceSchema(
       String resourceName,
       Function<K, String> canonicalPointerForKey,
@@ -53,7 +57,8 @@ public final class ResourceSchema<T, K extends ResourceKey> {
       boolean casBlobs,
       Function<T, ResourceId> resourceIdFromValue,
       Function<T, String> displayNameFromValue,
-      Function<K, ResourceId> resourceIdFromKey) {
+      Function<K, ResourceId> resourceIdFromKey,
+      Function<T, Timestamp> pointerIngestedAtFromValue) {
     this.resourceName = Objects.requireNonNull(resourceName, "resourceName");
     this.canonicalPointerForKey =
         Objects.requireNonNull(canonicalPointerForKey, "canonicalPointerForKey");
@@ -65,6 +70,7 @@ public final class ResourceSchema<T, K extends ResourceKey> {
     this.resourceIdFromValue = resourceIdFromValue;
     this.displayNameFromValue = displayNameFromValue;
     this.resourceIdFromKey = resourceIdFromKey;
+    this.pointerIngestedAtFromValue = pointerIngestedAtFromValue;
   }
 
   public static <T, K extends ResourceKey> ResourceSchema<T, K> of(
@@ -82,6 +88,7 @@ public final class ResourceSchema<T, K extends ResourceKey> {
         false,
         null,
         null,
+        null,
         null);
   }
 
@@ -95,7 +102,8 @@ public final class ResourceSchema<T, K extends ResourceKey> {
         true,
         resourceIdFromValue,
         displayNameFromValue,
-        resourceIdFromKey);
+        resourceIdFromKey,
+        pointerIngestedAtFromValue);
   }
 
   public ResourceSchema<T, K> withPointerMeta(
@@ -109,7 +117,22 @@ public final class ResourceSchema<T, K extends ResourceKey> {
         casBlobs,
         Objects.requireNonNull(resourceId, "resourceId"),
         Objects.requireNonNull(displayName, "displayName"),
-        resourceIdFromKey);
+        resourceIdFromKey,
+        pointerIngestedAtFromValue);
+  }
+
+  public ResourceSchema<T, K> withPointerIngestedAt(Function<T, Timestamp> ingestedAt) {
+    return new ResourceSchema<>(
+        resourceName,
+        canonicalPointerForKey,
+        blobUriForKey,
+        secondaryPointersFromValue,
+        keyFromValue,
+        casBlobs,
+        resourceIdFromValue,
+        displayNameFromValue,
+        resourceIdFromKey,
+        Objects.requireNonNull(ingestedAt, "ingestedAt"));
   }
 
   /**
@@ -126,6 +149,7 @@ public final class ResourceSchema<T, K extends ResourceKey> {
         casBlobs,
         resourceIdFromValue,
         displayNameFromValue,
-        Objects.requireNonNull(resourceIdFromKey, "resourceIdFromKey"));
+        Objects.requireNonNull(resourceIdFromKey, "resourceIdFromKey"),
+        pointerIngestedAtFromValue);
   }
 }

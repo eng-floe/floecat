@@ -24,6 +24,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.Schemas;
@@ -43,6 +44,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Clock;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.LockSupport;
@@ -64,6 +66,8 @@ public class SnapshotRepository {
   private final TableRepository tableRepo;
   private final CurrentSnapshotPointerRepository currentPointerRepo;
   private final PointerStore pointerStore;
+  private final PointerStore pointerReads;
+  private final BlobStore blobStore;
   private final TableRootRepository roots;
   private final StatsStore statsStore;
   private final Clock clock;
@@ -178,6 +182,8 @@ public class SnapshotRepository {
     this.tableRepo = tableRepo;
     this.currentPointerRepo = currentPointerRepo;
     this.pointerStore = pointerStore;
+    this.pointerReads = pointerReads;
+    this.blobStore = blobStore;
     this.roots = roots;
     this.statsStore = statsStore;
     this.clock = clock;
@@ -204,11 +210,9 @@ public class SnapshotRepository {
 
   public boolean update(Snapshot snapshot, long expectedPointerVersion) {
     // Deliberately does NOT advance the current-snapshot pointer here. The advance must go through
-    // the service layer (SnapshotServiceImpl.updateSnapshot → CurrentSnapshotPointerService), which
-    // re-upserts the root entry after advancing — otherwise an UpdateSnapshot that makes a
-    // snapshot current would move the pointer but leave the pinned identity stale, and new CURRENT
-    // query pins would resolve the old snapshot. Advancing here silently pre-empted that service
-    // advance (it saw the pointer already moved → UNCHANGED → no publish).
+    // the service layer (SnapshotServiceImpl.updateSnapshot → CurrentSnapshotPointerService),
+    // which re-upserts the root entry after advancing. This keeps root publication and the
+    // current-snapshot selection in one atomic service-level operation.
     return repo.update(snapshot, expectedPointerVersion);
   }
 
@@ -221,16 +225,86 @@ public class SnapshotRepository {
     return deleted;
   }
 
-  public boolean deleteWithPrecondition(
-      ResourceId tableId, long snapshotId, long expectedPointerVersion) {
-    boolean deleted =
-        repo.deleteWithPrecondition(
-            new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId),
-            expectedPointerVersion);
-    if (deleted) {
-      deleteCurrentPointerIfCurrent(tableId, snapshotId);
+  /**
+   * Deletes a snapshot together with the pointers of its artifacts (active stats and index
+   * generations, index capture manifest, constraints) in one pointer transaction, so the collectors
+   * reclaim their payloads once the root drops the entry. An artifact pointer absent now must stay
+   * absent, and every pointer in {@code unchanged} must still hold its version (0: absent). Returns
+   * false when the snapshot or one of those pointers moved; artifacts changing under the delete are
+   * re-read and retried.
+   */
+  public boolean deleteWithArtifacts(
+      ResourceId tableId,
+      long snapshotId,
+      long expectedPointerVersion,
+      Map<String, Long> unchanged) {
+    SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
+    for (int attempt = 0; attempt < 4; attempt++) {
+      Map<String, Long> required = new java.util.HashMap<>();
+      java.util.Set<String> absent = new java.util.HashSet<>();
+      unchanged.forEach(
+          (pointer, version) -> {
+            if (version == 0L) {
+              absent.add(pointer);
+            } else {
+              required.put(pointer, version);
+            }
+          });
+      Map<String, Long> artifacts = new java.util.LinkedHashMap<>();
+      for (String artifact : artifactPointers(tableId, snapshotId)) {
+        pointerStore
+            .get(artifact)
+            .ifPresentOrElse(
+                p -> artifacts.put(artifact, p.getVersion()), () -> absent.add(artifact));
+      }
+      if (repo.deleteWithPreconditionWhilePointersMatchAndDeletePointers(
+          key,
+          expectedPointerVersion,
+          new GenericResourceRepository.PointerConditions(required, absent, Map.of()),
+          artifacts)) {
+        deleteCurrentPointerIfCurrent(tableId, snapshotId);
+        return true;
+      }
+      if (repo.pointerMetaForSafe(key).getPointerVersion() != expectedPointerVersion
+          || unchanged.entrySet().stream()
+              .anyMatch(
+                  e ->
+                      pointerStore.get(e.getKey()).map(Pointer::getVersion).orElse(0L)
+                          != e.getValue())) {
+        return false;
+      }
     }
-    return deleted;
+    throw new StorageAbortRetryableException(
+        "snapshot artifacts changed repeatedly while deleting snapshot " + snapshotId);
+  }
+
+  /**
+   * Deletes a snapshot retention let go of, with its artifacts, unless it is the committed current:
+   * a rollback can make any snapshot current, so the delete requires the current pointer to be the
+   * one read here. Returns true when the snapshot is gone.
+   */
+  public boolean deleteUnlessCurrent(ResourceId tableId, long snapshotId) {
+    long version = metaForSafeConsistent(tableId, snapshotId).getPointerVersion();
+    if (version == 0L) {
+      return true;
+    }
+    String currentKey = Keys.currentSnapshotPointerByTable(tableId.getAccountId(), tableId.getId());
+    long currentVersion = pointerStore.get(currentKey).map(Pointer::getVersion).orElse(0L);
+    if (currentPointerRepo.get(tableId).map(c -> c.getSnapshotId() == snapshotId).orElse(false)) {
+      return false;
+    }
+    return deleteWithArtifacts(tableId, snapshotId, version, Map.of(currentKey, currentVersion));
+  }
+
+  private static List<String> artifactPointers(ResourceId tableId, long snapshotId) {
+    String account = tableId.getAccountId();
+    String table = tableId.getId();
+    return List.of(
+        Keys.snapshotTargetStatsManifestPointer(account, table, snapshotId),
+        Keys.snapshotIndexArtifactActiveGenerationPointer(account, table, snapshotId),
+        Keys.snapshotIndexArtifactCaptureManifestPointer(account, table, snapshotId),
+        Keys.snapshotConstraintsPointer(account, table, snapshotId),
+        Keys.snapshotConstraintsStatsPointer(account, table, snapshotId));
   }
 
   public Optional<Snapshot> getById(ResourceId tableId, long snapshotId) {
@@ -291,6 +365,11 @@ public class SnapshotRepository {
   /** Cache-bypassing read for liveness-bearing callers (see GenericResourceRepository). */
   public Optional<Snapshot> getByBlobUriLive(String blobUri) {
     return repo.getByBlobUriLive(blobUri);
+  }
+
+  /** Publication time of a manifest entry; see {@link SnapshotRetentionPolicy#publishedAt}. */
+  public Optional<Timestamp> publishedAt(ResourceId tableId, SnapshotManifestEntry entry) {
+    return SnapshotRetentionPolicy.publishedAt(tableId, entry, pointerReads, blobStore);
   }
 
   public CurrentSnapshotPointerUpdateResult maybeAdvanceCurrentSnapshotPointer(
@@ -504,47 +583,25 @@ public class SnapshotRepository {
       // before its root re-commit, so getById could serve a blob the current root never
       // referenced (and would keep serving it if the root commit then failed). The root is the
       // publication boundary for reads.
-      return snapshotFromRootEntry(
-          tableId, lookup.root(), lookup.root().getCurrentSnapshotId(), requireQueryReady);
+      return currentSnapshotFromRoot(lookup.root(), requireQueryReady);
     }
     return Optional.empty();
   }
 
   /**
-   * Loads a snapshot by the immutable {@code snapshot_ref} the root's manifest entry carries. A
-   * missing entry or ref is a broken root invariant (removal clears currency in the same commit),
-   * surfaced as empty rather than by walking to the mutable pointer.
+   * Loads the root's current snapshot by the immutable {@code snapshot_ref} its manifest entry
+   * carries: the committed current, or with {@code requireQueryReady} the snapshot CURRENT reads
+   * serve. A missing entry or ref is a broken root invariant (removal clears currency in the same
+   * commit), surfaced as empty rather than by walking to the mutable pointer.
    */
-  private Optional<Snapshot> snapshotFromRootEntry(
-      ResourceId tableId,
-      ai.floedb.floecat.catalog.rpc.TableRoot root,
-      long snapshotId,
-      boolean requireQueryReady) {
-    var head = root.hasSnapshotManifestRef() ? root.getSnapshotManifestRef() : null;
-    Optional<SnapshotManifestEntry> committed =
-        SnapshotManifests.findEntry(roots, head, snapshotId);
-    if (committed.isEmpty()) {
-      return Optional.empty();
-    }
-    SnapshotManifestEntry entry = committed.get();
-    if (requireQueryReady
-        && StatsVisibilityGate.gateOnFinalize(statsStore)
-        && !entry.hasStatsGenerationRef()) {
-      // Query-visible current: the committed current is not yet finalized, so serve the newest
-      // finalized snapshot at or before it (snapshot isolation — the latest fully-queryable state)
-      // rather than reporting no current. Metadata surfaces use getCommittedCurrent* and keep the
-      // committed selection. Empty here means nothing is queryable yet (pre-first-finalize).
-      Optional<SnapshotManifestEntry> queryable =
-          SnapshotManifests.latestQueryableCurrent(roots, head, entry);
-      if (queryable.isEmpty()) {
-        return Optional.empty();
-      }
-      entry = queryable.get();
-    }
-    if (!entry.hasSnapshotRef() || entry.getSnapshotRef().getUri().isEmpty()) {
-      return Optional.empty();
-    }
-    return getByBlobUri(entry.getSnapshotRef().getUri());
+  private Optional<Snapshot> currentSnapshotFromRoot(
+      ai.floedb.floecat.catalog.rpc.TableRoot root, boolean requireQueryReady) {
+    var current =
+        SnapshotManifests.currentSnapshots(
+            roots, root, requireQueryReady && StatsVisibilityGate.gateOnFinalize(statsStore));
+    return (requireQueryReady ? current.queryable() : current.committed())
+        .filter(entry -> entry.hasSnapshotRef() && !entry.getSnapshotRef().getUri().isEmpty())
+        .flatMap(entry -> getByBlobUri(entry.getSnapshotRef().getUri()));
   }
 
   /**
@@ -635,8 +692,7 @@ public class SnapshotRepository {
     }
     // Resolve through the root's published snapshot_ref, not the live pointer (see
     // getCurrentSnapshot).
-    return snapshotFromRootEntry(
-            tableId, lookup.root(), lookup.root().getCurrentSnapshotId(), requireQueryReady)
+    return currentSnapshotFromRoot(lookup.root(), requireQueryReady)
         .map(snap -> visibleCurrentPointer(tableId, snap));
   }
 

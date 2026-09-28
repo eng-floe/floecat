@@ -20,6 +20,7 @@ import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestPage;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import com.fasterxml.jackson.core.JacksonException;
@@ -171,6 +172,20 @@ public final class SnapshotManifests {
       }
     }
 
+    /** Visits entries until the predicate returns false. */
+    public void forEachEntryWhile(java.util.function.Predicate<SnapshotManifestEntry> visitor) {
+      BlobRef cursor = head;
+      while (isPresent(cursor)) {
+        SnapshotManifestPage page = page(cursor);
+        for (SnapshotManifestEntry entry : page.getEntriesList()) {
+          if (!visitor.test(entry)) {
+            return;
+          }
+        }
+        cursor = page.hasPrevPageRef() ? page.getPrevPageRef() : null;
+      }
+    }
+
     /**
      * Inserts or replaces the entry for {@code entry.snapshot_id} and returns the new head ref. A
      * new snapshot prepends to the head page (spilling a full head into the chain); an existing
@@ -255,6 +270,57 @@ public final class SnapshotManifests {
         cursor = page.hasPrevPageRef() ? page.getPrevPageRef() : null;
       }
       return head;
+    }
+
+    /**
+     * Removes the entries for {@code snapshotIds} in one walk, rewriting each page at most once;
+     * see {@link #remove}.
+     */
+    public BlobRef removeAll(java.util.Set<Long> snapshotIds) {
+      if (snapshotIds.isEmpty()) {
+        return head;
+      }
+      List<SnapshotManifestPage> walked = new ArrayList<>();
+      java.util.Set<Long> remaining = new java.util.HashSet<>(snapshotIds);
+      int oldestHit = -1;
+      BlobRef cursor = head;
+      while (isPresent(cursor)) {
+        SnapshotManifestPage page = page(cursor);
+        walked.add(page);
+        int remainingBefore = remaining.size();
+        page.getEntriesList().stream()
+            .map(SnapshotManifestEntry::getSnapshotId)
+            .forEach(remaining::remove);
+        if (remaining.size() < remainingBefore) {
+          oldestHit = walked.size() - 1;
+        }
+        // Once every requested entry has been found, older pages cannot affect the result.
+        if (remaining.isEmpty()) {
+          break;
+        }
+        cursor = page.hasPrevPageRef() ? page.getPrevPageRef() : null;
+      }
+      if (oldestHit < 0) {
+        return head;
+      }
+      SnapshotManifestPage oldest = walked.get(oldestHit);
+      BlobRef prev = oldest.hasPrevPageRef() ? oldest.getPrevPageRef() : null;
+      for (int i = oldestHit; i >= 0; i--) {
+        SnapshotManifestPage.Builder b = walked.get(i).toBuilder().clearEntries();
+        walked.get(i).getEntriesList().stream()
+            .filter(e -> !snapshotIds.contains(e.getSnapshotId()))
+            .forEach(b::addEntries);
+        if (b.getEntriesCount() == 0) {
+          continue; // emptied: collapsed out
+        }
+        if (prev == null) {
+          b.clearPrevPageRef();
+        } else {
+          b.setPrevPageRef(prev);
+        }
+        prev = put(b.build());
+      }
+      return prev;
     }
 
     /**
@@ -355,6 +421,41 @@ public final class SnapshotManifests {
   }
 
   /**
+   * The table's current snapshots: the committed current, and the entry a CURRENT read serves.
+   * Under the finalize gate an unfinalized committed current is served as the newest finalized
+   * entry at or before it; otherwise both are the committed current.
+   */
+  public record CurrentSnapshots(
+      Optional<SnapshotManifestEntry> committed, Optional<SnapshotManifestEntry> queryable) {
+    public static final CurrentSnapshots NONE =
+        new CurrentSnapshots(Optional.empty(), Optional.empty());
+
+    public boolean contains(long snapshotId) {
+      return committed.map(e -> e.getSnapshotId() == snapshotId).orElse(false)
+          || queryable.map(e -> e.getSnapshotId() == snapshotId).orElse(false);
+    }
+  }
+
+  public static CurrentSnapshots currentSnapshots(
+      Chain chain, TableRoot root, boolean gateOnFinalize) {
+    if (root == null || !root.hasCurrentSnapshotId()) {
+      return CurrentSnapshots.NONE;
+    }
+    Optional<SnapshotManifestEntry> committed = chain.findEntry(root.getCurrentSnapshotId());
+    if (committed.isEmpty() || !gateOnFinalize || committed.get().hasStatsGenerationRef()) {
+      return new CurrentSnapshots(committed, committed);
+    }
+    return new CurrentSnapshots(committed, latestQueryableCurrent(chain, committed.get()));
+  }
+
+  public static CurrentSnapshots currentSnapshots(
+      TableRootRepository roots, TableRoot root, boolean gateOnFinalize) {
+    BlobRef head =
+        root != null && root.hasSnapshotManifestRef() ? root.getSnapshotManifestRef() : null;
+    return currentSnapshots(chain(roots, null, head), root, gateOnFinalize);
+  }
+
+  /**
    * The query-visible current entry when the committed current is not yet finalized: the newest
    * FINALIZED entry (carrying a stats-generation ref) that is NOT newer than {@code
    * committedCurrent}.
@@ -367,10 +468,13 @@ public final class SnapshotManifests {
    */
   public static Optional<SnapshotManifestEntry> latestQueryableCurrent(
       TableRootRepository roots, BlobRef head, SnapshotManifestEntry committedCurrent) {
+    return latestQueryableCurrent(chain(roots, null, head), committedCurrent);
+  }
+
+  public static Optional<SnapshotManifestEntry> latestQueryableCurrent(
+      Chain chain, SnapshotManifestEntry committedCurrent) {
     SnapshotManifestEntry[] best = {null};
-    forEachEntry(
-        roots,
-        head,
+    chain.forEachEntry(
         e -> {
           if (!e.hasStatsGenerationRef() || newer(e, committedCurrent)) {
             return;

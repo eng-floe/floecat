@@ -22,10 +22,12 @@ import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.StatsTarget;
 import ai.floedb.floecat.catalog.rpc.TableStatsTarget;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.RelationStats;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
+import ai.floedb.floecat.service.error.impl.FloecatStatus;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -136,8 +138,8 @@ public final class StatsProviderFactory {
         statsWarmLimiter);
   }
 
-  SnapshotPinLookup pinLookupForQuery(QueryContext ctx, String correlationId) {
-    return new SnapshotPinResolver(queryStore, ctx, correlationId);
+  SnapshotSelectionLookup selectionLookupForQuery(QueryContext ctx, String correlationId) {
+    return new SnapshotSelectionResolver(queryStore, ctx, correlationId);
   }
 
   private static final class CachedStatsProvider implements StatsProvider {
@@ -148,7 +150,7 @@ public final class StatsProviderFactory {
     private final StatsOrchestrator statsOrchestrator;
     private final TableRepository tableRepository;
     private final SnapshotRepository snapshotRepository;
-    private final SnapshotPinResolver pinResolver;
+    private final SnapshotSelectionResolver selectionResolver;
     private final String correlationId;
     private final boolean allowUnpinnedLatestSnapshotFallback;
     private final Duration syncLatencyBudget;
@@ -174,7 +176,7 @@ public final class StatsProviderFactory {
       this.syncEnabled = syncEnabled;
       this.statsFanout = MetadataFanout.concurrent(maxParallelStatsWarms);
       this.statsWarmLimiter = statsWarmLimiter;
-      this.pinResolver = new SnapshotPinResolver(queryStore, ctx, correlationId);
+      this.selectionResolver = new SnapshotSelectionResolver(queryStore, ctx, correlationId);
       this.allowUnpinnedLatestSnapshotFallback = allowUnpinnedLatestSnapshotFallback;
     }
 
@@ -191,7 +193,7 @@ public final class StatsProviderFactory {
         return latestSnapshotTableStats(tableId);
       }
       Optional<StatsProvider.TableStatsView> pinnedStats =
-          pinResolver.withPinnedSnapshot(
+          selectionResolver.withResolvedSnapshot(
               tableId, snapshotId -> safeTableStats(tableId, snapshotId));
       if (pinnedStats.isPresent()) {
         return pinnedStats;
@@ -218,6 +220,7 @@ public final class StatsProviderFactory {
                 } catch (java.util.concurrent.CancellationException e) {
                   throw e;
                 } catch (RuntimeException e) {
+                  rethrowSnapshotExpired(e);
                   return Optional.<StatsProvider.TableStatsView>empty();
                 }
               },
@@ -242,13 +245,13 @@ public final class StatsProviderFactory {
 
     @Override
     public Optional<StatsProvider.ColumnStatsView> columnStats(ResourceId tableId, long columnId) {
-      return pinResolver.withPinnedSnapshot(
+      return selectionResolver.withResolvedSnapshot(
           tableId, snapshotId -> safeColumnStats(tableId, snapshotId, columnId));
     }
 
     @Override
-    public OptionalLong pinnedSnapshotId(ResourceId tableId) {
-      return pinResolver.pinnedSnapshotId(tableId);
+    public OptionalLong resolvedSnapshotId(ResourceId tableId) {
+      return selectionResolver.resolvedSnapshotId(tableId);
     }
 
     private OptionalLong resolveLatestSnapshotId(ResourceId tableId) {
@@ -286,13 +289,14 @@ public final class StatsProviderFactory {
         return statsOrchestrator
             .resolveTableFactsInGeneration(
                 request,
-                pinResolver.pinnedStatsGenerationRef(tableId),
-                allowUnpinnedLatestSnapshotFallback || pinResolver.currentSnapshotIsPinned(tableId))
+                selectionResolver.resolvedStatsGenerationRef(tableId),
+                allowUnpinnedLatestSnapshotFallback || selectionResolver.selectsCurrent(tableId))
             .map(
                 facts ->
                     new TableStatsViewImpl(
                         tableId, snapshotId, facts.rowCount(), facts.totalSizeBytes()));
       } catch (RuntimeException e) {
+        rethrowSnapshotExpired(e);
         LOG.debugf(e, "table stats lookup failed for %s snapshot %s", tableId, snapshotId);
         return Optional.empty();
       }
@@ -314,12 +318,13 @@ public final class StatsProviderFactory {
                 .build();
         StatsResolutionResult result =
             statsOrchestrator.resolveInGeneration(
-                request, pinResolver.pinnedStatsGenerationRef(tableId));
+                request, selectionResolver.resolvedStatsGenerationRef(tableId));
         return result
             .stats()
             .filter(TargetStatsRecord::hasScalar)
             .map(CachedStatsProvider::toColumnStatsView);
       } catch (RuntimeException e) {
+        rethrowSnapshotExpired(e);
         LOG.debugf(
             e,
             "column stats lookup failed for %s column %s snapshot %s",
@@ -327,6 +332,13 @@ public final class StatsProviderFactory {
             columnId,
             snapshotId);
         return Optional.empty();
+      }
+    }
+
+    private static void rethrowSnapshotExpired(RuntimeException failure) {
+      FloecatStatus status = FloecatStatus.fromThrowable(failure);
+      if (status != null && status.errorCode() == ErrorCode.MC_SNAPSHOT_EXPIRED) {
+        throw failure;
       }
     }
 

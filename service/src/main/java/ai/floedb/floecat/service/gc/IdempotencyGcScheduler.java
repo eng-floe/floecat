@@ -16,8 +16,6 @@
 
 package ai.floedb.floecat.service.gc;
 
-import ai.floedb.floecat.account.rpc.Account;
-import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.storage.kv.dynamodb.DynamoDbBootstrapReadiness;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.Tag;
@@ -33,9 +31,7 @@ import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import jakarta.inject.Provider;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -45,7 +41,7 @@ import org.eclipse.microprofile.config.ConfigProvider;
 @ApplicationScoped
 public class IdempotencyGcScheduler {
 
-  @Inject Provider<AccountRepository> accounts;
+  @Inject Provider<OwnedAccounts> accounts;
   @Inject Provider<IdempotencyGc> idempotencyGc;
   @Inject Observability observability;
 
@@ -98,7 +94,7 @@ public class IdempotencyGcScheduler {
       return;
     }
 
-    final AccountRepository accountRepo;
+    final OwnedAccounts accountRepo;
     final IdempotencyGc gc;
     try {
       accountRepo = accounts.get();
@@ -121,10 +117,10 @@ public class IdempotencyGcScheduler {
 
     long tickStart = System.nanoTime();
     try {
-      List<Account> allAccounts = fetchAllAccounts(accountRepo, accountsPageSize);
+      var allAccounts = accountRepo.listAll(accountsPageSize);
       Collections.shuffle(allAccounts);
 
-      for (Account account : allAccounts) {
+      for (var account : allAccounts) {
         if (System.currentTimeMillis() >= deadline || stopping) {
           break;
         }
@@ -133,7 +129,7 @@ public class IdempotencyGcScheduler {
         String token = tokenByAccount.getOrDefault(accountId, "");
 
         long sliceStart = System.nanoTime();
-        var result = gc.runSliceForAccount(accountId, token);
+        IdempotencyGc.Result result = gc.runSliceForAccount(accountId, token);
         gcMetrics.recordCollection(result.scanned(), Tag.of(TagKey.RESULT, "scanned"));
         gcMetrics.recordCollection(result.expired(), Tag.of(TagKey.RESULT, "expired"));
         gcMetrics.recordCollection(result.ptrDeleted(), Tag.of(TagKey.RESULT, "ptr-deleted"));
@@ -153,19 +149,6 @@ public class IdempotencyGcScheduler {
       lastTickEndMs.set(System.currentTimeMillis());
       running.set(0);
     }
-  }
-
-  private static List<Account> fetchAllAccounts(AccountRepository repo, int pageSize) {
-    List<Account> out = new ArrayList<>();
-    String tok = "";
-    StringBuilder next = new StringBuilder();
-    do {
-      var page = repo.list(pageSize, tok, next);
-      out.addAll(page);
-      tok = next.toString();
-      next.setLength(0);
-    } while (!tok.isBlank());
-    return out;
   }
 
   public static final class DisabledOrStopping implements Scheduled.SkipPredicate {

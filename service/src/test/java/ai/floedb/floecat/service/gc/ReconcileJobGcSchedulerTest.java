@@ -44,7 +44,11 @@ class ReconcileJobGcSchedulerTest {
     gc.failAccountId = "acct-a";
 
     ReconcileJobGcScheduler scheduler = new ReconcileJobGcScheduler();
-    scheduler.accounts = () -> accounts;
+    scheduler.accounts =
+        () ->
+            new OwnedAccounts(
+                accounts,
+                ai.floedb.floecat.service.repo.cache.PlanningPointerIndex.Ownership.ALWAYS_OWNED);
     scheduler.reconcileJobGc = () -> gc;
     scheduler.observability = new TestObservability();
     scheduler.initMeters();

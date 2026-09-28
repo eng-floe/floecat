@@ -549,6 +549,14 @@ public final class Keys {
     return "/accounts/" + encode(tid) + "/tables/by-id/" + encode(tbid);
   }
 
+  /** The decoded id after {@code prefix} in a listed key, or null when the key has none. */
+  public static String idAfterPrefix(String prefix, String key) {
+    if (key == null || !key.startsWith(prefix) || key.length() == prefix.length()) {
+      return null;
+    }
+    return decodeSegment(key.substring(prefix.length()));
+  }
+
   public static String tablePointerByIdPrefix(String accountId) {
     String tid = req("account_id", accountId);
     return "/accounts/" + encode(tid) + "/tables/by-id/";

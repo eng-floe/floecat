@@ -193,7 +193,8 @@ public final class Schemas {
                 return new SnapshotKey(
                     v.getTableId().getAccountId(), v.getTableId().getId(), v.getSnapshotId(), sha);
               })
-          .withCasBlobs();
+          .withCasBlobs()
+          .withPointerIngestedAt(s -> s.hasIngestedAt() ? s.getIngestedAt() : null);
 
   public static final ResourceSchema<CurrentSnapshotPointer, TableScopedPointerKey>
       CURRENT_SNAPSHOT_POINTER =

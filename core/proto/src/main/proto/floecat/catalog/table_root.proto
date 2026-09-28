@@ -73,6 +73,9 @@ message TableRoot {
    * retained because a replay may exclude the newest snapshot and request its predecessor.
    */
   repeated SnapshotManifestEntry reusable_snapshot_candidates = 7;
+
+  reserved 8;
+  reserved "superseded_definition_refs";
 }
 
 /** One snapshot's complete state as of the owning root's commit. */
@@ -109,6 +112,12 @@ message SnapshotManifestEntry {
 
   /** Stats generation whose compact bundles back this snapshot's artifact-reuse manifest. */
   BlobRef reuse_stats_generation_ref = 7;
+
+  /** Floecat publication time; unlike upstream_created_at this is the retention clock. */
+  google.protobuf.Timestamp ingested_at = 8;
+
+  reserved 9, 10;
+  reserved "superseded_stats_generation_refs", "superseded_constraints_refs";
 }
 
 /**

@@ -31,6 +31,7 @@ import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
+import ai.floedb.floecat.service.repo.model.BlobRefs;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.AccountDeletionFence;
@@ -933,7 +934,14 @@ public class IndexArtifactRepository {
                     new BaseResourceRepository.NotFoundException(
                         "index artifact pointer is missing"));
     String pointerKey = pointer.getKey();
-    String etag = blobStore.head(pointer.getBlobUri()).map(header -> header.getEtag()).orElse("");
+    String etag =
+        immutableBlobEtag(tableId, snapshotId, generationId, pointer.getBlobUri())
+            .orElseGet(
+                () ->
+                    blobStore
+                        .head(pointer.getBlobUri())
+                        .map(header -> header.getEtag())
+                        .orElse(""));
     return MutationMeta.newBuilder()
         .setPointerKey(pointerKey)
         .setBlobUri(pointer.getBlobUri())
@@ -941,6 +949,34 @@ public class IndexArtifactRepository {
         .setEtag(etag)
         .setUpdatedAt(nowTs)
         .build();
+  }
+
+  /**
+   * Derives an ETag locally only for immutable artifacts owned by this table generation.
+   *
+   * <p>The URI shape alone is not an ownership/immutability proof: a legacy or mutable URI could
+   * happen to end in a hash-looking filename. Unknown references deliberately fall back to HEAD,
+   * preserving the old behavior for those records.
+   */
+  private Optional<String> immutableBlobEtag(
+      ResourceId tableId, long snapshotId, String generationId, String blobUri) {
+    String directPrefix =
+        Keys.snapshotIndexArtifactGenerationBlobPrefix(
+            tableId.getAccountId(), tableId.getId(), snapshotId, generationId);
+    boolean directArtifact = blobUri != null && blobUri.startsWith(directPrefix);
+
+    boolean reusableBundle = false;
+    if (blobUri != null
+        && blobUri.startsWith(
+            Keys.tableTargetStatsBlobPrefix(tableId.getAccountId(), tableId.getId()))) {
+      Keys.GenerationKey carrier = Keys.generationFromTargetStatsBlobUri(blobUri);
+      reusableBundle =
+          carrier != null
+              && carrier.snapshotId() == snapshotId
+              && generationId.equals(carrier.generationId())
+              && ReusableArtifactBundleUris.isBundleUri(blobUri);
+    }
+    return directArtifact || reusableBundle ? BlobRefs.etagFromCasUri(blobUri) : Optional.empty();
   }
 
   private void registerWrites(ResourceId tableId, List<PrewrittenIndexWrite> writes) {

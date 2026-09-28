@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.catalog;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -33,6 +34,7 @@ import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.TableValueStats;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -40,6 +42,8 @@ import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
+import ai.floedb.floecat.service.error.impl.FloecatStatus;
+import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -177,6 +181,26 @@ class StatsProviderFactoryTest {
 
     assertTrue(provider.tableStats(TABLE).isEmpty());
     assertEquals(0, repository.tableStatsCalls());
+  }
+
+  @Test
+  void snapshotExpiryIsNotSwallowedByStatsProvider() {
+    var store = new UserObjectBundleTestSupport.TestQueryContextStore();
+    TableRepository tableRepository = Mockito.mock(TableRepository.class);
+    StatsOrchestrator orchestrator = Mockito.mock(StatsOrchestrator.class);
+    StatsProviderFactory factory =
+        new StatsProviderFactory(orchestrator, tableRepository, store, null, defaultSyncConfig());
+    QueryContext ctx = queryContextWithPin(10L);
+    store.seed(ctx);
+    when(orchestrator.resolveTableFactsInGeneration(any(), any(), anyBoolean()))
+        .thenThrow(GrpcErrors.snapshotExpired("corr", null, java.util.Map.of()));
+
+    var failure =
+        assertThrows(
+            io.grpc.StatusRuntimeException.class,
+            () -> factory.forQuery(ctx, "corr").tableStats(TABLE));
+
+    assertEquals(ErrorCode.MC_SNAPSHOT_EXPIRED, FloecatStatus.fromThrowable(failure).errorCode());
   }
 
   @Test
@@ -334,7 +358,7 @@ class StatsProviderFactoryTest {
   }
 
   @Test
-  void pinnedSnapshotIdReflectsStoredPin() {
+  void resolvedSnapshotIdReflectsStoredPin() {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
@@ -344,12 +368,12 @@ class StatsProviderFactoryTest {
     QueryContext pinned = queryContextWithPin("query-pin", snapshotId);
     store.seed(pinned);
     var provider = factory.forQuery(pinned, "corr");
-    assertEquals(snapshotId, provider.pinnedSnapshotId(TABLE).orElseThrow());
+    assertEquals(snapshotId, provider.resolvedSnapshotId(TABLE).orElseThrow());
 
     QueryContext noPin = queryContextWithoutPin();
     store.seed(noPin);
     var noPinProvider = factory.forQuery(noPin, "corr");
-    assertTrue(noPinProvider.pinnedSnapshotId(TABLE).isEmpty());
+    assertTrue(noPinProvider.resolvedSnapshotId(TABLE).isEmpty());
   }
 
   @Test
@@ -371,7 +395,7 @@ class StatsProviderFactoryTest {
     assertEquals(0, repository.tableStatsCalls());
 
     QueryContext pinned = queryContextWithPin(ctx.getQueryId(), snapshotId);
-    store.replace(pinned);
+    store.update(pinned.getQueryId(), ignored -> pinned);
     var view = provider.tableStats(TABLE).orElseThrow();
     assertEquals(stats.getRowCount(), view.rowCountValue().orElseThrow());
     assertEquals(stats.getTotalSizeBytes(), view.totalSizeBytesValue().orElseThrow());
@@ -650,7 +674,7 @@ class StatsProviderFactoryTest {
   }
 
   @Test
-  void systemScanUsesLatestSnapshotStatsEvenWhenQueryPinsOlderSnapshot() {
+  void systemScanUsesLatestSnapshotStatsEvenWhenSnapshotSelectionsOlderSnapshot() {
     CountingStatsRepository repository = new CountingStatsRepository();
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();

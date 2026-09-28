@@ -118,31 +118,41 @@ public abstract class BaseServiceImpl {
     ResolvedCallContext callCtx = ResolvedCallContexts.currentOrNull();
     Context otelCtx = otelContextForBody(Context.current());
     return Uni.createFrom()
-        .<T>emitter(
-            emitter -> {
+        .deferred(
+            () -> {
               RequestCancellation cancellation = new RequestCancellation(grpcCtx);
-              emitter.onTermination(cancellation::terminate);
-              try {
-                T result =
-                    grpcCtx.call(
-                        () ->
-                            ResolvedCallContexts.callWithOrInherit(
-                                callCtx,
-                                () -> {
-                                  try (var cancellationScope =
-                                          PropagatedContext.bindCancellation(cancellation);
-                                      Scope ignored = otelCtx.makeCurrent()) {
-                                    return body.get();
-                                  }
-                                }));
-                emitter.complete(result);
-              } catch (CancellationException cancelled) {
-                if (!cancellation.subscriptionTerminated()) {
-                  emitter.fail(cancelled);
-                }
-              } catch (Throwable failure) {
-                emitter.fail(failure);
-              }
+              Uni<T> operation =
+                  Uni.createFrom()
+                      .<T>emitter(
+                          emitter -> {
+                            emitter.onTermination(cancellation::terminate);
+                            try {
+                              T result =
+                                  grpcCtx.call(
+                                      () ->
+                                          ResolvedCallContexts.callWithOrInherit(
+                                              callCtx,
+                                              () -> {
+                                                try (var cancellationScope =
+                                                        PropagatedContext.bindCancellation(
+                                                            cancellation);
+                                                    Scope ignored = otelCtx.makeCurrent()) {
+                                                  return body.get();
+                                                }
+                                              }));
+                              emitter.complete(result);
+                            } catch (CancellationException cancelled) {
+                              if (!cancellation.subscriptionTerminated()) {
+                                emitter.fail(cancelled);
+                              }
+                            } catch (Throwable failure) {
+                              emitter.fail(failure);
+                            }
+                          });
+              // Mutiny invokes this callback immediately when the subscriber abandons a Uni.
+              // onTermination alone may wait for the emitter body to return, which would leave a
+              // queued metadata read unaware of cancellation and holding up admission.
+              return operation.onCancellation().invoke(cancellation::terminate);
             })
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
@@ -187,6 +197,8 @@ public abstract class BaseServiceImpl {
                               }));
               return source.onTermination().invoke(cancellation::terminate);
             })
+        .onFailure()
+        .transform(t -> toStatus(t, callCtx.effectiveCorrelationId()))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 
@@ -221,16 +233,19 @@ public abstract class BaseServiceImpl {
     Context otelCtx = otelContextForBody(Context.current());
     return Multi.createFrom()
         .<T>emitter(
-            emitter ->
-                grpcCtx.run(
-                    () ->
-                        ResolvedCallContexts.runWithOrInherit(
-                            callCtx,
-                            () -> {
-                              try (Scope ignored = otelCtx.makeCurrent()) {
-                                body.accept(callCtx, emitter);
-                              }
-                            })))
+            emitter -> {
+              grpcCtx.run(
+                  () ->
+                      ResolvedCallContexts.runWithOrInherit(
+                          callCtx,
+                          () -> {
+                            try (Scope ignored = otelCtx.makeCurrent()) {
+                              body.accept(callCtx, emitter);
+                            }
+                          }));
+            })
+        .onFailure()
+        .transform(t -> toStatus(t, callCtx.effectiveCorrelationId()))
         .runSubscriptionOn(Infrastructure.getDefaultExecutor());
   }
 

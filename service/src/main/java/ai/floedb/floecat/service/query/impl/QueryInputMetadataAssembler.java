@@ -22,10 +22,11 @@ import ai.floedb.floecat.query.rpc.ExpansionMap;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.account.AccountScope;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.resolver.ObligationsResolver;
 import ai.floedb.floecat.service.query.resolver.QueryInputResolver;
-import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotPinMemo;
+import ai.floedb.floecat.service.query.resolver.QueryInputResolver.SnapshotSelectionMemo;
 import ai.floedb.floecat.service.query.resolver.ViewExpansionResolver;
 import ai.floedb.floecat.telemetry.Observability;
 import ai.floedb.floecat.telemetry.PhaseDiagnostics;
@@ -43,6 +44,7 @@ public class QueryInputMetadataAssembler {
   @Inject ViewExpansionResolver expansions;
   @Inject ObligationsResolver obligations;
   @Inject Observability observability;
+  @Inject AccountScope accountScope;
 
   /**
    * Combines the existing resolvers to build the lifecycle metadata that BeginQuery should store
@@ -51,6 +53,7 @@ public class QueryInputMetadataAssembler {
   public QueryInputMetadata assemble(
       String queryId,
       String correlationId,
+      String accountId,
       List<QueryInput> inputs,
       Optional<Timestamp> asOfDefault,
       ResourceId defaultCatalogId) {
@@ -71,25 +74,30 @@ public class QueryInputMetadataAssembler {
     }
 
     try {
-      var resolution =
-          diagnostics.time(
-              "resolve_inputs",
-              () ->
-                  inputResolver.resolveInputs(
-                      queryId,
-                      correlationId,
-                      inputs,
-                      asOfDefault,
-                      Optional.of(defaultCatalogId),
-                      new SnapshotPinMemo(),
-                      diagnostics));
+      var resolutionPermit = accountScope.admitResolution(accountId);
+      QueryInputResolver.ResolutionResult resolution;
+      try {
+        resolution =
+            diagnostics.time(
+                "resolve_inputs",
+                () ->
+                    inputResolver.resolveInputs(
+                        queryId,
+                        correlationId,
+                        inputs,
+                        asOfDefault,
+                        Optional.of(defaultCatalogId),
+                        new SnapshotSelectionMemo(),
+                        diagnostics));
+      } finally {
+        resolutionPermit.close();
+      }
       diagnostics.put("resolved_inputs", resolution.resolved().size());
       RelationPinSet relationPinSet = resolution.relationPinSet();
       SnapshotSet snapshotSet = resolution.snapshotSet();
       diagnostics.put("snapshot_pins", relationPinSet.getPinsCount());
-      // The resolver already registered each resolved pin's blobs as a transient GC root at
-      // construction (QueryContextStore.registerResolvingPinBlobs), so the blobs are protected
-      // through expansion/obligations and until BeginQuery commits the context — no lease here.
+      // Snapshot identities are carried in the query context. Retention policy, rather than
+      // process-local query state, controls the lifetime of their immutable data.
       ExpansionMap expansionMap =
           diagnostics.time(
               "compute_expansion",
@@ -132,7 +140,7 @@ public class QueryInputMetadataAssembler {
 
     /** Projection for consumers (e.g. the query descriptor) that still speak SnapshotSet. */
     public SnapshotSet snapshotSet() {
-      return QueryPins.toSnapshotSet(relationPinSet);
+      return SnapshotSelections.toSnapshotSet(relationPinSet);
     }
 
     public static QueryInputMetadata empty() {

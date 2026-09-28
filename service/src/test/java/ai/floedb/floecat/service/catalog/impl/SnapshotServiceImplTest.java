@@ -47,7 +47,6 @@ import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.statistics.StatsOrchestrator;
 import ai.floedb.floecat.service.testsupport.TestNodes;
 import ai.floedb.floecat.service.testsupport.TestPrincipals;
-import ai.floedb.floecat.stats.spi.StatsStore;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
 import io.grpc.Status;
@@ -62,7 +61,6 @@ class SnapshotServiceImplTest {
   void latestFinalizedSnapshotUsesTheRootPublishedReuseBasis() {
     var svc = new SnapshotServiceImpl();
     svc.snapshotRepo = mock(SnapshotRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -107,7 +105,6 @@ class SnapshotServiceImplTest {
     var svc = new SnapshotServiceImpl();
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -148,7 +145,6 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -266,8 +262,7 @@ class SnapshotServiceImplTest {
                     .indefinitely());
 
     assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
-    verify(svc.snapshotRepo, never()).deleteWithPrecondition(any(), anyLong(), anyLong());
-    verifyNoInteractions(svc.statsStore);
+    verify(svc.snapshotRepo, never()).deleteWithArtifacts(any(), anyLong(), anyLong(), any());
   }
 
   @Test
@@ -276,7 +271,6 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -327,7 +321,6 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -374,7 +367,6 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -430,7 +422,6 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -521,7 +512,6 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -591,7 +581,6 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -653,7 +642,6 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -714,7 +702,6 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);
@@ -789,7 +776,6 @@ class SnapshotServiceImplTest {
     verify(svc.rootWriter).removeSnapshot(tableId, 123L);
     // The stats generations must NOT be torn down here — a query that pinned this snapshot still
     // reads them through its frozen stats_generation_ref; reference-aware CasBlobGc reclaims them.
-    verify(svc.statsStore, never()).deleteAllStatsForSnapshot(tableId, 123L);
   }
 
   @Test
@@ -800,7 +786,8 @@ class SnapshotServiceImplTest {
     svc.rootWriter = mock(TableRootWriter.class);
     when(svc.snapshotRepo.metaFor(tableId, 123L))
         .thenReturn(MutationMeta.newBuilder().setPointerVersion(4L).build());
-    when(svc.snapshotRepo.deleteWithPrecondition(tableId, 123L, 4L)).thenReturn(true);
+    when(svc.snapshotRepo.deleteWithArtifacts(tableId, 123L, 4L, java.util.Map.of()))
+        .thenReturn(true);
 
     svc.deleteSnapshot(
             DeleteSnapshotRequest.newBuilder().setTableId(tableId).setSnapshotId(123L).build())
@@ -810,7 +797,6 @@ class SnapshotServiceImplTest {
     verify(svc.rootWriter).removeSnapshot(tableId, 123L);
     // The success path must defer stats reclamation to reference-aware CasBlobGc, never eagerly
     // delete the generation blobs an active pinned scan still reads (it would fail loudly).
-    verify(svc.statsStore, never()).deleteAllStatsForSnapshot(tableId, 123L);
   }
 
   private static SnapshotServiceImpl serviceWithVisibleTable(ResourceId tableId, TableNode node) {
@@ -818,7 +804,6 @@ class SnapshotServiceImplTest {
 
     svc.snapshotRepo = mock(SnapshotRepository.class);
     svc.tableRepo = mock(TableRepository.class);
-    svc.statsStore = mock(StatsStore.class);
     svc.principal = mock(PrincipalProvider.class);
     svc.authz = mock(Authorizer.class);
     svc.idempotencyStore = mock(IdempotencyRepository.class);

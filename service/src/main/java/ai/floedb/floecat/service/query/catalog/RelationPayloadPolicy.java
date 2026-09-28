@@ -23,7 +23,7 @@ import ai.floedb.floecat.query.rpc.RelationInfo;
 import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.service.query.QueryPins;
+import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.types.Hashing;
@@ -78,8 +78,11 @@ final class RelationPayloadPolicy {
     if (relation.node().kind() == GraphNodeKind.TABLE
         && relation.node().origin() == GraphNodeOrigin.USER) {
       return queryContext
-          .findTablePin(relation.relationId(), correlationId)
-          .map(pin -> new PinIdentitySource(QueryPins.identity(pin), QueryPins.schemaScope(pin)));
+          .findResolvedSnapshot(relation.relationId(), correlationId)
+          .map(
+              pin ->
+                  new PinIdentitySource(
+                      SnapshotSelections.identity(pin), SnapshotSelections.schemaScope(pin)));
     }
     String cacheIdentity = relation.node().cacheIdentity();
     if (cacheIdentity == null || cacheIdentity.isBlank()) {
@@ -170,17 +173,18 @@ final class RelationPayloadPolicy {
    * so we fold it in server-side at both mint sites; the client stays engine-agnostic and
    * correctness no longer depends on it keying its own cache by engine.
    *
-   * <p>The token folds in a SCHEMA scope ({@link QueryPins#schemaScope}), because the served column
-   * schema is read from the pinned snapshot (schema-on-read) and CreateSnapshot/UpdateSnapshot can
-   * change that schema WITHOUT moving the definition ref (table_blob_version). A definition-only
-   * token would therefore let a client that holds an old schema be served identity-only for a NEW
-   * schema and reuse stale columns/types. The scope is the read-schema fingerprint stamped on the
-   * pinned manifest entry (SnapshotManifestEntry.schema_fingerprint): identical read schemas share
-   * it, so a data-only ingest keeps the token — and the client's schema — warm, while a
-   * snapshot-backed schema change moves it. Pins built from pre-fingerprint manifest entries fall
-   * back to the snapshot blob version (see {@link QueryPins#schemaScope}): still never stale, just
-   * cold on every ingest until the table's next snapshot write stamps a fingerprint. Views and
-   * system relations pass an empty scope — their content hash is already the schema identity.
+   * <p>The token folds in a SCHEMA scope ({@link SnapshotSelections#schemaScope}), because the
+   * served column schema is read from the resolved snapshot (schema-on-read) and
+   * CreateSnapshot/UpdateSnapshot can change that schema WITHOUT moving the definition ref
+   * (table_blob_version). A definition-only token would therefore let a client that holds an old
+   * schema be served identity-only for a NEW schema and reuse stale columns/types. The scope is the
+   * read-schema fingerprint stamped on the pinned manifest entry
+   * (SnapshotManifestEntry.schema_fingerprint): identical read schemas share it, so a data-only
+   * ingest keeps the token — and the client's schema — warm, while a snapshot-backed schema change
+   * moves it. Pins built from pre-fingerprint manifest entries fall back to the snapshot blob
+   * version (see {@link SnapshotSelections#schemaScope}): still never stale, just cold on every
+   * ingest until the table's next snapshot write stamps a fingerprint. Views and system relations
+   * pass an empty scope — their content hash is already the schema identity.
    *
    * <p>{@code decorationEpoch} additionally invalidates cached decoration when the decorator's
    * behavior changes without moving the engine version. When there is nothing to fold in — no

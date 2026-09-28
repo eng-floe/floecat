@@ -432,7 +432,11 @@ public class TransactionCommitSnapshotSupport {
       long snapshotId,
       Map<String, Object> snapshotMap,
       String requestedMetadataLocation) {
-    Snapshot.Builder builder = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(snapshotId);
+    Snapshot.Builder builder =
+        Snapshot.newBuilder()
+            .setTableId(tableId)
+            .setSnapshotId(snapshotId)
+            .setIngestedAt(Timestamps.fromMillis(clockMillis()));
     Long upstreamCreated = TableMappingUtil.asLong(snapshotMap.get("timestamp-ms"));
     if (upstreamCreated != null && upstreamCreated > 0) {
       builder.setUpstreamCreatedAt(Timestamps.fromMillis(upstreamCreated));

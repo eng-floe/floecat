@@ -125,6 +125,16 @@ public abstract class TableScopedPointerRepository<T> {
     return repo.metaForSafe(key(tableId));
   }
 
+  /** Pointer metadata without a blob HEAD for callers that only need URI and pointer version. */
+  public MutationMeta pointerMetaForSafe(ResourceId tableId) {
+    return repo.pointerMetaForSafe(key(tableId));
+  }
+
+  /** The pointer-only read through the consistent pointer view. */
+  public MutationMeta pointerMetaForSafeConsistent(ResourceId tableId) {
+    return repo.pointerMetaForSafeConsistent(key(tableId));
+  }
+
   protected static TableScopedPointerKey key(ResourceId tableId) {
     return new TableScopedPointerKey(tableId.getAccountId(), tableId.getId());
   }

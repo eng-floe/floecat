@@ -40,6 +40,7 @@ import ai.floedb.floecat.query.rpc.TargetStatsNeed;
 import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
@@ -111,7 +112,14 @@ abstract class PlannerStatsBundleServiceTestSupport {
             Mockito.mock(ai.floedb.floecat.service.repo.impl.ConnectorRepository.class));
     StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
     return PlannerStatsBundleService.forTesting(
-        factory, constraintProvider, repository, maxTables, maxTargets, chunkSize);
+        factory,
+        constraintProvider,
+        null,
+        repository,
+        maxTables,
+        maxTargets,
+        chunkSize,
+        testRetentionPolicy());
   }
 
   protected static PlannerStatsBundleService createService(
@@ -137,7 +145,8 @@ abstract class PlannerStatsBundleServiceTestSupport {
         repository,
         maxTables,
         maxTargets,
-        chunkSize);
+        chunkSize,
+        testRetentionPolicy());
   }
 
   protected static PlannerStatsBundleService createServiceWithRealLookup(
@@ -156,7 +165,23 @@ abstract class PlannerStatsBundleServiceTestSupport {
             Mockito.mock(ai.floedb.floecat.service.repo.impl.ConnectorRepository.class));
     StatsProviderFactory factory = new StatsProviderFactory(orchestrator, tableRepository, store);
     return PlannerStatsBundleService.forTestingWithRealLookup(
-        orchestrator, tableRepository, factory, maxTables, maxTargets, chunkSize);
+        orchestrator,
+        tableRepository,
+        factory,
+        maxTables,
+        maxTargets,
+        chunkSize,
+        testRetentionPolicy());
+  }
+
+  private static ai.floedb.floecat.service.query.ResolvedSnapshotReadContract
+      testRetentionPolicy() {
+    return new ai.floedb.floecat.service.query.ResolvedSnapshotReadContract(
+        null,
+        new SnapshotRetentionPolicy(
+            java.time.Clock.systemUTC(),
+            java.time.Duration.ofDays(30),
+            java.time.Duration.ofDays(7)));
   }
 
   protected static StatsRepository createRepository() {

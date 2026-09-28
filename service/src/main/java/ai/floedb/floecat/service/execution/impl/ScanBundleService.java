@@ -39,11 +39,14 @@ import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.service.catalog.impl.StatsVisibilityGate;
 import ai.floedb.floecat.service.common.ScanPruningUtils;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.service.query.PinnedReadContract;
+import ai.floedb.floecat.service.query.ResolvedSnapshotReadContract;
 import ai.floedb.floecat.service.query.impl.ScanSession;
 import ai.floedb.floecat.service.query.impl.ScanSession.DeleteFileMetadata;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
+import ai.floedb.floecat.service.repo.impl.TableRootRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
+import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
 import ai.floedb.floecat.service.storage.impl.ServerSideFileIoPropertiesResolver;
 import ai.floedb.floecat.stats.spi.StatsStore;
 import ai.floedb.floecat.stats.spi.StatsTargetType;
@@ -71,7 +74,9 @@ public class ScanBundleService {
   private final SnapshotRepository snapshots;
   private final StatsStore statsStore;
   private final ServerSideFileIoPropertiesResolver fileIoPropertiesResolver;
-  private final PinnedReadContract pinnedReads;
+  private final ResolvedSnapshotReadContract resolvedSnapshotReads;
+  private final TableRootRepository roots;
+  private final TableBlobReachabilityGuard reachabilityGuard;
 
   @Inject
   public ScanBundleService(
@@ -79,53 +84,71 @@ public class ScanBundleService {
       SnapshotRepository snapshots,
       StatsStore statsStore,
       ServerSideFileIoPropertiesResolver fileIoPropertiesResolver,
-      PinnedReadContract pinnedReads) {
+      ResolvedSnapshotReadContract resolvedSnapshotReads,
+      TableRootRepository roots,
+      TableBlobReachabilityGuard reachabilityGuard) {
     this.tables = tables;
     this.snapshots = snapshots;
     this.statsStore = statsStore;
     this.fileIoPropertiesResolver = fileIoPropertiesResolver;
-    this.pinnedReads = pinnedReads;
+    this.resolvedSnapshotReads = resolvedSnapshotReads;
+    this.roots = roots;
+    this.reachabilityGuard = reachabilityGuard;
+  }
+
+  /** Compatibility constructor for embedded callers and focused tests. */
+  public ScanBundleService(
+      TableRepository tables,
+      SnapshotRepository snapshots,
+      StatsStore statsStore,
+      ServerSideFileIoPropertiesResolver fileIoPropertiesResolver,
+      ResolvedSnapshotReadContract resolvedSnapshotReads) {
+    this(
+        tables, snapshots, statsStore, fileIoPropertiesResolver, resolvedSnapshotReads, null, null);
   }
 
   /**
-   * Loads the pinned table and snapshot blobs and builds the initial TableInfo for a scan handle.
+   * Loads the resolved table snapshot and snapshot blobs and builds the initial TableInfo for a
+   * scan handle.
    *
-   * <p>Both reads are by the pin's immutable blob URIs, never the live pointers: table-scoped scan
-   * properties (storage/connector settings, credentials, metadata location, schema fallback)
-   * reflect the pinned state and do not drift with the current table pointer — a scan survives a
-   * drop/unpublish of the current table — and an in-place UpdateSnapshot repointing the (table,
-   * snapshot id) pointer to a new blob cannot drift the scan after the pin was built. Every pin
-   * captures both blob identities at construction, so a missing blob here is a catalog-integrity
-   * failure, not a fallback case.
+   * <p>Both reads are by the resolved selection's immutable blob URIs, never the live pointers:
+   * table-scoped scan properties (storage/connector settings, credentials, metadata location,
+   * schema fallback) reflect the selected state and do not drift with the current table pointer — a
+   * scan survives a drop/unpublish of the current table — and an in-place UpdateSnapshot repointing
+   * the (table, snapshot id) pointer to a new blob cannot drift the scan after the selection was
+   * built. A missing snapshot blob means the selection was deleted or collected; a missing table
+   * blob the live root still owns is a catalog-integrity failure.
    */
   public InitData initScan(String correlationId, TablePin pin) {
     ResourceId tableId = pin.getTableId();
     long snapshotId = pin.getSnapshotId();
     long initStartedNanos = System.nanoTime();
     long tableStartedNanos = initStartedNanos;
-    // Cached reads: these blobs are immutable and content-addressed, so a resident decode IS the
-    // pinned content. requirePinned*'s contract is unchanged — a genuinely missing pinned blob
-    // still fails as catalog-integrity corruption at the point of the read.
+    // Cached reads: these blobs are immutable and content-addressed, so a resident decode is the
+    // selected content. A missing blob fails through requireResolved* at the point of the read.
     Table table =
-        pinnedReads.requirePinnedTableBlob(
-            tables.getByBlobUri(pin.getTableBlobUri()), correlationId, tableId);
+        resolvedSnapshotReads.requireResolvedTableBlob(
+            tables.getByBlobUri(pin.getTableBlobUri()),
+            correlationId,
+            pin,
+            () -> currentRootOwnsTableBlob(pin));
     StoreOperationSummary.nanos("table_load", System.nanoTime() - tableStartedNanos);
 
     long snapshotStartedNanos = System.nanoTime();
     Snapshot snapshot =
-        pinnedReads.requirePinnedSnapshotBlob(
-            snapshots.getByBlobUri(pin.getSnapshotBlobUri()), correlationId, tableId, snapshotId);
+        resolvedSnapshotReads.requireResolvedSnapshotBlob(
+            snapshots.getByBlobUri(pin.getSnapshotBlobUri()), correlationId, pin);
     StoreOperationSummary.nanos("snapshot_load", System.nanoTime() - snapshotStartedNanos);
 
     TableInfo info = buildTableInfo(table, snapshot, snapshotId);
-    // The scan streams its file list from the generation the PINNED root referenced, frozen on the
-    // pin at BeginQuery — NOT the live active generation. A re-stats/reconcile that published a new
-    // generation (and committed a new root) between BeginQuery and InitScan must not change what
-    // this pinned scan reads; retention plus the pin's root-chain GC roots keep the pinned
-    // generation readable for the query's life. "No generation" is a real frozen state
+    // The scan streams its file list from the generation the resolved root referenced, frozen on
+    // the
+    // selection at BeginQuery, not the live active generation: a re-stats between BeginQuery and
+    // InitScan must not change what this scan reads. Retention keeps that generation as a replaced
+    // version. "No generation" is a real frozen state
     // (STATS_GENERATION_ABSENT — an empty scan, even if a first generation publishes mid-stream);
     // a store that tracks no generations at all is null (reads serve live state). Under the gate a
-    // pinnable snapshot is always finalized, so the pin carries its ref.
+    // selectable snapshot is always finalized, so the selection carries its ref.
     String statsGeneration =
         StatsVisibilityGate.gateOnFinalize(statsStore)
             ? (pin.getStatsGenerationRefUri().isEmpty()
@@ -133,7 +156,22 @@ public class ScanBundleService {
                 : pin.getStatsGenerationRefUri())
             : null;
     StoreOperationSummary.nanos("scan_init", System.nanoTime() - initStartedNanos);
-    return new InitData(tableId, snapshotId, statsGeneration, info);
+    return new InitData(tableId, snapshotId, statsGeneration, pin, info);
+  }
+
+  private boolean currentRootOwnsTableBlob(TablePin pin) {
+    if (roots == null) {
+      // Embedded compatibility wiring predates the live-root probe; preserve its repair behavior.
+      return true;
+    }
+    if (pin.getTableBlobUri().isBlank()) {
+      return false;
+    }
+    return roots
+        .get(pin.getTableId())
+        .filter(root -> root.hasDefinitionRef())
+        .map(root -> root.getDefinitionRef().getUri().equals(pin.getTableBlobUri()))
+        .orElse(false);
   }
 
   /**
@@ -148,7 +186,9 @@ public class ScanBundleService {
    * just as a replacement generation does. A store that tracks no generations (null frozen token)
    * serves its live state; it cannot do better.
    */
-  private StatsStore.StatsStorePage listFrozenFilePage(ScanSession session, String pageToken) {
+  private StatsStore.StatsStorePage listFrozenFilePage(
+      ScanSession session, String pageToken, String correlationId) {
+    resolvedSnapshotReads.requireReadable(correlationId, session.selection());
     String frozen = session.statsGeneration();
     if (frozen == null) {
       return statsStore.listTargetStats(
@@ -161,13 +201,32 @@ public class ScanBundleService {
     if (STATS_GENERATION_ABSENT.equals(frozen)) {
       return new StatsStore.StatsStorePage(List.of(), "");
     }
-    return statsStore.listTargetStatsInGeneration(
-        session.tableId(),
-        session.snapshotId(),
-        frozen,
-        Optional.of(StatsTargetType.FILE),
-        FILE_STATS_PAGE_SIZE,
-        pageToken);
+    try {
+      return readStatsGeneration(session, frozen, pageToken);
+    } catch (BaseResourceRepository.NotFoundException missing) {
+      throw GrpcErrors.snapshotExpired(
+          correlationId,
+          null,
+          Map.of(
+              "table_id", session.tableId().getId(),
+              "snapshot_id", Long.toString(session.snapshotId())));
+    }
+  }
+
+  private StatsStore.StatsStorePage readStatsGeneration(
+      ScanSession session, String generationToken, String pageToken) {
+    java.util.function.Supplier<StatsStore.StatsStorePage> read =
+        () ->
+            statsStore.listTargetStatsInGeneration(
+                session.tableId(),
+                session.snapshotId(),
+                generationToken,
+                Optional.of(StatsTargetType.FILE),
+                FILE_STATS_PAGE_SIZE,
+                pageToken);
+    return reachabilityGuard == null
+        ? read.get()
+        : reachabilityGuard.reading(session.tableId(), read);
   }
 
   /** Streams delete batches, caching metadata for potential retries before completion. */
@@ -202,7 +261,7 @@ public class ScanBundleService {
             emitter -> {
               List<List<DeleteFileMetadata>> batches = new ArrayList<>();
               try {
-                emitDeleteBatches(session, emitter, batches);
+                emitDeleteBatches(session, correlationId, emitter, batches);
                 completion.complete(List.copyOf(batches));
                 emitter.complete();
               } catch (RuntimeException e) {
@@ -222,7 +281,7 @@ public class ScanBundleService {
         .emitter(
             emitter -> {
               try {
-                emitDataBatches(session, emitter);
+                emitDataBatches(session, correlationId, emitter);
                 emitter.complete();
               } catch (RuntimeException e) {
                 emitter.fail(e);
@@ -233,6 +292,7 @@ public class ScanBundleService {
   /** Pulls delete file stats pages, emits delete batches, and records metadata for replay. */
   private void emitDeleteBatches(
       ScanSession session,
+      String correlationId,
       MultiEmitter<? super DeleteFileBatch> emitter,
       List<List<DeleteFileMetadata>> stored) {
     int batchItems = Math.max(1, session.targetBatchItems());
@@ -245,7 +305,7 @@ public class ScanBundleService {
     // Byte heuristic uses on-disk size rather than actual serialized payload; prefer
     // targetBatchItems when include_column_stats means column metadata dominates the grpc frame.
     do {
-      var page = listFrozenFilePage(session, pageToken);
+      var page = listFrozenFilePage(session, pageToken, correlationId);
       for (var record : page.records()) {
         if (!record.hasFile()) {
           continue;
@@ -279,7 +339,8 @@ public class ScanBundleService {
   }
 
   /** Streams data file batches after deletes are ready, honoring batching hints. */
-  private void emitDataBatches(ScanSession session, MultiEmitter<? super DataFileBatch> emitter) {
+  private void emitDataBatches(
+      ScanSession session, String correlationId, MultiEmitter<? super DataFileBatch> emitter) {
     int batchItems = Math.max(1, session.targetBatchItems());
     int batchBytes = Math.max(1, session.targetBatchBytes());
     String pageToken = "";
@@ -287,7 +348,7 @@ public class ScanBundleService {
     long bytes = 0;
 
     do {
-      var page = listFrozenFilePage(session, pageToken);
+      var page = listFrozenFilePage(session, pageToken, correlationId);
       for (var record : page.records()) {
         if (!record.hasFile()) {
           continue;
@@ -498,5 +559,9 @@ public class ScanBundleService {
   }
 
   public record InitData(
-      ResourceId tableId, long snapshotId, String statsGeneration, TableInfo tableInfo) {}
+      ResourceId tableId,
+      long snapshotId,
+      String statsGeneration,
+      TablePin selection,
+      TableInfo tableInfo) {}
 }

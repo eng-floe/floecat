@@ -591,41 +591,6 @@ class StatsRepositoryTargetStorageTest {
   }
 
   @Test
-  void ordinaryStatsWritesPublishTheirActiveGenerationLifecycle() {
-    StatsRepository repository =
-        new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
-    long snapshotId = 7081L;
-    repository.putTargetStats(
-        TargetStatsRecords.tableRecord(
-            TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(12L).build(), null));
-
-    String manifestUri = repository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
-
-    assertThat(repository.requirePublishedGenerationLive(TABLE_ID, manifestUri).generationId())
-        .isEqualTo(Keys.generationFromManifestBlobUri(manifestUri).generationId());
-  }
-
-  @Test
-  void queryPinRejectsPreLifecycleGeneration() {
-    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
-    InMemoryBlobStore blobStore = new InMemoryBlobStore();
-    StatsRepository repository = new StatsRepository(pointerStore, blobStore);
-    long snapshotId = 7082L;
-    String generationId = "pre-lifecycle";
-    String manifestUri =
-        Keys.snapshotTargetStatsManifestBlobUri(
-            TABLE_ID.getAccountId(), TABLE_ID.getId(), snapshotId, generationId);
-    blobStore.put(
-        manifestUri,
-        com.google.protobuf.StringValue.of(generationId).toByteArray(),
-        "application/x-protobuf");
-
-    assertThatThrownBy(() -> repository.requirePublishedGenerationLive(TABLE_ID, manifestUri))
-        .isInstanceOf(BaseResourceRepository.CorruptionException.class)
-        .hasMessageContaining("generation is unavailable");
-  }
-
-  @Test
   void draftGenerationIsInvisibleUntilPublished() {
     StatsRepository repository =
         new StatsRepository(new InMemoryPointerStore(), new InMemoryBlobStore());
@@ -2276,6 +2241,32 @@ class StatsRepositoryTargetStorageTest {
                 .listTargetStats(TABLE_ID, snapshotId, java.util.Optional.empty(), 10, "")
                 .records())
         .hasSize(1);
+  }
+
+  @Test
+  void aGenerationBeingReclaimedReadsAsGoneBeforeItsManifestIs() {
+    InMemoryPointerStore pointerStore = new InMemoryPointerStore();
+    InMemoryBlobStore blobStore = new InMemoryBlobStore();
+    StatsRepository statsRepository = new StatsRepository(pointerStore, blobStore);
+    long snapshotId = 778L;
+    var records =
+        java.util.List.of(
+            TargetStatsRecords.tableRecord(
+                TABLE_ID, snapshotId, TableValueStats.newBuilder().setRowCount(1L).build(), null));
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, records);
+    String frozen = statsRepository.activeStatsGeneration(TABLE_ID, snapshotId).orElseThrow();
+    statsRepository.replaceAllStatsForSnapshot(TABLE_ID, snapshotId, records);
+
+    // One blob delete per slice: the reclaim stops with records going and the manifest still there.
+    statsRepository.deleteUnreferencedGenerations(
+        TABLE_ID, uri -> false, System.currentTimeMillis(), 0L, 1, Long.MAX_VALUE);
+
+    assertThat(blobStore.get(frozen)).isNotNull();
+    assertThatThrownBy(
+            () ->
+                statsRepository.listTargetStatsInGeneration(
+                    TABLE_ID, snapshotId, frozen, java.util.Optional.empty(), 10, ""))
+        .isInstanceOf(BaseResourceRepository.NotFoundException.class);
   }
 
   @Test

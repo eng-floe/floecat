@@ -32,13 +32,17 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.BundleResultStatus;
 import ai.floedb.floecat.query.rpc.ConstraintServingOptions;
 import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
+import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleEnd;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
+import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.impl.QueryContext;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
+import ai.floedb.floecat.service.testsupport.SnapshotTestSupport;
+import com.google.protobuf.util.Timestamps;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.util.ArrayList;
@@ -362,7 +366,7 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
   }
 
   @Test
-  void streamConstraintsFailsLoudlyWhenThePinnedBundleBlobIsGone() {
+  void streamConstraintsReportsExpiredSnapshotPastRetentionAndGrace() {
     UserObjectBundleTestSupport.TestQueryContextStore store =
         new UserObjectBundleTestSupport.TestQueryContextStore();
     StatsRepository repository = createRepository();
@@ -370,12 +374,181 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
         new ai.floedb.floecat.service.repo.impl.ConstraintRepository(
             new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
             new ai.floedb.floecat.storage.memory.InMemoryBlobStore());
-    // The pin names a bundle blob that is not retrievable: pinned blobs are GC-rooted for the
-    // query's lifetime, so this is a catalog-integrity error, never a silent fallback to live
-    // state.
-    QueryContext ctx =
-        queryContextWithConstraintRef(
-            "query-constraints-gone-ref", 498L, "s3://tbl/constraints-gone.pb", "etag-x");
+    // The bundle is still stored: only the selection's age fails the read.
+    constraintRepo.putSnapshotConstraints(
+        TABLE,
+        498L,
+        ai.floedb.floecat.catalog.rpc.SnapshotConstraints.newBuilder()
+            .addConstraints(constraint("pk", ConstraintType.CT_PRIMARY_KEY, List.of(1L)))
+            .build());
+    var stored = constraintRepo.metaForSafe(TABLE, 498L);
+    TablePin pin =
+        SnapshotTestSupport.blobBackedPin(TABLE, 498L).toBuilder()
+            .setPinKind(PinKind.PIN_KIND_SNAPSHOT_ID)
+            .setIngestedAt(
+                Timestamps.fromMillis(
+                    System.currentTimeMillis() - java.time.Duration.ofDays(45).toMillis()))
+            .setConstraintsRefUri(stored.getBlobUri())
+            .setConstraintsRefVersion(stored.getEtag())
+            .build();
+    QueryContext ctx = queryContextWithPins("query-constraints-expired", List.of(pin));
+    store.seed(ctx);
+
+    PlannerStatsBundleService service =
+        createService(
+            repository,
+            store,
+            ConstraintProvider.NONE,
+            constraintRepo,
+            /* chunkSize= */ 5,
+            /* maxTables= */ 1,
+            /* maxTargets= */ 10);
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .build();
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .streamConstraints("corr", ctx, request)
+                    .collect()
+                    .asList()
+                    .await()
+                    .indefinitely());
+    assertExpired(failure);
+  }
+
+  @Test
+  void streamConstraintsReportsExpiredSnapshotWhenTheBundleWasCollected() {
+    var store = new UserObjectBundleTestSupport.TestQueryContextStore();
+    var constraintRepo =
+        new ai.floedb.floecat.service.repo.impl.ConstraintRepository(
+            new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
+            new ai.floedb.floecat.storage.memory.InMemoryBlobStore());
+    // A selection retention keeps regardless of age, whose bundle is gone anyway.
+    TablePin pin =
+        SnapshotTestSupport.blobBackedPin(TABLE, 498L).toBuilder()
+            .setPinKind(PinKind.PIN_KIND_SNAPSHOT_ID)
+            .setConstraintsRefUri("s3://tbl/constraints-collected.pb")
+            .setConstraintsRefVersion("etag-x")
+            .build();
+    QueryContext ctx = queryContextWithPins("query-constraints-collected", List.of(pin));
+    store.seed(ctx);
+    PlannerStatsBundleService service =
+        createService(createRepository(), store, ConstraintProvider.NONE, constraintRepo, 5, 1, 10);
+    FetchTableConstraintsRequest request =
+        FetchTableConstraintsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTableIds(TABLE)
+            .build();
+
+    assertExpired(
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .streamConstraints("corr", ctx, request)
+                    .collect()
+                    .asList()
+                    .await()
+                    .indefinitely()));
+  }
+
+  @Test
+  void streamTargetsReportsExpiredSnapshotPastRetentionAndGrace() {
+    var store = new UserObjectBundleTestSupport.TestQueryContextStore();
+    TablePin pin =
+        SnapshotTestSupport.blobBackedPin(TABLE, 498L).toBuilder()
+            .setPinKind(PinKind.PIN_KIND_SNAPSHOT_ID)
+            .setIngestedAt(
+                Timestamps.fromMillis(
+                    System.currentTimeMillis() - java.time.Duration.ofDays(45).toMillis()))
+            .build();
+    QueryContext ctx = queryContextWithPins("query-targets-expired", List.of(pin));
+    store.seed(ctx);
+    PlannerStatsBundleService service =
+        createService(createRepository(), store, ConstraintProvider.NONE, null, 5, 1, 10);
+    var request =
+        ai.floedb.floecat.query.rpc.FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTables(tableRequest(TABLE, List.of(1L)))
+            .build();
+
+    assertExpired(
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .streamTargets("corr", ctx, request)
+                    .collect()
+                    .asList()
+                    .await()
+                    .indefinitely()));
+  }
+
+  @Test
+  void streamTargetsReportsExpiredSnapshotWhenTheGenerationWasCollected() {
+    var store = new UserObjectBundleTestSupport.TestQueryContextStore();
+    // A selection retention keeps regardless of age, whose stats generation is gone anyway.
+    TablePin pin =
+        SnapshotTestSupport.blobBackedPin(TABLE, 498L).toBuilder()
+            .setPinKind(PinKind.PIN_KIND_SNAPSHOT_ID)
+            .setStatsGenerationRefUri("s3://tbl/stats/gen-collected.pb")
+            .build();
+    QueryContext ctx = queryContextWithPins("query-targets-collected", List.of(pin));
+    store.seed(ctx);
+    PlannerStatsBundleService service =
+        createServiceWithRealLookup(createRepository(), store, 5, 1, 10);
+    var request =
+        ai.floedb.floecat.query.rpc.FetchTargetStatsRequest.newBuilder()
+            .setQueryId(ctx.getQueryId())
+            .addTables(tableRequest(TABLE, List.of(1L)))
+            .build();
+
+    assertExpired(
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .streamTargets("corr", ctx, request)
+                    .collect()
+                    .asList()
+                    .await()
+                    .indefinitely()));
+  }
+
+  private static void assertExpired(StatusRuntimeException failure) {
+    assertEquals(
+        ai.floedb.floecat.common.rpc.ErrorCode.MC_SNAPSHOT_EXPIRED,
+        ai.floedb.floecat.service.error.impl.FloecatStatus.fromThrowable(failure).errorCode());
+  }
+
+  @Test
+  void streamConstraintsServesAnOldCurrentSnapshot() {
+    UserObjectBundleTestSupport.TestQueryContextStore store =
+        new UserObjectBundleTestSupport.TestQueryContextStore();
+    StatsRepository repository = createRepository();
+    var constraintRepo =
+        new ai.floedb.floecat.service.repo.impl.ConstraintRepository(
+            new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
+            new ai.floedb.floecat.storage.memory.InMemoryBlobStore());
+    ConstraintDefinition pk = constraint("pk_current", ConstraintType.CT_PRIMARY_KEY, List.of(1L));
+    constraintRepo.putSnapshotConstraints(
+        TABLE,
+        498L,
+        ai.floedb.floecat.catalog.rpc.SnapshotConstraints.newBuilder().addConstraints(pk).build());
+    var meta = constraintRepo.metaForSafe(TABLE, 498L);
+    TablePin pin =
+        SnapshotTestSupport.blobBackedPin(TABLE, 498L).toBuilder()
+            .setPinKind(PinKind.PIN_KIND_CURRENT)
+            .setConstraintsRefUri(meta.getBlobUri())
+            .setConstraintsRefVersion(meta.getEtag())
+            .build();
+    QueryContext ctx = queryContextWithPins("query-constraints-current-old", List.of(pin));
     store.seed(ctx);
 
     PlannerStatsBundleService service =
@@ -389,7 +562,8 @@ class PlannerStatsBundleServiceSplitConstraintsTest extends PlannerStatsBundleSe
             /* maxTargets= */ 10);
 
     List<TableConstraintsResult> results = streamConstraintsFor(service, ctx);
-    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_ERROR, results.get(0).getStatus());
+    assertEquals(BundleResultStatus.BUNDLE_RESULT_STATUS_FOUND, results.get(0).getStatus());
+    assertEquals("pk_current", results.get(0).getConstraints(0).getName());
   }
 
   private static ConstraintProvider versionedProvider(

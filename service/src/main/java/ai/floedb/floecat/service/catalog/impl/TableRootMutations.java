@@ -57,11 +57,11 @@ public final class TableRootMutations {
    * <p>{@code advance} applies the currency-advance rule so the snapshot may become the root's
    * current at registration. The sole caller ({@code TableRootWriter.commitSnapshotEntry}) always
    * passes {@code true}: the root's {@code current_snapshot_id} tracks the committed logical
-   * current immediately. QUERY visibility is gated separately at READ time — a read or pin will not
-   * resolve to a current whose entry has no stats-generation ref (see {@link StatsVisibilityGate}
-   * and the finalize gate in {@code SnapshotRepository}), so currency can advance here without
-   * exposing an unfinalized scan. {@link #setStatsGeneration} is the finalize commit that attaches
-   * that ref.
+   * current immediately. QUERY visibility is gated separately at READ time — a read or resolved
+   * selection will not resolve to a current whose entry has no stats-generation ref (see {@link
+   * StatsVisibilityGate} and the finalize gate in {@code SnapshotRepository}), so currency can
+   * advance here without exposing an unfinalized scan. {@link #setStatsGeneration} is the finalize
+   * commit that attaches that ref.
    */
   public static TableRootCommitter.RootMutator upsertSnapshot(
       TableRootRepository roots,
@@ -103,26 +103,32 @@ public final class TableRootMutations {
    */
   public static TableRootCommitter.RootMutator removeSnapshot(
       TableRootRepository roots, ResourceId tableId, long snapshotId) {
+    return removeSnapshots(roots, tableId, Set.of(snapshotId));
+  }
+
+  /** Removes the entries of {@code snapshotIds} in one commit; see {@link #removeSnapshot}. */
+  public static TableRootCommitter.RootMutator removeSnapshots(
+      TableRootRepository roots, ResourceId tableId, Set<Long> snapshotIds) {
     return current -> {
       if (current.isEmpty()) {
         return null; // nothing to remove
       }
       TableRoot base = current.get();
-      BlobRef head = manifestHead(base);
-      BlobRef newHead = SnapshotManifests.chain(roots, tableId, head).remove(snapshotId);
-      if (equalsRef(newHead, head)) {
-        return null; // id not present: no-op
+      SnapshotManifests.Chain chain = SnapshotManifests.chain(roots, tableId, manifestHead(base));
+      BlobRef head = chain.removeAll(snapshotIds);
+      if (equalsRef(head, manifestHead(base))) {
+        return null; // no id present: no-op
       }
       TableRoot.Builder next = base.toBuilder();
-      if (newHead == null) {
+      if (head == null) {
         next.clearSnapshotManifestRef();
       } else {
-        next.setSnapshotManifestRef(newHead);
+        next.setSnapshotManifestRef(head);
       }
-      if (base.hasCurrentSnapshotId() && base.getCurrentSnapshotId() == snapshotId) {
+      if (base.hasCurrentSnapshotId() && snapshotIds.contains(base.getCurrentSnapshotId())) {
         next.clearCurrentSnapshotId();
       }
-      refreshReusableSnapshotCandidates(next, SnapshotManifests.chain(roots, tableId, newHead));
+      refreshReusableSnapshotCandidates(next, chain.withHead(head));
       return next.build();
     };
   }
@@ -130,10 +136,12 @@ public final class TableRootMutations {
   /** Sets the immutable table-definition ref (DDL / property change). */
   public static TableRootCommitter.RootMutator setDefinition(
       ResourceId tableId, BlobRef definitionRef) {
-    return current ->
-        baseRoot(current, tableId, definitionRef).toBuilder()
-            .setDefinitionRef(definitionRef)
-            .build();
+    return current -> {
+      TableRoot base = baseRoot(current, tableId, definitionRef);
+      TableRoot.Builder next = base.toBuilder();
+      replaceDefinition(next, definitionRef);
+      return next.build();
+    };
   }
 
   /** Replaces a stale definition publication without disturbing any other root state. */
@@ -146,11 +154,7 @@ public final class TableRootMutations {
         return null;
       }
       TableRoot.Builder replacement = current.get().toBuilder();
-      if (replacementDefinitionRef == null || replacementDefinitionRef.getUri().isEmpty()) {
-        replacement.clearDefinitionRef();
-      } else {
-        replacement.setDefinitionRef(replacementDefinitionRef);
-      }
+      replaceDefinition(replacement, replacementDefinitionRef);
       return replacement.build();
     };
   }
@@ -241,7 +245,7 @@ public final class TableRootMutations {
       TableRoot base = baseRoot(current, tableId, definitionRef);
       TableRoot.Builder next = base.toBuilder();
       if (definitionRef != null && !definitionRef.getUri().isEmpty()) {
-        next.setDefinitionRef(definitionRef);
+        replaceDefinition(next, definitionRef);
       }
 
       SnapshotManifests.Chain chain = SnapshotManifests.chain(roots, tableId, manifestHead(base));
@@ -302,12 +306,9 @@ public final class TableRootMutations {
                 toRemove.add(id);
               }
             });
-    BlobRef newHead = head;
-    for (long id : toRemove) {
-      newHead = chain.withHead(newHead).remove(id);
-      if (next.hasCurrentSnapshotId() && next.getCurrentSnapshotId() == id) {
-        next.clearCurrentSnapshotId();
-      }
+    BlobRef newHead = chain.withHead(head).removeAll(new java.util.HashSet<>(toRemove));
+    if (next.hasCurrentSnapshotId() && toRemove.contains(next.getCurrentSnapshotId())) {
+      next.clearCurrentSnapshotId();
     }
     if (entryLoader != null) {
       for (long id : liveSnapshotIds) {
@@ -352,6 +353,7 @@ public final class TableRootMutations {
       if (existing.isEmpty()) {
         return null; // snapshot unknown to the manifest: no-op
       }
+      // The updater receives the complete existing entry, so an explicit clear remains a clear.
       SnapshotManifestEntry changed = change.apply(existing.get());
       boolean entryChanged = !changed.equals(existing.get());
       boolean advanceNow =
@@ -432,6 +434,15 @@ public final class TableRootMutations {
     return (a == null || b == null) ? a == b : a.equals(b);
   }
 
+  private static void replaceDefinition(TableRoot.Builder next, BlobRef definitionRef) {
+    BlobRef live = definitionRef == null || definitionRef.getUri().isEmpty() ? null : definitionRef;
+    if (live == null) {
+      next.clearDefinitionRef();
+    } else {
+      next.setDefinitionRef(live);
+    }
+  }
+
   private static SnapshotManifestEntry preserveAuxRefs(
       SnapshotManifestEntry existing, SnapshotManifestEntry incoming) {
     SnapshotManifestEntry.Builder merged = incoming.toBuilder();
@@ -448,6 +459,9 @@ public final class TableRootMutations {
     // it must not silently re-sort the snapshot to "oldest". Preserve it like the other aux fields.
     if (!incoming.hasUpstreamCreatedAt() && existing.hasUpstreamCreatedAt()) {
       merged.setUpstreamCreatedAt(existing.getUpstreamCreatedAt());
+    }
+    if (!incoming.hasIngestedAt() && existing.hasIngestedAt()) {
+      merged.setIngestedAt(existing.getIngestedAt());
     }
     // schema_fingerprint has the same survive-a-partial-rewrite property: an incoming candidate
     // without one must not downgrade a fingerprinted entry to the coarse snapshot_blob_version

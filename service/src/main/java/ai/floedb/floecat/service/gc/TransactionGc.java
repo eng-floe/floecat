@@ -143,6 +143,7 @@ public class TransactionGc {
                 .setKind(ResourceKind.RK_TABLE)
                 .build();
         if (rootWriter.resyncFromCommittedState(rid)) {
+          // Acknowledge the marker only after the committed root has been rebuilt successfully.
           pointerStore.compareAndDelete(p.getKey(), p.getVersion());
         } else {
           LOG.debugf("root resync re-drive still failing for table %s", tableId);

@@ -38,6 +38,7 @@ import ai.floedb.floecat.query.rpc.TargetStatsBundleEnd;
 import ai.floedb.floecat.query.rpc.TargetStatsNeed;
 import ai.floedb.floecat.query.rpc.TargetStatsResult;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
+import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.query.catalog.PlannerStatsBundleService;
 import ai.floedb.floecat.service.query.catalog.StatsProviderFactory;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
@@ -355,7 +356,19 @@ class PlannerStatsServiceImplTest {
             tableRepository,
             store);
     return PlannerStatsBundleService.forTesting(
-        factory, repository, /* maxTables= */ 10, /* maxTargets= */ 10, /* chunkSize= */ 5);
+        factory,
+        null,
+        null,
+        repository,
+        /* maxTables= */ 10,
+        /* maxTargets= */ 10,
+        /* chunkSize= */ 5,
+        new ai.floedb.floecat.service.query.ResolvedSnapshotReadContract(
+            null,
+            new SnapshotRetentionPolicy(
+                java.time.Clock.systemUTC(),
+                java.time.Duration.ofDays(30),
+                java.time.Duration.ofDays(7))));
   }
 
   private static StatsRepository createRepository() {

@@ -211,18 +211,18 @@ class MetaGraphTest {
   }
 
   @Test
-  void tablePinFor_system_returnsNull() {
-    TablePin pin = meta.tablePinFor("c", sysTable, null, Optional.empty());
+  void resolvedSnapshotFor_system_returnsNull() {
+    TablePin pin = meta.resolvedSnapshotFor("c", sysTable, null, Optional.empty());
 
     assertThat(pin).isNull();
   }
 
   @Test
-  void tablePinFor_user_delegates() {
+  void resolvedSnapshotFor_user_delegates() {
     TablePin expected = TablePin.newBuilder().build();
-    when(user.tablePinFor(any(), any(), any(), any())).thenReturn(expected);
+    when(user.resolvedSnapshotFor(any(), any(), any(), any())).thenReturn(expected);
 
-    TablePin pin = meta.tablePinFor("c", usrTable, null, Optional.empty());
+    TablePin pin = meta.resolvedSnapshotFor("c", usrTable, null, Optional.empty());
 
     assertThat(pin).isEqualTo(expected);
   }

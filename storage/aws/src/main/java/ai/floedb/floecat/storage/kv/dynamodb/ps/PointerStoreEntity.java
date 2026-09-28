@@ -70,6 +70,7 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
   static final String ATTR_RESOURCE_KIND = "rk";
   static final String ATTR_DISPLAY_NAME = "dn";
   static final String ATTR_REFERENCED_OBJECT_SIZE_BYTES = "object_size_bytes";
+  static final String ATTR_INGESTED_AT = "ingested_at";
 
   @Inject
   public PointerStoreEntity(@KvTable("floecat") KvStore kv) {
@@ -94,7 +95,6 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
     if (k.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
       return new KvStore.Key(CREDENTIAL_CLEANUP_PK, k);
     }
-
     if (!k.startsWith("accounts/")) {
       throw new IllegalArgumentException("unexpected key: " + pointerKey);
     }
@@ -133,7 +133,6 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
         || p.startsWith(CREDENTIAL_CLEANUP_PREFIX)) {
       return new KvStore.Key(CREDENTIAL_CLEANUP_PK, p);
     }
-
     if (!p.startsWith("accounts/")) {
       throw new IllegalArgumentException("unexpected prefix: " + prefix);
     }
@@ -175,6 +174,10 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
       // String or numeric form both decode; a malformed stamp throws rather than reading as
       // "no expiry".
       builder.setExpiresAt(Timestamps.fromMillis(expiresAt.asLong() * 1000L));
+    }
+    var ingestedAt = r.attrs().get(ATTR_INGESTED_AT);
+    if (ingestedAt != null) {
+      builder.setIngestedAt(Timestamps.fromMillis(ingestedAt.asLong() * 1000L));
     }
     String rid = AttrValue.stringOr(r.attrs(), ATTR_RESOURCE_ID, null);
     String rkStr = AttrValue.stringOr(r.attrs(), ATTR_RESOURCE_KIND, null);
@@ -353,6 +356,11 @@ public final class PointerStoreEntity extends AbstractEntity<Pointer> {
       attrs.put(
           ATTR_REFERENCED_OBJECT_SIZE_BYTES,
           AttrValue.of(Long.toString(pointer.getReferencedObjectSizeBytes())));
+    }
+    if (pointer.hasIngestedAt()) {
+      attrs.put(
+          ATTR_INGESTED_AT,
+          AttrValue.of(Long.toString(Timestamps.toMillis(pointer.getIngestedAt()) / 1000L)));
     }
     return attrs;
   }
