@@ -1991,7 +1991,7 @@ CLI, and reconciler.</p>
   independent of Connector and deliberately contain no connectivity-validation or reconciliation
   operations.</li>
 <li><strong><code>query/lifecycle.proto</code></strong> – Query lifecycle (<code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>, <code>GetQuery</code>) and the
-  snapshot pin metadata sent down to the SQL planner.</li>
+  resolved snapshot metadata sent down to the SQL planner.</li>
 <li><strong><code>query/system_objects_registry.proto</code></strong> – <code>GetSystemObjects</code> plus message definitions for builtin functions,
   operators, casts, collations, aggregates, and types loaded from static files.</li>
 <li><strong><code>query/user_objects_bundle.proto</code></strong> – <code>GetUserObjects</code> streams resolved relation metadata for planner binding, including per-column <code>ColumnResult</code> outcomes (<code>READY</code> with <code>ColumnInfo</code> or <code>FAILED</code> with <code>ColumnFailure</code>).</li>
@@ -2137,7 +2137,7 @@ is preserved exactly, paths are deduplicated and deterministically ordered, and 
 case-sensitive. Each path selects that namespace subtree.</p>
 <h3 id="planner-lifecycle-execution-scan-schemas">Planner Lifecycle &amp; Execution Scan Schemas<a class="headerlink" href="#planner-lifecycle-execution-scan-schemas" title="Permanent link">&para;</a></h3>
 <p><code>query/lifecycle.proto</code> captures everything the planner needs to hold a lease:
-- <code>QueryDescriptor</code> mirrors the live query context (IDs, expiry timestamps, snapshot pins, expansion
+- <code>QueryDescriptor</code> mirrors the live query context (IDs, expiry timestamps, snapshot selections, expansion
   maps, and table obligations). Per-table scan manifests are retrieved lazily via
   <code>QueryScanService</code>: clients call <code>InitScan</code>, fully consume <code>StreamDeleteFiles</code>, then consume
   <code>StreamDataFiles</code> for a specific table before <code>CloseScan</code>.</p>
@@ -2163,7 +2163,9 @@ engine release.</p>
   service-owned and is not part of <code>SnapshotSpec</code>. Its <code>format_version</code> must match the current
   capture-manifest contract; older references are rejected before their blobs are read.
   <code>SnapshotManifestEntry.reuse_stats_generation_ref</code> heads the compact stats generation used by
-  that manifest.</li>
+  that manifest.
+  Snapshot selections carry <code>TablePin.ingested_at</code> when their retention clock is needed; current
+  selections omit it because the live current snapshot is retained regardless of age.</li>
 <li><strong>External reusable-index compatibility</strong> – external planner and finalizer deployments must
   regenerate bindings for <code>ReusableArtifactIndexReference</code> format 1 and its immutable sorted-run,
   run-manifest, and block messages. The old trie-root representation has no compatibility reader.
@@ -2296,7 +2298,7 @@ engine release.</p>
 </li>
 <li>
 <p>BeginQuery allows clients to provide an optional <code>query_id</code> (duplicates are rejected) and
-     a list of <code>common.QueryInput</code> records so the lifecycle service can pin snapshots and expansions
+     a list of <code>common.QueryInput</code> records so the service can resolve snapshots and expansions
      at creation time for deterministic replay. Schema resolution and planning still occur in the
      downstream services.</p>
 </li>
@@ -2324,7 +2326,7 @@ engine release.</p>
   extensions. Document keys in the consuming module (for example connector-specific hints in
   <a href="../connectors-spi/"><code>docs/connectors-spi.md</code></a>).</li>
 <li><strong>Query leases</strong> – Clients decide how aggressively to renew leases; planners should renew before
-  <code>expires_at</code> and call <code>EndQuery</code> even on failure so <code>QueryContextStore</code> can release pins eagerly.</li>
+  <code>expires_at</code> and call <code>EndQuery</code> even on failure to release process-local query bookkeeping.</li>
 </ul>
 <h2 id="examples-scenarios">Examples &amp; Scenarios<a class="headerlink" href="#examples-scenarios" title="Permanent link">&para;</a></h2>
 <h3 id="creating-a-table-via-grpc">Creating a table via gRPC<a class="headerlink" href="#creating-a-table-via-grpc" title="Permanent link">&para;</a></h3>
