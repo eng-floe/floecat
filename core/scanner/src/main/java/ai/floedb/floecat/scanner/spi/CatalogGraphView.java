@@ -241,7 +241,6 @@ public interface CatalogGraphView {
    * metadata and the snapshot-sourced schema are read from those immutable blobs rather than the
    * live pointers. Empty uris read the current pointers.
    */
-   */
   SchemaResolution schemaFor(
       String correlationId,
       ResourceId tableId,
