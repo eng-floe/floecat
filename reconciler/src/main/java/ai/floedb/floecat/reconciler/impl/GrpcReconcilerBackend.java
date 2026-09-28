@@ -31,7 +31,6 @@ import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.ListSnapshotsRequest;
 import ai.floedb.floecat.catalog.rpc.ListTargetStatsRequest;
 import ai.floedb.floecat.catalog.rpc.LookupCatalogRequest;
-import ai.floedb.floecat.catalog.rpc.LookupTableByRefRequest;
 import ai.floedb.floecat.catalog.rpc.MutinyTableIndexServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.MutinyTableStatisticsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.Namespace;
@@ -41,8 +40,10 @@ import ai.floedb.floecat.catalog.rpc.PutIndexArtifactItem;
 import ai.floedb.floecat.catalog.rpc.PutIndexArtifactsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTableConstraintsRequest;
 import ai.floedb.floecat.catalog.rpc.PutTargetStatsRequest;
+import ai.floedb.floecat.catalog.rpc.RelationReference;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
@@ -172,6 +173,9 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
   @GrpcClient("floecat")
+  RelationServiceGrpc.RelationServiceBlockingStub relation;
+
+  @GrpcClient("floecat")
   NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace;
 
   @GrpcClient("floecat")
@@ -278,13 +282,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
   @Override
   public Optional<ResourceId> lookupTable(ReconcileContext ctx, NameRef table) {
     NameRef normalizedTable = NameRefNormalizer.normalize(table);
-    var response =
-        directory(ctx)
-            .lookupTableByRef(LookupTableByRefRequest.newBuilder().setRef(normalizedTable).build());
-    if (!response.hasResourceId() || response.getResourceId().getId().isBlank()) {
-      return Optional.empty();
-    }
-    return Optional.of(response.getResourceId());
+    return resolveRelationId(ctx, normalizedTable, ResourceKind.RK_TABLE);
   }
 
   @Override
@@ -1212,10 +1210,7 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
       ref.addAllPath(List.of(namespaceFq.split("\\.")));
     }
     try {
-      return Optional.of(
-          directory(ctx)
-              .resolveView(ResolveViewRequest.newBuilder().setRef(ref.build()).build())
-              .getResourceId());
+      return resolveRelationId(ctx, ref.build(), ResourceKind.RK_VIEW);
     } catch (StatusRuntimeException e) {
       if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
         return Optional.empty();
@@ -1371,6 +1366,10 @@ public class GrpcReconcilerBackend implements ReconcilerBackend {
 
   private DirectoryServiceGrpc.DirectoryServiceBlockingStub directory(ReconcileContext ctx) {
     return withHeaders(directory, ctx);
+  }
+
+  private RelationServiceGrpc.RelationServiceBlockingStub relation(ReconcileContext ctx) {
+    return withHeaders(relation, ctx);
   }
 
   private NamespaceServiceGrpc.NamespaceServiceBlockingStub namespace(ReconcileContext ctx) {
