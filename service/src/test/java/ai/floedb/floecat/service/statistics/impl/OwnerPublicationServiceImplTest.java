@@ -1097,9 +1097,7 @@ class OwnerPublicationServiceImplTest {
         descriptor.getObjectCount(),
         descriptor.getFileStatsTargetCount(),
         descriptor.getIndexTargetCount(),
-        descriptor.getAggregateStatsTargetCount(),
-        ByteString.EMPTY,
-        false);
+        descriptor.getAggregateStatsTargetCount());
   }
 
   private static String registrationTargetKey(OwnerArtifactObjectReference object) {
@@ -1142,23 +1140,46 @@ class OwnerPublicationServiceImplTest {
   }
 
   private static ReusableCoverageManifestRef reuseDescriptor(byte[] payload) {
-    long count = payload.length / ReusableCoverageManifest.RECORD_BYTES;
+    long coverageCount = payload.length / ReusableCoverageManifest.RECORD_BYTES;
+    byte[] shardKey = new byte[32];
+    shardKey[31] = 42;
+    byte[] shardDigest = sha256(payload);
+    byte[] shardIndex = new byte[0];
+    if (payload.length > 0) {
+      var indexRecord =
+          java.nio.ByteBuffer.allocate(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
+              .order(java.nio.ByteOrder.BIG_ENDIAN);
+      indexRecord.put(shardKey);
+      indexRecord.put(shardDigest);
+      indexRecord.putLong(payload.length);
+      indexRecord.putLong(coverageCount);
+      shardIndex = indexRecord.array();
+      String shardUri =
+          Keys.tableReusableArtifactBlobPrefix(tableId().getAccountId(), tableId().getId())
+              + "coverage-shards/"
+              + java.util.HexFormat.of().formatHex(shardKey)
+              + "-"
+              + java.util.HexFormat.of().formatHex(shardDigest)
+              + ".bin";
+      EXTERNAL_OBJECTS.put(shardUri, payload);
+    }
+    long shardCount = payload.length == 0 ? 0L : 1L;
     var indexBuilder =
         ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndex.newBuilder()
             .setFormatVersion(1)
             .setDomain(
                 ai.floedb.floecat.reconciler.rpc.ExternalManifestDomain.EMD_REUSABLE_COVERAGE)
-            .setPayloadBytes(payload.length)
-            .setRecordCount(count)
+            .setPayloadBytes(shardIndex.length)
+            .setRecordCount(shardCount)
             .setChunkSizeLimit(OwnerArtifactRegistrationManifest.DEFAULT_READ_BYTES)
-            .setFixedRecordBytes(ReusableCoverageManifest.RECORD_BYTES);
-    if (payload.length > 0) {
+            .setFixedRecordBytes(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES);
+    if (shardIndex.length > 0) {
       indexBuilder.addChunks(
           ai.floedb.floecat.reconciler.rpc.ExternalManifestChunkCommitment.newBuilder()
               .setPayloadOffset(0L)
-              .setPayloadBytes(payload.length)
-              .setRecordCount(count)
-              .setPayloadSha256(ByteString.copyFrom(sha256(payload))));
+              .setPayloadBytes(shardIndex.length)
+              .setRecordCount(shardCount)
+              .setPayloadSha256(ByteString.copyFrom(sha256(shardIndex))));
     }
     byte[] indexBytes = indexBuilder.build().toByteArray();
     byte[] indexDigest = sha256(indexBytes);
@@ -1176,18 +1197,20 @@ class OwnerPublicationServiceImplTest {
             + tableId().getId()
             + "/snapshots/"
             + String.format("%019d", SNAPSHOT)
-            + "/index-artifacts/capture-manifests/reuse-"
+            + "/index-artifacts/capture-manifests/reuse-index-"
             + java.util.HexFormat.of().formatHex(indexDigest)
             + ".bin";
     EXTERNAL_OBJECTS.put(indexUri, indexBytes);
-    EXTERNAL_OBJECTS.put(payloadUri, payload);
+    EXTERNAL_OBJECTS.put(payloadUri, shardIndex);
     return ReusableCoverageManifestRef.newBuilder()
         .setFormatVersion(ReusableCoverageManifest.FORMAT_VERSION)
         .setUri(payloadUri)
-        .setPayloadBytes(payload.length)
-        .setPayloadSha256(ByteString.copyFrom(sha256(payload)))
-        .setEntryCount(count)
-        .setRecordBytes(ReusableCoverageManifest.RECORD_BYTES)
+        .setPayloadBytes(shardIndex.length)
+        .setPayloadSha256(ByteString.copyFrom(sha256(shardIndex)))
+        .setShardCount(shardCount)
+        .setShardIndexRecordBytes(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
+        .setCoverageEntryCount(coverageCount)
+        .setShardRecordBytes(ReusableCoverageManifest.RECORD_BYTES)
         .setCommitmentIndex(
             ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndexRef.newBuilder()
                 .setFormatVersion(1)

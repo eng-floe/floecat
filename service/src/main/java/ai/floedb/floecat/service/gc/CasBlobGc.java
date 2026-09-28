@@ -2239,10 +2239,15 @@ public class CasBlobGc {
                 normalizeKey(ReusableCoverageManifest.managedUri(managedPrefix, artifact)));
           }
         },
+        shardUri -> {
+          checkDeadline();
+          referenced.add(normalizeKey(shardUri));
+        },
         next -> state.nextRecord.put(uri, next),
         accountId,
         tableId,
-        snapshotId);
+        snapshotId,
+        managedPrefix);
     state.nextRecord.remove(uri);
     state.completed.add(uri);
   }

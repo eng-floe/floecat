@@ -576,21 +576,27 @@ enum SnapshotCaptureManifestKind {
   SCMK_OWNER_V2 = 2;
 }
 
-// Descriptor for the external fixed-record reuse manifest. Committed chunks consist only of
-// sorted 80-byte records and align on record boundaries.
+// Descriptor for the external fixed-record index of file-group reuse shards. Index records are
+// emitted in Owner planning order; neither the index nor coverage records are globally sorted.
+// Each index record identifies one immutable shard by the file group's planner-coverage ID and
+// the shard payload digest. Shard URIs are derived below the table reusable-object prefix.
 message ReusableCoverageManifestRef {
   uint32 format_version = 1;
+  // External fixed-record shard index.
   string uri = 2;
   uint64 payload_bytes = 3;
-  // Informational whole-payload digest. Bounded verification and URI identity use
-  // commitment_index, so Floecat does not reread the complete payload.
+  // Informational whole-index digest. Bounded verification and URI identity use commitment_index.
   bytes payload_sha256 = 4;
-  uint64 entry_count = 5;
-  uint32 record_bytes = 6;
-  // SHA-256 of the canonical table-level external-sidecar prefix. Present exactly when records
-  // use external sidecar storage, so a changed prefix deterministically disables their reuse.
+  uint64 shard_count = 5;
+  uint32 shard_index_record_bytes = 6;
+  // SHA-256 of the canonical table-level external-sidecar prefix. Present exactly when at least
+  // one shard contains external-sidecar records.
   bytes external_sidecar_storage_sha256 = 7;
   ExternalManifestCommitmentIndexRef commitment_index = 8;
+  // Exact physical record count summed across all shards. Coverage IDs may legitimately occur in
+  // more than one shard when file groups share a delete artifact.
+  uint64 coverage_entry_count = 9;
+  uint32 shard_record_bytes = 10;
 }
 
 // Immutable publication unit produced by the snapshot-finalize executor after it has verified all
@@ -645,8 +651,8 @@ message SnapshotCaptureManifest {
   // registration stream below so the compact capture manifest remains cheap to fetch and parse.
   repeated StatsObjectDescriptor file_stats = 34;
   repeated StatsObjectDescriptor index_artifacts = 35;
-  // Complete current reusable state for an Owner-managed v2 generation. The referenced records
-  // are sorted by coverage ID; snapshot-bound index wrappers are regenerated.
+  // Complete current reusable state for an Owner-managed v2 generation. The root references one
+  // bounded coverage shard per file group; snapshot-bound index wrappers are regenerated.
   ReusableCoverageManifestRef reusable_coverage_manifest = 36;
   SnapshotCaptureManifestKind manifest_kind = 37;
   // Deprecated inline Owner-v2 registration shape. Production rejects it; registration is

@@ -2136,21 +2136,27 @@ class CasBlobGcTest {
     byte[] reusableBytes = reusable.array();
     byte[] reusableDigest =
         java.security.MessageDigest.getInstance("SHA-256").digest(reusableBytes);
+    byte[] shardKey = java.util.HexFormat.of().parseHex("02".repeat(32));
+    var reusableRoot = java.nio.ByteBuffer.allocate(80).order(java.nio.ByteOrder.BIG_ENDIAN);
+    reusableRoot.put(shardKey).put(reusableDigest).putLong(reusableBytes.length).putLong(1L);
+    byte[] reusableRootBytes = reusableRoot.array();
+    byte[] reusableRootDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(reusableRootBytes);
     byte[] reusableIndexBytes =
         ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndex.newBuilder()
             .setFormatVersion(1)
             .setDomain(
                 ai.floedb.floecat.reconciler.rpc.ExternalManifestDomain.EMD_REUSABLE_COVERAGE)
-            .setPayloadBytes(reusableBytes.length)
+            .setPayloadBytes(reusableRootBytes.length)
             .setRecordCount(1L)
             .setChunkSizeLimit(8L * 1024L * 1024L)
             .setFixedRecordBytes(80)
             .addChunks(
                 ai.floedb.floecat.reconciler.rpc.ExternalManifestChunkCommitment.newBuilder()
                     .setPayloadOffset(0L)
-                    .setPayloadBytes(reusableBytes.length)
+                    .setPayloadBytes(reusableRootBytes.length)
                     .setRecordCount(1L)
-                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(reusableDigest)))
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(reusableRootDigest)))
             .build()
             .toByteArray();
     byte[] reusableIndexDigest =
@@ -2164,10 +2170,18 @@ class CasBlobGcTest {
             java.util.HexFormat.of().formatHex(reusableIndexDigest));
     String reusableUri =
         Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L)
-            + "reuse-"
+            + "reuse-index-"
             + java.util.HexFormat.of().formatHex(reusableIndexDigest)
             + ".bin";
-    blobs.put(reusableUri, reusableBytes, "application/octet-stream");
+    String reusableShardUri =
+        Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID)
+            + "coverage-shards/"
+            + java.util.HexFormat.of().formatHex(shardKey)
+            + "-"
+            + java.util.HexFormat.of().formatHex(reusableDigest)
+            + ".bin";
+    blobs.put(reusableUri, reusableRootBytes, "application/octet-stream");
+    blobs.put(reusableShardUri, reusableBytes, "application/octet-stream");
     blobs.put(reusableIndexUri, reusableIndexBytes, "application/x-protobuf");
     byte[] registrationBytes = "registration".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     byte[] registrationDigest =
@@ -2216,10 +2230,12 @@ class CasBlobGcTest {
                 ai.floedb.floecat.reconciler.rpc.ReusableCoverageManifestRef.newBuilder()
                     .setFormatVersion(1)
                     .setUri(reusableUri)
-                    .setPayloadBytes(reusableBytes.length)
-                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(reusableDigest))
-                    .setEntryCount(1)
-                    .setRecordBytes(80)
+                    .setPayloadBytes(reusableRootBytes.length)
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(reusableRootDigest))
+                    .setShardCount(1)
+                    .setShardIndexRecordBytes(80)
+                    .setCoverageEntryCount(1)
+                    .setShardRecordBytes(80)
                     .setCommitmentIndex(
                         ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndexRef
                             .newBuilder()

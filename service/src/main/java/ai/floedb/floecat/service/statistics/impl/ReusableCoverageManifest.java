@@ -1,10 +1,8 @@
 /*
  * Copyright 2026 Yellowbrick Data, Inc.
- *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  */
-
 package ai.floedb.floecat.service.statistics.impl;
 
 import ai.floedb.floecat.reconciler.rpc.ExternalManifestChunkCommitment;
@@ -16,24 +14,26 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.Arrays;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 
-/** Reader for the Owner v2 sorted, fixed-width reusable coverage manifest. */
+/** Reader for the Owner v2 fixed-width index of independently committed file-group shards. */
 public final class ReusableCoverageManifest {
   public static final int FORMAT_VERSION = 1;
   public static final int RECORD_BYTES = 80;
+  public static final int SHARD_INDEX_RECORD_BYTES = 80;
   private static final int STORAGE_MANAGED = 0;
   private static final int STORAGE_EXTERNAL_SIDECAR = 1;
 
-  public record Batch(
-      java.util.List<Record> records,
-      long recordCount,
-      byte[] firstCoverageId,
-      byte[] lastCoverageId,
-      boolean sawExternalSidecar) {}
+  public record Batch(List<ShardReference> shards, long shardCount, long coverageEntryCount) {}
+
+  public record ShardReference(
+      byte[] shardKey, byte[] payloadSha256, long payloadBytes, long entryCount) {}
 
   public record Record(
       byte[] coverageId,
@@ -51,67 +51,65 @@ public final class ReusableCoverageManifest {
   public static void walkTrusted(
       BlobStore blobs,
       ReusableCoverageManifestRef descriptor,
-      long firstRecord,
+      long firstShard,
       Consumer<Record> consumer,
+      Consumer<String> shardRoot,
       LongConsumer chunkComplete,
       String accountId,
       String tableId,
-      long snapshotId) {
-    walkCommitted(
-        blobs, descriptor, firstRecord, consumer, chunkComplete, accountId, tableId, snapshotId);
-  }
-
-  private static void walkCommitted(
-      BlobStore blobs,
-      ReusableCoverageManifestRef descriptor,
-      long firstRecord,
-      Consumer<Record> consumer,
-      LongConsumer chunkComplete,
-      String accountId,
-      String tableId,
-      long snapshotId) {
+      long snapshotId,
+      String reusablePrefix) {
     ExternalManifestCommitmentIndex index =
-        ExternalManifestCommitments.load(
-            blobs,
-            descriptor.getCommitmentIndex(),
-            ExternalManifestDomain.EMD_REUSABLE_COVERAGE,
-            accountId,
-            tableId,
-            snapshotId,
-            descriptor.getPayloadBytes(),
-            descriptor.getEntryCount(),
-            0L,
-            0L,
-            0L,
-            RECORD_BYTES,
-            OwnerArtifactRegistrationManifest.HARD_MAX_READ_BYTES,
-            OwnerArtifactRegistrationManifest.HARD_MAX_READ_BYTES / RECORD_BYTES,
-            0);
-    long record = 0L;
-    byte[] prior = null;
-    boolean foundCursor = firstRecord == 0L;
+        loadIndex(blobs, descriptor, accountId, tableId, snapshotId);
+    long shard = 0L;
+    boolean foundCursor = firstShard == 0L;
     for (ExternalManifestChunkCommitment commitment : index.getChunksList()) {
-      if (record == firstRecord) {
+      if (shard == firstShard) {
         foundCursor = true;
       }
-      if (record >= firstRecord) {
+      if (shard >= firstShard) {
         Batch batch = readCommittedChunk(blobs, descriptor, commitment);
-        if (prior != null && Arrays.compareUnsigned(prior, batch.firstCoverageId()) >= 0) {
-          throw new IllegalArgumentException("reusable coverage manifest is not strictly sorted");
+        for (ShardReference reference : batch.shards()) {
+          String uri = shardUri(reusablePrefix, reference);
+          shardRoot.accept(uri);
+          for (Record record : readShard(blobs, descriptor, reference, uri)) {
+            consumer.accept(record);
+          }
         }
-        for (Record value : batch.records()) {
-          consumer.accept(value);
-        }
-        prior = batch.lastCoverageId();
-        record += commitment.getRecordCount();
-        chunkComplete.accept(record);
+        shard += batch.shardCount();
+        chunkComplete.accept(shard);
       } else {
-        record += commitment.getRecordCount();
+        shard += commitment.getRecordCount();
       }
     }
-    if (!foundCursor || record != descriptor.getEntryCount()) {
-      throw new IllegalArgumentException("reusable coverage manifest cursor is not chunk aligned");
+    if (!foundCursor || shard != descriptor.getShardCount()) {
+      throw new IllegalArgumentException("reusable coverage shard-index cursor is not aligned");
     }
+  }
+
+  public static ExternalManifestCommitmentIndex loadIndex(
+      BlobStore blobs,
+      ReusableCoverageManifestRef descriptor,
+      String accountId,
+      String tableId,
+      long snapshotId) {
+    validateDescriptor(descriptor);
+    return ExternalManifestCommitments.load(
+        blobs,
+        descriptor.getCommitmentIndex(),
+        ExternalManifestDomain.EMD_REUSABLE_COVERAGE,
+        accountId,
+        tableId,
+        snapshotId,
+        descriptor.getPayloadBytes(),
+        descriptor.getShardCount(),
+        0L,
+        0L,
+        0L,
+        SHARD_INDEX_RECORD_BYTES,
+        OwnerArtifactRegistrationManifest.HARD_MAX_READ_BYTES,
+        OwnerArtifactRegistrationManifest.HARD_MAX_READ_BYTES / SHARD_INDEX_RECORD_BYTES,
+        0);
   }
 
   public static Batch readCommittedChunk(
@@ -121,34 +119,24 @@ public final class ReusableCoverageManifest {
     validateDescriptor(descriptor);
     byte[] chunk =
         ExternalManifestCommitments.readVerifiedChunk(blobs, descriptor.getUri(), commitment);
-    if (chunk.length % RECORD_BYTES != 0
-        || chunk.length / RECORD_BYTES != commitment.getRecordCount()) {
-      throw new IllegalArgumentException("reusable coverage chunk is not record aligned");
+    if (chunk.length % SHARD_INDEX_RECORD_BYTES != 0
+        || chunk.length / SHARD_INDEX_RECORD_BYTES != commitment.getRecordCount()) {
+      throw new IllegalArgumentException("reusable coverage shard-index chunk is not aligned");
     }
     ByteBuffer records = ByteBuffer.wrap(chunk).order(ByteOrder.BIG_ENDIAN);
-    java.util.List<Record> decoded =
+    List<ShardReference> decoded =
         new java.util.ArrayList<>(Math.toIntExact(commitment.getRecordCount()));
-    byte[] firstCoverage = null;
-    byte[] prior = null;
-    boolean sawExternalSidecar = false;
+    HashSet<String> shardKeys = new HashSet<>();
+    long coverageEntries = 0L;
     while (records.hasRemaining()) {
-      Record record = decodeRecord(records, descriptor);
-      if (prior != null && Arrays.compareUnsigned(prior, record.coverageId()) >= 0) {
-        throw new IllegalArgumentException("reusable coverage manifest is not strictly sorted");
+      ShardReference reference = decodeShardReference(records);
+      if (!shardKeys.add(HexFormat.of().formatHex(reference.shardKey()))) {
+        throw new IllegalArgumentException("duplicate reusable coverage shard key");
       }
-      if (firstCoverage == null) {
-        firstCoverage = record.coverageId();
-      }
-      prior = record.coverageId();
-      sawExternalSidecar |= record.externalSidecar();
-      decoded.add(record);
+      coverageEntries = Math.addExact(coverageEntries, reference.entryCount());
+      decoded.add(reference);
     }
-    return new Batch(
-        java.util.List.copyOf(decoded),
-        decoded.size(),
-        firstCoverage == null ? new byte[0] : firstCoverage,
-        prior == null ? new byte[0] : prior,
-        sawExternalSidecar);
+    return new Batch(List.copyOf(decoded), decoded.size(), coverageEntries);
   }
 
   public static boolean hasContentAddressedUri(
@@ -156,10 +144,9 @@ public final class ReusableCoverageManifest {
     byte[] identity = descriptor.getCommitmentIndex().getPayloadSha256().toByteArray();
     return descriptor
         .getUri()
-        .equals(requiredPrefix + "reuse-" + HexFormat.of().formatHex(identity) + ".bin");
+        .equals(requiredPrefix + "reuse-index-" + HexFormat.of().formatHex(identity) + ".bin");
   }
 
-  /** Validates descriptor metadata without fetching the manifest or any registered artifact. */
   public static boolean hasValidDescriptor(ReusableCoverageManifestRef descriptor) {
     try {
       validateDescriptor(descriptor);
@@ -169,13 +156,22 @@ public final class ReusableCoverageManifest {
     }
   }
 
+  public static String shardUri(String prefix, ShardReference reference) {
+    return prefix
+        + "coverage-shards/"
+        + HexFormat.of().formatHex(reference.shardKey())
+        + "-"
+        + HexFormat.of().formatHex(reference.payloadSha256())
+        + ".bin";
+  }
+
   public static String managedUri(String prefix, Record record) {
     String directory =
         switch (record.outputFamily()) {
-          case ROF_PLANNER_STATISTICS -> "statistics/planner/";
-          case ROF_FILE_STATISTICS -> "statistics/files/";
-          case ROF_FILE_RANGE_SIDECAR -> "sidecars/file-range/";
-          case ROF_PAGE_GROUP_RANGE_SIDECAR -> "sidecars/page-group-range/";
+          case ROF_PLANNER_STATISTICS -> "statistics/planner";
+          case ROF_FILE_STATISTICS -> "statistics/files";
+          case ROF_FILE_RANGE_SIDECAR -> "sidecars/file-range";
+          case ROF_PAGE_GROUP_RANGE_SIDECAR -> "sidecars/page-group-range";
           default -> throw new IllegalArgumentException("output family is not reusable");
         };
     String suffix =
@@ -184,17 +180,41 @@ public final class ReusableCoverageManifest {
             ? ".pb"
             : ".parquet";
     return Keys.ownerReusableArtifactBlobUri(
-        prefix,
-        directory.substring(0, directory.length() - 1),
-        HexFormat.of().formatHex(record.coverageId()),
-        suffix);
+        prefix, directory, HexFormat.of().formatHex(record.coverageId()), suffix);
+  }
+
+  private static List<Record> readShard(
+      BlobStore blobs,
+      ReusableCoverageManifestRef descriptor,
+      ShardReference reference,
+      String uri) {
+    byte[] payload = blobs.get(uri);
+    long expectedBytes = Math.multiplyExact(reference.entryCount(), (long) RECORD_BYTES);
+    if (payload == null
+        || reference.payloadBytes() != expectedBytes
+        || payload.length != expectedBytes
+        || !MessageDigest.isEqual(sha256(payload), reference.payloadSha256())) {
+      throw new IllegalArgumentException("reusable coverage shard does not match its commitment");
+    }
+    ByteBuffer records = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
+    List<Record> decoded = new java.util.ArrayList<>(Math.toIntExact(reference.entryCount()));
+    HashSet<String> coverageIds = new HashSet<>();
+    while (records.hasRemaining()) {
+      Record record = decodeRecord(records, descriptor);
+      if (!coverageIds.add(HexFormat.of().formatHex(record.coverageId()))) {
+        throw new IllegalArgumentException("duplicate coverage ID within reuse shard");
+      }
+      decoded.add(record);
+    }
+    return List.copyOf(decoded);
   }
 
   private static void validateDescriptor(ReusableCoverageManifestRef descriptor) {
-    long expected = Math.multiplyExact(descriptor.getEntryCount(), (long) RECORD_BYTES);
+    long expected = Math.multiplyExact(descriptor.getShardCount(), (long) SHARD_INDEX_RECORD_BYTES);
     if (descriptor.getFormatVersion() != FORMAT_VERSION
         || !descriptor.hasCommitmentIndex()
-        || descriptor.getRecordBytes() != RECORD_BYTES
+        || descriptor.getShardIndexRecordBytes() != SHARD_INDEX_RECORD_BYTES
+        || descriptor.getShardRecordBytes() != RECORD_BYTES
         || descriptor.getPayloadBytes() != expected
         || descriptor.getPayloadSha256().size() != 32
         || (descriptor.getExternalSidecarStorageSha256().size() != 0
@@ -202,6 +222,19 @@ public final class ReusableCoverageManifest {
         || descriptor.getUri().isBlank()) {
       throw new IllegalArgumentException("invalid reusable coverage manifest descriptor");
     }
+  }
+
+  private static ShardReference decodeShardReference(ByteBuffer records) {
+    byte[] shardKey = new byte[32];
+    byte[] payloadDigest = new byte[32];
+    records.get(shardKey);
+    records.get(payloadDigest);
+    long payloadBytes = records.getLong();
+    long entryCount = records.getLong();
+    if (entryCount <= 0L || payloadBytes != Math.multiplyExact(entryCount, (long) RECORD_BYTES)) {
+      throw new IllegalArgumentException("invalid reusable coverage shard reference");
+    }
+    return new ShardReference(shardKey, payloadDigest, payloadBytes, entryCount);
   }
 
   private static Record decodeRecord(ByteBuffer records, ReusableCoverageManifestRef descriptor) {
@@ -231,5 +264,13 @@ public final class ReusableCoverageManifest {
       throw new IllegalArgumentException("external sidecar storage identity is missing");
     }
     return new Record(coverage, family, payloadBytes, payloadDigest, storageSpace);
+  }
+
+  private static byte[] sha256(byte[] bytes) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(bytes);
+    } catch (NoSuchAlgorithmException error) {
+      throw new IllegalStateException("SHA-256 unavailable", error);
+    }
   }
 }

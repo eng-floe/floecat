@@ -56,7 +56,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -373,9 +372,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                 Math.addExact(progress.fileStatsTargetCount(), batch.fileStatsTargetCount()),
                 Math.addExact(progress.indexTargetCount(), batch.indexTargetCount()),
                 Math.addExact(
-                    progress.aggregateStatsTargetCount(), batch.aggregateStatsTargetCount()),
-                progress.lastCoverageId(),
-                progress.sawExternalSidecar());
+                    progress.aggregateStatsTargetCount(), batch.aggregateStatsTargetCount()));
         if (nextProgress.registrationChunk() == registration.getCommitmentIndex().getChunkCount()) {
           requireRegistrationTotals(registration, nextProgress);
         }
@@ -396,22 +393,8 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       ReusableCoverageManifest.Batch batch;
       try {
         ExternalManifestCommitmentIndex commitments =
-            ExternalManifestCommitments.load(
-                blobStore,
-                coverage.getCommitmentIndex(),
-                ExternalManifestDomain.EMD_REUSABLE_COVERAGE,
-                tableId.getAccountId(),
-                tableId.getId(),
-                snapshotId,
-                coverage.getPayloadBytes(),
-                coverage.getEntryCount(),
-                0L,
-                0L,
-                0L,
-                ReusableCoverageManifest.RECORD_BYTES,
-                registrationBatchBytes,
-                registrationBatchBytes / ReusableCoverageManifest.RECORD_BYTES,
-                0);
+            ReusableCoverageManifest.loadIndex(
+                blobStore, coverage, tableId.getAccountId(), tableId.getId(), snapshotId);
         batch =
             ReusableCoverageManifest.readCommittedChunk(
                 blobStore,
@@ -420,25 +403,17 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       } catch (IllegalArgumentException error) {
         throw invalidManifest();
       }
-      if (!progress.lastCoverageId().isEmpty()
-          && Arrays.compareUnsigned(
-                  progress.lastCoverageId().toByteArray(), batch.firstCoverageId())
-              >= 0) {
-        throw invalidManifest();
-      }
       OwnerReuseLeaseRepository.RegistrationProgress nextProgress;
       try {
         nextProgress =
             new OwnerReuseLeaseRepository.RegistrationProgress(
                 progress.registrationChunk(),
                 Math.addExact(progress.coverageChunk(), 1L),
-                Math.addExact(progress.coverageRecordCount(), batch.recordCount()),
+                Math.addExact(progress.coverageRecordCount(), batch.coverageEntryCount()),
                 progress.objectCount(),
                 progress.fileStatsTargetCount(),
                 progress.indexTargetCount(),
-                progress.aggregateStatsTargetCount(),
-                com.google.protobuf.ByteString.copyFrom(batch.lastCoverageId()),
-                progress.sawExternalSidecar() || batch.sawExternalSidecar());
+                progress.aggregateStatsTargetCount());
       } catch (ArithmeticException error) {
         throw invalidManifest();
       }
@@ -589,9 +564,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
               progress.objectCount(),
               progress.fileStatsTargetCount(),
               progress.indexTargetCount(),
-              progress.aggregateStatsTargetCount(),
-              progress.lastCoverageId(),
-              progress.sawExternalSidecar());
+              progress.aggregateStatsTargetCount());
     } else {
       predecessor =
           new OwnerReuseLeaseRepository.RegistrationProgress(
@@ -601,9 +574,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
               progress.objectCount(),
               progress.fileStatsTargetCount(),
               progress.indexTargetCount(),
-              progress.aggregateStatsTargetCount(),
-              progress.lastCoverageId(),
-              progress.sawExternalSidecar());
+              progress.aggregateStatsTargetCount());
     }
     String previous =
         predecessor.registrationChunk() == 0L && predecessor.coverageChunk() == 0L
@@ -646,9 +617,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
   private void requireCoverageTotals(
       ai.floedb.floecat.reconciler.rpc.ReusableCoverageManifestRef descriptor,
       OwnerReuseLeaseRepository.RegistrationProgress progress) {
-    if (progress.coverageRecordCount() != descriptor.getEntryCount()
-        || progress.sawExternalSidecar()
-            != (descriptor.getExternalSidecarStorageSha256().size() == 32)) {
+    if (progress.coverageRecordCount() != descriptor.getCoverageEntryCount()) {
       throw invalidManifest();
     }
   }

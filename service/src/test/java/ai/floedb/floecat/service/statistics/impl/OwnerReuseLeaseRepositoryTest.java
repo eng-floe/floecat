@@ -81,9 +81,7 @@ class OwnerReuseLeaseRepositoryTest {
   @Test
   void progressIsDurableMonotonicAndBoundToOneCaptureManifest() {
     var initial = OwnerReuseLeaseRepository.RegistrationProgress.initial();
-    var complete =
-        new OwnerReuseLeaseRepository.RegistrationProgress(
-            1L, 0L, 0L, 2L, 3L, 4L, 5L, ByteString.EMPTY, false);
+    var complete = new OwnerReuseLeaseRepository.RegistrationProgress(1L, 0L, 0L, 2L, 3L, 4L, 5L);
     assertThat(repository.progress(TABLE, PUBLICATION, "aa")).isEqualTo(initial);
 
     repository.advanceProgress(TABLE, PUBLICATION, "aa", initial, complete);
@@ -92,9 +90,7 @@ class OwnerReuseLeaseRepositoryTest {
     assertThat(repository.progress(TABLE, PUBLICATION, "aa")).isEqualTo(complete);
     assertThatThrownBy(() -> repository.progress(TABLE, PUBLICATION, "bb"))
         .isInstanceOf(IllegalArgumentException.class);
-    var later =
-        new OwnerReuseLeaseRepository.RegistrationProgress(
-            2L, 0L, 0L, 3L, 4L, 5L, 6L, ByteString.EMPTY, false);
+    var later = new OwnerReuseLeaseRepository.RegistrationProgress(2L, 0L, 0L, 3L, 4L, 5L, 6L);
     assertThatThrownBy(() -> repository.advanceProgress(TABLE, PUBLICATION, "aa", initial, later))
         .isInstanceOf(RuntimeException.class);
   }
@@ -103,9 +99,7 @@ class OwnerReuseLeaseRepositoryTest {
   void releaseRemovesLeaseAndProgress() {
     repository.acquire(TABLE, PUBLICATION, CAPTURE_PREFIX, null);
     var initial = OwnerReuseLeaseRepository.RegistrationProgress.initial();
-    var complete =
-        new OwnerReuseLeaseRepository.RegistrationProgress(
-            1L, 0L, 0L, 2L, 3L, 4L, 5L, ByteString.EMPTY, false);
+    var complete = new OwnerReuseLeaseRepository.RegistrationProgress(1L, 0L, 0L, 2L, 3L, 4L, 5L);
     repository.advanceProgress(TABLE, PUBLICATION, "aa", initial, complete);
 
     repository.release(TABLE, PUBLICATION);
@@ -127,8 +121,7 @@ class OwnerReuseLeaseRepositoryTest {
         PUBLICATION,
         "aa",
         OwnerReuseLeaseRepository.RegistrationProgress.initial(),
-        new OwnerReuseLeaseRepository.RegistrationProgress(
-            1L, 0L, 0L, 1L, 0L, 0L, 1L, ByteString.EMPTY, false));
+        new OwnerReuseLeaseRepository.RegistrationProgress(1L, 0L, 0L, 1L, 0L, 0L, 1L));
     now.set(1_100L);
 
     assertThatThrownBy(() -> repository.renew(TABLE, PUBLICATION, null))
