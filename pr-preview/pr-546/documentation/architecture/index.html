@@ -418,9 +418,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#table-roots-query-pinning-and-snapshot-visibility" class="md-nav__link">
+  <a href="#table-roots-coherent-snapshot-selection-and-snapshot-visibility" class="md-nav__link">
     <span class="md-ellipsis">
-      Table roots, query pinning, and snapshot visibility
+      Table roots, coherent snapshot selection, and snapshot visibility
     </span>
   </a>
   
@@ -1720,9 +1720,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#table-roots-query-pinning-and-snapshot-visibility" class="md-nav__link">
+  <a href="#table-roots-coherent-snapshot-selection-and-snapshot-visibility" class="md-nav__link">
     <span class="md-ellipsis">
-      Table roots, query pinning, and snapshot visibility
+      Table roots, coherent snapshot selection, and snapshot visibility
     </span>
   </a>
   
@@ -1807,18 +1807,20 @@ Views, Snapshots, statistics, and query-lifecycle artifacts.</p>
   <code>/accounts/{account_id}/catalogs/by-name/{name}</code> and
   <code>/accounts/{account_id}/tables/{table_id}/snapshots/by-id/{snapshot_id}</code>.</li>
 </ul>
-<h3 id="table-roots-query-pinning-and-snapshot-visibility">Table roots, query pinning, and snapshot visibility<a class="headerlink" href="#table-roots-query-pinning-and-snapshot-visibility" title="Permanent link">&para;</a></h3>
+<h3 id="table-roots-coherent-snapshot-selection-and-snapshot-visibility">Table roots, coherent snapshot selection, and snapshot visibility<a class="headerlink" href="#table-roots-coherent-snapshot-selection-and-snapshot-visibility" title="Permanent link">&para;</a></h3>
 <p>Per table, the two primitives compose into an immutable <strong><code>TableRoot</code></strong>: a content-addressed root
 blob referencing a chain of immutable snapshot-manifest pages, with a single CAS'd pointer per
 table naming the current root. Every writer publishes through <code>TableRootCommitter</code> — the single
 owner of every root mutation — which reads the current root, applies the caller's mutator, writes
 the new root blob, and CASes the pointer; a lost CAS re-runs the mutator against the winner's root
 so concurrent commits merge instead of clobbering.</p>
-<p>Queries read through <strong>pins</strong>: a <code>TablePin</code> copies the refs it needs (definition, snapshot,
-constraints, stats generation) out of one root at resolution time, so every later schema, scan,
-stats, and constraints read in that query is coherent by construction. Pinned blobs are GC-rooted
-for the query's lifetime — a pin protects its root's whole reference chain even after the current
-pointer moves past it.</p>
+<p>Queries resolve one coherent snapshot selection: <code>TablePin</code> copies the refs it needs (definition,
+snapshot, constraints, stats generation) out of one root at resolution time, so every later schema,
+scan, stats, and constraints read in that query is coherent by construction. This selection is
+process-local query state, not a GC root or lifetime lease. Retention controls which snapshots new
+queries may select; explicit deletion or later collection can make an already-selected snapshot
+unavailable. Such a query fails with the snapshot-unavailable error, and Core replans only when the
+original query semantics allow a different selection.</p>
 <p>Snapshot visibility is gated at <strong>read time</strong> (<code>StatsVisibilityGate</code>): registration and resync
 advance the root's <code>current_snapshot_id</code> freely, but when the stats store tracks generations a
 manifest entry without its <code>stats_generation_ref</code> is not yet query-visible — a read or pin resolves
@@ -1929,7 +1931,7 @@ Account deletion removes overlays before integrations and catalogs.</p>
    and optional query leases before hitting service implementations.</li>
 <li><strong>Repositories</strong> translate RPCs into pointer/blob mutations, enforce optimistic concurrency, and
    update idempotency records.</li>
-<li><strong>Query lifecycle RPCs</strong> hand planners lease descriptors (snapshot pins, obligations) plus any
+<li><strong>Query lifecycle RPCs</strong> hand planners query descriptors (snapshot selections, obligations) plus any
    connector-provided scan metadata needed before execution.</li>
 </ol>
 <h2 id="consistency-model-current">Consistency Model (Current)<a class="headerlink" href="#consistency-model-current" title="Permanent link">&para;</a></h2>

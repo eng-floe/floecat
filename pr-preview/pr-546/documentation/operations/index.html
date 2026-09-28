@@ -565,6 +565,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#account-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      Account lifecycle
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#telemetry-hub-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       Telemetry hub configuration
@@ -1867,6 +1876,15 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#account-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      Account lifecycle
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#telemetry-hub-configuration" class="md-nav__link">
     <span class="md-ellipsis">
       Telemetry hub configuration
@@ -2200,6 +2218,13 @@ cross-lane fallback: an accepted intent remains owned by the exact lane recorded
   ship spans to a collector. See <a href="https://github.com/eng-floe/floecat/blob/main/examples/telemetry/telemetry-demo.md"><code>telemetry-demo.md</code></a>
   for the full Prometheus + Tempo + Loki + Grafana demo stack.</li>
 </ul>
+<h3 id="account-lifecycle">Account lifecycle<a class="headerlink" href="#account-lifecycle" title="Permanent link">&para;</a></h3>
+<p>The default Floecat process serves every account. Deployments may bind a different
+<code>AccountScope</code>/ownership implementation when they need account admission or lease coordination.
+Query contexts and object caches are local optimizations; retention-based snapshot visibility and
+account-scoped GC determine whether durable data can be used or collected. A pod can therefore be
+restarted without a Floecat drain protocol: Core stops routing new work to the old pod and retries
+queries whose local context was lost.</p>
 <h3 id="telemetry-hub-configuration">Telemetry hub configuration<a class="headerlink" href="#telemetry-hub-configuration" title="Permanent link">&para;</a></h3>
 <p>The service uses the telemetry hub core + Micrometer backend. The following flags are available in
 <code>service/src/main/resources/application.properties</code> (the <code>telemetry-otlp</code> profile toggles OTLP tracing/log exports):</p>
