@@ -19,7 +19,6 @@ package ai.floedb.floecat.service.query.impl;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
-import ai.floedb.floecat.catalog.rpc.SchemaServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableStatisticsServiceGrpc;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -83,9 +82,6 @@ public class QueryServiceImpl extends BaseServiceImpl implements QueryService {
 
   @GrpcClient("floecat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
-
-  @GrpcClient("floecat")
-  SchemaServiceGrpc.SchemaServiceBlockingStub schemas;
 
   @GrpcClient("floecat")
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub stats;
