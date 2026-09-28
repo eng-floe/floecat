@@ -26,14 +26,22 @@ import java.util.function.LongConsumer;
 public final class ReusableCoverageManifest {
   public static final int FORMAT_VERSION = 1;
   public static final int RECORD_BYTES = 80;
-  public static final int SHARD_INDEX_RECORD_BYTES = 80;
+  public static final int SHARD_INDEX_RECORD_BYTES = 192;
   private static final int STORAGE_MANAGED = 0;
   private static final int STORAGE_EXTERNAL_SIDECAR = 1;
 
   public record Batch(List<ShardReference> shards, long shardCount, long coverageEntryCount) {}
 
   public record ShardReference(
-      byte[] shardKey, byte[] payloadSha256, long payloadBytes, long entryCount) {}
+      byte[] shardKey,
+      byte[] payloadSha256,
+      long payloadBytes,
+      long entryCount,
+      byte[] plannerStatisticsPayloadSha256,
+      long plannerStatisticsPayloadBytes,
+      byte[] sidecarFormatsSha256,
+      byte[] groupLayoutPayloadSha256,
+      long groupLayoutPayloadBytes) {}
 
   public record Record(
       byte[] coverageId,
@@ -72,6 +80,7 @@ public final class ReusableCoverageManifest {
         for (ShardReference reference : batch.shards()) {
           String uri = shardUri(reusablePrefix, reference);
           shardRoot.accept(uri);
+          shardRoot.accept(groupLayoutUri(reusablePrefix, reference));
           for (Record record : readShard(blobs, descriptor, reference, uri)) {
             consumer.accept(record);
           }
@@ -165,6 +174,15 @@ public final class ReusableCoverageManifest {
         + ".bin";
   }
 
+  public static String groupLayoutUri(String prefix, ShardReference reference) {
+    return prefix
+        + "group-layouts/"
+        + HexFormat.of().formatHex(reference.shardKey())
+        + "-"
+        + HexFormat.of().formatHex(reference.groupLayoutPayloadSha256())
+        + ".bin";
+  }
+
   public static String managedUri(String prefix, Record record) {
     String directory =
         switch (record.outputFamily()) {
@@ -227,14 +245,34 @@ public final class ReusableCoverageManifest {
   private static ShardReference decodeShardReference(ByteBuffer records) {
     byte[] shardKey = new byte[32];
     byte[] payloadDigest = new byte[32];
+    byte[] plannerStatisticsPayloadDigest = new byte[32];
+    byte[] sidecarFormatsDigest = new byte[32];
+    byte[] groupLayoutPayloadDigest = new byte[32];
     records.get(shardKey);
     records.get(payloadDigest);
     long payloadBytes = records.getLong();
     long entryCount = records.getLong();
-    if (entryCount <= 0L || payloadBytes != Math.multiplyExact(entryCount, (long) RECORD_BYTES)) {
+    records.get(plannerStatisticsPayloadDigest);
+    long plannerStatisticsPayloadBytes = records.getLong();
+    records.get(sidecarFormatsDigest);
+    records.get(groupLayoutPayloadDigest);
+    long groupLayoutPayloadBytes = records.getLong();
+    if (entryCount <= 0L
+        || payloadBytes != Math.multiplyExact(entryCount, (long) RECORD_BYTES)
+        || plannerStatisticsPayloadBytes <= 0L
+        || groupLayoutPayloadBytes <= 0L) {
       throw new IllegalArgumentException("invalid reusable coverage shard reference");
     }
-    return new ShardReference(shardKey, payloadDigest, payloadBytes, entryCount);
+    return new ShardReference(
+        shardKey,
+        payloadDigest,
+        payloadBytes,
+        entryCount,
+        plannerStatisticsPayloadDigest,
+        plannerStatisticsPayloadBytes,
+        sidecarFormatsDigest,
+        groupLayoutPayloadDigest,
+        groupLayoutPayloadBytes);
   }
 
   private static Record decodeRecord(ByteBuffer records, ReusableCoverageManifestRef descriptor) {

@@ -389,7 +389,7 @@ class OwnerPublicationServiceImplTest {
         .getRange(
             org.mockito.ArgumentMatchers.eq(manifest.getReusableCoverageManifest().getUri()),
             eq(0L),
-            eq(coverage.length));
+            eq(Math.toIntExact(manifest.getReusableCoverageManifest().getPayloadBytes())));
   }
 
   @Test
@@ -431,10 +431,10 @@ class OwnerPublicationServiceImplTest {
         .advanceProgress(any(), anyString(), anyString(), any(), progress.capture());
     when(service.reuseLeases.progress(any(), anyString(), anyString()))
         .thenReturn(progress.getValue());
-    byte[] corrupt = coverage.clone();
+    byte[] corrupt = EXTERNAL_OBJECTS.get(manifest.getReusableCoverageManifest().getUri()).clone();
     corrupt[0] ^= 1;
     when(service.blobStore.getRange(
-            manifest.getReusableCoverageManifest().getUri(), 0L, coverage.length))
+            manifest.getReusableCoverageManifest().getUri(), 0L, corrupt.length))
         .thenReturn(corrupt);
 
     var error =
@@ -1153,6 +1153,14 @@ class OwnerPublicationServiceImplTest {
       indexRecord.put(shardDigest);
       indexRecord.putLong(payload.length);
       indexRecord.putLong(coverageCount);
+      indexRecord.put(sha256(new byte[] {1}));
+      indexRecord.putLong(1L);
+      indexRecord.put(
+          sha256("sidecar-formats-v1".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+      byte[] groupLayout = new byte[] {3};
+      byte[] groupLayoutDigest = sha256(groupLayout);
+      indexRecord.put(groupLayoutDigest);
+      indexRecord.putLong(groupLayout.length);
       shardIndex = indexRecord.array();
       String shardUri =
           Keys.tableReusableArtifactBlobPrefix(tableId().getAccountId(), tableId().getId())
@@ -1162,6 +1170,14 @@ class OwnerPublicationServiceImplTest {
               + java.util.HexFormat.of().formatHex(shardDigest)
               + ".bin";
       EXTERNAL_OBJECTS.put(shardUri, payload);
+      String groupLayoutUri =
+          Keys.tableReusableArtifactBlobPrefix(tableId().getAccountId(), tableId().getId())
+              + "group-layouts/"
+              + java.util.HexFormat.of().formatHex(shardKey)
+              + "-"
+              + java.util.HexFormat.of().formatHex(groupLayoutDigest)
+              + ".bin";
+      EXTERNAL_OBJECTS.put(groupLayoutUri, groupLayout);
     }
     long shardCount = payload.length == 0 ? 0L : 1L;
     var indexBuilder =

@@ -28,6 +28,7 @@ import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.statistics.impl.ReusableCoverageManifest;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -2137,8 +2138,18 @@ class CasBlobGcTest {
     byte[] reusableDigest =
         java.security.MessageDigest.getInstance("SHA-256").digest(reusableBytes);
     byte[] shardKey = java.util.HexFormat.of().parseHex("02".repeat(32));
-    var reusableRoot = java.nio.ByteBuffer.allocate(80).order(java.nio.ByteOrder.BIG_ENDIAN);
+    var reusableRoot =
+        java.nio.ByteBuffer.allocate(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
+            .order(java.nio.ByteOrder.BIG_ENDIAN);
     reusableRoot.put(shardKey).put(reusableDigest).putLong(reusableBytes.length).putLong(1L);
+    reusableRoot.put(payloadDigest).putLong(1L);
+    reusableRoot.put(
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest("sidecar-formats-v1".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    byte[] groupLayoutBytes = new byte[] {9};
+    byte[] groupLayoutDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(groupLayoutBytes);
+    reusableRoot.put(groupLayoutDigest).putLong(groupLayoutBytes.length);
     byte[] reusableRootBytes = reusableRoot.array();
     byte[] reusableRootDigest =
         java.security.MessageDigest.getInstance("SHA-256").digest(reusableRootBytes);
@@ -2150,7 +2161,7 @@ class CasBlobGcTest {
             .setPayloadBytes(reusableRootBytes.length)
             .setRecordCount(1L)
             .setChunkSizeLimit(8L * 1024L * 1024L)
-            .setFixedRecordBytes(80)
+            .setFixedRecordBytes(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
             .addChunks(
                 ai.floedb.floecat.reconciler.rpc.ExternalManifestChunkCommitment.newBuilder()
                     .setPayloadOffset(0L)
@@ -2180,8 +2191,16 @@ class CasBlobGcTest {
             + "-"
             + java.util.HexFormat.of().formatHex(reusableDigest)
             + ".bin";
+    String groupLayoutUri =
+        Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID)
+            + "group-layouts/"
+            + java.util.HexFormat.of().formatHex(shardKey)
+            + "-"
+            + java.util.HexFormat.of().formatHex(groupLayoutDigest)
+            + ".bin";
     blobs.put(reusableUri, reusableRootBytes, "application/octet-stream");
     blobs.put(reusableShardUri, reusableBytes, "application/octet-stream");
+    blobs.put(groupLayoutUri, groupLayoutBytes, "application/octet-stream");
     blobs.put(reusableIndexUri, reusableIndexBytes, "application/x-protobuf");
     byte[] registrationBytes = "registration".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     byte[] registrationDigest =
@@ -2233,7 +2252,7 @@ class CasBlobGcTest {
                     .setPayloadBytes(reusableRootBytes.length)
                     .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(reusableRootDigest))
                     .setShardCount(1)
-                    .setShardIndexRecordBytes(80)
+                    .setShardIndexRecordBytes(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
                     .setCoverageEntryCount(1)
                     .setShardRecordBytes(80)
                     .setCommitmentIndex(
@@ -2307,6 +2326,7 @@ class CasBlobGcTest {
     assertTrue(blobs.head(registrationIndexUri).isPresent());
     assertTrue(blobs.head(reusableUri).isPresent());
     assertTrue(blobs.head(reusableIndexUri).isPresent());
+    assertTrue(blobs.head(groupLayoutUri).isPresent());
     assertTrue(blobs.head(artifactUri).isPresent());
     assertTrue(
         blobs.head(captureUploadOnlyUri).isPresent(),
