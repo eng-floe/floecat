@@ -1855,6 +1855,11 @@
 pointer reads is an immutable blob. Caching therefore splits into a small number of disciplines,
 each with a different correctness contract, rather than one generic cache with invalidation
 callbacks.</p>
+<p>The wire names <code>TablePin</code>, <code>RelationPinSet</code>, and related fields are compatibility names for a
+resolved snapshot selection. They freeze the immutable identities used by one query; they are not
+GC roots, leases, or ownership claims. Retention and durable reachability determine when the
+selected data may be collected; an explicit delete or a later collection can make an already-
+selected snapshot unavailable.</p>
 <h2 id="principles">Principles<a class="headerlink" href="#principles" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Mutable edges resolve to immutable keys.</strong> A read first resolves a mutable pointer (resource ID
@@ -1862,9 +1867,8 @@ callbacks.</p>
   be stale; the content it names is immutable.</li>
 <li><strong>Content-addressed means no invalidation.</strong> The bytes at a CAS blob URI never change, so a
   decoded entry keyed by URI is right forever. Eviction exists only for memory, never correctness.</li>
-<li><strong>Decoded content never proves existence.</strong> A resident decode may outlive the durable blob (GC can
-  sweep a superseded blob while its decode is still cached). Any read whose emptiness is
-  load-bearing — a liveness or integrity probe — must hit the live store. The complete pointer
+<li><strong>Decoded content is safe for resolved-snapshot reads.</strong> A resident decode may outlive the durable blob, but
+  immutable content-addressed values remain the exact value named by the resolved selection. The complete pointer
   index is deliberately different: after its account load completes, a missing addressing key is
   authoritative absence.</li>
 </ul>
@@ -1900,13 +1904,13 @@ identity; they do not replace a value in an existing key.</p>
 <td>Blobs</td>
 <td><code>DiskBlobCache</code> behind <code>BlobCacheAccess</code></td>
 <td>Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe</td>
-<td>Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mmap content stays pinned until its scoped read closes. The disk budget and kill switch are <code>floecat.cache.blob.disk.*</code>; it is independent of the heap budget.</td>
+<td>Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mapped content stays retained until its scoped read closes. The disk budget and kill switch are <code>floecat.cache.blob.disk.*</code>; it is independent of the heap budget.</td>
 </tr>
 <tr>
 <td>Per-query state</td>
 <td><code>QueryContextStore</code> and per-query memos</td>
-<td><code>QueryContext</code> (pins, snapshot set, expansion map) keyed by query ID</td>
-<td>Scoped to one query lease; consistency comes from pinning, not freshness.</td>
+<td>Snapshot selections, expansion map, and scan/session bookkeeping keyed by query ID</td>
+<td>Rebuildable process-local optimization, not a GC root. If the selected snapshot is deleted or collected, the query receives the snapshot-unavailable error.</td>
 </tr>
 </tbody>
 </table>
@@ -1925,10 +1929,12 @@ same key set in opposite orders. Listing, counting, batch reads, warming, reload
 deletion take the account write side because they need one stable ordered view. There is no
 application-level in-flight request map or version fence in this path: the partition gate and
 key-lock ownership define the ordering.</p>
-<p>Standalone Floecat uses <code>ALWAYS_OWNED</code>, because there is no competing owner. A managed deployment
-provides the <code>PlanningPointerIndex.Ownership</code> implementation and connects ownership handoff to the
-index: revoke ownership before routing the account away, then drop the old partition; after the
-new owner is granted, start warming it. The index never assumes ownership from a cache hit.</p>
+<p><code>AccountAssignment</code> (<code>service/.../account</code>) is the default <code>PlanningPointerIndex.Ownership</code>
+implementation. It serves every account in standalone Floecat. Managed deployments can bind a
+different <code>AccountScope</code> implementation when they have an external account-routing policy; that
+policy is independent of query snapshot selection and cache lifetime. Deployments that need leases,
+durable fences or a coordinator can provide those through the same extension seam without changing
+the cache.</p>
 <p><code>ObjectCache</code> stores immutable-generation target statistics by <code>(accountId, tableId, snapshotId,
 generation, target identity)</code>. A live/newest result has no stable identity and is therefore read
 through without retention. Exact-body target-stat URIs are immutable once published and may be
@@ -2091,7 +2097,8 @@ KV, and mutations still run through <code>IndexedPointerStore</code> and keep th
 order a publish against a load. Otherwise the durable adapter is used automatically while an
 account index is loading and for operational keys.</p>
 <h2 id="deliberately-live-reads">Deliberately live reads<a class="headerlink" href="#deliberately-live-reads" title="Permanent link">&para;</a></h2>
-<p>These reads bypass every cache because their result is a detector, not content:</p>
+<p>Only reads that decide a mutation or reclamation, or whose emptiness is load-bearing, bypass the
+cache:</p>
 <table>
 <thead>
 <tr>
@@ -2102,19 +2109,9 @@ account index is loading and for operational keys.</p>
 </thead>
 <tbody>
 <tr>
-<td>Resolving-pin root guard, currency and manifest proof</td>
-<td><code>QueryContextStoreImpl.requirePinnedRootLive</code></td>
-<td>Asks whether a pinned root is still <em>present</em> before it is registered as a GC root — the bytes are immutable, but their presence is exactly what a sweep changes, so a cache hit cannot answer the question. The same read then follows a <em>mutable</em> pointer to decide whether the root is current, and proves the manifest head or chain is still live.</td>
-</tr>
-<tr>
 <td>Frozen stats-manifest read</td>
 <td><code>StatsRepository.listTargetStatsInGeneration</code> (per scan page)</td>
 <td>This read <em>is</em> the scan's retention guard. A cached generation ID would let a scan page "successfully" over a reclaimed generation — empty pages, silently truncated results — exactly when the guard must fire.</td>
-</tr>
-<tr>
-<td>Published-generation and manifest-page checks</td>
-<td><code>StatsRepository.requirePublishedGenerationLive</code>, <code>TableRootRepository.getManifestPageLive</code></td>
-<td>Same shape: emptiness is the retention verdict.</td>
 </tr>
 <tr>
 <td>Dangling-pointer verdict</td>
@@ -2133,16 +2130,13 @@ account index is loading and for operational keys.</p>
 </tr>
 </tbody>
 </table>
-<p>Pinned <strong>blob</strong> reads are not among them. The blob a pin names is immutable and content-addressed,
-so a resident decode of it <em>is</em> the pinned content rather than a stale view — the pinned table,
-snapshot, schema, node and constraint loads all read through the cache. For the table, snapshot,
-schema and node legs a genuinely missing pinned blob still fails as catalog-integrity corruption
-through <code>requirePinned*</code>, and still enqueues the table for the resync re-drive. The constraints leg
-does neither: it logs a broken-retention warning and degrades that relation to an <code>ERROR</code>
-resolution, with no repair report — and on a cache hit over a swept blob it does not fire at all.</p>
-<p>Nor is a pinned read preceded by a probe of its root. A pin whose blobs still read is coherent
-whatever has happened to the live pointer meanwhile, and a probe could only report what the read
-that needs the blob reports anyway.</p>
+<p>Selected <strong>blob</strong> reads are not among them. The blob a query selection names is immutable and
+content-addressed, so a resident decode of it <em>is</em> the selected content rather than a stale view — the table,
+snapshot, schema, node and constraint loads all read through the cache. If the durable blob is missing,
+the read path reports the resolved-snapshot read error and requests repair where that contract applies.</p>
+<p>Nor is a selected read preceded by a probe of its root. A selection whose blobs still read is
+coherent whatever has happened to the live pointer meanwhile, and a probe could only report what
+the read that needs the blob reports anyway.</p>
 <p>The repository API encodes the split: <code>getByBlobUri</code> serves cached content — a present result does
 <strong>not</strong> prove the blob still exists — while <code>getByBlobUriLive</code> bypasses the cache for reads whose
 emptiness is load-bearing.</p>
@@ -2172,9 +2166,9 @@ emptiness is load-bearing.</p>
 <td><code>PlanningPointerIndex</code> sorted account partitions</td>
 </tr>
 <tr>
-<td>Pinned data read within a query</td>
-<td>None by construction</td>
-<td>Immutable blobs plus live integrity reads</td>
+<td>Selected data read within a query</td>
+<td>Retention window plus grace period</td>
+<td>Immutable content-addressed blobs plus durable reachability</td>
 </tr>
 </tbody>
 </table>
