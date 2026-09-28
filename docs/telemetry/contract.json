@@ -550,6 +550,16 @@
     "allowedTags": ["component", "operation"]
   },
   {
+    "name": "floecat.service.gc.cas.poisoned_tables",
+    "type": "GAUGE",
+    "unit": "",
+    "since": "v1",
+    "origin": "service",
+    "description": "Tables whose CAS GC root walk was poisoned in the last tick.",
+    "requiredTags": ["component", "operation"],
+    "allowedTags": ["component", "operation"]
+  },
+  {
     "name": "floecat.service.gc.reconcile_jobs.account_page.index",
     "type": "GAUGE",
     "unit": "count",
