@@ -114,12 +114,17 @@ public final class CatalogSurfaceRelations {
     var results = new ArrayList<RelationListResult>(want);
     var catalogNames = new HashMap<ResourceId, String>();
     int total = total(segments, request.getIncludeTotal(), cursor.total(), accountId);
+    int startSegment = RelationScope.indexAtOrAfter(segments, cursor.segmentKey(), kinds, corr);
     String innerToken = cursor.innerToken();
+    // A namespace may disappear between pages. Its relation cursor is scoped to that namespace
+    // and must not be applied to the next surviving segment.
+    if (startSegment >= segments.size()
+        || !segments.get(startSegment).key().equals(cursor.segmentKey())) {
+      innerToken = "";
+    }
     String nextToken = "";
 
-    for (int i = RelationScope.indexAtOrAfter(segments, cursor.segmentKey(), kinds, corr);
-        i < segments.size();
-        i++) {
+    for (int i = startSegment; i < segments.size(); i++) {
       Segment segment = segments.get(i);
       var page =
           pageSegment(

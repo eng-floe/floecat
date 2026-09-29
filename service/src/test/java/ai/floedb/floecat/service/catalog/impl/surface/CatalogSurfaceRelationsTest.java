@@ -48,6 +48,7 @@ import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.ViewRepository;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.systemcatalog.graph.SystemResourceIdGenerator;
