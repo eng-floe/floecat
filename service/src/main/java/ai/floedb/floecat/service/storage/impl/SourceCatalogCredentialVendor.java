@@ -294,16 +294,43 @@ public class SourceCatalogCredentialVendor {
 
     String namespaceFq = String.join(".", upstream.getNamespacePathList());
     Optional<FloecatConnector.VendedStorageCredentials> vended;
-    try (FloecatConnector source = connectorFactory.apply(resolvedConfig)) {
-      vended = source.vendStorageCredentials(namespaceFq, upstream.getTableDisplayName());
+    // One deadline across building the connector and the vend it makes. Building an Iceberg REST
+    // connector is itself a config round trip and a SigV4/OAuth exchange, and vendStorageCredentials
+    // adds a delegated loadTable; an upstream that accepts the connection and then stalls -- Glue's
+    // Lake Formation vend, a Databricks Uniform loadTable -- puts no socket bound on the sum and
+    // would hold this gRPC handler with no limit, leaving the reconcile job in no terminal state.
+    // vendFromCatalogIntegration budgets the same calls for the same reason; the Connector path was
+    // missing it.
+    CatalogUpstreamBudget budget = CatalogUpstreamBudget.start(upstreamTimeout, nanoTime);
+    // Not try-with-resources: the build is itself budgeted, so a connector that arrives after the
+    // deadline must be closed rather than leaked -- the close is the budget's abandoned-result
+    // cleanup, and the ordinary close runs bounded in the finally.
+    FloecatConnector source = null;
+    try {
+      source =
+          budget.call(
+              () -> connectorFactory.apply(resolvedConfig),
+              SourceCatalogCredentialVendor::closeQuietly);
+      FloecatConnector opened = source;
+      vended =
+          budget.call(
+              () -> opened.vendStorageCredentials(namespaceFq, upstream.getTableDisplayName()));
     } catch (StatusRuntimeException e) {
+      throw e;
+    } catch (java.util.concurrent.CancellationException e) {
+      // The budget raises this when the wait is interrupted, and BaseServiceImpl.toStatus maps it to
+      // CANCELLED. Folding it into the classification below would report a caller who went away as a
+      // catalog fault, and put a cancelled reconcile attempt on the retry path.
       throw e;
     } catch (RuntimeException e) {
       // A catalog that refuses us is a permanent condition: bad credentials, a revoked grant, a
       // principal without TABLE_READ_DATA. Letting it escape as INTERNAL makes the reconciler treat
       // it as transient and retry the job forever, so classify it terminally. Anything that is not
-      // recognisably an authorization refusal stays retryable.
+      // recognisably an authorization refusal stays retryable -- a budget timeout among them, so a
+      // catalog that recovers is retried rather than permanently failed.
       throw catalogFailureStatus(e, connector, namespaceFq, upstream.getTableDisplayName(), use);
+    } finally {
+      closeWithinBudget(source);
     }
     // Empty and absent are the same answer. A connector that hands back a credential object with
     // no properties has vended nothing, and falling through would reach requireUsableCredentials
@@ -1221,6 +1248,36 @@ public class SourceCatalogCredentialVendor {
               ignored -> {});
     } catch (RuntimeException e) {
       LOG.debugf(e, "closing a catalog client failed or outlasted its budget");
+    }
+  }
+
+  /** The Connector-path counterpart of {@link #closeQuietly(CatalogClient)}. */
+  private static void closeQuietly(FloecatConnector connector) {
+    if (connector == null) {
+      return;
+    }
+    try {
+      connector.close();
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "closing a source-catalog connector failed");
+    }
+  }
+
+  /** The Connector-path counterpart of {@link #closeWithinBudget(CatalogClient)}. */
+  private void closeWithinBudget(FloecatConnector connector) {
+    if (connector == null) {
+      return;
+    }
+    try {
+      CatalogUpstreamBudget.start(CLOSE_TIMEOUT, nanoTime)
+          .call(
+              () -> {
+                connector.close();
+                return null;
+              },
+              ignored -> {});
+    } catch (RuntimeException e) {
+      LOG.debugf(e, "closing a source-catalog connector failed or outlasted its budget");
     }
   }
 
