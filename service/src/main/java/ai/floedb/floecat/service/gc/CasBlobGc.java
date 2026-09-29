@@ -174,10 +174,12 @@ public class CasBlobGc {
 
   private static final class OwnerManifestWalkState {
     private final Set<String> completed = new HashSet<>();
+    private final HashSet<String> completedAggregationNodes = new HashSet<>();
     private final Map<String, Long> nextRecord = new HashMap<>();
 
     private void clear() {
       completed.clear();
+      completedAggregationNodes.clear();
       nextRecord.clear();
     }
   }
@@ -2243,6 +2245,7 @@ public class CasBlobGc {
           checkDeadline();
           referenced.add(normalizeKey(shardUri));
         },
+        state.completedAggregationNodes,
         next -> state.nextRecord.put(uri, next),
         accountId,
         tableId,

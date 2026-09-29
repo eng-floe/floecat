@@ -597,6 +597,42 @@ message ReusableCoverageManifestRef {
   // more than one shard when file groups share a delete artifact.
   uint64 coverage_entry_count = 9;
   uint32 shard_record_bytes = 10;
+  // Content-addressed root of the canonical planner-statistics aggregation tree. Present exactly
+  // when shard_count is non-zero. Tree nodes are stored below the table reusable-object prefix.
+  AggregationTreeNodeRef aggregation_tree_root = 11;
+}
+
+message AggregationTreeNodeRef {
+  uint64 payload_bytes = 1;
+  bytes payload_sha256 = 2;
+  bytes membership_sha256 = 3;
+  bytes min_key = 4;
+  uint64 leaf_count = 5;
+}
+
+message AggregationTreeNode {
+  uint32 format_version = 1;
+  bytes membership_sha256 = 2;
+  bytes min_key = 3;
+  uint64 leaf_count = 4;
+  repeated bytes records = 5;
+  oneof kind {
+    AggregationTreeLeaf leaf = 6;
+    AggregationTreeBranch branch = 7;
+  }
+}
+
+message AggregationTreeLeaf {
+  bytes key = 1;
+  string artifact_uri = 2;
+  uint64 artifact_payload_bytes = 3;
+  bytes artifact_payload_sha256 = 4;
+}
+
+message AggregationTreeBranch {
+  uint32 bit = 1;
+  AggregationTreeNodeRef left = 2;
+  AggregationTreeNodeRef right = 3;
 }
 
 // Immutable publication unit produced by the snapshot-finalize executor after it has verified all

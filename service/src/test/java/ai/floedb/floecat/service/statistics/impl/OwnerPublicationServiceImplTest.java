@@ -1218,25 +1218,36 @@ class OwnerPublicationServiceImplTest {
             + ".bin";
     EXTERNAL_OBJECTS.put(indexUri, indexBytes);
     EXTERNAL_OBJECTS.put(payloadUri, shardIndex);
-    return ReusableCoverageManifestRef.newBuilder()
-        .setFormatVersion(ReusableCoverageManifest.FORMAT_VERSION)
-        .setUri(payloadUri)
-        .setPayloadBytes(shardIndex.length)
-        .setPayloadSha256(ByteString.copyFrom(sha256(shardIndex)))
-        .setShardCount(shardCount)
-        .setShardIndexRecordBytes(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
-        .setCoverageEntryCount(coverageCount)
-        .setShardRecordBytes(ReusableCoverageManifest.RECORD_BYTES)
-        .setCommitmentIndex(
-            ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndexRef.newBuilder()
-                .setFormatVersion(1)
-                .setDomain(
-                    ai.floedb.floecat.reconciler.rpc.ExternalManifestDomain.EMD_REUSABLE_COVERAGE)
-                .setUri(indexUri)
-                .setPayloadBytes(indexBytes.length)
-                .setPayloadSha256(ByteString.copyFrom(indexDigest))
-                .setChunkCount(indexBuilder.getChunksCount()))
-        .build();
+    var descriptor =
+        ReusableCoverageManifestRef.newBuilder()
+            .setFormatVersion(ReusableCoverageManifest.FORMAT_VERSION)
+            .setUri(payloadUri)
+            .setPayloadBytes(shardIndex.length)
+            .setPayloadSha256(ByteString.copyFrom(sha256(shardIndex)))
+            .setShardCount(shardCount)
+            .setShardIndexRecordBytes(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
+            .setCoverageEntryCount(coverageCount)
+            .setShardRecordBytes(ReusableCoverageManifest.RECORD_BYTES)
+            .setCommitmentIndex(
+                ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndexRef.newBuilder()
+                    .setFormatVersion(1)
+                    .setDomain(
+                        ai.floedb.floecat.reconciler.rpc.ExternalManifestDomain
+                            .EMD_REUSABLE_COVERAGE)
+                    .setUri(indexUri)
+                    .setPayloadBytes(indexBytes.length)
+                    .setPayloadSha256(ByteString.copyFrom(indexDigest))
+                    .setChunkCount(indexBuilder.getChunksCount()));
+    if (shardCount > 0L) {
+      descriptor.setAggregationTreeRoot(
+          ai.floedb.floecat.reconciler.rpc.AggregationTreeNodeRef.newBuilder()
+              .setPayloadBytes(1L)
+              .setPayloadSha256(ByteString.copyFrom(sha256(new byte[] {4})))
+              .setMembershipSha256(ByteString.copyFrom(sha256(new byte[] {5})))
+              .setMinKey(ByteString.copyFrom(shardKey))
+              .setLeafCount(shardCount));
+    }
+    return descriptor.build();
   }
 
   private static byte[] reusableManifest(int... families) {

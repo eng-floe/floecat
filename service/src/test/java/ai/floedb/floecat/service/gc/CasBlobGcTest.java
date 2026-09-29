@@ -2202,6 +2202,38 @@ class CasBlobGcTest {
     blobs.put(reusableShardUri, reusableBytes, "application/octet-stream");
     blobs.put(groupLayoutUri, groupLayoutBytes, "application/octet-stream");
     blobs.put(reusableIndexUri, reusableIndexBytes, "application/x-protobuf");
+    byte[] treeMembership =
+        java.security.MessageDigest.getInstance("SHA-256").digest(new byte[] {10});
+    byte[] treeNodeBytes =
+        ai.floedb.floecat.reconciler.rpc.AggregationTreeNode.newBuilder()
+            .setFormatVersion(1)
+            .setMembershipSha256(com.google.protobuf.ByteString.copyFrom(treeMembership))
+            .setMinKey(com.google.protobuf.ByteString.copyFrom(shardKey))
+            .setLeafCount(1L)
+            .addRecords(com.google.protobuf.ByteString.copyFrom(new byte[] {11}))
+            .setLeaf(
+                ai.floedb.floecat.reconciler.rpc.AggregationTreeLeaf.newBuilder()
+                    .setKey(com.google.protobuf.ByteString.copyFrom(shardKey))
+                    .setArtifactUri(artifactUri)
+                    .setArtifactPayloadBytes(1L)
+                    .setArtifactPayloadSha256(
+                        com.google.protobuf.ByteString.copyFrom(payloadDigest)))
+            .build()
+            .toByteArray();
+    byte[] treeNodeDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(treeNodeBytes);
+    var treeRoot =
+        ai.floedb.floecat.reconciler.rpc.AggregationTreeNodeRef.newBuilder()
+            .setPayloadBytes(treeNodeBytes.length)
+            .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(treeNodeDigest))
+            .setMembershipSha256(com.google.protobuf.ByteString.copyFrom(treeMembership))
+            .setMinKey(com.google.protobuf.ByteString.copyFrom(shardKey))
+            .setLeafCount(1L)
+            .build();
+    String treeNodeUri =
+        ReusableCoverageManifest.aggregationTreeNodeUri(
+            Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID), treeRoot);
+    blobs.put(treeNodeUri, treeNodeBytes, "application/x-protobuf");
     byte[] registrationBytes = "registration".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     byte[] registrationDigest =
         java.security.MessageDigest.getInstance("SHA-256").digest(registrationBytes);
@@ -2255,6 +2287,7 @@ class CasBlobGcTest {
                     .setShardIndexRecordBytes(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
                     .setCoverageEntryCount(1)
                     .setShardRecordBytes(80)
+                    .setAggregationTreeRoot(treeRoot)
                     .setCommitmentIndex(
                         ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndexRef
                             .newBuilder()
@@ -2327,6 +2360,7 @@ class CasBlobGcTest {
     assertTrue(blobs.head(reusableUri).isPresent());
     assertTrue(blobs.head(reusableIndexUri).isPresent());
     assertTrue(blobs.head(groupLayoutUri).isPresent());
+    assertTrue(blobs.head(treeNodeUri).isPresent());
     assertTrue(blobs.head(artifactUri).isPresent());
     assertTrue(
         blobs.head(captureUploadOnlyUri).isPresent(),
