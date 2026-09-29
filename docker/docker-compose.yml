@@ -186,7 +186,7 @@ services:
       - floecat
 
   polaris:
-    image: apache/polaris:latest
+    image: apache/polaris:1.8.0
     pull_policy: if_not_present
     depends_on:
       polaris-bootstrap:
@@ -241,7 +241,8 @@ services:
       POSTGRES_DB: POLARIS
       POSTGRES_INITDB_ARGS: "--encoding UTF8 --data-checksums"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      # TCP check: the init-time server listens on the socket only, so this passes once init scripts ran.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"]
       interval: 5s
       timeout: 2s
       retries: 15
@@ -249,9 +250,11 @@ services:
       - polaris
     networks:
       - floecat
+    volumes:
+      - ./polaris-db/init:/docker-entrypoint-initdb.d:ro
 
   polaris-bootstrap:
-    image: apache/polaris-admin-tool:latest
+    image: apache/polaris-admin-tool:1.8.0
     pull_policy: if_not_present
     depends_on:
       polaris-db:
