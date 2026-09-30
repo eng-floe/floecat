@@ -59,6 +59,14 @@ class BlobStoreTest {
   }
 
   @Test
+  void boundedRangeReadReturnsAShortResultAtEof() {
+    BlobStore store = store(Map.of("/present", "value".getBytes(StandardCharsets.UTF_8)));
+
+    assertArrayEquals(
+        "alue".getBytes(StandardCharsets.UTF_8), store.getRangeAtMost("/present", 1L, 100));
+  }
+
+  @Test
   void defaultScopedBatchReadWrapsHeapBodiesAsReadOnlyBuffers() {
     BlobStore store = store(Map.of("/present", "value".getBytes(StandardCharsets.UTF_8)));
 

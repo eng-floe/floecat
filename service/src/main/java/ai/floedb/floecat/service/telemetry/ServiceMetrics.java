@@ -369,6 +369,11 @@ public final class ServiceMetrics {
         new MetricId(
             "floecat.service.gc.cas.poisoned_accounts", MetricType.GAUGE, "", CONTRACT, "service");
 
+    /** Tables whose Owner/root walk was poisoned during the most recent scheduler tick. */
+    public static final MetricId CAS_POISONED_TABLES =
+        new MetricId(
+            "floecat.service.gc.cas.poisoned_tables", MetricType.GAUGE, "", CONTRACT, "service");
+
     /**
      * Accounts whose sweep was skipped in the last tick because the blob store cannot delete by
      * immutable version (on S3: bucket versioning not Enabled, or s3:GetBucketVersioning denied).

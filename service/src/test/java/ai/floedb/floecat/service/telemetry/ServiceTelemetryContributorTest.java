@@ -54,6 +54,7 @@ class ServiceTelemetryContributorTest {
         registry.metric(ServiceMetrics.Reconcile.PLANNER_TICK_LATENCY.name());
     MetricDef plannerEnqueue = registry.metric(ServiceMetrics.Reconcile.PLANNER_ENQUEUE.name());
     MetricDef casPoisonedAccounts = registry.metric(ServiceMetrics.Gc.CAS_POISONED_ACCOUNTS.name());
+    MetricDef casPoisonedTables = registry.metric(ServiceMetrics.Gc.CAS_POISONED_TABLES.name());
     MetricDef casDeleteUnsupportedAccounts =
         registry.metric(ServiceMetrics.Gc.CAS_DELETE_UNSUPPORTED_ACCOUNTS.name());
     MetricDef casOldestSweepAge = registry.metric(ServiceMetrics.Gc.CAS_OLDEST_SWEEP_AGE.name());
@@ -149,6 +150,9 @@ class ServiceTelemetryContributorTest {
         .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION);
     assertThat(casPoisonedAccounts.allowedTags())
         .containsExactlyInAnyOrder(TagKey.COMPONENT, TagKey.OPERATION);
+    assertThat(casPoisonedTables).isNotNull();
+    assertThat(casPoisonedTables.requiredTags()).isEqualTo(casPoisonedAccounts.requiredTags());
+    assertThat(casPoisonedTables.allowedTags()).isEqualTo(casPoisonedAccounts.allowedTags());
     assertThat(casDeleteUnsupportedAccounts).isNotNull();
     assertThat(casDeleteUnsupportedAccounts.requiredTags())
         .isEqualTo(casPoisonedAccounts.requiredTags());
@@ -198,6 +202,7 @@ class ServiceTelemetryContributorTest {
                 ServiceMetrics.Reconcile.PLANNER_TICK_LATENCY.name(),
                 ServiceMetrics.Reconcile.PLANNER_ENQUEUE.name(),
                 ServiceMetrics.Gc.CAS_POISONED_ACCOUNTS.name(),
+                ServiceMetrics.Gc.CAS_POISONED_TABLES.name(),
                 ServiceMetrics.Gc.CAS_DELETE_UNSUPPORTED_ACCOUNTS.name(),
                 ServiceMetrics.Gc.CAS_OLDEST_SWEEP_AGE.name(),
                 ServiceMetrics.Gc.RECONCILE_JOB_ACCOUNTS_LAST_TICK.name(),

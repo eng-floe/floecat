@@ -200,6 +200,59 @@ public class SnapshotRepository {
     return repo.createWithMeta(snapshot, completionFactory);
   }
 
+  /**
+   * Writes the immutable snapshot blob and returns the pointer updates that would make it visible.
+   * The caller must include these updates in another repository's atomic publication batch.
+   */
+  public List<StatsStore.PublicationPointerUpdate> prepareCreatePublicationUpdates(
+      Snapshot snapshot) {
+    return publicationUpdates(repo.prepareCreateOps(snapshot));
+  }
+
+  public record PreparedReuseManifestPublication(
+      Snapshot snapshot, List<StatsStore.PublicationPointerUpdate> pointerUpdates) {}
+
+  /**
+   * Prepares an existing snapshot's reuse-root update for the caller's atomic publication fence.
+   */
+  public PreparedReuseManifestPublication prepareReuseManifestPublication(
+      ResourceId tableId, long snapshotId, SnapshotReuseManifestRef reuseManifestRef) {
+    requireReuseManifest(reuseManifestRef);
+    SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
+    var current =
+        repo.getByKeyWithMetaForMutation(key)
+            .orElseThrow(
+                () ->
+                    new BaseResourceRepository.NotFoundException(
+                        "snapshot disappeared before reuse manifest publication: " + snapshotId));
+    if (current.value().hasReuseManifestRef()
+        && !current.value().getReuseManifestRef().equals(reuseManifestRef)) {
+      throw new BaseResourceRepository.NameConflictException(
+          "snapshot already has a different reuse manifest: " + snapshotId);
+    }
+    Snapshot next = current.value().toBuilder().setReuseManifestRef(reuseManifestRef).build();
+    if (next.equals(current.value())) {
+      return new PreparedReuseManifestPublication(next, List.of());
+    }
+    return new PreparedReuseManifestPublication(
+        next, publicationUpdates(repo.prepareUpdateOps(next, current.meta().getPointerVersion())));
+  }
+
+  private static List<StatsStore.PublicationPointerUpdate> publicationUpdates(
+      List<PointerStore.CasOp> operations) {
+    return operations.stream()
+        .map(
+            operation -> {
+              if (!(operation instanceof PointerStore.CasUpsert upsert)) {
+                throw new IllegalStateException(
+                    "snapshot publication produced a non-upsert operation");
+              }
+              return new StatsStore.PublicationPointerUpdate(
+                  upsert.key(), upsert.expectedVersion(), upsert.next());
+            })
+        .toList();
+  }
+
   public Optional<MutationMeta> completeWithMetaIfUnchanged(
       Snapshot snapshot,
       long expectedPointerVersion,
@@ -323,15 +376,7 @@ public class SnapshotRepository {
    */
   public Snapshot recordReuseManifest(
       ResourceId tableId, long snapshotId, SnapshotReuseManifestRef reuseManifestRef) {
-    if (reuseManifestRef == null
-        || reuseManifestRef.getFormatVersion()
-            != ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest.FORMAT_VERSION
-        || reuseManifestRef.getUri().isBlank()
-        || reuseManifestRef.getPayloadBytes() <= 0L
-        || reuseManifestRef.getPayloadSha256().size() != 32
-        || reuseManifestRef.getStatsGenerationManifestUri().isBlank()) {
-      throw new IllegalArgumentException("complete reuse manifest metadata is required");
-    }
+    requireReuseManifest(reuseManifestRef);
     SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
     for (int attempt = 0; attempt < 8; attempt++) {
       MutationMeta meta = repo.pointerMetaForSafe(key);
@@ -350,6 +395,18 @@ public class SnapshotRepository {
     }
     throw new StorageAbortRetryableException(
         "could not record reuse manifest after concurrent snapshot updates: " + snapshotId);
+  }
+
+  private static void requireReuseManifest(SnapshotReuseManifestRef reuseManifestRef) {
+    if (reuseManifestRef == null
+        || reuseManifestRef.getFormatVersion()
+            != ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest.FORMAT_VERSION
+        || reuseManifestRef.getUri().isBlank()
+        || reuseManifestRef.getPayloadBytes() <= 0L
+        || reuseManifestRef.getPayloadSha256().size() != 32
+        || reuseManifestRef.getStatsGenerationManifestUri().isBlank()) {
+      throw new IllegalArgumentException("complete reuse manifest metadata is required");
+    }
   }
 
   /**

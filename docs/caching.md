@@ -97,7 +97,7 @@ sizing harness use the same arithmetic.
 | `MemoryCache<K, V>` | Read-through `get`; batch `getAll`; uncounted `peek`; `evict` by key and `evictPartition` by caller-supplied membership; `bytes()`/`entryCount()` for the budget. Values are immutable and keyed by durable identity, so there is no generic replacement, publication fence, or in-flight map. Eviction is an infrequent O(n) memory-hygiene scan. Pointer version ordering deliberately is not part of this generic contract. |
 | `CaffeineMemoryCache` | The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction. |
 | `CacheWeights` | Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (`WeightedValue` first, then protobuf, text, `byte[]`, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte. |
-| `CacheFamily` | The independently budgeted in-memory families that use this module. Pointer planning state is not a `MemoryCache` family: it is a complete index with a separate admission budget and no entry eviction. `OBJECT` is decoded metadata and `HINT` is decoded engine-specific metadata. Disk blob caching has its own volume budget. |
+| `CacheFamily` | The independently budgeted in-memory families that use this module. Pointer planning state is not a `MemoryCache` family: it is a complete index with a separate admission budget and no entry eviction. `OBJECT` is decoded metadata, `HINT` is decoded engine-specific metadata, and `MANIFEST_COMMITMENT` is validated content-addressed Owner manifest indexes. Disk blob caching has its own volume budget. |
 | `CacheBudget` / `CacheBudgetResolver` | One total split across the families. Pure arithmetic in `CacheBudget.split`; `CacheBudgetResolver` (`service/cache/`) reads the configuration and runs it at startup. |
 | `CacheEvents` | The common event baseline: `hit`, `miss`, `loadTime`, `loadFailed` and `evicted`. Bulk reads report misses for the keys passed to their source loader and one duration per loader invocation. A disk cache can reuse the telemetry vocabulary while exposing its own lifecycle-shaped interface. The module reports events; the container names the metrics. |
 
@@ -212,4 +212,5 @@ Cache budgets derive from the container: `floecat.cache.total-bytes` defaults to
 maximum heap, which the JVM already sizes from the container memory limit, and each memory cache takes a
 share of that. `heap-share` carries its default in
 `service/src/main/resources/application.properties`, alongside the disk blob settings;
-`total-bytes` is unset and is derived when the object and hint memory caches are wired.
+`total-bytes` is unset and is derived when the object, hint, and manifest-commitment memory caches
+are wired.

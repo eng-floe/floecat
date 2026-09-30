@@ -34,6 +34,9 @@ public enum CacheFamily {
   /** Decoded engine-specific relation metadata, isolated by exact engine version. */
   HINT("hint"),
 
+  /** Validated content-addressed Owner manifest commitment indexes. */
+  MANIFEST_COMMITMENT("manifest-commitment"),
+
   /** Serialized immutable bodies held on local disk rather than the JVM heap. */
   BLOB("blob");
 

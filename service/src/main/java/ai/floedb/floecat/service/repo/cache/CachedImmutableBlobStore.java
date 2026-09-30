@@ -63,6 +63,13 @@ public final class CachedImmutableBlobStore implements BlobStore {
   }
 
   @Override
+  public byte[] getRangeAtMost(String uri, long offset, int length) {
+    // A short EOF result does not fit the exact-range cache key contract. This path is used for
+    // small bounded descriptor reads, so delegate it without populating the immutable range cache.
+    return delegate.getRangeAtMost(uri, offset, length);
+  }
+
+  @Override
   public Map<String, byte[]> getBatch(List<String> uris) {
     return cache.immutableBytes(
         new LinkedHashSet<>(uris).stream().toList(), fill, delegate::getBatch);

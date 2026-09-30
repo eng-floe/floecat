@@ -28,6 +28,8 @@ import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.statistics.impl.ExternalManifestCommitmentCache;
+import ai.floedb.floecat.service.statistics.impl.ReusableCoverageManifest;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -62,6 +64,7 @@ class CasBlobGcTest {
     gc.pointerStore = pointers;
     gc.durablePointers = new DurablePointerReads(pointers);
     gc.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
+    gc.manifestCommitments = ExternalManifestCommitmentCache.forTesting();
     useBlobs(new InMemoryBlobStore());
   }
 
@@ -2110,6 +2113,409 @@ class CasBlobGcTest {
   }
 
   @Test
+  void ownerReuseLeaseRootsItsManifestAndManagedReusableArtifacts() throws Exception {
+    seedCurrentTable();
+    String artifactUri =
+        Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID)
+            + "statistics/files/"
+            + "01".repeat(32)
+            + ".pb";
+    blobs.put(artifactUri, new byte[] {7}, "application/x-protobuf");
+    String uploadOnlyUri =
+        Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID)
+            + "statistics/files/"
+            + "02".repeat(32)
+            + ".pb";
+    blobs.put(uploadOnlyUri, new byte[] {8}, "application/x-protobuf");
+    String captureUploadOnlyUri =
+        Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L)
+            + "pending-upload.bin";
+    blobs.put(captureUploadOnlyUri, new byte[] {6}, "application/octet-stream");
+    byte[] payloadDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(new byte[] {7});
+    var reusable = java.nio.ByteBuffer.allocate(80).order(java.nio.ByteOrder.BIG_ENDIAN);
+    reusable.put(java.util.HexFormat.of().parseHex("01".repeat(32)));
+    reusable.put(payloadDigest).putLong(1L).putInt(5).putInt(0);
+    byte[] reusableBytes = reusable.array();
+    byte[] reusableDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(reusableBytes);
+    byte[] shardKey = java.util.HexFormat.of().parseHex("02".repeat(32));
+    var reusableRoot =
+        java.nio.ByteBuffer.allocate(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
+            .order(java.nio.ByteOrder.BIG_ENDIAN);
+    reusableRoot.put(shardKey).put(reusableDigest).putLong(reusableBytes.length).putLong(1L);
+    reusableRoot.put(payloadDigest).putLong(1L);
+    reusableRoot.put(
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest("sidecar-formats-v1".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    byte[] groupLayoutBytes = new byte[] {9};
+    byte[] groupLayoutDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(groupLayoutBytes);
+    reusableRoot.put(groupLayoutDigest).putLong(groupLayoutBytes.length);
+    byte[] reusableRootBytes = reusableRoot.array();
+    byte[] reusableRootDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(reusableRootBytes);
+    byte[] reusableIndexBytes =
+        ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndex.newBuilder()
+            .setFormatVersion(1)
+            .setDomain(
+                ai.floedb.floecat.reconciler.rpc.ExternalManifestDomain.EMD_REUSABLE_COVERAGE)
+            .setPayloadBytes(reusableRootBytes.length)
+            .setRecordCount(1L)
+            .setChunkSizeLimit(8L * 1024L * 1024L)
+            .setFixedRecordBytes(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
+            .addChunks(
+                ai.floedb.floecat.reconciler.rpc.ExternalManifestChunkCommitment.newBuilder()
+                    .setPayloadOffset(0L)
+                    .setPayloadBytes(reusableRootBytes.length)
+                    .setRecordCount(1L)
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(reusableRootDigest)))
+            .build()
+            .toByteArray();
+    byte[] reusableIndexDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(reusableIndexBytes);
+    String reusableIndexUri =
+        Keys.snapshotOwnerManifestCommitmentIndexBlobUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            7L,
+            "coverage",
+            java.util.HexFormat.of().formatHex(reusableIndexDigest));
+    String reusableUri =
+        Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L)
+            + "reuse-index-"
+            + java.util.HexFormat.of().formatHex(reusableIndexDigest)
+            + ".bin";
+    String reusableShardUri =
+        Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID)
+            + "coverage-shards/"
+            + java.util.HexFormat.of().formatHex(shardKey)
+            + "-"
+            + java.util.HexFormat.of().formatHex(reusableDigest)
+            + ".bin";
+    String groupLayoutUri =
+        Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID)
+            + "group-layouts/"
+            + java.util.HexFormat.of().formatHex(shardKey)
+            + "-"
+            + java.util.HexFormat.of().formatHex(groupLayoutDigest)
+            + ".bin";
+    blobs.put(reusableUri, reusableRootBytes, "application/octet-stream");
+    blobs.put(reusableShardUri, reusableBytes, "application/octet-stream");
+    blobs.put(groupLayoutUri, groupLayoutBytes, "application/octet-stream");
+    blobs.put(reusableIndexUri, reusableIndexBytes, "application/x-protobuf");
+    byte[] treeMembership =
+        java.security.MessageDigest.getInstance("SHA-256").digest(new byte[] {10});
+    byte[] treeNodeBytes =
+        ai.floedb.floecat.reconciler.rpc.AggregationTreeNode.newBuilder()
+            .setFormatVersion(1)
+            .setMembershipSha256(com.google.protobuf.ByteString.copyFrom(treeMembership))
+            .setMinKey(com.google.protobuf.ByteString.copyFrom(shardKey))
+            .setLeafCount(1L)
+            .addRecords(com.google.protobuf.ByteString.copyFrom(new byte[] {11}))
+            .setLeaf(
+                ai.floedb.floecat.reconciler.rpc.AggregationTreeLeaf.newBuilder()
+                    .setKey(com.google.protobuf.ByteString.copyFrom(shardKey))
+                    .setArtifactUri(artifactUri)
+                    .setArtifactPayloadBytes(1L)
+                    .setArtifactPayloadSha256(
+                        com.google.protobuf.ByteString.copyFrom(payloadDigest)))
+            .build()
+            .toByteArray();
+    byte[] treeNodeDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(treeNodeBytes);
+    var treeRoot =
+        ai.floedb.floecat.reconciler.rpc.AggregationTreeNodeRef.newBuilder()
+            .setPayloadBytes(treeNodeBytes.length)
+            .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(treeNodeDigest))
+            .setMembershipSha256(com.google.protobuf.ByteString.copyFrom(treeMembership))
+            .setMinKey(com.google.protobuf.ByteString.copyFrom(shardKey))
+            .setLeafCount(1L)
+            .build();
+    String treeNodeUri =
+        ReusableCoverageManifest.aggregationTreeNodeUri(
+            Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID), treeRoot);
+    blobs.put(treeNodeUri, treeNodeBytes, "application/x-protobuf");
+    byte[] registrationBytes = "registration".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    byte[] registrationDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(registrationBytes);
+    byte[] registrationIndexBytes =
+        ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndex.newBuilder()
+            .setFormatVersion(1)
+            .setDomain(
+                ai.floedb.floecat.reconciler.rpc.ExternalManifestDomain
+                    .EMD_OWNER_ARTIFACT_REGISTRATION)
+            .setPayloadBytes(registrationBytes.length)
+            .setRecordCount(1L)
+            .setChunkSizeLimit(8L * 1024L * 1024L)
+            .addChunks(
+                ai.floedb.floecat.reconciler.rpc.ExternalManifestChunkCommitment.newBuilder()
+                    .setPayloadOffset(0L)
+                    .setPayloadBytes(registrationBytes.length)
+                    .setRecordCount(1L)
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(registrationDigest)))
+            .build()
+            .toByteArray();
+    byte[] registrationIndexDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(registrationIndexBytes);
+    String registrationIndexUri =
+        Keys.snapshotOwnerManifestCommitmentIndexBlobUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            7L,
+            "registration",
+            java.util.HexFormat.of().formatHex(registrationIndexDigest));
+    String registrationUri =
+        Keys.snapshotOwnerRegistrationManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, 7L, java.util.HexFormat.of().formatHex(registrationIndexDigest));
+    blobs.put(registrationUri, registrationBytes, "application/octet-stream");
+    blobs.put(registrationIndexUri, registrationIndexBytes, "application/x-protobuf");
+    byte[] manifestBytes =
+        ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setTableId(TABLE_ID)
+            .setSnapshotId(7L)
+            .setPublicationGenerationId("owner-generation")
+            .setManifestKind(
+                ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestKind.SCMK_OWNER_V2)
+            .setReusableCoverageManifest(
+                ai.floedb.floecat.reconciler.rpc.ReusableCoverageManifestRef.newBuilder()
+                    .setFormatVersion(1)
+                    .setUri(reusableUri)
+                    .setPayloadBytes(reusableRootBytes.length)
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(reusableRootDigest))
+                    .setShardCount(1)
+                    .setShardIndexRecordBytes(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
+                    .setCoverageEntryCount(1)
+                    .setShardRecordBytes(80)
+                    .setAggregationTreeRoot(treeRoot)
+                    .setCommitmentIndex(
+                        ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndexRef
+                            .newBuilder()
+                            .setFormatVersion(1)
+                            .setDomain(
+                                ai.floedb.floecat.reconciler.rpc.ExternalManifestDomain
+                                    .EMD_REUSABLE_COVERAGE)
+                            .setUri(reusableIndexUri)
+                            .setPayloadBytes(reusableIndexBytes.length)
+                            .setPayloadSha256(
+                                com.google.protobuf.ByteString.copyFrom(reusableIndexDigest))
+                            .setChunkCount(1L)))
+            .setOwnerArtifactRegistrationManifest(
+                ai.floedb.floecat.reconciler.rpc.OwnerArtifactRegistrationManifestRef.newBuilder()
+                    .setFormatVersion(1)
+                    .setUri(registrationUri)
+                    .setPayloadBytes(registrationBytes.length)
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(registrationDigest))
+                    .setCommitmentIndex(
+                        ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndexRef
+                            .newBuilder()
+                            .setFormatVersion(1)
+                            .setDomain(
+                                ai.floedb.floecat.reconciler.rpc.ExternalManifestDomain
+                                    .EMD_OWNER_ARTIFACT_REGISTRATION)
+                            .setUri(registrationIndexUri)
+                            .setPayloadBytes(registrationIndexBytes.length)
+                            .setPayloadSha256(
+                                com.google.protobuf.ByteString.copyFrom(registrationIndexDigest))
+                            .setChunkCount(1L)))
+            .build()
+            .toByteArray();
+    byte[] manifestDigest =
+        java.security.MessageDigest.getInstance("SHA-256").digest(manifestBytes);
+    String manifestUri =
+        Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+            ACCOUNT_ID, TABLE_ID, 7L, java.util.HexFormat.of().formatHex(manifestDigest));
+    blobs.put(manifestUri, manifestBytes, "application/x-protobuf");
+    byte[] leaseBytes =
+        ai.floedb.floecat.catalog.rpc.OwnerPublicationLease.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setTableId(TABLE_ID)
+            .setPublicationId("owner-generation")
+            .setReusableNamespacePrefix(Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID))
+            .setExpiresAtEpochMs(Long.MAX_VALUE)
+            .addProtectedCaptureManifestPrefixes(
+                Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(ACCOUNT_ID, TABLE_ID, 7L))
+            .addProtectedCaptureManifestUris(manifestUri)
+            .build()
+            .toByteArray();
+    String leaseUri =
+        Keys.ownerPublicationLeaseBlobUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            "owner-generation",
+            java.util.HexFormat.of()
+                .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(leaseBytes)));
+    blobs.put(leaseUri, leaseBytes, "application/x-protobuf");
+    putPointer(
+        Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, "owner-generation"), leaseUri);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(result.poisoned());
+    assertEquals(1, result.ownerReuseLeasesScanned());
+    assertTrue(blobs.head(manifestUri).isPresent());
+    assertTrue(blobs.head(registrationUri).isPresent());
+    assertTrue(blobs.head(registrationIndexUri).isPresent());
+    assertTrue(blobs.head(reusableUri).isPresent());
+    assertTrue(blobs.head(reusableIndexUri).isPresent());
+    assertTrue(blobs.head(groupLayoutUri).isPresent());
+    assertTrue(blobs.head(treeNodeUri).isPresent());
+    assertTrue(blobs.head(artifactUri).isPresent());
+    assertTrue(
+        blobs.head(captureUploadOnlyUri).isPresent(),
+        "the Begin lease protects capture-manifest uploads before Complete names them");
+    assertTrue(
+        blobs.head(uploadOnlyUri).isPresent(),
+        "the Begin lease protects uploads not yet named by a completed coverage manifest");
+  }
+
+  @Test
+  void expiredOwnerReuseLeaseDoesNotProtectReusableNamespace() throws Exception {
+    seedCurrentTable();
+    String generationId = "expired-owner-generation";
+    gc.statsRepository.beginStatsGeneration(tableRid(), 42L, generationId);
+    gc.statsRepository.prepareStatsGenerationManifest(tableRid(), 42L, generationId);
+    String generationUpload =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, 42L, generationId)
+            + "finalizer-outputs/stats.pb";
+    blobs.put(generationUpload, new byte[] {8}, "application/x-protobuf");
+    String artifactUri =
+        Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID)
+            + "statistics/files/"
+            + "03".repeat(32)
+            + ".pb";
+    blobs.put(artifactUri, new byte[] {9}, "application/x-protobuf");
+    byte[] leaseBytes =
+        ai.floedb.floecat.catalog.rpc.OwnerPublicationLease.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setTableId(TABLE_ID)
+            .setPublicationId(generationId)
+            .setReusableNamespacePrefix(Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID))
+            .setExpiresAtEpochMs(1L)
+            .build()
+            .toByteArray();
+    String leaseUri =
+        Keys.ownerPublicationLeaseBlobUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            generationId,
+            java.util.HexFormat.of()
+                .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(leaseBytes)));
+    blobs.put(leaseUri, leaseBytes, "application/x-protobuf");
+    putPointer(Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, generationId), leaseUri);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(result.poisoned());
+    assertTrue(blobs.head(artifactUri).isEmpty());
+    assertTrue(blobs.head(generationUpload).isEmpty());
+    assertFalse(gc.statsRepository.statsGenerationExists(tableRid(), 42L, generationId));
+  }
+
+  @Test
+  void expiredOwnerLeaseReclaimsWritingGenerationWithoutPreparedManifest() throws Exception {
+    seedCurrentTable();
+    String generationId = "unprepared-owner-generation";
+    long snapshotId = 44L;
+    gc.statsRepository.beginStatsGeneration(tableRid(), snapshotId, generationId);
+    byte[] expired = ownerLease(generationId, 1L);
+    String expiredUri = ownerLeaseUri(generationId, expired);
+    blobs.put(expiredUri, expired, "application/x-protobuf");
+    putPointer(Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, generationId), expiredUri);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(result.poisoned());
+    assertFalse(gc.statsRepository.statsGenerationExists(tableRid(), snapshotId, generationId));
+  }
+
+  @Test
+  void concurrentOwnerLeaseRenewalPreventsWritingGenerationCleanup() throws Exception {
+    seedCurrentTable();
+    String generationId = "renewed-owner-generation";
+    long snapshotId = 43L;
+    gc.statsRepository.beginStatsGeneration(tableRid(), snapshotId, generationId);
+    gc.statsRepository.prepareStatsGenerationManifest(tableRid(), snapshotId, generationId);
+    String generationUpload =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, snapshotId, generationId)
+            + "finalizer-outputs/stats.pb";
+    blobs.put(generationUpload, new byte[] {8}, "application/x-protobuf");
+    String leaseKey = Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, generationId);
+    byte[] expired = ownerLease(generationId, 1L);
+    String expiredUri = ownerLeaseUri(generationId, expired);
+    blobs.put(expiredUri, expired, "application/x-protobuf");
+    putPointer(leaseKey, expiredUri);
+    var renewed = new java.util.concurrent.atomic.AtomicBoolean();
+    gc.reachabilityGuard =
+        new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard() {
+          @Override
+          public <T> GuardedResult<T> deleteIfUnchanged(
+              Proof proof, java.util.function.Supplier<T> deletion) {
+            if (renewed.compareAndSet(false, true)) {
+              try {
+                byte[] fresh = ownerLease(generationId, Long.MAX_VALUE);
+                String freshUri = ownerLeaseUri(generationId, fresh);
+                blobs.put(freshUri, fresh, "application/x-protobuf");
+                Pointer current = pointers.get(leaseKey).orElseThrow();
+                assertTrue(
+                    pointers.compareAndSet(
+                        leaseKey,
+                        current.getVersion(),
+                        PointerReferences.blobPointer(
+                            leaseKey, freshUri, current.getVersion() + 1L, fresh.length)));
+              } catch (Exception error) {
+                throw new RuntimeException(error);
+              }
+            }
+            return super.deleteIfUnchanged(proof, deletion);
+          }
+        };
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(renewed.get());
+    assertFalse(result.poisoned());
+    assertTrue(gc.statsRepository.statsGenerationExists(tableRid(), snapshotId, generationId));
+    assertTrue(blobs.head(generationUpload).isPresent());
+  }
+
+  @Test
+  void missingOwnerReuseLeaseIsReportedSeparately() {
+    seedCurrentTable();
+    putPointer(
+        Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, "missing-owner"),
+        Keys.tableBlobPrefix(ACCOUNT_ID, TABLE_ID) + "owner-publications/missing.pb");
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(result.poisoned());
+    assertEquals(1, result.ownerReuseLeasesScanned());
+    assertEquals(1, result.ownerReuseLeasesMissing());
+    assertEquals(0, result.ownerReuseLeasesMalformed());
+    assertEquals(1, result.poisonedTables());
+  }
+
+  @Test
+  void malformedOwnerReuseLeaseIsReportedSeparately() {
+    seedCurrentTable();
+    String leaseUri = Keys.tableBlobPrefix(ACCOUNT_ID, TABLE_ID) + "owner-publications/bad.pb";
+    blobs.put(leaseUri, new byte[] {1, 2, 3}, "application/x-protobuf");
+    putPointer(Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, "malformed-owner"), leaseUri);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(result.poisoned());
+    assertEquals(1, result.ownerReuseLeasesScanned());
+    assertEquals(0, result.ownerReuseLeasesMissing());
+    assertEquals(1, result.ownerReuseLeasesMalformed());
+    assertEquals(1, result.poisonedTables());
+  }
+
+  @Test
   void reusableArtifactIndexObjectsFromAnotherTablePoisonGc() throws Exception {
     seedCurrentTable();
     String foreignPrefix =
@@ -2261,6 +2667,27 @@ class CasBlobGcTest {
   private void putPointer(String key, String blobUri) {
     Pointer ptr = PointerReferences.blobPointer(key, blobUri, 1L);
     pointers.compareAndSet(key, 0L, ptr);
+  }
+
+  private byte[] ownerLease(String generationId, long expiresAt) {
+    return ai.floedb.floecat.catalog.rpc.OwnerPublicationLease.newBuilder()
+        .setFormatVersion(1)
+        .setAccountId(ACCOUNT_ID)
+        .setTableId(TABLE_ID)
+        .setPublicationId(generationId)
+        .setReusableNamespacePrefix(Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID))
+        .setExpiresAtEpochMs(expiresAt)
+        .build()
+        .toByteArray();
+  }
+
+  private String ownerLeaseUri(String generationId, byte[] leaseBytes) throws Exception {
+    return Keys.ownerPublicationLeaseBlobUri(
+        ACCOUNT_ID,
+        TABLE_ID,
+        generationId,
+        java.util.HexFormat.of()
+            .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(leaseBytes)));
   }
 
   private String seedCurrentTable() {

@@ -210,6 +210,41 @@ public class S3BlobStore implements BlobStore {
   }
 
   @Override
+  public byte[] getRangeAtMost(String key, long offset, int length) {
+    if (offset < 0L || length < 0) {
+      throw new IllegalArgumentException("blob range is invalid");
+    }
+    if (length == 0) {
+      return new byte[0];
+    }
+    final String k = normalize(key);
+    String range = "bytes=" + offset + "-" + Math.addExact(offset, length - 1L);
+    try {
+      byte[] bytes =
+          s3.call(
+                  c ->
+                      c.getObject(
+                          GetObjectRequest.builder().bucket(bucket).key(k).range(range).build(),
+                          ResponseTransformer.toBytes()))
+              .asByteArray();
+      if (bytes.length > length) {
+        throw new StorageCorruptionException(
+            msg("GET", k, "range returned more than " + length + " bytes"), null);
+      }
+      return bytes;
+    } catch (S3Exception e) {
+      if (e.statusCode() == 404) {
+        throw new StorageNotFoundException(msg("GET", k, "not found"));
+      }
+      throw mapAndWrap("GET", k, e);
+    } catch (SdkClientException e) {
+      throw new StorageAbortRetryableException(msg("GET", k, e.getMessage()));
+    } catch (RuntimeException e) {
+      throw mapClosedPoolOrRethrow("GET", k, e);
+    }
+  }
+
+  @Override
   public Map<String, byte[]> getBatch(List<String> uris) {
     if (uris == null || uris.isEmpty()) {
       return Map.of();

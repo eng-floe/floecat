@@ -296,6 +296,10 @@ class KeysTest {
         Keys.snapshotTargetStatsManifestPointer("a c", "tbl 1", 7L),
         Keys.ownerPointerKeyForBlob(
             Keys.snapshotTargetStatsManifestBlobUri("a c", "tbl 1", 7L, "gen 1")));
+    assertEquals(
+        Keys.tableOwnerReuseLeasePointer("a c", "tbl 1", "publication/1"),
+        Keys.ownerPointerKeyForBlob(
+            Keys.ownerPublicationLeaseBlobUri("a c", "tbl 1", "publication/1", "sha")));
     // Blob LISTs return keys without the leading slash — same derivation.
     assertEquals(
         Keys.tablePointerById("a c", "tbl 1"),
@@ -317,10 +321,36 @@ class KeysTest {
         Keys.ownerPointerKeyForBlob(
             Keys.snapshotIndexArtifactGenerationBlobUri(
                 "a", "t", 7L, "gen", "file:s3://bucket/file.parquet", "sha")));
+    assertEquals(
+        null,
+        Keys.ownerPointerKeyForBlob(
+            Keys.ownerReusableArtifactBlobUri(
+                Keys.tableReusableArtifactBlobPrefix("a", "t"),
+                "statistics/files",
+                "0".repeat(64),
+                ".pb")));
     assertEquals(null, Keys.ownerPointerKeyForBlob(null));
     assertEquals(null, Keys.ownerPointerKeyForBlob("/accounts/a"));
     assertEquals(null, Keys.ownerPointerKeyForBlob("/other/a/tables/t/table/sha.pb"));
     // Malformed (blank) segments degrade to "no owner", never throw.
     assertEquals(null, Keys.ownerPointerKeyForBlob("/accounts/%20/tables/t/table/sha.pb"));
+  }
+
+  @Test
+  void ownerReusableArtifactValidatorSharesTheCanonicalPathGrammar() {
+    String prefix = Keys.tableReusableArtifactBlobPrefix("a c", "t bl");
+    String uri =
+        Keys.ownerReusableArtifactBlobUri(prefix, "statistics/files", "ab".repeat(32), ".pb");
+
+    assertEquals(true, Keys.isOwnerReusableArtifactBlobUri(prefix, "statistics/files", ".pb", uri));
+    assertEquals(
+        false,
+        Keys.isOwnerReusableArtifactBlobUri(
+            prefix,
+            "statistics/files",
+            ".pb",
+            Keys.ownerReusableArtifactBlobUri(prefix, "statistics/files", "AB".repeat(32), ".pb")));
+    assertEquals(
+        false, Keys.isOwnerReusableArtifactBlobUri(prefix, "sidecars/file-ranges", ".pb", uri));
   }
 }

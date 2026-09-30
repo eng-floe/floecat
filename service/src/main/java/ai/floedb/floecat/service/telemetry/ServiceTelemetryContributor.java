@@ -360,6 +360,12 @@ public final class ServiceTelemetryContributor implements TelemetryContributor {
         "Accounts whose CAS GC delete phase was poisoned in the last tick.");
     add(
         defs,
+        ServiceMetrics.Gc.CAS_POISONED_TABLES,
+        gcRequired,
+        gcAllowed,
+        "Tables whose CAS GC root walk was poisoned in the last tick.");
+    add(
+        defs,
         ServiceMetrics.Gc.CAS_DELETE_UNSUPPORTED_ACCOUNTS,
         gcRequired,
         gcAllowed,

@@ -67,6 +67,7 @@ CLI, and reconciler.
 | `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `GetLatestFinalizedSnapshot`, `CreateSnapshot`, `DeleteSnapshot` | Pins upstream checkpoints and timestamps. The bounded latest-finalized lookup selects a root-published reuse basis without scanning snapshot history. Finalized snapshots expose a system-owned `reuse_manifest_ref`; `SnapshotSpec` does not accept that field. |
 | `TableStatisticsService` | `GetTargetStats`, `ListTargetStats`, client-streaming `PutTargetStats` | Accepts per-snapshot target stats envelopes (table/column/expression/file). `ListTargetStats` supports target-kind filtering (currently at most one kind per request); streaming writes collapse multiple batches into a single call. |
 | `TableIndexService` | `GetIndexArtifact`, `GetIndexCaptureStatus`, `ListIndexArtifacts`, client-streaming `PutIndexArtifacts` | Stores and resolves snapshot-scoped parquet sidecar artifact metadata and bounded-cost finalized capture status keyed by table and snapshot. |
+| `OwnerPublicationService` | `BeginOwnerPublication`, `CompleteOwnerPublication` | Reserves an Owner generation and activates it through sequential, bounded completion calls. External registration and coverage manifests remain format v1 but are split into independently hashed, record-aligned chunks committed by a small content-addressed index. `Complete` accepts and returns an opaque phase/chunk cursor and verifies at most one committed chunk per call. |
 | `TableConstraintsService` | `GetTableConstraints`, `ListTableConstraints`, `PutTableConstraints`, `MergeTableConstraints`, `AppendTableConstraints`, `DeleteTableConstraints`, `AddTableConstraint`, `DeleteTableConstraint` | Snapshot-scoped constraints CRUD for user tables. `PutTableConstraints` is full-bundle upsert, `MergeTableConstraints` is server-side merge by `constraint.name` plus shallow merge of bundle `properties` (incoming keys win), `AppendTableConstraints` is server-side append-only (duplicate names rejected), and `AddTableConstraint`/`DeleteTableConstraint` are single-constraint partial mutations. All write operations require snapshot existence (`NOT_FOUND` when missing). |
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
@@ -125,6 +126,14 @@ engine release.
   that manifest.
   Snapshot selections carry `TablePin.ingested_at` when their retention clock is needed; current
   selections omit it because the live current snapshot is retained regardless of age.
+- **Owner publication completion** – Owner writes the capture manifest, registration payload,
+  coverage payload, and their two commitment indexes directly to object storage. Floecat reads the
+  small commitment index and one bounded range per `Complete`; it does not read registered artifact
+  payloads to calculate their hashes. Registration chunks have independent framing and byte,
+  object, and target limits. Coverage chunks contain fixed-width records. Floecat persists separate
+   registration/coverage chunk positions, cumulative counts, and ordering keys, and activates only
+   after every commitment and global total has been checked. Callers keep the 120-second RPC
+   deadline, send `Complete` sequentially, and retry an uncertain call with the same opaque cursor.
 - **External reusable-index compatibility** – external planner and finalizer deployments must
   regenerate bindings for `ReusableArtifactIndexReference` format 1 and its immutable sorted-run,
   run-manifest, and block messages. The old trie-root representation has no compatibility reader.

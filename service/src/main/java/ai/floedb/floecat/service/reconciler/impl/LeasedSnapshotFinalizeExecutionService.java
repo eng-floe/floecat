@@ -292,6 +292,7 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
             SnapshotReuseManifestRef.newBuilder()
                 .setFormatVersion(
                     ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest.FORMAT_VERSION)
+                .setKind(ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind.SRMK_RECONCILER)
                 .setUri(validated.getManifestUri())
                 .setPayloadBytes(validated.getManifestBytes())
                 .setPayloadSha256(validated.getManifestSha256())

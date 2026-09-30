@@ -16,7 +16,9 @@
 
 package ai.floedb.floecat.service.gc;
 
+import ai.floedb.floecat.catalog.rpc.OwnerPublicationLease;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -24,6 +26,7 @@ import ai.floedb.floecat.reconciler.impl.ReusableArtifactIndexStore;
 import ai.floedb.floecat.reconciler.jobs.ReusableArtifactBundleUris;
 import ai.floedb.floecat.reconciler.rpc.ReusableArtifactBundlePayload;
 import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest;
+import ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestKind;
 import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.impl.StatsRepository;
@@ -32,8 +35,11 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
+import ai.floedb.floecat.service.statistics.impl.ExternalManifestCommitmentCache;
+import ai.floedb.floecat.service.statistics.impl.ReusableCoverageManifest;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import com.google.protobuf.InvalidProtocolBufferException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URLDecoder;
@@ -44,6 +50,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -104,6 +111,7 @@ public class CasBlobGc {
   private static final int CHAIN_READ_ATTEMPTS = 3;
 
   @Inject BlobStore blobStore;
+  @Inject ExternalManifestCommitmentCache manifestCommitments;
   @Inject PointerStore pointerStore;
 
   /**
@@ -142,6 +150,10 @@ public class CasBlobGc {
     private boolean remarkComplete;
     private boolean publicationAfterDelete;
     private boolean verificationRemarkComplete;
+    private final OwnerManifestWalkState ownerManifests = new OwnerManifestWalkState();
+    private final Set<String> ownerProtectedPrefixes = new HashSet<>();
+    private final Set<String> activeOwnerPublications = new HashSet<>();
+    private final Set<String> expiredOwnerPublications = new HashSet<>();
 
     private DeferredPageState(
         String prefix, List<DeferredCandidate> candidates, boolean prefixPending) {
@@ -161,6 +173,18 @@ public class CasBlobGc {
       if (remarkProof != null) {
         remarkProof.close();
       }
+    }
+  }
+
+  private static final class OwnerManifestWalkState {
+    private final Set<String> completed = new HashSet<>();
+    private final HashSet<String> completedAggregationNodes = new HashSet<>();
+    private final Map<String, Long> nextRecord = new HashMap<>();
+
+    private void clear() {
+      completed.clear();
+      completedAggregationNodes.clear();
+      nextRecord.clear();
     }
   }
 
@@ -222,11 +246,19 @@ public class CasBlobGc {
     private int blobsDeleted;
     private int blobsRescued;
     private int tablesScanned;
+    private int ownerReuseLeasesScanned;
+    private int ownerReuseLeasesMissing;
+    private int ownerReuseLeasesMalformed;
+    private int poisonedTables;
     private long completedTableReferenceInsertions;
     private double maxReferenceIndexSaturation;
     private double maxReferenceIndexFalsePositiveProbability;
     private boolean generationCleanupPending;
     private boolean poisoned;
+    private final OwnerManifestWalkState ownerManifests = new OwnerManifestWalkState();
+    private final Set<String> ownerProtectedPrefixes = new HashSet<>();
+    private final Set<String> activeOwnerPublications = new HashSet<>();
+    private final Set<String> expiredOwnerPublications = new HashSet<>();
     private Phase phase = Phase.ACCOUNT_MARK;
 
     private PassContinuation(
@@ -292,6 +324,18 @@ public class CasBlobGc {
     }
   }
 
+  private static final class MissingOwnerLeaseObject extends RuntimeException {
+    private MissingOwnerLeaseObject(String message) {
+      super(message);
+    }
+  }
+
+  private enum OwnerLeaseRootResult {
+    ROOTED,
+    MISSING,
+    MALFORMED
+  }
+
   /**
    * One sweep's tallies. {@code blobsDeleted} counts successful version-delete CALLS, not blobs
    * physically removed: (a) on a versioned store, deleting the current version of an N-version blob
@@ -313,10 +357,14 @@ public class CasBlobGc {
       int referenceIndexSaturationPpm,
       int referenceIndexEstimatedFalsePositivePpb,
       int tablesScanned,
+      int ownerReuseLeasesScanned,
+      int ownerReuseLeasesMissing,
+      int ownerReuseLeasesMalformed,
+      int poisonedTables,
       boolean poisoned,
       boolean deletesUnsupported,
       boolean generationCleanupPending) {
-    Result(
+    public Result(
         int pointersScanned,
         long referencedBytes,
         int sizedBlobPointers,
@@ -341,6 +389,83 @@ public class CasBlobGc {
           0,
           0,
           tablesScanned,
+          0,
+          0,
+          0,
+          0,
+          poisoned,
+          deletesUnsupported,
+          generationCleanupPending);
+    }
+
+    public Result(
+        int pointersScanned,
+        long referencedBytes,
+        int sizedBlobPointers,
+        int blobPointers,
+        int blobsScanned,
+        int blobsDeleted,
+        int blobsRescued,
+        int referenced,
+        int referenceIndexSaturationPpm,
+        int referenceIndexEstimatedFalsePositivePpb,
+        int tablesScanned,
+        boolean poisoned,
+        boolean deletesUnsupported,
+        boolean generationCleanupPending) {
+      this(
+          pointersScanned,
+          referencedBytes,
+          sizedBlobPointers,
+          blobPointers,
+          blobsScanned,
+          blobsDeleted,
+          blobsRescued,
+          referenced,
+          referenceIndexSaturationPpm,
+          referenceIndexEstimatedFalsePositivePpb,
+          tablesScanned,
+          0,
+          0,
+          0,
+          0,
+          poisoned,
+          deletesUnsupported,
+          generationCleanupPending);
+    }
+
+    public Result(
+        int pointersScanned,
+        long referencedBytes,
+        int sizedBlobPointers,
+        int blobPointers,
+        int blobsScanned,
+        int blobsDeleted,
+        int blobsRescued,
+        int referenced,
+        int referenceIndexSaturationPpm,
+        int referenceIndexEstimatedFalsePositivePpb,
+        int tablesScanned,
+        int ownerReuseLeasesScanned,
+        boolean poisoned,
+        boolean deletesUnsupported,
+        boolean generationCleanupPending) {
+      this(
+          pointersScanned,
+          referencedBytes,
+          sizedBlobPointers,
+          blobPointers,
+          blobsScanned,
+          blobsDeleted,
+          blobsRescued,
+          referenced,
+          referenceIndexSaturationPpm,
+          referenceIndexEstimatedFalsePositivePpb,
+          tablesScanned,
+          ownerReuseLeasesScanned,
+          0,
+          0,
+          0,
           poisoned,
           deletesUnsupported,
           generationCleanupPending);
@@ -553,6 +678,10 @@ public class CasBlobGc {
         saturationPpm(pass),
         falsePositivePpb(pass),
         pass.tableIds.size(),
+        pass.ownerReuseLeasesScanned,
+        pass.ownerReuseLeasesMissing,
+        pass.ownerReuseLeasesMalformed,
+        pass.poisonedTables,
         false,
         false,
         true);
@@ -574,6 +703,10 @@ public class CasBlobGc {
         saturationPpm(pass),
         falsePositivePpb(pass),
         pass.tableIds.size(),
+        pass.ownerReuseLeasesScanned,
+        pass.ownerReuseLeasesMissing,
+        pass.ownerReuseLeasesMalformed,
+        pass.poisonedTables,
         true,
         false,
         true);
@@ -806,6 +939,9 @@ public class CasBlobGc {
           pass.generationGcProof = reachabilityGuard.beginProof(accountId, tableId);
           pass.generationGcComplete = false;
           pass.tableWalkFailures[0] = 0;
+          pass.ownerProtectedPrefixes.clear();
+          pass.activeOwnerPublications.clear();
+          pass.expiredOwnerPublications.clear();
         }
         ReferenceIndex tableReferenced = pass.tableReferenced;
         var tablePointer =
@@ -835,6 +971,31 @@ public class CasBlobGc {
                 pointer ->
                     rememberDirectIndexArtifactGeneration(
                         accountId, tableId, snapshotsById, pointer));
+        int ownerReuseLeases =
+            collectPointers(
+                Keys.tableOwnerReuseLeasePointerPrefix(accountId, tableId),
+                tableReferenced,
+                null,
+                pageSize,
+                null,
+                storageEstimate,
+                true,
+                pointer -> {
+                  switch (rootOwnerReuseLease(
+                      accountId, tableId, pointer.getBlobUri(), tableReferenced)) {
+                    case ROOTED -> {}
+                    case MISSING -> {
+                      pass.ownerReuseLeasesMissing++;
+                      pass.tableWalkFailures[0]++;
+                    }
+                    case MALFORMED -> {
+                      pass.ownerReuseLeasesMalformed++;
+                      pass.tableWalkFailures[0]++;
+                    }
+                  }
+                });
+        pointersScanned += ownerReuseLeases;
+        pass.ownerReuseLeasesScanned += ownerReuseLeases;
 
         // The current table root and EVERYTHING it references are GC roots: the root blob, every
         // manifest page, and each entry's definition/snapshot/generation-manifest/constraints
@@ -875,6 +1036,16 @@ public class CasBlobGc {
             for (Keys.GenerationKey generation : pass.generationGcContinuation.generations()) {
               pass.addGenerationKey(generation);
             }
+            pass.generationGcContinuation.allowAbandonedWritingGenerations(
+                generationId ->
+                    pass.tableWalkFailures[0] == 0
+                        && pass.expiredOwnerPublications.contains(generationId)
+                        && !pass.activeOwnerPublications.contains(generationId)
+                        && ownerPublicationLeaseExpired(
+                            accountId,
+                            tableId,
+                            generationId,
+                            pass.passStartedAtMs - supersededArtifactMinAgeMs));
             boolean[] generationProofChanged = {false};
             StatsRepository.GenerationGcResult generationGc =
                 statsRepository.deleteUnreferencedGenerations(
@@ -896,7 +1067,17 @@ public class CasBlobGc {
                         generationProofChanged[0] = true;
                         return false;
                       }
-                      return guardedClaim.value();
+                      if (!guardedClaim.value()) {
+                        return false;
+                      }
+                      // The reachability epoch is process-local. Re-read durable protection after
+                      // WRITING -> DELETING so a lease renewed by another replica restores the
+                      // generation before remote deletion begins.
+                      if (isProtected.getAsBoolean()) {
+                        restore.run();
+                        return false;
+                      }
+                      return true;
                     });
             remainingGenerationBlobDeletes =
                 Math.max(0, remainingGenerationBlobDeletes - generationGc.blobDeleteAttempts());
@@ -946,9 +1127,13 @@ public class CasBlobGc {
           pass.blobsDeleted += tableSweep.deleted();
           pass.blobsRescued += tableSweep.rescued();
           pass.generationCleanupPending |= tableSweep.pending();
-          pass.poisoned |= pass.tableWalkFailures[0] > 0;
+          if (pass.tableWalkFailures[0] > 0) {
+            pass.poisoned = true;
+            pass.poisonedTables++;
+          }
         } else {
           pass.poisoned = true;
+          pass.poisonedTables++;
         }
         pass.tablesScanned++;
         clearCompletedTableState(accountId, tableId, pass);
@@ -987,6 +1172,10 @@ public class CasBlobGc {
           saturationPpm(pass),
           falsePositivePpb(pass),
           pass.tablesScanned,
+          pass.ownerReuseLeasesScanned,
+          pass.ownerReuseLeasesMissing,
+          pass.ownerReuseLeasesMalformed,
+          pass.poisonedTables,
           true,
           false,
           pass.generationCleanupPending);
@@ -1124,6 +1313,10 @@ public class CasBlobGc {
         saturationPpm(pass),
         falsePositivePpb(pass),
         pass.tablesScanned,
+        pass.ownerReuseLeasesScanned,
+        pass.ownerReuseLeasesMissing,
+        pass.ownerReuseLeasesMalformed,
+        pass.poisonedTables,
         walkFailures[0] > 0 || pass.poisoned,
         false,
         pass.generationCleanupPending);
@@ -1165,7 +1358,8 @@ public class CasBlobGc {
       List<String> directPrefixes =
           List.of(
               Keys.tableDefinitionBlobPrefix(accountId, tableId),
-              Keys.tableConstraintsBlobPrefix(accountId, tableId));
+              Keys.tableConstraintsBlobPrefix(accountId, tableId),
+              Keys.tableOwnerPublicationLeaseBlobPrefix(accountId, tableId));
       for (String prefix : directPrefixes) {
         DeleteResult result =
             deleteUnreferenced(
@@ -1202,53 +1396,72 @@ public class CasBlobGc {
       deleted += snapshots.deleted();
       rescued += snapshots.rescued();
 
-      String prefix = Keys.tableRootBlobPrefix(accountId, tableId);
-      boolean more;
-      do {
-        if (continuation.deferredPage == null) {
-          var deferred = new ArrayList<DeferredCandidate>(pageSize);
-          DeleteResult listed =
-              deleteUnreferenced(
-                  prefix,
+      // Both table-root objects and Owner-managed reusable artifacts lack a derivable owner
+      // pointer. Sweep them through the deferred remark-and-fence path so a concurrent publication
+      // cannot make an object live between the mark and its delete.
+      List<String> deferredPrefixes =
+          List.of(
+              Keys.tableRootBlobPrefix(accountId, tableId),
+              Keys.tableReusableArtifactBlobPrefix(accountId, tableId));
+      int firstDeferredPrefix = 0;
+      if (continuation.deferredPage != null) {
+        firstDeferredPrefix = deferredPrefixes.indexOf(continuation.deferredPage.prefix);
+        if (firstDeferredPrefix < 0) {
+          throw new IllegalStateException(
+              "deferred table candidate page has an unrecognised prefix");
+        }
+      }
+      for (int prefixIndex = firstDeferredPrefix;
+          prefixIndex < deferredPrefixes.size();
+          prefixIndex++) {
+        String prefix = deferredPrefixes.get(prefixIndex);
+        boolean more;
+        do {
+          if (continuation.deferredPage == null) {
+            var deferred = new ArrayList<DeferredCandidate>(pageSize);
+            DeleteResult listed =
+                deleteUnreferenced(
+                    prefix,
+                    referenced,
+                    walkFailures,
+                    key -> true,
+                    deferred,
+                    pageSize,
+                    nowMs,
+                    supersededArtifactMinAgeMs);
+            scanned += listed.scanned();
+            deleted += listed.deleted();
+            rescued += listed.rescued();
+            if (walkFailures[0] > 0) {
+              return new DeleteResult(scanned, deleted, rescued, true);
+            }
+            if (deferred.isEmpty()) {
+              more = listed.pending();
+              continue;
+            }
+            continuation.deferredPage = new DeferredPageState(prefix, deferred, listed.pending());
+            checkDeadline();
+          }
+          DeleteResult flushed =
+              flushDeferredTableCandidates(
+                  accountId,
+                  tableId,
                   referenced,
                   walkFailures,
-                  key -> true,
-                  deferred,
                   pageSize,
-                  nowMs,
-                  supersededArtifactMinAgeMs);
-          scanned += listed.scanned();
-          deleted += listed.deleted();
-          rescued += listed.rescued();
+                  referenceCapacity,
+                  referenceFalsePositiveRate);
+          deleted += flushed.deleted();
+          rescued += flushed.rescued();
           if (walkFailures[0] > 0) {
             return new DeleteResult(scanned, deleted, rescued, true);
           }
-          if (deferred.isEmpty()) {
-            more = listed.pending();
-            continue;
-          }
-          continuation.deferredPage = new DeferredPageState(prefix, deferred, listed.pending());
-          checkDeadline();
-        }
-        DeleteResult flushed =
-            flushDeferredTableCandidates(
-                accountId,
-                tableId,
-                referenced,
-                walkFailures,
-                pageSize,
-                referenceCapacity,
-                referenceFalsePositiveRate);
-        deleted += flushed.deleted();
-        rescued += flushed.rescued();
-        if (walkFailures[0] > 0) {
-          return new DeleteResult(scanned, deleted, rescued, true);
-        }
-        more = continuation.deferredPage.prefixPending;
-        continuation.deferredPage.close();
-        continuation.deferredPage = null;
-        clearRemarkContinuationState(tableId, prefix);
-      } while (more);
+          more = continuation.deferredPage.prefixPending;
+          continuation.deferredPage.close();
+          continuation.deferredPage = null;
+          clearRemarkContinuationState(tableId, prefix);
+        } while (more);
+      }
       return new DeleteResult(scanned, deleted, rescued, false);
     } catch (DeadlineReached e) {
       addDeleteProgress(continuation, scanned, deleted, rescued);
@@ -1318,6 +1531,14 @@ public class CasBlobGc {
         DeferredCandidate candidate = state.candidates.get(state.deleteIndex);
         String normalized = normalizeKey(candidate.key());
         if (referenced.mightContain(normalized) || state.fresh.mightContain(normalized)) {
+          state.deleteIndex++;
+          continue;
+        }
+        // Owner-v2 reusable artifacts deliberately have no derivable owner pointer (see
+        // Keys.tableBlobOwner). That keeps them on this deferred, remark-proven path, where an
+        // in-flight Owner publication's namespace lease is consulted before deletion. If those
+        // objects ever gain a primary-sweep owner, the same lease check must move with them.
+        if (protectedByOwnerPublicationLease(normalized, state.fresh)) {
           state.deleteIndex++;
           continue;
         }
@@ -1396,6 +1617,9 @@ public class CasBlobGc {
     }
     state.remarkProof = null;
     state.fresh = null;
+    state.ownerProtectedPrefixes.clear();
+    state.activeOwnerPublications.clear();
+    state.expiredOwnerPublications.clear();
     state.remarkComplete = false;
     state.generationRefresh = new StatsRepository.GenerationGcContinuation();
     clearRemarkContinuationState(tableId, state.prefix);
@@ -1457,6 +1681,7 @@ public class CasBlobGc {
     }
     pass.tableGenerationKeys.clear();
     pass.tableWalkFailures[0] = 0;
+    pass.ownerManifests.clear();
   }
 
   private String generationCursor(String accountId) {
@@ -1724,6 +1949,35 @@ public class CasBlobGc {
         throw new IllegalStateException("snapshot reuse manifest metadata mismatch");
       }
       SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes);
+      if (manifest.getManifestKind() == SnapshotCaptureManifestKind.SCMK_OWNER_V2) {
+        var coverage = manifest.getReusableCoverageManifest();
+        String coveragePrefix =
+            Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(accountId, tableId, snapshotId);
+        if (manifest.getFormatVersion() != 1
+            || manifestRef.getKind() != SnapshotReuseManifestKind.SRMK_OWNER_V2
+            || !accountId.equals(manifest.getAccountId())
+            || !tableId.equals(manifest.getTableId())
+            || manifest.getSnapshotId() != snapshotId
+            || !manifest.hasReusableCoverageManifest()
+            || !ReusableCoverageManifest.hasContentAddressedUri(coverage, coveragePrefix)
+            || !manifestRef
+                .getUri()
+                .equals(
+                    Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+                        accountId,
+                        tableId,
+                        snapshotId,
+                        HexFormat.of().formatHex(sha256(manifestBytes))))) {
+          throw new IllegalStateException("Owner reuse manifest identity mismatch");
+        }
+        String managedPrefix = Keys.tableReusableArtifactBlobPrefix(accountId, tableId);
+        rootOwnerCoverageManifest(
+            accountId, tableId, snapshotId, coverage, managedPrefix, referenced);
+        return true;
+      }
+      if (manifestRef.getKind() == SnapshotReuseManifestKind.SRMK_OWNER_V2) {
+        throw new IllegalStateException("Owner reuse reference names a reconciler manifest");
+      }
       if (manifest.getFormatVersion() != 1
           || !manifest.getReusableArtifactBundlesComplete()
           || !manifest.hasReusableArtifactIndex()
@@ -1880,6 +2134,258 @@ public class CasBlobGc {
           snapshotBlobUri);
       return false;
     }
+  }
+
+  private OwnerLeaseRootResult rootOwnerReuseLease(
+      String accountId, String tableId, String leaseUri, ReferenceIndex referenced) {
+    try {
+      byte[] leaseBytes = blobStore.get(leaseUri);
+      if (leaseBytes == null) {
+        throw new MissingOwnerLeaseObject("missing Owner publication lease " + leaseUri);
+      }
+      OwnerPublicationLease lease = OwnerPublicationLease.parseFrom(leaseBytes);
+      String expectedPrefix = Keys.tableReusableArtifactBlobPrefix(accountId, tableId);
+      String expectedLeaseUri =
+          Keys.ownerPublicationLeaseBlobUri(
+              accountId,
+              tableId,
+              lease.getPublicationId(),
+              HexFormat.of().formatHex(sha256(leaseBytes)));
+      if (lease.getFormatVersion() != 1
+          || !accountId.equals(lease.getAccountId())
+          || !tableId.equals(lease.getTableId())
+          || lease.getPublicationId().isBlank()
+          || lease.getExpiresAtEpochMs() <= 0L
+          || !expectedPrefix.equals(lease.getReusableNamespacePrefix())
+          || !leaseUri.equals(expectedLeaseUri)) {
+        throw new IllegalStateException("invalid Owner publication lease");
+      }
+      referenced.add(normalizeKey(leaseUri));
+      long gcNow = continuation == null ? System.currentTimeMillis() : continuation.passStartedAtMs;
+      if (lease.getExpiresAtEpochMs() <= gcNow) {
+        expiredOwnerPublications(referenced).add(lease.getPublicationId());
+        return OwnerLeaseRootResult.ROOTED;
+      }
+      activeOwnerPublications(referenced).add(lease.getPublicationId());
+      ownerProtectedPrefixes(referenced).add(normalizeKey(expectedPrefix));
+      for (String manifestPrefix : lease.getProtectedCaptureManifestPrefixesList()) {
+        if (!isOwnerCaptureManifestPrefix(accountId, tableId, manifestPrefix)) {
+          throw new IllegalStateException("invalid Owner capture-manifest lease prefix");
+        }
+        ownerProtectedPrefixes(referenced).add(normalizeKey(manifestPrefix));
+      }
+      for (String manifestUri : lease.getProtectedCaptureManifestUrisList()) {
+        rootOwnerCaptureManifest(accountId, tableId, manifestUri, referenced);
+      }
+      return OwnerLeaseRootResult.ROOTED;
+    } catch (DeadlineReached | ReferenceIndex.CapacityExceededException error) {
+      throw error;
+    } catch (MissingOwnerLeaseObject error) {
+      LOG.warnf(error, "cas gc could not find Owner publication lease object %s", leaseUri);
+      return OwnerLeaseRootResult.MISSING;
+    } catch (Exception error) {
+      LOG.warnf(error, "cas gc could not root Owner publication lease %s", leaseUri);
+      return OwnerLeaseRootResult.MALFORMED;
+    }
+  }
+
+  private boolean ownerPublicationLeaseExpired(
+      String accountId, String tableId, String publicationId, long expiredBeforeMs) {
+    try {
+      Pointer pointer =
+          pointerStore
+              .get(Keys.tableOwnerReuseLeasePointer(accountId, tableId, publicationId))
+              .orElse(null);
+      if (pointer == null) {
+        return false;
+      }
+      byte[] leaseBytes = blobStore.get(pointer.getBlobUri());
+      if (leaseBytes == null) {
+        return false;
+      }
+      OwnerPublicationLease lease = OwnerPublicationLease.parseFrom(leaseBytes);
+      String expectedUri =
+          Keys.ownerPublicationLeaseBlobUri(
+              accountId, tableId, publicationId, HexFormat.of().formatHex(sha256(leaseBytes)));
+      return lease.getFormatVersion() == 1
+          && accountId.equals(lease.getAccountId())
+          && tableId.equals(lease.getTableId())
+          && publicationId.equals(lease.getPublicationId())
+          && pointer.getBlobUri().equals(expectedUri)
+          && lease.getExpiresAtEpochMs() > 0L
+          && lease.getExpiresAtEpochMs() <= expiredBeforeMs;
+    } catch (Exception ignored) {
+      return false;
+    }
+  }
+
+  private void rootOwnerCaptureManifest(
+      String accountId, String tableId, String manifestUri, ReferenceIndex referenced)
+      throws InvalidProtocolBufferException {
+    byte[] manifestBytes = blobStore.get(manifestUri);
+    if (manifestBytes == null) {
+      throw new MissingOwnerLeaseObject("missing leased Owner reuse manifest " + manifestUri);
+    }
+    SnapshotCaptureManifest manifest = SnapshotCaptureManifest.parseFrom(manifestBytes);
+    var coverage = manifest.getReusableCoverageManifest();
+    String coveragePrefix =
+        Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
+            accountId, tableId, manifest.getSnapshotId());
+    if (manifest.getManifestKind() != SnapshotCaptureManifestKind.SCMK_OWNER_V2
+        || manifest.getFormatVersion() != 1
+        || !accountId.equals(manifest.getAccountId())
+        || !tableId.equals(manifest.getTableId())
+        || !manifest.hasReusableCoverageManifest()
+        || !ReusableCoverageManifest.hasContentAddressedUri(coverage, coveragePrefix)
+        || !manifestUri.equals(
+            Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+                accountId,
+                tableId,
+                manifest.getSnapshotId(),
+                HexFormat.of().formatHex(sha256(manifestBytes))))) {
+      throw new IllegalStateException("invalid leased Owner reuse manifest");
+    }
+    if (manifest.hasOwnerArtifactRegistrationManifest()) {
+      var registration = manifest.getOwnerArtifactRegistrationManifest();
+      if (registration.getFormatVersion() != 1
+          || registration.getPayloadBytes() <= 0L
+          || registration.getPayloadSha256().size() != 32
+          || !registration.hasCommitmentIndex()
+          || !registration
+              .getUri()
+              .equals(
+                  Keys.snapshotOwnerRegistrationManifestBlobUri(
+                      accountId,
+                      tableId,
+                      manifest.getSnapshotId(),
+                      HexFormat.of()
+                          .formatHex(
+                              registration
+                                  .getCommitmentIndex()
+                                  .getPayloadSha256()
+                                  .toByteArray())))) {
+        throw new IllegalStateException("invalid leased Owner registration manifest");
+      }
+      referenced.add(normalizeKey(registration.getUri()));
+      referenced.add(normalizeKey(registration.getCommitmentIndex().getUri()));
+    }
+    referenced.add(normalizeKey(manifestUri));
+    String managedPrefix = Keys.tableReusableArtifactBlobPrefix(accountId, tableId);
+    rootOwnerCoverageManifest(
+        accountId, tableId, manifest.getSnapshotId(), coverage, managedPrefix, referenced);
+  }
+
+  private void rootOwnerCoverageManifest(
+      String accountId,
+      String tableId,
+      long snapshotId,
+      ai.floedb.floecat.reconciler.rpc.ReusableCoverageManifestRef coverage,
+      String managedPrefix,
+      ReferenceIndex referenced) {
+    String uri = normalizeKey(coverage.getUri());
+    referenced.add(uri);
+    if (coverage.hasCommitmentIndex()) {
+      referenced.add(normalizeKey(coverage.getCommitmentIndex().getUri()));
+    }
+    OwnerManifestWalkState state = ownerManifestState(referenced);
+    if (state.completed.contains(uri)) {
+      return;
+    }
+    long firstRecord = state.nextRecord.getOrDefault(uri, 0L);
+    ReusableCoverageManifest.walkTrusted(
+        manifestCommitments,
+        blobStore,
+        coverage,
+        firstRecord,
+        artifact -> {
+          checkDeadline();
+          if (!artifact.externalSidecar()) {
+            referenced.add(
+                normalizeKey(ReusableCoverageManifest.managedUri(managedPrefix, artifact)));
+          }
+        },
+        shardUri -> {
+          checkDeadline();
+          referenced.add(normalizeKey(shardUri));
+        },
+        state.completedAggregationNodes,
+        next -> state.nextRecord.put(uri, next),
+        accountId,
+        tableId,
+        snapshotId,
+        managedPrefix);
+    state.nextRecord.remove(uri);
+    state.completed.add(uri);
+  }
+
+  private OwnerManifestWalkState ownerManifestState(ReferenceIndex referenced) {
+    if (continuation != null) {
+      if (referenced == continuation.tableReferenced) {
+        return continuation.ownerManifests;
+      }
+      if (continuation.deferredPage != null && referenced == continuation.deferredPage.fresh) {
+        return continuation.deferredPage.ownerManifests;
+      }
+    }
+    return new OwnerManifestWalkState();
+  }
+
+  private Set<String> ownerProtectedPrefixes(ReferenceIndex referenced) {
+    if (continuation != null) {
+      if (referenced == continuation.tableReferenced) {
+        return continuation.ownerProtectedPrefixes;
+      }
+      if (continuation.deferredPage != null && referenced == continuation.deferredPage.fresh) {
+        return continuation.deferredPage.ownerProtectedPrefixes;
+      }
+    }
+    // Unlike ownerManifestState, an empty fallback is not conservative here: it would turn an
+    // unrecognised reachability index into a false delete. Fail closed on this internal invariant.
+    throw new IllegalStateException(
+        "Owner publication lease state does not match reachability index");
+  }
+
+  private Set<String> activeOwnerPublications(ReferenceIndex referenced) {
+    if (continuation != null) {
+      if (referenced == continuation.tableReferenced) {
+        return continuation.activeOwnerPublications;
+      }
+      if (continuation.deferredPage != null && referenced == continuation.deferredPage.fresh) {
+        return continuation.deferredPage.activeOwnerPublications;
+      }
+    }
+    throw new IllegalStateException(
+        "Owner publication lease state does not match reachability index");
+  }
+
+  private Set<String> expiredOwnerPublications(ReferenceIndex referenced) {
+    if (continuation != null) {
+      if (referenced == continuation.tableReferenced) {
+        return continuation.expiredOwnerPublications;
+      }
+      if (continuation.deferredPage != null && referenced == continuation.deferredPage.fresh) {
+        return continuation.deferredPage.expiredOwnerPublications;
+      }
+    }
+    throw new IllegalStateException(
+        "Owner publication lease state does not match reachability index");
+  }
+
+  private boolean protectedByOwnerPublicationLease(String key, ReferenceIndex referenced) {
+    return ownerProtectedPrefixes(referenced).stream().anyMatch(key::startsWith);
+  }
+
+  private static boolean isOwnerCaptureManifestPrefix(
+      String accountId, String tableId, String prefix) {
+    String snapshotPrefix = Keys.tableSnapshotBlobPrefix(accountId, tableId);
+    if (!prefix.startsWith(snapshotPrefix) || !prefix.endsWith(Keys.SEG_INDEX_CAPTURE_MANIFESTS)) {
+      return false;
+    }
+    String snapshotId =
+        prefix.substring(
+            snapshotPrefix.length(), prefix.length() - Keys.SEG_INDEX_CAPTURE_MANIFESTS.length());
+    return snapshotId.length() == 19
+        && snapshotId.chars().allMatch(value -> value >= '0' && value <= '9');
   }
 
   private static byte[] sha256(byte[] bytes) {
@@ -2199,6 +2705,13 @@ public class CasBlobGc {
             // unconditional delete here would reintroduce the race.
             continue;
           }
+          // Begin leases this snapshot's upload namespace before returning it to the Owner. The
+          // pass-start age fence protects a lease created during this sweep; leases already present
+          // at the mark are consulted here before any capture-manifest object is deleted.
+          if (normalized.contains(Keys.SEG_INDEX_CAPTURE_MANIFESTS)
+              && protectedByOwnerPublicationLease(normalized, referenced)) {
+            continue;
+          }
           if (ownerPointerKey == null && deferNoOwnerTo != null) {
             // No owner pointer derivable from the key (chain-walked manifest pages, persistent
             // reusable-index run objects, and shared content-addressed sidecars) — and blob
@@ -2347,6 +2860,24 @@ public class CasBlobGc {
             rememberDirectIndexArtifactGeneration(accountId, tableId, snapshotsById, pointer));
     collectPointers(
         Keys.snapshotConstraintsPointerPrefix(accountId, tableId), fresh, null, pageSize);
+    int[] failures = {0};
+    collectPointers(
+        Keys.tableOwnerReuseLeasePointerPrefix(accountId, tableId),
+        fresh,
+        null,
+        pageSize,
+        null,
+        null,
+        true,
+        pointer -> {
+          if (rootOwnerReuseLease(accountId, tableId, pointer.getBlobUri(), fresh)
+              != OwnerLeaseRootResult.ROOTED) {
+            failures[0]++;
+          }
+        });
+    if (failures[0] > 0) {
+      return false;
+    }
     return true;
   }
 

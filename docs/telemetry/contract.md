@@ -77,6 +77,7 @@ This lists all metrics currently available in the repository:
 | floecat.service.gc.cas.delete_unsupported_accounts | GAUGE |  | v1 | Accounts whose CAS GC sweep was skipped because immutable version deletes are unsupported. | component, operation | component, operation |
 | floecat.service.gc.cas.oldest_sweep_age | GAUGE | ms | v1 | Age in milliseconds of the least-recently cleanly-swept CAS GC account. | component, operation | component, operation |
 | floecat.service.gc.cas.poisoned_accounts | GAUGE |  | v1 | Accounts whose CAS GC delete phase was poisoned in the last tick. | component, operation | component, operation |
+| floecat.service.gc.cas.poisoned_tables | GAUGE |  | v1 | Tables whose CAS GC root walk was poisoned in the last tick. | component, operation | component, operation |
 | floecat.service.gc.reconcile_jobs.account_page.index | GAUGE | count | v1 | Current reconcile job GC index within the cached account page. | component, operation | component, operation |
 | floecat.service.gc.reconcile_jobs.account_page.size | GAUGE | count | v1 | Current reconcile job GC cached account page size. | component, operation | component, operation |
 | floecat.service.gc.reconcile_jobs.account_tokens.active | GAUGE | count | v1 | Accounts with active reconcile job GC continuation tokens. | component, operation | component, operation |
