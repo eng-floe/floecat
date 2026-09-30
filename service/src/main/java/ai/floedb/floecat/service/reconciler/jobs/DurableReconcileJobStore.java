@@ -219,6 +219,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   private final Map<String, String> snapshotCoverageClaimGcTokens = new ConcurrentHashMap<>();
   volatile Semaphore leaseScanPermits = new Semaphore(DEFAULT_LEASE_MAX_CONCURRENCY, true);
   private volatile String statsCleanupScanToken = "";
+  private volatile String snapshotOrphanScanToken = "";
 
   private ReconcilePayloadStore payloads() {
     if (payloadStore == null) {
@@ -1813,6 +1814,67 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
     cancellationMaintenance().runCancellationMaintenanceOnce(maxMillis);
   }
 
+  /**
+   * Audits waiting snapshot plans independently of projection markers. This repairs jobs orphaned
+   * while delete/cancellation maintenance was unavailable and prevents a cancelled finalizer from
+   * leaving its parent permanently waiting.
+   */
+  public void runSnapshotOrphanMaintenanceOnce(int maxJobs) {
+    int limit = Math.max(1, maxJobs);
+    var page =
+        jobIndexStore()
+            .listStoredJobsInState("JS_WAITING", limit, blankToEmpty(snapshotOrphanScanToken));
+    for (StoredReconcileJob record : page.records()) {
+      if (record == null
+          || record.jobKind() != ReconcileJobKind.PLAN_SNAPSHOT
+          || !executionLane.equals(record.executionPolicy().lane())) {
+        continue;
+      }
+      try {
+        if (!blankToEmpty(record.connectorId).isBlank()
+            && !canonicalConnectorExists(record.accountId, record.connectorId)) {
+          cancel(
+              record.accountId,
+              record.jobId,
+              "connector deleted: " + blankToEmpty(record.connectorId));
+          continue;
+        }
+        if (hasCancelledSnapshotFinalizer(record.accountId, record.jobId)) {
+          cancel(record.accountId, record.jobId, "snapshot finalizer was cancelled");
+        }
+      } catch (RuntimeException e) {
+        LOG.warnf(
+            e,
+            "Snapshot orphan maintenance failed accountId=%s jobId=%s",
+            record.accountId,
+            record.jobId);
+      }
+    }
+    snapshotOrphanScanToken = blankToEmpty(page.nextPageToken());
+  }
+
+  private boolean hasCancelledSnapshotFinalizer(String accountId, String parentJobId) {
+    String pageToken = "";
+    Set<String> visitedTokens = new java.util.HashSet<>();
+    while (visitedTokens.add(pageToken)) {
+      var page =
+          jobIndexStore().listStoredChildJobs(accountId, parentJobId, readyScanLimit, pageToken);
+      for (StoredReconcileJob child : page.records()) {
+        if (child != null
+            && child.jobKind() == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+            && "JS_CANCELLED".equals(blankToEmpty(child.state))) {
+          return true;
+        }
+      }
+      String nextPageToken = blankToEmpty(page.nextPageToken());
+      if (nextPageToken.isBlank()) {
+        return false;
+      }
+      pageToken = nextPageToken;
+    }
+    return false;
+  }
+
   @Override
   public boolean renewLease(String jobId, String leaseEpoch) {
     var loaded = loadByAnyAccount(jobId);
@@ -2591,6 +2653,65 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
   public Optional<SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntent(String jobId) {
     StoredEnvelope stored = loadByAnyAccount(jobId).orElse(null);
     return Optional.ofNullable(stored == null ? null : snapshotFinalizeCommitIntent(stored.record));
+  }
+
+  @Override
+  public SnapshotFinalizePublicationDisposition snapshotFinalizePublicationDisposition(
+      String jobId, String leaseEpoch) {
+    StoredEnvelope finalizer = loadByAnyAccount(jobId).orElse(null);
+    if (finalizer == null
+        || finalizer.record == null
+        || !finalizer.record.hasPublishableSnapshotFinalizeIntent()
+        || !blankToEmpty(leaseEpoch)
+            .equals(blankToEmpty(finalizer.record.snapshotFinalizeResultLeaseEpoch))) {
+      return SnapshotFinalizePublicationDisposition.RESOLVED;
+    }
+    if (!"JS_RUNNING".equals(blankToEmpty(finalizer.record.state))) {
+      return SnapshotFinalizePublicationDisposition.RESOLVED;
+    }
+    StoredEnvelope parent = loadByAnyAccount(finalizer.record.parentJobId).orElse(null);
+    if (parent == null
+        || parent.record == null
+        || isTerminalState(parent.record.state)
+        || isCancellationState(parent.record.state)
+        || isBlockedByAncestorCancellation(finalizer.record)) {
+      return SnapshotFinalizePublicationDisposition.ABANDON;
+    }
+    if (!blankToEmpty(finalizer.record.connectorId).isBlank()
+        && !canonicalConnectorExists(finalizer.record.accountId, finalizer.record.connectorId)) {
+      return SnapshotFinalizePublicationDisposition.ABANDON;
+    }
+    return SnapshotFinalizePublicationDisposition.RETRYABLE;
+  }
+
+  @Override
+  public boolean abandonSnapshotFinalizeCommit(
+      String jobId, String leaseEpoch, long finishedAtMs, String message) {
+    Optional<StoredEnvelope> updated =
+        mutateByJobIdReturningRecord(
+            jobId,
+            existing -> {
+              if (existing == null
+                  || existing.jobKind() != ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
+                  || isTerminalState(existing.state)
+                  || !existing.hasPublishableSnapshotFinalizeIntent()
+                  || !blankToEmpty(leaseEpoch)
+                      .equals(blankToEmpty(existing.snapshotFinalizeResultLeaseEpoch))) {
+                return null;
+              }
+              applyFailedTerminalToRecord(
+                  existing, finishedAtMs, message, 0L, 0L, 0L, 0L, 1L, 0L, 0L, 0L);
+              existing.clearSnapshotFinalizeIntent();
+              existing.updatedAtMs = System.currentTimeMillis();
+              return existing;
+            });
+    updated.ifPresent(
+        env -> {
+          leaseManager().clearLeaseIfEpochMatches(env.record.accountId, jobId, leaseEpoch);
+          leaseManager().clearLaneLeaseIfOwned(env.record, env.canonicalPointerKey);
+          projectionMaintenance().signalWork();
+        });
+    return updated.isPresent();
   }
 
   @Override
@@ -3933,9 +4054,13 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
         || !"JS_CANCELLED".equals(blankToEmpty(env.record.state))) {
       return;
     }
-    leaseManager()
-        .loadLease(env.record)
-        .ifPresent(lease -> clearExecutionLeasesIfOwned(env, env.record.jobId, lease.epoch));
+    var lease = leaseManager().loadLease(env.record).orElse(null);
+    if (lease != null) {
+      clearExecutionLeasesIfOwned(env, env.record.jobId, lease.epoch);
+      return;
+    }
+    leaseManager().clearLaneLeaseIfOwned(env.record, env.canonicalPointerKey);
+    leaseManager().clearSnapshotOwnershipIfOwned(env.record, env.canonicalPointerKey);
   }
 
   private void markDirtyParentForRecord(StoredReconcileJob record) {
@@ -4401,8 +4526,7 @@ public class DurableReconcileJobStore implements ReconcileJobStore {
       if (child == null) {
         continue;
       }
-      if (child.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE
-          && !"JS_CANCELLED".equals(child.state)) {
+      if (child.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE) {
         hasFinalizer = true;
         continue;
       }

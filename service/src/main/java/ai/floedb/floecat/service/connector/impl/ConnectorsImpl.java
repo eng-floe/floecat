@@ -50,6 +50,7 @@ import ai.floedb.floecat.connector.spi.ConnectorConfig.Kind;
 import ai.floedb.floecat.connector.spi.ConnectorFactory;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.DatabricksAccessDelegation;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.service.common.IdempotencyGuard;
@@ -70,6 +71,7 @@ import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import com.google.protobuf.FieldMask;
 import io.quarkus.grpc.GrpcService;
 import io.smallrye.mutiny.Uni;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import java.util.Arrays;
 import java.util.List;
@@ -77,6 +79,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jboss.logging.Logger;
 
 @GrpcService
@@ -89,6 +92,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Inject Authorizer authz;
   @Inject IdempotencyRepository idempotencyStore;
   @Inject CredentialResolver credentialResolver;
+  @Inject Instance<ReconcileJobStore> reconcileJobStore;
 
   private static final Set<String> CONNECTOR_MUTABLE_PATHS =
       Set.of(
@@ -650,6 +654,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
   @Override
   public Uni<DeleteConnectorResponse> deleteConnector(DeleteConnectorRequest request) {
     var L = LogHelper.start(LOG, "DeleteConnector");
+    var cleanupTarget = new AtomicReference<DeletedConnector>();
 
     return mapFailures(
             runWithRetry(
@@ -676,10 +681,9 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                     }
                     MutationOps.BaseServiceChecks.enforcePreconditions(
                         corr, safe, request.getPrecondition());
+                    cleanupTarget.set(new DeletedConnector(pc.getAccountId(), connectorId.getId()));
                     return DeleteConnectorResponse.newBuilder().setMeta(safe).build();
                   }
-
-                  String secretId = connectorId.getId();
 
                   var out =
                       MutationOps.deleteWithPreconditions(
@@ -691,7 +695,7 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
                           "connector",
                           Map.of("id", connectorId.getId()));
 
-                  credentialResolver.delete(pc.getAccountId(), secretId);
+                  cleanupTarget.set(new DeletedConnector(pc.getAccountId(), connectorId.getId()));
 
                   return DeleteConnectorResponse.newBuilder().setMeta(out).build();
                 }),
@@ -699,8 +703,51 @@ public class ConnectorsImpl extends BaseServiceImpl implements Connectors {
         .onFailure()
         .invoke(L::fail)
         .onItem()
+        .invoke(
+            ignored -> {
+              DeletedConnector deleted = cleanupTarget.get();
+              if (deleted != null) {
+                cleanupDeletedConnector(deleted.accountId(), deleted.connectorId());
+              }
+            })
+        .onItem()
         .invoke(L::ok);
   }
+
+  private void cleanupDeletedConnector(String accountId, String connectorId) {
+    try {
+      credentialResolver.delete(accountId, connectorId);
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e,
+          "connector_delete_credential_cleanup_failed accountId=%s connectorId=%s",
+          accountId,
+          connectorId);
+    }
+    try {
+      if (reconcileJobStore == null || !reconcileJobStore.isResolvable()) {
+        LOG.warnf(
+            "connector_delete_reconcile_cleanup_unavailable accountId=%s connectorId=%s",
+            accountId, connectorId);
+        return;
+      }
+      int cancelled =
+          reconcileJobStore
+              .get()
+              .cancelConnectorJobs(accountId, connectorId, "connector deleted: " + connectorId);
+      LOG.infof(
+          "connector_delete_reconcile_cleanup accountId=%s connectorId=%s jobs=%d",
+          accountId, connectorId, Integer.valueOf(cancelled));
+    } catch (RuntimeException e) {
+      LOG.warnf(
+          e,
+          "connector_delete_reconcile_cleanup_failed accountId=%s connectorId=%s",
+          accountId,
+          connectorId);
+    }
+  }
+
+  private record DeletedConnector(String accountId, String connectorId) {}
 
   @Override
   public Uni<ValidateConnectorResponse> validateConnector(ValidateConnectorRequest request) {

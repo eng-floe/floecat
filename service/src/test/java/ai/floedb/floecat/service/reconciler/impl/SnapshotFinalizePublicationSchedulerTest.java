@@ -21,6 +21,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 class SnapshotFinalizePublicationSchedulerTest {
@@ -68,6 +69,7 @@ class SnapshotFinalizePublicationSchedulerTest {
         .thenReturn(new ReconcileJobStore.SnapshotFinalizeCommitPage(List.of(only), ""));
     when(scheduler.publicationService.publishAcceptedSnapshotFinalize("only"))
         .thenThrow(new IllegalStateException("storage unavailable"));
+    when(scheduler.jobs.snapshotFinalizeCommitIntent("only")).thenReturn(Optional.of(only));
 
     // Far more attempts than the previous local retry budget, all transient.
     for (int attempt = 0; attempt < 12; attempt++) {
@@ -101,6 +103,35 @@ class SnapshotFinalizePublicationSchedulerTest {
             anyLong(),
             anyLong(),
             anyLong());
+  }
+
+  @Test
+  void cancelledParentIntentIsDurablyAbandonedAfterPublicationFailure() throws Exception {
+    var scheduler = new SnapshotFinalizePublicationScheduler();
+    scheduler.jobs = mock(ReconcileJobStore.class);
+    scheduler.publicationService = mock(LeasedSnapshotFinalizeExecutionService.class);
+    List<Runnable> scheduled = new ArrayList<>();
+    set(scheduler, "executor", (java.util.concurrent.Executor) scheduled::add);
+    set(scheduler, "pageSize", 1);
+    set(scheduler, "maxParallelism", 1);
+    var orphan = intent("orphan");
+    when(scheduler.jobs.pendingSnapshotFinalizeCommits(1, ""))
+        .thenReturn(new ReconcileJobStore.SnapshotFinalizeCommitPage(List.of(orphan), ""));
+    when(scheduler.publicationService.publishAcceptedSnapshotFinalize("orphan"))
+        .thenThrow(new IllegalStateException("snapshot finalization child results are not ready"));
+    when(scheduler.jobs.snapshotFinalizePublicationDisposition("orphan", "lease"))
+        .thenReturn(ReconcileJobStore.SnapshotFinalizePublicationDisposition.ABANDON);
+    when(scheduler.jobs.abandonSnapshotFinalizeCommit(
+            eq("orphan"), eq("lease"), anyLong(), contains("no longer active")))
+        .thenReturn(true);
+
+    scheduler.tick();
+    scheduled.removeFirst().run();
+
+    verify(scheduler.publicationService).publishAcceptedSnapshotFinalize("orphan");
+    verify(scheduler.jobs)
+        .abandonSnapshotFinalizeCommit(
+            eq("orphan"), eq("lease"), anyLong(), contains("no longer active"));
   }
 
   @Test

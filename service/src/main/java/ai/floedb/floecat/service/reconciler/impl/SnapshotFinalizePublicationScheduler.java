@@ -153,11 +153,35 @@ public class SnapshotFinalizePublicationScheduler {
           0L);
       LOG.warnf(e, "Rejected accepted snapshot finalizer result jobId=%s", intent.jobId());
     } catch (RuntimeException e) {
+      try {
+        ReconcileJobStore.SnapshotFinalizePublicationDisposition disposition =
+            jobs.snapshotFinalizePublicationDisposition(intent.jobId(), intent.leaseEpoch());
+        if (disposition == ReconcileJobStore.SnapshotFinalizePublicationDisposition.RESOLVED) {
+          retries.remove(intent.jobId());
+          return;
+        }
+        if (disposition == ReconcileJobStore.SnapshotFinalizePublicationDisposition.ABANDON) {
+          if (jobs.abandonSnapshotFinalizeCommit(
+              intent.jobId(),
+              intent.leaseEpoch(),
+              System.currentTimeMillis(),
+              "Accepted snapshot finalizer cannot publish because its parent or connector is no longer active")) {
+            retries.remove(intent.jobId());
+            LOG.warnf(
+                e,
+                "Permanently failed snapshot finalizer whose parent or connector is no longer active jobId=%s",
+                intent.jobId());
+            return;
+          }
+        }
+      } catch (RuntimeException dispositionFailure) {
+        e.addSuppressed(dispositionFailure);
+      }
       // Transient publication failures must never discard a durably accepted result: markFailed
       // clears the finalize intent and requeues the job, throwing away completed capture work. The
       // intent stays accepted and this instance keeps retrying under capped backoff; if the process
       // dies, another instance picks the same intent up from pendingSnapshotFinalizeCommits. Only a
-      // proven-invalid payload (IllegalArgumentException above) is promoted to a terminal failure.
+      // proven-invalid payload or a definitively unpublishable fenced job is failed terminally.
       RetryState prior = retries.get(intent.jobId());
       int attempts = prior == null ? 1 : prior.attempts() + 1;
       long delayMs = Math.min(30_000L, 250L << Math.min(16, attempts - 1));

@@ -671,6 +671,38 @@ public interface ReconcileJobStore {
 
   Optional<ReconcileJob> cancel(String accountId, String jobId, String reason);
 
+  /**
+   * Best-effort cancellation of bounded reconcile-root pages for a connector. Live roots are
+   * prioritized; a small cancelled-root page lets a reissued delete repair an interrupted cascade
+   * without walking all historical jobs on the request thread.
+   */
+  default int cancelConnectorJobs(String accountId, String connectorId, String reason) {
+    if (accountId == null || accountId.isBlank() || connectorId == null || connectorId.isBlank()) {
+      return 0;
+    }
+    int cancelled = 0;
+    ReconcileJobPage live =
+        listRootJobs(
+            accountId,
+            100,
+            "",
+            connectorId,
+            Set.of("JS_QUEUED", "JS_WAITING", "JS_RUNNING", "JS_CANCELLING"));
+    for (ReconcileJob job : live.jobs) {
+      if (job != null && cancel(accountId, job.jobId, reason).isPresent()) {
+        cancelled++;
+      }
+    }
+    ReconcileJobPage interrupted =
+        listRootJobs(accountId, 10, "", connectorId, Set.of("JS_CANCELLED"));
+    for (ReconcileJob job : interrupted.jobs) {
+      if (job != null && cancel(accountId, job.jobId, reason).isPresent()) {
+        cancelled++;
+      }
+    }
+    return cancelled;
+  }
+
   boolean isCancellationRequested(String jobId);
 
   String persistSnapshotPlanManifest(
@@ -706,6 +738,27 @@ public interface ReconcileJobStore {
 
   /** Returns a previously accepted snapshot-finalize publication intent. */
   Optional<SnapshotFinalizeCommitIntent> snapshotFinalizeCommitIntent(String jobId);
+
+  /** Classifies whether an accepted snapshot-finalize publication should retry or be retired. */
+  default SnapshotFinalizePublicationDisposition snapshotFinalizePublicationDisposition(
+      String jobId, String leaseEpoch) {
+    SnapshotFinalizeCommitIntent intent = snapshotFinalizeCommitIntent(jobId).orElse(null);
+    if (intent == null || !intent.leaseEpoch().equals(leaseEpoch)) {
+      return SnapshotFinalizePublicationDisposition.RESOLVED;
+    }
+    return SnapshotFinalizePublicationDisposition.RETRYABLE;
+  }
+
+  /** Permanently fails an accepted finalizer that can no longer satisfy its publication fences. */
+  default boolean abandonSnapshotFinalizeCommit(
+      String jobId, String leaseEpoch, long finishedAtMs, String message) {
+    SnapshotFinalizeCommitIntent intent = snapshotFinalizeCommitIntent(jobId).orElse(null);
+    if (intent == null || !intent.leaseEpoch().equals(leaseEpoch)) {
+      return false;
+    }
+    markFailedTerminal(jobId, leaseEpoch, finishedAtMs, message, 0L, 0L, 0L, 0L, 1L, 0L, 0L);
+    return snapshotFinalizeCommitIntent(jobId).isEmpty();
+  }
 
   /** Lists accepted snapshot-finalize intents that still require publication. */
   SnapshotFinalizeCommitPage pendingSnapshotFinalizeCommits(int pageSize, String pageToken);
@@ -748,6 +801,12 @@ public interface ReconcileJobStore {
       intents = intents == null ? List.of() : List.copyOf(intents);
       nextPageToken = nextPageToken == null ? "" : nextPageToken;
     }
+  }
+
+  enum SnapshotFinalizePublicationDisposition {
+    RETRYABLE,
+    ABANDON,
+    RESOLVED
   }
 
   void markCancelled(

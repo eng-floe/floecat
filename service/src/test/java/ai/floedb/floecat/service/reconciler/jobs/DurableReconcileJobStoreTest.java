@@ -1271,6 +1271,163 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void cancellationCascadeReleasesWaitingSnapshotOwnershipWithoutALease() {
+    ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+    String tableJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            ReconcileJobKind.PLAN_TABLE,
+            ReconcileTableTask.of("db", "orders", "table-1", "orders"),
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    String owner =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            tableJobId,
+            "");
+    var ownerLease = leaseJob(owner);
+    store.markRunning(owner, ownerLease.leaseEpoch, 100L, "snapshot-planner");
+    store.markWaiting(
+        owner,
+        ownerLease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    store.cancel(ACCOUNT_ID, tableJobId, "connector deleted: " + CONNECTOR_ID);
+    runCancellationMaintenance();
+    runCancellationMaintenance();
+
+    assertEquals("JS_CANCELLED", store.get(ACCOUNT_ID, owner).orElseThrow().state);
+    String successor =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "successor-parent",
+            "");
+    assertEquals(successor, leaseJob(successor).jobId);
+  }
+
+  @Test
+  void terminalSnapshotCanClearOwnershipWhenCanonicalRecordIsMissing() {
+    ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+    String owner =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent",
+            "");
+    var lease = leaseJob(owner);
+    store.markRunning(owner, lease.leaseEpoch, 100L, "snapshot-planner");
+    store.markWaiting(
+        owner,
+        lease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+
+    String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, owner);
+    StoredReconcileJob terminal = readStoredRecord(canonicalKey);
+    terminal.state = "JS_CANCELLED";
+    var canonical = store.jobIndexStore.loadCanonicalSnapshot(canonicalKey).orElseThrow();
+    assertTrue(
+        store.jobIndexBackend.compareAndSetBatch(
+            store.jobIndexStore.buildJobDeleteBatch(canonical)));
+    assertTrue(leaseManager().isSnapshotOwnershipHeldBy(terminal, canonicalKey));
+
+    leaseManager().clearSnapshotOwnershipIfOwned(terminal, canonicalKey);
+
+    assertFalse(leaseManager().isSnapshotOwnershipHeldBy(terminal, canonicalKey));
+  }
+
+  @Test
+  void snapshotOrphanAuditCancelsWaitingPlanWhoseConnectorIsMissing() {
+    ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
+    String owner =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            task,
+            ReconcileExecutionPolicy.defaults(),
+            "parent",
+            "");
+    var lease = leaseJob(owner);
+    store.markRunning(owner, lease.leaseEpoch, 100L, "snapshot-planner");
+    store.markWaiting(
+        owner,
+        lease.leaseEpoch,
+        110L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on child work",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    store.connectorRepo = Mockito.mock(ConnectorRepository.class);
+    Mockito.when(store.connectorRepo.existsById(Mockito.any(ResourceId.class))).thenReturn(false);
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        owner,
+        record -> {
+          record.executionLane = "other-lane";
+          return record;
+        });
+
+    store.runSnapshotOrphanMaintenanceOnce(32);
+
+    assertEquals("JS_WAITING", store.get(ACCOUNT_ID, owner).orElseThrow().state);
+    store.jobIndexStore.mutateByJobIdReturningRecord(
+        owner,
+        record -> {
+          record.executionLane = "";
+          return record;
+        });
+    store.runSnapshotOrphanMaintenanceOnce(32);
+
+    assertEquals("JS_CANCELLED", store.get(ACCOUNT_ID, owner).orElseThrow().state);
+  }
+
+  @Test
   void snapshotOwnershipAllowsOnlyOwnerToRetry() {
     ReconcileSnapshotTask task = ReconcileSnapshotTask.of("table-1", 55L, "db", "orders");
     String first =
@@ -6601,6 +6758,61 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void cancelledSnapshotFinalizerIsNotReenqueuedAndOrphanAuditCancelsParent() {
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true)
+            .withContentState("revision-1", "metadata-1", List.of());
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_ONLY,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on explicit-empty finalization",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    runProjectionMaintenance();
+    String finalizerJobId =
+        store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .findFirst()
+            .orElseThrow()
+            .jobId;
+
+    store.cancel(ACCOUNT_ID, finalizerJobId, "connector deleted: " + CONNECTOR_ID);
+    Pointer dirtyMarker =
+        store.pointerStore.get(dirtyParentKey(ACCOUNT_ID, snapshotJobId)).orElseThrow();
+    assertTrue(store.pointerStore.compareAndDelete(dirtyMarker.getKey(), dirtyMarker.getVersion()));
+    store.runSnapshotOrphanMaintenanceOnce(32);
+    runProjectionMaintenance(3);
+
+    List<ReconcileJob> finalizers =
+        store.childJobsPage(ACCOUNT_ID, snapshotJobId, 200, "").jobs.stream()
+            .filter(job -> job.jobKind == ReconcileJobKind.FINALIZE_SNAPSHOT_CAPTURE)
+            .toList();
+    assertEquals(1, finalizers.size());
+    assertEquals("JS_CANCELLED", finalizers.getFirst().state);
+    assertEquals("JS_CANCELLED", store.get(ACCOUNT_ID, snapshotJobId).orElseThrow().state);
+  }
+
+  @Test
   void appendOnlyFinalizerJobPlanPreservesBaseWithDeltaGroups() throws Exception {
     ReconcileFileGroupTask deltaGroup =
         ReconcileFileGroupTask.of(
@@ -7020,6 +7232,84 @@ class DurableReconcileJobStoreTest {
     assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
     assertSnapshotFinalizeIntentCleared(
         readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, finalizerJobId)));
+  }
+
+  @Test
+  void noLongerPublishableSnapshotFinalizeIntentIsFailedAndClearedDurably() {
+    ReconcileSnapshotTask emptyPlan =
+        ReconcileSnapshotTask.of("table-1", 55L, "db", "orders", List.of(), true);
+    String snapshotJobId =
+        store.enqueueSnapshotPlan(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            "",
+            "");
+    var snapshotLease = leaseJob(snapshotJobId);
+    store.markRunning(snapshotJobId, snapshotLease.leaseEpoch, 90L, "snapshot-planner");
+    store.markWaiting(
+        snapshotJobId,
+        snapshotLease.leaseEpoch,
+        95L,
+        ReconcileJobStore.WaitingReason.CHILD_WORK_FINALIZED,
+        "Waiting on finalizer",
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L);
+    String finalizerJobId =
+        store.enqueueSnapshotFinalization(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.of(List.of(), "table-1"),
+            emptyPlan,
+            ReconcileExecutionPolicy.defaults(),
+            snapshotJobId,
+            "");
+    var finalizerLease = leaseJob(finalizerJobId);
+    var intent =
+        new ReconcileJobStore.SnapshotFinalizeCommitIntent(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            "result-1",
+            "/capture-manifest.pb",
+            123L,
+            "abcdef",
+            1,
+            3,
+            4L,
+            2L);
+    assertTrue(
+        store.beginSnapshotFinalizeCommit(finalizerJobId, finalizerLease.leaseEpoch, intent));
+    assertEquals(
+        ReconcileJobStore.SnapshotFinalizePublicationDisposition.RETRYABLE,
+        store.snapshotFinalizePublicationDisposition(finalizerJobId, finalizerLease.leaseEpoch));
+
+    store.cancel(ACCOUNT_ID, snapshotJobId, "connector deleted: " + CONNECTOR_ID);
+
+    assertEquals(
+        ReconcileJobStore.SnapshotFinalizePublicationDisposition.ABANDON,
+        store.snapshotFinalizePublicationDisposition(finalizerJobId, finalizerLease.leaseEpoch));
+
+    assertTrue(
+        store.abandonSnapshotFinalizeCommit(
+            finalizerJobId,
+            finalizerLease.leaseEpoch,
+            120L,
+            "Accepted snapshot finalizer cannot publish because its parent is cancelled"));
+
+    assertEquals("JS_FAILED", store.get(ACCOUNT_ID, finalizerJobId).orElseThrow().state);
+    assertTrue(store.snapshotFinalizeCommitIntent(finalizerJobId).isEmpty());
+    assertTrue(store.pendingSnapshotFinalizeCommits(100, "").intents().isEmpty());
   }
 
   @Test
