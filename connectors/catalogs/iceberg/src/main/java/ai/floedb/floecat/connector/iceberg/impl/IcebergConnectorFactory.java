@@ -162,8 +162,17 @@ final class IcebergConnectorFactory {
   }
 
   private static RESTSessionCatalog createRestCatalog(Map<String, String> catalogProperties) {
-    Map<String, String> catalogProps =
-        Collections.unmodifiableMap(new HashMap<>(catalogProperties));
+    Map<String, String> merged = new HashMap<>(catalogProperties);
+    // Bound the REST client. The connector's own loadTable -- reconcile capture (PLAN_TABLE) and
+    // storage-credential vending both go through it -- has no wall-clock budget around it, so a
+    // delegated catalog (Glue Lake Formation, Databricks Uniform) that accepts the connection and
+    // then never answers loadTable would hold the reconcile thread until the outer job timeout with
+    // no bound and no error logged. A socket timeout turns that silent hang into a surfaced,
+    // retryable failure. Both are overridable via connector properties. (Iceberg 1.10 HTTPClient
+    // keys: rest.client.connection-timeout-ms / rest.client.socket-timeout-ms.)
+    merged.putIfAbsent("rest.client.connection-timeout-ms", "10000");
+    merged.putIfAbsent("rest.client.socket-timeout-ms", "60000");
+    Map<String, String> catalogProps = Collections.unmodifiableMap(merged);
     RESTSessionCatalog catalog =
         new RESTSessionCatalog(
             config ->
