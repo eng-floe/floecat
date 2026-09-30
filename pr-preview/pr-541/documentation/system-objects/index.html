@@ -1876,7 +1876,7 @@
                     ↓
 ┌────────────────────────────────────────────┐
 │ SystemNodeRegistry → BuiltinNodes          │
-│ - filters EngineSpecific rules             │
+│ - filters ScopedMetadataRule rules             │
 └────────────────────────────────────────────┘
                     ↓
 ┌────────────────────────────────────────────┐
@@ -1955,7 +1955,7 @@
 </code></pre></div></li>
 <li><strong>Namespace resolution</strong> – Objects are mapped to namespaces by canonical name, trimming everything after the final dot. That means <code>t</code> resolves to namespace <code>t</code> rather than a default schema, so every system function/table/view must be defined with a fully qualified name (e.g., <code>foo.bar</code>). If you need to expose unqualified identifiers you must provide a dedicated namespace node whose canonical path matches the identifier you intend to publish; otherwise the node will be skipped during merging because <code>findNamespaceId</code> can’t map it to an existing namespace.</li>
 <li><strong><code>CatalogGraphView</code> / <code>MetaGraph</code></strong> – The composite graph view implements <code>SystemObjectGraphView</code> and exposes an immutable view over <code>MetadataGraph</code> plus the <code>_system</code> snapshot from <code>SystemGraph</code>. <code>SystemObjectScanContext</code> receives this view and uses it for every lookup, so scanners consistently benefit from the metadata graph’s caches.</li>
-<li><strong>Registry-level engine hints</strong> – <code>SystemObjectsRegistry</code> carries a <code>repeated EngineSpecific engine_specific</code> section that plugins can use to ship shared dictionaries (pg_opfamily/opclass/amop-like payloads) or other planner-only metadata once per <code>(engine_kind, engine_version)</code>. These payloads are filtered by <code>EngineSpecificRule</code> and travel alongside the node-level definitions, so the planner and scanners can deserialize them without adding new system tables (see <code>SystemObjectsRegistry.engine_specific</code> in <code>core/proto/src/main/proto/floecat/query/system_objects_registry.proto</code>).</li>
+<li><strong>Registry-level engine hints</strong> – <code>SystemObjectsRegistry</code> carries a <code>repeated ScopedMetadataRule scoped_metadata</code> section that plugins can use to ship shared dictionaries (pg_opfamily/opclass/amop-like payloads) or other planner-only metadata once per <code>(engine_kind, engine_version)</code>. These payloads are filtered by <code>ScopedMetadataRule</code> and travel alongside the node-level definitions, so the planner and scanners can deserialize them without adding new system tables (see <code>SystemObjectsRegistry.scoped_metadata</code> in <code>core/proto/src/main/proto/floecat/query/system_objects_registry.proto</code>).</li>
 <li>Each <code>payload_type</code> identifies one dictionary; the validator enforces uniqueness on the <code>(payload_type, engine_kind, min_version, max_version)</code> tuple so you can still ship the same dictionary payload for disjoint version windows but duplicates with the same engine kind and window will be rejected. Treat schema changes as a new <code>payload_type</code> (or add a suffix) so the planner knows when you actually mean a new payload.</li>
 </ul>
 <h3 id="built-in-information_schema">Built-in information_schema<a class="headerlink" href="#built-in-information_schema" title="Permanent link">&para;</a></h3>
