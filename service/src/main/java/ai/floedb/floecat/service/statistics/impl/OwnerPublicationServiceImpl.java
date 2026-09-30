@@ -87,6 +87,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
   @Inject CurrentSnapshotPointerService currentSnapshots;
   @Inject CatalogGraphView graphView;
   @Inject BlobStore blobStore;
+  @Inject ExternalManifestCommitmentCache manifestCommitments;
   @Inject OwnerReuseLeaseRepository reuseLeases;
   @Inject PrincipalProvider principal;
   @Inject Authorizer authz;
@@ -130,14 +131,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                   new CatalogSurfaceWritePolicy(graphView)
                       .requireWritableTable(tableId, correlationId());
                   String generationId = generationId(request, requireCallerSubject());
-                  if (!statsStore.statsGenerationExists(tableId, snapshotId, generationId)) {
-                    statsStore.beginStatsGeneration(tableId, snapshotId, generationId);
-                  }
-                  // This marker is tiny and Floecat-owned. Requiring the Owner to manufacture it
-                  // would add an upload while also making the existing prepared-generation API
-                  // fail every publication that did not know about this repository detail. This
-                  // call also repairs a Begin retry interrupted after reserving the generation.
-                  statsStore.prepareStatsGenerationManifest(tableId, snapshotId, generationId);
                   boolean reuseSourceLeased = false;
                   SnapshotReuseManifestRef source = null;
                   if (request.hasReuseSourceSnapshotId()) {
@@ -164,7 +157,20 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                             generationId,
                             Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
                                 tableId.getAccountId(), tableId.getId(), snapshotId),
-                            source);
+                            source,
+                            () -> {
+                              if (!statsStore.statsGenerationExists(
+                                  tableId, snapshotId, generationId)) {
+                                statsStore.beginStatsGeneration(tableId, snapshotId, generationId);
+                              }
+                              // This marker is tiny and Floecat-owned. Requiring the Owner to
+                              // manufacture it would add an upload while also making the existing
+                              // prepared-generation API fail every publication that did not know
+                              // about this repository detail. This also repairs a Begin retry
+                              // interrupted after reserving the generation.
+                              statsStore.prepareStatsGenerationManifest(
+                                  tableId, snapshotId, generationId);
+                            });
                   } catch (OwnerReuseLeaseRepository.LeaseContinuityException error) {
                     throw GrpcErrors.preconditionFailed(
                         correlationId(),
@@ -308,7 +314,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     OwnerReuseLeaseRepository.RegistrationProgress progress =
         reuseLeases.progress(tableId, generationId, manifestIdentity);
     if (progress.equals(OwnerReuseLeaseRepository.RegistrationProgress.initial())
-        && !request.getCompletionCursor().isEmpty()
         && publicationAlreadyCommitted(
             tableId, snapshotId, generationId, snapshot, reuseManifestRef)) {
       return completedResponse(manifest, manifestIdentity, progress, true, 0L);
@@ -337,6 +342,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       try {
         commitments =
             ExternalManifestCommitments.load(
+                manifestCommitments,
                 blobStore,
                 registration.getCommitmentIndex(),
                 ExternalManifestDomain.EMD_OWNER_ARTIFACT_REGISTRATION,
@@ -394,7 +400,12 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       try {
         ExternalManifestCommitmentIndex commitments =
             ReusableCoverageManifest.loadIndex(
-                blobStore, coverage, tableId.getAccountId(), tableId.getId(), snapshotId);
+                manifestCommitments,
+                blobStore,
+                coverage,
+                tableId.getAccountId(),
+                tableId.getId(),
+                snapshotId);
         batch =
             ReusableCoverageManifest.readCommittedChunk(
                 blobStore,

@@ -2293,6 +2293,7 @@ public class StatsRepository implements StatsStore {
     private int candidateIndex;
     private boolean pointerScanComplete;
     private boolean scanComplete;
+    private java.util.function.Predicate<String> abandonedWritingGeneration = ignored -> false;
 
     public GenerationGcContinuation() {
       this(
@@ -2313,6 +2314,10 @@ public class StatsRepository implements StatsStore {
 
     public List<Keys.GenerationKey> generations() {
       return candidates;
+    }
+
+    public void allowAbandonedWritingGenerations(java.util.function.Predicate<String> predicate) {
+      abandonedWritingGeneration = java.util.Objects.requireNonNull(predicate, "predicate");
     }
 
     private void discover(Keys.GenerationKey generation) {
@@ -2487,13 +2492,17 @@ public class StatsRepository implements StatsStore {
         continuation.candidateIndex++;
         continue;
       }
+      boolean abandonedWriting =
+          GENERATION_WRITING.equals(lifecycleState)
+              && continuation.abandonedWritingGeneration.test(generationId);
       var header = blobStore.head(manifestUri).orElse(null);
-      if (header == null) {
+      if (header == null && !abandonedWriting) {
         continuation.candidateIndex++;
         continue;
       }
-      if (nowMs - com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt())
-          < minAgeMs) {
+      if (header != null
+          && nowMs - com.google.protobuf.util.Timestamps.toMillis(header.getLastModifiedAt())
+              < minAgeMs) {
         // publish->flip window: too young to be provably unreferenced. Runs UNCONDITIONALLY, not
         // only when min-age > 0 — matching the CAS blob sweep. nowMs is frozen at pass start, so a
         // generation whose manifest was published mid-sweep has lastModified STRICTLY later than
@@ -2523,11 +2532,22 @@ public class StatsRepository implements StatsStore {
           () ->
               manifestUri.equals(activeStatsGenerationConsistent(tableId, snapshotId).orElse(""))
                   || isProtectedManifestUri.test(manifestUri)
-                  || isActiveIndexGeneration(tableId, snapshotId, generationId);
+                  || isActiveIndexGeneration(tableId, snapshotId, generationId)
+                  // Re-run the caller's durable lease check after WRITING -> DELETING. A lease
+                  // renewed by another replica between eligibility and the claim restores the
+                  // lifecycle before any blobs or pointers are removed.
+                  || (abandonedWriting
+                      && !continuation.abandonedWritingGeneration.test(generationId));
+      if (!GENERATION_PUBLISHED.equals(lifecycleState) && !abandonedWriting) {
+        continuation.candidateIndex++;
+        continue;
+      }
+      String claimedState = abandonedWriting ? GENERATION_WRITING : GENERATION_PUBLISHED;
       BooleanSupplier claim =
-          () -> claimPublishedGenerationForGc(tableId, snapshotId, generationId);
+          () -> claimGenerationForGc(tableId, snapshotId, generationId, claimedState);
       Runnable restore =
-          () -> restoreGenerationPublishedAfterFailedGcClaim(tableId, snapshotId, generationId);
+          () ->
+              restoreGenerationAfterFailedGcClaim(tableId, snapshotId, generationId, claimedState);
       boolean claimed =
           claimGuard == null
               ? claimGenerationIfStillUnprotected(stillProtected, claim, restore)
@@ -2773,8 +2793,8 @@ public class StatsRepository implements StatsStore {
                     accountId, tableId, snapshotId, generationId)));
   }
 
-  private boolean claimPublishedGenerationForGc(
-      ResourceId tableId, long snapshotId, String generationId) {
+  private boolean claimGenerationForGc(
+      ResourceId tableId, long snapshotId, String generationId, String expectedState) {
     String lifecyclePointer = generationLifecyclePointer(tableId, snapshotId, generationId);
     for (int attempt = 0; attempt < 8; attempt++) {
       Pointer current = pointerStore.get(lifecyclePointer).orElse(null);
@@ -2785,7 +2805,7 @@ public class StatsRepository implements StatsStore {
       if (GENERATION_DELETING.equals(state)) {
         return true;
       }
-      if (!GENERATION_PUBLISHED.equals(state)) {
+      if (!expectedState.equals(state)) {
         return false;
       }
       Pointer next =
@@ -2800,12 +2820,12 @@ public class StatsRepository implements StatsStore {
         "stats generation GC claim conflicted repeatedly: " + generationId);
   }
 
-  private void restoreGenerationPublishedAfterFailedGcClaim(
-      ResourceId tableId, long snapshotId, String generationId) {
+  private void restoreGenerationAfterFailedGcClaim(
+      ResourceId tableId, long snapshotId, String generationId, String restoredState) {
     String lifecyclePointer = generationLifecyclePointer(tableId, snapshotId, generationId);
     for (int attempt = 0; attempt < 8; attempt++) {
       Pointer current = pointerStore.get(lifecyclePointer).orElse(null);
-      if (current == null || GENERATION_PUBLISHED.equals(blankToEmpty(current.getBlobUri()))) {
+      if (current == null || restoredState.equals(blankToEmpty(current.getBlobUri()))) {
         return;
       }
       if (!GENERATION_DELETING.equals(blankToEmpty(current.getBlobUri()))) {
@@ -2814,7 +2834,7 @@ public class StatsRepository implements StatsStore {
       }
       Pointer restored =
           PointerReferences.opaqueMarkerPointer(
-              lifecyclePointer, GENERATION_PUBLISHED, current.getVersion() + 1L);
+              lifecyclePointer, restoredState, current.getVersion() + 1L);
       if (AccountDeletionFence.compareAndSet(
           pointerStore, tableId.getAccountId(), lifecyclePointer, current.getVersion(), restored)) {
         return;

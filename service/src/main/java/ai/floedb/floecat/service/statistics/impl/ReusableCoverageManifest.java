@@ -31,6 +31,8 @@ public final class ReusableCoverageManifest {
   public static final int FORMAT_VERSION = 1;
   public static final int RECORD_BYTES = 80;
   public static final int SHARD_INDEX_RECORD_BYTES = 192;
+  public static final int MAX_SHARD_BYTES = 16 * 1024 * 1024;
+  public static final int MAX_AGGREGATION_TREE_NODE_BYTES = 16 * 1024 * 1024;
   private static final int STORAGE_MANAGED = 0;
   private static final int STORAGE_EXTERNAL_SIDECAR = 1;
 
@@ -61,6 +63,7 @@ public final class ReusableCoverageManifest {
   private ReusableCoverageManifest() {}
 
   public static void walkTrusted(
+      ExternalManifestCommitmentCache cache,
       BlobStore blobs,
       ReusableCoverageManifestRef descriptor,
       long firstShard,
@@ -73,7 +76,7 @@ public final class ReusableCoverageManifest {
       long snapshotId,
       String reusablePrefix) {
     ExternalManifestCommitmentIndex index =
-        loadIndex(blobs, descriptor, accountId, tableId, snapshotId);
+        loadIndex(cache, blobs, descriptor, accountId, tableId, snapshotId);
     long shard = 0L;
     boolean foundCursor = firstShard == 0L;
     for (ExternalManifestChunkCommitment commitment : index.getChunksList()) {
@@ -113,6 +116,7 @@ public final class ReusableCoverageManifest {
   }
 
   public static ExternalManifestCommitmentIndex loadIndex(
+      ExternalManifestCommitmentCache cache,
       BlobStore blobs,
       ReusableCoverageManifestRef descriptor,
       String accountId,
@@ -120,6 +124,7 @@ public final class ReusableCoverageManifest {
       long snapshotId) {
     validateDescriptor(descriptor);
     return ExternalManifestCommitments.load(
+        cache,
         blobs,
         descriptor.getCommitmentIndex(),
         ExternalManifestDomain.EMD_REUSABLE_COVERAGE,
@@ -224,15 +229,19 @@ public final class ReusableCoverageManifest {
         prefix, directory, HexFormat.of().formatHex(record.coverageId()), suffix);
   }
 
-  private static List<Record> readShard(
+  static List<Record> readShard(
       BlobStore blobs,
       ReusableCoverageManifestRef descriptor,
       ShardReference reference,
       String uri) {
-    byte[] payload = blobs.get(uri);
     long expectedBytes = Math.multiplyExact(reference.entryCount(), (long) RECORD_BYTES);
+    if (expectedBytes > MAX_SHARD_BYTES || reference.payloadBytes() != expectedBytes) {
+      throw new IllegalArgumentException("reusable coverage shard exceeds the read limit");
+    }
+    // S3BlobStore enforces this as an HTTP Range bound. BlobStore's default implementation may
+    // buffer the full object, so the exact-length check below is still required by the SPI path.
+    byte[] payload = blobs.getRangeAtMost(uri, 0L, Math.toIntExact(reference.payloadBytes() + 1L));
     if (payload == null
-        || reference.payloadBytes() != expectedBytes
         || payload.length != expectedBytes
         || !MessageDigest.isEqual(sha256(payload), reference.payloadSha256())) {
       throw new IllegalArgumentException("reusable coverage shard does not match its commitment");
@@ -281,7 +290,10 @@ public final class ReusableCoverageManifest {
     if (completed.contains(uri)) {
       return;
     }
-    byte[] payload = blobs.get(uri);
+    // S3BlobStore enforces this as an HTTP Range bound. BlobStore's default implementation may
+    // buffer the full object, so the exact-length check below is still required by the SPI path.
+    byte[] payload =
+        blobs.getRangeAtMost(uri, 0L, Math.toIntExact(reference.getPayloadBytes() + 1L));
     if (payload == null
         || payload.length != reference.getPayloadBytes()
         || !MessageDigest.isEqual(sha256(payload), reference.getPayloadSha256().toByteArray())) {
@@ -313,6 +325,7 @@ public final class ReusableCoverageManifest {
 
   private static void validateNodeReference(AggregationTreeNodeRef reference) {
     if (reference.getPayloadBytes() <= 0L
+        || reference.getPayloadBytes() > MAX_AGGREGATION_TREE_NODE_BYTES
         || reference.getPayloadSha256().size() != 32
         || reference.getMembershipSha256().size() != 32
         || reference.getMinKey().size() != 32

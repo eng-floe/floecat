@@ -28,6 +28,7 @@ import ai.floedb.floecat.service.metagraph.snapshot.SnapshotRetentionPolicy;
 import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
+import ai.floedb.floecat.service.statistics.impl.ExternalManifestCommitmentCache;
 import ai.floedb.floecat.service.statistics.impl.ReusableCoverageManifest;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
@@ -63,6 +64,7 @@ class CasBlobGcTest {
     gc.pointerStore = pointers;
     gc.durablePointers = new DurablePointerReads(pointers);
     gc.reachabilityGuard = new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard();
+    gc.manifestCommitments = ExternalManifestCommitmentCache.forTesting();
     useBlobs(new InMemoryBlobStore());
   }
 
@@ -2373,6 +2375,13 @@ class CasBlobGcTest {
   @Test
   void expiredOwnerReuseLeaseDoesNotProtectReusableNamespace() throws Exception {
     seedCurrentTable();
+    String generationId = "expired-owner-generation";
+    gc.statsRepository.beginStatsGeneration(tableRid(), 42L, generationId);
+    gc.statsRepository.prepareStatsGenerationManifest(tableRid(), 42L, generationId);
+    String generationUpload =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, 42L, generationId)
+            + "finalizer-outputs/stats.pb";
+    blobs.put(generationUpload, new byte[] {8}, "application/x-protobuf");
     String artifactUri =
         Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID)
             + "statistics/files/"
@@ -2384,7 +2393,7 @@ class CasBlobGcTest {
             .setFormatVersion(1)
             .setAccountId(ACCOUNT_ID)
             .setTableId(TABLE_ID)
-            .setPublicationId("expired-owner-generation")
+            .setPublicationId(generationId)
             .setReusableNamespacePrefix(Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID))
             .setExpiresAtEpochMs(1L)
             .build()
@@ -2393,18 +2402,85 @@ class CasBlobGcTest {
         Keys.ownerPublicationLeaseBlobUri(
             ACCOUNT_ID,
             TABLE_ID,
-            "expired-owner-generation",
+            generationId,
             java.util.HexFormat.of()
                 .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(leaseBytes)));
     blobs.put(leaseUri, leaseBytes, "application/x-protobuf");
-    putPointer(
-        Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, "expired-owner-generation"),
-        leaseUri);
+    putPointer(Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, generationId), leaseUri);
 
     var result = gc.runForAccount(ACCOUNT_ID);
 
     assertFalse(result.poisoned());
     assertTrue(blobs.head(artifactUri).isEmpty());
+    assertTrue(blobs.head(generationUpload).isEmpty());
+    assertFalse(gc.statsRepository.statsGenerationExists(tableRid(), 42L, generationId));
+  }
+
+  @Test
+  void expiredOwnerLeaseReclaimsWritingGenerationWithoutPreparedManifest() throws Exception {
+    seedCurrentTable();
+    String generationId = "unprepared-owner-generation";
+    long snapshotId = 44L;
+    gc.statsRepository.beginStatsGeneration(tableRid(), snapshotId, generationId);
+    byte[] expired = ownerLease(generationId, 1L);
+    String expiredUri = ownerLeaseUri(generationId, expired);
+    blobs.put(expiredUri, expired, "application/x-protobuf");
+    putPointer(Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, generationId), expiredUri);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(result.poisoned());
+    assertFalse(gc.statsRepository.statsGenerationExists(tableRid(), snapshotId, generationId));
+  }
+
+  @Test
+  void concurrentOwnerLeaseRenewalPreventsWritingGenerationCleanup() throws Exception {
+    seedCurrentTable();
+    String generationId = "renewed-owner-generation";
+    long snapshotId = 43L;
+    gc.statsRepository.beginStatsGeneration(tableRid(), snapshotId, generationId);
+    gc.statsRepository.prepareStatsGenerationManifest(tableRid(), snapshotId, generationId);
+    String generationUpload =
+        Keys.snapshotTargetStatsGenerationBlobPrefix(ACCOUNT_ID, TABLE_ID, snapshotId, generationId)
+            + "finalizer-outputs/stats.pb";
+    blobs.put(generationUpload, new byte[] {8}, "application/x-protobuf");
+    String leaseKey = Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, generationId);
+    byte[] expired = ownerLease(generationId, 1L);
+    String expiredUri = ownerLeaseUri(generationId, expired);
+    blobs.put(expiredUri, expired, "application/x-protobuf");
+    putPointer(leaseKey, expiredUri);
+    var renewed = new java.util.concurrent.atomic.AtomicBoolean();
+    gc.reachabilityGuard =
+        new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard() {
+          @Override
+          public <T> GuardedResult<T> deleteIfUnchanged(
+              Proof proof, java.util.function.Supplier<T> deletion) {
+            if (renewed.compareAndSet(false, true)) {
+              try {
+                byte[] fresh = ownerLease(generationId, Long.MAX_VALUE);
+                String freshUri = ownerLeaseUri(generationId, fresh);
+                blobs.put(freshUri, fresh, "application/x-protobuf");
+                Pointer current = pointers.get(leaseKey).orElseThrow();
+                assertTrue(
+                    pointers.compareAndSet(
+                        leaseKey,
+                        current.getVersion(),
+                        PointerReferences.blobPointer(
+                            leaseKey, freshUri, current.getVersion() + 1L, fresh.length)));
+              } catch (Exception error) {
+                throw new RuntimeException(error);
+              }
+            }
+            return super.deleteIfUnchanged(proof, deletion);
+          }
+        };
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertTrue(renewed.get());
+    assertFalse(result.poisoned());
+    assertTrue(gc.statsRepository.statsGenerationExists(tableRid(), snapshotId, generationId));
+    assertTrue(blobs.head(generationUpload).isPresent());
   }
 
   @Test
@@ -2591,6 +2667,27 @@ class CasBlobGcTest {
   private void putPointer(String key, String blobUri) {
     Pointer ptr = PointerReferences.blobPointer(key, blobUri, 1L);
     pointers.compareAndSet(key, 0L, ptr);
+  }
+
+  private byte[] ownerLease(String generationId, long expiresAt) {
+    return ai.floedb.floecat.catalog.rpc.OwnerPublicationLease.newBuilder()
+        .setFormatVersion(1)
+        .setAccountId(ACCOUNT_ID)
+        .setTableId(TABLE_ID)
+        .setPublicationId(generationId)
+        .setReusableNamespacePrefix(Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID))
+        .setExpiresAtEpochMs(expiresAt)
+        .build()
+        .toByteArray();
+  }
+
+  private String ownerLeaseUri(String generationId, byte[] leaseBytes) throws Exception {
+    return Keys.ownerPublicationLeaseBlobUri(
+        ACCOUNT_ID,
+        TABLE_ID,
+        generationId,
+        java.util.HexFormat.of()
+            .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(leaseBytes)));
   }
 
   private String seedCurrentTable() {

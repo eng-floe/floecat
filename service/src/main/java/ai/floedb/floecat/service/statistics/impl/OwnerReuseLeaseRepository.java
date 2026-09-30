@@ -66,11 +66,26 @@ public class OwnerReuseLeaseRepository {
       String publicationId,
       String captureManifestPrefix,
       SnapshotReuseManifestRef source) {
-    return updateLease(tableId, publicationId, captureManifestPrefix, source, false);
+    return acquire(tableId, publicationId, captureManifestPrefix, source, () -> {});
+  }
+
+  public long acquire(
+      ResourceId tableId,
+      String publicationId,
+      String captureManifestPrefix,
+      SnapshotReuseManifestRef source,
+      Runnable initializePublication) {
+    return updateLease(
+        tableId,
+        publicationId,
+        captureManifestPrefix,
+        source,
+        false,
+        java.util.Objects.requireNonNull(initializePublication, "initializePublication"));
   }
 
   public long renew(ResourceId tableId, String publicationId, SnapshotReuseManifestRef successor) {
-    return updateLease(tableId, publicationId, null, successor, true);
+    return updateLease(tableId, publicationId, null, successor, true, () -> {});
   }
 
   private long updateLease(
@@ -78,7 +93,8 @@ public class OwnerReuseLeaseRepository {
       String publicationId,
       String captureManifestPrefix,
       SnapshotReuseManifestRef source,
-      boolean requireContinuousLease) {
+      boolean requireContinuousLease,
+      Runnable initializePublication) {
     if (leaseTtlMs <= 0L) {
       throw new IllegalStateException("Owner reuse lease TTL must be positive");
     }
@@ -173,6 +189,7 @@ public class OwnerReuseLeaseRepository {
                     publicationId,
                     Hashing.sha256Hex(leaseBytes));
             if (current != null && leaseUri.equals(current.getBlobUri())) {
+              initializePublication.run();
               return null;
             }
             blobs.putImmutable(leaseUri, leaseBytes, "application/x-protobuf");
@@ -183,6 +200,7 @@ public class OwnerReuseLeaseRepository {
               if (reclaimExpired) {
                 clearProgress(tableId, publicationId);
               }
+              initializePublication.run();
               return null;
             }
           }

@@ -28,6 +28,7 @@ import ai.floedb.floecat.service.repo.cache.DurablePointerReads;
 import ai.floedb.floecat.service.repo.cache.IndexedPointerStore;
 import ai.floedb.floecat.service.repo.cache.PlanningPointerIndex;
 import ai.floedb.floecat.service.repo.impl.RelationHintsRepository;
+import ai.floedb.floecat.service.statistics.impl.ExternalManifestCommitmentCache;
 import ai.floedb.floecat.service.telemetry.ServiceMetrics;
 import ai.floedb.floecat.storage.spi.CachedPointerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -191,6 +192,22 @@ public class MetadataCaches {
     var metrics = metricsFor(CacheFamily.HINT, observability);
     var cache =
         new HintCache(repository, budgets.bytesFor(CacheFamily.HINT), events(metrics), enabled);
+    report(cache.family(), cache::entryCount, cache::bytes, budgets, metrics, cache.enabled());
+    return cache;
+  }
+
+  /** Parsed Owner manifest indexes, keyed by their content-addressed validation contract. */
+  @Produces
+  @ApplicationScoped
+  public ExternalManifestCommitmentCache manifestCommitments(
+      CacheBudgetResolver budgets,
+      Observability observability,
+      @ConfigProperty(name = "floecat.cache.manifest-commitment.enabled", defaultValue = "true")
+          boolean enabled) {
+    var metrics = metricsFor(CacheFamily.MANIFEST_COMMITMENT, observability);
+    var cache =
+        new ExternalManifestCommitmentCache(
+            budgets.bytesFor(CacheFamily.MANIFEST_COMMITMENT), events(metrics), enabled);
     report(cache.family(), cache::entryCount, cache::bytes, budgets, metrics, cache.enabled());
     return cache;
   }

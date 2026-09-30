@@ -35,6 +35,7 @@ import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard;
+import ai.floedb.floecat.service.statistics.impl.ExternalManifestCommitmentCache;
 import ai.floedb.floecat.service.statistics.impl.ReusableCoverageManifest;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
@@ -110,6 +111,7 @@ public class CasBlobGc {
   private static final int CHAIN_READ_ATTEMPTS = 3;
 
   @Inject BlobStore blobStore;
+  @Inject ExternalManifestCommitmentCache manifestCommitments;
   @Inject PointerStore pointerStore;
 
   /**
@@ -150,6 +152,8 @@ public class CasBlobGc {
     private boolean verificationRemarkComplete;
     private final OwnerManifestWalkState ownerManifests = new OwnerManifestWalkState();
     private final Set<String> ownerProtectedPrefixes = new HashSet<>();
+    private final Set<String> activeOwnerPublications = new HashSet<>();
+    private final Set<String> expiredOwnerPublications = new HashSet<>();
 
     private DeferredPageState(
         String prefix, List<DeferredCandidate> candidates, boolean prefixPending) {
@@ -253,6 +257,8 @@ public class CasBlobGc {
     private boolean poisoned;
     private final OwnerManifestWalkState ownerManifests = new OwnerManifestWalkState();
     private final Set<String> ownerProtectedPrefixes = new HashSet<>();
+    private final Set<String> activeOwnerPublications = new HashSet<>();
+    private final Set<String> expiredOwnerPublications = new HashSet<>();
     private Phase phase = Phase.ACCOUNT_MARK;
 
     private PassContinuation(
@@ -934,6 +940,8 @@ public class CasBlobGc {
           pass.generationGcComplete = false;
           pass.tableWalkFailures[0] = 0;
           pass.ownerProtectedPrefixes.clear();
+          pass.activeOwnerPublications.clear();
+          pass.expiredOwnerPublications.clear();
         }
         ReferenceIndex tableReferenced = pass.tableReferenced;
         var tablePointer =
@@ -1028,6 +1036,16 @@ public class CasBlobGc {
             for (Keys.GenerationKey generation : pass.generationGcContinuation.generations()) {
               pass.addGenerationKey(generation);
             }
+            pass.generationGcContinuation.allowAbandonedWritingGenerations(
+                generationId ->
+                    pass.tableWalkFailures[0] == 0
+                        && pass.expiredOwnerPublications.contains(generationId)
+                        && !pass.activeOwnerPublications.contains(generationId)
+                        && ownerPublicationLeaseExpired(
+                            accountId,
+                            tableId,
+                            generationId,
+                            pass.passStartedAtMs - supersededArtifactMinAgeMs));
             boolean[] generationProofChanged = {false};
             StatsRepository.GenerationGcResult generationGc =
                 statsRepository.deleteUnreferencedGenerations(
@@ -1049,7 +1067,17 @@ public class CasBlobGc {
                         generationProofChanged[0] = true;
                         return false;
                       }
-                      return guardedClaim.value();
+                      if (!guardedClaim.value()) {
+                        return false;
+                      }
+                      // The reachability epoch is process-local. Re-read durable protection after
+                      // WRITING -> DELETING so a lease renewed by another replica restores the
+                      // generation before remote deletion begins.
+                      if (isProtected.getAsBoolean()) {
+                        restore.run();
+                        return false;
+                      }
+                      return true;
                     });
             remainingGenerationBlobDeletes =
                 Math.max(0, remainingGenerationBlobDeletes - generationGc.blobDeleteAttempts());
@@ -1590,6 +1618,8 @@ public class CasBlobGc {
     state.remarkProof = null;
     state.fresh = null;
     state.ownerProtectedPrefixes.clear();
+    state.activeOwnerPublications.clear();
+    state.expiredOwnerPublications.clear();
     state.remarkComplete = false;
     state.generationRefresh = new StatsRepository.GenerationGcContinuation();
     clearRemarkContinuationState(tableId, state.prefix);
@@ -2133,8 +2163,10 @@ public class CasBlobGc {
       referenced.add(normalizeKey(leaseUri));
       long gcNow = continuation == null ? System.currentTimeMillis() : continuation.passStartedAtMs;
       if (lease.getExpiresAtEpochMs() <= gcNow) {
+        expiredOwnerPublications(referenced).add(lease.getPublicationId());
         return OwnerLeaseRootResult.ROOTED;
       }
+      activeOwnerPublications(referenced).add(lease.getPublicationId());
       ownerProtectedPrefixes(referenced).add(normalizeKey(expectedPrefix));
       for (String manifestPrefix : lease.getProtectedCaptureManifestPrefixesList()) {
         if (!isOwnerCaptureManifestPrefix(accountId, tableId, manifestPrefix)) {
@@ -2154,6 +2186,36 @@ public class CasBlobGc {
     } catch (Exception error) {
       LOG.warnf(error, "cas gc could not root Owner publication lease %s", leaseUri);
       return OwnerLeaseRootResult.MALFORMED;
+    }
+  }
+
+  private boolean ownerPublicationLeaseExpired(
+      String accountId, String tableId, String publicationId, long expiredBeforeMs) {
+    try {
+      Pointer pointer =
+          pointerStore
+              .get(Keys.tableOwnerReuseLeasePointer(accountId, tableId, publicationId))
+              .orElse(null);
+      if (pointer == null) {
+        return false;
+      }
+      byte[] leaseBytes = blobStore.get(pointer.getBlobUri());
+      if (leaseBytes == null) {
+        return false;
+      }
+      OwnerPublicationLease lease = OwnerPublicationLease.parseFrom(leaseBytes);
+      String expectedUri =
+          Keys.ownerPublicationLeaseBlobUri(
+              accountId, tableId, publicationId, HexFormat.of().formatHex(sha256(leaseBytes)));
+      return lease.getFormatVersion() == 1
+          && accountId.equals(lease.getAccountId())
+          && tableId.equals(lease.getTableId())
+          && publicationId.equals(lease.getPublicationId())
+          && pointer.getBlobUri().equals(expectedUri)
+          && lease.getExpiresAtEpochMs() > 0L
+          && lease.getExpiresAtEpochMs() <= expiredBeforeMs;
+    } catch (Exception ignored) {
+      return false;
     }
   }
 
@@ -2231,6 +2293,7 @@ public class CasBlobGc {
     }
     long firstRecord = state.nextRecord.getOrDefault(uri, 0L);
     ReusableCoverageManifest.walkTrusted(
+        manifestCommitments,
         blobStore,
         coverage,
         firstRecord,
@@ -2278,6 +2341,32 @@ public class CasBlobGc {
     }
     // Unlike ownerManifestState, an empty fallback is not conservative here: it would turn an
     // unrecognised reachability index into a false delete. Fail closed on this internal invariant.
+    throw new IllegalStateException(
+        "Owner publication lease state does not match reachability index");
+  }
+
+  private Set<String> activeOwnerPublications(ReferenceIndex referenced) {
+    if (continuation != null) {
+      if (referenced == continuation.tableReferenced) {
+        return continuation.activeOwnerPublications;
+      }
+      if (continuation.deferredPage != null && referenced == continuation.deferredPage.fresh) {
+        return continuation.deferredPage.activeOwnerPublications;
+      }
+    }
+    throw new IllegalStateException(
+        "Owner publication lease state does not match reachability index");
+  }
+
+  private Set<String> expiredOwnerPublications(ReferenceIndex referenced) {
+    if (continuation != null) {
+      if (referenced == continuation.tableReferenced) {
+        return continuation.expiredOwnerPublications;
+      }
+      if (continuation.deferredPage != null && referenced == continuation.deferredPage.fresh) {
+        return continuation.deferredPage.expiredOwnerPublications;
+      }
+    }
     throw new IllegalStateException(
         "Owner publication lease state does not match reachability index");
   }

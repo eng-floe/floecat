@@ -142,11 +142,13 @@ class OwnerPublicationServiceImplTest {
     assertTrue(response.getReuseSourceLeased());
     verify(service.reuseLeases)
         .acquire(
-            tableId(),
-            response.getGenerationId(),
-            Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
-                tableId().getAccountId(), tableId().getId(), SNAPSHOT),
-            sourceRef);
+            eq(tableId()),
+            eq(response.getGenerationId()),
+            eq(
+                Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
+                    tableId().getAccountId(), tableId().getId(), SNAPSHOT)),
+            eq(sourceRef),
+            any());
   }
 
   @Test
@@ -178,11 +180,13 @@ class OwnerPublicationServiceImplTest {
     assertFalse(response.getReuseSourceLeased());
     verify(service.reuseLeases)
         .acquire(
-            tableId(),
-            response.getGenerationId(),
-            Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
-                tableId().getAccountId(), tableId().getId(), SNAPSHOT),
-            null);
+            eq(tableId()),
+            eq(response.getGenerationId()),
+            eq(
+                Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
+                    tableId().getAccountId(), tableId().getId(), SNAPSHOT)),
+            org.mockito.ArgumentMatchers.isNull(),
+            any());
   }
 
   @Test
@@ -299,7 +303,7 @@ class OwnerPublicationServiceImplTest {
   }
 
   @Test
-  void completeRegistersAnUnboundedManifestInDurableBatches() {
+  void completeRegistersAnUnboundedManifestInDurableBatches() throws Exception {
     var service = service();
     var publication = begin();
     String generationId = OwnerPublicationServiceImpl.generationId(publication, CALLER_SUBJECT);
@@ -313,6 +317,16 @@ class OwnerPublicationServiceImplTest {
     }
     manifest.setFinalStatsRecordCount(recordCount);
     var firstRequest = complete(service, publication, manifest.build());
+    byte[] captureManifestBytes =
+        service.blobStore.getRangeAtMost(
+            firstRequest.getManifest().getManifestUri(),
+            0L,
+            Math.toIntExact(firstRequest.getManifest().getManifestBytes() + 1L));
+    var commitmentIndex =
+        SnapshotCaptureManifest.parseFrom(captureManifestBytes)
+            .getOwnerArtifactRegistrationManifest()
+            .getCommitmentIndex();
+    clearInvocations(service.blobStore);
 
     var first = service.completeOwnerPublication(firstRequest).await().indefinitely();
 
@@ -342,6 +356,9 @@ class OwnerPublicationServiceImplTest {
         .registerPrewrittenStatsReferencesInGeneration(any(), anyLong(), anyString(), any());
     verify(service.persistence)
         .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
+    verify(service.blobStore, times(1))
+        .getRangeAtMost(
+            commitmentIndex.getUri(), 0L, Math.toIntExact(commitmentIndex.getPayloadBytes() + 1L));
   }
 
   @Test
@@ -403,7 +420,10 @@ class OwnerPublicationServiceImplTest {
                 0L,
                 Math.toIntExact(request.getManifest().getManifestBytes() + 1L)));
     String indexUri = stored.getOwnerArtifactRegistrationManifest().getCommitmentIndex().getUri();
-    when(service.blobStore.get(indexUri)).thenReturn(new byte[] {1, 2, 3});
+    long indexBytes =
+        stored.getOwnerArtifactRegistrationManifest().getCommitmentIndex().getPayloadBytes();
+    when(service.blobStore.getRangeAtMost(indexUri, 0L, Math.toIntExact(indexBytes + 1L)))
+        .thenReturn(new byte[] {1, 2, 3});
 
     var error =
         assertThrows(
@@ -482,6 +502,33 @@ class OwnerPublicationServiceImplTest {
     assertEquals(0L, replay.getReuseLeaseExpiresAtEpochMs());
     verify(service.persistence, times(1))
         .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
+  }
+
+  @Test
+  void beginAndEmptyCursorCompleteReturnCommittedPublicationWithoutRestaging() {
+    var service = service();
+    var request = complete(service);
+    var published = ArgumentCaptor.<Snapshot>captor();
+
+    var first = service.completeOwnerPublication(request).await().indefinitely();
+    assertTrue(first.getActivated());
+    verify(service.snapshots).prepareCreatePublicationUpdates(published.capture());
+    when(service.snapshots.getByIdConsistent(tableId(), SNAPSHOT))
+        .thenReturn(Optional.of(published.getValue()));
+    when(service.statsStore.validatePreparedStatsGenerationRetry(
+            any(), anyLong(), anyString(), any()))
+        .thenReturn(true);
+
+    service.beginOwnerPublication(begin()).await().indefinitely();
+    var replay = service.completeOwnerPublication(request).await().indefinitely();
+
+    assertTrue(replay.getActivated());
+    assertEquals(0L, replay.getReuseLeaseExpiresAtEpochMs());
+    verify(service.statsStore, times(1))
+        .registerPrewrittenStatsReferencesInGeneration(any(), anyLong(), anyString(), any());
+    verify(service.persistence, times(1))
+        .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
+    verify(service.reuseLeases, times(1)).renew(any(), anyString(), any());
   }
 
   @Test
@@ -609,7 +656,8 @@ class OwnerPublicationServiceImplTest {
             .toList());
     verify(service.indexes)
         .completePreparedGenerationActivation(tableId(), SNAPSHOT, preparedIndexes);
-    verify(service.blobStore, times(1)).get(anyString());
+    verify(service.blobStore, times(2))
+        .getRangeAtMost(anyString(), eq(0L), org.mockito.ArgumentMatchers.anyInt());
   }
 
   @Test
@@ -913,10 +961,6 @@ class OwnerPublicationServiceImplTest {
                             .setPayloadSha256(ByteString.copyFrom(registrationIndexDigest))
                             .setChunkCount(registrationPayload.index().getChunksCount())))
             .build();
-    when(service.blobStore.get(registrationIndexUri)).thenReturn(registrationIndexBytes);
-    for (var entry : EXTERNAL_OBJECTS.entrySet()) {
-      when(service.blobStore.get(entry.getKey())).thenReturn(entry.getValue());
-    }
     when(service.blobStore.getRange(anyString(), anyLong(), org.mockito.ArgumentMatchers.anyInt()))
         .thenAnswer(
             invocation -> {
@@ -930,6 +974,25 @@ class OwnerPublicationServiceImplTest {
               }
               return java.util.Arrays.copyOfRange(
                   external, Math.toIntExact(offset), Math.toIntExact(offset + length));
+            });
+    when(service.blobStore.getRangeAtMost(
+            anyString(), anyLong(), org.mockito.ArgumentMatchers.anyInt()))
+        .thenAnswer(
+            invocation -> {
+              String uri = invocation.getArgument(0, String.class);
+              long offset = invocation.getArgument(1, Long.class);
+              int length = invocation.getArgument(2, Integer.class);
+              byte[] external =
+                  registrationIndexUri.equals(uri)
+                      ? registrationIndexBytes
+                      : EXTERNAL_OBJECTS.get(uri);
+              if (external == null || offset > external.length) {
+                return null;
+              }
+              return java.util.Arrays.copyOfRange(
+                  external,
+                  Math.toIntExact(offset),
+                  Math.toIntExact(Math.min(external.length, offset + length)));
             });
     byte[] manifestBytes = manifest.toByteArray();
     byte[] manifestDigest = sha256(manifestBytes);
@@ -1378,9 +1441,14 @@ class OwnerPublicationServiceImplTest {
     service.currentSnapshots = org.mockito.Mockito.mock(CurrentSnapshotPointerService.class);
     service.graphView = org.mockito.Mockito.mock(CatalogGraphView.class);
     service.blobStore = org.mockito.Mockito.mock(BlobStore.class);
+    service.manifestCommitments = ExternalManifestCommitmentCache.forTesting();
     service.reuseLeases = org.mockito.Mockito.mock(OwnerReuseLeaseRepository.class);
-    when(service.reuseLeases.acquire(any(), anyString(), anyString(), any()))
-        .thenReturn(Long.MAX_VALUE);
+    when(service.reuseLeases.acquire(any(), anyString(), anyString(), any(), any()))
+        .thenAnswer(
+            invocation -> {
+              invocation.getArgument(4, Runnable.class).run();
+              return Long.MAX_VALUE;
+            });
     when(service.reuseLeases.renew(any(), anyString(), any())).thenReturn(Long.MAX_VALUE);
     when(service.reuseLeases.progress(any(), anyString(), anyString()))
         .thenReturn(OwnerReuseLeaseRepository.RegistrationProgress.initial());

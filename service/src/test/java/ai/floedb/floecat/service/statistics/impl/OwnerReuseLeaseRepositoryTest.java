@@ -79,6 +79,25 @@ class OwnerReuseLeaseRepositoryTest {
   }
 
   @Test
+  void acquirePublishesLeaseBeforeInitializingGeneration() throws Exception {
+    var initialized = new java.util.concurrent.atomic.AtomicBoolean();
+
+    repository.acquire(
+        TABLE,
+        PUBLICATION,
+        CAPTURE_PREFIX,
+        null,
+        () -> {
+          assertThat(pointers.get(Keys.tableOwnerReuseLeasePointer("acct", "table", PUBLICATION)))
+              .isPresent();
+          initialized.set(true);
+        });
+
+    assertThat(initialized).isTrue();
+    assertThat(currentLease().getPublicationId()).isEqualTo(PUBLICATION);
+  }
+
+  @Test
   void progressIsDurableMonotonicAndBoundToOneCaptureManifest() {
     var initial = OwnerReuseLeaseRepository.RegistrationProgress.initial();
     var complete = new OwnerReuseLeaseRepository.RegistrationProgress(1L, 0L, 0L, 2L, 3L, 4L, 5L);

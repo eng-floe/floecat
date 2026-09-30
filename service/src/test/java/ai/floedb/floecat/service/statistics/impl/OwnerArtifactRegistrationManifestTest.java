@@ -8,6 +8,7 @@ package ai.floedb.floecat.service.statistics.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -83,6 +84,7 @@ class OwnerArtifactRegistrationManifestTest {
         IllegalArgumentException.class,
         () ->
             ExternalManifestCommitments.load(
+                ExternalManifestCommitmentCache.forTesting(),
                 blobs,
                 reference,
                 ExternalManifestDomain.EMD_OWNER_ARTIFACT_REGISTRATION,
@@ -124,10 +126,12 @@ class OwnerArtifactRegistrationManifestTest {
             .setPayloadBytes(index.length)
             .setPayloadSha256(ByteString.copyFrom(digest))
             .build();
-    when(blobs.get(uri)).thenReturn(index);
+    when(blobs.getRangeAtMost(uri, 0L, index.length + 1)).thenReturn(index);
+    var cache = ExternalManifestCommitmentCache.forTesting();
 
     var loaded =
         ExternalManifestCommitments.load(
+            cache,
             blobs,
             reference,
             ExternalManifestDomain.EMD_REUSABLE_COVERAGE,
@@ -146,6 +150,48 @@ class OwnerArtifactRegistrationManifestTest {
             0);
 
     assertEquals(0, loaded.getChunksCount());
+    ExternalManifestCommitments.load(
+        cache,
+        blobs,
+        reference,
+        ExternalManifestDomain.EMD_REUSABLE_COVERAGE,
+        "acct",
+        "table",
+        42L,
+        0L,
+        0L,
+        0L,
+        0L,
+        0L,
+        ReusableCoverageManifest.RECORD_BYTES,
+        OwnerArtifactRegistrationManifest.DEFAULT_READ_BYTES,
+        OwnerArtifactRegistrationManifest.DEFAULT_READ_BYTES
+            / ReusableCoverageManifest.RECORD_BYTES,
+        0);
+    verify(blobs, times(1)).getRangeAtMost(uri, 0L, index.length + 1);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            ExternalManifestCommitments.load(
+                cache,
+                blobs,
+                reference,
+                ExternalManifestDomain.EMD_REUSABLE_COVERAGE,
+                "acct",
+                "table",
+                42L,
+                1L,
+                0L,
+                0L,
+                0L,
+                0L,
+                ReusableCoverageManifest.RECORD_BYTES,
+                OwnerArtifactRegistrationManifest.DEFAULT_READ_BYTES,
+                OwnerArtifactRegistrationManifest.DEFAULT_READ_BYTES
+                    / ReusableCoverageManifest.RECORD_BYTES,
+                0));
+    verify(blobs, times(2)).getRangeAtMost(uri, 0L, index.length + 1);
   }
 
   private static OwnerArtifactObjectReference object(String target) {

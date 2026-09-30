@@ -6,8 +6,10 @@
 package ai.floedb.floecat.service.statistics.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.reconciler.rpc.AggregationTreeBranch;
@@ -23,6 +25,62 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class ReusableCoverageManifestAggregationTreeTest {
+  @Test
+  void rejectsOversizedCoverageShardBeforeReadingIt() {
+    BlobStore blobs = mock(BlobStore.class);
+    long entries =
+        ReusableCoverageManifest.MAX_SHARD_BYTES / ReusableCoverageManifest.RECORD_BYTES + 1L;
+    long payloadBytes = entries * ReusableCoverageManifest.RECORD_BYTES;
+    var reference =
+        new ReusableCoverageManifest.ShardReference(
+            new byte[32],
+            new byte[32],
+            payloadBytes,
+            entries,
+            new byte[32],
+            1L,
+            new byte[32],
+            new byte[32],
+            1L);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            ReusableCoverageManifest.readShard(
+                blobs,
+                ai.floedb.floecat.reconciler.rpc.ReusableCoverageManifestRef.getDefaultInstance(),
+                reference,
+                "/oversized"));
+    verifyNoInteractions(blobs);
+  }
+
+  @Test
+  void rejectsCoverageShardWhosePhysicalObjectExceedsItsCommitment() {
+    BlobStore blobs = mock(BlobStore.class);
+    var reference =
+        new ReusableCoverageManifest.ShardReference(
+            new byte[32],
+            new byte[32],
+            ReusableCoverageManifest.RECORD_BYTES,
+            1L,
+            new byte[32],
+            1L,
+            new byte[32],
+            new byte[32],
+            1L);
+    when(blobs.getRangeAtMost("/oversized", 0L, ReusableCoverageManifest.RECORD_BYTES + 1))
+        .thenReturn(new byte[ReusableCoverageManifest.RECORD_BYTES + 1]);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            ReusableCoverageManifest.readShard(
+                blobs,
+                ai.floedb.floecat.reconciler.rpc.ReusableCoverageManifestRef.getDefaultInstance(),
+                reference,
+                "/oversized"));
+  }
+
   @Test
   void walksAndResumesAContentAddressedBranch() throws Exception {
     byte[] leftKey = new byte[32];
@@ -67,7 +125,11 @@ class ReusableCoverageManifestAggregationTreeTest {
     ReusableCoverageManifest.walkAggregationTree(blobs, root, prefix, completed, rooted::add);
     assertEquals(List.of(), rooted);
     for (String uri : expected) {
-      verify(blobs).get(uri);
+      verify(blobs)
+          .getRangeAtMost(
+              org.mockito.ArgumentMatchers.eq(uri),
+              org.mockito.ArgumentMatchers.eq(0L),
+              org.mockito.ArgumentMatchers.anyInt());
     }
   }
 
@@ -104,7 +166,10 @@ class ReusableCoverageManifestAggregationTreeTest {
 
   private static void stub(
       BlobStore blobs, String prefix, AggregationTreeNodeRef reference, AggregationTreeNode node) {
-    when(blobs.get(ReusableCoverageManifest.aggregationTreeNodeUri(prefix, reference)))
+    when(blobs.getRangeAtMost(
+            ReusableCoverageManifest.aggregationTreeNodeUri(prefix, reference),
+            0L,
+            Math.toIntExact(reference.getPayloadBytes() + 1L)))
         .thenReturn(node.toByteArray());
   }
 

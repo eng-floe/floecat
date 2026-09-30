@@ -22,9 +22,26 @@ final class ExternalManifestCommitments {
   static final int MAX_INDEX_BYTES = 16 * 1024 * 1024;
   static final int MAX_CHUNKS = 100_000;
 
+  record CacheKey(
+      ExternalManifestCommitmentIndexRef reference,
+      ExternalManifestDomain domain,
+      String accountId,
+      String tableId,
+      long snapshotId,
+      long payloadBytes,
+      long recordCount,
+      long fileStatsTargets,
+      long indexTargets,
+      long aggregateStatsTargets,
+      int fixedRecordBytes,
+      int maximumChunkBytes,
+      int maximumChunkRecords,
+      int maximumChunkTargets) {}
+
   private ExternalManifestCommitments() {}
 
   static ExternalManifestCommitmentIndex load(
+      ExternalManifestCommitmentCache cache,
       BlobStore blobs,
       ExternalManifestCommitmentIndexRef reference,
       ExternalManifestDomain domain,
@@ -41,80 +58,110 @@ final class ExternalManifestCommitments {
       int maximumChunkRecords,
       int maximumChunkTargets) {
     validateReference(reference, domain, accountId, tableId, snapshotId);
-    byte[] bytes = blobs.get(reference.getUri());
-    if (bytes == null
-        || bytes.length != reference.getPayloadBytes()
-        || !MessageDigest.isEqual(sha256(bytes), reference.getPayloadSha256().toByteArray())) {
-      throw new IllegalArgumentException("external manifest commitment index is unreadable");
-    }
-    ExternalManifestCommitmentIndex index;
-    try {
-      index = ExternalManifestCommitmentIndex.parseFrom(bytes);
-    } catch (InvalidProtocolBufferException error) {
-      throw new IllegalArgumentException("invalid external manifest commitment index", error);
-    }
-    if (index.getFormatVersion() != FORMAT_VERSION
-        || index.getDomain() != domain
-        || index.getPayloadBytes() != payloadBytes
-        || index.getRecordCount() != recordCount
-        || index.getFileStatsTargetCount() != fileStatsTargets
-        || index.getIndexTargetCount() != indexTargets
-        || index.getAggregateStatsTargetCount() != aggregateStatsTargets
-        || index.getFixedRecordBytes() != fixedRecordBytes
-        || index.getChunksCount() != reference.getChunkCount()
-        || index.getChunksCount() > MAX_CHUNKS
-        || index.getChunkSizeLimit() <= 0L
-        || index.getChunkSizeLimit() > maximumChunkBytes) {
-      throw new IllegalArgumentException("external manifest commitment index metadata mismatch");
-    }
-    long offset = 0L;
-    long records = 0L;
-    long fileTargets = 0L;
-    long indexes = 0L;
-    long aggregateTargets = 0L;
-    for (ExternalManifestChunkCommitment chunk : index.getChunksList()) {
-      long targets;
-      long fixedPayloadBytes = -1L;
-      try {
-        targets =
-            Math.addExact(
-                Math.addExact(chunk.getFileStatsTargetCount(), chunk.getIndexTargetCount()),
-                chunk.getAggregateStatsTargetCount());
-        if (fixedRecordBytes > 0) {
-          fixedPayloadBytes = Math.multiplyExact(chunk.getRecordCount(), (long) fixedRecordBytes);
-        }
-      } catch (ArithmeticException error) {
-        throw new IllegalArgumentException("external manifest chunk counts overflow", error);
-      }
-      if (chunk.getPayloadOffset() != offset
-          || chunk.getPayloadBytes() <= 0L
-          || chunk.getPayloadBytes() > index.getChunkSizeLimit()
-          || chunk.getPayloadBytes() > maximumChunkBytes
-          || chunk.getPayloadSha256().size() != 32
-          || chunk.getRecordCount() <= 0L
-          || chunk.getRecordCount() > maximumChunkRecords
-          || targets > maximumChunkTargets
-          || (fixedRecordBytes > 0 && chunk.getPayloadBytes() != fixedPayloadBytes)) {
-        throw new IllegalArgumentException("invalid external manifest chunk commitment");
-      }
-      try {
-        offset = Math.addExact(offset, chunk.getPayloadBytes());
-        records = Math.addExact(records, chunk.getRecordCount());
-        fileTargets = Math.addExact(fileTargets, chunk.getFileStatsTargetCount());
-        indexes = Math.addExact(indexes, chunk.getIndexTargetCount());
-        aggregateTargets = Math.addExact(aggregateTargets, chunk.getAggregateStatsTargetCount());
-      } catch (ArithmeticException error) {
-        throw new IllegalArgumentException("external manifest commitment totals overflow", error);
-      }
-    }
-    if (offset != payloadBytes
-        || records != recordCount
-        || fileTargets != fileStatsTargets
-        || indexes != indexTargets
-        || aggregateTargets != aggregateStatsTargets) {
-      throw new IllegalArgumentException("external manifest commitment totals mismatch");
-    }
-    return index;
+    CacheKey cacheKey =
+        new CacheKey(
+            reference,
+            domain,
+            accountId,
+            tableId,
+            snapshotId,
+            payloadBytes,
+            recordCount,
+            fileStatsTargets,
+            indexTargets,
+            aggregateStatsTargets,
+            fixedRecordBytes,
+            maximumChunkBytes,
+            maximumChunkRecords,
+            maximumChunkTargets);
+    return cache.get(
+        cacheKey,
+        () -> {
+          // BlobStore's default implementation may buffer the full object; S3BlobStore enforces
+          // this as a physical HTTP Range bound. The exact-length check remains authoritative for
+          // every implementation.
+          byte[] bytes =
+              blobs.getRangeAtMost(
+                  reference.getUri(), 0L, Math.toIntExact(reference.getPayloadBytes() + 1L));
+          if (bytes == null
+              || bytes.length != reference.getPayloadBytes()
+              || !MessageDigest.isEqual(
+                  sha256(bytes), reference.getPayloadSha256().toByteArray())) {
+            throw new IllegalArgumentException("external manifest commitment index is unreadable");
+          }
+          ExternalManifestCommitmentIndex index;
+          try {
+            index = ExternalManifestCommitmentIndex.parseFrom(bytes);
+          } catch (InvalidProtocolBufferException error) {
+            throw new IllegalArgumentException("invalid external manifest commitment index", error);
+          }
+          if (index.getFormatVersion() != FORMAT_VERSION
+              || index.getDomain() != domain
+              || index.getPayloadBytes() != payloadBytes
+              || index.getRecordCount() != recordCount
+              || index.getFileStatsTargetCount() != fileStatsTargets
+              || index.getIndexTargetCount() != indexTargets
+              || index.getAggregateStatsTargetCount() != aggregateStatsTargets
+              || index.getFixedRecordBytes() != fixedRecordBytes
+              || index.getChunksCount() != reference.getChunkCount()
+              || index.getChunksCount() > MAX_CHUNKS
+              || index.getChunkSizeLimit() <= 0L
+              || index.getChunkSizeLimit() > maximumChunkBytes) {
+            throw new IllegalArgumentException(
+                "external manifest commitment index metadata mismatch");
+          }
+          long offset = 0L;
+          long records = 0L;
+          long fileTargets = 0L;
+          long indexes = 0L;
+          long aggregateTargets = 0L;
+          for (ExternalManifestChunkCommitment chunk : index.getChunksList()) {
+            long targets;
+            long fixedPayloadBytes = -1L;
+            try {
+              targets =
+                  Math.addExact(
+                      Math.addExact(chunk.getFileStatsTargetCount(), chunk.getIndexTargetCount()),
+                      chunk.getAggregateStatsTargetCount());
+              if (fixedRecordBytes > 0) {
+                fixedPayloadBytes =
+                    Math.multiplyExact(chunk.getRecordCount(), (long) fixedRecordBytes);
+              }
+            } catch (ArithmeticException error) {
+              throw new IllegalArgumentException("external manifest chunk counts overflow", error);
+            }
+            if (chunk.getPayloadOffset() != offset
+                || chunk.getPayloadBytes() <= 0L
+                || chunk.getPayloadBytes() > index.getChunkSizeLimit()
+                || chunk.getPayloadBytes() > maximumChunkBytes
+                || chunk.getPayloadSha256().size() != 32
+                || chunk.getRecordCount() <= 0L
+                || chunk.getRecordCount() > maximumChunkRecords
+                || targets > maximumChunkTargets
+                || (fixedRecordBytes > 0 && chunk.getPayloadBytes() != fixedPayloadBytes)) {
+              throw new IllegalArgumentException("invalid external manifest chunk commitment");
+            }
+            try {
+              offset = Math.addExact(offset, chunk.getPayloadBytes());
+              records = Math.addExact(records, chunk.getRecordCount());
+              fileTargets = Math.addExact(fileTargets, chunk.getFileStatsTargetCount());
+              indexes = Math.addExact(indexes, chunk.getIndexTargetCount());
+              aggregateTargets =
+                  Math.addExact(aggregateTargets, chunk.getAggregateStatsTargetCount());
+            } catch (ArithmeticException error) {
+              throw new IllegalArgumentException(
+                  "external manifest commitment totals overflow", error);
+            }
+          }
+          if (offset != payloadBytes
+              || records != recordCount
+              || fileTargets != fileStatsTargets
+              || indexes != indexTargets
+              || aggregateTargets != aggregateStatsTargets) {
+            throw new IllegalArgumentException("external manifest commitment totals mismatch");
+          }
+          return index;
+        });
   }
 
   static byte[] readVerifiedChunk(
