@@ -44,6 +44,7 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileCapturePolicy;
 import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.service.cache.ObjectCache;
+import ai.floedb.floecat.service.reconciler.ReconcileJobQueueTestScope;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -62,6 +63,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
@@ -552,6 +554,33 @@ class StatsOrchestratorTest {
               assertThat(item.outcome().name()).isEqualTo("DEGRADED");
               assertThat(item.detail()).isEqualTo("failed to enqueue reconcile capture");
             });
+  }
+
+  @Test
+  @ResourceLock(ReconcileJobQueueTestScope.LOCK_NAME)
+  void triggerBatchReturnsQueueDisabledWithoutEnqueue() {
+    try (var ignored = ReconcileJobQueueTestScope.disabled()) {
+      StatsStore statsStore = Mockito.mock(StatsStore.class);
+      ReconcileJobStore jobStore = Mockito.mock(ReconcileJobStore.class);
+      TableRepository tableRepository = Mockito.mock(TableRepository.class);
+      StatsOrchestrator orchestrator =
+          new StatsOrchestrator(statsStore, jobStore, tableRepository, connectorRepositoryWith());
+      StatsCaptureRequest request = tableRequest(StatsExecutionMode.ASYNC);
+
+      StatsCaptureBatchResult result =
+          orchestrator.triggerBatch(StatsCaptureBatchRequest.of(List.of(request)));
+
+      assertThat(result.results())
+          .singleElement()
+          .satisfies(
+              item -> {
+                assertThat(item.request()).isEqualTo(request);
+                assertThat(item.outcome().name()).isEqualTo("UNCAPTURABLE");
+                assertThat(item.detail()).isEqualTo("queue_disabled");
+              });
+      verify(jobStore, never()).enqueue(anyString(), anyString(), anyBoolean(), any(), any());
+      verify(tableRepository, never()).getById(any());
+    }
   }
 
   @Test
