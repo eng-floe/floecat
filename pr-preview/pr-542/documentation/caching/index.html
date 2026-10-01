@@ -1980,7 +1980,7 @@ sizing harness use the same arithmetic.</p>
 </tr>
 <tr>
 <td><code>CacheFamily</code></td>
-<td>The independently budgeted in-memory families that use this module. Pointer planning state is not a <code>MemoryCache</code> family: it is a complete index with a separate admission budget and no entry eviction. <code>OBJECT</code> is decoded metadata and <code>HINT</code> is decoded engine-specific metadata. Disk blob caching has its own volume budget.</td>
+<td>The independently budgeted in-memory families that use this module. Pointer planning state is not a <code>MemoryCache</code> family: it is a complete index with a separate admission budget and no entry eviction. <code>OBJECT</code> is decoded metadata, <code>HINT</code> is decoded engine-specific metadata, and <code>MANIFEST_COMMITMENT</code> is validated content-addressed Owner manifest indexes. Disk blob caching has its own volume budget.</td>
 </tr>
 <tr>
 <td><code>CacheBudget</code> / <code>CacheBudgetResolver</code></td>
@@ -2176,7 +2176,8 @@ emptiness is load-bearing.</p>
 maximum heap, which the JVM already sizes from the container memory limit, and each memory cache takes a
 share of that. <code>heap-share</code> carries its default in
 <code>service/src/main/resources/application.properties</code>, alongside the disk blob settings;
-<code>total-bytes</code> is unset and is derived when the object and hint memory caches are wired.</p>
+<code>total-bytes</code> is unset and is derived when the object, hint, and manifest-commitment memory caches
+are wired.</p>
 
 
 

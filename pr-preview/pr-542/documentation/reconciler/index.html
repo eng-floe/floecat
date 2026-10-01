@@ -2306,6 +2306,13 @@ For handled remote completions, workers stop heartbeats before the handled succe
 perform a post-completion final lease confirmation after that RPC has durably completed the job.</p>
 <h2 id="configuration-extensibility">Configuration &amp; Extensibility<a class="headerlink" href="#configuration-extensibility" title="Permanent link">&para;</a></h2>
 <ul>
+<li>Queue kill switch via <code>floecat.reconciler.job-queue.enabled</code> (default <code>true</code>, environment variable
+  <code>FLOECAT_RECONCILER_JOB_QUEUE_ENABLED</code>). Treat this as a startup setting and restart the service
+  after changing it. When <code>false</code>, Floecat rejects new capture admission, stops scheduled queue
+  work and executor RPCs, and leaves persisted jobs in place. Job inspection, cancellation, and
+  reconciler settings RPCs remain available, as does account-deletion cleanup. Re-enable the flag
+  and restart to resume eligible persisted jobs. Async stats capture reports <code>queue_disabled</code> as
+  uncapturable; synchronous stats capture returns its existing failed outcome.</li>
 <li>Scheduling cadence via <code>reconciler.pollEvery</code> (defaults to <code>1s</code>).</li>
 <li>Empty-queue polling uses one probe sweep per worker JVM and exponentially backs off with jitter
   between <code>reconciler.empty-poll-backoff-initial-ms</code> (default <code>500</code>) and

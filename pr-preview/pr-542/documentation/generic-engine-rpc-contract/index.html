@@ -1872,7 +1872,7 @@ Mutation stays resource-specific because table and view specs differ.</p>
 </tr>
 <tr>
 <td>Pin query inputs / snapshot-aware schema</td>
-<td><code>QuerySchemaService.DescribeInputs</code>, <code>UserObjectsService.GetUserObjects</code></td>
+<td><code>QuerySchemaService.DescribeInputs</code>, <code>UserObjectsService.ResolveQueryInputs</code></td>
 <td>Query-context APIs. Pinned/current/as-of behavior belongs here.</td>
 </tr>
 <tr>
@@ -1909,7 +1909,7 @@ management APIs for callers that need the typed resource records; engine adapter
 because it prints management metadata such as <code>created_at</code>.</p>
 <p><code>SnapshotService.GetSnapshotSchema</code> answers the schema of one table as of one snapshot. Generic
 relation callers use <code>RelationService.GetRelation(include_schema=true)</code> for the current schema, and
-query planners use <code>QuerySchemaService.DescribeInputs</code> or <code>UserObjectsService.GetUserObjects</code> when
+query planners use <code>QuerySchemaService.DescribeInputs</code> or <code>UserObjectsService.ResolveQueryInputs</code> when
 pinned snapshot behavior is required.</p>
 <h2 id="adapter-recipe">Adapter Recipe<a class="headerlink" href="#adapter-recipe" title="Permanent link">&para;</a></h2>
 <p>For catalog browsing and name binding, an engine adapter can use this sequence:</p>
@@ -1923,12 +1923,12 @@ pinned snapshot behavior is required.</p>
 <li>Call <code>RelationService.ResolveRelations</code> when binding ordered name candidates from a search path,
    or <code>RelationService.GetRelation</code> when the resource id is already known.</li>
 <li>Start the query lifecycle and use <code>QuerySchemaService.DescribeInputs</code> or
-   <code>UserObjectsService.GetUserObjects</code> only when planning requires pinned snapshot state.</li>
+   <code>UserObjectsService.ResolveQueryInputs</code> only when planning requires pinned snapshot state.</li>
 </ol>
-<p><code>ResolveRelations</code> and <code>GetUserObjects</code> intentionally accept different candidate shapes. The former
+<p><code>ResolveRelations</code> and <code>ResolveQueryInputs</code> intentionally accept different candidate shapes. The former
 is a catalog bind: send one <code>RelationReference</code> per logical input and put ordered <code>NameRef</code>
 candidates in its <code>candidates</code> field. The latter is a query bind: send one <code>QueryInput</code> per logical
-input to <code>GetUserObjectsRequest.tables</code>; its candidates can carry ids, names, and snapshot
+input to <code>ResolveQueryInputsRequest.tables</code>; its candidates can carry ids, names, and snapshot
 overrides, and successful inputs become pinned. The <code>tables</code> field is historical naming for relation
 inputs, not a requirement that the engine support tables only. In short: use <code>NameRef</code> candidates
 for unpinned name resolution, and <code>QueryInput</code> candidates when requesting the pinned planner bundle.</p>
@@ -2005,7 +2005,7 @@ for unpinned name resolution, and <code>QueryInput</code> candidates when reques
 - <code>name</code> is the fully qualified <code>NameRef</code>; <code>display_name</code> is the leaf.
 - <code>table</code> details carry <code>UpstreamRef</code> (format and partition keys live on it) and <code>schema_json</code>.
 - <code>view</code> details carry <code>ViewSqlDefinition</code>, base relation names and the creation search path.</p>
-<p><code>GetUserObjects</code> returns canonical recursive <code>types.LogicalType</code> values in <code>ColumnInfo</code>. The SQL
+<p><code>ResolveQueryInputs</code> returns canonical recursive <code>types.LogicalType</code> values in <code>ColumnInfo</code>. The SQL
 object registry keeps <code>NameRef</code> type symbols for engine-defined functions, operators, and builtin
 types because those names may not have a Floecat logical-type equivalent.</p>
 <p><code>RelationStatus.queryability</code>
@@ -2040,10 +2040,10 @@ types because those names may not have a Floecat logical-type equivalent.</p>
 answer catalog topology questions.</p>
 <p>Pinning is query-context specific:
 - <code>QuerySchemaService.DescribeInputs</code> resolves schemas under the active query context.
-- <code>UserObjectsService.GetUserObjects</code> streams planner bundles with relation, schema, stats, and
+- <code>UserObjectsService.ResolveQueryInputs</code> streams planner bundles with relation, schema, stats, and
   constraint data.
 - <code>CatalogGraphView.tablePinFor(...)</code> is the lower-level graph hook for table pins.</p>
-<p><code>GetUserObjects</code> keeps query-level failures as stream failures: an unknown or inactive query,
+<p><code>ResolveQueryInputs</code> keeps query-level failures as stream failures: an unknown or inactive query,
 authorization failure, cancellation, malformed request, or unavailable backend cannot produce a
 usable planning result. A relation-scoped pin, schema, or decoration failure is emitted as that
 input's <code>RelationResolution.ERROR</code>; other inputs in the same bundle continue and successful pins

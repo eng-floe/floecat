@@ -1809,6 +1809,10 @@ entries first.</p>
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/{generation_id}/index-artifacts/{target_id_sha256}/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/target-stats/{snapshot_id:019d}/generations/direct/index-sidecars/{target_id}/{sha}.parquet
 /accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/index-artifacts/capture-manifests/{sha}.pb
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/index-artifacts/capture-manifests/registration-{sha}.bin
+/accounts/{account_id}/tables/{table_id}/snapshots/{snapshot_id:019d}/index-artifacts/capture-manifests/commitment-{registration|coverage}-{sha}.pb
+/accounts/{account_id}/tables/{table_id}/reusable-artifacts/{family}/{coverage_sha256}{.pb|.parquet}
+/accounts/{account_id}/tables/{table_id}/owner-publication-leases/{publication_id}/{sha}.pb
 /accounts/{account_id}/tables/{table_id}/constraints/{snapshot_id:019d}/{sha}.pb
 </code></pre></div>
 <p><code>{target_id_sha256}</code> is the lowercase SHA-256 hex digest of the logical target identity. Reusable
@@ -1863,6 +1867,8 @@ and therefore have no blob key.</p>
 /accounts/{account_id}/namespaces/{namespace_id}/markers/relations
 /accounts/{account_id}/gc/cas/generation-cursor
 /accounts/{account_id}/root-resyncs/by-table/{table_id}
+/accounts/{account_id}/tables/{table_id}/owner-reuse-leases/{publication_id}
+/accounts/{account_id}/tables/{table_id}/owner-publication-progress/{publication_id}
 </code></pre></div>
 <p>A catalog carries a <code>markers/children</code> marker versioning its set of namespaces. Every writer that
 adds one asserts and advances it in its own batch — the namespace services, the overlay reconciler,
