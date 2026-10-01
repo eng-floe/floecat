@@ -568,6 +568,7 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     synchronized (state) {
       state.laneOwnerByKey.put(lanePointerKey, existing.canonicalPointerKey());
     }
+    boolean expectedOwner = expectedReference.equals(existing.canonicalPointerKey());
     if (!expectedReference.equals(existing.canonicalPointerKey())) {
       StoredReconcileJob owner =
           jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey()).orElse(null);
@@ -579,12 +580,19 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     }
     StoredReconcileJob owner =
         jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey()).orElse(null);
-    if (owner == null
-        || !record.jobId.equals(owner.jobId)
-        || !record.accountId.equals(owner.accountId)) {
+    if (owner == null && !expectedOwner) {
       return;
     }
-    if (holdsExecutionLease(owner) && hasActiveLaneLease(owner, System.currentTimeMillis())) {
+    if (owner == null && !isTerminalState(record.state)) {
+      return;
+    }
+    if (owner != null
+        && (!record.jobId.equals(owner.jobId) || !record.accountId.equals(owner.accountId))) {
+      return;
+    }
+    if (owner != null
+        && holdsExecutionLease(owner)
+        && hasActiveLaneLease(owner, System.currentTimeMillis())) {
       return;
     }
     if (leaseBackend.compareAndSetBatch(
@@ -614,6 +622,8 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     synchronized (state) {
       state.snapshotOwnerByKey.put(pointerKey, existing.canonicalPointerKey());
     }
+    boolean expectedOwner =
+        !blank(expectedReference) && expectedReference.equals(existing.canonicalPointerKey());
     if (!blank(expectedReference) && !expectedReference.equals(existing.canonicalPointerKey())) {
       StoredReconcileJob owner =
           jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey()).orElse(null);
@@ -625,9 +635,14 @@ public final class InMemoryReconcileLeaseStore implements ReconcileLeaseStore {
     }
     StoredReconcileJob owner =
         jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey()).orElse(null);
-    if (owner == null
-        || !record.jobId.equals(owner.jobId)
-        || !record.accountId.equals(owner.accountId)) {
+    if (owner == null && !expectedOwner) {
+      return;
+    }
+    if (owner == null && !isTerminalState(record.state)) {
+      return;
+    }
+    if (owner != null
+        && (!record.jobId.equals(owner.jobId) || !record.accountId.equals(owner.accountId))) {
       return;
     }
     if (leaseBackend.compareAndSetBatch(

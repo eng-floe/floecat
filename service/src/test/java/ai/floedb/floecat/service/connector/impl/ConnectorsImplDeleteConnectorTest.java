@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.connector.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -27,9 +28,11 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.DeleteConnectorRequest;
 import ai.floedb.floecat.connector.spi.CredentialResolver;
+import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
+import jakarta.enterprise.inject.Instance;
 import java.lang.reflect.Field;
 import org.junit.jupiter.api.Test;
 
@@ -41,6 +44,10 @@ class ConnectorsImplDeleteConnectorTest {
     service.principalProvider = mock(PrincipalProvider.class);
     service.authz = mock(Authorizer.class);
     service.credentialResolver = mock(CredentialResolver.class);
+    service.reconcileJobStore = mock(Instance.class);
+    ReconcileJobStore jobs = mock(ReconcileJobStore.class);
+    when(service.reconcileJobStore.isResolvable()).thenReturn(true);
+    when(service.reconcileJobStore.get()).thenReturn(jobs);
     installBasePrincipal(service, service.principalProvider);
 
     var connectorId =
@@ -77,6 +84,58 @@ class ConnectorsImplDeleteConnectorTest {
     assertEquals(7L, response.getMeta().getPointerVersion());
     verify(service.connectorRepo).deleteWithPrecondition(connectorId, 7L);
     verify(service.credentialResolver).delete("acct", "connector-1");
+    verify(jobs).cancelConnectorJobs("acct", "connector-1", "connector deleted: connector-1");
+  }
+
+  @Test
+  void reconcileCleanupFailureDoesNotFailOrRetrySuccessfulDelete() throws Exception {
+    var service = new ConnectorsImpl();
+    service.connectorRepo = mock(ConnectorRepository.class);
+    service.principalProvider = mock(PrincipalProvider.class);
+    service.authz = mock(Authorizer.class);
+    service.credentialResolver = mock(CredentialResolver.class);
+    service.reconcileJobStore = mock(Instance.class);
+    ReconcileJobStore jobs = mock(ReconcileJobStore.class);
+    when(service.reconcileJobStore.isResolvable()).thenReturn(true);
+    when(service.reconcileJobStore.get()).thenReturn(jobs);
+    installBasePrincipal(service, service.principalProvider);
+
+    var connectorId =
+        ResourceId.newBuilder()
+            .setAccountId("acct")
+            .setId("connector-1")
+            .setKind(ResourceKind.RK_CONNECTOR)
+            .build();
+    var principal =
+        PrincipalContext.newBuilder()
+            .setAccountId("acct")
+            .setCorrelationId("corr-1")
+            .addPermissions("connector.manage")
+            .build();
+    var meta =
+        MutationMeta.newBuilder()
+            .setPointerKey("/accounts/acct/connectors/by-id/connector-1")
+            .setBlobUri("blob://connector-1")
+            .setPointerVersion(7L)
+            .build();
+
+    when(service.principalProvider.get()).thenReturn(principal);
+    when(service.connectorRepo.metaFor(connectorId)).thenReturn(meta);
+    when(service.connectorRepo.deleteWithPrecondition(connectorId, 7L)).thenReturn(true);
+    when(service.connectorRepo.metaForSafe(connectorId)).thenReturn(meta);
+    when(jobs.cancelConnectorJobs("acct", "connector-1", "connector deleted: connector-1"))
+        .thenThrow(new IllegalStateException("cleanup unavailable"));
+
+    var response =
+        service
+            .deleteConnector(
+                DeleteConnectorRequest.newBuilder().setConnectorId(connectorId).build())
+            .await()
+            .indefinitely();
+
+    assertEquals(7L, response.getMeta().getPointerVersion());
+    verify(service.connectorRepo, times(1)).metaFor(connectorId);
+    verify(service.connectorRepo, times(1)).deleteWithPrecondition(connectorId, 7L);
   }
 
   private static void installBasePrincipal(

@@ -932,6 +932,7 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     if (existing == null) {
       return;
     }
+    boolean expectedOwner = expectedReference.equals(existing.canonicalPointerKey());
     if (!expectedReference.equals(existing.canonicalPointerKey())) {
       var owner = jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey());
       if (owner.isEmpty()
@@ -941,12 +942,19 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       }
     }
     var owner = jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey());
-    if (owner.isEmpty()
-        || !record.jobId.equals(owner.get().jobId)
-        || !record.accountId.equals(owner.get().accountId)) {
+    if (owner.isEmpty() && !expectedOwner) {
       return;
     }
-    if (holdsExecutionLease(owner.get())
+    if (owner.isEmpty() && !isTerminalState(record.state)) {
+      return;
+    }
+    if (owner.isPresent()
+        && (!record.jobId.equals(owner.get().jobId)
+            || !record.accountId.equals(owner.get().accountId))) {
+      return;
+    }
+    if (owner.isPresent()
+        && holdsExecutionLease(owner.get())
         && hasActiveLaneLease(owner.get(), System.currentTimeMillis())) {
       return;
     }
@@ -966,6 +974,8 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
     if (existing == null) {
       return;
     }
+    boolean expectedOwner =
+        !blank(expectedReference) && expectedReference.equals(existing.canonicalPointerKey());
     if (!blank(expectedReference) && !expectedReference.equals(existing.canonicalPointerKey())) {
       var owner = jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey());
       if (owner.isEmpty()
@@ -975,9 +985,15 @@ public class NativeReconcileLeaseStore implements ReconcileLeaseStore {
       }
     }
     var owner = jobIndexStore.readCanonicalRecordByKey(existing.canonicalPointerKey());
-    if (owner.isEmpty()
-        || !record.jobId.equals(owner.get().jobId)
-        || !record.accountId.equals(owner.get().accountId)) {
+    if (owner.isEmpty() && !expectedOwner) {
+      return;
+    }
+    if (owner.isEmpty() && !isTerminalState(record.state)) {
+      return;
+    }
+    if (owner.isPresent()
+        && (!record.jobId.equals(owner.get().jobId)
+            || !record.accountId.equals(owner.get().accountId))) {
       return;
     }
     leaseBackend.compareAndSetBatch(
