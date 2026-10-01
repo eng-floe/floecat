@@ -664,7 +664,10 @@ final class QueryCliSupport {
                           : "#" + col.getColumnId();
                   out.printf(
                       "      %s (%s) nulls=%d ndv=%s%n",
-                      displayName, scalar.getLogicalType(), nullCount, ndv);
+                      displayName,
+                      LogicalTypeProtoAdapter.columnLogicalTypeString(scalar),
+                      nullCount,
+                      ndv);
                 });
       }
     }

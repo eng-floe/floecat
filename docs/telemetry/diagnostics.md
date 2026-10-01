@@ -86,7 +86,7 @@ How to read it:
 
 ### `floecat.get_user_objects.summary`
 
-Emitted by `GetUserObjects`. This is the main planner metadata lookup summary for user relations.
+Emitted by `ResolveQueryInputs`. This is the main planner metadata lookup summary for user relations.
 
 | Field | Meaning |
 |---|---|

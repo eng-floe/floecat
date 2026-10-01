@@ -213,7 +213,7 @@ contents.
   and versioned so planners/executors can safely down-level or up-level between releases.
 
 ## Query Catalog Service
-`UserObjectsService.GetUserObjects` streams `UserObjectsBundleChunk`s directly from the metadata
+`UserObjectsService.ResolveQueryInputs` streams `UserObjectsBundleChunk`s directly from the metadata
 graph. Each chunk carries a header, batched relation resolutions (`RelationResolutions`) and a final
 summary, so planners can start binding as soon as the service resolves each relation. The service
 shares the same `QueryContext` as the other query RPCs and relies on `CatalogGraphView.resolve`,

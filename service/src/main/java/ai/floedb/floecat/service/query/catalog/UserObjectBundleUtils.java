@@ -118,8 +118,7 @@ public final class UserObjectBundleUtils {
             .setName(column.getName())
             .setType(
                 column.hasType()
-                    ? LogicalTypeProtoAdapter.parseToProto(
-                        LogicalTypeProtoAdapter.columnTypeString(column))
+                    ? LogicalTypeProtoAdapter.toProto(LogicalTypeProtoAdapter.columnType(column))
                     : ai.floedb.floecat.types.rpc.LogicalType.getDefaultInstance())
             .setNullable(column.getNullable())
             .setOrdinal(column.getOrdinal())

@@ -20,11 +20,11 @@ import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * The single in-flight telemetry tally for one GetUserObjects request: every phase timer plus every
- * found/not-found counter. The request-level instance lives on the driver; each parallel build task
- * keeps its own instance that the driver folds back in via {@link #mergeFrom} once the task has
- * joined. Every slot is a {@link LongAdder}, so concurrent selection updates, driver updates, and
- * per-task merges are lock-free and thread-safe.
+ * The single in-flight telemetry tally for one ResolveQueryInputs request: every phase timer plus
+ * every found/not-found counter. The request-level instance lives on the driver; each parallel
+ * build task keeps its own instance that the driver folds back in via {@link #mergeFrom} once the
+ * task has joined. Every slot is a {@link LongAdder}, so concurrent selection updates, driver
+ * updates, and per-task merges are lock-free and thread-safe.
  */
 final class TimingAccumulator {
   private final LongAdder statsLookupNanos = new LongAdder();
@@ -239,7 +239,7 @@ final class TimingAccumulator {
     defaultCatalogLookups.add(other.defaultCatalogLookups.sum());
   }
 
-  /** Write the request summary using the diagnostics contract documented for GetUserObjects. */
+  /** Write the request summary using the diagnostics contract documented for ResolveQueryInputs. */
   void flushInto(PhaseDiagnostics diagnostics, SummaryContext ctx) {
     diagnostics.put("query_id", ctx.queryId());
     diagnostics.put("correlation_id", ctx.correlationId());
@@ -277,7 +277,7 @@ final class TimingAccumulator {
   }
 }
 
-/** Non-tally request values needed when the GetUserObjects timing summary is emitted. */
+/** Non-tally request values needed when the ResolveQueryInputs timing summary is emitted. */
 record SummaryContext(
     String queryId,
     String correlationId,

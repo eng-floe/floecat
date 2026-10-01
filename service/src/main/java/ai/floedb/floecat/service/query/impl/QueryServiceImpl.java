@@ -68,7 +68,7 @@ import org.jboss.logging.Logger;
  * <p>Scan bundle retrieval is implemented separately in {@code QueryScanServiceImpl}.
  *
  * <p><b>Important:</b> BeginQuery may optionally accept inputs for deterministic replay; schema
- * resolution still happens in DescribeInputs() and GetUserObjects().
+ * resolution still happens in DescribeInputs() and ResolveQueryInputs().
  */
 @Singleton
 @GrpcService

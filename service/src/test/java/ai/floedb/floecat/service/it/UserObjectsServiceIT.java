@@ -28,7 +28,6 @@ import ai.floedb.floecat.execution.rpc.ScanFile;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
 import ai.floedb.floecat.query.rpc.DataFileBatch;
 import ai.floedb.floecat.query.rpc.DeleteFileBatch;
-import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.InitScanRequest;
 import ai.floedb.floecat.query.rpc.InitScanResponse;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
@@ -38,6 +37,7 @@ import ai.floedb.floecat.query.rpc.RelationKind;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.RelationResolutions;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
+import ai.floedb.floecat.query.rpc.ResolveQueryInputsRequest;
 import ai.floedb.floecat.query.rpc.ScanHandle;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableInfo;
@@ -106,7 +106,7 @@ class UserObjectsServiceIT {
   }
 
   @Test
-  void GetUserObjectsPinsTable() {
+  void ResolveQueryInputsPinsTable() {
     var catName = catalogPrefix + "table_cat";
     var cat = TestSupport.createCatalog(catalogService, catName, "");
     var ns =
@@ -143,7 +143,10 @@ class UserObjectsServiceIT {
 
     List<UserObjectsBundleChunk> chunks =
         collectUserObjectBundle(
-                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
+                ResolveQueryInputsRequest.newBuilder()
+                    .setQueryId(queryId)
+                    .addTables(candidate)
+                    .build())
             .toCompletableFuture()
             .join();
 
@@ -177,7 +180,7 @@ class UserObjectsServiceIT {
   }
 
   @Test
-  void GetUserObjectsRelationNotFound() {
+  void ResolveQueryInputsRelationNotFound() {
     var catName = catalogPrefix + "missing_cat";
     var cat = TestSupport.createCatalog(catalogService, catName, "");
     var ns =
@@ -203,7 +206,10 @@ class UserObjectsServiceIT {
 
     List<UserObjectsBundleChunk> chunks =
         collectUserObjectBundle(
-                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
+                ResolveQueryInputsRequest.newBuilder()
+                    .setQueryId(queryId)
+                    .addTables(candidate)
+                    .build())
             .toCompletableFuture()
             .join();
 
@@ -227,7 +233,7 @@ class UserObjectsServiceIT {
   }
 
   @Test
-  void GetUserObjectsRelationNotFoundByName() {
+  void ResolveQueryInputsRelationNotFoundByName() {
     var catName = catalogPrefix + "missing_name_cat";
     var cat = TestSupport.createCatalog(catalogService, catName, "");
     var ns =
@@ -247,7 +253,10 @@ class UserObjectsServiceIT {
 
     List<UserObjectsBundleChunk> chunks =
         collectUserObjectBundle(
-                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
+                ResolveQueryInputsRequest.newBuilder()
+                    .setQueryId(queryId)
+                    .addTables(candidate)
+                    .build())
             .toCompletableFuture()
             .join();
 
@@ -270,7 +279,7 @@ class UserObjectsServiceIT {
   }
 
   @Test
-  void GetUserObjectsStreamsViewDefinition() {
+  void ResolveQueryInputsStreamsViewDefinition() {
     var catName = catalogPrefix + "view_cat";
     var cat = TestSupport.createCatalog(catalogService, catName, "");
     var ns =
@@ -316,7 +325,10 @@ class UserObjectsServiceIT {
 
     List<UserObjectsBundleChunk> chunks =
         collectUserObjectBundle(
-                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
+                ResolveQueryInputsRequest.newBuilder()
+                    .setQueryId(queryId)
+                    .addTables(candidate)
+                    .build())
             .toCompletableFuture()
             .join();
 
@@ -336,13 +348,13 @@ class UserObjectsServiceIT {
   }
 
   private CompletionStage<List<UserObjectsBundleChunk>> collectUserObjectBundle(
-      GetUserObjectsRequest request) {
+      ResolveQueryInputsRequest request) {
     UserObjectsServiceGrpc.UserObjectsServiceStub async =
         UserObjectsServiceGrpc.newStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
     CompletableFuture<List<UserObjectsBundleChunk>> future = new CompletableFuture<>();
     List<UserObjectsBundleChunk> chunks = Collections.synchronizedList(new ArrayList<>());
 
-    async.getUserObjects(
+    async.resolveQueryInputs(
         request,
         new StreamObserver<UserObjectsBundleChunk>() {
           @Override
@@ -503,7 +515,10 @@ class UserObjectsServiceIT {
 
     List<UserObjectsBundleChunk> chunks =
         collectUserObjectBundle(
-                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
+                ResolveQueryInputsRequest.newBuilder()
+                    .setQueryId(queryId)
+                    .addTables(candidate)
+                    .build())
             .toCompletableFuture()
             .join();
 
@@ -598,7 +613,10 @@ class UserObjectsServiceIT {
 
     List<UserObjectsBundleChunk> chunks =
         collectUserObjectBundle(
-                GetUserObjectsRequest.newBuilder().setQueryId(queryId).addTables(candidate).build())
+                ResolveQueryInputsRequest.newBuilder()
+                    .setQueryId(queryId)
+                    .addTables(candidate)
+                    .build())
             .toCompletableFuture()
             .join();
 

@@ -22,9 +22,9 @@ import java.util.List;
 /**
  * Optional snapshot metadata cached alongside a {@link UserTableNode}.
  *
- * <p>The info mirrors the structures returned by GetUserObjects: the currently effective snapshot
- * plus the resolved pins already stored in the {@code QueryContext}. Keeping it as a dedicated
- * record avoids bloating {@link UserTableNode} with repeated repository calls.
+ * <p>The info mirrors the structures returned by ResolveQueryInputs: the currently effective
+ * snapshot plus the resolved pins already stored in the {@code QueryContext}. Keeping it as a
+ * dedicated record avoids bloating {@link UserTableNode} with repeated repository calls.
  */
 public record ResolvedSnapshotInfo(
     SnapshotRef currentSnapshot, List<SnapshotRef> resolvedSnapshots) {

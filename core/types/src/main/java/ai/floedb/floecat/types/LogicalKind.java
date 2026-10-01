@@ -127,6 +127,7 @@ public enum LogicalKind {
     m.put("INT8", INT);
     m.put("INT4", INT);
     m.put("INT2", INT);
+    m.put("INT64", INT);
     m.put("UINT8", INT);
     m.put("UINT4", INT);
     m.put("UINT2", INT);

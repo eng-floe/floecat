@@ -13,7 +13,7 @@ Mutation stays resource-specific because table and view specs differ.
 | List tables and views together | `RelationService.ListRelations` | Metadata/topology only by default. Does not require a queryable snapshot. |
 | Resolve a table or view by name | `RelationService.ResolveRelations` | Batch, one result per logical reference, with search-path candidates tried in order. |
 | Describe a table or view by id | `RelationService.GetRelation` | Set `include_schema` when the caller needs columns. |
-| Pin query inputs / snapshot-aware schema | `QuerySchemaService.DescribeInputs`, `UserObjectsService.GetUserObjects` | Query-context APIs. Pinned/current/as-of behavior belongs here. |
+| Pin query inputs / snapshot-aware schema | `QuerySchemaService.DescribeInputs`, `UserObjectsService.ResolveQueryInputs` | Query-context APIs. Pinned/current/as-of behavior belongs here. |
 | Create/update/delete tables | `TableService` | |
 | Create/update/delete views | `ViewService` | |
 | Fetch functions/types/operators/casts/collations/aggregates | `SqlCatalogService.GetSqlObjectsRegistry` | Serves the `SystemObjectsRegistry` envelope. |
@@ -38,7 +38,7 @@ because it prints management metadata such as `created_at`.
 
 `SnapshotService.GetSnapshotSchema` answers the schema of one table as of one snapshot. Generic
 relation callers use `RelationService.GetRelation(include_schema=true)` for the current schema, and
-query planners use `QuerySchemaService.DescribeInputs` or `UserObjectsService.GetUserObjects` when
+query planners use `QuerySchemaService.DescribeInputs` or `UserObjectsService.ResolveQueryInputs` when
 pinned snapshot behavior is required.
 
 ## Adapter Recipe
@@ -54,12 +54,12 @@ For catalog browsing and name binding, an engine adapter can use this sequence:
 4. Call `RelationService.ResolveRelations` when binding ordered name candidates from a search path,
    or `RelationService.GetRelation` when the resource id is already known.
 5. Start the query lifecycle and use `QuerySchemaService.DescribeInputs` or
-   `UserObjectsService.GetUserObjects` only when planning requires pinned snapshot state.
+   `UserObjectsService.ResolveQueryInputs` only when planning requires pinned snapshot state.
 
-`ResolveRelations` and `GetUserObjects` intentionally accept different candidate shapes. The former
+`ResolveRelations` and `ResolveQueryInputs` intentionally accept different candidate shapes. The former
 is a catalog bind: send one `RelationReference` per logical input and put ordered `NameRef`
 candidates in its `candidates` field. The latter is a query bind: send one `QueryInput` per logical
-input to `GetUserObjectsRequest.tables`; its candidates can carry ids, names, and snapshot
+input to `ResolveQueryInputsRequest.tables`; its candidates can carry ids, names, and snapshot
 overrides, and successful inputs become pinned. The `tables` field is historical naming for relation
 inputs, not a requirement that the engine support tables only. In short: use `NameRef` candidates
 for unpinned name resolution, and `QueryInput` candidates when requesting the pinned planner bundle.
@@ -144,7 +144,7 @@ for unpinned name resolution, and `QueryInput` candidates when requesting the pi
 - `table` details carry `UpstreamRef` (format and partition keys live on it) and `schema_json`.
 - `view` details carry `ViewSqlDefinition`, base relation names and the creation search path.
 
-`GetUserObjects` returns canonical recursive `types.LogicalType` values in `ColumnInfo`. The SQL
+`ResolveQueryInputs` returns canonical recursive `types.LogicalType` values in `ColumnInfo`. The SQL
 object registry keeps `NameRef` type symbols for engine-defined functions, operators, and builtin
 types because those names may not have a Floecat logical-type equivalent.
 
@@ -183,11 +183,11 @@ answer catalog topology questions.
 
 Pinning is query-context specific:
 - `QuerySchemaService.DescribeInputs` resolves schemas under the active query context.
-- `UserObjectsService.GetUserObjects` streams planner bundles with relation, schema, stats, and
+- `UserObjectsService.ResolveQueryInputs` streams planner bundles with relation, schema, stats, and
   constraint data.
 - `CatalogGraphView.tablePinFor(...)` is the lower-level graph hook for table pins.
 
-`GetUserObjects` keeps query-level failures as stream failures: an unknown or inactive query,
+`ResolveQueryInputs` keeps query-level failures as stream failures: an unknown or inactive query,
 authorization failure, cancellation, malformed request, or unavailable backend cannot produce a
 usable planning result. A relation-scoped pin, schema, or decoration failure is emitted as that
 input's `RelationResolution.ERROR`; other inputs in the same bundle continue and successful pins

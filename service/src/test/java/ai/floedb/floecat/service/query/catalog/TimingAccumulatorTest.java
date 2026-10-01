@@ -31,7 +31,7 @@ import org.junit.jupiter.api.Test;
  */
 class TimingAccumulatorTest {
 
-  /** The complete, ordered summary key set the GetUserObjects contract emits. */
+  /** The complete, ordered summary key set the ResolveQueryInputs contract emits. */
   private static final Set<String> EXPECTED_KEYS =
       Set.of(
           "query_id",

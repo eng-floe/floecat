@@ -43,9 +43,9 @@ option java_outer_classname = "UserObjectsProto";
 // ENGINE.
 service UserObjectsService {
   /**
-   * GetUserObjects resolves each requested logical reference and streams results.
+   * ResolveQueryInputs resolves each requested logical reference and streams results.
    */
-  rpc GetUserObjects(GetUserObjectsRequest) returns (stream UserObjectsBundleChunk);
+  rpc ResolveQueryInputs(ResolveQueryInputsRequest) returns (stream UserObjectsBundleChunk);
 }
 
 /**
@@ -69,7 +69,7 @@ message TableReferenceCandidate {
 /**
  * Request to resolve user objects referenced by a planner.
  */
-message GetUserObjectsRequest {
+message ResolveQueryInputsRequest {
   /** Query ID obtained from BeginQuery. */
   string query_id = 1;
 

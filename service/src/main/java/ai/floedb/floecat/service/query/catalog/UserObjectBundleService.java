@@ -90,7 +90,7 @@ public class UserObjectBundleService {
 
   private static void throwIfCancelled(BooleanSupplier cancelled) {
     if (cancelled.getAsBoolean()) {
-      throw new CancellationException("GetUserObjects stream cancelled");
+      throw new CancellationException("ResolveQueryInputs stream cancelled");
     }
   }
 
@@ -179,7 +179,7 @@ public class UserObjectBundleService {
     this.engineContext = engineContext;
     this.decorationEpoch = safe(decorationEpoch);
     this.slowRpcMs = Math.max(0L, slowRpcMs);
-    // A permit count of 0 or negative would wedge every GetUserObjects request forever in the
+    // A permit count of 0 or negative would wedge every ResolveQueryInputs request forever in the
     // fan-out's permit wait, so clamp to serial and warn rather than serve in a permanently-hanging
     // state.
     if (maxParallelRelations < 1) {
@@ -261,7 +261,7 @@ public class UserObjectBundleService {
     List<TableReferenceCandidate> candidates = List.copyOf(tables);
     if (LOG.isDebugEnabled()) {
       LOG.debugf(
-          "GetUserObjects stream start query_id=%s correlation_id=%s candidates=%d"
+          "ResolveQueryInputs stream start query_id=%s correlation_id=%s candidates=%d"
               + " default_catalog_id=%s",
           ctx.getQueryId(),
           correlationId,
@@ -889,7 +889,7 @@ public class UserObjectBundleService {
     private Map<ResourceId, Optional<StatsProvider.TableStatsView>> warmChunkStats(
         List<PendingItem> chunkItems) {
       if (isCancelled()) {
-        throw new java.util.concurrent.CancellationException("GetUserObjects cancelled");
+        throw new java.util.concurrent.CancellationException("ResolveQueryInputs cancelled");
       }
       List<ResourceId> tableIds = new ArrayList<>(chunkItems.size());
       Set<ResourceId> seenTableIds = new HashSet<>();
@@ -925,7 +925,7 @@ public class UserObjectBundleService {
         timings.addStatsWarmNanos(System.nanoTime() - startNs);
       }
       if (isCancelled()) {
-        throw new java.util.concurrent.CancellationException("GetUserObjects cancelled");
+        throw new java.util.concurrent.CancellationException("ResolveQueryInputs cancelled");
       }
       return statsByTable;
     }
@@ -1171,9 +1171,10 @@ public class UserObjectBundleService {
       framer.offer(resolutions);
     }
 
-    // The GetUserObjects RPC has many internal sub-phases (resolve, decoration, ...). We do NOT
+    // The ResolveQueryInputs RPC has many internal sub-phases (resolve, decoration, ...). We do NOT
     // emit a span per phase -- they are not RPCs and only add noise to the trace. Per-phase
-    // timings are attached as one summary event on the GetUserObjects RPC span (the single tally's
+    // timings are attached as one summary event on the ResolveQueryInputs RPC span (the single
+    // tally's
     // flushInto), so Jaeger stays readable for small catalog lookups.
     private void publishStreamTelemetry(String outcome) {
       if (!telemetryState.claim()) {
@@ -1204,7 +1205,7 @@ public class UserObjectBundleService {
 
       if (totalMs >= slowRpcMs) {
         LOG.infof(
-            "op=GetUserObjects slow query_id=%s correlation_id=%s totalMs=%.1f"
+            "op=ResolveQueryInputs slow query_id=%s correlation_id=%s totalMs=%.1f"
                 + " resolveMs=%.1f baseInjectMs=%.1f pinMs=%.1f relationBuildMs=%.1f"
                 + " decorationMs=%.1f statsLookupMs=%.1f schedulingMs=%.1f"
                 + " candidates=%d chunks=%d found=%d notFound=%d outcome=%s",
@@ -1227,7 +1228,7 @@ public class UserObjectBundleService {
 
       if (LOG.isTraceEnabled()) {
         LOG.tracef(
-            "GetUserObjects telemetry query_id=%s correlation_id=%s candidates=%d chunks=%d"
+            "ResolveQueryInputs telemetry query_id=%s correlation_id=%s candidates=%d chunks=%d"
                 + " found=%d notFound=%d outcome=%s",
             ctx.getQueryId(),
             correlationId,

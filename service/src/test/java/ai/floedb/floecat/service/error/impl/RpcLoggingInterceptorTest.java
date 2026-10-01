@@ -18,7 +18,7 @@ package ai.floedb.floecat.service.error.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
+import ai.floedb.floecat.query.rpc.ResolveQueryInputsRequest;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.service.context.impl.InboundCallContextHelper;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
@@ -34,11 +34,12 @@ import org.junit.jupiter.api.Test;
 
 class RpcLoggingInterceptorTest {
 
-  private static final MethodDescriptor<GetUserObjectsRequest, UserObjectsBundleChunk> METHOD =
-      MethodDescriptor.<GetUserObjectsRequest, UserObjectsBundleChunk>newBuilder()
+  private static final MethodDescriptor<ResolveQueryInputsRequest, UserObjectsBundleChunk> METHOD =
+      MethodDescriptor.<ResolveQueryInputsRequest, UserObjectsBundleChunk>newBuilder()
           .setType(MethodDescriptor.MethodType.SERVER_STREAMING)
-          .setFullMethodName("ai.floedb.floecat.query.UserObjectsService/GetUserObjects")
-          .setRequestMarshaller(ProtoUtils.marshaller(GetUserObjectsRequest.getDefaultInstance()))
+          .setFullMethodName("ai.floedb.floecat.query.UserObjectsService/ResolveQueryInputs")
+          .setRequestMarshaller(
+              ProtoUtils.marshaller(ResolveQueryInputsRequest.getDefaultInstance()))
           .setResponseMarshaller(ProtoUtils.marshaller(UserObjectsBundleChunk.getDefaultInstance()))
           .build();
 
@@ -48,9 +49,9 @@ class RpcLoggingInterceptorTest {
   @Test
   void capturesQueryIdFromRequestMessage() {
     QueryCapturingRpcLoggingInterceptor interceptor = new QueryCapturingRpcLoggingInterceptor();
-    AtomicReference<ServerCall<GetUserObjectsRequest, UserObjectsBundleChunk>> forwardedCall =
+    AtomicReference<ServerCall<ResolveQueryInputsRequest, UserObjectsBundleChunk>> forwardedCall =
         new AtomicReference<>();
-    RecordingServerCall<GetUserObjectsRequest, UserObjectsBundleChunk> underlying =
+    RecordingServerCall<ResolveQueryInputsRequest, UserObjectsBundleChunk> underlying =
         new RecordingServerCall<>(METHOD);
 
     Context previous = Context.ROOT.attach();
@@ -60,7 +61,7 @@ class RpcLoggingInterceptorTest {
               underlying,
               new Metadata(),
               captureHandler(forwardedCall, new ServerCall.Listener<>() {}));
-      listener.onMessage(GetUserObjectsRequest.newBuilder().setQueryId("req-query-id").build());
+      listener.onMessage(ResolveQueryInputsRequest.newBuilder().setQueryId("req-query-id").build());
       forwardedCall.get().close(Status.OK, new Metadata());
     } finally {
       Context.ROOT.detach(previous);
@@ -72,9 +73,9 @@ class RpcLoggingInterceptorTest {
   @Test
   void capturesQueryIdFromResponseMessageWhenRequestDoesNotCarryIt() {
     QueryCapturingRpcLoggingInterceptor interceptor = new QueryCapturingRpcLoggingInterceptor();
-    AtomicReference<ServerCall<GetUserObjectsRequest, UserObjectsBundleChunk>> forwardedCall =
+    AtomicReference<ServerCall<ResolveQueryInputsRequest, UserObjectsBundleChunk>> forwardedCall =
         new AtomicReference<>();
-    RecordingServerCall<GetUserObjectsRequest, UserObjectsBundleChunk> underlying =
+    RecordingServerCall<ResolveQueryInputsRequest, UserObjectsBundleChunk> underlying =
         new RecordingServerCall<>(METHOD);
 
     Context previous = Context.ROOT.attach();
@@ -84,7 +85,7 @@ class RpcLoggingInterceptorTest {
               underlying,
               new Metadata(),
               captureHandler(forwardedCall, new ServerCall.Listener<>() {}));
-      listener.onMessage(GetUserObjectsRequest.getDefaultInstance());
+      listener.onMessage(ResolveQueryInputsRequest.getDefaultInstance());
       forwardedCall
           .get()
           .sendMessage(UserObjectsBundleChunk.newBuilder().setQueryId("resp-query-id").build());
@@ -99,9 +100,9 @@ class RpcLoggingInterceptorTest {
   @Test
   void fallsBackToHeaderQueryIdWhenContextAndMessagesDoNotProvideOne() {
     QueryCapturingRpcLoggingInterceptor interceptor = new QueryCapturingRpcLoggingInterceptor();
-    AtomicReference<ServerCall<GetUserObjectsRequest, UserObjectsBundleChunk>> forwardedCall =
+    AtomicReference<ServerCall<ResolveQueryInputsRequest, UserObjectsBundleChunk>> forwardedCall =
         new AtomicReference<>();
-    RecordingServerCall<GetUserObjectsRequest, UserObjectsBundleChunk> underlying =
+    RecordingServerCall<ResolveQueryInputsRequest, UserObjectsBundleChunk> underlying =
         new RecordingServerCall<>(METHOD);
     Metadata headers = new Metadata();
     headers.put(QUERY_ID_HEADER, "header-query-id");
@@ -111,7 +112,7 @@ class RpcLoggingInterceptorTest {
       var listener =
           interceptor.interceptCall(
               underlying, headers, captureHandler(forwardedCall, new ServerCall.Listener<>() {}));
-      listener.onMessage(GetUserObjectsRequest.getDefaultInstance());
+      listener.onMessage(ResolveQueryInputsRequest.getDefaultInstance());
       forwardedCall.get().close(Status.OK, new Metadata());
     } finally {
       Context.ROOT.detach(previous);
@@ -123,9 +124,9 @@ class RpcLoggingInterceptorTest {
   @Test
   void contextQueryIdTakesPrecedenceOverHeaderQueryId() {
     QueryCapturingRpcLoggingInterceptor interceptor = new QueryCapturingRpcLoggingInterceptor();
-    AtomicReference<ServerCall<GetUserObjectsRequest, UserObjectsBundleChunk>> forwardedCall =
+    AtomicReference<ServerCall<ResolveQueryInputsRequest, UserObjectsBundleChunk>> forwardedCall =
         new AtomicReference<>();
-    RecordingServerCall<GetUserObjectsRequest, UserObjectsBundleChunk> underlying =
+    RecordingServerCall<ResolveQueryInputsRequest, UserObjectsBundleChunk> underlying =
         new RecordingServerCall<>(METHOD);
     Metadata headers = new Metadata();
     headers.put(QUERY_ID_HEADER, "header-query-id");
@@ -136,7 +137,7 @@ class RpcLoggingInterceptorTest {
       var listener =
           interceptor.interceptCall(
               underlying, headers, captureHandler(forwardedCall, new ServerCall.Listener<>() {}));
-      listener.onMessage(GetUserObjectsRequest.getDefaultInstance());
+      listener.onMessage(ResolveQueryInputsRequest.getDefaultInstance());
       forwardedCall.get().close(Status.OK, new Metadata());
     } finally {
       context.detach(previous);
