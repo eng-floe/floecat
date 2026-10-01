@@ -23,13 +23,12 @@ import org.junit.jupiter.api.Test;
 final class CatalogContextTest {
 
   @Test
-  void absentEnvironmentFollowsEngine() {
+  void emptyEnvironmentRemainsIndependentFromEngine() {
     EngineContext engine = EngineContext.of("duckdb", "1.0");
 
     CatalogContext context = CatalogContext.of(EnvironmentContext.empty(), engine);
 
-    assertThat(context.environment().normalizedKind()).isEqualTo("duckdb");
-    assertThat(context.environment().normalizedVersion()).isEqualTo("1.0");
+    assertThat(context.environment()).isEqualTo(EnvironmentContext.empty());
     assertThat(context.engine()).isEqualTo(engine);
   }
 

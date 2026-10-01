@@ -1,6 +1,6 @@
 # System Objects
 
-System objects are the catalog-level row sources that live inside the `_system` account: `information_schema.*`, `pg_catalog.*`, and any engine/plugin-provided tables or views. Unlike user tables, these objects are not backed by persisted blobs – they are synthesised from the builtin catalog metadata, cached graph snapshots, and bespoke scanners. The builtin catalog load/caching pipeline that feeds these snapshots is described in [Builtin catalog architecture](builtin-catalog.md), and `EngineCatalogProvider` is the single SPI that ships optional builtin data and the corresponding system-object definitions.
+System objects are the catalog-level row sources that live inside the `_system` account: `information_schema.*`, `pg_catalog.*`, and any executor- or environment-provided tables or views. Unlike user tables, these objects are not backed by persisted blobs – they are synthesised from builtin catalog metadata, cached graph snapshots, and bespoke scanners. A request selects an environment and an executor independently. The builtin catalog load/caching pipeline is described in [Builtin catalog architecture](builtin-catalog.md); `EngineCatalogProvider` supplies executor capabilities, while `CatalogEnvironmentProvider` supplies environment-owned relations.
 
 ### Client contract for GetSystemObjects
 
@@ -36,8 +36,8 @@ Both `ServiceLoaderSystemCatalogProvider` and `FloecatInternalProvider` fail fas
 ```
 ┌────────────────────────────────────────────┐
 │ ServiceLoaderSystemCatalogProvider         │
-│ - discovers EngineCatalogProvider          │
-│ - merges SystemObjectScannerProvider defs  │
+│ - discovers engine providers               │
+│ - discovers environment providers          │
 └────────────────────────────────────────────┘
                     ↓
 ┌────────────────────────────────────────────┐
@@ -76,9 +76,10 @@ The core pieces:
 
 - **`SystemObjectDef`** – Describes a system row source (`NameRef`, `SchemaColumn[]`, `scannerId`, `TableBackendKind`, etc.). Implemented by `SystemNamespaceDef`, `SystemTableDef`, `SystemViewDef`.
 - **`SystemObjectScanner`** (`core/catalog`, `ai.floedb.floecat.systemcatalog.spi.scanner`) – Exposes `schema()` and a lazy `scan(SystemObjectScanContext)` that returns `Stream<SystemObjectRow>`. Scanners must be allocation-light, respect the Arrow schema, and keep rows as `Object[]`.
-- **`SystemObjectScannerProvider`** – SPI for providers of definitions and scanners. `definitions()` lists every `SystemObjectDef` (no filtering). `supportsEngine`/`supports(NameRef, engineKind)` gate when a definition applies. `provide(scannerId, engineKind, engineVersion)` lets the runtime look up the scanner for a node’s `scannerId`. The SPI exposes version-aware helpers (`definitions(engineKind, engineVersion)` and `supports(NameRef, engineKind, engineVersion)`) so providers can evolve schemas per engine version. During catalog assembly `SystemNodeRegistry.mergeCatalogData` seeds the map with the `floecat_internal` base from `FloecatInternalProvider`, overlays the plugin catalog, and finally applies provider definitions so every overlay can override earlier entries.
-- **`ServiceLoaderSystemCatalogProvider`** – Discovers `EngineCatalogProvider`s (which already extend `SystemObjectScannerProvider`), loads the optional catalog for each normalized engine kind, fingerprints it, and hands it to `SystemDefinitionRegistry`. It exposes `internalProvider()` for the shared `floecat_internal` layer and `providers()` for engine overlays; provider merges happen later in `SystemNodeRegistry`.
-- **`SystemNodeRegistry` + `SystemGraph`** – The registry filters the snapshot for the requested engine/version, materialises `GraphNode`s (functions, types, aggregates) and `SystemTableNode`s (with their `scannerId`s), and caches the result, seeding each merge with the shared `information_schema` definitions provided by `FloecatInternalProvider`. Overlays are only applied when `EngineContext.enginePluginOverlaysEnabled()` returns true. Unknown or missing headers fall back to the base view while still exposing `information_schema`. `SystemGraph` builds `GraphSnapshot`s from those nodes and keeps them in an LRU `LinkedHashMap` keyed by `(engineKind, engineVersion)`. Each snapshot stores namespace buckets, table relations, and a `nodesById` map for constant-time resolution.
+- **`SystemObjectScannerProvider`** – SPI for executor-owned definitions and scanners. `definitions()` lists every `SystemObjectDef` (no filtering). `supportsEngine`/`supports(NameRef, engineKind)` gate when a definition applies. `provide(scannerId, engineKind, engineVersion)` lets the runtime look up a scanner for a node’s `scannerId`. `EngineCatalogProvider` extends this SPI and can implement the live executor path without copying changing engine metadata into PBtxt.
+- **`CatalogEnvironmentProvider`** – SPI for environment-owned relations and scanners. Its methods receive the complete `CatalogContext`, so an environment can be selected independently of the executor whose capabilities describe the request.
+- **`ServiceLoaderSystemCatalogProvider`** – Discovers engine and environment providers separately, loads optional static executor catalog data, and hands it to `SystemDefinitionRegistry`. It exposes the shared internal provider, executor providers, and environment providers; composition happens later in `SystemNodeRegistry`.
+- **`SystemNodeRegistry` + `SystemGraph`** – The registry filters the snapshot for the requested environment/executor context, materialises `GraphNode`s (functions, types, aggregates) and `SystemTableNode`s (with their `scannerId`s), and caches the result. It merges shared definitions, static/live executor contributions, and live environment contributions in that order. `SystemGraph` builds `GraphSnapshot`s from those nodes and keeps them in an LRU `LinkedHashMap` keyed by the complete catalog context. Each snapshot stores namespace buckets, table relations, and a `nodesById` map for constant-time resolution.
 - **System constraint catalog** – Planner/system constraint lookups are backed by an immutable cache keyed by `(engineKind, engineVersion, systemRelationId)` and built from the pbtxt-backed builtin table definitions loaded by `FloecatInternalProvider`/`SystemNodeRegistry` (not from `information_schema` scans). Constraints are explicit metadata (`SystemTable.constraints`) and are validated during builtin catalog load. The runtime currently de-duplicates only `CT_NOT_NULL` between explicit and nullable-derived implicit entries (and keeps other constraint kinds as declared), so semantic de-duplication of PK/UNIQUE/FK/CHECK is intentionally out of scope here.
   - Validator note: FK referenced-column target validation resolves through `referenced_table` when provided.
   - Column reference note: use `column_id` only when the corresponding `SystemColumn.id` is defined. If a column has no `id`, use `column_name` (and constraint-local `ordinal`) and omit `column_id`.
@@ -159,10 +160,10 @@ Constraint view semantics are ANSI-oriented:
 
 ### Writing your own provider
 
-1. **Implement `EngineCatalogProvider`** – provide every `SystemObjectDef`/`SchemaColumn` pair, return the matching scanner from `provide(...)`, and let `supports(...)` gate whether your definition overrides a builtin. Leave `loadSystemCatalog()` empty when the engine metadata is live rather than PBtxt-backed.
-2. **Use static data only where it is stable** – `EngineCatalogProvider.loadSystemCatalog()` supports Floecat-owned or file-backed catalogs, while live engines implement the scanner and type-mapper hooks directly. `SystemNodeRegistry` merges both forms with the base `floecat_internal` data.
+1. **Implement `EngineCatalogProvider`** for executor-owned capabilities and any live executor relations. Leave `loadSystemCatalog()` empty when the executor metadata is live rather than PBtxt-backed.
+2. **Implement `CatalogEnvironmentProvider`** for environment-owned relations. Return definitions and scanners from the complete `CatalogContext`; do not duplicate executor types or functions in the environment provider.
 3. **Emit rows with `SystemObjectRow`** – `SystemObjectRow` is a cheap wrapper around `Object[]`. Use `SystemObjectScanContext` for every graph lookup (catalog, namespace, table, schema) so you benefit from `CatalogGraphView`’s caches.
-4. **Register via `META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider`.** CDI exposes the provider list through `ServiceLoaderSystemCatalogProvider.providers()`, so downstream services can resolve scanners by ID.
+4. **Register the relevant provider with ServiceLoader.** Engine providers use `META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider`; environment providers use `META-INF/services/ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider`.
 
 ### Provider version contract
 

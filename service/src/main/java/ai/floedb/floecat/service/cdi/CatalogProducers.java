@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.cdi;
 
 import ai.floedb.floecat.connector.common.resolver.LogicalSchemaMapper;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
+import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.ServiceLoaderSystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
@@ -47,7 +48,8 @@ public class CatalogProducers {
   @ApplicationScoped
   public SystemNodeRegistry produceBuiltinNodeRegistry(
       SystemDefinitionRegistry defs, ServiceLoaderSystemCatalogProvider loader) {
-    return new SystemNodeRegistry(defs, loader.internalProvider(), loader.providers());
+    return new SystemNodeRegistry(
+        defs, loader.internalProvider(), loader.providers(), loader.environmentProviders());
   }
 
   @Produces
@@ -62,6 +64,13 @@ public class CatalogProducers {
       ServiceLoaderSystemCatalogProvider loader) {
     return Stream.concat(Stream.of(loader.internalProvider()), loader.providers().stream())
         .toList();
+  }
+
+  @Produces
+  @ApplicationScoped
+  public List<CatalogEnvironmentProvider> produceCatalogEnvironmentProviders(
+      ServiceLoaderSystemCatalogProvider loader) {
+    return loader.environmentProviders();
   }
 
   @Produces

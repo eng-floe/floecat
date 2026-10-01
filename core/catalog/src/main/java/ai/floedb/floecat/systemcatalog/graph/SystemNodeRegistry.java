@@ -34,8 +34,8 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
-import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCollationDef;
@@ -51,6 +51,7 @@ import ai.floedb.floecat.systemcatalog.engine.EngineHintsMapper;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificMatcher;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
+import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
@@ -71,14 +72,15 @@ import java.util.stream.Collectors;
 import org.jboss.logging.Logger;
 
 /**
- * Materializes and caches engine-specific system catalog nodes.
+ * Materializes and caches system catalog nodes for a selected catalog context.
  *
  * <p>This registry takes declarative {@link SystemCatalogData} from the {@link
- * SystemDefinitionRegistry}, filters it by engine kind and version, applies engine-specific rules,
- * and builds immutable {@link GraphNode} instances with stable {@code _system} {@link ResourceId}s.
+ * SystemDefinitionRegistry}, filters it by executor kind and version, applies executor-specific
+ * rules, and builds immutable {@link GraphNode} instances with stable {@code _system} {@link
+ * ResourceId}s.
  *
- * <p>Results are cached per {@code (engineKind, engineVersion)} pair to avoid repeated filtering
- * and node construction.
+ * <p>Results are cached per selected catalog context to avoid repeated filtering and node
+ * construction.
  *
  * <p>This registry is the authoritative source of system-level graph nodes (functions, types,
  * operators, casts, namespaces, tables, views) used by the catalog overlay.
@@ -89,23 +91,26 @@ public class SystemNodeRegistry {
   private final SystemDefinitionRegistry definitionRegistry;
   private static final Logger LOG = Logger.getLogger(SystemNodeRegistry.class);
   private final SystemObjectScannerProvider internalProvider;
-  private final List<SystemObjectScannerProvider> extensionProviders;
+  private final List<SystemObjectScannerProvider> engineProviders;
+  private final List<CatalogEnvironmentProvider> environmentProviders;
 
   /*
    * Immutable cache of materialized system nodes.
-   * Entries are never evicted or mutated; a fresh registry instance
-   * should be created for test isolation or controlled reloads.
+   * Entries are never evicted or mutated; a fresh registry instance should be created for test
+   * isolation or controlled reloads.
    */
   private final ConcurrentMap<VersionKey, BuiltinNodes> cache = new ConcurrentHashMap<>();
 
   public SystemNodeRegistry(
       SystemDefinitionRegistry definitionRegistry,
       SystemObjectScannerProvider internalProvider,
-      List<SystemObjectScannerProvider> extensionProviders) {
+      List<SystemObjectScannerProvider> engineProviders,
+      List<CatalogEnvironmentProvider> environmentProviders) {
     this.definitionRegistry = Objects.requireNonNull(definitionRegistry);
     this.internalProvider = Objects.requireNonNull(internalProvider, "internalProvider");
-    this.extensionProviders =
-        List.copyOf(Objects.requireNonNull(extensionProviders, "extensionProviders"));
+    this.engineProviders = List.copyOf(Objects.requireNonNull(engineProviders, "engineProviders"));
+    this.environmentProviders =
+        List.copyOf(Objects.requireNonNull(environmentProviders, "environmentProviders"));
   }
 
   private static final SystemCatalogData EMPTY_CATALOG = SystemCatalogData.empty();
@@ -135,25 +140,22 @@ public class SystemNodeRegistry {
     return definitionRegistry.engineKinds();
   }
 
-  public BuiltinNodes nodesFor(String engineKind, String engineVersion) {
-    return nodesFor(EngineContext.of(engineKind, engineVersion));
-  }
-
-  public BuiltinNodes nodesFor(EngineContext ctx) {
-    EngineContext canonical = ctx == null ? EngineContext.empty() : ctx;
-    VersionKey key = new VersionKey(canonical.normalizedKind(), canonical.normalizedVersion());
+  /** Resolves system nodes for the selected environment and engine. */
+  public BuiltinNodes nodesFor(CatalogContext context) {
+    CatalogContext canonical = Objects.requireNonNull(context, "context");
+    VersionKey key = VersionKey.from(canonical);
     return cache.computeIfAbsent(key, ignored -> buildNodes(canonical));
   }
 
-  private BuiltinNodes buildNodes(EngineContext canonical) {
+  private BuiltinNodes buildNodes(CatalogContext canonical) {
     SystemEngineCatalog baseCatalog = definitionRegistry.catalog(canonical);
     SystemCatalogData mergedCatalogData = mergeCatalogData(canonical, baseCatalog);
     SystemEngineCatalog catalog =
         SystemEngineCatalog.from(baseCatalog.engineKind(), mergedCatalogData);
     long version = versionFromFingerprint(catalog.fingerprint());
-    String normalizedKind = canonical.normalizedKind();
-    String effectiveKind = canonical.effectiveEngineKind();
-    String normalizedVersion = canonical.normalizedVersion();
+    String normalizedKind = canonical.engine().normalizedKind();
+    String effectiveKind = canonical.engine().effectiveEngineKind();
+    String normalizedVersion = canonical.engine().normalizedVersion();
     ResourceId catalogId = systemCatalogContainerId(normalizedKind);
 
     // --- Namespaces ---
@@ -412,12 +414,12 @@ public class SystemNodeRegistry {
   }
 
   private SystemCatalogData mergeCatalogData(
-      EngineContext canonical, SystemEngineCatalog baseCatalog) {
+      CatalogContext canonical, SystemEngineCatalog baseCatalog) {
     String engineKind = baseCatalog.engineKind();
-    String normalizedKind = canonical.normalizedKind();
-    String normalizedVersion = canonical.normalizedVersion();
-    boolean includeProviders =
-        canonical.enginePluginOverlaysEnabled()
+    String normalizedKind = canonical.engine().normalizedKind();
+    String normalizedVersion = canonical.engine().normalizedVersion();
+    boolean includeEngineProviders =
+        canonical.engine().enginePluginOverlaysEnabled()
             && !EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(engineKind);
 
     Map<String, SystemNamespaceDef> namespaceByName = new LinkedHashMap<>();
@@ -440,16 +442,29 @@ public class SystemNodeRegistry {
       viewByName.put(NameRefUtil.canonical(view.name()), view);
     }
 
-    if (includeProviders) {
-      for (SystemObjectScannerProvider provider : extensionProviders) {
-        if (!provider.supportsEngine(normalizedKind)) {
-          continue;
-        }
-        for (SystemObjectDef def : provider.definitions(normalizedKind, normalizedVersion)) {
-          if (!provider.supports(def.name(), normalizedKind, normalizedVersion)) {
+    if (includeEngineProviders || canonical.environment().hasEnvironmentKind()) {
+      if (includeEngineProviders) {
+        for (SystemObjectScannerProvider provider : engineProviders) {
+          if (!provider.supportsEngine(normalizedKind)) {
             continue;
           }
-          mergeDefinition(def, namespaceByName, tableByName, viewByName);
+          for (SystemObjectDef def : provider.definitions(normalizedKind, normalizedVersion)) {
+            if (provider.supports(def.name(), normalizedKind, normalizedVersion)) {
+              mergeDefinition(def, namespaceByName, tableByName, viewByName);
+            }
+          }
+        }
+      }
+      if (canonical.environment().hasEnvironmentKind()) {
+        for (CatalogEnvironmentProvider provider : environmentProviders) {
+          if (!provider.supportsEnvironment(canonical.environment())) {
+            continue;
+          }
+          for (SystemObjectDef def : provider.definitions(canonical)) {
+            if (provider.supports(def.name(), canonical)) {
+              mergeDefinition(def, namespaceByName, tableByName, viewByName);
+            }
+          }
         }
       }
     }
@@ -1026,5 +1041,15 @@ public class SystemNodeRegistry {
     }
   }
 
-  private record VersionKey(String engineKind, String engineVersion) {}
+  private record VersionKey(
+      String environmentKind, String environmentVersion, String engineKind, String engineVersion) {
+
+    private static VersionKey from(CatalogContext context) {
+      return new VersionKey(
+          context.environment().normalizedKind(),
+          context.environment().normalizedVersion(),
+          context.engine().normalizedKind(),
+          context.engine().normalizedVersion());
+    }
+  }
 }

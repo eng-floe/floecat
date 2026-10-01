@@ -42,7 +42,9 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.cache.ObjectCache;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
@@ -167,7 +169,12 @@ class RelationBundleBuilderTest {
   }
 
   private MetadataResolutionContext resolutionContext(StatsProvider stats) {
-    return MetadataResolutionContext.of(graphView, CATALOG, ENGINE, stats);
+    return MetadataResolutionContext.of(
+        graphView,
+        CATALOG,
+        CatalogContext.of(
+            EnvironmentContext.of(ENGINE.engineKind(), ENGINE.engineVersion()), ENGINE),
+        stats);
   }
 
   private ResolvedRelation resolved(ResourceId id, TableReferenceCandidate candidate) {

@@ -32,9 +32,9 @@ import java.util.Optional;
 /**
  * Engine-owned system-catalog contribution.
  *
- * <p>An implementation may provide a materialised {@code SystemCatalogData} (the Floe use case),
- * live relation definitions/scanners (the DuckDB use case), or both. Live providers do not copy
- * changing engine types, functions, or system relations into PBtxt files.
+ * <p>An implementation may provide materialised {@code SystemCatalogData}, live relation
+ * definitions/scanners, or both. Live providers do not copy changing engine types, functions, or
+ * system relations into PBtxt files.
  *
  * <p>Implementations are expected to obtain engine-owned metadata through their runtime bridge. The
  * inherited version-aware {@code definitions(...)} and {@code provide(...)} methods are called
@@ -47,7 +47,7 @@ import java.util.Optional;
  */
 public interface EngineCatalogProvider extends SystemObjectScannerProvider {
 
-  /** Globally unique executor/engine identifier, for example {@code duckdb}. */
+  /** Globally unique executor/engine identifier. */
   String engineKind();
 
   /**

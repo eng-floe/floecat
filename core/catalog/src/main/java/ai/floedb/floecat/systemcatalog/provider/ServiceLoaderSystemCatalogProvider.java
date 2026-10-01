@@ -17,6 +17,7 @@
 package ai.floedb.floecat.systemcatalog.provider;
 
 import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
@@ -34,11 +35,13 @@ import ai.floedb.floecat.systemcatalog.validation.SystemCatalogValidator;
 import ai.floedb.floecat.systemcatalog.validation.ValidationFailures;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssue;
 import ai.floedb.floecat.systemcatalog.validation.ValidationIssueFormatter;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.function.Function;
@@ -60,6 +63,7 @@ public final class ServiceLoaderSystemCatalogProvider
       new FloecatInternalProvider();
 
   private final Map<String, EngineCatalogProvider> providersByEngine;
+  private final List<CatalogEnvironmentProvider> environmentProviders;
   private final Map<String, EngineMetadataDecorator> decorators;
   private final List<SystemObjectScannerProvider> providers;
 
@@ -77,6 +81,7 @@ public final class ServiceLoaderSystemCatalogProvider
 
     Map<String, EngineCatalogProvider> providerMap = new HashMap<>();
     Map<String, EngineMetadataDecorator> decoratorMap = new HashMap<>();
+    List<EngineCatalogProvider> acceptedEngineProviders = new ArrayList<>();
     for (EngineCatalogProvider provider : engineProviders) {
       String normalizedKind = EngineIdentityNormalizer.normalizeEngineKind(provider.engineKind());
       if (normalizedKind.isEmpty()) {
@@ -88,6 +93,7 @@ public final class ServiceLoaderSystemCatalogProvider
                 + provider.getClass());
         continue;
       }
+      acceptedEngineProviders.add(provider);
       EngineCatalogProvider previous = providerMap.put(normalizedKind, provider);
       if (previous != null) {
         throw new IllegalStateException(
@@ -120,18 +126,22 @@ public final class ServiceLoaderSystemCatalogProvider
     this.providersByEngine = Map.copyOf(providerMap);
     this.decorators = Map.copyOf(decoratorMap);
 
-    /*
-     * Extract every SystemObjectScannerProvider from the extensions so we can merge any extra
-     * namespace/table/view definitions into the cached catalog later on.
-     * Floecat default Information schema objects are always added but can be overwritten by the
-     * plugins own definition of the schema.
-     *
-     * Every engine-specific scanner provider should be surfaced through its
-     * EngineCatalogProvider implementation.
-     */
-    List<SystemObjectScannerProvider> extensionProviders =
-        engineProviders.stream().map(provider -> (SystemObjectScannerProvider) provider).toList();
-    this.providers = extensionProviders.stream().collect(Collectors.toUnmodifiableList());
+    List<CatalogEnvironmentProvider> loadedEnvironmentProviders;
+    try {
+      loadedEnvironmentProviders =
+          ServiceLoader.load(CatalogEnvironmentProvider.class).stream()
+              .map(ServiceLoader.Provider::get)
+              .toList();
+    } catch (Exception e) {
+      LOG.warn("Failed to load CatalogEnvironmentProvider implementations", e);
+      loadedEnvironmentProviders = List.of();
+    }
+    this.environmentProviders = List.copyOf(loadedEnvironmentProviders);
+
+    this.providers =
+        acceptedEngineProviders.stream()
+            .map(provider -> (SystemObjectScannerProvider) provider)
+            .toList();
   }
 
   @Override
@@ -145,12 +155,13 @@ public final class ServiceLoaderSystemCatalogProvider
   }
 
   @Override
-  public SystemEngineCatalog load(EngineContext ctx) {
-    EngineContext canonical = ctx == null ? EngineContext.empty() : ctx;
+  public SystemEngineCatalog load(CatalogContext context) {
+    CatalogContext canonical = Objects.requireNonNull(context, "context");
+    EngineContext engine = canonical.engine();
 
     // Rule: no header => floecat_internal only (which includes information_schema).
-    String effectiveKind = canonical.effectiveEngineKind();
-    boolean overlaysRequested = canonical.enginePluginOverlaysEnabled();
+    String effectiveKind = engine.effectiveEngineKind();
+    boolean overlaysRequested = engine.enginePluginOverlaysEnabled();
 
     EngineCatalogProvider provider = providersByEngine.get(effectiveKind);
     SystemCatalogData catalog;
@@ -162,7 +173,7 @@ public final class ServiceLoaderSystemCatalogProvider
             "No engine catalog provider found for engine_kind="
                 + effectiveKind
                 + " (ctx="
-                + canonical.engineKind()
+                + engine.engineKind()
                 + "), defaulting to floecat_internal-only content scoped as "
                 + effectiveKind);
       }
@@ -172,7 +183,7 @@ public final class ServiceLoaderSystemCatalogProvider
           "Loading engine catalog provider for engine_kind="
               + effectiveKind
               + " (ctx="
-              + canonical.engineKind()
+              + engine.engineKind()
               + ")");
       catalog = provider.loadSystemCatalog();
 
@@ -194,13 +205,18 @@ public final class ServiceLoaderSystemCatalogProvider
     catalog = mergeWithInternalCatalog(catalog);
 
     String resolvedEngineKind =
-        canonical.hasEngineHeaders() ? effectiveKind : EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
+        engine.hasEngineHeaders() ? effectiveKind : EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
 
     return SystemEngineCatalog.from(resolvedEngineKind, catalog);
   }
 
   public List<SystemObjectScannerProvider> providers() {
     return providers;
+  }
+
+  /** Returns all environment providers discovered through the service loader. */
+  public List<CatalogEnvironmentProvider> environmentProviders() {
+    return environmentProviders;
   }
 
   /** Returns the floecat_internal provider that always seeds every catalog build. */

@@ -32,6 +32,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
@@ -47,7 +48,7 @@ class SystemConstraintCatalogTest {
   void lookupBySystemRelationIdUsesPbtxtDeclaredConstraints() {
     SystemNodeRegistry registry = mock(SystemNodeRegistry.class);
     ResourceId tableId = tableId();
-    when(registry.nodesFor(any(EngineContext.class))).thenReturn(builtinNodes(tableId));
+    when(registry.nodesFor(any(CatalogContext.class))).thenReturn(builtinNodes(tableId));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
     var view = catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).orElseThrow();
@@ -63,7 +64,7 @@ class SystemConstraintCatalogTest {
   void lookupSynthesizesNotNullFromNonNullableColumnsWhenNotExplicitlyDeclared() {
     SystemNodeRegistry registry = mock(SystemNodeRegistry.class);
     ResourceId tableId = tableId();
-    when(registry.nodesFor(any(EngineContext.class)))
+    when(registry.nodesFor(any(CatalogContext.class)))
         .thenReturn(builtinNodesWithoutExplicitConstraint(tableId));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
@@ -79,7 +80,7 @@ class SystemConstraintCatalogTest {
   void lookupDedupesExplicitAndImplicitNotNullForSameColumn() {
     SystemNodeRegistry registry = mock(SystemNodeRegistry.class);
     ResourceId tableId = tableId();
-    when(registry.nodesFor(any(EngineContext.class))).thenReturn(builtinNodes(tableId));
+    when(registry.nodesFor(any(CatalogContext.class))).thenReturn(builtinNodes(tableId));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
     var view = catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).orElseThrow();
@@ -92,7 +93,7 @@ class SystemConstraintCatalogTest {
   void lookupDedupesExplicitAndImplicitNotNullWhenExplicitKeyedByColumnId() {
     SystemNodeRegistry registry = mock(SystemNodeRegistry.class);
     ResourceId tableId = tableId();
-    when(registry.nodesFor(any(EngineContext.class)))
+    when(registry.nodesFor(any(CatalogContext.class)))
         .thenReturn(
             builtinNodesWithColumnsAndConstraints(
                 tableId,
@@ -123,7 +124,7 @@ class SystemConstraintCatalogTest {
   void lookupDedupesExplicitAndImplicitNotNullWhenExplicitKeyedByColumnName() {
     SystemNodeRegistry registry = mock(SystemNodeRegistry.class);
     ResourceId tableId = tableId();
-    when(registry.nodesFor(any(EngineContext.class)))
+    when(registry.nodesFor(any(CatalogContext.class)))
         .thenReturn(
             builtinNodesWithColumnsAndConstraints(
                 tableId,
@@ -157,7 +158,7 @@ class SystemConstraintCatalogTest {
   void lookupMalformedExplicitNotNullStillSynthesizesImplicitNotNull() {
     SystemNodeRegistry registry = mock(SystemNodeRegistry.class);
     ResourceId tableId = tableId();
-    when(registry.nodesFor(any(EngineContext.class)))
+    when(registry.nodesFor(any(CatalogContext.class)))
         .thenReturn(
             builtinNodesWithColumnsAndConstraints(
                 tableId,
@@ -188,7 +189,7 @@ class SystemConstraintCatalogTest {
   void lookupSynthesizesImplicitNotNullForEachNonNullableColumn() {
     SystemNodeRegistry registry = mock(SystemNodeRegistry.class);
     ResourceId tableId = tableId();
-    when(registry.nodesFor(any(EngineContext.class)))
+    when(registry.nodesFor(any(CatalogContext.class)))
         .thenReturn(
             builtinNodesWithColumnsAndConstraints(
                 tableId,
@@ -228,7 +229,7 @@ class SystemConstraintCatalogTest {
   void lookupPreservesExplicitOrderAndAppendsMissingImplicitNotNulls() {
     SystemNodeRegistry registry = mock(SystemNodeRegistry.class);
     ResourceId tableId = tableId();
-    when(registry.nodesFor(any(EngineContext.class))).thenReturn(builtinNodesWithOrder(tableId));
+    when(registry.nodesFor(any(CatalogContext.class))).thenReturn(builtinNodesWithOrder(tableId));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
     var view = catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).orElseThrow();
@@ -244,7 +245,7 @@ class SystemConstraintCatalogTest {
   void lookupNormalizesSystemMarkerIdsAcrossAccounts() {
     SystemNodeRegistry registry = mock(SystemNodeRegistry.class);
     ResourceId systemId = tableId();
-    when(registry.nodesFor(any(EngineContext.class))).thenReturn(builtinNodes(systemId));
+    when(registry.nodesFor(any(CatalogContext.class))).thenReturn(builtinNodes(systemId));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
     ResourceId userAccountAlias = systemId.toBuilder().setAccountId("acct").build();
@@ -258,13 +259,13 @@ class SystemConstraintCatalogTest {
   void catalogIsCachedPerEngineVersionKey() {
     SystemNodeRegistry registry = mock(SystemNodeRegistry.class);
     ResourceId tableId = tableId();
-    when(registry.nodesFor(any(EngineContext.class))).thenReturn(builtinNodes(tableId));
+    when(registry.nodesFor(any(CatalogContext.class))).thenReturn(builtinNodes(tableId));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
     assertTrue(catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).isPresent());
     assertTrue(catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).isPresent());
 
-    verify(registry, times(1)).nodesFor(any(EngineContext.class));
+    verify(registry, times(1)).nodesFor(any(CatalogContext.class));
   }
 
   private static SystemNodeRegistry.BuiltinNodes builtinNodes(ResourceId tableId) {
