@@ -167,12 +167,9 @@ public class SystemNodeRegistry {
     SystemEngineCatalog catalog =
         SystemEngineCatalog.from(baseCatalog.engineKind(), mergedCatalogData);
     long version = versionFromFingerprint(catalog.fingerprint());
-    String normalizedKind =
-        canonical.engine().hasEngineKind()
-            ? canonical.engine().normalizedKind()
-            : baseCatalog.engineKind();
+    String normalizedKind = canonical.effectiveSystemCatalogKind();
     String effectiveKind = normalizedKind;
-    String normalizedVersion = canonical.engine().normalizedVersion();
+    String normalizedVersion = canonical.effectiveSystemCatalogVersion();
     ResourceId catalogId = systemCatalogContainerId(normalizedKind);
 
     // --- Namespaces ---
@@ -432,10 +429,8 @@ public class SystemNodeRegistry {
 
   private SystemCatalogData mergeCatalogData(
       CatalogContext canonical, SystemEngineCatalog baseCatalog) {
-    String engineKind = baseCatalog.engineKind();
-    String normalizedKind =
-        canonical.engine().hasEngineKind() ? canonical.engine().normalizedKind() : engineKind;
-    String normalizedVersion = canonical.engine().normalizedVersion();
+    String normalizedKind = canonical.effectiveSystemCatalogKind();
+    String normalizedVersion = canonical.effectiveSystemCatalogVersion();
     boolean includeEngineProviders =
         canonical.engine().hasEngineKind()
             && !EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(normalizedKind);

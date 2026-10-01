@@ -196,8 +196,8 @@ public final class MetaGraph implements CatalogGraphView {
   /**
    * Resolves a catalog by name.
    *
-   * <p>Catalog resolution is user-first, with a system fallback alias equal to the current engine
-   * kind.
+   * <p>Catalog resolution is user-first, with a system fallback alias equal to the selected system
+   * catalog kind.
    *
    * @param correlationId correlation ID for error reporting
    * @param name the catalog name to resolve
@@ -213,7 +213,7 @@ public final class MetaGraph implements CatalogGraphView {
 
     if (isSystemCatalogAlias(name, ctx)) {
       return Optional.of(
-          SystemNodeRegistry.systemCatalogContainerId(ctx.engine().effectiveEngineKind()));
+          SystemNodeRegistry.systemCatalogContainerId(ctx.effectiveSystemCatalogKind()));
     }
     return Optional.empty();
   }
@@ -226,7 +226,7 @@ public final class MetaGraph implements CatalogGraphView {
     if (candidate.isEmpty()) {
       return false;
     }
-    return candidate.equalsIgnoreCase(ctx.engine().effectiveEngineKind());
+    return candidate.equalsIgnoreCase(ctx.effectiveSystemCatalogKind());
   }
 
   /**
@@ -243,7 +243,7 @@ public final class MetaGraph implements CatalogGraphView {
   @Override
   public Optional<ResourceId> resolveNamespace(
       String correlationId, NameRef ref, CatalogContext ctx) {
-    NameRef systemRef = SystemCatalogTranslator.toSystemNamespaceRef(ref, ctx.engine());
+    NameRef systemRef = SystemCatalogTranslator.toSystemNamespaceRef(ref, ctx);
     Optional<ResourceId> system = systemGraph.resolveNamespace(systemRef, ctx);
     return system.isPresent() ? system : userGraph.resolveNamespace(correlationId, ref);
   }
@@ -385,9 +385,9 @@ public final class MetaGraph implements CatalogGraphView {
   /**
    * Resolves tables for an explicit list of fully-qualified name references.
    *
-   * <p>System resolution is attempted first using the current engine context (kind/version). Names
-   * that match system objects do not require a user graph lookup because write-side policy prevents
-   * user relations from occupying system relation names.
+   * <p>System resolution is attempted first using the selected catalog context. Names that match
+   * system objects do not require a user graph lookup because write-side policy prevents user
+   * relations from occupying system relation names.
    *
    * <p>The returned {@link NameRef} for system objects is aliased back to the user-facing catalog
    * name so callers observe a "symlink" effect (e.g. user catalog "examples" shows {@code
@@ -403,8 +403,8 @@ public final class MetaGraph implements CatalogGraphView {
    * Resolves tables under a namespace prefix.
    *
    * <p>Performs a full merge between system and user objects. If the prefix resolves to a system
-   * namespace under the current engine context, system relations are enumerated and returned first
-   * (aliased back to the user-facing catalog). User relations are then appended.
+   * namespace under the selected catalog context, system relations are enumerated and returned
+   * first (aliased back to the user-facing catalog). User relations are then appended.
    *
    * <p>This enables queries like {@code tables examples.information_schema} to surface built-in
    * engine relations while preserving user catalog naming.
@@ -418,9 +418,9 @@ public final class MetaGraph implements CatalogGraphView {
   /**
    * Resolves views for an explicit list of fully-qualified name references.
    *
-   * <p>System resolution is attempted first using the current engine context (kind/version). Names
-   * that match system objects do not require a user graph lookup because write-side policy prevents
-   * user relations from occupying system relation names.
+   * <p>System resolution is attempted first using the selected catalog context. Names that match
+   * system objects do not require a user graph lookup because write-side policy prevents user
+   * relations from occupying system relation names.
    *
    * <p>The returned {@link NameRef} for system objects is aliased back to the user-facing catalog
    * name so callers observe a "symlink" effect.
@@ -475,8 +475,8 @@ public final class MetaGraph implements CatalogGraphView {
    * Resolves views under a namespace prefix.
    *
    * <p>Performs a full merge between system and user objects. If the prefix resolves to a system
-   * namespace under the current engine context, system relations are enumerated and returned first
-   * (aliased back to the user-facing catalog). User relations are then appended.
+   * namespace under the selected catalog context, system relations are enumerated and returned
+   * first (aliased back to the user-facing catalog). User relations are then appended.
    */
   @Override
   public ResolveResult listViewsByPrefix(
@@ -629,7 +629,7 @@ public final class MetaGraph implements CatalogGraphView {
   /**
    * Resolves a catalog node by its resource ID.
    *
-   * <p>Looks up user catalogs first, then the synthetic system catalog for the current engine.
+   * <p>Looks up user catalogs first, then the synthetic system catalog for the selected context.
    *
    * @param id the catalog resource ID
    * @return the catalog node, or empty if not found
@@ -802,10 +802,8 @@ public final class MetaGraph implements CatalogGraphView {
     for (NameRef ref : refs) {
       Optional<ResourceId> sysId =
           tables
-              ? systemGraph.resolveTable(
-                  SystemCatalogTranslator.toSystemRelationRef(ref, ctx.engine()), ctx)
-              : systemGraph.resolveView(
-                  SystemCatalogTranslator.toSystemRelationRef(ref, ctx.engine()), ctx);
+              ? systemGraph.resolveTable(SystemCatalogTranslator.toSystemRelationRef(ref, ctx), ctx)
+              : systemGraph.resolveView(SystemCatalogTranslator.toSystemRelationRef(ref, ctx), ctx);
       if (sysId.isEmpty()) {
         continue;
       }
@@ -844,7 +842,7 @@ public final class MetaGraph implements CatalogGraphView {
   private int countSystemRelationsInNamespace(NameRef prefix, CatalogContext ctx, boolean tables) {
     Optional<ResourceId> sysNsId =
         systemGraph.resolveNamespace(
-            SystemCatalogTranslator.toSystemNamespaceRef(prefix, ctx.engine()), ctx);
+            SystemCatalogTranslator.toSystemNamespaceRef(prefix, ctx), ctx);
     if (sysNsId.isEmpty()) {
       return 0;
     }
@@ -862,7 +860,7 @@ public final class MetaGraph implements CatalogGraphView {
       NameRef prefix, CatalogContext ctx, boolean tables, int max) {
     Optional<ResourceId> sysNsId =
         systemGraph.resolveNamespace(
-            SystemCatalogTranslator.toSystemNamespaceRef(prefix, ctx.engine()), ctx);
+            SystemCatalogTranslator.toSystemNamespaceRef(prefix, ctx), ctx);
     if (sysNsId.isEmpty()) {
       return List.of();
     }

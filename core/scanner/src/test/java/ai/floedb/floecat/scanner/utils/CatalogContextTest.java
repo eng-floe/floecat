@@ -64,4 +64,18 @@ final class CatalogContextTest {
     assertThat(environmentOnly.environment().normalizedKind()).isEqualTo("floe");
     assertThat(environmentOnly.engine()).isEqualTo(EngineContext.empty());
   }
+
+  @Test
+  void systemCatalogKindUsesEngineThenEnvironmentThenInternal() {
+    assertThat(
+            CatalogContext.of(EnvironmentContext.empty(), EngineContext.of("duckdb", "1.0"))
+                .effectiveSystemCatalogKind())
+        .isEqualTo("duckdb");
+    assertThat(
+            CatalogContext.of(EnvironmentContext.of("floe", "3.1"), EngineContext.empty())
+                .effectiveSystemCatalogKind())
+        .isEqualTo("floe");
+    assertThat(CatalogContext.empty().effectiveSystemCatalogKind())
+        .isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+  }
 }

@@ -22,9 +22,9 @@ import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import java.util.Optional;
 
 /** Test-only live provider used to verify ServiceLoader wiring. */
-public final class DynamicDuckCatalogProvider implements EngineCatalogProvider {
+public final class DynamicTestEngineCatalogProvider implements EngineCatalogProvider {
 
-  static final String ENGINE_KIND = "duckdb";
+  static final String ENGINE_KIND = "test-engine";
 
   @Override
   public String engineKind() {

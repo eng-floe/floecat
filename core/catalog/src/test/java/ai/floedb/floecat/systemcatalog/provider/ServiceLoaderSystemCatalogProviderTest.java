@@ -78,7 +78,7 @@ class ServiceLoaderSystemCatalogProviderTest {
 
     CatalogContext context =
         CatalogContext.of(
-            EnvironmentContext.of("unknown-environment", ""), EngineContext.of("duckdb", ""));
+            EnvironmentContext.of("unknown-environment", ""), EngineContext.of("test-engine", ""));
 
     assertThatThrownBy(() -> provider.load(context))
         .isInstanceOf(IllegalArgumentException.class)
@@ -107,10 +107,10 @@ class ServiceLoaderSystemCatalogProviderTest {
   void liveEngineProvider_isDiscoveredSeparatelyFromStaticExtensions() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    assertThat(provider.engineKinds()).contains("duckdb");
-    assertThat(provider.providerFor(" DuckDB "))
-        .containsInstanceOf(DynamicDuckCatalogProvider.class);
-    assertThat(provider.providers()).anyMatch(DynamicDuckCatalogProvider.class::isInstance);
+    assertThat(provider.engineKinds()).contains("test-engine");
+    assertThat(provider.providerFor(" Test-Engine "))
+        .containsInstanceOf(DynamicTestEngineCatalogProvider.class);
+    assertThat(provider.providers()).anyMatch(DynamicTestEngineCatalogProvider.class::isInstance);
   }
 
   @Test
@@ -125,8 +125,8 @@ class ServiceLoaderSystemCatalogProviderTest {
   void load_returnsIndependentSnapshots() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
-    SystemEngineCatalog c1 = provider.load(context(EngineContext.of("duckdb", "")));
-    SystemEngineCatalog c2 = provider.load(context(EngineContext.of("duckdb", "")));
+    SystemEngineCatalog c1 = provider.load(context(EngineContext.of("test-engine", "")));
+    SystemEngineCatalog c2 = provider.load(context(EngineContext.of("test-engine", "")));
 
     assertThat(c1).isNotSameAs(c2);
     assertThat(c1.fingerprint()).isEqualTo(c2.fingerprint());
