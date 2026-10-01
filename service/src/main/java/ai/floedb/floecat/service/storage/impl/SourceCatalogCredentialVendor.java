@@ -295,7 +295,8 @@ public class SourceCatalogCredentialVendor {
     String namespaceFq = String.join(".", upstream.getNamespacePathList());
     Optional<FloecatConnector.VendedStorageCredentials> vended;
     // One deadline across building the connector and the vend it makes. Building an Iceberg REST
-    // connector is itself a config round trip and a SigV4/OAuth exchange, and vendStorageCredentials
+    // connector is itself a config round trip and a SigV4/OAuth exchange, and
+    // vendStorageCredentials
     // adds a delegated loadTable; an upstream that accepts the connection and then stalls -- Glue's
     // Lake Formation vend, a Databricks Uniform loadTable -- puts no socket bound on the sum and
     // would hold this gRPC handler with no limit, leaving the reconcile job in no terminal state.
@@ -318,8 +319,10 @@ public class SourceCatalogCredentialVendor {
     } catch (StatusRuntimeException e) {
       throw e;
     } catch (java.util.concurrent.CancellationException e) {
-      // The budget raises this when the wait is interrupted, and BaseServiceImpl.toStatus maps it to
-      // CANCELLED. Folding it into the classification below would report a caller who went away as a
+      // The budget raises this when the wait is interrupted, and BaseServiceImpl.toStatus maps it
+      // to
+      // CANCELLED. Folding it into the classification below would report a caller who went away as
+      // a
       // catalog fault, and put a cancelled reconcile attempt on the retry path.
       throw e;
     } catch (RuntimeException e) {
