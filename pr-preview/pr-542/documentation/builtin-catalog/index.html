@@ -2686,18 +2686,18 @@ identical definitions are deduplicated and incompatible definitions fail with pr
 <p>Providers implement one of the two specialized SPIs:</p>
 <ol>
 <li><strong><code>EngineCatalogProvider</code></strong> – A stable engine identifier, optional static catalog data, and/or
-   live engine definitions and scanners. Dynamic engines can leave <code>loadSystemCatalog()</code> empty.</li>
+   live engine metadata definitions. Engine-owned tables use <code>TABLE_BACKEND_KIND_ENGINE</code>; their
+   rows are produced by the engine and do not have Floecat scanners.</li>
 <li><strong><code>CatalogEnvironmentProvider</code></strong> – A stable environment identifier plus environment-owned
    definitions and scanners. Its methods receive the complete <code>CatalogContext</code>, including the
    selected engine.</li>
 <li><strong>Discovery</strong> – Register the relevant SPI with <code>ServiceLoader</code> for automatic runtime discovery.</li>
 </ol>
 <p>See <code>extensions/example/</code> for a static engine-provider reference implementation. A dynamic engine
-provider only needs to implement the context-aware definition/scanner methods and does not need one
+provider only needs to implement the context-aware definition method and does not need one
 PBtxt file per engine function or relation.</p>
 <h3 id="hint-lifecycle">Hint Lifecycle<a class="headerlink" href="#hint-lifecycle" title="Permanent link">&para;</a></h3>
-<p><code>EngineCatalogProvider</code> extends <code>SystemObjectScannerProvider</code>, so every plugin can also
-serve system-table definitions and scanners. Plugins that persist engine hints (metadata attached
+<p>Plugins that persist engine hints (metadata attached
 to catalog objects at runtime) can control when those hints are invalidated by implementing
 <code>decideHintClear</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="k">default</span><span class="w"> </span><span class="n">HintClearDecision</span><span class="w"> </span><span class="nf">decideHintClear</span><span class="p">(</span><span class="n">EngineContext</span><span class="w"> </span><span class="n">ctx</span><span class="p">,</span><span class="w"> </span><span class="n">HintClearContext</span><span class="w"> </span><span class="n">context</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
@@ -3043,7 +3043,7 @@ allocate 16GB+ to handle metadata graph + execution plans.
 <p>Validation errors are logged; invalid catalogs are still returned (planner must handle gracefully).</p>
 <h2 id="creating-a-new-plugin">Creating a New Plugin<a class="headerlink" href="#creating-a-new-plugin" title="Permanent link">&para;</a></h2>
 <h3 id="step-1-implement-enginecatalogprovider">Step 1: Implement EngineCatalogProvider<a class="headerlink" href="#step-1-implement-enginecatalogprovider" title="Permanent link">&para;</a></h3>
-<p><code>EngineCatalogProvider</code> lives in <code>ai.floedb.floecat.systemcatalog.spi</code> and already extends <code>SystemObjectScannerProvider</code>, so every plugin can also supply system table definitions and scanners without extra wiring.</p>
+<p><code>EngineCatalogProvider</code> lives in <code>ai.floedb.floecat.systemcatalog.spi</code> and supplies engine metadata. Engine-owned system tables do not require a Floecat scanner; the engine executes their rows.</p>
 <div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">MyEngineCatalogExtension</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">EngineCatalogProvider</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nd">@Override</span>
 <span class="w">  </span><span class="kd">public</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="nf">engineKind</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
@@ -3056,7 +3056,6 @@ allocate 16GB+ to handle metadata graph + execution plans.
 <span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">SystemCatalogData</span><span class="p">(...);</span>
 <span class="w">  </span><span class="p">}</span>
 
-<span class="w">  </span><span class="c1">// Implement SystemObjectScannerProvider methods if you expose new rows.</span>
 <span class="p">}</span>
 </code></pre></div>
 <h3 id="step-2-register-with-serviceloader">Step 2: Register with ServiceLoader<a class="headerlink" href="#step-2-register-with-serviceloader" title="Permanent link">&para;</a></h3>
