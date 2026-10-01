@@ -202,7 +202,7 @@ public class SourceCatalogCredentialVendor {
    * documented there -- so this default is what a stalled upstream costs a scan.
    */
   @ConfigProperty(name = "floecat.storage.source-catalog.upstream-timeout", defaultValue = "PT30S")
-  Duration upstreamTimeout;
+  Duration upstreamTimeout = Duration.ofSeconds(30);
 
   /**
    * How long a vend waits for its own client to close. Short because teardown is not the answer the
