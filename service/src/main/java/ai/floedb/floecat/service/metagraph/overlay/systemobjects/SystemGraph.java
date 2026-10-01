@@ -27,6 +27,7 @@ import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
+import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry.BuiltinNodes;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
@@ -320,7 +321,7 @@ public final class SystemGraph {
     if (catalogId == null) return GraphSnapshot.empty();
     synchronized (snapshots) {
       for (Map.Entry<VersionKey, CachedSnapshot> entry : snapshots.entrySet()) {
-        ResourceId candidate = systemCatalogId(entry.getKey().engineKind());
+        ResourceId candidate = systemCatalogId(entry.getKey().effectiveCatalogKind());
         if (catalogId.equals(candidate)) {
           return entry.getValue().snapshot();
         }
@@ -466,6 +467,16 @@ public final class SystemGraph {
 
   private record VersionKey(
       String environmentKind, String environmentVersion, String engineKind, String engineVersion) {
+
+    private String effectiveCatalogKind() {
+      if (!engineKind.isBlank()) {
+        return engineKind;
+      }
+      if (!environmentKind.isBlank()) {
+        return environmentKind;
+      }
+      return EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
+    }
 
     private static VersionKey from(CatalogContext context) {
       return new VersionKey(

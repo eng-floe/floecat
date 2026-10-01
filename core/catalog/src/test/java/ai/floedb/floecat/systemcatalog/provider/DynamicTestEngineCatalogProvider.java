@@ -16,10 +16,7 @@
 
 package ai.floedb.floecat.systemcatalog.provider;
 
-import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
-import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
-import java.util.Optional;
 
 /** Test-only live provider used to verify ServiceLoader wiring. */
 public final class DynamicTestEngineCatalogProvider implements EngineCatalogProvider {
@@ -29,10 +26,5 @@ public final class DynamicTestEngineCatalogProvider implements EngineCatalogProv
   @Override
   public String engineKind() {
     return ENGINE_KIND;
-  }
-
-  @Override
-  public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-    return Optional.empty();
   }
 }

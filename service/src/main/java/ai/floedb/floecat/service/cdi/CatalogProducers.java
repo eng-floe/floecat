@@ -26,7 +26,6 @@ import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Produces;
 import java.util.List;
-import java.util.stream.Stream;
 
 /* CDI producers for catalog-related components */
 @ApplicationScoped
@@ -62,8 +61,7 @@ public class CatalogProducers {
   @ApplicationScoped
   public List<SystemObjectScannerProvider> produceSystemObjectProviders(
       ServiceLoaderSystemCatalogProvider loader) {
-    return Stream.concat(Stream.of(loader.internalProvider()), loader.providers().stream())
-        .toList();
+    return List.of(loader.internalProvider());
   }
 
   @Produces

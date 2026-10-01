@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * SPI for internal or engine-owned system object definitions and scanners.
+ * SPI for internal or environment-owned system object definitions and scanners.
  *
  * <p>Definitions returned by this SPI are merged for the supplied catalog context. Providers may
  * build them from static resources or from live engine metadata; the catalog model does not

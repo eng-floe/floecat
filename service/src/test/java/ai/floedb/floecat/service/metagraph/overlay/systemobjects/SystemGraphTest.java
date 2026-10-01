@@ -128,6 +128,7 @@ class SystemGraphTest {
             List.of());
 
     registry.register(ENGINE, catalogData);
+    registry.register("floe", catalogData);
     registry.register(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, floecatCatalogData);
 
     systemGraph = new SystemGraph(registry, 16);
@@ -159,6 +160,19 @@ class SystemGraphTest {
   void listRelations_visibleFromAnyCatalog() {
     List<RelationNode> nodes = systemGraph.listRelations(wrongCatalogId, context(ENGINE, VERSION));
     assertThat(nodes).extracting(node -> node.displayName()).contains("pg_class");
+  }
+
+  @Test
+  void environmentOnlyContextUsesEnvironmentCatalogIdentity() {
+    CatalogContext context =
+        CatalogContext.of(EnvironmentContext.of("floe", "1"), EngineContext.empty());
+    ResourceId environmentCatalogId = SystemNodeRegistry.systemCatalogContainerId("floe");
+
+    assertThat(systemGraph.listRelations(environmentCatalogId, context))
+        .extracting(GraphNode::id)
+        .contains(
+            SystemNodeRegistry.resourceId(
+                "floe", ResourceKind.RK_TABLE, NameRefUtil.name("pg_catalog", "pg_class")));
   }
 
   @Test
@@ -293,12 +307,13 @@ class SystemGraphTest {
   }
 
   @Test
-  void listCatalogs_returnsEngineCatalogs() {
+  void listCatalogs_returnsRegisteredCatalogs() {
     ResourceId defaultCatalogId =
         SystemNodeRegistry.systemCatalogContainerId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+    ResourceId environmentCatalogId = SystemNodeRegistry.systemCatalogContainerId("floe");
 
     assertThat(systemGraph.listCatalogs())
-        .containsExactlyInAnyOrder(defaultCatalogId, systemCatalogId);
+        .containsExactlyInAnyOrder(defaultCatalogId, systemCatalogId, environmentCatalogId);
   }
 
   @Test
@@ -433,11 +448,6 @@ class SystemGraphTest {
     @Override
     public List<SystemObjectDef> definitions(CatalogContext context) {
       return List.of(namespace, tablesOverride, pluginTable);
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-      return Optional.empty();
     }
   }
 

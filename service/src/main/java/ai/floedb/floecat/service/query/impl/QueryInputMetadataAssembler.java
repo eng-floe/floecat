@@ -22,7 +22,6 @@ import ai.floedb.floecat.query.rpc.ExpansionMap;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TableObligations;
-import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.query.SnapshotSelections;
@@ -92,7 +91,7 @@ public class QueryInputMetadataAssembler {
                         Optional.of(defaultCatalogId),
                         new SnapshotSelectionMemo(),
                         diagnostics,
-                        CatalogContext.forEngine(engineContext.engineContext())));
+                        engineContext.catalogContext()));
       } finally {
         resolutionPermit.close();
       }

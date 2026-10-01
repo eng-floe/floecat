@@ -56,12 +56,6 @@ final class EngineCatalogProviderTest {
     public EngineTypeMapper typeMapper(EngineContext engine) {
       return MAPPER;
     }
-
-    @Override
-    public java.util.Optional<ai.floedb.floecat.scanner.spi.SystemObjectScanner> provide(
-        String scannerId, CatalogContext context) {
-      return java.util.Optional.empty();
-    }
   }
 
   private static CatalogContext context(String engineKind) {

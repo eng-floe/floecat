@@ -59,11 +59,6 @@ public final class SystemCatalogTestProviders {
           tableFor(context.engine().normalizedKind(), context.engine().normalizedVersion()));
     }
 
-    @Override
-    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-      return Optional.empty();
-    }
-
     public int invocationCount() {
       return definitionsCalled.get();
     }
@@ -155,11 +150,6 @@ public final class SystemCatalogTestProviders {
       return List.of(
           new SystemNamespaceDef(namespace, NameRefUtil.identityKey(namespace), List.of()),
           tableDef());
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-      return Optional.empty();
     }
 
     private SystemTableDef tableDef() {

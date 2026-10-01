@@ -18,9 +18,6 @@ package ai.floedb.floecat.extensions.example;
 
 import ai.floedb.floecat.query.rpc.ScopedMetadataRule;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
-import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
-import ai.floedb.floecat.scanner.utils.CatalogContext;
-import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
 import ai.floedb.floecat.systemcatalog.registry.SystemObjectsRegistryMerger;
@@ -322,19 +319,5 @@ public final class ExampleCatalogExtension implements EngineCatalogProvider {
               }
             });
     return Collections.unmodifiableList(result);
-  }
-
-  // ---------------------------------------------------------------------------
-  // SystemObjectScannerProvider — no engine-specific scanners in this extension
-  // ---------------------------------------------------------------------------
-
-  @Override
-  public List<SystemObjectDef> definitions(CatalogContext context) {
-    return List.of();
-  }
-
-  @Override
-  public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-    return Optional.empty();
   }
 }

@@ -532,11 +532,6 @@ class ExampleCatalogExtensionTest {
   }
 
   @Test
-  void provideReturnsEmpty() {
-    assertThat(ext().provide("any_scanner", context("example"))).isEmpty();
-  }
-
-  @Test
   void definitionsReturnsEmptyList() {
     assertThat(ext().definitions(context("example"))).isEmpty();
   }

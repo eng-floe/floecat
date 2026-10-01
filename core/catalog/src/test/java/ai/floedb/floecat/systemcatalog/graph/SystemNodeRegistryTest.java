@@ -790,11 +790,6 @@ class SystemNodeRegistryTest {
                     List.of(),
                     null));
           }
-
-          @Override
-          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-            return Optional.empty();
-          }
         };
     var registry =
         new SystemNodeRegistry(
@@ -899,11 +894,6 @@ class SystemNodeRegistryTest {
                     false,
                     List.of()));
           }
-
-          @Override
-          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-            return Optional.empty();
-          }
         };
     var defs =
         new SystemDefinitionRegistry(
@@ -950,11 +940,6 @@ class SystemNodeRegistryTest {
                     "",
                     List.of(),
                     null));
-          }
-
-          @Override
-          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-            return Optional.empty();
           }
         };
 
@@ -1073,6 +1058,54 @@ class SystemNodeRegistryTest {
 
     assertThat(merged).hasSize(1);
     assertThat(merged.get(0)).isEqualTo(engineRule);
+  }
+
+  @Test
+  void registryScopedMetadata_keepsEngineAndEnvironmentPayloadsSeparate() {
+    var engineRule =
+        new ScopedMetadataRule(
+            ScopedMetadataRule.Scope.ENGINE,
+            FLOE_KIND,
+            "",
+            "",
+            "dict.shared",
+            new byte[] {1},
+            Map.of("scope", "engine"));
+    var environmentRule =
+        new ScopedMetadataRule(
+            ScopedMetadataRule.Scope.ENVIRONMENT,
+            "floe",
+            "",
+            "",
+            "dict.shared",
+            new byte[] {2},
+            Map.of("scope", "environment"));
+    var catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(engineRule, environmentRule));
+
+    var registry =
+        new SystemDefinitionRegistry(new StaticSystemCatalogProvider(Map.of(FLOE_KIND, catalog)));
+    var nodeRegistry = registryWith(registry);
+
+    var merged =
+        nodeRegistry
+            .nodesFor(
+                CatalogContext.of(
+                    EnvironmentContext.of("floe", "1"), EngineContext.of(FLOE_KIND, "16.0")))
+            .catalogData()
+            .registryScopedMetadata();
+
+    assertThat(merged).containsExactly(engineRule, environmentRule);
   }
 
   @Test
@@ -1212,11 +1245,6 @@ class SystemNodeRegistryTest {
           new SystemCollationDef(NameRefUtil.name("duck", "default"), "en_US", List.of()),
           new SystemAggregateDef(
               NameRefUtil.name("duck", "pg_agg"), List.of(int4), int4, int4, List.of()));
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-      return Optional.empty();
     }
   }
 

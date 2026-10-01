@@ -17,14 +17,12 @@
 package ai.floedb.floecat.systemcatalog.provider;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import java.util.List;
-import java.util.Optional;
 
 /** Test-only extension that intentionally returns invalid catalog data. */
 public final class InvalidCatalogExtension implements EngineCatalogProvider {
@@ -61,10 +59,5 @@ public final class InvalidCatalogExtension implements EngineCatalogProvider {
   @Override
   public List<SystemObjectDef> definitions(CatalogContext context) {
     return List.of();
-  }
-
-  @Override
-  public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-    return Optional.empty();
   }
 }

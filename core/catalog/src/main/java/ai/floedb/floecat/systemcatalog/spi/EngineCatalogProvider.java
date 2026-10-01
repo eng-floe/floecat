@@ -16,13 +16,13 @@
 
 package ai.floedb.floecat.systemcatalog.spi;
 
+import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.hint.HintClearContext;
 import ai.floedb.floecat.systemcatalog.hint.HintClearDecision;
-import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;
@@ -33,14 +33,14 @@ import java.util.Optional;
 /**
  * Engine-owned contribution to the materialized system catalog.
  *
- * <p>An implementation may provide materialised {@code SystemCatalogData}, live definitions and
- * scanners, or both. Live providers do not copy changing engine types, functions, or system
- * relations into PBtxt files.
+ * <p>An implementation may provide materialised {@code SystemCatalogData}, or live metadata
+ * definitions. Engine providers describe engine-owned objects; they do not provide Floecat
+ * scanners. Rows for {@code TABLE_BACKEND_KIND_ENGINE} relations are produced by the engine.
  *
  * <p>Implementations are expected to obtain engine-owned metadata through their runtime bridge. The
- * context-aware {@code definitions(...)} and {@code provide(...)} methods are called while building
- * the requested catalog, so the provider remains the source of truth for the engine's current
- * metadata. Floecat does not snapshot or persist the result of this SPI.
+ * context-aware {@code definitions(...)} method is called while building the requested catalog, so
+ * the provider remains the source of truth for the engine's current metadata. Floecat does not
+ * snapshot or persist the result of this SPI.
  *
  * <p>The selected catalog environment is intentionally not owned by this provider. The provider
  * describes the engine identified by {@link #engineKind()}; environment-owned relations are
@@ -49,7 +49,7 @@ import java.util.Optional;
  * <p>Engine-owned relation definitions must use {@code TABLE_BACKEND_KIND_ENGINE}. Other
  * definitions describe engine capabilities such as functions, types, operators, and casts.
  */
-public interface EngineCatalogProvider extends SystemObjectScannerProvider {
+public interface EngineCatalogProvider {
 
   /** Globally unique engine identifier. */
   String engineKind();
@@ -58,7 +58,7 @@ public interface EngineCatalogProvider extends SystemObjectScannerProvider {
    * Returns static builtin catalog data for this engine.
    *
    * <p>Dynamic engine integrations should keep the default empty catalog and implement the live
-   * scanner methods inherited from {@link SystemObjectScannerProvider} instead.
+   * {@link #definitions(CatalogContext)} method instead.
    */
   default SystemCatalogData loadSystemCatalog() {
     return SystemCatalogData.empty();
@@ -93,12 +93,15 @@ public interface EngineCatalogProvider extends SystemObjectScannerProvider {
   }
 
   /** Dynamic providers may return definitions obtained from the selected engine at runtime. */
-  @Override
   default List<SystemObjectDef> definitions(CatalogContext context) {
     return List.of();
   }
 
-  @Override
+  /** Checks whether this provider owns a named definition in the supplied catalog context. */
+  default boolean supports(NameRef name, CatalogContext context) {
+    return supports(context);
+  }
+
   default boolean supports(CatalogContext context) {
     return context != null
         && context.engine().hasEngineKind()

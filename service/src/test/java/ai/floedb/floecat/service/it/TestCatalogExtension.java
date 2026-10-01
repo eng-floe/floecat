@@ -18,7 +18,6 @@ package ai.floedb.floecat.service.catalog.it;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
-import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
@@ -36,7 +35,6 @@ import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 /**
  * Test-only {@link EngineCatalogProvider} for {@code SystemObjectsServiceIT}.
@@ -252,11 +250,6 @@ public final class TestCatalogExtension implements EngineCatalogProvider {
   @Override
   public List<SystemObjectDef> definitions(CatalogContext context) {
     return List.of();
-  }
-
-  @Override
-  public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
-    return Optional.empty();
   }
 
   // ---------------------------------------------------------------------------

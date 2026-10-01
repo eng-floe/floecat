@@ -1046,7 +1046,7 @@ public class SystemNodeRegistry {
     if (payloadType == null) {
       payloadType = "";
     }
-    return payloadType;
+    return rule.scope().name() + "\u0000" + payloadType;
   }
 
   private static boolean shouldReplaceBySpecificity(

@@ -132,20 +132,20 @@ Every `ScopedMetadataRule` with a `payloadType` is mapped to a metagraph `Engine
 Providers implement one of the two specialized SPIs:
 
 1. **`EngineCatalogProvider`** – A stable engine identifier, optional static catalog data, and/or
-   live engine definitions and scanners. Dynamic engines can leave `loadSystemCatalog()` empty.
+   live engine metadata definitions. Engine-owned tables use `TABLE_BACKEND_KIND_ENGINE`; their
+   rows are produced by the engine and do not have Floecat scanners.
 2. **`CatalogEnvironmentProvider`** – A stable environment identifier plus environment-owned
    definitions and scanners. Its methods receive the complete `CatalogContext`, including the
    selected engine.
 3. **Discovery** – Register the relevant SPI with `ServiceLoader` for automatic runtime discovery.
 
 See `extensions/example/` for a static engine-provider reference implementation. A dynamic engine
-provider only needs to implement the context-aware definition/scanner methods and does not need one
+provider only needs to implement the context-aware definition method and does not need one
 PBtxt file per engine function or relation.
 
 ### Hint Lifecycle
 
-`EngineCatalogProvider` extends `SystemObjectScannerProvider`, so every plugin can also
-serve system-table definitions and scanners. Plugins that persist engine hints (metadata attached
+Plugins that persist engine hints (metadata attached
 to catalog objects at runtime) can control when those hints are invalidated by implementing
 `decideHintClear`:
 
@@ -492,7 +492,7 @@ Validation errors are logged; invalid catalogs are still returned (planner must 
 
 ### Step 1: Implement EngineCatalogProvider
 
-`EngineCatalogProvider` lives in `ai.floedb.floecat.systemcatalog.spi` and already extends `SystemObjectScannerProvider`, so every plugin can also supply system table definitions and scanners without extra wiring.
+`EngineCatalogProvider` lives in `ai.floedb.floecat.systemcatalog.spi` and supplies engine metadata. Engine-owned system tables do not require a Floecat scanner; the engine executes their rows.
 
 ```java
 public class MyEngineCatalogExtension implements EngineCatalogProvider {
@@ -507,7 +507,6 @@ public class MyEngineCatalogExtension implements EngineCatalogProvider {
     return new SystemCatalogData(...);
   }
 
-  // Implement SystemObjectScannerProvider methods if you expose new rows.
 }
 ```
 
