@@ -26,7 +26,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
-import ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecorator;
 import ai.floedb.floecat.systemcatalog.spi.decorator.EngineMetadataDecoratorProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
@@ -47,8 +47,8 @@ import java.util.stream.Stream;
 import org.jboss.logging.Logger;
 
 /**
- * Production implementation of SystemCatalogProvider. Discovers EngineSystemCatalogExtension
- * implementations using ServiceLoader.
+ * Production implementation of SystemCatalogProvider. Discovers engine catalog providers using
+ * ServiceLoader.
  */
 public final class ServiceLoaderSystemCatalogProvider
     implements SystemCatalogProvider, EngineMetadataDecoratorProvider {
@@ -59,52 +59,48 @@ public final class ServiceLoaderSystemCatalogProvider
   private static final FloecatInternalProvider FLOECAT_INTERNAL_PROVIDER =
       new FloecatInternalProvider();
 
-  private final Map<String, EngineSystemCatalogExtension> plugins;
+  private final Map<String, EngineCatalogProvider> providersByEngine;
   private final Map<String, EngineMetadataDecorator> decorators;
   private final List<SystemObjectScannerProvider> providers;
 
-  private static List<EngineSystemCatalogExtension> discoverExtensions() {
-    try {
-      return ServiceLoader.load(EngineSystemCatalogExtension.class).stream()
-          .map(ServiceLoader.Provider::get)
-          .toList();
-    } catch (Exception e) {
-      LOG.warn("Failed to load EngineSystemCatalogExtension implementations", e);
-      return List.of();
-    }
-  }
-
   public ServiceLoaderSystemCatalogProvider() {
-    this(discoverExtensions());
-  }
+    List<EngineCatalogProvider> engineProviders;
+    try {
+      engineProviders =
+          ServiceLoader.load(EngineCatalogProvider.class).stream()
+              .map(ServiceLoader.Provider::get)
+              .toList();
+    } catch (Exception e) {
+      LOG.warn("Failed to load EngineCatalogProvider implementations", e);
+      engineProviders = List.of();
+    }
 
-  /** Visible for testing: takes the extensions directly instead of discovering them. */
-  ServiceLoaderSystemCatalogProvider(List<EngineSystemCatalogExtension> engineExtensions) {
-    Map<String, EngineSystemCatalogExtension> tmp = new HashMap<>();
+    Map<String, EngineCatalogProvider> providerMap = new HashMap<>();
     Map<String, EngineMetadataDecorator> decoratorMap = new HashMap<>();
-    for (EngineSystemCatalogExtension ext : engineExtensions) {
-      String normalizedKind = EngineIdentityNormalizer.normalizeEngineKind(ext.engineKind());
+    for (EngineCatalogProvider provider : engineProviders) {
+      String normalizedKind = EngineIdentityNormalizer.normalizeEngineKind(provider.engineKind());
       if (normalizedKind.isEmpty()) {
         continue;
       }
       if (EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(normalizedKind)) {
         LOG.warn(
-            "EngineSystemCatalogExtension for floecat_internal is reserved; ignoring "
-                + ext.getClass());
+            "EngineCatalogProvider for floecat_internal is reserved; ignoring "
+                + provider.getClass());
         continue;
       }
-      EngineSystemCatalogExtension previous = tmp.put(normalizedKind, ext);
+      EngineCatalogProvider previous = providerMap.put(normalizedKind, provider);
       if (previous != null) {
         throw new IllegalStateException(
-            "Multiple system catalog extensions registered for engine_kind="
+            "Multiple engine catalog providers registered for engine_kind="
                 + normalizedKind
                 + " (prev="
                 + previous.getClass().getName()
                 + ", next="
-                + ext.getClass().getName()
+                + provider.getClass().getName()
                 + ")");
       }
-      ext.decorator()
+      provider
+          .decorator()
           .ifPresent(
               dec -> {
                 EngineMetadataDecorator previousDecorator = decoratorMap.put(normalizedKind, dec);
@@ -120,7 +116,8 @@ public final class ServiceLoaderSystemCatalogProvider
                 }
               });
     }
-    this.plugins = Map.copyOf(tmp);
+
+    this.providersByEngine = Map.copyOf(providerMap);
     this.decorators = Map.copyOf(decoratorMap);
 
     /*
@@ -130,17 +127,18 @@ public final class ServiceLoaderSystemCatalogProvider
      * plugins own definition of the schema.
      *
      * Every engine-specific scanner provider should be surfaced through its
-     * EngineSystemCatalogExtension implementation.
+     * EngineCatalogProvider implementation.
      */
     List<SystemObjectScannerProvider> extensionProviders =
-        engineExtensions.stream().map(ext -> (SystemObjectScannerProvider) ext).toList();
+        engineProviders.stream().map(provider -> (SystemObjectScannerProvider) provider).toList();
     this.providers = extensionProviders.stream().collect(Collectors.toUnmodifiableList());
   }
 
   @Override
   public List<String> engineKinds() {
     return Stream.concat(
-            Stream.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG), plugins.keySet().stream())
+            Stream.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG),
+            providersByEngine.keySet().stream())
         .distinct()
         .sorted()
         .toList();
@@ -154,14 +152,14 @@ public final class ServiceLoaderSystemCatalogProvider
     String effectiveKind = canonical.effectiveEngineKind();
     boolean overlaysRequested = canonical.enginePluginOverlaysEnabled();
 
-    EngineSystemCatalogExtension ext = plugins.get(effectiveKind);
+    EngineCatalogProvider provider = providersByEngine.get(effectiveKind);
     SystemCatalogData catalog;
 
-    if (ext == null) {
+    if (provider == null) {
       // No plugin registered: still serve floecat-internal (merged in later).
       if (overlaysRequested) {
         LOG.warn(
-            "No system catalog plugin found for engine_kind="
+            "No engine catalog provider found for engine_kind="
                 + effectiveKind
                 + " (ctx="
                 + canonical.engineKind()
@@ -171,23 +169,23 @@ public final class ServiceLoaderSystemCatalogProvider
       catalog = SystemCatalogData.empty();
     } else {
       LOG.info(
-          "Loading system catalog plugin for engine_kind="
+          "Loading engine catalog provider for engine_kind="
               + effectiveKind
               + " (ctx="
               + canonical.engineKind()
               + ")");
-      catalog = ext.loadSystemCatalog();
+      catalog = provider.loadSystemCatalog();
 
-      List<ValidationIssue> extErrors = ext.validate(catalog);
+      List<ValidationIssue> extErrors = provider.validate(catalog);
       if (!extErrors.isEmpty()) {
-        logValidationIssues(ext, extErrors);
+        logValidationIssues(provider, extErrors);
       }
       ValidationFailures.throwOnErrorIssues(
           "Engine extension validation failed for engine_kind=" + effectiveKind, extErrors);
 
       List<ValidationIssue> validatorIssues = SystemCatalogValidator.validate(catalog);
       if (!validatorIssues.isEmpty()) {
-        logValidationIssues(ext, validatorIssues);
+        logValidationIssues(provider, validatorIssues);
       }
       ValidationFailures.throwOnErrorIssues(
           "System catalog validation failed for engine_kind=" + effectiveKind, validatorIssues);
@@ -220,40 +218,24 @@ public final class ServiceLoaderSystemCatalogProvider
   }
 
   /**
-   * A registered engine decorates only if it supplied a decorator. An unregistered kind is a
-   * misconfiguration, so it stays expected and fails closed rather than serving undecorated objects
-   * to an engine that needs them.
+   * Returns the engine catalog provider for the provided engine kind. Versions are handled by the
+   * provider through the supplied {@link ai.floedb.floecat.scanner.utils.EngineContext}.
    */
-  @Override
-  public boolean expectsDecoration(EngineContext ctx) {
-    if (ctx == null || !ctx.enginePluginOverlaysEnabled()) {
-      return false;
-    }
-    String engineKind = ctx.effectiveEngineKind();
-    if (!plugins.containsKey(engineKind)) {
-      return true;
-    }
-    return decorators.containsKey(engineKind);
-  }
-
-  /**
-   * Returns the install extension for the provided engine kind. Versions are handled by the
-   * extension itself through the provided {@link ai.floedb.floecat.scanner.utils.EngineContext}.
-   */
-  public Optional<EngineSystemCatalogExtension> extensionFor(String engineKind) {
+  public Optional<EngineCatalogProvider> providerFor(String engineKind) {
     if (engineKind == null || engineKind.isBlank()) {
       return Optional.empty();
     }
-    return Optional.ofNullable(plugins.get(engineKind));
+    return Optional.ofNullable(
+        providersByEngine.get(EngineIdentityNormalizer.normalizeEngineKind(engineKind)));
   }
 
   private static void logValidationIssues(
-      EngineSystemCatalogExtension ext, List<ValidationIssue> issues) {
+      EngineCatalogProvider provider, List<ValidationIssue> issues) {
     LOG.warn(
         "Engine extension emitted "
             + issues.size()
             + " validation issues for engine_kind="
-            + ext.engineKind());
+            + provider.engineKind());
     int limit = Math.min(VALIDATION_LOG_LIMIT, issues.size());
     for (int i = 0; i < limit; i++) {
       LOG.warn("Engine validation: " + ValidationIssueFormatter.format(issues.get(i)));

@@ -49,7 +49,7 @@ java -jar tools/builtin-validator/target/builtin-validator.jar \
 
 Flags:
 
-- `--engine <kind>` – load the registered `EngineSystemCatalogExtension` for the given engine kind via `ServiceLoader` instead of reading a file.
+- `--engine <kind>` – load the registered `EngineCatalogProvider` for the given engine kind via `ServiceLoader` instead of reading a file.
 - `--json` – emit machine-readable output (for CI or scripting).
 - `--strict` – fail the run when warnings are present (warnings are currently reserved for future checks).
 

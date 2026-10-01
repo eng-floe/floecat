@@ -1,7 +1,7 @@
 # Example Catalog Extension
 
 `floecat-extension-example` is a zero-code, file-based
-`EngineSystemCatalogExtension`
+`EngineCatalogProvider`
 that serves any engine's catalog from user-authored `.pbtxt` files — no Java required.
 
 ## Overview

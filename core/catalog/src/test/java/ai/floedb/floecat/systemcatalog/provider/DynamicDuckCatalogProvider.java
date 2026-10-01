@@ -18,53 +18,17 @@ package ai.floedb.floecat.systemcatalog.provider;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
-import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
-import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
-import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
-import java.util.List;
 import java.util.Optional;
 
-/** Test-only extension that intentionally returns invalid catalog data. */
-public final class InvalidCatalogExtension implements EngineCatalogProvider {
+/** Test-only live provider used to verify ServiceLoader wiring. */
+public final class DynamicDuckCatalogProvider implements EngineCatalogProvider {
 
-  static final String ENGINE_KIND = "invalid_engine";
+  static final String ENGINE_KIND = "duckdb";
 
   @Override
   public String engineKind() {
     return ENGINE_KIND;
-  }
-
-  @Override
-  public SystemCatalogData loadSystemCatalog() {
-    // Invalid by design: namespace-scoped type name is unqualified.
-    return new SystemCatalogData(
-        List.of(),
-        List.of(),
-        List.of(
-            new SystemTypeDef(
-                NameRef.newBuilder().setName("unqualified_type").build(),
-                "S",
-                false,
-                null,
-                List.of())),
-        List.of(),
-        List.of(),
-        List.of(),
-        List.of(),
-        List.of(),
-        List.of(),
-        List.of());
-  }
-
-  @Override
-  public List<SystemObjectDef> definitions() {
-    return List.of();
-  }
-
-  @Override
-  public boolean supportsEngine(String engineKind) {
-    return ENGINE_KIND.equals(engineKind);
   }
 
   @Override
