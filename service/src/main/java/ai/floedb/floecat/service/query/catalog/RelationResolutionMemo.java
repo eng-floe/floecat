@@ -31,8 +31,8 @@ import java.util.function.LongConsumer;
 import java.util.function.Supplier;
 
 /**
- * Per-request memo for name-to-id and id-to-node resolution during one GetUserObjects stream. Both
- * maps resolve each key at most once: a repeated lookup returns the stored {@link Optional}
+ * Per-request memo for name-to-id and id-to-node resolution during one ResolveQueryInputs stream.
+ * Both maps resolve each key at most once: a repeated lookup returns the stored {@link Optional}
  * (present or empty). {@link ConcurrentHashMap#computeIfAbsent} gives single-flight — the resolve
  * runs once per key even under the concurrent select stage that shares this memo across its fan-out
  * tasks — and first-touch semantics: the first caller resolves, later callers read. Every resolve's

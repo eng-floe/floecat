@@ -19,6 +19,7 @@ package ai.floedb.floecat.types;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import org.junit.jupiter.api.Test;
 
 class LogicalTypeProtoAdapterTest {
@@ -41,5 +42,21 @@ class LogicalTypeProtoAdapterTest {
     assertThrows(
         IllegalArgumentException.class,
         () -> LogicalTypeProtoAdapter.decodeLogicalType("NOT_A_REAL_TYPE"));
+  }
+
+  @Test
+  void scalarStats_acceptsTypedAndLegacyLogicalTypes() {
+    ScalarStats typed =
+        ScalarStats.newBuilder()
+            .setType(LogicalTypeProtoAdapter.parseToProto("DECIMAL(12,3)"))
+            .build();
+    assertEquals(LogicalType.decimal(12, 3), LogicalTypeProtoAdapter.columnLogicalType(typed));
+
+    ScalarStats legacy = ScalarStats.newBuilder().setLogicalType("BIGINT").build();
+    assertEquals(
+        LogicalType.of(LogicalKind.INT), LogicalTypeProtoAdapter.columnLogicalType(legacy));
+    assertEquals(
+        LogicalTypeProtoAdapter.parseToProto("BIGINT"),
+        LogicalTypeProtoAdapter.upgradeLegacyScalarStats(legacy).getType());
   }
 }

@@ -18,6 +18,7 @@ package ai.floedb.floecat.scanner.spi;
 
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.types.LogicalType;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -29,10 +30,10 @@ import java.util.function.BooleanSupplier;
 /**
  * Shared provider that surfaces table/column stats to metadata consumers.
  *
- * <p>GetUserObjects invokes these callbacks synchronously on its bundle-producer thread so provider
- * implementations may retain caller-thread state. Implementations that perform blocking I/O must
- * enforce their own downstream deadlines; stream cancellation is observed cooperatively through the
- * batch callback's signal but does not interrupt an active provider callback.
+ * <p>ResolveQueryInputs invokes these callbacks synchronously on its bundle-producer thread so
+ * provider implementations may retain caller-thread state. Implementations that perform blocking
+ * I/O must enforce their own downstream deadlines; stream cancellation is observed cooperatively
+ * through the batch callback's signal but does not interrupt an active provider callback.
  */
 public interface StatsProvider {
 
@@ -111,11 +112,8 @@ public interface StatsProvider {
     /** Column id */
     long columnId();
 
-    /**
-     * Logical type string (same encoding as {@link
-     * ai.floedb.floecat.query.rpc.SchemaColumn#logical_type}).
-     */
-    String logicalType();
+    /** Structured logical type for this column. */
+    LogicalType logicalType();
 
     /** Column name (can be empty when unknown). */
     default String columnName() {

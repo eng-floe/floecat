@@ -15,6 +15,8 @@
 syntax = "proto3";
 package ai.floedb.floecat.catalog;
 
+import "floecat/types/types.proto";
+
 option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.catalog.rpc";
 
@@ -238,7 +240,11 @@ message ScalarStats {
   // Optional presentation label for this scalar target (column name, alias, etc.).
   // This field is cosmetic only and MUST NOT be used for identity, routing, or storage keys.
   string display_name = 1;
+  // Legacy canonical type string retained during the wire-compatible rollout.
   string logical_type = 2;
+  // Structured type. New readers prefer this when present; new writers populate both fields until
+  // all external consumers have regenerated bindings.
+  ai.floedb.floecat.types.LogicalType type = 12;
   UpstreamStamp upstream = 3;
   int64 row_count = 4;
   optional int64 null_count = 5;

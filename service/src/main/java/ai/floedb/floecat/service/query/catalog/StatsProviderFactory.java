@@ -37,6 +37,8 @@ import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
 import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.stats.spi.StatsResolutionResult;
+import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.config.WithDefault;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -361,7 +363,7 @@ public final class StatsProviderFactory {
           scalar.getRowCount(),
           scalar.hasNullCount() ? OptionalLong.of(scalar.getNullCount()) : OptionalLong.empty(),
           scalar.hasNanCount() ? OptionalLong.of(scalar.getNanCount()) : OptionalLong.empty(),
-          scalar.getLogicalType(),
+          LogicalTypeProtoAdapter.columnLogicalType(scalar),
           scalar.hasMin() ? Optional.of(scalar.getMin()) : Optional.empty(),
           scalar.hasMax() ? Optional.of(scalar.getMax()) : Optional.empty(),
           estimatedNdv,
@@ -391,7 +393,7 @@ public final class StatsProviderFactory {
         long rowCount,
         OptionalLong nullCount,
         OptionalLong nanCount,
-        String logicalType,
+        LogicalType logicalType,
         Optional<String> min,
         Optional<String> max,
         Ndv ndvValue,

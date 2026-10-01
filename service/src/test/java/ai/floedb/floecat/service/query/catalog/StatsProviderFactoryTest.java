@@ -59,6 +59,8 @@ import ai.floedb.floecat.stats.spi.StatsCaptureRequest;
 import ai.floedb.floecat.stats.spi.StatsExecutionMode;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import ai.floedb.floecat.types.LogicalKind;
+import ai.floedb.floecat.types.LogicalType;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 import com.google.protobuf.util.Timestamps;
@@ -305,7 +307,7 @@ class StatsProviderFactoryTest {
     assertEquals(77, view.rowCount());
     assertEquals(2, view.nullCountValue().orElseThrow());
     assertEquals(3, view.nanCountValue().orElseThrow());
-    assertEquals("int64", view.logicalType());
+    assertEquals(LogicalType.of(LogicalKind.INT), view.logicalType());
     assertEquals("1", view.minValue().orElseThrow());
     assertEquals("5", view.maxValue().orElseThrow());
     assertEquals(ndv, view.ndv().get());

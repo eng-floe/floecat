@@ -77,7 +77,7 @@ import org.jboss.logging.Logger;
  *       reference resolves once; its timestamp is kept only as provenance on the pin)
  * </ul>
  *
- * <p>This is invoked by DescribeInputs() and GetUserObjects(), before any QueryContext exists.
+ * <p>This is invoked by DescribeInputs() and ResolveQueryInputs(), before any QueryContext exists.
  *
  * <p>Behavior:
  *

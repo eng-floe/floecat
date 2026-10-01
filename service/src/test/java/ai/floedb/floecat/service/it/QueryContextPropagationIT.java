@@ -27,10 +27,10 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
-import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
 import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
+import ai.floedb.floecat.query.rpc.ResolveQueryInputsRequest;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
@@ -88,12 +88,12 @@ import org.junit.jupiter.api.Test;
  *   <li>{@code beginQuery} on its own — the {@link
  *       ai.floedb.floecat.service.common.BaseServiceImpl#run BaseServiceImpl.run} path with a
  *       {@code Uni}.
- *   <li>{@code beginQuery + getUserObjects} per attempt — the {@code Multi.createFrom().emitter(
- *       ...).runSubscriptionOn(...)} path, with the in-body {@code grpcCtx.run(...)} that the
- *       handler uses for streaming. Each attempt resolves an engine-gated system table and fails on
- *       any non-FOUND resolution (silent-form detector).
- *   <li>{@code getUserObjects} against an unknown query id — the returned {@code NOT_FOUND} error
- *       payload must echo the request's correlation id, which the service body read from the
+ *   <li>{@code beginQuery + resolveQueryInputs} per attempt — the {@code
+ *       Multi.createFrom().emitter( ...).runSubscriptionOn(...)} path, with the in-body {@code
+ *       grpcCtx.run(...)} that the handler uses for streaming. Each attempt resolves an
+ *       engine-gated system table and fails on any non-FOUND resolution (silent-form detector).
+ *   <li>{@code resolveQueryInputs} against an unknown query id — the returned {@code NOT_FOUND}
+ *       error payload must echo the request's correlation id, which the service body read from the
  *       fragile context channel (silent-form detector for the correlation channel).
  * </ul>
  *
@@ -185,7 +185,7 @@ class QueryContextPropagationIT {
   }
 
   @Test
-  void concurrentGetUserObjectsDoesNotLoseCallContext() throws Exception {
+  void concurrentResolveQueryInputsDoesNotLoseCallContext() throws Exception {
     // Silent-form detector: sys.const only resolves while the engine context declared in the
     // request headers is visible to the resolving thread. A NOT_FOUND here means the engine
     // context was lost mid-call even though the stream completed OK.
@@ -201,7 +201,7 @@ class QueryContextPropagationIT {
     AtomicReference<String> firstSilentSample = new AtomicReference<>();
 
     runStress(
-        "getUserObjects",
+        "resolveQueryInputs",
         (threadIdx, iteration) -> {
           String correlationId = "ctx-prop-guo-t" + threadIdx + "-i" + iteration;
           Metadata md = metadataFor(correlationId);
@@ -217,8 +217,8 @@ class QueryContextPropagationIT {
                   .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(md));
 
           Iterator<UserObjectsBundleChunk> it =
-              userObjectsStub.getUserObjects(
-                  GetUserObjectsRequest.newBuilder()
+              userObjectsStub.resolveQueryInputs(
+                  ResolveQueryInputsRequest.newBuilder()
                       .setQueryId(queryId)
                       .addTables(systemTableCandidate)
                       .build());
@@ -263,7 +263,7 @@ class QueryContextPropagationIT {
   }
 
   @Test
-  void getUserObjectsErrorCarriesRequestCorrelationId() throws Exception {
+  void resolveQueryInputsErrorCarriesRequestCorrelationId() throws Exception {
     // The NOT_FOUND error for an unknown query id is built inside the service body from the
     // correlation id read off the fragile context channel. If that channel is lost, the error
     // payload carries an empty correlation id — the same loss that produces empty
@@ -272,7 +272,7 @@ class QueryContextPropagationIT {
     AtomicReference<String> firstMismatchSample = new AtomicReference<>();
 
     runStress(
-        "getUserObjectsCorrelation",
+        "resolveQueryInputsCorrelation",
         (threadIdx, iteration) -> {
           String correlationId =
               "ctx-prop-corr-t" + threadIdx + "-i" + iteration + "-" + UUID.randomUUID();
@@ -287,8 +287,8 @@ class QueryContextPropagationIT {
                   .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(md));
 
           Iterator<UserObjectsBundleChunk> it =
-              userObjectsStub.getUserObjects(
-                  GetUserObjectsRequest.newBuilder()
+              userObjectsStub.resolveQueryInputs(
+                  ResolveQueryInputsRequest.newBuilder()
                       .setQueryId("unknown-" + UUID.randomUUID())
                       .build());
           try {

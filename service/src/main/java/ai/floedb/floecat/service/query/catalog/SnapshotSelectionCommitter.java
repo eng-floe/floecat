@@ -39,11 +39,11 @@ import java.util.function.BooleanSupplier;
 import org.jboss.logging.Logger;
 
 /**
- * The snapshot-selection transaction for one GetUserObjects stream, driven per chunk. The conductor
- * calls {@link #accumulate} as each chunk's relations are gathered (collect the resolver's
- * selections and fold them into the pending set) and {@link #commit} before the chunk's stats are
- * warmed (write the pending set durably to the QueryContext). Owns the mutable selection state —
- * {@code pendingSelections} plus the per-request snapshot-selection memo — and records the
+ * The snapshot-selection transaction for one ResolveQueryInputs stream, driven per chunk. The
+ * conductor calls {@link #accumulate} as each chunk's relations are gathered (collect the
+ * resolver's selections and fold them into the pending set) and {@link #commit} before the chunk's
+ * stats are warmed (write the pending set durably to the QueryContext). Owns the mutable selection
+ * state — {@code pendingSelections} plus the per-request snapshot-selection memo — and records the
  * selection-collect / selection-commit timers into the shared request {@link TimingAccumulator}.
  *
  * <p>Snapshot selections are accumulated here before they are written to the process-local query

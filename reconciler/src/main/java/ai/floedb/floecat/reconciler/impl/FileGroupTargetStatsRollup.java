@@ -413,6 +413,7 @@ public final class FileGroupTargetStatsRollup {
     private long totalRowsForWidth = 0L;
 
     void add(TargetStatsRecord source, ScalarStats scalar) {
+      scalar = LogicalTypeProtoAdapter.upgradeLegacyScalarStats(scalar);
       contributors++;
       // Exactly one contributor means its stats describe the whole column (see soleSource); a
       // second contributor voids that claim for good.
@@ -423,10 +424,10 @@ public final class FileGroupTargetStatsRollup {
           && displayName.isBlank()) {
         displayName = scalar.getDisplayName();
       }
-      if (scalar.getLogicalType() != null
-          && !scalar.getLogicalType().isBlank()
-          && logicalType.isBlank()) {
-        logicalType = scalar.getLogicalType();
+      if (scalar.hasType() && logicalType.isBlank()) {
+        logicalType =
+            LogicalTypeProtoAdapter.encodeLogicalType(
+                LogicalTypeProtoAdapter.fromProto(scalar.getType()));
         decodedLogicalType = null; /* invalidate cache when type string changes */
       }
       rowCount += Math.max(0L, scalar.getRowCount());
@@ -467,7 +468,9 @@ public final class FileGroupTargetStatsRollup {
       ScalarStats.Builder builder = ScalarStats.newBuilder().setDisplayName(displayName);
       builder.setRowCount(rowCount);
       if (!logicalType.isBlank()) {
-        builder.setLogicalType(logicalType);
+        builder
+            .setLogicalType(logicalType)
+            .setType(LogicalTypeProtoAdapter.parseToProto(logicalType));
       }
       if (nullCount != null) {
         builder.setNullCount(nullCount);
