@@ -2125,7 +2125,8 @@ lease-coordination domain when they lease, renew, cancel, and complete work. Pro
 summary maintenance is best-effort observability only and does not participate in queue
 correctness.</p>
 <p>Key reconciler mode flags live in <code>service/src/main/resources/application.properties</code>:</p>
-<div class="highlight"><pre><span></span><code><span class="na">floecat.reconciler.worker.mode</span>
+<div class="highlight"><pre><span></span><code><span class="na">floecat.reconciler.job-queue.enabled</span>
+<span class="na">floecat.reconciler.worker.mode</span>
 <span class="na">floecat.reconciler.worker-affinity</span>
 <span class="na">reconciler.max-parallelism</span>
 <span class="na">floecat.reconciler.executor.remote-planner.enabled</span>
@@ -2146,6 +2147,14 @@ correctness.</p>
 <span class="na">floecat.reconciler.auto.execution-class</span>
 <span class="na">floecat.reconciler.execution-lane</span>
 </code></pre></div>
+<p><code>floecat.reconciler.job-queue.enabled=false</code> is the emergency admission and execution kill switch.
+Set it with <code>FLOECAT_RECONCILER_JOB_QUEUE_ENABLED=false</code> and restart every control-plane and
+executor instance. Disabled instances do not admit captures, run scheduled queue work, or serve
+executor protocol calls. Existing jobs remain persisted; <code>Get</code>/<code>List</code> job inspection, finalized
+snapshot status, cancellation, reconciler settings, and account-deletion cleanup remain available.
+Async stats capture returns an uncapturable <code>queue_disabled</code> result and synchronous stats capture
+returns <code>FAILED</code>. Re-enable the setting and restart to resume eligible persisted jobs. Queue
+maintenance and reconcile-job GC are paused while the switch is disabled.</p>
 <p>Recommended split deployment:</p>
 <ul>
 <li>Control plane: <code>QUARKUS_PROFILE=reconciler-control</code></li>

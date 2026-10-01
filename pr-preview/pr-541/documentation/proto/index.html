@@ -2052,6 +2052,11 @@ CLI, and reconciler.</p>
 <td>Stores and resolves snapshot-scoped parquet sidecar artifact metadata and bounded-cost finalized capture status keyed by table and snapshot.</td>
 </tr>
 <tr>
+<td><code>OwnerPublicationService</code></td>
+<td><code>BeginOwnerPublication</code>, <code>CompleteOwnerPublication</code></td>
+<td>Reserves an Owner generation and activates it through sequential, bounded completion calls. External registration and coverage manifests remain format v1 but are split into independently hashed, record-aligned chunks committed by a small content-addressed index. <code>Complete</code> accepts and returns an opaque phase/chunk cursor and verifies at most one committed chunk per call.</td>
+</tr>
+<tr>
 <td><code>TableConstraintsService</code></td>
 <td><code>GetTableConstraints</code>, <code>ListTableConstraints</code>, <code>PutTableConstraints</code>, <code>MergeTableConstraints</code>, <code>AppendTableConstraints</code>, <code>DeleteTableConstraints</code>, <code>AddTableConstraint</code>, <code>DeleteTableConstraint</code></td>
 <td>Snapshot-scoped constraints CRUD for user tables. <code>PutTableConstraints</code> is full-bundle upsert, <code>MergeTableConstraints</code> is server-side merge by <code>constraint.name</code> plus shallow merge of bundle <code>properties</code> (incoming keys win), <code>AppendTableConstraints</code> is server-side append-only (duplicate names rejected), and <code>AddTableConstraint</code>/<code>DeleteTableConstraint</code> are single-constraint partial mutations. All write operations require snapshot existence (<code>NOT_FOUND</code> when missing).</td>
@@ -2166,6 +2171,14 @@ engine release.</p>
   that manifest.
   Snapshot selections carry <code>TablePin.ingested_at</code> when their retention clock is needed; current
   selections omit it because the live current snapshot is retained regardless of age.</li>
+<li><strong>Owner publication completion</strong> – Owner writes the capture manifest, registration payload,
+  coverage payload, and their two commitment indexes directly to object storage. Floecat reads the
+  small commitment index and one bounded range per <code>Complete</code>; it does not read registered artifact
+  payloads to calculate their hashes. Registration chunks have independent framing and byte,
+  object, and target limits. Coverage chunks contain fixed-width records. Floecat persists separate
+   registration/coverage chunk positions, cumulative counts, and ordering keys, and activates only
+   after every commitment and global total has been checked. Callers keep the 120-second RPC
+   deadline, send <code>Complete</code> sequentially, and retry an uncertain call with the same opaque cursor.</li>
 <li><strong>External reusable-index compatibility</strong> – external planner and finalizer deployments must
   regenerate bindings for <code>ReusableArtifactIndexReference</code> format 1 and its immutable sorted-run,
   run-manifest, and block messages. The old trie-root representation has no compatibility reader.

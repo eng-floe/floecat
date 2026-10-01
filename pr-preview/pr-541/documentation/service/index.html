@@ -2600,6 +2600,14 @@ rows upserted after all batches have been consumed.</p>
 <td>Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to <code>16</code>; clamped to <code>&gt;= 1</code>.</td>
 </tr>
 <tr>
+<td><code>floecat.owner-publication.registration-batch-*</code></td>
+<td>Bounds one Owner <code>Complete</code> call by committed external-manifest bytes and, for registration chunks, objects and target-pointer writes. Defaults to 8 MiB, 10,000 objects, and 10,000 targets; tune downward if the caller's 120-second RPC deadline requires it.</td>
+</tr>
+<tr>
+<td><code>floecat.owner-publication.reuse-lease-ttl-ms</code></td>
+<td>Renewable GC lease for an in-flight Owner publication. Defaults to 24 hours.</td>
+</tr>
+<tr>
 <td><code>floecat.gc.idempotency.*</code></td>
 <td>Cadence, page size, batch limit, slice duration for idempotency GC.</td>
 </tr>
@@ -2614,6 +2622,10 @@ rows upserted after all batches have been consumed.</p>
 <tr>
 <td><code>floecat.gc.reconcile-jobs.*</code></td>
 <td>Cadence, retention, and slice settings for durable reconcile-job GC. Finished terminal jobs default to 24 h retention.</td>
+</tr>
+<tr>
+<td><code>floecat.reconciler.job-queue.enabled</code></td>
+<td>Startup-scoped reconcile admission and execution kill switch (default <code>true</code>; env <code>FLOECAT_RECONCILER_JOB_QUEUE_ENABLED</code>). When disabled, persisted jobs and read/settings/cancellation APIs remain available, while new captures and executor work return <code>FAILED_PRECONDITION</code>. Restart after changing it.</td>
 </tr>
 <tr>
 <td><code>floecat.reconciler.worker-affinity</code></td>
