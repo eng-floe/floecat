@@ -153,7 +153,7 @@ public final class SystemCatalogTestProviders {
     public List<SystemObjectDef> definitions(CatalogContext context) {
       NameRef namespace = NameRefUtil.namespaceRef(name).orElseThrow();
       return List.of(
-          new SystemNamespaceDef(namespace, NameRefUtil.canonical(namespace), List.of()),
+          new SystemNamespaceDef(namespace, NameRefUtil.identityKey(namespace), List.of()),
           tableDef());
     }
 

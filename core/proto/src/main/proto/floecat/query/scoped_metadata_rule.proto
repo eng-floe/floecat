@@ -19,17 +19,23 @@ option java_multiple_files = true;
 option java_package = "ai.floedb.floecat.query.rpc";
 
 /**
- * Engine-specific rule metadata.
+ * Metadata that applies to one engine or environment and a version range.
  *
- * For all engines (Floe, Postgres, Trino, Spark, …), the payload is opaque:
- * Floecat never interprets it.
+ * The payload is opaque to Floecat.  The scope and version bounds determine
+ * whether the metadata is applicable to the current catalog context.
  */
-message EngineSpecific {
+message ScopedMetadataRule {
+  enum Scope {
+    ENGINE = 0;
+    ENVIRONMENT = 1;
+  }
+
   // Allow PBtxt readable extension blocks 
   extensions 1 to 99;
 
   // --- Applicability rules (PBtxt only) ---
-  optional string engine_kind = 100;
+  optional string kind = 100;
+  optional Scope scope = 202 [default = ENGINE];
   optional string min_version = 101;
   optional string max_version = 102;
 

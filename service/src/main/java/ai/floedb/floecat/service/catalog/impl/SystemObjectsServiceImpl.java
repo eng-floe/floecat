@@ -114,7 +114,7 @@ public class SystemObjectsServiceImpl extends BaseServiceImpl implements SystemO
         List.of(),
         List.of(),
         List.of(),
-        data.registryEngineSpecific());
+        data.registryScopedMetadata());
   }
 
   private PhaseDiagnostics diagnostics(String operation) {

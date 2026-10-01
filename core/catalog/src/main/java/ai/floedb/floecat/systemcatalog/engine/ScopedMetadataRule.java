@@ -19,21 +19,38 @@ package ai.floedb.floecat.systemcatalog.engine;
 import java.util.Arrays;
 import java.util.Map;
 
-/** Engine-specific applicability window for a builtin object. */
-public record EngineSpecificRule(
-    String engineKind,
+/** Engine- or environment-scoped metadata and its applicability window. */
+public record ScopedMetadataRule(
+    Scope scope,
+    String kind,
     String minVersion,
     String maxVersion,
-    // Engine hint name that describes this payload.
+    // Name that describes this metadata payload.
     String payloadType,
-    // Decoded payload bytes (from EngineSpecific.payload at runtime, or PBtxt extension blocks at
-    // build time).
+    // Decoded payload bytes (from the wire payload or PBtxt extension blocks).
     byte[] extensionPayload,
     // Generic key/value metadata (Spark, Trino, etc.)
     Map<String, String> properties) {
 
-  public EngineSpecificRule {
-    engineKind = engineKind == null ? "" : engineKind.trim();
+  public enum Scope {
+    ENGINE,
+    ENVIRONMENT
+  }
+
+  /** Compatibility constructor for existing engine-scoped resource definitions. */
+  public ScopedMetadataRule(
+      String kind,
+      String minVersion,
+      String maxVersion,
+      String payloadType,
+      byte[] extensionPayload,
+      Map<String, String> properties) {
+    this(Scope.ENGINE, kind, minVersion, maxVersion, payloadType, extensionPayload, properties);
+  }
+
+  public ScopedMetadataRule {
+    scope = scope == null ? Scope.ENGINE : scope;
+    kind = kind == null ? "" : kind.trim();
     minVersion = minVersion == null ? "" : minVersion.trim();
     maxVersion = maxVersion == null ? "" : maxVersion.trim();
 
@@ -68,12 +85,18 @@ public record EngineSpecificRule(
     return trimmed.isBlank() ? "" : trimmed;
   }
 
-  public static EngineSpecificRule exact(String engine, String version, String payloadType) {
-    return new EngineSpecificRule(engine, version, version, payloadType, null, Map.of());
+  public static ScopedMetadataRule exact(String engine, String version, String payloadType) {
+    return new ScopedMetadataRule(
+        Scope.ENGINE, engine, version, version, payloadType, null, Map.of());
   }
 
-  public boolean hasEngineKind() {
-    return !engineKind.isBlank();
+  public static ScopedMetadataRule exact(
+      Scope scope, String kind, String version, String payloadType) {
+    return new ScopedMetadataRule(scope, kind, version, version, payloadType, null, Map.of());
+  }
+
+  public boolean hasKind() {
+    return !kind.isBlank();
   }
 
   public boolean hasMinVersion() {
@@ -91,8 +114,9 @@ public record EngineSpecificRule(
   @Override
   public boolean equals(Object o) {
     if (this == o) return true;
-    if (!(o instanceof EngineSpecificRule other)) return false;
-    return engineKind.equals(other.engineKind)
+    if (!(o instanceof ScopedMetadataRule other)) return false;
+    return scope == other.scope
+        && kind.equals(other.kind)
         && minVersion.equals(other.minVersion)
         && maxVersion.equals(other.maxVersion)
         && payloadType.equals(other.payloadType)
@@ -102,7 +126,8 @@ public record EngineSpecificRule(
 
   @Override
   public int hashCode() {
-    int result = engineKind.hashCode();
+    int result = scope.hashCode();
+    result = 31 * result + kind.hashCode();
     result = 31 * result + minVersion.hashCode();
     result = 31 * result + maxVersion.hashCode();
     result = 31 * result + payloadType.hashCode();

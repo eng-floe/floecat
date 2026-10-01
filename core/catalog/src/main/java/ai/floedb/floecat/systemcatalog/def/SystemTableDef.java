@@ -21,7 +21,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -35,7 +35,7 @@ public record SystemTableDef(
     String scannerId,
     String storagePath,
     String storageEndpointKey,
-    List<EngineSpecificRule> engineSpecific,
+    List<ScopedMetadataRule> scopedMetadata,
     FlightEndpointRef flightEndpoint,
     List<ConstraintDefinition> constraints)
     implements SystemObjectDef {
@@ -48,7 +48,7 @@ public record SystemTableDef(
     displayName = displayName == null ? "" : displayName;
     storagePath = storagePath == null ? "" : storagePath;
     storageEndpointKey = storageEndpointKey == null ? "" : storageEndpointKey;
-    engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
+    scopedMetadata = List.copyOf(scopedMetadata == null ? List.of() : scopedMetadata);
     constraints = List.copyOf(constraints == null ? List.of() : constraints);
     Set<String> columnNames = new HashSet<>();
     for (SystemColumnDef column : columns) {
@@ -80,7 +80,7 @@ public record SystemTableDef(
       String scannerId,
       String storagePath,
       String storageEndpointKey,
-      List<EngineSpecificRule> engineSpecific,
+      List<ScopedMetadataRule> scopedMetadata,
       FlightEndpointRef flightEndpoint) {
     this(
         name,
@@ -90,7 +90,7 @@ public record SystemTableDef(
         scannerId,
         storagePath,
         storageEndpointKey,
-        engineSpecific,
+        scopedMetadata,
         flightEndpoint,
         List.of());
   }

@@ -17,7 +17,7 @@
 package ai.floedb.floecat.systemcatalog.def;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import java.util.List;
 import java.util.Objects;
 
@@ -28,7 +28,7 @@ public record SystemColumnDef(
     boolean nullable,
     int ordinal,
     Long id,
-    List<EngineSpecificRule> engineSpecific) {
+    List<ScopedMetadataRule> scopedMetadata) {
 
   public SystemColumnDef {
     name = Objects.requireNonNull(name, "name").trim();
@@ -42,7 +42,7 @@ public record SystemColumnDef(
     if (id != null && id <= 0) {
       throw new IllegalArgumentException("id must be positive when provided");
     }
-    engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
+    scopedMetadata = List.copyOf(scopedMetadata == null ? List.of() : scopedMetadata);
   }
 
   public boolean hasId() {

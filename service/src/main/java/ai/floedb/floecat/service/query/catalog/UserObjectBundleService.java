@@ -41,7 +41,6 @@ import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.account.AccountAssignment;
 import ai.floedb.floecat.service.account.AccountScope;
 import ai.floedb.floecat.service.cache.ObjectCache;

@@ -72,7 +72,7 @@ public class TestCatalogGraphView extends BaseTestCatalogGraphView {
     if (ref == null || ref.getName().isBlank()) {
       return Optional.empty();
     }
-    String target = NameRefUtil.canonical(ref);
+    String target = NameRefUtil.matchKey(ref);
     resolveTableLookups.computeIfAbsent(target, ignored -> new AtomicInteger()).incrementAndGet();
     for (GraphNode node : nodes.values()) {
       if (!(node instanceof UserTableNode table)) {
@@ -87,7 +87,7 @@ public class TestCatalogGraphView extends BaseTestCatalogGraphView {
       if (!namespace.displayName().isBlank()) {
         tableRefBuilder.addPath(namespace.displayName());
       }
-      if (NameRefUtil.canonical(tableRefBuilder.build()).equalsIgnoreCase(target)) {
+      if (NameRefUtil.matchKey(tableRefBuilder.build()).equals(target)) {
         return Optional.of(table.id());
       }
     }

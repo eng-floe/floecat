@@ -11,9 +11,9 @@ not need to duplicate changing engine metadata in PBtxt.
 
 ## Design Principles
 
-1. **Engine-Agnostic Core** – The core proto (`engine_specific.proto`) defines only the envelope; engines plug in without modifying the core.
+1. **Engine-Agnostic Core** – The core proto (`scoped_metadata_rule.proto`) defines only the envelope; engines plug in without modifying the core.
 2. **ServiceLoader Discovery** – Plugins are discovered automatically via Java's `ServiceLoader` mechanism at runtime.
-3. **Proto Extensions** – Plugins define proto extensions on the core `EngineSpecific` message to allow rich PBtxt files while preserving core simplicity.
+3. **Proto Extensions** – Plugins define proto extensions on the core `ScopedMetadataRule` message to allow rich PBtxt files while preserving core simplicity.
 4. **Versioned Metadata** – Each plugin defines metadata per engine version; the planner can request version-specific capabilities.
 
 ## Architecture
@@ -38,7 +38,7 @@ not need to duplicate changing engine metadata in PBtxt.
 ┌────────────────────────────────────────────────────────────┐
 │ SystemNodeRegistry (core/catalog)                           │
 │ - caches BuiltinNodes per complete CatalogContext           │
-│ - filters SystemCatalogData with EngineSpecificMatcher       │
+│ - filters SystemCatalogData with ScopedMetadataMatcher       │
 │ - materialises GraphNodes + SystemTable/Table/View defs     │
 └──────┬──────────────────────────────────────────────────────┘
        │
@@ -123,7 +123,7 @@ identical definitions are deduplicated and incompatible definitions fail with pr
 
 ### Engine-specific hint contract
 
-Every `EngineSpecificRule` with a `payloadType` is mapped to a metagraph `EngineHint` whose key is `(engineKind, engineVersion, payloadType)` and whose value contains the payload bytes plus properties. The `EngineHintsMapper` replaces null payloads with an empty byte array to avoid NPEs, and it throws `IllegalStateException` if two rules share the same `(engineKind, engineVersion, payloadType)` triple. Column-level hints are grouped per column name; duplicate column names are already rejected by `SystemTableDef` so the per-column maps stay one-to-one with the schema. These hints drive scanner/table metadata, so when you add engine-specific definitions ensure each `EngineSpecificRule` has a unique payload type per engine/version.
+Every `ScopedMetadataRule` with a `payloadType` is mapped to a metagraph `EngineHint` whose key is `(engineKind, engineVersion, payloadType)` and whose value contains the payload bytes plus properties. The `EngineHintsMapper` replaces null payloads with an empty byte array to avoid NPEs, and it throws `IllegalStateException` if two rules share the same `(engineKind, engineVersion, payloadType)` triple. Column-level hints are grouped per column name; duplicate column names are already rejected by `SystemTableDef` so the per-column maps stay one-to-one with the schema. These hints drive scanner/table metadata, so when you add engine-specific definitions ensure each `ScopedMetadataRule` has a unique payload type per engine/version.
 
 `ServiceLoaderSystemCatalogProvider` discovers engine providers and environment providers separately. It loads optional static catalog data from the selected engine provider; `SystemDefinitionRegistry` caches that result by the complete `CatalogContext`. `SystemNodeRegistry` composes the static engine data, live engine definitions, and live environment definitions, validating ownership and conflicts along the way. The resulting `BuiltinNodes` are exposed through `SystemGraph` and `CatalogGraphView` for metadata resolution and scanning. That merged `_system` view (load + scan) is documented in [System objects](system-objects.md).
 
@@ -162,7 +162,7 @@ snapshots. `HintClearDecision` controls what to clear:
 - Fine-grained constructor — clears only specific `payloadType` sets or individual column IDs, for
   plugins that want to avoid unnecessary hint recomputation on unrelated schema changes
 
-`SystemNodeRegistry` automatically materializes each object's matching `engine_specific` rules as
+`SystemNodeRegistry` automatically materializes each object's matching `scoped_metadata` rules as
 `EngineHint` entries keyed by `(engineKind, engineVersion, payloadType)`. Plugins that rely solely
 on `properties`-based metadata in their `.pbtxt` files get immutable system hints without a second
 provider or cache path. `decideHintClear` applies only to legacy property-backed user hints during
@@ -170,12 +170,12 @@ migration.
 
 ## Core Components
 
-### EngineSpecific (Proto)
+### ScopedMetadataRule (Proto)
 
-The core envelope in `proto/src/main/proto/floecat/query/engine_specific.proto`:
+The core envelope in `proto/src/main/proto/floecat/query/scoped_metadata_rule.proto`:
 
 ```proto
-message EngineSpecific {
+message ScopedMetadataRule {
   string engine_kind = 10;       // "postgres", ...
   string min_version = 11;       // min engine version (inclusive)
   string max_version = 12;       // max engine version (inclusive)
@@ -249,7 +249,7 @@ Builtins are cached at every stage of the pipeline:
 
 1. **SystemDefinitionRegistry** – caches the immutable `SystemEngineCatalog` produced by the `SystemCatalogProvider` under the normalized environment/engine tuple. Static engine catalogs remain separate from live environment contributions. Tests can reset this cache via `clear()`.
 
-2. **SystemNodeRegistry** – filters the cached catalog through `EngineSpecificMatcher` (per `min_version`, `max_version` rules) and composes static/live engine contributions with live environment contributions. The resulting `BuiltinNodes` record keeps copies of the filtered and merged `SystemCatalogData` (functions, types, casts, tables, etc.), so the same snapshot serves both the catalog service and the system graph. `VersionKey` is the normalized `(environmentKind, environmentVersion, engineKind, engineVersion)` tuple stored in a `ConcurrentHashMap`. Identical definitions are deduplicated; conflicting definitions fail rather than using stage order as precedence.
+2. **SystemNodeRegistry** – filters the cached catalog through `ScopedMetadataMatcher` (per `min_version`, `max_version` rules) and composes static/live engine contributions with live environment contributions. The resulting `BuiltinNodes` record keeps copies of the filtered and merged `SystemCatalogData` (functions, types, casts, tables, etc.), so the same snapshot serves both the catalog service and the system graph. `VersionKey` is the normalized `(environmentKind, environmentVersion, engineKind, engineVersion)` tuple stored in a `ConcurrentHashMap`. Identical definitions are deduplicated; conflicting definitions fail rather than using stage order as precedence.
    Canonical names remain fully qualified for identity and namespace mapping, while node display labels are materialized separately (functions/operators/types/collations/aggregates default to leaf names unless a provider overrides them).
    Catalog validation is enforced at load time: providers fail fast on `Severity.ERROR` issues. The default namespace-scope policy currently requires known namespaces for `function/type/table/view` and leaves `operator/cast/collation/aggregate` relaxed unless a stricter policy is selected.
 
@@ -340,7 +340,7 @@ com.example.MyEngineCatalogProvider
 3. **SystemNodeRegistry** looks up the complete `(environmentKind, environmentVersion, engineKind, engineVersion)` context in its cache, and, on a miss, asks `SystemDefinitionRegistry` for the engine catalog data.
 4. **SystemDefinitionRegistry** delegates to `ServiceLoaderSystemCatalogProvider` when it needs to load the engine's static catalog snapshot.
 5. **SystemNodeRegistry** composes static engine data, live engine definitions, and live environment definitions. It caches the result per complete `CatalogContext`.
-6. **SystemNodeRegistry** filters the catalog by version (`EngineSpecificMatcher`), applies engine-specific rules, and materialises `BuiltinNodes` (graph nodes + filtered `SystemCatalogData`). The `BuiltinNodes` instance is cached for future requests for the same context.
+6. **SystemNodeRegistry** filters the catalog by version (`ScopedMetadataMatcher`), applies engine-specific rules, and materialises `BuiltinNodes` (graph nodes + filtered `SystemCatalogData`). The `BuiltinNodes` instance is cached for future requests for the same context.
 7. **SystemObjectsServiceImpl** receives the cached `BuiltinNodes`, hands its embedded `SystemCatalogData` to `SystemCatalogProtoMapper.toProto()`, and streams the `GetSystemObjectsResponse` back to the planner.
 8. **SystemGraph** reuses the same `BuiltinNodes` to build `_system` catalog snapshots (namespace buckets, relation map, `SystemTableNode`s) that `MetaGraph` exposes as `CatalogGraphView`/`SystemObjectGraphView` for system object scanning.
    * The scanner-visible system relations (information_schema, pg_catalog, etc.) are seeded from the shared provider and merged into the selected catalog context for `_system` scans.
@@ -358,7 +358,7 @@ All caches are case-normalized and thread-safe:
 Each rule in the builtin catalog carries `min_version` and `max_version` constraints:
 
 ```java
-EngineSpecific {
+ScopedMetadataRule {
   min_version: "9.5"
   max_version: "13.0"
   // ...
@@ -367,7 +367,7 @@ EngineSpecific {
 
 The planner can filter or match rules based on the requested version. The versioning semantics are engine-defined; plugins document their version scheme in their documentation.
 
-The actual predicate is implemented by `EngineSpecificMatcher.matches(rules, engineKind, engineVersion)`, which is used by `SystemNodeRegistry` to compute exactly which objects survive the version filter.
+The actual predicate is implemented by `ScopedMetadataMatcher.matches(rules, engineKind, engineVersion)`, which is used by `SystemNodeRegistry` to compute exactly which objects survive the version filter.
 
 ## Scalability & Performance
 
@@ -455,11 +455,11 @@ Both Layer 1 and Layer 2 use `ConcurrentHashMap` with atomic `computeIfAbsent()`
 
 ## Proto Extensions (Advanced)
 
-Plugins can define proto extensions on `EngineSpecific` to support rich PBtxt syntax. The Floe plugin defines:
+Plugins can define proto extensions on `ScopedMetadataRule` to support rich PBtxt syntax. The Floe plugin defines:
 
 ```proto
 // my_engine.proto — define in your own plugin proto
-extend ai.floedb.floecat.query.EngineSpecific {
+extend ai.floedb.floecat.query.ScopedMetadataRule {
   MyFunctionSpecific  my_function  = 1001;
   MyOperatorSpecific  my_operator  = 1002;
   MyCastSpecific      my_cast      = 1003;
@@ -524,11 +524,11 @@ com.example.MyEngineCatalogExtension
 If using PBtxt with custom fields, define proto extensions:
 
 ```proto
-import "query/engine_specific.proto";
+import "query/scoped_metadata_rule.proto";
 
 message MyEngineFunction { /* ... */ }
 
-extend ai.floedb.floecat.query.EngineSpecific {
+extend ai.floedb.floecat.query.ScopedMetadataRule {
   MyEngineFunction my_function = 1100;  // Use allocated range for your engine
 }
 ```
@@ -560,7 +560,7 @@ class CatalogExtensionTest {
   }
 
   @Test
-  void catalogDataPreservesEngineSpecificRules() {
+  void catalogDataPreservesScopedMetadataRules() {
     var extension = new ExampleCatalogExtension();
     SystemCatalogData catalog = extension.loadSystemCatalog();
 
@@ -572,7 +572,7 @@ class CatalogExtensionTest {
     for (var func : functionsWithRules) {
       for (var rule : func.engineSpecific()) {
         assert !rule.payloadType().isBlank() :
-            "engine_specific rules must have a non-blank payload_type";
+            "scoped_metadata rules must have a non-blank payload_type";
       }
     }
   }

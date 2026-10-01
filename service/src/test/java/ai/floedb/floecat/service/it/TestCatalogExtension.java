@@ -31,7 +31,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import java.util.List;
@@ -50,14 +50,14 @@ import java.util.Optional;
  */
 public final class TestCatalogExtension implements EngineCatalogProvider {
 
-  static final String ENGINE_KIND = "test-engine";
+  public static final String ENGINE_KIND = "test-engine";
 
   /**
    * Version-constraining rule: functions carrying this rule are only served when the engine reports
    * version {@code "16.0"} or higher. Functions with no rules are always served.
    */
-  private static final EngineSpecificRule RULE_MIN_16 =
-      new EngineSpecificRule(ENGINE_KIND, "16.0", "", "test.payload", new byte[0], Map.of());
+  private static final ScopedMetadataRule RULE_MIN_16 =
+      new ScopedMetadataRule(ENGINE_KIND, "16.0", "", "test.payload", new byte[0], Map.of());
 
   // ---------------------------------------------------------------------------
   // EngineCatalogProvider
@@ -80,7 +80,7 @@ public final class TestCatalogExtension implements EngineCatalogProvider {
         namespaces(),
         tables(),
         /* views= */ List.of(),
-        /* registryEngineSpecific= */ List.of());
+        /* registryScopedMetadata= */ List.of());
   }
 
   // ---------------------------------------------------------------------------

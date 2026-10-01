@@ -21,7 +21,7 @@
 #   is_aggregate    — true for aggregate state-transition / finalizer functions
 #   is_window       — true for window functions
 #
-# engine_specific:
+# scoped_metadata:
 #   payload_type  — identifies the payload schema (required by the catalog validator).
 #                   Use a value like "example.properties" when there is no binary payload.
 #   min_version   — earliest engine version that supports this function (inclusive).
@@ -46,7 +46,7 @@ functions {
     path: "example"
     name: "my_type"
   }
-  engine_specific {
+  scoped_metadata {
     payload_type: "example.properties"
     properties {
       key: "description"
@@ -75,7 +75,7 @@ functions {
     path: "example"
     name: "my_type"
   }
-  engine_specific {
+  scoped_metadata {
     min_version: "2.0"
     payload_type: "example.properties"
     properties {

@@ -84,7 +84,7 @@ version)` and attached by `MetaGraph`; system-node hints are materialized direct
 definitions. Consumers read the node map and do not know which source supplied it.
 
 ### Version‑Specificity and Matching Semantics
-Engine‑specific hint providers rely on `EngineSpecificMatcher`, which compares an engine’s
+Engine‑specific hint providers rely on `ScopedMetadataMatcher`, which compares an engine’s
 (engine_kind, engine_version) against each rule’s declared constraints. Version matching is
 inclusive: `min_version` and `max_version` both participate in ≥ / ≤ comparisons. Versions are
 compared using natural ordering: numeric segments compare by magnitude, while mixed alphanumeric
@@ -100,13 +100,13 @@ pointer/blob repositories. Instead, `SystemNodeRegistry` (core/catalog) loads th
 per engine kind, materialises immutable relation nodes, and caches the result per
 `(engine_kind, engine_version)`. Catalog files live under `resources/builtins` and follow the
 `<engine_kind>.pb[pbtxt]` naming convention. Each builtin definition can declare one or more
-`engine_specific` rules (engine kind + min/max versions + optional properties). The registry filters
+`scoped_metadata` rules (engine kind + min/max versions + optional properties). The registry filters
 definitions using those rules so a planner that sets `x-engine-kind=postgres` and
 `x-engine-version=16.0` only sees builtin nodes that actually exist in that release. Callers that omit
 either header simply receive an empty builtin bundle (the catalog files stay untouched), and
 `GetSystemObjects` rejects the request until both headers are provided.
 
-Each `engine_specific` block may also attach arbitrary key/value `properties`. When the registry
+Each `scoped_metadata` block may also attach arbitrary key/value `properties`. When the registry
 materialises a `(engine_kind, engine_version)` bundle it keeps only the rules that match the requested
 engine/version, so the filtered catalog (and `GetSystemObjects` response) contains exactly the
 entries that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in every rule;
@@ -116,7 +116,7 @@ rule), so planners request the hint whose `payloadType` matches the catalog payl
 payload types live alongside the catalog definitions. Catalog
 authors should prefer stable, namespaced strings (e.g., `builtin.systemcatalog.function.semantic+json`
 or `floe.type+proto`) so that consumers can register decoders per payload family and avoid accidental
-collisions. Catalog authors control override behavior by ordering `engine_specific` rules intentionally:
+collisions. Catalog authors control override behavior by ordering `scoped_metadata` rules intentionally:
 entries stay in pbtxt order (including overlay merges), and the mapper treats the *last* matching
 rule as the one to publish.
 

@@ -211,9 +211,10 @@ public final class ConstraintScanIndex {
   }
 
   private static String referencedTableCacheKey(NameRef referencedTable) {
-    String catalog = referencedTable.getCatalog().trim().toLowerCase(java.util.Locale.ROOT);
-    String canonical = NameRefUtil.canonical(referencedTable);
-    return catalog + "|" + canonical;
+    // The value cached under this key comes from an exact resolution, so the key preserves case
+    // too. Folding it would let two spellings share one entry and inherit each other's result.
+    String catalog = referencedTable.getCatalog().trim();
+    return catalog + "|" + NameRefUtil.matchKey(referencedTable);
   }
 
   private static String resolveReferencedConstraintName(ConstraintDefinition constraint) {

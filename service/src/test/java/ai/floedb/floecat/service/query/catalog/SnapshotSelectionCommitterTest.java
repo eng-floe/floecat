@@ -29,6 +29,7 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.SnapshotSelections;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport;
@@ -108,7 +109,8 @@ class SnapshotSelectionCommitterTest {
   void accumulateGrowsPendingPinCountAcrossRelations() {
     TestQueryContextStore store = seededStore();
     SnapshotSelectionCommitter committer =
-        new SnapshotSelectionCommitter(resolver, store, ctx(), CID, timings);
+        new SnapshotSelectionCommitter(
+            resolver, store, ctx(), CID, timings, CatalogContext.empty());
 
     assertThat(committer.pendingSelectionCount()).isZero();
 
@@ -124,7 +126,8 @@ class SnapshotSelectionCommitterTest {
   void commitWritesToQueryContextExactlyOnceAndIsDurable() {
     TestQueryContextStore store = seededStore();
     SnapshotSelectionCommitter committer =
-        new SnapshotSelectionCommitter(resolver, store, ctx(), CID, timings);
+        new SnapshotSelectionCommitter(
+            resolver, store, ctx(), CID, timings, CatalogContext.empty());
 
     committer.accumulate(List.of(resolved(TABLE_A), resolved(TABLE_B)), PhaseDiagnostics.NOOP);
     committer.commit();
@@ -149,7 +152,8 @@ class SnapshotSelectionCommitterTest {
     store.seed(ctx());
     store.failUpdateWith(new IllegalStateException("boom"));
     SnapshotSelectionCommitter committer =
-        new SnapshotSelectionCommitter(resolver, store, ctx(), CID, timings);
+        new SnapshotSelectionCommitter(
+            resolver, store, ctx(), CID, timings, CatalogContext.empty());
 
     committer.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP);
 
@@ -161,7 +165,8 @@ class SnapshotSelectionCommitterTest {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
     SnapshotSelectionCommitter committer =
-        new SnapshotSelectionCommitter(resolver, store, ctx(), CID, timings);
+        new SnapshotSelectionCommitter(
+            resolver, store, ctx(), CID, timings, CatalogContext.empty());
     AtomicBoolean cancelled = new AtomicBoolean();
 
     committer.accumulate(List.of(resolved(TABLE_A)), PhaseDiagnostics.NOOP, cancelled::get);
@@ -178,7 +183,8 @@ class SnapshotSelectionCommitterTest {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
     SnapshotSelectionCommitter committer =
-        new SnapshotSelectionCommitter(new SnapshotAwareResolver(), store, ctx(), CID, timings);
+        new SnapshotSelectionCommitter(
+            new SnapshotAwareResolver(), store, ctx(), CID, timings, CatalogContext.empty());
 
     committer.accumulate(List.of(resolved(TABLE_A, selected(TABLE_A, 1L))), PhaseDiagnostics.NOOP);
 
@@ -196,7 +202,8 @@ class SnapshotSelectionCommitterTest {
     RecordingReleaseStore store = new RecordingReleaseStore();
     store.seed(ctx());
     SnapshotSelectionCommitter committer =
-        new SnapshotSelectionCommitter(resolver, store, ctx(), CID, timings);
+        new SnapshotSelectionCommitter(
+            resolver, store, ctx(), CID, timings, CatalogContext.empty());
 
     committer.accumulate(List.of(), PhaseDiagnostics.NOOP);
     assertThat(committer.pendingSelectionCount()).isZero();
@@ -217,7 +224,8 @@ class SnapshotSelectionCommitterTest {
   }
 
   private ResolvedRelation resolved(ResourceId table, QueryInput selectedInput) {
-    RelationNode node = (RelationNode) graphView.resolve(table).orElseThrow();
+    RelationNode node =
+        (RelationNode) graphView.resolve(table, CatalogContext.empty()).orElseThrow();
     return new ResolvedRelation(
         TableReferenceCandidate.newBuilder()
             .addCandidates(QueryInput.newBuilder().setTableId(table))
@@ -226,7 +234,7 @@ class SnapshotSelectionCommitterTest {
         node,
         selectedInput,
         graphView
-            .tableName(table)
+            .tableName(table, CatalogContext.empty())
             .orElse(NameRef.newBuilder().setName(node.displayName()).build()));
   }
 

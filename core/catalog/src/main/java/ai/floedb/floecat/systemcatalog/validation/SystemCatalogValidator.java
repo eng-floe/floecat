@@ -31,7 +31,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import ai.floedb.floecat.systemcatalog.engine.VersionIntervals;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
@@ -142,9 +142,9 @@ public final class SystemCatalogValidator {
       String VIEW_NAMESPACE_UNKNOWN = "view.namespace.unknown";
     }
 
-    interface EngineSpecific {
-      String PAYLOAD_REQUIRED = "engine_specific.payload_type.required";
-      String REGISTRY_DUPLICATE = "registry.engineSpecific.duplicate";
+    interface ScopedMetadata {
+      String PAYLOAD_REQUIRED = "scoped_metadata.payload_type.required";
+      String REGISTRY_DUPLICATE = "registry.scopedMetadata.duplicate";
     }
 
     interface Column {
@@ -245,7 +245,7 @@ public final class SystemCatalogValidator {
 
     validateNamespacesTablesAndViews(catalog, issues, policy);
 
-    validateEngineSpecificPayloadTypes(catalog, issues);
+    validateScopedMetadataPayloadTypes(catalog, issues);
 
     return issues;
   }
@@ -784,7 +784,7 @@ public final class SystemCatalogValidator {
         continue;
       }
       tableColumnsByCanonical.put(
-          NameRefUtil.canonical(table.name()), indexColumns(table.columns()));
+          NameRefUtil.identityKey(table.name()), indexColumns(table.columns()));
     }
 
     Set<NameRef> seen = new HashSet<>();
@@ -951,7 +951,7 @@ public final class SystemCatalogValidator {
       return null;
     }
     NameRef referencedTable = constraint.getReferencedTable();
-    String referencedRaw = NameRefUtil.canonical(referencedTable);
+    String referencedRaw = NameRefUtil.identityKey(referencedTable);
     if (referencedRaw.isBlank()) {
       return null;
     }
@@ -1128,23 +1128,23 @@ public final class SystemCatalogValidator {
   // Engine specific payload types
   // ------------------------------------------------------------
 
-  private static void validateEngineSpecificPayloadTypes(
+  private static void validateScopedMetadataPayloadTypes(
       SystemCatalogData catalog, List<ValidationIssue> issues) {
 
-    validateEngineSpecificPayloadTypes("function", catalog.functions(), issues);
-    validateEngineSpecificPayloadTypes("operator", catalog.operators(), issues);
-    validateEngineSpecificPayloadTypes("type", catalog.types(), issues);
-    validateEngineSpecificPayloadTypes("cast", catalog.casts(), issues);
-    validateEngineSpecificPayloadTypes("collation", catalog.collations(), issues);
-    validateEngineSpecificPayloadTypes("aggregate", catalog.aggregates(), issues);
-    validateEngineSpecificPayloadTypes("namespace", catalog.namespaces(), issues);
-    validateEngineSpecificPayloadTypes("table", catalog.tables(), issues);
-    validateEngineSpecificPayloadTypes("view", catalog.views(), issues);
+    validateScopedMetadataPayloadTypes("function", catalog.functions(), issues);
+    validateScopedMetadataPayloadTypes("operator", catalog.operators(), issues);
+    validateScopedMetadataPayloadTypes("type", catalog.types(), issues);
+    validateScopedMetadataPayloadTypes("cast", catalog.casts(), issues);
+    validateScopedMetadataPayloadTypes("collation", catalog.collations(), issues);
+    validateScopedMetadataPayloadTypes("aggregate", catalog.aggregates(), issues);
+    validateScopedMetadataPayloadTypes("namespace", catalog.namespaces(), issues);
+    validateScopedMetadataPayloadTypes("table", catalog.tables(), issues);
+    validateScopedMetadataPayloadTypes("view", catalog.views(), issues);
 
-    validateRegistryEngineSpecificPayloads(catalog, issues);
+    validateRegistryScopedMetadataPayloads(catalog, issues);
   }
 
-  private static void validateEngineSpecificPayloadTypes(
+  private static void validateScopedMetadataPayloadTypes(
       String kind, List<? extends SystemObjectDef> defs, List<ValidationIssue> issues) {
     if (defs == null) {
       return;
@@ -1155,60 +1155,60 @@ public final class SystemCatalogValidator {
       }
       NameRef name = def.name();
       String baseCtx = objectCtx(kind, name);
-      validateEngineSpecificRules(baseCtx, def.engineSpecific(), issues);
+      validateScopedMetadataRules(baseCtx, def.scopedMetadata(), issues);
     }
   }
 
-  private static void validateEngineSpecificRules(
-      String baseCtx, List<EngineSpecificRule> rules, List<ValidationIssue> issues) {
+  private static void validateScopedMetadataRules(
+      String baseCtx, List<ScopedMetadataRule> rules, List<ValidationIssue> issues) {
     if (rules == null || rules.isEmpty()) {
       return;
     }
     for (int i = 0; i < rules.size(); i++) {
-      EngineSpecificRule rule = rules.get(i);
+      ScopedMetadataRule rule = rules.get(i);
       if (rule == null) {
         continue;
       }
       if (isBlank(rule.payloadType())) {
         err(
             issues,
-            Codes.EngineSpecific.PAYLOAD_REQUIRED,
-            baseCtx + ".engineSpecific[" + i + "]",
+            Codes.ScopedMetadata.PAYLOAD_REQUIRED,
+            baseCtx + ".scopedMetadata[" + i + "]",
             null);
       }
     }
   }
 
-  private static void validateRegistryEngineSpecificPayloads(
+  private static void validateRegistryScopedMetadataPayloads(
       SystemCatalogData catalog, List<ValidationIssue> issues) {
-    List<EngineSpecificRule> rules = catalog.registryEngineSpecific();
+    List<ScopedMetadataRule> rules = catalog.registryScopedMetadata();
     if (rules == null || rules.isEmpty()) {
       return;
     }
     Set<String> seen = new HashSet<>();
     for (int i = 0; i < rules.size(); i++) {
-      EngineSpecificRule rule = rules.get(i);
+      ScopedMetadataRule rule = rules.get(i);
       if (rule == null) {
         continue;
       }
       if (isBlank(rule.payloadType())) {
         err(
             issues,
-            Codes.EngineSpecific.PAYLOAD_REQUIRED,
-            "registry.engineSpecific[" + i + "]",
+            Codes.ScopedMetadata.PAYLOAD_REQUIRED,
+            "registry.scopedMetadata[" + i + "]",
             null);
         continue;
       }
       String key = registryRuleKey(rule);
       if (!seen.add(key)) {
-        err(issues, Codes.EngineSpecific.REGISTRY_DUPLICATE, "registry", null, key);
+        err(issues, Codes.ScopedMetadata.REGISTRY_DUPLICATE, "registry", null, key);
       }
     }
   }
 
-  private static String registryRuleKey(EngineSpecificRule rule) {
+  private static String registryRuleKey(ScopedMetadataRule rule) {
     String payloadType = nullToEmpty(rule.payloadType());
-    String kind = nullToEmpty(rule.engineKind());
+    String kind = nullToEmpty(rule.kind());
     String min = nullToEmpty(rule.minVersion());
     String max = nullToEmpty(rule.maxVersion());
     return String.join("|", payloadType, kind, min, max);

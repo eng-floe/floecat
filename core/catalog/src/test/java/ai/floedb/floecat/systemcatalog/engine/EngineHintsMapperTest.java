@@ -27,9 +27,9 @@ class EngineHintsMapperTest {
   @Test
   void duplicateHintKeyOverwritesPreviousEntry() {
     var rule1 =
-        new EngineSpecificRule("pg", "1.0", "", "hint", new byte[] {1, 2}, Map.of("x", "1"));
+        new ScopedMetadataRule("pg", "1.0", "", "hint", new byte[] {1, 2}, Map.of("x", "1"));
     var rule2 =
-        new EngineSpecificRule("pg", "1.0", "", "hint", new byte[] {3, 4}, Map.of("x", "2"));
+        new ScopedMetadataRule("pg", "1.0", "", "hint", new byte[] {3, 4}, Map.of("x", "2"));
     var hints = EngineHintsMapper.toHints("pg", "1.0", List.of(rule1, rule2));
     assertThat(hints).hasSize(1);
     var entry = hints.values().iterator().next();
@@ -39,10 +39,25 @@ class EngineHintsMapperTest {
 
   @Test
   void nullPayloadIsTreatedAsEmpty() {
-    var rule = new EngineSpecificRule("pg", "1.0", "", "hint", null, Map.of());
+    var rule = new ScopedMetadataRule("pg", "1.0", "", "hint", null, Map.of());
     var hints = EngineHintsMapper.toHints("pg", "1.0", List.of(rule));
     assertThat(hints).hasSize(1);
     var intent = hints.values().iterator().next();
     assertThat(intent.payload()).hasSize(0);
+  }
+
+  @Test
+  void environmentMetadataIsNotExposedAsEngineHints() {
+    var rule =
+        new ScopedMetadataRule(
+            ScopedMetadataRule.Scope.ENVIRONMENT,
+            "floedb",
+            "1.0",
+            "",
+            "environment.pg_class",
+            null,
+            Map.of());
+
+    assertThat(EngineHintsMapper.toHints("postgres", "1.0", List.of(rule))).isEmpty();
   }
 }

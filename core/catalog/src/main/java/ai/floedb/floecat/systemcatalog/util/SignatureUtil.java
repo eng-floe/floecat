@@ -14,7 +14,7 @@
 
 package ai.floedb.floecat.systemcatalog.util;
 
-import static ai.floedb.floecat.systemcatalog.util.NameRefUtil.canonical;
+import static ai.floedb.floecat.systemcatalog.util.NameRefUtil.identityKey;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
@@ -45,14 +45,14 @@ public final class SignatureUtil {
   // Helpers
   // ----------------------------------------------------------------------
 
-  /** Comma-joins argument type names using {@link #canonical(NameRef)}. */
+  /** Comma-joins argument type names using {@link #identityKey(NameRef)}. */
   public static String args(List<NameRef> argTypes) {
     if (argTypes == null || argTypes.isEmpty()) {
       return "";
     }
     StringBuilder b = new StringBuilder();
     for (int i = 0; i < argTypes.size(); i++) {
-      b.append(canonical(argTypes.get(i)));
+      b.append(identityKey(argTypes.get(i)));
       if (i + 1 < argTypes.size()) {
         b.append(",");
       }
@@ -83,7 +83,7 @@ public final class SignatureUtil {
     } else if (def instanceof SystemTypeDef typeName) {
       suffix = SignatureUtil.typeSignature(typeName);
     } else {
-      suffix = canonical(def.name()); // Fallback to name only
+      suffix = identityKey(def.name()); // Fallback to name only
     }
     return suffix;
   }
@@ -99,7 +99,7 @@ public final class SignatureUtil {
    */
   public static String functionSignature(SystemFunctionDef fn) {
     if (fn == null) return "";
-    return canonical(fn.name()) + "(" + args(fn.argumentTypes()) + ")";
+    return identityKey(fn.name()) + "(" + args(fn.argumentTypes()) + ")";
   }
 
   // ----------------------------------------------------------------------
@@ -116,13 +116,13 @@ public final class SignatureUtil {
    */
   public static String operatorSignature(SystemOperatorDef op) {
     if (op == null) return "";
-    return canonical(op.name())
+    return identityKey(op.name())
         + "("
-        + canonical(op.leftType())
+        + identityKey(op.leftType())
         + ","
-        + canonical(op.rightType())
+        + identityKey(op.rightType())
         + ")->"
-        + canonical(op.returnType());
+        + identityKey(op.returnType());
   }
 
   // ----------------------------------------------------------------------
@@ -136,13 +136,13 @@ public final class SignatureUtil {
    */
   public static String aggregateSignature(SystemAggregateDef agg) {
     if (agg == null) return "";
-    return canonical(agg.name())
+    return identityKey(agg.name())
         + "("
         + args(agg.argumentTypes())
         + ")->"
-        + canonical(agg.returnType())
+        + identityKey(agg.returnType())
         + "["
-        + canonical(agg.stateType())
+        + identityKey(agg.stateType())
         + "]";
   }
 
@@ -157,7 +157,7 @@ public final class SignatureUtil {
    */
   public static String castSignature(SystemCastDef cast) {
     if (cast == null) return "";
-    return canonical(cast.sourceType()) + "->" + canonical(cast.targetType());
+    return identityKey(cast.sourceType()) + "->" + identityKey(cast.targetType());
   }
 
   // ----------------------------------------------------------------------
@@ -170,7 +170,7 @@ public final class SignatureUtil {
    */
   public static String collationSignature(SystemCollationDef collation) {
     if (collation == null) return "";
-    return canonical(collation.name()) + "." + collation.locale();
+    return identityKey(collation.name()) + "." + collation.locale();
   }
 
   // ----------------------------------------------------------------------
@@ -183,6 +183,6 @@ public final class SignatureUtil {
    * <p>Format: {@code name}
    */
   public static String typeSignature(SystemTypeDef typeName) {
-    return canonical(typeName.name());
+    return identityKey(typeName.name());
   }
 }

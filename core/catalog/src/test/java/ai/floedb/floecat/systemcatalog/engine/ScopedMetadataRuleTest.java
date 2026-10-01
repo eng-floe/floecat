@@ -21,13 +21,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-class EngineSpecificRuleTest {
+class ScopedMetadataRuleTest {
 
   @Test
   void extensionPayloadCloneProtectsEqualsHashCode() {
     byte[] payload = new byte[] {1, 2, 3};
-    EngineSpecificRule rule =
-        new EngineSpecificRule("floedb", "1.0", "2.0", "type", payload, Map.of());
+    ScopedMetadataRule rule =
+        new ScopedMetadataRule("floedb", "1.0", "2.0", "type", payload, Map.of());
 
     byte[] returned = rule.extensionPayload();
     returned[0] = 42;
@@ -35,8 +35,8 @@ class EngineSpecificRuleTest {
     // original payload remains untouched
     assertThat(rule.extensionPayload()[0]).isEqualTo((byte) 1);
 
-    EngineSpecificRule identical =
-        new EngineSpecificRule("floedb", "1.0", "2.0", "type", payload, Map.of());
+    ScopedMetadataRule identical =
+        new ScopedMetadataRule("floedb", "1.0", "2.0", "type", payload, Map.of());
     assertThat(rule).isEqualTo(identical);
     assertThat(rule.hashCode()).isEqualTo(identical.hashCode());
   }

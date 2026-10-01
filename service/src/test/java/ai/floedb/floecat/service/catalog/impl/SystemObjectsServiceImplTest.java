@@ -33,7 +33,7 @@ import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
@@ -110,7 +110,7 @@ class SystemObjectsServiceImplTest {
       assertThat(registry.getSystemNamespacesCount()).isZero();
       assertThat(registry.getSystemTablesCount()).isZero();
       assertThat(registry.getSystemViewsCount()).isZero();
-      assertThat(registry.getEngineSpecificList()).hasSize(1);
+      assertThat(registry.getScopedMetadataList()).hasSize(1);
     } finally {
       context.detach(previous);
     }
@@ -186,8 +186,8 @@ class SystemObjectsServiceImplTest {
         new SystemViewDef(
             NameRefUtil.name("sanitized", "view"), "view", "select 1", "", List.of(), List.of());
 
-    EngineSpecificRule registryHint =
-        new EngineSpecificRule("pg", "", "", "registry", new byte[] {1}, Map.of("mode", "test"));
+    ScopedMetadataRule registryHint =
+        new ScopedMetadataRule("pg", "", "", "registry", new byte[] {1}, Map.of("mode", "test"));
 
     return new SystemCatalogData(
         List.of(),

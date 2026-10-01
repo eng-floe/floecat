@@ -97,6 +97,22 @@ class ServiceLoaderSystemCatalogProviderTest {
   }
 
   @Test
+  void internalSelectionKeepsItsIdentityUnderAnEnvironment() {
+    ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
+
+    SystemEngineCatalog catalog =
+        provider.load(
+            CatalogContext.of(
+                EnvironmentContext.of("test-env", ""),
+                EngineContext.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "")));
+
+    // Ownership is classified from this identity. Stamping the environment onto the internal
+    // catalog makes it read as engine-owned, which rejects its own FLOECAT-backed tables.
+    assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+    assertInfoSchemaTablesPresent(catalog);
+  }
+
+  @Test
   void internalProvider_isFloecatInternal() {
     ServiceLoaderSystemCatalogProvider provider = new ServiceLoaderSystemCatalogProvider();
 
@@ -145,7 +161,7 @@ class ServiceLoaderSystemCatalogProviderTest {
   private static void assertInfoSchemaTablesPresent(SystemEngineCatalog catalog) {
     assertThat(catalog.tables()).isNotEmpty();
     assertThat(catalog.tables())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains(
             "information_schema.tables",
             "information_schema.columns",

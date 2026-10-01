@@ -57,7 +57,7 @@ public final class VersionIntervals {
       }
     }
 
-    public static VersionInterval fromRule(EngineSpecificRule rule) {
+    public static VersionInterval fromRule(ScopedMetadataRule rule) {
       VersionBound min =
           rule != null && rule.hasMinVersion()
               ? VersionBound.finite(EngineVersionComparator.normalize(rule.minVersion()))
@@ -71,16 +71,15 @@ public final class VersionIntervals {
   }
 
   public record RuleKey(String engineKindNormalizedOrEmpty, String payloadTypeNormalizedOrEmpty) {
-    static RuleKey fromRule(EngineSpecificRule rule) {
-      String kind =
-          rule == null ? "" : EngineIdentityNormalizer.normalizeEngineKind(rule.engineKind());
+    static RuleKey fromRule(ScopedMetadataRule rule) {
+      String kind = rule == null ? "" : EngineIdentityNormalizer.normalizeEngineKind(rule.kind());
       String payload = rule == null ? "" : rule.payloadType();
       return new RuleKey(kind, payload);
     }
   }
 
-  public record RuleInterval(EngineSpecificRule rule, RuleKey key, VersionInterval interval) {
-    static RuleInterval fromRule(EngineSpecificRule rule) {
+  public record RuleInterval(ScopedMetadataRule rule, RuleKey key, VersionInterval interval) {
+    static RuleInterval fromRule(ScopedMetadataRule rule) {
       if (rule == null) {
         throw new IllegalArgumentException("rule is required");
       }

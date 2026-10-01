@@ -17,7 +17,6 @@
 package ai.floedb.floecat.systemcatalog.registry;
 
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.FloeCatTableDetails;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.SqlAggregate;
@@ -43,7 +42,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import com.google.protobuf.ByteString;
 import java.util.List;
 import java.util.Objects;
@@ -73,7 +72,7 @@ public final class SystemCatalogProtoMapper {
     catalog.namespaces().forEach(ns -> builder.addSystemNamespaces(toProtoNamespace(ns)));
     catalog.tables().forEach(tbl -> builder.addSystemTables(toProtoTable(tbl)));
     catalog.views().forEach(view -> builder.addSystemViews(toProtoView(view)));
-    catalog.registryEngineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    catalog.registryScopedMetadata().forEach(es -> builder.addScopedMetadata(toProtoRule(es)));
 
     return builder.build();
   }
@@ -101,7 +100,7 @@ public final class SystemCatalogProtoMapper {
         proto.getSystemViewsList().stream()
             .map(view -> fromProtoView(view, defaultEngine))
             .toList(),
-        proto.getEngineSpecificList().stream()
+        proto.getScopedMetadataList().stream()
             .map(es -> fromProtoRule(es, defaultEngine))
             .toList());
   }
@@ -120,7 +119,7 @@ public final class SystemCatalogProtoMapper {
             .setIsWindow(def.isWindow())
             .setOrigin(Origin.ORIGIN_BUILTIN);
 
-    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    def.scopedMetadata().forEach(es -> builder.addScopedMetadata(toProtoRule(es)));
     return builder.build();
   }
 
@@ -131,7 +130,7 @@ public final class SystemCatalogProtoMapper {
         proto.getReturnType(),
         proto.getIsAggregate(),
         proto.getIsWindow(),
-        proto.getEngineSpecificList().stream()
+        proto.getScopedMetadataList().stream()
             .map(es -> fromProtoRule(es, defaultEngine))
             .toList());
   }
@@ -151,7 +150,7 @@ public final class SystemCatalogProtoMapper {
             .setIsAssociative(def.isAssociative())
             .setOrigin(Origin.ORIGIN_BUILTIN);
 
-    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    def.scopedMetadata().forEach(es -> builder.addScopedMetadata(toProtoRule(es)));
     return builder.build();
   }
 
@@ -163,7 +162,7 @@ public final class SystemCatalogProtoMapper {
         proto.getReturnType(),
         proto.getIsCommutative(),
         proto.getIsAssociative(),
-        proto.getEngineSpecificList().stream()
+        proto.getScopedMetadataList().stream()
             .map(es -> fromProtoRule(es, defaultEngine))
             .toList());
   }
@@ -184,7 +183,7 @@ public final class SystemCatalogProtoMapper {
       builder.setElementType(def.elementType());
     }
 
-    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    def.scopedMetadata().forEach(es -> builder.addScopedMetadata(toProtoRule(es)));
     return builder.build();
   }
 
@@ -199,7 +198,7 @@ public final class SystemCatalogProtoMapper {
         proto.getCategory(),
         proto.getIsArray(),
         elem,
-        proto.getEngineSpecificList().stream()
+        proto.getScopedMetadataList().stream()
             .map(es -> fromProtoRule(es, defaultEngine))
             .toList());
   }
@@ -217,7 +216,7 @@ public final class SystemCatalogProtoMapper {
             .setMethod(def.method().wireValue())
             .setOrigin(Origin.ORIGIN_BUILTIN);
 
-    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    def.scopedMetadata().forEach(es -> builder.addScopedMetadata(toProtoRule(es)));
     return builder.build();
   }
 
@@ -227,7 +226,7 @@ public final class SystemCatalogProtoMapper {
         proto.getSourceType(),
         proto.getTargetType(),
         SystemCastMethod.fromWireValue(proto.getMethod()),
-        proto.getEngineSpecificList().stream()
+        proto.getScopedMetadataList().stream()
             .map(es -> fromProtoRule(es, defaultEngine))
             .toList());
   }
@@ -243,7 +242,7 @@ public final class SystemCatalogProtoMapper {
             .setLocale(def.locale())
             .setOrigin(Origin.ORIGIN_BUILTIN);
 
-    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    def.scopedMetadata().forEach(es -> builder.addScopedMetadata(toProtoRule(es)));
     return builder.build();
   }
 
@@ -251,7 +250,7 @@ public final class SystemCatalogProtoMapper {
     return new SystemCollationDef(
         proto.getName(),
         proto.getLocale(),
-        proto.getEngineSpecificList().stream()
+        proto.getScopedMetadataList().stream()
             .map(es -> fromProtoRule(es, defaultEngine))
             .toList());
   }
@@ -269,7 +268,7 @@ public final class SystemCatalogProtoMapper {
             .setReturnType(def.returnType())
             .setOrigin(Origin.ORIGIN_BUILTIN);
 
-    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    def.scopedMetadata().forEach(es -> builder.addScopedMetadata(toProtoRule(es)));
     return builder.build();
   }
 
@@ -279,7 +278,7 @@ public final class SystemCatalogProtoMapper {
         proto.getArgumentTypesList(),
         proto.getStateType(),
         proto.getReturnType(),
-        proto.getEngineSpecificList().stream()
+        proto.getScopedMetadataList().stream()
             .map(es -> fromProtoRule(es, defaultEngine))
             .toList());
   }
@@ -291,7 +290,7 @@ public final class SystemCatalogProtoMapper {
   private static SystemNamespace toProtoNamespace(SystemNamespaceDef def) {
     var builder =
         SystemNamespace.newBuilder().setName(def.name()).setDisplayName(def.displayName());
-    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    def.scopedMetadata().forEach(es -> builder.addScopedMetadata(toProtoRule(es)));
     return builder.build();
   }
 
@@ -300,7 +299,7 @@ public final class SystemCatalogProtoMapper {
     return new SystemNamespaceDef(
         proto.getName(),
         proto.getDisplayName(),
-        proto.getEngineSpecificList().stream()
+        proto.getScopedMetadataList().stream()
             .map(es -> fromProtoRule(es, defaultEngineKind))
             .toList());
   }
@@ -331,7 +330,7 @@ public final class SystemCatalogProtoMapper {
     }
     def.columns().forEach(col -> builder.addColumns(toProtoColumn(col)));
     def.constraints().forEach(builder::addConstraints);
-    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    def.scopedMetadata().forEach(es -> builder.addScopedMetadata(toProtoRule(es)));
     return builder.build();
   }
 
@@ -351,7 +350,7 @@ public final class SystemCatalogProtoMapper {
         proto.hasFloecat() ? proto.getFloecat().getScannerId() : "",
         proto.hasStorage() ? proto.getStorage().getPath() : "",
         storageEndpointKey,
-        proto.getEngineSpecificList().stream()
+        proto.getScopedMetadataList().stream()
             .map(es -> fromProtoRule(es, defaultEngineKind))
             .toList(),
         flightEndpoint,
@@ -366,7 +365,7 @@ public final class SystemCatalogProtoMapper {
             .setSql(def.sql())
             .setDialect(def.dialect());
     def.columns().forEach(col -> builder.addColumns(toProtoColumn(col)));
-    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    def.scopedMetadata().forEach(es -> builder.addScopedMetadata(toProtoRule(es)));
     return builder.build();
   }
 
@@ -379,7 +378,7 @@ public final class SystemCatalogProtoMapper {
         proto.getColumnsList().stream()
             .map(col -> fromProtoColumn(col, defaultEngineKind))
             .toList(),
-        proto.getEngineSpecificList().stream()
+        proto.getScopedMetadataList().stream()
             .map(es -> fromProtoRule(es, defaultEngineKind))
             .toList());
   }
@@ -394,7 +393,7 @@ public final class SystemCatalogProtoMapper {
     if (def.hasId()) {
       builder.setId(def.id());
     }
-    def.engineSpecific().forEach(es -> builder.addEngineSpecific(toProtoRule(es)));
+    def.scopedMetadata().forEach(es -> builder.addScopedMetadata(toProtoRule(es)));
     return builder.build();
   }
 
@@ -405,19 +404,24 @@ public final class SystemCatalogProtoMapper {
         proto.getNullable(),
         proto.getOrdinal(),
         proto.getId() != 0 ? proto.getId() : null,
-        proto.getEngineSpecificList().stream()
+        proto.getScopedMetadataList().stream()
             .map(es -> fromProtoRule(es, defaultEngineKind))
             .toList());
   }
 
   // =========================================================================
-  //  EngineSpecific <-> EngineSpecificRule
+  //  ScopedMetadataRule <-> ScopedMetadataRule
   // =========================================================================
 
-  private static EngineSpecific toProtoRule(EngineSpecificRule rule) {
+  private static ai.floedb.floecat.query.rpc.ScopedMetadataRule toProtoRule(
+      ScopedMetadataRule rule) {
     var builder =
-        EngineSpecific.newBuilder()
-            .setEngineKind(rule.engineKind())
+        ai.floedb.floecat.query.rpc.ScopedMetadataRule.newBuilder()
+            .setScope(
+                rule.scope() == ScopedMetadataRule.Scope.ENVIRONMENT
+                    ? ai.floedb.floecat.query.rpc.ScopedMetadataRule.Scope.ENVIRONMENT
+                    : ai.floedb.floecat.query.rpc.ScopedMetadataRule.Scope.ENGINE)
+            .setKind(rule.kind())
             .setMinVersion(rule.minVersion())
             .setMaxVersion(rule.maxVersion())
             .putAllProperties(rule.properties());
@@ -431,13 +435,24 @@ public final class SystemCatalogProtoMapper {
     return builder.build();
   }
 
-  private static EngineSpecificRule fromProtoRule(EngineSpecific proto, String defaultEngineKind) {
-    String engineKind = proto.getEngineKind().isBlank() ? defaultEngineKind : proto.getEngineKind();
+  private static ScopedMetadataRule fromProtoRule(
+      ai.floedb.floecat.query.rpc.ScopedMetadataRule proto, String defaultEngineKind) {
+    ScopedMetadataRule.Scope scope =
+        proto.getScope() == ai.floedb.floecat.query.rpc.ScopedMetadataRule.Scope.ENVIRONMENT
+            ? ScopedMetadataRule.Scope.ENVIRONMENT
+            : ScopedMetadataRule.Scope.ENGINE;
+    // The legacy default applies only to engine-scoped rules. An environment rule with no kind
+    // intentionally matches every environment, rather than inheriting the selected engine.
+    String kind =
+        proto.getKind().isBlank() && scope == ScopedMetadataRule.Scope.ENGINE
+            ? defaultEngineKind
+            : proto.getKind();
 
     byte[] payload = proto.getPayload().isEmpty() ? new byte[0] : proto.getPayload().toByteArray();
 
-    return new EngineSpecificRule(
-        engineKind,
+    return new ScopedMetadataRule(
+        scope,
+        kind,
         proto.getMinVersion(),
         proto.getMaxVersion(),
         proto.getPayloadType(),

@@ -16,7 +16,7 @@
 
 package ai.floedb.floecat.extensions.example;
 
-import ai.floedb.floecat.query.rpc.EngineSpecific;
+import ai.floedb.floecat.query.rpc.ScopedMetadataRule;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
@@ -63,9 +63,9 @@ import org.jboss.logging.Logger;
  * Files must be valid {@code SystemObjectsRegistry} proto text format using core fields only. See
  * the bundled {@code builtins/example/} files for field-by-field format documentation.
  *
- * <p>Proto2 extension syntax ({@code [floe.ext.*]} blocks) is not supported. The {@code
- * engine_kind} field inside {@code engine_specific} blocks is ignored; the catalog's configured
- * engine kind always applies.
+ * <p>Proto2 extension syntax ({@code [floe.ext.*]} blocks) is not supported. The {@code kind} field
+ * inside {@code scoped_metadata} blocks is ignored; the catalog's configured engine kind always
+ * applies.
  *
  * <h2>Error handling</h2>
  *
@@ -220,7 +220,7 @@ public final class ExampleCatalogExtension implements EngineCatalogProvider {
       LOG.warnf(e, "Failed to parse pbtxt fragment %s — skipping", source);
       return;
     }
-    // engine_kind inside engine_specific blocks is not supported: the catalog's configured
+    // kind inside scoped_metadata blocks is not supported: the catalog's configured
     // engine kind (FLOECAT_EXTENSION_ENGINE_KIND) always applies. Strip any user-supplied values
     // so they cannot accidentally scope rules to the wrong engine.
     stripEngineKinds(tmp);
@@ -228,7 +228,7 @@ public final class ExampleCatalogExtension implements EngineCatalogProvider {
   }
 
   // ---------------------------------------------------------------------------
-  // Strip engine_kind from all engine_specific entries (not a supported field)
+  // Strip kind from all scoped_metadata entries (not a supported field)
   // ---------------------------------------------------------------------------
 
   private static void stripEngineKinds(SystemObjectsRegistry.Builder builder) {
@@ -237,8 +237,8 @@ public final class ExampleCatalogExtension implements EngineCatalogProvider {
       builder.setFunctions(
           i,
           fn.toBuilder()
-              .clearEngineSpecific()
-              .addAllEngineSpecific(dropEngineKind(fn.getEngineSpecificList()))
+              .clearScopedMetadata()
+              .addAllScopedMetadata(dropEngineKind(fn.getScopedMetadataList()))
               .build());
     }
     for (int i = 0; i < builder.getTypesCount(); i++) {
@@ -246,8 +246,8 @@ public final class ExampleCatalogExtension implements EngineCatalogProvider {
       builder.setTypes(
           i,
           t.toBuilder()
-              .clearEngineSpecific()
-              .addAllEngineSpecific(dropEngineKind(t.getEngineSpecificList()))
+              .clearScopedMetadata()
+              .addAllScopedMetadata(dropEngineKind(t.getScopedMetadataList()))
               .build());
     }
     for (int i = 0; i < builder.getOperatorsCount(); i++) {
@@ -255,8 +255,8 @@ public final class ExampleCatalogExtension implements EngineCatalogProvider {
       builder.setOperators(
           i,
           op.toBuilder()
-              .clearEngineSpecific()
-              .addAllEngineSpecific(dropEngineKind(op.getEngineSpecificList()))
+              .clearScopedMetadata()
+              .addAllScopedMetadata(dropEngineKind(op.getScopedMetadataList()))
               .build());
     }
     for (int i = 0; i < builder.getCastsCount(); i++) {
@@ -264,8 +264,8 @@ public final class ExampleCatalogExtension implements EngineCatalogProvider {
       builder.setCasts(
           i,
           c.toBuilder()
-              .clearEngineSpecific()
-              .addAllEngineSpecific(dropEngineKind(c.getEngineSpecificList()))
+              .clearScopedMetadata()
+              .addAllScopedMetadata(dropEngineKind(c.getScopedMetadataList()))
               .build());
     }
     for (int i = 0; i < builder.getCollationsCount(); i++) {
@@ -273,8 +273,8 @@ public final class ExampleCatalogExtension implements EngineCatalogProvider {
       builder.setCollations(
           i,
           col.toBuilder()
-              .clearEngineSpecific()
-              .addAllEngineSpecific(dropEngineKind(col.getEngineSpecificList()))
+              .clearScopedMetadata()
+              .addAllScopedMetadata(dropEngineKind(col.getScopedMetadataList()))
               .build());
     }
     for (int i = 0; i < builder.getAggregatesCount(); i++) {
@@ -282,21 +282,21 @@ public final class ExampleCatalogExtension implements EngineCatalogProvider {
       builder.setAggregates(
           i,
           agg.toBuilder()
-              .clearEngineSpecific()
-              .addAllEngineSpecific(dropEngineKind(agg.getEngineSpecificList()))
+              .clearScopedMetadata()
+              .addAllScopedMetadata(dropEngineKind(agg.getScopedMetadataList()))
               .build());
     }
-    // Registry-level engine_specific entries
-    if (!builder.getEngineSpecificList().isEmpty()) {
+    // Registry-level scoped_metadata entries
+    if (!builder.getScopedMetadataList().isEmpty()) {
       builder
-          .clearEngineSpecific()
-          .addAllEngineSpecific(dropEngineKind(builder.getEngineSpecificList()));
+          .clearScopedMetadata()
+          .addAllScopedMetadata(dropEngineKind(builder.getScopedMetadataList()));
     }
   }
 
-  private static List<EngineSpecific> dropEngineKind(List<EngineSpecific> rules) {
+  private static List<ScopedMetadataRule> dropEngineKind(List<ScopedMetadataRule> rules) {
     return rules.stream()
-        .map(r -> r.getEngineKind().isEmpty() ? r : r.toBuilder().clearEngineKind().build())
+        .map(r -> r.getKind().isEmpty() ? r : r.toBuilder().clearKind().build())
         .toList();
   }
 

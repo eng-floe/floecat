@@ -166,7 +166,7 @@ class ExampleCatalogExtensionTest {
             .findFirst();
     assertThat(fn).isPresent();
     var rule =
-        fn.get().engineSpecific().stream().filter(r -> !r.minVersion().isEmpty()).findFirst();
+        fn.get().scopedMetadata().stream().filter(r -> !r.minVersion().isEmpty()).findFirst();
     assertThat(rule).isPresent();
     assertThat(rule.get().minVersion()).isEqualTo("2.0");
   }
@@ -178,7 +178,7 @@ class ExampleCatalogExtensionTest {
             .filter(f -> f.name().getName().equals("my_function"))
             .findFirst();
     assertThat(fn).isPresent();
-    assertThat(fn.get().engineSpecific()).allSatisfy(r -> assertThat(r.minVersion()).isEmpty());
+    assertThat(fn.get().scopedMetadata()).allSatisfy(r -> assertThat(r.minVersion()).isEmpty());
   }
 
   @Test
@@ -188,7 +188,7 @@ class ExampleCatalogExtensionTest {
             .filter(t -> t.name().getName().equals("my_type"))
             .findFirst();
     assertThat(type).isPresent();
-    var rules = type.get().engineSpecific();
+    var rules = type.get().scopedMetadata();
     assertThat(rules).isNotEmpty();
     boolean hasDescription =
         rules.stream().anyMatch(r -> r.properties().containsKey("description"));
@@ -405,14 +405,14 @@ class ExampleCatalogExtensionTest {
   }
 
   // ---------------------------------------------------------------------------
-  // engine_kind stripping
+  // kind stripping
   // ---------------------------------------------------------------------------
 
   @Test
-  void engineKindInEngineSpecificIsStripped(@TempDir Path dir) throws IOException {
-    // Write a type whose engine_specific block carries engine_kind: "wrong-engine".
+  void engineKindInScopedMetadataRuleIsStripped(@TempDir Path dir) throws IOException {
+    // Write a type whose scoped_metadata block carries kind: "wrong-engine".
     // After stripping, the rule must still be present (properties accessible) because
-    // the engine_kind filter was removed before handing the registry to fromProto().
+    // the kind filter was removed before handing the registry to fromProto().
     // If stripping were absent, fromProto() would discard the rule (wrong engine kind)
     // and the property would not appear.
     writeFile(
@@ -422,8 +422,8 @@ class ExampleCatalogExtensionTest {
         types {
           name { name: "tagged_type" path: "example" }
           category: "N"
-          engine_specific {
-            engine_kind: "wrong-engine"
+          scoped_metadata {
+            kind: "wrong-engine"
             properties { key: "marker" value: "present" }
           }
         }
@@ -436,8 +436,8 @@ class ExampleCatalogExtensionTest {
           var types = ext().loadSystemCatalog().types();
           var t = types.stream().filter(x -> x.name().getName().equals("tagged_type")).findFirst();
           assertThat(t).isPresent();
-          // The rule must survive: engine_kind was stripped so it now matches any engine.
-          var rules = t.get().engineSpecific();
+          // The rule must survive: kind was stripped so it now matches any engine.
+          var rules = t.get().scopedMetadata();
           assertThat(rules).isNotEmpty();
           boolean markerPresent =
               rules.stream().anyMatch(r -> "present".equals(r.properties().get("marker")));

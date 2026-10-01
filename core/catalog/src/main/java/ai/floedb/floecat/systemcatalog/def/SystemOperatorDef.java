@@ -18,7 +18,7 @@ package ai.floedb.floecat.systemcatalog.def;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import java.util.List;
 import java.util.Objects;
 
@@ -29,7 +29,7 @@ public record SystemOperatorDef(
     NameRef returnType,
     boolean isCommutative,
     boolean isAssociative,
-    List<EngineSpecificRule> engineSpecific)
+    List<ScopedMetadataRule> scopedMetadata)
     implements SystemObjectDef {
 
   public SystemOperatorDef {
@@ -37,7 +37,7 @@ public record SystemOperatorDef(
     leftType = Objects.requireNonNull(leftType, "leftType");
     rightType = Objects.requireNonNull(rightType, "rightType");
     returnType = Objects.requireNonNull(returnType, "returnType");
-    engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
+    scopedMetadata = List.copyOf(scopedMetadata == null ? List.of() : scopedMetadata);
   }
 
   @Override

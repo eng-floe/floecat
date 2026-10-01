@@ -31,7 +31,6 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.ColumnFailureCode;
 import ai.floedb.floecat.query.rpc.ColumnStatus;
-import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationInfo;
@@ -40,6 +39,7 @@ import ai.floedb.floecat.query.rpc.RelationResolution;
 import ai.floedb.floecat.query.rpc.RelationResolutions;
 import ai.floedb.floecat.query.rpc.ResolutionStatus;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.query.rpc.ScopedMetadataRule;
 import ai.floedb.floecat.query.rpc.SnapshotSet;
 import ai.floedb.floecat.query.rpc.TablePin;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
@@ -2112,9 +2112,9 @@ class UserObjectBundleServiceTest {
                     if ("c_ready".equals(columnDecoration.builder().getName())) {
                       columnDecoration
                           .builder()
-                          .addEngineSpecific(
-                              EngineSpecific.newBuilder()
-                                  .setEngineKind(ec.normalizedKind())
+                          .addScopedMetadata(
+                              ScopedMetadataRule.newBuilder()
+                                  .setKind(ec.normalizedKind())
                                   .setPayloadType("test.column")
                                   .setPayload(com.google.protobuf.ByteString.copyFromUtf8("ok"))
                                   .build());
@@ -2209,9 +2209,9 @@ class UserObjectBundleServiceTest {
                     columnDecorations.incrementAndGet();
                     columnDecoration
                         .builder()
-                        .addEngineSpecific(
-                            EngineSpecific.newBuilder()
-                                .setEngineKind(ec.normalizedKind())
+                        .addScopedMetadata(
+                            ScopedMetadataRule.newBuilder()
+                                .setKind(ec.normalizedKind())
                                 .setPayloadType("test.column")
                                 .setPayload(com.google.protobuf.ByteString.copyFromUtf8("ok"))
                                 .build());
@@ -2350,9 +2350,9 @@ class UserObjectBundleServiceTest {
       if (emitPayload) {
         columnDecoration
             .builder()
-            .addEngineSpecific(
-                EngineSpecific.newBuilder()
-                    .setEngineKind(ctx.normalizedKind())
+            .addScopedMetadata(
+                ScopedMetadataRule.newBuilder()
+                    .setKind(ctx.normalizedKind())
                     .setPayloadType("test.column")
                     .setPayload(com.google.protobuf.ByteString.copyFromUtf8("ok"))
                     .build());

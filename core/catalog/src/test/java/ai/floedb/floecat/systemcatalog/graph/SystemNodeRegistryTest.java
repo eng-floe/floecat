@@ -43,7 +43,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemOperatorDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
@@ -133,9 +133,9 @@ class SystemNodeRegistryTest {
                 .filter(def -> def.name().equals(nr("pg_catalog.pg_only")))
                 .findFirst()
                 .orElseThrow()
-                .engineSpecific())
+                .scopedMetadata())
         .singleElement()
-        .extracting(EngineSpecificRule::engineKind)
+        .extracting(ScopedMetadataRule::kind)
         .isEqualTo(FLOE_KIND);
 
     assertThat(
@@ -143,7 +143,7 @@ class SystemNodeRegistryTest {
                 .filter(def -> def.name().equals(nr("pg_catalog.shared_fn")))
                 .findFirst()
                 .orElseThrow()
-                .engineSpecific())
+                .scopedMetadata())
         .isEmpty();
   }
 
@@ -234,7 +234,7 @@ class SystemNodeRegistryTest {
     var nodes = registry.nodesFor(context(PG_KIND, "16.0")).toCatalogData();
     ConstraintDefinition normalized =
         nodes.tables().stream()
-            .filter(t -> "custom.t".equals(NameRefUtil.canonical(t.name())))
+            .filter(t -> "custom.t".equals(NameRefUtil.identityKey(t.name())))
             .findFirst()
             .orElseThrow()
             .constraints()
@@ -375,7 +375,7 @@ class SystemNodeRegistryTest {
   @Test
   void buildsFunctionNodeWithCorrectResourceIds() {
     var rule =
-        new EngineSpecificRule(FLOE_KIND, "1.0", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
+        new ScopedMetadataRule(FLOE_KIND, "1.0", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
     var fn =
         new SystemFunctionDef(
             nr("pg.abs"), List.of(nr("pg.int4")), nr("pg.int4"), false, false, List.of(rule));
@@ -692,22 +692,22 @@ class SystemNodeRegistryTest {
     var nodes = registry.nodesFor(context);
 
     assertThat(nodes.catalogData().functions())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.pg_fn");
     assertThat(nodes.catalogData().operators())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.pg_op");
     assertThat(nodes.catalogData().types())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.int4");
     assertThat(nodes.catalogData().casts())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.int4_to_text");
     assertThat(nodes.catalogData().collations())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.default");
     assertThat(nodes.catalogData().aggregates())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.pg_agg");
     assertThat(canonicalTableNames(nodes)).contains("environment.environment_table");
   }
@@ -913,7 +913,7 @@ class SystemNodeRegistryTest {
 
     var first = registry.nodesFor(context);
     assertThat(first.catalogData().functions())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.before_reload");
 
     functionName.set("after_reload");
@@ -923,7 +923,7 @@ class SystemNodeRegistryTest {
     var second = registry.nodesFor(context);
     assertThat(second).isNotSameAs(first);
     assertThat(second.catalogData().functions())
-        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .extracting(def -> NameRefUtil.identityKey(def.name()))
         .contains("duck.after_reload")
         .doesNotContain("duck.before_reload");
   }
@@ -968,12 +968,12 @@ class SystemNodeRegistryTest {
     NameRef int4 = NameRefUtil.name("pg_catalog", "int4");
     NameRef text = NameRefUtil.name("pg_catalog", "text");
 
-    EngineSpecificRule functionRule = hintRule(FUNCTION_HINT);
-    EngineSpecificRule operatorRule = hintRule(OPERATOR_HINT);
-    EngineSpecificRule typeRule = hintRule(TYPE_HINT);
-    EngineSpecificRule castRule = hintRule(CAST_HINT);
-    EngineSpecificRule collationRule = hintRule(COLLATION_HINT);
-    EngineSpecificRule aggregateRule = hintRule(AGGREGATE_HINT);
+    ScopedMetadataRule functionRule = hintRule(FUNCTION_HINT);
+    ScopedMetadataRule operatorRule = hintRule(OPERATOR_HINT);
+    ScopedMetadataRule typeRule = hintRule(TYPE_HINT);
+    ScopedMetadataRule castRule = hintRule(CAST_HINT);
+    ScopedMetadataRule collationRule = hintRule(COLLATION_HINT);
+    ScopedMetadataRule aggregateRule = hintRule(AGGREGATE_HINT);
 
     SystemFunctionDef function =
         new SystemFunctionDef(
@@ -1043,12 +1043,12 @@ class SystemNodeRegistryTest {
   }
 
   @Test
-  void registryEngineSpecific_hintsLayeredAndOverridden() {
+  void registryScopedMetadata_hintsLayeredAndOverridden() {
     var globalRule =
-        new EngineSpecificRule(
+        new ScopedMetadataRule(
             "", "", "", "dict.shared", new byte[] {1}, Map.of("dict_name", "shared"));
     var engineRule =
-        new EngineSpecificRule(
+        new ScopedMetadataRule(
             FLOE_KIND, "", "", "dict.shared", new byte[] {2}, Map.of("dict_name", "shared"));
 
     var catalog =
@@ -1069,19 +1069,19 @@ class SystemNodeRegistryTest {
     var nodeRegistry = registryWith(registry);
 
     var merged =
-        nodeRegistry.nodesFor(context(FLOE_KIND, "16.0")).catalogData().registryEngineSpecific();
+        nodeRegistry.nodesFor(context(FLOE_KIND, "16.0")).catalogData().registryScopedMetadata();
 
     assertThat(merged).hasSize(1);
     assertThat(merged.get(0)).isEqualTo(engineRule);
   }
 
   @Test
-  void registryEngineSpecific_versionWindowsCoexist() {
+  void registryScopedMetadata_versionWindowsCoexist() {
     var baseRule =
-        new EngineSpecificRule(
+        new ScopedMetadataRule(
             FLOE_KIND, "", "15.999", "dict.shared", new byte[] {1}, Map.of("dict_name", "shared"));
     var nextRule =
-        new EngineSpecificRule(
+        new ScopedMetadataRule(
             FLOE_KIND, "16.0", "", "dict.shared", new byte[] {2}, Map.of("dict_name", "shared"));
 
     var catalog =
@@ -1101,12 +1101,12 @@ class SystemNodeRegistryTest {
     var nodeRegistry = registryWith(registry);
 
     var merged15 =
-        nodeRegistry.nodesFor(context(FLOE_KIND, "15.0")).catalogData().registryEngineSpecific();
+        nodeRegistry.nodesFor(context(FLOE_KIND, "15.0")).catalogData().registryScopedMetadata();
     assertThat(merged15).hasSize(1);
     assertThat(merged15.get(0)).isEqualTo(baseRule);
 
     var merged16 =
-        nodeRegistry.nodesFor(context(FLOE_KIND, "16.0")).catalogData().registryEngineSpecific();
+        nodeRegistry.nodesFor(context(FLOE_KIND, "16.0")).catalogData().registryScopedMetadata();
     assertThat(merged16).hasSize(1);
     assertThat(merged16.get(0)).isEqualTo(nextRule);
   }
@@ -1116,15 +1116,15 @@ class SystemNodeRegistryTest {
   // -----------------------------------------------------
   private static SystemDefinitionRegistry registryWithCatalogs() {
 
-    var sharedRule = new EngineSpecificRule("", "", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
+    var sharedRule = new ScopedMetadataRule("", "", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
 
     var floeRule =
-        new EngineSpecificRule(FLOE_KIND, "16.0", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
+        new ScopedMetadataRule(FLOE_KIND, "16.0", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
 
     var floeLegacyRule =
-        new EngineSpecificRule(FLOE_KIND, "", "15.0", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
+        new ScopedMetadataRule(FLOE_KIND, "", "15.0", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
 
-    var pgRule = new EngineSpecificRule(PG_KIND, "", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
+    var pgRule = new ScopedMetadataRule(PG_KIND, "", "", TEST_PAYLOAD_TYPE, new byte[0], Map.of());
 
     // TYPE
     var int4Name = nr("pg_catalog.int4");
@@ -1173,7 +1173,9 @@ class SystemNodeRegistryTest {
   }
 
   private static List<String> canonicalTableNames(SystemNodeRegistry.BuiltinNodes nodes) {
-    return nodes.catalogData().tables().stream().map(t -> NameRefUtil.canonical(t.name())).toList();
+    return nodes.catalogData().tables().stream()
+        .map(t -> NameRefUtil.identityKey(t.name()))
+        .toList();
   }
 
   private static final class DynamicEngineProvider implements EngineCatalogProvider {
@@ -1219,10 +1221,10 @@ class SystemNodeRegistryTest {
   }
 
   private static SystemCatalogData catalogWithVersionedObjects() {
-    EngineSpecificRule tableRule =
-        new EngineSpecificRule(PG_KIND, "2.0", "", "table.rule", null, Map.of());
-    EngineSpecificRule viewRule =
-        new EngineSpecificRule(PG_KIND, "", "1.5", "view.rule", null, Map.of());
+    ScopedMetadataRule tableRule =
+        new ScopedMetadataRule(PG_KIND, "2.0", "", "table.rule", null, Map.of());
+    ScopedMetadataRule viewRule =
+        new ScopedMetadataRule(PG_KIND, "", "1.5", "view.rule", null, Map.of());
     SystemNamespaceDef namespace =
         new SystemNamespaceDef(NameRefUtil.name("custom"), "custom", List.of());
     SystemTableDef table =
@@ -1275,8 +1277,8 @@ class SystemNodeRegistryTest {
         .isTrue();
   }
 
-  private static EngineSpecificRule hintRule(String payloadType) {
-    return new EngineSpecificRule(
+  private static ScopedMetadataRule hintRule(String payloadType) {
+    return new ScopedMetadataRule(
         HINT_ENGINE, "", "", payloadType, new byte[] {1}, Map.of("payload_type", payloadType));
   }
 
@@ -1408,7 +1410,7 @@ class SystemNodeRegistryTest {
 
     SystemTableDef overridden =
         nodes.catalogData().tables().stream()
-            .filter(def -> NameRefUtil.canonical(def.name()).equals("information_schema.tables"))
+            .filter(def -> NameRefUtil.identityKey(def.name()).equals("information_schema.tables"))
             .findFirst()
             .orElseThrow();
     assertThat(overridden.backendKind()).isEqualTo(TableBackendKind.TABLE_BACKEND_KIND_ENGINE);

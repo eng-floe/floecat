@@ -501,7 +501,7 @@ class SystemTableFlightProducerBaseTest {
 
     @Override
     protected Optional<ResourceId> resolveSystemTableId(NameRef name, ResolvedCallContext context) {
-      return Optional.ofNullable(resolvedIdsByName.get(NameRefUtil.canonical(name)));
+      return Optional.ofNullable(resolvedIdsByName.get(NameRefUtil.identityKey(name)));
     }
 
     @Override

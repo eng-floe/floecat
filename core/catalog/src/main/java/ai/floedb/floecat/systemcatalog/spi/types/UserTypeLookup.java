@@ -130,7 +130,7 @@ final class UserTypeLookup implements TypeLookup {
       if (SystemNodeRegistry.SYSTEM_ACCOUNT.equals(ns.id().getAccountId())) {
         continue;
       }
-      String canonicalName = NameRefUtil.canonical(ns.toNameRef());
+      String canonicalName = NameRefUtil.identityKey(ns.toNameRef());
       if (canonicalName.isEmpty()) {
         continue;
       }

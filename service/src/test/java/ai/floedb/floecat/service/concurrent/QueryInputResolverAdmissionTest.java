@@ -65,9 +65,8 @@ class QueryInputResolverAdmissionTest {
             .setSnapshotId(1)
             .build();
     AtomicBoolean backendStarted = new AtomicBoolean();
-    when(
-            graph.resolvedSnapshotFor(
-                anyString(), eq(tableId), nullable(SnapshotRef.class), any(), any()))
+    when(graph.resolvedSnapshotFor(
+            anyString(), eq(tableId), nullable(SnapshotRef.class), any(), any()))
         .thenAnswer(
             ignored -> {
               backendStarted.set(true);

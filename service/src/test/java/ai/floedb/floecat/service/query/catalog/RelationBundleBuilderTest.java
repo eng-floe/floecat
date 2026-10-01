@@ -31,7 +31,6 @@ import ai.floedb.floecat.query.rpc.ColumnFailureCode;
 import ai.floedb.floecat.query.rpc.ColumnInfo;
 import ai.floedb.floecat.query.rpc.ColumnResult;
 import ai.floedb.floecat.query.rpc.ColumnStatus;
-import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.FlightEndpointRef;
 import ai.floedb.floecat.query.rpc.Origin;
 import ai.floedb.floecat.query.rpc.RelationInfo;
@@ -39,6 +38,7 @@ import ai.floedb.floecat.query.rpc.RelationKind;
 import ai.floedb.floecat.query.rpc.RelationPinIdentity;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.query.rpc.ScopedMetadataRule;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.scanner.spi.MetadataResolutionContext;
 import ai.floedb.floecat.scanner.spi.StatsProvider;
@@ -444,8 +444,8 @@ class RelationBundleBuilderTest {
                   public void decorateView(EngineContext ctx, ViewDecoration decoration) {
                     decoration
                         .viewBuilder()
-                        .addEngineSpecific(
-                            EngineSpecific.newBuilder().setPayloadType("test.view-decoration"));
+                        .addScopedMetadata(
+                            ScopedMetadataRule.newBuilder().setPayloadType("test.view-decoration"));
                   }
                 });
     TableReferenceCandidate candidate =
@@ -464,8 +464,8 @@ class RelationBundleBuilderTest {
                 Optional.empty())
             .info();
 
-    assertThat(info.getViewDefinition().getEngineSpecificList())
-        .extracting(EngineSpecific::getPayloadType)
+    assertThat(info.getViewDefinition().getScopedMetadataList())
+        .extracting(ScopedMetadataRule::getPayloadType)
         .containsExactly("test.view-decoration");
     assertThat(info.getColumnsList())
         .extracting(ColumnResult::getColumnName)

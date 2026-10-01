@@ -15,7 +15,7 @@
 syntax = "proto3";
 package ai.floedb.floecat.query;
 
-import "floecat/query/engine_specific.proto";
+import "floecat/query/scoped_metadata_rule.proto";
 import "floecat/query/sql_objects.proto";
 import "floecat/common/common.proto";
 import "floecat/catalog/constraints.proto";
@@ -64,7 +64,7 @@ message SystemObjectsRegistry {
   repeated SystemView system_views = 9;
 
   /** Engine-specific payloads attached to the registry as a whole. */
-  repeated EngineSpecific engine_specific = 99;
+  repeated ScopedMetadataRule scoped_metadata = 99;
 }
 
 /** Describes a builtin namespace and attached hints. */
@@ -76,7 +76,7 @@ message SystemNamespace {
   string display_name = 2;
 
   /** Engine-specific metadata scoped to this namespace. */
-  repeated EngineSpecific engine_specific = 99;
+  repeated ScopedMetadataRule scoped_metadata = 99;
 }
 
 /** Describes a builtin table and its schema. */
@@ -109,7 +109,7 @@ message SystemTable {
   repeated ai.floedb.floecat.catalog.ConstraintDefinition constraints = 8;
 
   /** Engine-specific metadata scoped to this table. */
-  repeated EngineSpecific engine_specific = 99;
+  repeated ScopedMetadataRule scoped_metadata = 99;
 }
 
 /**
@@ -183,7 +183,7 @@ message SystemView {
   repeated SystemColumn columns = 5;
 
   /** Engine-specific metadata scoped to this view. */
-  repeated EngineSpecific engine_specific = 99;
+  repeated ScopedMetadataRule scoped_metadata = 99;
 }
 
 /** Describes a column inside a builtin relation. */
@@ -204,7 +204,7 @@ message SystemColumn {
   int64 id = 5;
 
   /** Engine-specific metadata scoped to this column. */
-  repeated EngineSpecific engine_specific = 99;
+  repeated ScopedMetadataRule scoped_metadata = 99;
 }
 
 /** Execution backends for system tables. */

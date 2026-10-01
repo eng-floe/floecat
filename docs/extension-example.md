@@ -92,7 +92,7 @@ All loading paths degrade gracefully; the service never fails to start due to ca
 | `_index.txt` not found on classpath | `WARN` log; empty catalog served |
 | File cannot be read (I/O error) | `WARN` log; file skipped; other files still load |
 | File fails to parse (invalid proto text) | `WARN` log; file skipped; other files still load |
-| `engine_kind` inside an `engine_specific` block | Silently stripped (see [engine_specific blocks](#engine_specific-blocks)) |
+| `kind` inside an `scoped_metadata` block | Silently stripped (see [scoped_metadata blocks](#scoped_metadata-blocks)) |
 
 ## PBtxt format reference
 
@@ -128,14 +128,14 @@ Defines the scalar and collection types your engine exposes.
 | `category` | string | yes | One of: `"N"` numeric, `"S"` string/character, `"B"` boolean, `"D"` date/time, `"A"` array/collection, `"U"` user-defined. |
 | `is_array` | bool | no | `true` for array / collection types.  Set `element_type` when `true`. |
 | `element_type` | NameRef | when `is_array` | Element type reference: `name` + `path`. |
-| `engine_specific.properties` | map&lt;string,string&gt; | no | Free-form metadata for your runtime (type IDs, byte widths, storage layouts, etc.). |
+| `scoped_metadata.properties` | map&lt;string,string&gt; | no | Free-form metadata for your runtime (type IDs, byte widths, storage layouts, etc.). |
 
 ```protobuf
 # Scalar type
 types {
   name { name: "my_integer" path: "my_schema" }
   category: "N"
-  engine_specific {
+  scoped_metadata {
     properties { key: "description" value: "32-bit signed integer" }
     properties { key: "size_bytes"  value: "4" }
   }
@@ -162,9 +162,9 @@ Defines scalar functions, aggregate state-transition and finalizer functions, an
 | `return_type` | NameRef | yes | Return type. |
 | `is_aggregate` | bool | no | `true` for aggregate state-transition and finalizer functions. |
 | `is_window` | bool | no | `true` for window functions. |
-| `engine_specific.min_version` | string | no | Earliest engine version that supports this function (inclusive). |
-| `engine_specific.max_version` | string | no | Latest engine version that supports this function (inclusive). |
-| `engine_specific.properties` | map&lt;string,string&gt; | no | Free-form metadata (description, volatility, internal IDs, …). |
+| `scoped_metadata.min_version` | string | no | Earliest engine version that supports this function (inclusive). |
+| `scoped_metadata.max_version` | string | no | Latest engine version that supports this function (inclusive). |
+| `scoped_metadata.properties` | map&lt;string,string&gt; | no | Free-form metadata (description, volatility, internal IDs, …). |
 
 ```protobuf
 # Scalar function — single argument
@@ -172,7 +172,7 @@ functions {
   name { name: "my_abs" path: "my_schema" }
   argument_types { name: "my_integer" path: "my_schema" }
   return_type    { name: "my_integer" path: "my_schema" }
-  engine_specific {
+  scoped_metadata {
     properties { key: "volatility" value: "immutable" }
   }
 }
@@ -183,7 +183,7 @@ functions {
   argument_types { name: "my_text"    path: "my_schema" }
   argument_types { name: "my_text"    path: "my_schema" }
   return_type    { name: "my_text"    path: "my_schema" }
-  engine_specific {
+  scoped_metadata {
     min_version: "2.0"
     properties { key: "volatility" value: "immutable" }
   }
@@ -266,7 +266,7 @@ functions — those are defined as `functions` with `is_aggregate: true`).
 | `argument_types` | repeated NameRef | no | Input column types.  Repeat once per argument. |
 | `state_type` | NameRef | yes | Type of the running accumulator state. |
 | `return_type` | NameRef | yes | Type returned after finalization. |
-| `engine_specific.properties` | map&lt;string,string&gt; | no | Free-form metadata.  Conventionally used to reference state-transition and finalizer functions (`state_function`, `final_function`). |
+| `scoped_metadata.properties` | map&lt;string,string&gt; | no | Free-form metadata.  Conventionally used to reference state-transition and finalizer functions (`state_function`, `final_function`). |
 
 ```protobuf
 aggregates {
@@ -274,20 +274,20 @@ aggregates {
   argument_types { name: "my_integer" path: "my_schema" }
   state_type     { name: "my_bigint"  path: "my_schema" }
   return_type    { name: "my_bigint"  path: "my_schema" }
-  engine_specific {
+  scoped_metadata {
     properties { key: "state_function" value: "my_sum_state" }
     properties { key: "final_function" value: "my_sum_final" }
   }
 }
 ```
 
-## `engine_specific` blocks
+## `scoped_metadata` blocks
 
-Every catalog object type accepts an `engine_specific` block for version constraints and
+Every catalog object type accepts an `scoped_metadata` block for version constraints and
 free-form metadata:
 
 ```protobuf
-engine_specific {
+scoped_metadata {
   min_version: "2.0"          # inclusive lower bound; omit if no minimum
   max_version: "5.9"          # inclusive upper bound; omit if no maximum
   properties { key: "volatility" value: "immutable" }
@@ -296,17 +296,17 @@ engine_specific {
 ```
 
 **Version filtering.**  `min_version` and `max_version` are compared against the engine version
-sent in the `x-engine-version` gRPC header.  `EngineSpecificMatcher` evaluates the comparison
+sent in the `x-engine-version` gRPC header.  `ScopedMetadataMatcher` evaluates the comparison
 using lexicographic semver-style ordering.  Planners that send a version outside the declared
-range will not see the object.  Objects with no `engine_specific` block (or no version fields)
+range will not see the object.  Objects with no `scoped_metadata` block (or no version fields)
 are always included.
 
 **`properties`.**  A free-form `map<string,string>` for any metadata your engine needs at
 runtime — internal type or function IDs, byte widths, volatility, storage layout hints, etc.
 Floecat does not interpret property keys or values; they are passed through to the planner as-is.
 
-**`engine_kind` is not supported.**  If an `engine_kind` field appears inside an
-`engine_specific` block it is silently stripped before the catalog is served.  The catalog's
+**`kind` is not supported.**  If an `kind` field appears inside an
+`scoped_metadata` block it is silently stripped before the catalog is served.  The catalog's
 configured engine kind (`FLOECAT_EXTENSION_ENGINE_KIND`) always applies uniformly — one
 extension instance serves exactly one engine kind, so a per-rule filter is unnecessary and would
 cause subtle scoping bugs if the engine kind is ever renamed.

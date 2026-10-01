@@ -32,6 +32,6 @@ public final class SystemObjectsRegistryMerger {
     accumulator.addAllSystemNamespaces(parsed.getSystemNamespacesList());
     accumulator.addAllSystemTables(parsed.getSystemTablesList());
     accumulator.addAllSystemViews(parsed.getSystemViewsList());
-    accumulator.addAllEngineSpecific(parsed.getEngineSpecificList());
+    accumulator.addAllScopedMetadata(parsed.getScopedMetadataList());
   }
 }

@@ -17,7 +17,7 @@
 package ai.floedb.floecat.systemcatalog.registry;
 
 import ai.floedb.floecat.systemcatalog.def.*;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -60,7 +60,7 @@ public final class SystemEngineCatalog {
 
   private final List<SystemViewDef> views;
   private final Map<String, SystemViewDef> viewsByName;
-  private final List<EngineSpecificRule> registryEngineSpecific;
+  private final List<ScopedMetadataRule> registryScopedMetadata;
 
   private SystemEngineCatalog(
       String engineKind,
@@ -83,7 +83,7 @@ public final class SystemEngineCatalog {
       Map<String, SystemTableDef> tablesByName,
       List<SystemViewDef> views,
       Map<String, SystemViewDef> viewsByName,
-      List<EngineSpecificRule> registryEngineSpecific) {
+      List<ScopedMetadataRule> registryScopedMetadata) {
 
     this.engineKind = engineKind;
     this.fingerprint = fingerprint;
@@ -105,7 +105,7 @@ public final class SystemEngineCatalog {
     this.tablesByName = tablesByName;
     this.views = views;
     this.viewsByName = viewsByName;
-    this.registryEngineSpecific = registryEngineSpecific;
+    this.registryScopedMetadata = registryScopedMetadata;
   }
 
   /** Builds a materialised catalog snapshot from parsed builtin data. */
@@ -121,31 +121,31 @@ public final class SystemEngineCatalog {
     List<SystemNamespaceDef> namespaces = copy(data.namespaces());
     List<SystemTableDef> tables = copy(data.tables());
     List<SystemViewDef> views = copy(data.views());
-    List<EngineSpecificRule> registryEngineSpecific = copy(data.registryEngineSpecific());
+    List<ScopedMetadataRule> registryScopedMetadata = copy(data.registryScopedMetadata());
     String fingerprint = computeFingerprint(engineKind, data);
 
     return new SystemEngineCatalog(
         engineKind,
         fingerprint,
         functions,
-        indexMulti(functions, f -> NameRefUtil.canonical(f.name())),
+        indexMulti(functions, f -> NameRefUtil.identityKey(f.name())),
         operators,
-        indexUnique(operators, o -> NameRefUtil.canonical(o.name())),
+        indexUnique(operators, o -> NameRefUtil.identityKey(o.name())),
         types,
-        indexUnique(types, t -> NameRefUtil.canonical(t.name())),
+        indexUnique(types, t -> NameRefUtil.identityKey(t.name())),
         casts,
-        indexUnique(casts, c -> NameRefUtil.canonical(c.name())),
+        indexUnique(casts, c -> NameRefUtil.identityKey(c.name())),
         collations,
-        indexUnique(collations, c -> NameRefUtil.canonical(c.name())),
+        indexUnique(collations, c -> NameRefUtil.identityKey(c.name())),
         aggregates,
-        indexUnique(aggregates, a -> NameRefUtil.canonical(a.name())),
+        indexUnique(aggregates, a -> NameRefUtil.identityKey(a.name())),
         namespaces,
-        indexUnique(namespaces, n -> NameRefUtil.canonical(n.name())),
+        indexUnique(namespaces, n -> NameRefUtil.identityKey(n.name())),
         tables,
-        indexUnique(tables, t -> NameRefUtil.canonical(t.name())),
+        indexUnique(tables, t -> NameRefUtil.identityKey(t.name())),
         views,
-        indexUnique(views, v -> NameRefUtil.canonical(v.name())),
-        registryEngineSpecific);
+        indexUnique(views, v -> NameRefUtil.identityKey(v.name())),
+        registryScopedMetadata);
   }
 
   public String engineKind() {
@@ -228,8 +228,8 @@ public final class SystemEngineCatalog {
     return Optional.ofNullable(viewsByName.get(name));
   }
 
-  public List<EngineSpecificRule> registryEngineSpecific() {
-    return registryEngineSpecific;
+  public List<ScopedMetadataRule> registryScopedMetadata() {
+    return registryScopedMetadata;
   }
 
   private static <T> List<T> copy(List<T> values) {

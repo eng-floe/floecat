@@ -29,7 +29,8 @@ class FloecatInternalProviderTest {
     SystemCatalogData catalog = FloecatInternalProvider.catalogData();
 
     assertThat(catalog.tables()).isNotEmpty();
-    assertThat(catalog.tables().stream().map(table -> NameRefUtil.canonical(table.name())).toList())
+    assertThat(
+            catalog.tables().stream().map(table -> NameRefUtil.identityKey(table.name())).toList())
         .contains(
             "information_schema.tables",
             "information_schema.columns",

@@ -18,7 +18,7 @@ package ai.floedb.floecat.systemcatalog.def;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import java.util.List;
 import java.util.Objects;
 
@@ -27,7 +27,7 @@ public record SystemCastDef(
     NameRef sourceType,
     NameRef targetType,
     SystemCastMethod method,
-    List<EngineSpecificRule> engineSpecific)
+    List<ScopedMetadataRule> scopedMetadata)
     implements SystemObjectDef {
 
   public SystemCastDef {
@@ -35,7 +35,7 @@ public record SystemCastDef(
     sourceType = Objects.requireNonNull(sourceType, "sourceType");
     targetType = Objects.requireNonNull(targetType, "targetType");
     method = Objects.requireNonNull(method, "method");
-    engineSpecific = List.copyOf(engineSpecific == null ? List.of() : engineSpecific);
+    scopedMetadata = List.copyOf(scopedMetadata == null ? List.of() : scopedMetadata);
   }
 
   @Override

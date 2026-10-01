@@ -49,8 +49,8 @@ import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
 import ai.floedb.floecat.systemcatalog.engine.EngineHintsMapper;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificMatcher;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataMatcher;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
@@ -170,75 +170,83 @@ public class SystemNodeRegistry {
     String normalizedKind = canonical.effectiveSystemCatalogKind();
     String effectiveKind = normalizedKind;
     String normalizedVersion = canonical.effectiveSystemCatalogVersion();
+    String metadataKind =
+        canonical.engine().hasEngineKind() ? canonical.engine().normalizedKind() : normalizedKind;
+    String metadataVersion =
+        canonical.engine().hasEngineKind()
+            ? canonical.engine().normalizedVersion()
+            : normalizedVersion;
     ResourceId catalogId = systemCatalogContainerId(normalizedKind);
 
     // --- Namespaces ---
     List<SystemNamespaceDef> namespaceDefs =
         catalog.namespaces().stream()
-            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
-            .map(def -> withNamespaceRules(def, normalizedKind, normalizedVersion))
+            .filter(def -> matches(def.scopedMetadata(), canonical, metadataKind, metadataVersion))
+            .map(def -> withNamespaceRules(def, canonical, metadataKind, metadataVersion))
             .toList();
 
     Map<String, ResourceId> namespaceIds =
         namespaceDefs.stream()
             .collect(
                 Collectors.toUnmodifiableMap(
-                    ns -> NameRefUtil.canonical(ns.name()), ns -> resourceId(normalizedKind, ns)));
+                    ns -> NameRefUtil.identityKey(ns.name()),
+                    ns -> resourceId(normalizedKind, ns)));
 
     // --- Functions ---
     List<SystemFunctionDef> functionDefs =
         catalog.functions().stream()
-            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
-            .map(def -> withFunctionRules(def, normalizedKind, normalizedVersion))
+            .filter(def -> matches(def.scopedMetadata(), canonical, metadataKind, metadataVersion))
+            .map(def -> withFunctionRules(def, canonical, metadataKind, metadataVersion))
             .toList();
 
     // --- Operators ---
     List<SystemOperatorDef> operatorDefs =
         catalog.operators().stream()
-            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
-            .map(def -> withOperatorRules(def, normalizedKind, normalizedVersion))
+            .filter(def -> matches(def.scopedMetadata(), canonical, metadataKind, metadataVersion))
+            .map(def -> withOperatorRules(def, canonical, metadataKind, metadataVersion))
             .toList();
 
     // --- Types ---
     List<SystemTypeDef> typeDefs =
         catalog.types().stream()
-            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
-            .map(def -> withTypeRules(def, normalizedKind, normalizedVersion))
+            .filter(def -> matches(def.scopedMetadata(), canonical, metadataKind, metadataVersion))
+            .map(def -> withTypeRules(def, canonical, metadataKind, metadataVersion))
             .toList();
 
     // --- Casts ---
     List<SystemCastDef> castDefs =
         catalog.casts().stream()
-            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
-            .map(def -> withCastRules(def, normalizedKind, normalizedVersion))
+            .filter(def -> matches(def.scopedMetadata(), canonical, metadataKind, metadataVersion))
+            .map(def -> withCastRules(def, canonical, metadataKind, metadataVersion))
             .toList();
 
     // --- Collations ---
     List<SystemCollationDef> collationDefs =
         catalog.collations().stream()
-            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
-            .map(def -> withCollationRules(def, normalizedKind, normalizedVersion))
+            .filter(def -> matches(def.scopedMetadata(), canonical, metadataKind, metadataVersion))
+            .map(def -> withCollationRules(def, canonical, metadataKind, metadataVersion))
             .toList();
 
     // --- Aggregates ---
     List<SystemAggregateDef> aggregateDefs =
         catalog.aggregates().stream()
-            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
-            .map(def -> withAggregateRules(def, normalizedKind, normalizedVersion))
+            .filter(def -> matches(def.scopedMetadata(), canonical, metadataKind, metadataVersion))
+            .map(def -> withAggregateRules(def, canonical, metadataKind, metadataVersion))
             .toList();
 
     // --- Tables ---
     List<SystemTableDef> tableDefs =
         catalog.tables().stream()
-            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
-            .map(def -> withTableRules(def, normalizedKind, normalizedVersion, effectiveKind))
+            .filter(def -> matches(def.scopedMetadata(), canonical, metadataKind, metadataVersion))
+            .map(
+                def -> withTableRules(def, canonical, metadataKind, metadataVersion, effectiveKind))
             .toList();
 
     // --- Views ---
     List<SystemViewDef> viewDefs =
         catalog.views().stream()
-            .filter(def -> matches(def.engineSpecific(), normalizedKind, normalizedVersion))
-            .map(def -> withViewRules(def, normalizedKind, normalizedVersion))
+            .filter(def -> matches(def.scopedMetadata(), canonical, metadataKind, metadataVersion))
+            .map(def -> withViewRules(def, canonical, metadataKind, metadataVersion))
             .toList();
 
     List<FunctionNode> functionNodes =
@@ -286,7 +294,7 @@ public class SystemNodeRegistry {
           buildColumnHints(table.columns(), normalizedKind, normalizedVersion);
       List<SchemaColumn> tableColumns = SystemSchemaMapper.toSchemaColumns(table.columns());
       Map<EngineHintKey, EngineHint> tableHints =
-          EngineHintsMapper.toHints(normalizedKind, normalizedVersion, table.engineSpecific());
+          EngineHintsMapper.toHints(normalizedKind, normalizedVersion, table.scopedMetadata());
       SystemTableNode node;
       switch (table.backendKind()) {
         case TABLE_BACKEND_KIND_FLOECAT ->
@@ -341,7 +349,7 @@ public class SystemNodeRegistry {
       }
       tableNodes.add(node);
       tablesByNamespace.computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>()).add(node);
-      tableNames.put(NameRefUtil.canonical(table.name()), tableId);
+      tableNames.put(NameRefUtil.matchKey(table.name()), tableId);
     }
 
     for (SystemViewDef view : viewDefs) {
@@ -353,7 +361,7 @@ public class SystemNodeRegistry {
       ResourceId viewId = resourceId(normalizedKind, view);
       List<SchemaColumn> viewColumns = SystemSchemaMapper.toSchemaColumns(view.columns());
       Map<EngineHintKey, EngineHint> viewHints =
-          EngineHintsMapper.toHints(normalizedKind, normalizedVersion, view.engineSpecific());
+          EngineHintsMapper.toHints(normalizedKind, normalizedVersion, view.scopedMetadata());
       ViewNode node =
           new ViewNode(
               viewId,
@@ -373,13 +381,13 @@ public class SystemNodeRegistry {
               viewHints);
       viewNodes.add(node);
       viewsByNamespace.computeIfAbsent(namespaceId.get(), ignored -> new ArrayList<>()).add(node);
-      viewNames.put(NameRefUtil.canonical(view.name()), viewId);
+      viewNames.put(NameRefUtil.matchKey(view.name()), viewId);
     }
 
     for (SystemNamespaceDef ns : namespaceDefs) {
       ResourceId namespaceId = resourceId(normalizedKind, ns);
       Map<EngineHintKey, EngineHint> namespaceHints =
-          EngineHintsMapper.toHints(normalizedKind, normalizedVersion, ns.engineSpecific());
+          EngineHintsMapper.toHints(normalizedKind, normalizedVersion, ns.scopedMetadata());
       NamespaceNode node =
           new NamespaceNode(
               namespaceId,
@@ -391,7 +399,7 @@ public class SystemNodeRegistry {
               Map.of(),
               namespaceHints);
       namespaceNodes.add(node);
-      namespaceNames.put(NameRefUtil.canonical(ns.name()), namespaceId);
+      namespaceNames.put(NameRefUtil.matchKey(ns.name()), namespaceId);
       tablesByNamespace.computeIfAbsent(namespaceId, ignored -> List.of());
       viewsByNamespace.computeIfAbsent(namespaceId, ignored -> List.of());
     }
@@ -424,13 +432,19 @@ public class SystemNodeRegistry {
             namespaceDefs,
             tableDefs,
             viewDefs,
-            catalog.registryEngineSpecific()));
+            catalog.registryScopedMetadata()));
   }
 
   private SystemCatalogData mergeCatalogData(
       CatalogContext canonical, SystemEngineCatalog baseCatalog) {
     String normalizedKind = canonical.effectiveSystemCatalogKind();
     String normalizedVersion = canonical.effectiveSystemCatalogVersion();
+    String metadataKind =
+        canonical.engine().hasEngineKind() ? canonical.engine().normalizedKind() : normalizedKind;
+    String metadataVersion =
+        canonical.engine().hasEngineKind()
+            ? canonical.engine().normalizedVersion()
+            : normalizedVersion;
     boolean includeEngineProviders =
         canonical.engine().hasEngineKind()
             && !EngineCatalogNames.FLOECAT_DEFAULT_CATALOG.equals(normalizedKind);
@@ -475,12 +489,13 @@ public class SystemNodeRegistry {
       }
     }
 
-    List<EngineSpecificRule> registryRules =
+    List<ScopedMetadataRule> registryRules =
         dedupeMatchingRules(
             matchingRules(
-                dedupeRegistryRules(baseCatalog.registryEngineSpecific()),
-                normalizedKind,
-                normalizedVersion),
+                dedupeRegistryRules(baseCatalog.registryScopedMetadata()),
+                canonical,
+                metadataKind,
+                metadataVersion),
             normalizedKind);
 
     return merged.toCatalogData(registryRules);
@@ -541,11 +556,11 @@ public class SystemNodeRegistry {
     private void add(SystemObjectDef def, DefinitionSource source) {
       validateOwnership(def, source);
       if (def instanceof SystemNamespaceDef ns) {
-        putDefinition(namespaces, NameRefUtil.canonical(ns.name()), ns, "namespace", source);
+        putDefinition(namespaces, NameRefUtil.identityKey(ns.name()), ns, "namespace", source);
       } else if (def instanceof SystemTableDef table) {
-        putDefinition(tables, NameRefUtil.canonical(table.name()), table, "table", source);
+        putDefinition(tables, NameRefUtil.identityKey(table.name()), table, "table", source);
       } else if (def instanceof SystemViewDef view) {
-        putDefinition(views, NameRefUtil.canonical(view.name()), view, "view", source);
+        putDefinition(views, NameRefUtil.identityKey(view.name()), view, "view", source);
       } else if (def instanceof SystemFunctionDef function) {
         putDefinition(
             functions, SignatureUtil.identityString(function), function, "function", source);
@@ -586,7 +601,7 @@ public class SystemNodeRegistry {
               + source.description());
     }
 
-    private SystemCatalogData toCatalogData(List<EngineSpecificRule> registryEngineSpecific) {
+    private SystemCatalogData toCatalogData(List<ScopedMetadataRule> registryScopedMetadata) {
       return new SystemCatalogData(
           List.copyOf(functions.values()),
           List.copyOf(operators.values()),
@@ -597,7 +612,7 @@ public class SystemNodeRegistry {
           List.copyOf(namespaces.values()),
           List.copyOf(tables.values()),
           List.copyOf(views.values()),
-          registryEngineSpecific);
+          registryScopedMetadata);
     }
 
     private static void validateOwnership(SystemObjectDef def, DefinitionSource source) {
@@ -611,7 +626,7 @@ public class SystemNodeRegistry {
                 + " contributed non-relation system object "
                 + def.kind()
                 + " ("
-                + NameRefUtil.canonical(def.name())
+                + NameRefUtil.identityKey(def.name())
                 + ")");
       }
       if (!(def instanceof SystemTableDef table)) {
@@ -633,7 +648,7 @@ public class SystemNodeRegistry {
                 + " contributed "
                 + backend
                 + " table "
-                + NameRefUtil.canonical(table.name())
+                + NameRefUtil.identityKey(table.name())
                 + "; expected "
                 + expectedBackends(source.role()));
       }
@@ -692,10 +707,10 @@ public class SystemNodeRegistry {
   // =======================================================================
 
   private SystemFunctionDef withFunctionRules(
-      SystemFunctionDef def, String engineKind, String engineVersion) {
+      SystemFunctionDef def, CatalogContext context, String engineKind, String engineVersion) {
 
-    List<EngineSpecificRule> matched =
-        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    List<ScopedMetadataRule> matched =
+        matchingRules(def.scopedMetadata(), context, engineKind, engineVersion);
 
     return new SystemFunctionDef(
         def.name(),
@@ -707,10 +722,10 @@ public class SystemNodeRegistry {
   }
 
   private SystemOperatorDef withOperatorRules(
-      SystemOperatorDef def, String engineKind, String engineVersion) {
+      SystemOperatorDef def, CatalogContext context, String engineKind, String engineVersion) {
 
-    List<EngineSpecificRule> matched =
-        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    List<ScopedMetadataRule> matched =
+        matchingRules(def.scopedMetadata(), context, engineKind, engineVersion);
 
     return new SystemOperatorDef(
         def.name(),
@@ -722,55 +737,61 @@ public class SystemNodeRegistry {
         matched);
   }
 
-  private SystemTypeDef withTypeRules(SystemTypeDef def, String engineKind, String engineVersion) {
+  private SystemTypeDef withTypeRules(
+      SystemTypeDef def, CatalogContext context, String engineKind, String engineVersion) {
 
-    List<EngineSpecificRule> matched =
-        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    List<ScopedMetadataRule> matched =
+        matchingRules(def.scopedMetadata(), context, engineKind, engineVersion);
 
     return new SystemTypeDef(def.name(), def.category(), def.array(), def.elementType(), matched);
   }
 
-  private SystemCastDef withCastRules(SystemCastDef def, String engineKind, String engineVersion) {
+  private SystemCastDef withCastRules(
+      SystemCastDef def, CatalogContext context, String engineKind, String engineVersion) {
 
-    List<EngineSpecificRule> matched =
-        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    List<ScopedMetadataRule> matched =
+        matchingRules(def.scopedMetadata(), context, engineKind, engineVersion);
 
     return new SystemCastDef(def.name(), def.sourceType(), def.targetType(), def.method(), matched);
   }
 
   private SystemCollationDef withCollationRules(
-      SystemCollationDef def, String engineKind, String engineVersion) {
+      SystemCollationDef def, CatalogContext context, String engineKind, String engineVersion) {
 
-    List<EngineSpecificRule> matched =
-        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    List<ScopedMetadataRule> matched =
+        matchingRules(def.scopedMetadata(), context, engineKind, engineVersion);
 
     return new SystemCollationDef(def.name(), def.locale(), matched);
   }
 
   private SystemAggregateDef withAggregateRules(
-      SystemAggregateDef def, String engineKind, String engineVersion) {
+      SystemAggregateDef def, CatalogContext context, String engineKind, String engineVersion) {
 
-    List<EngineSpecificRule> matched =
-        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    List<ScopedMetadataRule> matched =
+        matchingRules(def.scopedMetadata(), context, engineKind, engineVersion);
 
     return new SystemAggregateDef(
         def.name(), def.argumentTypes(), def.stateType(), def.returnType(), matched);
   }
 
   private SystemNamespaceDef withNamespaceRules(
-      SystemNamespaceDef def, String engineKind, String engineVersion) {
+      SystemNamespaceDef def, CatalogContext context, String engineKind, String engineVersion) {
 
-    List<EngineSpecificRule> matched =
-        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    List<ScopedMetadataRule> matched =
+        matchingRules(def.scopedMetadata(), context, engineKind, engineVersion);
 
     return new SystemNamespaceDef(def.name(), def.displayName(), matched);
   }
 
   private SystemTableDef withTableRules(
-      SystemTableDef def, String engineKind, String engineVersion, String effectiveEngineKind) {
+      SystemTableDef def,
+      CatalogContext context,
+      String engineKind,
+      String engineVersion,
+      String effectiveEngineKind) {
 
-    List<EngineSpecificRule> matched =
-        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    List<ScopedMetadataRule> matched =
+        matchingRules(def.scopedMetadata(), context, engineKind, engineVersion);
     List<ConstraintDefinition> normalizedConstraints =
         normalizeConstraintCatalogs(def.constraints(), effectiveEngineKind);
 
@@ -810,10 +831,11 @@ public class SystemNodeRegistry {
     return changed ? List.copyOf(normalized) : constraints;
   }
 
-  private SystemViewDef withViewRules(SystemViewDef def, String engineKind, String engineVersion) {
+  private SystemViewDef withViewRules(
+      SystemViewDef def, CatalogContext context, String engineKind, String engineVersion) {
 
-    List<EngineSpecificRule> matched =
-        matchingRules(def.engineSpecific(), engineKind, engineVersion);
+    List<ScopedMetadataRule> matched =
+        matchingRules(def.scopedMetadata(), context, engineKind, engineVersion);
 
     return new SystemViewDef(
         def.name(), def.displayName(), def.sql(), def.dialect(), def.columns(), matched);
@@ -828,7 +850,7 @@ public class SystemNodeRegistry {
     ResourceId nsId = requireNamespaceId(engineKind, "function", def.name());
 
     Map<EngineHintKey, EngineHint> hints =
-        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.scopedMetadata());
     return new FunctionNode(
         resourceId(engineKind, def),
         version,
@@ -847,7 +869,7 @@ public class SystemNodeRegistry {
   private OperatorNode toOperatorNode(
       String engineKind, String engineVersion, long version, SystemOperatorDef def) {
     Map<EngineHintKey, EngineHint> hints =
-        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.scopedMetadata());
 
     return new OperatorNode(
         resourceId(engineKind, def),
@@ -865,7 +887,7 @@ public class SystemNodeRegistry {
   private TypeNode toTypeNode(
       String engineKind, String engineVersion, long version, SystemTypeDef def) {
     Map<EngineHintKey, EngineHint> hints =
-        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.scopedMetadata());
     ResourceId namespaceId = requireNamespaceId(engineKind, "type", def.name());
     return new TypeNode(
         resourceId(engineKind, def),
@@ -884,7 +906,7 @@ public class SystemNodeRegistry {
   private CastNode toCastNode(
       String engineKind, String engineVersion, long version, SystemCastDef def) {
     Map<EngineHintKey, EngineHint> hints =
-        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.scopedMetadata());
     return new CastNode(
         resourceId(engineKind, def),
         version,
@@ -898,7 +920,7 @@ public class SystemNodeRegistry {
   private CollationNode toCollationNode(
       String engineKind, String engineVersion, long version, SystemCollationDef def) {
     Map<EngineHintKey, EngineHint> hints =
-        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.scopedMetadata());
 
     return new CollationNode(
         resourceId(engineKind, def),
@@ -912,7 +934,7 @@ public class SystemNodeRegistry {
   private AggregateNode toAggregateNode(
       String engineKind, String engineVersion, long version, SystemAggregateDef def) {
     Map<EngineHintKey, EngineHint> hints =
-        EngineHintsMapper.toHints(engineKind, engineVersion, def.engineSpecific());
+        EngineHintsMapper.toHints(engineKind, engineVersion, def.scopedMetadata());
 
     return new AggregateNode(
         resourceId(engineKind, def),
@@ -947,7 +969,7 @@ public class SystemNodeRegistry {
 
   /** ResourceId builder for objects identified by NameRef only (no overloads). */
   public static ResourceId resourceId(String engineKind, ResourceKind kind, NameRef name) {
-    String canonical = NameRefUtil.canonical(name);
+    String canonical = NameRefUtil.identityKey(name);
     return resourceId(engineKind, kind, canonical);
   }
 
@@ -983,22 +1005,35 @@ public class SystemNodeRegistry {
     return ref.getName();
   }
 
-  private static List<EngineSpecificRule> matchingRules(
-      List<EngineSpecificRule> rules, String engineKind, String engineVersion) {
+  private static List<ScopedMetadataRule> matchingRules(
+      List<ScopedMetadataRule> rules,
+      CatalogContext context,
+      String engineKind,
+      String engineVersion) {
     if (rules == null || rules.isEmpty()) return List.of();
-    return EngineSpecificMatcher.matchedRules(rules, engineKind, engineVersion);
+    List<ScopedMetadataRule> matched = new ArrayList<>();
+    matched.addAll(
+        ScopedMetadataMatcher.matchedRules(
+            rules, ScopedMetadataRule.Scope.ENGINE, engineKind, engineVersion));
+    matched.addAll(
+        ScopedMetadataMatcher.matchedRules(
+            rules,
+            ScopedMetadataRule.Scope.ENVIRONMENT,
+            context.environment().normalizedKind(),
+            context.environment().normalizedVersion()));
+    return List.copyOf(matched);
   }
 
-  private static List<EngineSpecificRule> dedupeMatchingRules(
-      List<EngineSpecificRule> matched, String targetKind) {
+  private static List<ScopedMetadataRule> dedupeMatchingRules(
+      List<ScopedMetadataRule> matched, String targetKind) {
     if (matched == null || matched.isEmpty()) return List.of();
-    LinkedHashMap<String, EngineSpecificRule> dedup = new LinkedHashMap<>();
-    for (EngineSpecificRule rule : matched) {
+    LinkedHashMap<String, ScopedMetadataRule> dedup = new LinkedHashMap<>();
+    for (ScopedMetadataRule rule : matched) {
       if (rule == null) {
         continue;
       }
       String key = registryMatchKey(rule);
-      EngineSpecificRule existing = dedup.get(key);
+      ScopedMetadataRule existing = dedup.get(key);
       if (shouldReplaceBySpecificity(existing, rule, targetKind)) {
         dedup.put(key, rule);
       }
@@ -1006,7 +1041,7 @@ public class SystemNodeRegistry {
     return List.copyOf(dedup.values());
   }
 
-  private static String registryMatchKey(EngineSpecificRule rule) {
+  private static String registryMatchKey(ScopedMetadataRule rule) {
     String payloadType = rule.payloadType();
     if (payloadType == null) {
       payloadType = "";
@@ -1015,12 +1050,12 @@ public class SystemNodeRegistry {
   }
 
   private static boolean shouldReplaceBySpecificity(
-      EngineSpecificRule existing, EngineSpecificRule candidate, String targetKind) {
+      ScopedMetadataRule existing, ScopedMetadataRule candidate, String targetKind) {
     if (existing == null) {
       return true;
     }
-    String existingKind = existing.engineKind();
-    String candidateKind = candidate.engineKind();
+    String existingKind = existing.kind();
+    String candidateKind = candidate.kind();
     if (candidateKind != null
         && !candidateKind.isBlank()
         && !candidateKind.equals(existingKind)
@@ -1043,7 +1078,7 @@ public class SystemNodeRegistry {
     return true; // tie goes to later candidate so overlays override earlier hints
   }
 
-  private static int versionSpecificity(EngineSpecificRule rule) {
+  private static int versionSpecificity(ScopedMetadataRule rule) {
     int score = 0;
     if (rule.hasMinVersion()) {
       score++;
@@ -1054,12 +1089,12 @@ public class SystemNodeRegistry {
     return score;
   }
 
-  private static List<EngineSpecificRule> dedupeRegistryRules(List<EngineSpecificRule> candidates) {
+  private static List<ScopedMetadataRule> dedupeRegistryRules(List<ScopedMetadataRule> candidates) {
     if (candidates == null || candidates.isEmpty()) {
       return List.of();
     }
-    LinkedHashMap<String, EngineSpecificRule> dedup = new LinkedHashMap<>();
-    for (EngineSpecificRule rule : candidates) {
+    LinkedHashMap<String, ScopedMetadataRule> dedup = new LinkedHashMap<>();
+    for (ScopedMetadataRule rule : candidates) {
       if (rule == null) {
         continue;
       }
@@ -1070,20 +1105,29 @@ public class SystemNodeRegistry {
     return List.copyOf(dedup.values());
   }
 
-  private static String registryRuleKey(EngineSpecificRule rule) {
+  private static String registryRuleKey(ScopedMetadataRule rule) {
     String payloadType = rule.payloadType();
     if (payloadType == null) {
       payloadType = "";
     }
-    String kind = rule.engineKind() == null ? "" : rule.engineKind();
+    String kind = rule.kind() == null ? "" : rule.kind();
     String min = rule.minVersion() == null ? "" : rule.minVersion();
     String max = rule.maxVersion() == null ? "" : rule.maxVersion();
     return String.join("|", payloadType, kind, min, max);
   }
 
   private static boolean matches(
-      List<EngineSpecificRule> rules, String engineKind, String engineVersion) {
-    return EngineSpecificMatcher.matches(rules, engineKind, engineVersion);
+      List<ScopedMetadataRule> rules,
+      CatalogContext context,
+      String engineKind,
+      String engineVersion) {
+    return ScopedMetadataMatcher.matches(
+            rules, ScopedMetadataRule.Scope.ENGINE, engineKind, engineVersion)
+        && ScopedMetadataMatcher.matches(
+            rules,
+            ScopedMetadataRule.Scope.ENVIRONMENT,
+            context.environment().normalizedKind(),
+            context.environment().normalizedVersion());
   }
 
   /**
@@ -1113,7 +1157,7 @@ public class SystemNodeRegistry {
     Map<Long, Map<EngineHintKey, EngineHint>> hints = new LinkedHashMap<>();
     for (SystemColumnDef column : columns) {
       Map<EngineHintKey, EngineHint> columnHints =
-          EngineHintsMapper.toHints(engineKind, engineVersion, column.engineSpecific());
+          EngineHintsMapper.toHints(engineKind, engineVersion, column.scopedMetadata());
       if (!columnHints.isEmpty()) {
         long columnId = column.hasId() ? column.id() : column.ordinal();
         hints.put(columnId, columnHints);
@@ -1125,7 +1169,7 @@ public class SystemNodeRegistry {
   private static Optional<ResourceId> findNamespaceId(
       NameRef name, Map<String, ResourceId> namespaceIds) {
     return NameRefUtil.namespaceRef(name)
-        .map(NameRefUtil::canonical)
+        .map(NameRefUtil::identityKey)
         .flatMap(namespaceKey -> Optional.ofNullable(namespaceIds.get(namespaceKey)));
   }
 
@@ -1138,12 +1182,12 @@ public class SystemNodeRegistry {
                         "No namespace value for "
                             + objectType
                             + " definition: "
-                            + (name == null ? "<null>" : NameRefUtil.canonical(name))));
+                            + (name == null ? "<null>" : NameRefUtil.identityKey(name))));
     return resourceId(engineKind, ResourceKind.RK_NAMESPACE, namespaceRef);
   }
 
   private static void logMissingNamespace(String objectType, NameRef name) {
-    String canonical = name == null ? "<unknown>" : NameRefUtil.canonical(name);
+    String canonical = name == null ? "<unknown>" : NameRefUtil.identityKey(name);
     String namespaceKey = "";
     if (canonical != null) {
       int dot = canonical.lastIndexOf('.');
