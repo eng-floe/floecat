@@ -701,12 +701,7 @@ class TransactionsServiceImplTest {
     when(txRepo.getById(accountId, txId)).thenReturn(Optional.of(txn));
     when(pointerStore.get(pointerKey))
         .thenReturn(Optional.of(Pointer.newBuilder().setKey(pointerKey).setVersion(7L).build()));
-    when(graphView.resolve(
-            ResourceId.newBuilder()
-                .setAccountId(accountId)
-                .setId(tableId)
-                .setKind(ResourceKind.RK_TABLE)
-                .build()))
+    when(graphView.resolve(any(ResourceId.class), any()))
         .thenReturn(Optional.of(Mockito.mock(UserTableNode.class)));
     when(intentRepo.getByTarget(accountId, pointerKey)).thenReturn(Optional.empty());
     when(txRepo.metaFor(accountId, txId))
@@ -892,12 +887,7 @@ class TransactionsServiceImplTest {
     when(pointerStore.get(targetKey))
         .thenReturn(Optional.of(PointerReferences.blobPointer(targetKey, tableBlobUri, 7L)));
     when(blobStore.get(tableBlobUri)).thenReturn(table.toByteArray());
-    when(graphView.resolve(
-            ResourceId.newBuilder()
-                .setAccountId(accountId)
-                .setId(tableId)
-                .setKind(ResourceKind.RK_TABLE)
-                .build()))
+    when(graphView.resolve(any(ResourceId.class), any()))
         .thenReturn(Optional.of(Mockito.mock(UserTableNode.class)));
     when(intentRepo.getByTarget(accountId, targetKey)).thenReturn(Optional.empty());
     when(txRepo.metaFor(accountId, txId))
@@ -1538,7 +1528,7 @@ class TransactionsServiceImplTest {
             call ->
                 Optional.of(
                     Pointer.newBuilder().setKey(call.getArgument(0)).setVersion(7L).build()));
-    when(graphView.resolve(any(ResourceId.class)))
+    when(graphView.resolve(any(ResourceId.class), any()))
         .thenReturn(Optional.of(Mockito.mock(UserTableNode.class)));
     when(intentRepo.getByTarget(anyString(), anyString())).thenReturn(Optional.empty());
 

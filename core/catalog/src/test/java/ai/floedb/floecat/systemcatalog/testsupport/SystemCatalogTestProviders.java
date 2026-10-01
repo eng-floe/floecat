@@ -26,7 +26,7 @@ import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
-import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Optional;
@@ -37,7 +37,7 @@ public final class SystemCatalogTestProviders {
 
   private SystemCatalogTestProviders() {}
 
-  public static final class VersionedTableProvider implements SystemObjectScannerProvider {
+  public static final class VersionedTableProvider implements EngineCatalogProvider {
 
     private final String engineKind;
     private final AtomicInteger definitionsCalled = new AtomicInteger();
@@ -47,34 +47,20 @@ public final class SystemCatalogTestProviders {
     }
 
     @Override
-    public List<SystemObjectDef> definitions() {
-      return definitions(engineKind, "");
+    public String engineKind() {
+      return engineKind;
     }
 
     @Override
-    public List<SystemObjectDef> definitions(String engineKind, String engineVersion) {
+    public List<SystemObjectDef> definitions(CatalogContext context) {
       definitionsCalled.incrementAndGet();
-      return List.of(namespaceFor(engineKind), tableFor(engineKind, engineVersion));
+      return List.of(
+          namespaceFor(context.engine().normalizedKind()),
+          tableFor(context.engine().normalizedKind(), context.engine().normalizedVersion()));
     }
 
     @Override
-    public boolean supportsEngine(String engineKind) {
-      return this.engineKind.equals(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return this.engineKind.equals(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind, String engineVersion) {
-      return supports(name, engineKind);
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
       return Optional.empty();
     }
 
@@ -88,8 +74,8 @@ public final class SystemCatalogTestProviders {
           NameRefUtil.name(engineKind, "versioned_" + suffix),
           "versioned_" + suffix,
           List.<SystemColumnDef>of(),
-          TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
-          "version-scanner",
+          TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+          "",
           "",
           "",
           List.of(),
@@ -148,41 +134,31 @@ public final class SystemCatalogTestProviders {
     }
   }
 
-  public static final class OverridingTableProvider implements SystemObjectScannerProvider {
+  public static final class EngineTableProvider implements EngineCatalogProvider {
 
     private final String engineKind;
     private final NameRef name;
-    private final String scannerId;
 
-    public OverridingTableProvider(String engineKind, NameRef name, String scannerId) {
+    public EngineTableProvider(String engineKind, NameRef name) {
       this.engineKind = engineKind;
       this.name = name;
-      this.scannerId = scannerId;
     }
 
     @Override
-    public List<SystemObjectDef> definitions() {
-      return List.of(tableDef());
+    public String engineKind() {
+      return engineKind;
     }
 
     @Override
-    public boolean supportsEngine(String engineKind) {
-      return this.engineKind.equals(engineKind);
+    public List<SystemObjectDef> definitions(CatalogContext context) {
+      NameRef namespace = NameRefUtil.namespaceRef(name).orElseThrow();
+      return List.of(
+          new SystemNamespaceDef(namespace, NameRefUtil.canonical(namespace), List.of()),
+          tableDef());
     }
 
     @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return this.engineKind.equals(engineKind);
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind, String engineVersion) {
-      return supports(name, engineKind);
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
       return Optional.empty();
     }
 
@@ -191,8 +167,8 @@ public final class SystemCatalogTestProviders {
           name,
           "overridden",
           List.<SystemColumnDef>of(),
-          TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
-          scannerId,
+          TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+          "",
           "",
           "",
           List.of(),

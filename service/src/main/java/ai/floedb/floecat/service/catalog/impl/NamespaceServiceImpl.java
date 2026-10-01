@@ -570,11 +570,11 @@ public class NamespaceServiceImpl extends BaseServiceImpl implements NamespaceSe
   }
 
   private CatalogSurfaceNamespaces namespaceSurface() {
-    return new CatalogSurfaceNamespaces(namespaceRepo, graphView);
+    return new CatalogSurfaceNamespaces(namespaceRepo, graphView, catalogContext());
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView);
+    return new CatalogSurfaceWritePolicy(graphView, catalogContext());
   }
 
   private static byte[] canonicalFingerprint(

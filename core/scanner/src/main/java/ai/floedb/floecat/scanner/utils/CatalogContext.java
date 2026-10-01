@@ -31,10 +31,33 @@ public record CatalogContext(EnvironmentContext environment, EngineContext engin
     return new CatalogContext(EnvironmentContext.empty(), EngineContext.empty());
   }
 
+  /** Returns the explicit internal catalog selection used by legacy request adapters. */
+  public static CatalogContext floecatInternal() {
+    return new CatalogContext(
+        EnvironmentContext.empty(),
+        EngineContext.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, ""));
+  }
+
+  /** Adapts an engine-only request boundary to an explicit catalog selection. */
+  public static CatalogContext forEngine(EngineContext engine) {
+    Objects.requireNonNull(engine, "engine");
+    return engine.hasEngineKind() ? of(EnvironmentContext.empty(), engine) : floecatInternal();
+  }
+
   /** Selects the environment and engine for a catalog operation. */
   public static CatalogContext of(EnvironmentContext environment, EngineContext engine) {
     return new CatalogContext(
         Objects.requireNonNull(environment, "environment"),
         Objects.requireNonNull(engine, "engine"));
+  }
+
+  /** Resolves an inbound request selection, preserving the internal default when both axes omit. */
+  public static CatalogContext forRequest(EnvironmentContext environment, EngineContext engine) {
+    Objects.requireNonNull(environment, "environment");
+    Objects.requireNonNull(engine, "engine");
+    if (!environment.hasEnvironmentKind() && !engine.hasEngineKind()) {
+      return floecatInternal();
+    }
+    return of(environment, engine);
   }
 }

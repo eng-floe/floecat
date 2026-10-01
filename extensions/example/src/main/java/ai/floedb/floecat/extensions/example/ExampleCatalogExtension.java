@@ -16,11 +16,10 @@
 
 package ai.floedb.floecat.extensions.example;
 
-import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import ai.floedb.floecat.query.rpc.EngineSpecific;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogProtoMapper;
@@ -330,25 +329,12 @@ public final class ExampleCatalogExtension implements EngineCatalogProvider {
   // ---------------------------------------------------------------------------
 
   @Override
-  public List<SystemObjectDef> definitions() {
+  public List<SystemObjectDef> definitions(CatalogContext context) {
     return List.of();
   }
 
   @Override
-  public boolean supportsEngine(String engineKind) {
-    return EngineIdentityNormalizer.normalizeEngineKind(engineKind)
-        .equals(EngineIdentityNormalizer.normalizeEngineKind(this.engineKind()));
-  }
-
-  @Override
-  public boolean supports(NameRef name, String engineKind) {
-    // definitions() is empty so this extension never provides scanner-backed objects.
-    return false;
-  }
-
-  @Override
-  public Optional<SystemObjectScanner> provide(
-      String scannerId, String engineKind, String engineVersion) {
+  public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
     return Optional.empty();
   }
 }

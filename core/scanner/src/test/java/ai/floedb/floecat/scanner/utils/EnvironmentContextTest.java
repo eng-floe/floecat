@@ -40,4 +40,20 @@ final class EnvironmentContextTest {
     assertThat(context.normalizedKind()).isEqualTo("floedb");
     assertThat(context.environmentVersion()).isEqualTo("16.0");
   }
+
+  @Test
+  void readsEnvironmentHeaders() {
+    EnvironmentContext context =
+        EnvironmentContext.fromHeaders(
+            name ->
+                switch (name) {
+                  case EnvironmentContext.HEADER_KIND -> " Floe ";
+                  case EnvironmentContext.HEADER_VERSION -> "1.2";
+                  default -> null;
+                });
+
+    assertThat(context.environmentKind()).isEqualTo("Floe");
+    assertThat(context.environmentVersion()).isEqualTo("1.2");
+    assertThat(context.normalizedKind()).isEqualTo("floe");
+  }
 }

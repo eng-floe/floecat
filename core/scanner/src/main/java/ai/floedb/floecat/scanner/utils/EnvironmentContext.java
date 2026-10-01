@@ -18,9 +18,13 @@ package ai.floedb.floecat.scanner.utils;
 
 import ai.floedb.floecat.engine.util.EngineIdentityNormalizer;
 import java.util.Objects;
+import java.util.function.Function;
 
 /** Identity of the catalog environment presented to a client. */
 public final class EnvironmentContext {
+
+  public static final String HEADER_KIND = "x-environment-kind";
+  public static final String HEADER_VERSION = "x-environment-version";
 
   private static final EnvironmentContext EMPTY = new EnvironmentContext("", "", "", "", false);
 
@@ -60,6 +64,12 @@ public final class EnvironmentContext {
 
   public static EnvironmentContext empty() {
     return EMPTY;
+  }
+
+  /** Builds an environment context from a protocol header source. */
+  public static EnvironmentContext fromHeaders(Function<String, String> headerReader) {
+    Objects.requireNonNull(headerReader, "headerReader");
+    return of(headerReader.apply(HEADER_KIND), headerReader.apply(HEADER_VERSION));
   }
 
   public String environmentKind() {

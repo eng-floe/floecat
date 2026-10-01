@@ -96,18 +96,19 @@ final class SystemDefinitionRegistryTest {
   }
 
   @Test
-  void catalog_blankEngineUsesInternalDefault() {
+  void catalog_emptyContextRemainsDistinctFromExplicitInternal() {
     AtomicInteger loadCount = new AtomicInteger();
-    AtomicReference<String> lastKind = new AtomicReference<>();
+    AtomicReference<Boolean> lastHasEngineKind = new AtomicReference<>();
 
     SystemCatalogProvider provider =
         new SystemCatalogProvider() {
           @Override
           public SystemEngineCatalog load(CatalogContext context) {
-            String engineKind = context.engine().effectiveEngineKind();
-            lastKind.set(engineKind);
+            lastHasEngineKind.set(context.engine().hasEngineKind());
             loadCount.incrementAndGet();
-            return SystemEngineCatalog.from(engineKind, SystemCatalogData.empty());
+            return SystemEngineCatalog.from(
+                context.engine().hasEngineKind() ? context.engine().normalizedKind() : "",
+                SystemCatalogData.empty());
           }
 
           @Override
@@ -118,11 +119,20 @@ final class SystemDefinitionRegistryTest {
 
     SystemDefinitionRegistry registry = new SystemDefinitionRegistry(provider);
 
-    SystemEngineCatalog catalog = registry.catalog(context(EngineContext.empty()));
+    SystemEngineCatalog empty = registry.catalog(CatalogContext.empty());
+    assertThat(lastHasEngineKind.get()).isFalse();
 
     assertThat(loadCount.get()).isEqualTo(1);
-    assertThat(lastKind.get()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
-    assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+
+    SystemEngineCatalog internal =
+        registry.catalog(
+            CatalogContext.of(
+                EnvironmentContext.empty(),
+                EngineContext.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "")));
+
+    assertThat(loadCount.get()).isEqualTo(2);
+    assertThat(internal).isNotSameAs(empty);
+    assertThat(internal.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
   }
 
   @Test

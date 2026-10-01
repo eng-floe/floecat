@@ -21,7 +21,7 @@ import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView.NamespaceRef;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.NamespaceKey;
 import ai.floedb.floecat.service.repo.model.Schemas;

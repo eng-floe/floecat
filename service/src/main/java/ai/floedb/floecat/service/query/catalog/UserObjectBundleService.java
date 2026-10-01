@@ -470,11 +470,8 @@ public class UserObjectBundleService {
       this.defaultCatalogId = ctx.getQueryDefaultCatalogId();
       this.statsProvider = statsFactory.forQuery(ctx, correlationId);
       EngineContext requestEngine = engineContext.engineContext();
-      CatalogContext requestCatalog =
-          CatalogContext.of(
-              EnvironmentContext.of(requestEngine.engineKind(), requestEngine.engineVersion()),
-              requestEngine);
-      this.engineKind = requestEngine.normalizedKind();
+      CatalogContext requestCatalog = engineContext.catalogContext();
+      this.engineKind = requestCatalog.engine().normalizedKind();
       this.engineVersion = requestEngine.normalizedVersion();
       this.resolutionContext =
           MetadataResolutionContext.of(
@@ -487,7 +484,8 @@ public class UserObjectBundleService {
       this.decorationSelection = engineRelationDecorator.select(requestEngine);
       this.buildFanout = buildFanout(decorationSelection);
       this.selectionCommitter =
-          new SnapshotSelectionCommitter(inputResolver, queryStore, ctx, correlationId, timings);
+          new SnapshotSelectionCommitter(
+              inputResolver, queryStore, ctx, correlationId, timings, requestCatalog);
       initializeParentSpan();
       if (LOG.isDebugEnabled()) {
         LOG.debugf(
@@ -1289,7 +1287,10 @@ public class UserObjectBundleService {
         long startNs = System.nanoTime();
         try {
           defaultCatalogName =
-              graphView.catalog(defaultCatalogId).map(CatalogNode::displayName).orElse("");
+              graphView
+                  .catalog(defaultCatalogId, resolutionContext.catalogContext())
+                  .map(CatalogNode::displayName)
+                  .orElse("");
           defaultCatalogResolved = true;
           timings.recordDefaultCatalogLookup();
         } finally {

@@ -23,8 +23,7 @@ import java.util.function.Function;
 /** Shared representation of the engine context (kind + version + normalized helpers). */
 public final class EngineContext {
 
-  private static final EngineContext EMPTY =
-      new EngineContext("", "", EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "", false);
+  private static final EngineContext EMPTY = new EngineContext("", "", "", "", false);
 
   private final String engineKind;
   private final String engineVersion;
@@ -49,10 +48,7 @@ public final class EngineContext {
     String kind = engineKind == null ? "" : engineKind.trim();
     String version = engineVersion == null ? "" : engineVersion.trim();
     boolean hasKind = !kind.isEmpty();
-    String normalizedKind =
-        hasKind
-            ? EngineIdentityNormalizer.normalizeEngineKind(kind)
-            : EngineCatalogNames.FLOECAT_DEFAULT_CATALOG;
+    String normalizedKind = hasKind ? EngineIdentityNormalizer.normalizeEngineKind(kind) : "";
     if (!hasKind) {
       version = "";
     }

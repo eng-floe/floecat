@@ -17,11 +17,11 @@
 package ai.floedb.floecat.systemcatalog.graph;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.catalog.rpc.ConstraintDefinition;
 import ai.floedb.floecat.catalog.rpc.ConstraintType;
 import ai.floedb.floecat.common.rpc.NameRef;
-import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.EngineHintKey;
 import ai.floedb.floecat.metagraph.model.GraphNode;
@@ -49,16 +49,17 @@ import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.ServiceLoaderSystemCatalogProvider;
 import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
-import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import ai.floedb.floecat.systemcatalog.registry.SystemDefinitionRegistry;
 import ai.floedb.floecat.systemcatalog.registry.SystemEngineCatalog;
+import ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider;
 import ai.floedb.floecat.systemcatalog.testsupport.SystemCatalogTestProviders;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
@@ -207,7 +208,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("custom", "t"),
             "t",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -250,7 +251,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("custom", "ok"),
             "ok",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -261,7 +262,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("orphan"),
             "orphan",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -296,7 +297,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("missing", "table"),
             "table",
             List.of(column("id")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -352,13 +353,23 @@ class SystemNodeRegistryTest {
     var registry = registryWithCatalogs();
     var nodeRegistry = registryWith(registry);
 
-    var tables = canonicalTableNames(nodeRegistry.nodesFor(context("", "")));
+    var tables = canonicalTableNames(nodeRegistry.nodesFor(CatalogContext.floecatInternal()));
 
     assertThat(tables)
         .contains(
             "information_schema.tables",
             "information_schema.columns",
             "information_schema.schemata");
+  }
+
+  @Test
+  void emptyContextRemainsDistinctFromExplicitInternal() {
+    var registry = registryWithCatalogs();
+    var nodeRegistry = registryWith(registry);
+
+    assertThat(nodeRegistry.nodesFor(CatalogContext.empty()).tableNames()).isEmpty();
+    assertThat(nodeRegistry.nodesFor(CatalogContext.floecatInternal()).tableNames().keySet())
+        .contains("information_schema.tables");
   }
 
   @Test
@@ -646,15 +657,112 @@ class SystemNodeRegistryTest {
   }
 
   @Test
-  void providerDefinitionsWithUnknownNamespaceAreIgnored() {
-    SystemObjectScannerProvider invalidProvider =
-        new SystemObjectScannerProvider() {
+  void dynamicEngineAndEnvironmentContributionsCompose() {
+    DynamicEngineProvider engineProvider = new DynamicEngineProvider("duckdb");
+    var environmentProvider =
+        new SystemCatalogTestProviders.EnvironmentTableProvider("floe", "environment_table");
+    var defs =
+        new SystemDefinitionRegistry(
+            new StaticSystemCatalogProvider(Map.of("duckdb", SystemCatalogData.empty())));
+    var registry =
+        new SystemNodeRegistry(
+            defs, internalProvider(), List.of(engineProvider), List.of(environmentProvider));
+
+    var context =
+        CatalogContext.of(EnvironmentContext.of("floe", "1"), EngineContext.of("DUCKDB", "1"));
+    var nodes = registry.nodesFor(context);
+
+    assertThat(nodes.catalogData().functions())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.pg_fn");
+    assertThat(nodes.catalogData().operators())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.pg_op");
+    assertThat(nodes.catalogData().types())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.int4");
+    assertThat(nodes.catalogData().casts())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.int4_to_text");
+    assertThat(nodes.catalogData().collations())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.default");
+    assertThat(nodes.catalogData().aggregates())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.pg_agg");
+    assertThat(canonicalTableNames(nodes)).contains("environment.environment_table");
+  }
+
+  @Test
+  void conflictingEngineAndEnvironmentRelationsFailInsteadOfOverriding() {
+    EngineCatalogProvider engineProvider =
+        new SystemCatalogTestProviders.EngineTableProvider(
+            PG_KIND, NameRefUtil.name("shared", "relation"));
+    CatalogEnvironmentProvider environmentProvider =
+        new CatalogEnvironmentProvider() {
           @Override
-          public List<SystemObjectDef> definitions() {
+          public String environmentKind() {
+            return "floe";
+          }
+
+          @Override
+          public List<SystemObjectDef> definitions(CatalogContext context) {
+            return List.of(
+                new SystemNamespaceDef(NameRefUtil.name("shared"), "shared", List.of()),
+                new SystemTableDef(
+                    NameRefUtil.name("shared", "relation"),
+                    "relation",
+                    List.of(),
+                    TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+                    "environment-scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null));
+          }
+
+          @Override
+          public boolean supports(NameRef name, CatalogContext context) {
+            return true;
+          }
+
+          @Override
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+            return Optional.empty();
+          }
+        };
+    var registry =
+        new SystemNodeRegistry(
+            registryWithCatalogs(),
+            internalProvider(),
+            List.of(engineProvider),
+            List.of(environmentProvider));
+
+    assertThatThrownBy(
+            () ->
+                registry.nodesFor(
+                    CatalogContext.of(
+                        EnvironmentContext.of("floe", "1"), EngineContext.of(PG_KIND, "16.0"))))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Conflicting system object definition")
+        .hasMessageContaining("relation");
+  }
+
+  @Test
+  void engineProviderMustDeclareEngineTables() {
+    EngineCatalogProvider provider =
+        new EngineCatalogProvider() {
+          @Override
+          public String engineKind() {
+            return PG_KIND;
+          }
+
+          @Override
+          public List<SystemObjectDef> definitions(CatalogContext context) {
             return List.of(
                 new SystemTableDef(
-                    NameRefUtil.name("missing_ns", "bad_table"),
-                    "bad_table",
+                    NameRefUtil.name("engine", "table"),
+                    "table",
                     List.of(),
                     TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
                     "scanner",
@@ -665,18 +773,168 @@ class SystemNodeRegistryTest {
           }
 
           @Override
-          public boolean supportsEngine(String engineKind) {
-            return FLOE_KIND.equals(engineKind);
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+            return Optional.empty();
+          }
+        };
+    var registry =
+        new SystemNodeRegistry(
+            new SystemDefinitionRegistry(
+                new StaticSystemCatalogProvider(Map.of(PG_KIND, SystemCatalogData.empty()))),
+            internalProvider(),
+            List.of(provider),
+            List.of());
+
+    assertThatThrownBy(() -> registry.nodesFor(context(PG_KIND, "16.0")))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("expected TABLE_BACKEND_KIND_ENGINE");
+  }
+
+  @Test
+  void identicalDefinitionsAreDeduplicated() {
+    EngineCatalogProvider first =
+        new SystemCatalogTestProviders.EngineTableProvider(
+            PG_KIND, NameRefUtil.name("shared", "relation"));
+    EngineCatalogProvider second =
+        new SystemCatalogTestProviders.EngineTableProvider(
+            PG_KIND, NameRefUtil.name("shared", "relation"));
+    var registry =
+        new SystemNodeRegistry(
+            new SystemDefinitionRegistry(
+                new StaticSystemCatalogProvider(Map.of(PG_KIND, SystemCatalogData.empty()))),
+            internalProvider(),
+            List.of(first, second),
+            List.of());
+
+    assertThat(canonicalTableNames(registry.nodesFor(context(PG_KIND, "16.0"))))
+        .containsExactly("shared.relation");
+  }
+
+  @Test
+  void relationKindCollisionsFail() {
+    SystemNamespaceDef namespace =
+        new SystemNamespaceDef(NameRefUtil.name("shared"), "shared", List.of());
+    SystemTableDef table =
+        new SystemTableDef(
+            NameRefUtil.name("shared", "relation"),
+            "relation",
+            List.of(),
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+            "",
+            "",
+            "",
+            List.of(),
+            null);
+    SystemViewDef view =
+        new SystemViewDef(
+            NameRefUtil.name("shared", "relation"),
+            "relation",
+            "select 1",
+            "",
+            List.of(),
+            List.of());
+    SystemCatalogData catalog =
+        new SystemCatalogData(
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(),
+            List.of(namespace),
+            List.of(table),
+            List.of(view),
+            List.of());
+    var registry =
+        registryWith(
+            new SystemDefinitionRegistry(
+                new StaticSystemCatalogProvider(Map.of(PG_KIND, catalog))));
+
+    assertThatThrownBy(() -> registry.nodesFor(context(PG_KIND, "16.0")))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("Conflicting system object definition")
+        .hasMessageContaining("relation");
+  }
+
+  @Test
+  void invalidationRebuildsDynamicEngineContributions() {
+    AtomicReference<String> functionName = new AtomicReference<>("before_reload");
+    EngineCatalogProvider provider =
+        new EngineCatalogProvider() {
+          @Override
+          public String engineKind() {
+            return "duckdb";
           }
 
           @Override
-          public boolean supports(NameRef name, String engineKind) {
-            return supportsEngine(engineKind);
+          public List<SystemObjectDef> definitions(CatalogContext context) {
+            NameRef int4 = NameRefUtil.name("duck", "int4");
+            return List.of(
+                new SystemNamespaceDef(NameRefUtil.name("duck"), "duck", List.of()),
+                new SystemTypeDef(int4, "N", false, null, List.of()),
+                new SystemFunctionDef(
+                    NameRefUtil.name("duck", functionName.get()),
+                    List.of(int4),
+                    int4,
+                    false,
+                    false,
+                    List.of()));
           }
 
           @Override
-          public Optional<SystemObjectScanner> provide(
-              String scannerId, String engineKind, String engineVersion) {
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+            return Optional.empty();
+          }
+        };
+    var defs =
+        new SystemDefinitionRegistry(
+            new StaticSystemCatalogProvider(Map.of("duckdb", SystemCatalogData.empty())));
+    var registry = new SystemNodeRegistry(defs, internalProvider(), List.of(provider), List.of());
+    var context = context("duckdb", "1");
+
+    var first = registry.nodesFor(context);
+    assertThat(first.catalogData().functions())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.before_reload");
+
+    functionName.set("after_reload");
+    assertThat(registry.nodesFor(context)).isSameAs(first);
+
+    registry.invalidate(context);
+    var second = registry.nodesFor(context);
+    assertThat(second).isNotSameAs(first);
+    assertThat(second.catalogData().functions())
+        .extracting(def -> NameRefUtil.canonical(def.name()))
+        .contains("duck.after_reload")
+        .doesNotContain("duck.before_reload");
+  }
+
+  @Test
+  void providerDefinitionsWithUnknownNamespaceAreIgnored() {
+    EngineCatalogProvider invalidProvider =
+        new EngineCatalogProvider() {
+          @Override
+          public String engineKind() {
+            return FLOE_KIND;
+          }
+
+          @Override
+          public List<SystemObjectDef> definitions(CatalogContext context) {
+            return List.of(
+                new SystemTableDef(
+                    NameRefUtil.name("missing_ns", "bad_table"),
+                    "bad_table",
+                    List.of(),
+                    TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
+                    "scanner",
+                    "",
+                    "",
+                    List.of(),
+                    null));
+          }
+
+          @Override
+          public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
             return Optional.empty();
           }
         };
@@ -891,13 +1149,54 @@ class SystemNodeRegistryTest {
                 PG_KIND, catalog)));
   }
 
-  private static List<SystemObjectScannerProvider> extensionProviders(
-      SystemObjectScannerProvider... extras) {
+  private static List<EngineCatalogProvider> extensionProviders(EngineCatalogProvider... extras) {
     return Stream.of(extras).toList();
   }
 
   private static List<String> canonicalTableNames(SystemNodeRegistry.BuiltinNodes nodes) {
     return nodes.catalogData().tables().stream().map(t -> NameRefUtil.canonical(t.name())).toList();
+  }
+
+  private static final class DynamicEngineProvider implements EngineCatalogProvider {
+
+    private final String engineKind;
+
+    private DynamicEngineProvider(String engineKind) {
+      this.engineKind = engineKind;
+    }
+
+    @Override
+    public String engineKind() {
+      return engineKind;
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions(CatalogContext context) {
+      NameRef int4 = NameRefUtil.name("duck", "int4");
+      NameRef text = NameRefUtil.name("duck", "text");
+      return List.of(
+          new SystemNamespaceDef(NameRefUtil.name("duck"), "duck", List.of()),
+          new SystemTypeDef(int4, "N", false, null, List.of()),
+          new SystemTypeDef(text, "S", false, null, List.of()),
+          new SystemFunctionDef(
+              NameRefUtil.name("duck", "pg_fn"), List.of(int4), int4, false, false, List.of()),
+          new SystemOperatorDef(
+              NameRefUtil.name("duck", "pg_op"), int4, int4, int4, false, false, List.of()),
+          new SystemCastDef(
+              NameRefUtil.name("duck", "int4_to_text"),
+              int4,
+              text,
+              SystemCastMethod.EXPLICIT,
+              List.of()),
+          new SystemCollationDef(NameRefUtil.name("duck", "default"), "en_US", List.of()),
+          new SystemAggregateDef(
+              NameRefUtil.name("duck", "pg_agg"), List.of(int4), int4, int4, List.of()));
+    }
+
+    @Override
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+      return Optional.empty();
+    }
   }
 
   private static SystemCatalogData catalogWithVersionedObjects() {
@@ -912,7 +1211,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("custom", "legacy_table"),
             "legacy_table",
             List.of(column("value")),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "legacy_scanner",
             "",
             "",
@@ -968,11 +1267,11 @@ class SystemNodeRegistryTest {
 
   private static CatalogContext context(String engineKind, String engineVersion) {
     EngineContext engine = EngineContext.of(engineKind, engineVersion);
-    return CatalogContext.of(EnvironmentContext.of(engineKind, engineVersion), engine);
+    return CatalogContext.of(EnvironmentContext.empty(), engine);
   }
 
   private static SystemNodeRegistry registryWith(
-      SystemDefinitionRegistry defs, SystemObjectScannerProvider... extras) {
+      SystemDefinitionRegistry defs, EngineCatalogProvider... extras) {
     return new SystemNodeRegistry(defs, internalProvider(), extensionProviders(extras), List.of());
   }
 
@@ -983,37 +1282,22 @@ class SystemNodeRegistryTest {
   }
 
   @Test
-  void floecatInternalTablesExistForEngineWithoutPlugin() {
+  void explicitEngineDoesNotInheritFloecatInternalTables() {
     ServiceLoaderSystemCatalogProvider loader = new ServiceLoaderSystemCatalogProvider();
     SystemDefinitionRegistry defs = new SystemDefinitionRegistry(loader);
     SystemNodeRegistry registry =
         new SystemNodeRegistry(
             defs, loader.internalProvider(), loader.providers(), loader.environmentProviders());
 
-    EngineContext ctx = EngineContext.of("pg", "");
+    EngineContext ctx = EngineContext.of("duckdb", "");
     SystemEngineCatalog engineCatalog =
-        defs.catalog(
-            CatalogContext.of(EnvironmentContext.of(ctx.engineKind(), ctx.engineVersion()), ctx));
-    assertThat(engineCatalog.tables()).isNotEmpty();
-    assertThat(engineCatalog.namespaces()).isNotEmpty();
+        defs.catalog(CatalogContext.of(EnvironmentContext.empty(), ctx));
+    assertThat(engineCatalog.tables()).isEmpty();
+    assertThat(engineCatalog.namespaces()).isEmpty();
     SystemNodeRegistry.BuiltinNodes nodes =
-        registry.nodesFor(
-            CatalogContext.of(EnvironmentContext.of(ctx.engineKind(), ctx.engineVersion()), ctx));
+        registry.nodesFor(CatalogContext.of(EnvironmentContext.empty(), ctx));
 
-    assertThat(nodes.tableNames())
-        .containsKey("information_schema.tables")
-        .containsKey("information_schema.columns")
-        .containsKey("information_schema.schemata");
-    String infoSchemaTableId =
-        SystemNodeRegistry.resourceId(
-                "pg", ResourceKind.RK_TABLE, NameRefUtil.name("information_schema", "tables"))
-            .getId();
-    assertThat(
-            nodes.tableNodes().stream()
-                .map(node -> node.id().getId())
-                .filter(id -> id.equals(infoSchemaTableId))
-                .toList())
-        .isNotEmpty();
+    assertThat(nodes.tableNames()).isEmpty();
   }
 
   @Test
@@ -1036,7 +1320,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("orphan"),
             "orphan",
             List.<SystemColumnDef>of(),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -1068,7 +1352,7 @@ class SystemNodeRegistryTest {
             NameRefUtil.name("missing", "table"),
             "table",
             List.<SystemColumnDef>of(),
-            TableBackendKind.TABLE_BACKEND_KIND_FLOECAT,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             "scanner",
             "",
             "",
@@ -1094,9 +1378,9 @@ class SystemNodeRegistryTest {
   }
 
   @Test
-  void pluginTableOverridesInternalDefinition() {
+  void engineProviderContributesEngineRelation() {
     SystemDefinitionRegistry defs = registryWithCatalogs();
-    SystemObjectScannerProvider provider =
+    EngineCatalogProvider provider =
         new SystemCatalogTestProviders.OverridingTableProvider(
             PG_KIND, NameRefUtil.name("information_schema", "tables"), "overridden_scanner");
 
@@ -1108,17 +1392,9 @@ class SystemNodeRegistryTest {
             .filter(def -> NameRefUtil.canonical(def.name()).equals("information_schema.tables"))
             .findFirst()
             .orElseThrow();
-    assertThat(overridden.scannerId()).isEqualTo("overridden_scanner");
-    String scannerId = null;
-    ResourceId expectedTableId =
-        SystemNodeRegistry.resourceId(
-            PG_KIND, ResourceKind.RK_TABLE, NameRefUtil.name("information_schema", "tables"));
-    SystemTableNode overriddenNode =
-        nodes.tableNodes().stream()
-            .filter(node -> node.id().equals(expectedTableId))
-            .findFirst()
-            .orElseThrow();
-    assertThat(((SystemTableNode.FloeCatSystemTableNode) overriddenNode).scannerId())
-        .isEqualTo("overridden_scanner");
+    assertThat(overridden.backendKind()).isEqualTo(TableBackendKind.TABLE_BACKEND_KIND_ENGINE);
+    assertThat(nodes.tableNodes())
+        .anySatisfy(
+            node -> assertThat(node).isInstanceOf(SystemTableNode.EngineSystemTableNode.class));
   }
 }

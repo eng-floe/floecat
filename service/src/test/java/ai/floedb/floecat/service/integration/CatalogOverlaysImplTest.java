@@ -78,7 +78,8 @@ class CatalogOverlaysImplTest {
     when(service.principal.get()).thenReturn(principal());
     stubIntegration(integrationId(), 5L);
     stubCatalog(catalogId(), 7L);
-    when(service.graphView.resolve(catalogId())).thenReturn(Optional.of(catalogNode(catalogId())));
+    when(service.graphView.resolve(eq(catalogId()), any()))
+        .thenReturn(Optional.of(catalogNode(catalogId())));
     when(service.markerStore.catalogIntegrationOverlaysMarkerVersion(integrationId()))
         .thenReturn(2L);
     when(service.markerStore.catalogOverlaysMarkerVersion(catalogId())).thenReturn(3L);

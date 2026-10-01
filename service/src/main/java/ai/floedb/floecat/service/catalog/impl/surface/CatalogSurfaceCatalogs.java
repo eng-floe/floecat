@@ -25,8 +25,8 @@ import ai.floedb.floecat.catalog.rpc.ListCatalogsResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.common.MutationOps;
-import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.systemcatalog.graph.SystemCatalogTranslator;
@@ -49,15 +49,13 @@ public final class CatalogSurfaceCatalogs {
 
   private final CatalogRepository catalogRepo;
   private final CatalogGraphView graphView;
-  private final EngineContextProvider engineContext;
+  private final CatalogContext catalogContext;
 
   public CatalogSurfaceCatalogs(
-      CatalogRepository catalogRepo,
-      CatalogGraphView graphView,
-      EngineContextProvider engineContext) {
+      CatalogRepository catalogRepo, CatalogGraphView graphView, CatalogContext catalogContext) {
     this.catalogRepo = catalogRepo;
     this.graphView = graphView;
-    this.engineContext = engineContext;
+    this.catalogContext = catalogContext;
   }
 
   public ListCatalogsResponse listCatalogs(
@@ -124,7 +122,7 @@ public final class CatalogSurfaceCatalogs {
   }
 
   private Catalog systemCatalogForCurrentEngine() {
-    String engineKind = engineContext.effectiveEngineKind();
+    String engineKind = catalogContext.engine().effectiveEngineKind();
     return Catalog.newBuilder()
         .setResourceId(SystemNodeRegistry.systemCatalogContainerId(engineKind))
         .setDisplayName(engineKind)
@@ -180,7 +178,8 @@ public final class CatalogSurfaceCatalogs {
       return Optional.empty();
     }
     String currentId =
-        SystemNodeRegistry.systemCatalogContainerId(engineContext.effectiveEngineKind()).getId();
+        SystemNodeRegistry.systemCatalogContainerId(catalogContext.engine().effectiveEngineKind())
+            .getId();
     return normalized.getId().equals(currentId) ? Optional.of(normalized) : Optional.empty();
   }
 
@@ -197,11 +196,15 @@ public final class CatalogSurfaceCatalogs {
 
   private Optional<Catalog> visibleSystemCatalogForCurrentEngine() {
     Catalog systemCatalog = systemCatalogForCurrentEngine();
-    return graphView.catalog(systemCatalog.getResourceId()).map(ignored -> systemCatalog);
+    return graphView
+        .catalog(systemCatalog.getResourceId(), catalogContext)
+        .map(ignored -> systemCatalog);
   }
 
   private boolean isVisibleSystemCatalog(ResourceId catalogId) {
-    return normalizedCurrentSystemCatalogId(catalogId).flatMap(graphView::catalog).isPresent();
+    return normalizedCurrentSystemCatalogId(catalogId)
+        .flatMap(id -> graphView.catalog(id, catalogContext))
+        .isPresent();
   }
 
   private static final class CatalogPageCursor {

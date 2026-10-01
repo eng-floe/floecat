@@ -18,7 +18,9 @@ package ai.floedb.floecat.systemcatalog.spi;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.spi.types.EngineTypeMapper;
 import org.junit.jupiter.api.Test;
 
@@ -28,9 +30,9 @@ final class EngineCatalogProviderTest {
   void dynamicProviderDoesNotRequireStaticDefinitions() {
     EngineCatalogProvider provider = new DuckProvider();
 
-    assertThat(provider.definitions()).isEmpty();
-    assertThat(provider.supportsEngine(" DuckDB ")).isTrue();
-    assertThat(provider.supportsEngine("floedb")).isFalse();
+    assertThat(provider.definitions(context(" DuckDB "))).isEmpty();
+    assertThat(provider.supports(context(" DuckDB "))).isTrue();
+    assertThat(provider.supports(context("floedb"))).isFalse();
   }
 
   @Test
@@ -56,14 +58,13 @@ final class EngineCatalogProviderTest {
     }
 
     @Override
-    public boolean supports(ai.floedb.floecat.common.rpc.NameRef name, String engineKind) {
-      return supportsEngine(engineKind);
-    }
-
-    @Override
     public java.util.Optional<ai.floedb.floecat.scanner.spi.SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
+        String scannerId, CatalogContext context) {
       return java.util.Optional.empty();
     }
+  }
+
+  private static CatalogContext context(String engineKind) {
+    return CatalogContext.of(EnvironmentContext.empty(), EngineContext.of(engineKind, "1.0"));
   }
 }

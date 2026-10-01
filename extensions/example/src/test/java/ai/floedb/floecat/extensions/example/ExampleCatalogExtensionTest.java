@@ -19,6 +19,9 @@ package ai.floedb.floecat.extensions.example;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 
+import ai.floedb.floecat.scanner.utils.CatalogContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -501,50 +504,41 @@ class ExampleCatalogExtensionTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void supportsEngineReturnsTrueForExampleKind() {
-    assertThat(ext().supportsEngine("example")).isTrue();
+  void supportsReturnsTrueForExampleKind() {
+    assertThat(ext().supports(context("example"))).isTrue();
   }
 
   @Test
-  void supportsEngineIsCaseInsensitive() {
-    assertThat(ext().supportsEngine("EXAMPLE")).isTrue();
-    assertThat(ext().supportsEngine("Example")).isTrue();
+  void supportsIsCaseInsensitive() {
+    assertThat(ext().supports(context("EXAMPLE"))).isTrue();
+    assertThat(ext().supports(context("Example"))).isTrue();
   }
 
   @Test
-  void supportsEngineReturnsFalseForOtherKind() {
-    assertThat(ext().supportsEngine("floedb")).isFalse();
-    assertThat(ext().supportsEngine("postgres")).isFalse();
+  void supportsReturnsFalseForOtherKind() {
+    assertThat(ext().supports(context("floedb"))).isFalse();
+    assertThat(ext().supports(context("postgres"))).isFalse();
   }
 
   @Test
-  void supportsEngineRespectsConfiguredKind() {
+  void supportsRespectsConfiguredKind() {
     withProp(
         ExampleCatalogExtension.CONFIG_ENGINE_KIND,
         "my-custom",
         () -> {
-          assertThat(ext().supportsEngine("my-custom")).isTrue();
-          assertThat(ext().supportsEngine("example")).isFalse();
+          assertThat(ext().supports(context("my-custom"))).isTrue();
+          assertThat(ext().supports(context("example"))).isFalse();
         });
   }
 
   @Test
-  void supportsReturnsFalseForAnyName() {
-    // supports() always returns false — the example extension has no scanner-backed objects.
-    // Use a default (empty) NameRef to avoid depending on the NameRef builder's internal API.
-    assertThat(ext().supports(ai.floedb.floecat.common.rpc.NameRef.getDefaultInstance(), "example"))
-        .isFalse();
-    assertThat(ext().supports(null, "example")).isFalse();
-  }
-
-  @Test
   void provideReturnsEmpty() {
-    assertThat(ext().provide("any_scanner", "example", "1.0")).isEmpty();
+    assertThat(ext().provide("any_scanner", context("example"))).isEmpty();
   }
 
   @Test
   void definitionsReturnsEmptyList() {
-    assertThat(ext().definitions()).isEmpty();
+    assertThat(ext().definitions(context("example"))).isEmpty();
   }
 
   @Test
@@ -555,6 +549,10 @@ class ExampleCatalogExtensionTest {
   @Test
   void onLoadErrorDoesNotThrow() {
     assertThatNoException().isThrownBy(() -> ext().onLoadError(new RuntimeException("test error")));
+  }
+
+  private static CatalogContext context(String engineKind) {
+    return CatalogContext.of(EnvironmentContext.empty(), EngineContext.of(engineKind, "1.0"));
   }
 
   @Test

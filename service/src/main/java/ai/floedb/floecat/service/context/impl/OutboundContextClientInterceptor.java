@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.context.impl;
 
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
@@ -38,6 +39,10 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
       Metadata.Key.of("x-engine-kind", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> ENGINE_VERSION =
       Metadata.Key.of("x-engine-version", Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ENVIRONMENT_KIND =
+      Metadata.Key.of(EnvironmentContext.HEADER_KIND, Metadata.ASCII_STRING_MARSHALLER);
+  private static final Metadata.Key<String> ENVIRONMENT_VERSION =
+      Metadata.Key.of(EnvironmentContext.HEADER_VERSION, Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> CORR =
       Metadata.Key.of("x-correlation-id", Metadata.ASCII_STRING_MARSHALLER);
 
@@ -75,6 +80,7 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
         }
 
         EngineContext engineContext = resolved.engineContext();
+        EnvironmentContext environmentContext = resolved.environmentContext();
         String engineKind = engineContext.hasEngineKind() ? engineContext.engineKind() : null;
         // Only propagate an engine version if we are propagating an engine kind.
         String engineVersion =
@@ -96,6 +102,16 @@ public class OutboundContextClientInterceptor implements io.grpc.ClientIntercept
         putIfNonBlank(headers, QUERY_ID, resolved.queryId());
         putIfNonBlank(headers, ENGINE_KIND, engineKind);
         putIfNonBlank(headers, ENGINE_VERSION, engineVersion);
+        putIfNonBlank(
+            headers,
+            ENVIRONMENT_KIND,
+            environmentContext.hasEnvironmentKind() ? environmentContext.environmentKind() : null);
+        putIfNonBlank(
+            headers,
+            ENVIRONMENT_VERSION,
+            environmentContext.hasEnvironmentKind()
+                ? environmentContext.environmentVersion()
+                : null);
         putIfNonBlank(headers, CORR, resolved.correlationId());
         super.start(responseListener, headers);
       }

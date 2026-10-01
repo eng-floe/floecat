@@ -20,6 +20,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import java.util.List;
 
@@ -34,19 +35,22 @@ final class CatalogSurfaceTablePageSource
   private final NamespaceNode namespace;
   private final ResourceId namespaceId;
   private final ResourceId catalogId;
+  private final CatalogContext context;
 
   CatalogSurfaceTablePageSource(
       TableRepository repo,
       CatalogGraphView graphView,
       String accountId,
       NamespaceNode namespace,
-      ResourceId namespaceId) {
+      ResourceId namespaceId,
+      CatalogContext context) {
     this.repo = repo;
     this.graphView = graphView;
     this.accountId = accountId;
     this.namespace = namespace;
     this.namespaceId = namespaceId;
     this.catalogId = namespace.catalogId();
+    this.context = context;
   }
 
   @Override
@@ -71,7 +75,7 @@ final class CatalogSurfaceTablePageSource
 
   @Override
   public List<TableNode> systemNodes() {
-    return graphView.listSystemRelationsInNamespace(catalogId, namespaceId).stream()
+    return graphView.listSystemRelationsInNamespace(catalogId, namespaceId, context).stream()
         .filter(TableNode.class::isInstance)
         .map(TableNode.class::cast)
         .toList();

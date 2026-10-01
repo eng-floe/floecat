@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.catalog.it;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.def.SystemAggregateDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastDef;
 import ai.floedb.floecat.systemcatalog.def.SystemCastMethod;
@@ -223,11 +224,11 @@ public final class TestCatalogExtension implements EngineCatalogProvider {
   }
 
   /**
-   * One engine-gated system table, {@code sys.const}, mirroring the shape of engine-extension
-   * catalogs deployed in production. It exists only in the {@code test-engine} snapshot — never in
-   * the default one — so resolving it by name succeeds only while the request's engine context is
-   * visible to the resolving thread. {@code QueryContextPropagationIT} relies on this to detect
-   * silent engine-context loss (eng-floe/floecat#361).
+   * One engine-gated system table, {@code sys.const}, mirroring the shape of engine-owned catalogs.
+   * It exists only in the {@code test-engine} snapshot — never in the default one — so resolving it
+   * by name succeeds only while the request's engine context is visible to the resolving thread.
+   * {@code QueryContextPropagationIT} relies on this to detect silent engine-context loss
+   * (eng-floe/floecat#361).
    */
   private static List<SystemTableDef> tables() {
     return List.of(
@@ -235,9 +236,9 @@ public final class TestCatalogExtension implements EngineCatalogProvider {
             nr("sys.const"),
             "const",
             List.of(new SystemColumnDef("value", nr("pg_catalog.int4"), false, 1, null, List.of())),
-            TableBackendKind.TABLE_BACKEND_KIND_STORAGE,
+            TableBackendKind.TABLE_BACKEND_KIND_ENGINE,
             /* scannerId= */ "",
-            /* storagePath= */ "memory://test-engine/sys/const",
+            /* storagePath= */ "",
             /* storageEndpointKey= */ "",
             List.of(),
             /* flightEndpoint= */ null,
@@ -249,23 +250,12 @@ public final class TestCatalogExtension implements EngineCatalogProvider {
   // ---------------------------------------------------------------------------
 
   @Override
-  public List<SystemObjectDef> definitions() {
+  public List<SystemObjectDef> definitions(CatalogContext context) {
     return List.of();
   }
 
   @Override
-  public boolean supportsEngine(String engineKind) {
-    return ENGINE_KIND.equals(engineKind);
-  }
-
-  @Override
-  public boolean supports(NameRef name, String engineKind) {
-    return false;
-  }
-
-  @Override
-  public Optional<SystemObjectScanner> provide(
-      String scannerId, String engineKind, String engineVersion) {
+  public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
     return Optional.empty();
   }
 

@@ -18,6 +18,7 @@ package ai.floedb.floecat.systemcatalog.provider;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTypeDef;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
@@ -58,23 +59,12 @@ public final class InvalidCatalogExtension implements EngineCatalogProvider {
   }
 
   @Override
-  public List<SystemObjectDef> definitions() {
+  public List<SystemObjectDef> definitions(CatalogContext context) {
     return List.of();
   }
 
   @Override
-  public boolean supportsEngine(String engineKind) {
-    return ENGINE_KIND.equals(engineKind);
-  }
-
-  @Override
-  public boolean supports(NameRef name, String engineKind) {
-    return supportsEngine(engineKind);
-  }
-
-  @Override
-  public Optional<SystemObjectScanner> provide(
-      String scannerId, String engineKind, String engineVersion) {
+  public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
     return Optional.empty();
   }
 }

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.resolver;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -80,19 +81,12 @@ class SystemScannerResolverTest {
   }
 
   @Test
-  void fallsBackWhenEngineTableMissing() {
+  void doesNotFallBackWhenEngineTableMissing() {
     ResourceId pgId = systemTableId("pg", "missing");
-    ResourceId fallbackId = systemTableId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "missing");
-    SystemTableNode.FloeCatSystemTableNode fallbackNode = tableNode(fallbackId, "internal-scanner");
+    SystemScannerResolver resolver = buildResolver(new TestCatalogGraphView(), Map.of());
 
-    SystemObjectScanner internalScanner = new TestSystemObjectScanner("internal-scanner");
-    SystemScannerResolver resolver =
-        buildResolver(
-            new TestCatalogGraphView().addNode(fallbackNode),
-            Map.of("internal-scanner", internalScanner));
-
-    assertThat(withEngineContext(ENGINE_CTX, () -> resolver.resolve("corr", pgId)))
-        .isSameAs(internalScanner);
+    assertThatThrownBy(() -> withEngineContext(ENGINE_CTX, () -> resolver.resolve("corr", pgId)))
+        .isInstanceOf(RuntimeException.class);
   }
 
   @Test
@@ -109,6 +103,24 @@ class SystemScannerResolverTest {
 
     CatalogContext context = CatalogContext.of(EnvironmentContext.of("floe", "1"), ENGINE_CTX);
     assertThat(resolver.resolve("corr", tableId, context, PhaseDiagnostics.NOOP)).isSameAs(scanner);
+  }
+
+  @Test
+  void selectedEnvironmentOwnsScannerLookup() {
+    ResourceId tableId = systemTableId("pg", "foo");
+    SystemObjectScanner engineScanner = new TestSystemObjectScanner("engine-scanner");
+    SystemObjectScanner environmentScanner = new TestSystemObjectScanner("environment-scanner");
+    SystemScannerResolver resolver =
+        buildResolver(
+            new TestCatalogGraphView().addNode(tableNode(tableId, "shared-scanner")),
+            Map.of("shared-scanner", engineScanner));
+    resolver.environmentProviders =
+        List.of(new TestEnvironmentProvider(Map.of("shared-scanner", environmentScanner)));
+
+    CatalogContext context = CatalogContext.of(EnvironmentContext.of("floe", "1"), ENGINE_CTX);
+
+    assertThat(resolver.resolve("corr", tableId, context, PhaseDiagnostics.NOOP))
+        .isSameAs(environmentScanner);
   }
 
   private static SystemScannerResolver buildResolver(
@@ -151,23 +163,12 @@ class SystemScannerResolverTest {
     }
 
     @Override
-    public List<SystemObjectDef> definitions() {
+    public List<SystemObjectDef> definitions(CatalogContext context) {
       return List.of();
     }
 
     @Override
-    public boolean supportsEngine(String engineKind) {
-      return true;
-    }
-
-    @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return true;
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
       return Optional.ofNullable(scanners.get(scannerId));
     }
   }

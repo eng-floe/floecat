@@ -43,7 +43,7 @@ public final class StaticSystemCatalogProvider implements SystemCatalogProvider 
   @Override
   public SystemEngineCatalog load(CatalogContext context) {
     CatalogContext canonical = Objects.requireNonNull(context, "context");
-    String normalized = canonical.engine().effectiveEngineKind();
+    String normalized = canonical.engine().normalizedKind();
     SystemCatalogData data = catalogs.get(normalized);
     return SystemEngineCatalog.from(normalized, data != null ? data : SystemCatalogData.empty());
   }

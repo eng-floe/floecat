@@ -27,7 +27,6 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
-import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -117,9 +116,7 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        CatalogContext.of(
-            EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
-            engineContext),
+        catalogContext(engineContext),
         StatsProvider.NONE,
         ConstraintProvider.NONE,
         new ConcurrentHashMap<>());
@@ -135,9 +132,7 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        CatalogContext.of(
-            EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
-            engineContext),
+        catalogContext(engineContext),
         statsProvider,
         ConstraintProvider.NONE,
         new ConcurrentHashMap<>());
@@ -154,9 +149,7 @@ public record SystemObjectScanContext(
         graph,
         name,
         queryDefaultCatalogId,
-        CatalogContext.of(
-            EnvironmentContext.of(engineContext.engineKind(), engineContext.engineVersion()),
-            engineContext),
+        catalogContext(engineContext),
         statsProvider,
         constraintProvider,
         new ConcurrentHashMap<>());
@@ -164,6 +157,10 @@ public record SystemObjectScanContext(
 
   public GraphNode resolve(ResourceId id) {
     return graph.resolve(id, catalogContext).orElseThrow();
+  }
+
+  private static CatalogContext catalogContext(EngineContext engineContext) {
+    return CatalogContext.forEngine(engineContext);
   }
 
   @Override
@@ -181,12 +178,12 @@ public record SystemObjectScanContext(
   }
 
   /** Lightweight namespace refs from the graph view; production avoids full node hydration. */
-  public List<TopologyGraph.NamespaceRef> listNamespaceRefs() {
+  public List<CatalogGraphView.NamespaceRef> listNamespaceRefs() {
     return graph.listNamespaceRefs(queryDefaultCatalogId, catalogContext);
   }
 
   /** Lightweight namespace refs matching the supplied information_schema names. */
-  public List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(java.util.Set<String> names) {
+  public List<CatalogGraphView.NamespaceRef> listNamespaceRefsByName(java.util.Set<String> names) {
     return graph.listNamespaceRefsByName(queryDefaultCatalogId, names, catalogContext);
   }
 
@@ -196,12 +193,12 @@ public record SystemObjectScanContext(
   }
 
   /** Lightweight relation refs for a namespace; production avoids full node hydration. */
-  public List<TopologyGraph.RelationRef> listRelationRefs(ResourceId namespaceId) {
+  public List<CatalogGraphView.RelationRef> listRelationRefs(ResourceId namespaceId) {
     return graph.listRelationRefs(queryDefaultCatalogId, namespaceId, catalogContext);
   }
 
   /** Lightweight relation refs matching the supplied names. */
-  public List<TopologyGraph.RelationRef> listRelationRefsByName(
+  public List<CatalogGraphView.RelationRef> listRelationRefsByName(
       ResourceId namespaceId, java.util.Set<String> names) {
     return graph.listRelationRefsByName(queryDefaultCatalogId, namespaceId, names, catalogContext);
   }

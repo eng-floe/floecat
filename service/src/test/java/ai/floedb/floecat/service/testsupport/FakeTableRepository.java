@@ -20,7 +20,7 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView.RelationRef;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.storage.errors.StorageNotFoundException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;

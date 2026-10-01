@@ -34,6 +34,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.def.SystemColumnDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
@@ -51,7 +52,10 @@ class SystemConstraintCatalogTest {
     when(registry.nodesFor(any(CatalogContext.class))).thenReturn(builtinNodes(tableId));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
-    var view = catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).orElseThrow();
+    var view =
+        catalog
+            .constraints(CatalogContext.forEngine(EngineContext.of("floedb", "1.0")), tableId)
+            .orElseThrow();
 
     assertEquals(tableId, view.relationId());
     assertEquals(1, view.constraints().size());
@@ -68,7 +72,10 @@ class SystemConstraintCatalogTest {
         .thenReturn(builtinNodesWithoutExplicitConstraint(tableId));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
-    var view = catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).orElseThrow();
+    var view =
+        catalog
+            .constraints(CatalogContext.forEngine(EngineContext.of("floedb", "1.0")), tableId)
+            .orElseThrow();
 
     assertEquals(1, view.constraints().size());
     assertEquals(ConstraintType.CT_NOT_NULL, view.constraints().get(0).getType());
@@ -83,7 +90,10 @@ class SystemConstraintCatalogTest {
     when(registry.nodesFor(any(CatalogContext.class))).thenReturn(builtinNodes(tableId));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
-    var view = catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).orElseThrow();
+    var view =
+        catalog
+            .constraints(CatalogContext.forEngine(EngineContext.of("floedb", "1.0")), tableId)
+            .orElseThrow();
 
     assertEquals(1, view.constraints().size());
     assertEquals("tables_table_name_nn", view.constraints().get(0).getName());
@@ -114,7 +124,10 @@ class SystemConstraintCatalogTest {
                         .build())));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
-    var view = catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).orElseThrow();
+    var view =
+        catalog
+            .constraints(CatalogContext.forEngine(EngineContext.of("floedb", "1.0")), tableId)
+            .orElseThrow();
 
     assertEquals(1, view.constraints().size());
     assertEquals("nn_c1_explicit_id", view.constraints().get(0).getName());
@@ -148,7 +161,10 @@ class SystemConstraintCatalogTest {
                         .build())));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
-    var view = catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).orElseThrow();
+    var view =
+        catalog
+            .constraints(CatalogContext.forEngine(EngineContext.of("floedb", "1.0")), tableId)
+            .orElseThrow();
 
     assertEquals(1, view.constraints().size());
     assertEquals("nn_c1_explicit_name", view.constraints().get(0).getName());
@@ -178,7 +194,10 @@ class SystemConstraintCatalogTest {
                         .build())));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
-    var view = catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).orElseThrow();
+    var view =
+        catalog
+            .constraints(CatalogContext.forEngine(EngineContext.of("floedb", "1.0")), tableId)
+            .orElseThrow();
 
     assertEquals(2, view.constraints().size());
     assertEquals("nn_malformed", view.constraints().get(0).getName());
@@ -218,7 +237,10 @@ class SystemConstraintCatalogTest {
                 List.of()));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
-    var view = catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).orElseThrow();
+    var view =
+        catalog
+            .constraints(CatalogContext.forEngine(EngineContext.of("floedb", "1.0")), tableId)
+            .orElseThrow();
 
     assertEquals(2, view.constraints().size());
     assertEquals("nn_1", view.constraints().get(0).getName());
@@ -232,7 +254,10 @@ class SystemConstraintCatalogTest {
     when(registry.nodesFor(any(CatalogContext.class))).thenReturn(builtinNodesWithOrder(tableId));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
-    var view = catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).orElseThrow();
+    var view =
+        catalog
+            .constraints(CatalogContext.forEngine(EngineContext.of("floedb", "1.0")), tableId)
+            .orElseThrow();
 
     assertEquals(4, view.constraints().size());
     assertEquals("pk_tables", view.constraints().get(0).getName());
@@ -251,21 +276,36 @@ class SystemConstraintCatalogTest {
     ResourceId userAccountAlias = systemId.toBuilder().setAccountId("acct").build();
 
     var view =
-        catalog.constraints(EngineContext.of("floedb", "1.0"), userAccountAlias).orElseThrow();
+        catalog
+            .constraints(
+                CatalogContext.forEngine(EngineContext.of("floedb", "1.0")), userAccountAlias)
+            .orElseThrow();
     assertEquals(systemId, view.relationId());
   }
 
   @Test
-  void catalogIsCachedPerEngineVersionKey() {
+  void catalogIsCachedPerCompleteCatalogContext() {
     SystemNodeRegistry registry = mock(SystemNodeRegistry.class);
     ResourceId tableId = tableId();
     when(registry.nodesFor(any(CatalogContext.class))).thenReturn(builtinNodes(tableId));
 
     SystemConstraintCatalog catalog = new SystemConstraintCatalog(registry);
-    assertTrue(catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).isPresent());
-    assertTrue(catalog.constraints(EngineContext.of("floedb", "1.0"), tableId).isPresent());
+    assertTrue(
+        catalog
+            .constraints(CatalogContext.forEngine(EngineContext.of("floedb", "1.0")), tableId)
+            .isPresent());
+    assertTrue(
+        catalog
+            .constraints(CatalogContext.forEngine(EngineContext.of("floedb", "1.0")), tableId)
+            .isPresent());
+    CatalogContext environmentA =
+        CatalogContext.of(EnvironmentContext.of("floe", "1"), EngineContext.of("floedb", "1.0"));
+    CatalogContext environmentB =
+        CatalogContext.of(EnvironmentContext.of("duck", "1"), EngineContext.of("floedb", "1.0"));
+    assertTrue(catalog.constraints(environmentA, tableId).isPresent());
+    assertTrue(catalog.constraints(environmentB, tableId).isPresent());
 
-    verify(registry, times(1)).nodesFor(any(CatalogContext.class));
+    verify(registry, times(3)).nodesFor(any(CatalogContext.class));
   }
 
   private static SystemNodeRegistry.BuiltinNodes builtinNodes(ResourceId tableId) {
