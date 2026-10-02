@@ -124,7 +124,7 @@ class NativeReconcileJobIndexStorePointerSetTest {
     StoredReconcileJob record = record("JS_SUCCEEDED");
     record.parentJobId = "";
     String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, JOB_ID);
-    String sortableToken = String.format("%019d-%s", Long.MAX_VALUE - record.createdAtMs, JOB_ID);
+    String sortableToken = Keys.reconcileJobSortableToken(record.createdAtMs, JOB_ID);
 
     ReconcileJobIndexStore.JobIndexWriteBatch batch =
         store.buildJobIndexWriteBatch(

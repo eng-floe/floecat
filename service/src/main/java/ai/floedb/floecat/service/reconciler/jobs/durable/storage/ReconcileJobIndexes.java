@@ -56,7 +56,7 @@ public class ReconcileJobIndexes {
       return "";
     }
     return Keys.reconcileJobByConnectorPointer(
-        accountId, connectorId, connectorSortableJobToken(createdAtMs, jobId));
+        accountId, connectorId, Keys.reconcileJobSortableToken(createdAtMs, jobId));
   }
 
   public String dedupePointerKey(StoredReconcileJob record) {
@@ -199,12 +199,6 @@ public class ReconcileJobIndexes {
     return "JS_SUCCEEDED".equals(state)
         || "JS_FAILED".equals(state)
         || "JS_CANCELLED".equals(state);
-  }
-
-  private static String connectorSortableJobToken(long createdAtMs, String jobId) {
-    long created = Math.max(0L, createdAtMs);
-    long reversedCreated = Long.MAX_VALUE - created;
-    return String.format("%019d-%s", reversedCreated, jobId);
   }
 
   private static boolean blank(String value) {

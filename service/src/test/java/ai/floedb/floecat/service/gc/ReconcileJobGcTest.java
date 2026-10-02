@@ -612,7 +612,7 @@ class ReconcileJobGcTest {
     String jobId = "job-claimed-unreadable";
     long createdAtMs = 123L;
     String canonicalKey = Keys.reconcileJobPointerById(ACCOUNT_ID, jobId);
-    String sortableToken = String.format("%019d-%s", Long.MAX_VALUE - createdAtMs, jobId);
+    String sortableToken = Keys.reconcileJobSortableToken(createdAtMs, jobId);
     String projectionKey = Keys.reconcileJobProjectionPointer(ACCOUNT_ID, jobId);
     String accountSummaryKey =
         Keys.reconcileRootJobSummaryByAccountPointer(ACCOUNT_ID, sortableToken);
@@ -999,9 +999,7 @@ class ReconcileJobGcTest {
         jobIndexBackend
             .loadIndexEntry(
                 Keys.reconcileJobByConnectorPointer(
-                    ACCOUNT_ID,
-                    CONNECTOR_ID,
-                    String.format("%019d-%s", Long.MAX_VALUE - now, jobId)))
+                    ACCOUNT_ID, CONNECTOR_ID, Keys.reconcileJobSortableToken(now, jobId)))
             .isEmpty());
     assertTrue(
         jobIndexBackend
@@ -1127,9 +1125,7 @@ class ReconcileJobGcTest {
         jobIndexBackend
             .loadIndexEntry(
                 Keys.reconcileJobByConnectorPointer(
-                    ACCOUNT_ID,
-                    CONNECTOR_ID,
-                    String.format("%019d-%s", Long.MAX_VALUE - now, jobId)))
+                    ACCOUNT_ID, CONNECTOR_ID, Keys.reconcileJobSortableToken(now, jobId)))
             .isEmpty());
     assertTrue(
         jobIndexBackend
@@ -1164,7 +1160,7 @@ class ReconcileJobGcTest {
         Keys.reconcileReadyPointerByDue(now - 1_000L, ACCOUNT_ID, "lane-native", jobId);
     StoredReconcileJob record = storedJob(jobId, "JS_FAILED", now, "", dedupeHash, readyPointer);
     putNativeJobIndexRows(record);
-    String token = String.format("%019d-%s", Long.MAX_VALUE - now, jobId);
+    String token = Keys.reconcileJobSortableToken(now, jobId);
     String byAccount = Keys.reconcileRootJobSummaryByAccountPointer(ACCOUNT_ID, token);
     String byConnector =
         Keys.reconcileRootJobSummaryByConnectorPointer(ACCOUNT_ID, CONNECTOR_ID, token);
@@ -1221,9 +1217,7 @@ class ReconcileJobGcTest {
         jobIndexBackend
             .loadIndexEntry(
                 Keys.reconcileJobByConnectorPointer(
-                    ACCOUNT_ID,
-                    CONNECTOR_ID,
-                    String.format("%019d-%s", Long.MAX_VALUE - now, jobId)))
+                    ACCOUNT_ID, CONNECTOR_ID, Keys.reconcileJobSortableToken(now, jobId)))
             .isPresent());
     assertTrue(
         jobIndexBackend
@@ -1458,7 +1452,7 @@ class ReconcileJobGcTest {
             Keys.reconcileJobByConnectorPointer(
                 record.accountId,
                 record.connectorId,
-                String.format("%019d-%s", Long.MAX_VALUE - record.createdAtMs, record.jobId)),
+                Keys.reconcileJobSortableToken(record.createdAtMs, record.jobId)),
             0L,
             canonicalKey,
             PointerReferenceKind.PRK_POINTER_KEY));
@@ -1518,7 +1512,7 @@ class ReconcileJobGcTest {
           Keys.reconcileJobByConnectorPointer(
               record.accountId,
               record.connectorId,
-              String.format("%019d-%s", Long.MAX_VALUE - record.createdAtMs, record.jobId)));
+              Keys.reconcileJobSortableToken(record.createdAtMs, record.jobId)));
       cleanupIndexKeys.add(
           Keys.reconcileJobByStatePointer(
               record.state, record.createdAtMs, record.accountId, record.jobId));
