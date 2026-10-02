@@ -48,12 +48,12 @@ import ai.floedb.floecat.query.rpc.DescribeInputsRequest;
 import ai.floedb.floecat.query.rpc.DescribeInputsResponse;
 import ai.floedb.floecat.query.rpc.FetchTableConstraintsRequest;
 import ai.floedb.floecat.query.rpc.FetchTargetStatsRequest;
-import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.InitScanRequest;
 import ai.floedb.floecat.query.rpc.PlannerStatsServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryScanServiceGrpc;
 import ai.floedb.floecat.query.rpc.QuerySchemaServiceGrpc;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
+import ai.floedb.floecat.query.rpc.ResolveQueryInputsRequest;
 import ai.floedb.floecat.query.rpc.TableConstraintsBundleChunk;
 import ai.floedb.floecat.query.rpc.TableConstraintsResult;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
@@ -91,7 +91,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Service-boundary proof that a table pin freezes the query's view of a table: after a query pins a
  * table, publishing a new snapshot and altering the table must not change what that query's schema
- * and scan see. Exercises the real RPC surface (BeginQuery / DescribeInputs / GetUserObjects /
+ * and scan see. Exercises the real RPC surface (BeginQuery / DescribeInputs / ResolveQueryInputs /
  * InitScan) rather than unit-testing pin builders.
  */
 @QuarkusTest
@@ -224,9 +224,9 @@ class QueryPinningConsistencyIT {
     return SnapshotRef.newBuilder().setSnapshotId(id).build();
   }
 
-  private List<UserObjectsBundleChunk> getUserObjects(String queryId, NameRef name) {
+  private List<UserObjectsBundleChunk> resolveQueryInputs(String queryId, NameRef name) {
     var request =
-        GetUserObjectsRequest.newBuilder()
+        ResolveQueryInputsRequest.newBuilder()
             .setQueryId(queryId)
             .addTables(
                 TableReferenceCandidate.newBuilder()
@@ -236,7 +236,7 @@ class QueryPinningConsistencyIT {
         UserObjectsServiceGrpc.newStub(channel).withDeadlineAfter(10, TimeUnit.SECONDS);
     CompletableFuture<List<UserObjectsBundleChunk>> future = new CompletableFuture<>();
     List<UserObjectsBundleChunk> chunks = Collections.synchronizedList(new ArrayList<>());
-    async.getUserObjects(
+    async.resolveQueryInputs(
         request,
         new StreamObserver<>() {
           @Override
@@ -304,15 +304,15 @@ class QueryPinningConsistencyIT {
   }
 
   // ---------------------------------------------------------------------------
-  // Mandatory scenario 2: begin without inputs, resolve via GetUserObjects, publish, hold.
+  // Mandatory scenario 2: begin without inputs, resolve via ResolveQueryInputs, publish, hold.
   // ---------------------------------------------------------------------------
   @Test
-  void lazyResolutionViaGetUserObjectsPinsFirstStateThroughPublish() {
+  void lazyResolutionViaResolveQueryInputsPinsFirstStateThroughPublish() {
     Fixture f = createTableWithSnapshot("lazy");
     String queryId = beginQuery(f);
 
     // First-touch discovery pins the current snapshot (snap1).
-    List<UserObjectsBundleChunk> chunks = getUserObjects(queryId, f.name());
+    List<UserObjectsBundleChunk> chunks = resolveQueryInputs(queryId, f.name());
     assertTrue(chunks.stream().anyMatch(UserObjectsBundleChunk::hasResolutions));
 
     // Publish a new snapshot + schema after the pin.
@@ -360,11 +360,11 @@ class QueryPinningConsistencyIT {
 
     String queryA = beginQuery(f);
     describe(queryA, f.name(), atSnapshot(f.snap1()));
-    String fpA = pinFingerprint(getUserObjects(queryA, f.name()));
+    String fpA = pinFingerprint(resolveQueryInputs(queryA, f.name()));
 
     String queryB = beginQuery(f);
     describe(queryB, f.name(), atSnapshot(snap2));
-    String fpB = pinFingerprint(getUserObjects(queryB, f.name()));
+    String fpB = pinFingerprint(resolveQueryInputs(queryB, f.name()));
 
     assertTrue(!fpA.isEmpty() && !fpB.isEmpty(), "both queries must expose a pin fingerprint");
     assertNotEquals(fpA, fpB, "different pinned snapshots must yield different pin fingerprints");

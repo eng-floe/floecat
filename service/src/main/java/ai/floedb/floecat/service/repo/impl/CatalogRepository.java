@@ -128,6 +128,17 @@ public class CatalogRepository {
         .flatMap(pointer -> toCatalogRef(accountId, pointer));
   }
 
+  /** Resolves a catalog identity from the pointer index without fetching its blob. */
+  public Optional<CatalogRef> getRefById(ResourceId catalogResourceId) {
+    return repo
+        .listRefsByPrefix(Keys.catalogPointerByNamePrefix(catalogResourceId.getAccountId()))
+        .stream()
+        .map(pointer -> toCatalogRef(catalogResourceId.getAccountId(), pointer))
+        .flatMap(Optional::stream)
+        .filter(ref -> ref.id().equals(catalogResourceId))
+        .findFirst();
+  }
+
   public List<Catalog> list(String accountId, int limit, String pageToken, StringBuilder nextOut) {
     return repo.listByPrefix(Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }

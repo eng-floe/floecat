@@ -163,15 +163,16 @@ final class RelationPayloadPolicy {
   }
 
   /**
-   * The payload token a caching client advertises (GetUserObjectsRequest.known_table_blob_versions)
-   * and this policy matches on. It must identify the WITHHELD PAYLOAD, not merely the content
-   * version: withheld columns carry engine-keyed payload (decorateColumns /
-   * hasRequiredEnginePayload), so a bare content version would let a client that shares one catalog
-   * cache across engines — or that spans an engine-version or decorator upgrade — advertise a
-   * version decorated for engine A, be served identity-only under engine B, and reuse engine-A
-   * decoration for an engine-B query. The requesting engine is already on the wire (EngineContext),
-   * so we fold it in server-side at both mint sites; the client stays engine-agnostic and
-   * correctness no longer depends on it keying its own cache by engine.
+   * The payload token a caching client advertises
+   * (ResolveQueryInputsRequest.known_table_blob_versions) and this policy matches on. It must
+   * identify the WITHHELD PAYLOAD, not merely the content version: withheld columns carry
+   * engine-keyed payload (decorateColumns / hasRequiredEnginePayload), so a bare content version
+   * would let a client that shares one catalog cache across engines — or that spans an
+   * engine-version or decorator upgrade — advertise a version decorated for engine A, be served
+   * identity-only under engine B, and reuse engine-A decoration for an engine-B query. The
+   * requesting engine is already on the wire (EngineContext), so we fold it in server-side at both
+   * mint sites; the client stays engine-agnostic and correctness no longer depends on it keying its
+   * own cache by engine.
    *
    * <p>The token folds in a SCHEMA scope ({@link SnapshotSelections#schemaScope}), because the
    * served column schema is read from the resolved snapshot (schema-on-read) and

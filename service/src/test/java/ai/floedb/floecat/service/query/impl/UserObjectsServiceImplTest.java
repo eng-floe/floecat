@@ -23,7 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
+import ai.floedb.floecat.query.rpc.ResolveQueryInputsRequest;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.service.query.catalog.UserObjectBundleService;
@@ -43,7 +43,7 @@ import org.mockito.Mockito;
 
 /**
  * Verifies that the gRPC principal context is propagated to the worker thread during streaming item
- * emission in {@link UserObjectsServiceImpl#getUserObjects}. Without the {@code grpcCtx.run()}
+ * emission in {@link UserObjectsServiceImpl#resolveQueryInputs}. Without the {@code grpcCtx.run()}
  * wrapping the entire subscription, {@code principal.get()} on the executor thread returns the
  * default (empty) {@link PrincipalContext}, causing {@code requireAccountId()} to fail with "key
  * arg 'account_id' is null/blank".
@@ -118,14 +118,14 @@ class UserObjectsServiceImplTest {
     service.bundles = mockBundles;
 
     // Build request
-    GetUserObjectsRequest request =
-        GetUserObjectsRequest.newBuilder()
+    ResolveQueryInputsRequest request =
+        ResolveQueryInputsRequest.newBuilder()
             .setQueryId("q-1")
             .addTables(TableReferenceCandidate.getDefaultInstance())
             .build();
 
     // Set the gRPC principal context (simulating what floecat's interceptor does) and invoke.
-    // The context is set on the TEST thread; getUserObjects() runs the Multi on an executor
+    // The context is set on the TEST thread; resolveQueryInputs() runs the Multi on an executor
     // thread. The fix ensures the context is propagated to that executor thread.
     PrincipalContext principal =
         PrincipalContext.newBuilder()
@@ -137,7 +137,7 @@ class UserObjectsServiceImplTest {
     Context previous = grpcCtx.attach();
     try {
       List<UserObjectsBundleChunk> chunks =
-          service.getUserObjects(request).collect().asList().await().indefinitely();
+          service.resolveQueryInputs(request).collect().asList().await().indefinitely();
       assertFalse(chunks.isEmpty(), "Expected at least one chunk");
     } finally {
       grpcCtx.detach(previous);
@@ -211,8 +211,8 @@ class UserObjectsServiceImplTest {
     service.bundles = mockBundles;
 
     // Build request
-    GetUserObjectsRequest request =
-        GetUserObjectsRequest.newBuilder()
+    ResolveQueryInputsRequest request =
+        ResolveQueryInputsRequest.newBuilder()
             .setQueryId("q-cancel")
             .addTables(TableReferenceCandidate.getDefaultInstance())
             .build();
@@ -231,7 +231,7 @@ class UserObjectsServiceImplTest {
       CountDownLatch itemReceived = new CountDownLatch(1);
 
       service
-          .getUserObjects(request)
+          .resolveQueryInputs(request)
           .subscribe()
           .withSubscriber(
               new MultiSubscriber<UserObjectsBundleChunk>() {

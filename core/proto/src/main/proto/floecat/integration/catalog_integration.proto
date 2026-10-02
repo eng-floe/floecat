@@ -307,6 +307,7 @@ message ListUpstreamObjectsResponse {
   ai.floedb.floecat.common.MutationMeta integration_meta = 3;
 }
 
+// CONTROL PLANE.
 service CatalogIntegrations {
   rpc GetCatalogIntegration(GetCatalogIntegrationRequest) returns (GetCatalogIntegrationResponse);
   rpc ListCatalogIntegrations(ListCatalogIntegrationsRequest) returns (ListCatalogIntegrationsResponse);

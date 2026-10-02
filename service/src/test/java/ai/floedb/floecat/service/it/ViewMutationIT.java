@@ -61,6 +61,9 @@ class ViewMutationIT {
   @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
+  @GrpcClient("floecat")
+  RelationServiceGrpc.RelationServiceBlockingStub relation;
+
   String viewPrefix = this.getClass().getSimpleName() + "_";
 
   @Inject TestDataResetter resetter;
@@ -95,19 +98,21 @@ class ViewMutationIT {
     var viewId = created.getResourceId();
     assertEquals(ResourceKind.RK_VIEW, viewId.getKind());
 
-    var resolved =
-        directory.resolveView(
-            ResolveViewRequest.newBuilder()
-                .setRef(
-                    NameRef.newBuilder()
-                        .setCatalog(cat.getDisplayName())
-                        .addAllPath(nsPath)
-                        .setName("recent_orders"))
-                .build());
-    assertEquals(viewId.getId(), resolved.getResourceId().getId());
+    assertEquals(
+        viewId.getId(),
+        TestSupport.resolveRelationId(
+                relation,
+                NameRef.newBuilder()
+                    .setCatalog(cat.getDisplayName())
+                    .addAllPath(nsPath)
+                    .setName("recent_orders")
+                    .build(),
+                ResourceKind.RK_VIEW)
+            .getId());
 
-    var lookup = directory.lookupView(LookupViewRequest.newBuilder().setResourceId(viewId).build());
-    assertEquals("recent_orders", lookup.getName().getName());
+    var lookup =
+        relation.getRelation(GetRelationRequest.newBuilder().setRelationId(viewId).build());
+    assertEquals("recent_orders", lookup.getRelation().getName().getName());
 
     var weekly =
         TestSupport.createView(
@@ -129,31 +134,34 @@ class ViewMutationIT {
     assertEquals(2, listed.getViewsCount());
 
     var prefixResolved =
-        directory.resolveFQViews(
-            ResolveFQViewsRequest.newBuilder()
-                .setPrefix(NameRef.newBuilder().setCatalog(cat.getDisplayName()).addAllPath(nsPath))
+        relation.listRelations(
+            ListRelationsRequest.newBuilder()
+                .setNamespaceId(nsId)
+                .addKinds(ResourceKind.RK_VIEW)
                 .setPage(PageRequest.newBuilder().setPageSize(10).build())
                 .build());
-    assertEquals(2, prefixResolved.getViewsCount());
+    assertEquals(
+        2, prefixResolved.getResultsList().stream().filter(result -> result.hasRelation()).count());
 
     var listResolved =
-        directory.resolveFQViews(
-            ResolveFQViewsRequest.newBuilder()
-                .setList(
-                    NameList.newBuilder()
-                        .addNames(
+        relation.resolveRelations(
+            ResolveRelationsRequest.newBuilder()
+                .addReferences(
+                    RelationReference.newBuilder()
+                        .addCandidates(
                             NameRef.newBuilder()
                                 .setCatalog(cat.getDisplayName())
                                 .addAllPath(nsPath)
-                                .setName("recent_orders"))
-                        .addNames(
+                                .setName("recent_orders")))
+                .addReferences(
+                    RelationReference.newBuilder()
+                        .addCandidates(
                             NameRef.newBuilder()
                                 .setCatalog(cat.getDisplayName())
                                 .addAllPath(nsPath)
                                 .setName("weekly_summary")))
-                .setPage(PageRequest.newBuilder().setPageSize(10).build())
                 .build());
-    assertEquals(2, listResolved.getViewsCount());
+    assertEquals(2, listResolved.getResultsCount());
 
     var beforeRename = TestSupport.metaForView(ptr, blob, viewId);
     FieldMask mask = FieldMask.newBuilder().addPaths("display_name").build();
@@ -172,33 +180,34 @@ class ViewMutationIT {
     assertEquals("recent_orders_v2", renameResp.getView().getDisplayName());
     assertTrue(renameResp.getMeta().getPointerVersion() > beforeRename.getPointerVersion());
 
-    var resolveRenamed =
-        directory.resolveView(
-            ResolveViewRequest.newBuilder()
-                .setRef(
-                    NameRef.newBuilder()
-                        .setCatalog(cat.getDisplayName())
-                        .addAllPath(nsPath)
-                        .setName("recent_orders_v2"))
-                .build());
-    assertEquals(viewId.getId(), resolveRenamed.getResourceId().getId());
+    assertEquals(
+        viewId.getId(),
+        TestSupport.resolveRelationId(
+                relation,
+                NameRef.newBuilder()
+                    .setCatalog(cat.getDisplayName())
+                    .addAllPath(nsPath)
+                    .setName("recent_orders_v2")
+                    .build(),
+                ResourceKind.RK_VIEW)
+            .getId());
 
     var lookupRenamed =
-        directory.lookupView(LookupViewRequest.newBuilder().setResourceId(viewId).build());
-    assertEquals("recent_orders_v2", lookupRenamed.getName().getName());
+        relation.getRelation(GetRelationRequest.newBuilder().setRelationId(viewId).build());
+    assertEquals("recent_orders_v2", lookupRenamed.getRelation().getName().getName());
 
     var nfOldName =
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                directory.resolveView(
-                    ResolveViewRequest.newBuilder()
-                        .setRef(
-                            NameRef.newBuilder()
-                                .setCatalog(cat.getDisplayName())
-                                .addAllPath(nsPath)
-                                .setName("recent_orders"))
-                        .build()));
+                TestSupport.resolveRelationId(
+                    relation,
+                    NameRef.newBuilder()
+                        .setCatalog(cat.getDisplayName())
+                        .addAllPath(nsPath)
+                        .setName("recent_orders")
+                        .build(),
+                    ResourceKind.RK_VIEW));
     TestSupport.assertGrpcAndMc(
         nfOldName, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
 
@@ -319,14 +328,14 @@ class ViewMutationIT {
         assertThrows(
             StatusRuntimeException.class,
             () ->
-                directory.resolveView(
-                    ResolveViewRequest.newBuilder()
-                        .setRef(
-                            NameRef.newBuilder()
-                                .setCatalog(cat.getDisplayName())
-                                .addAllPath(nsPath)
-                                .setName("recent_orders_v2"))
-                        .build()));
+                TestSupport.resolveRelationId(
+                    relation,
+                    NameRef.newBuilder()
+                        .setCatalog(cat.getDisplayName())
+                        .addAllPath(nsPath)
+                        .setName("recent_orders_v2")
+                        .build(),
+                    ResourceKind.RK_VIEW));
     TestSupport.assertGrpcAndMc(
         dirNotFound, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, "not found");
 

@@ -22,6 +22,7 @@ import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
@@ -166,6 +167,10 @@ public class Shell implements Runnable {
 
   @Inject
   @GrpcClient("floecat")
+  RelationServiceGrpc.RelationServiceBlockingStub relations;
+
+  @Inject
+  @GrpcClient("floecat")
   TableStatisticsServiceGrpc.TableStatisticsServiceBlockingStub statistics;
 
   @Inject
@@ -259,6 +264,7 @@ public class Shell implements Runnable {
               .accounts(accounts)
               .catalogs(catalogs)
               .directory(directory)
+              .relations(relations)
               .namespaces(namespaces)
               .tables(tables)
               .viewService(viewService)
@@ -916,6 +922,7 @@ public class Shell implements Runnable {
     namespaces = namespaces.withInterceptors(authInterceptor);
     tables = tables.withInterceptors(authInterceptor);
     directory = directory.withInterceptors(authInterceptor);
+    relations = relations.withInterceptors(authInterceptor);
     statistics = statistics.withInterceptors(authInterceptor);
     indexes = indexes.withInterceptors(authInterceptor);
     constraintsService = constraintsService.withInterceptors(authInterceptor);

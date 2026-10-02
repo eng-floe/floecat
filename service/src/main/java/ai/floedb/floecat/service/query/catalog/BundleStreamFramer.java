@@ -26,9 +26,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The GetUserObjects wire protocol for one request: a header chunk, then zero or more resolution
- * chunks, then a single end chunk carrying the result counts — every chunk stamped with a monotonic
- * {@code seq}. Resolutions are buffered and sliced so no chunk exceeds {@code
+ * The ResolveQueryInputs wire protocol for one request: a header chunk, then zero or more
+ * resolution chunks, then a single end chunk carrying the result counts — every chunk stamped with
+ * a monotonic {@code seq}. Resolutions are buffered and sliced so no chunk exceeds {@code
  * maxResolutionsPerChunk}.
  *
  * <p>The pipeline hands this framer already-built {@link RelationResolution}s in emit order via

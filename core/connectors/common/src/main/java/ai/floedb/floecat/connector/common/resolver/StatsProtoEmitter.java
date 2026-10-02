@@ -462,12 +462,16 @@ public final class StatsProtoEmitter {
 
   private static ScalarStats buildColumnScalar(
       FloecatConnector.ColumnStatsView view, UpstreamStamp upstreamOrNull) {
+    String logicalType = view.logicalType() == null ? "" : view.logicalType();
     ScalarStats.Builder scalar =
         ScalarStats.newBuilder()
             .setDisplayName(statsDisplayName(view.ref()))
-            .setLogicalType(view.logicalType() == null ? "" : view.logicalType())
+            .setLogicalType(logicalType)
             .setRowCount(view.rowCount())
             .putAllProperties(view.properties() == null ? Map.of() : view.properties());
+    if (!logicalType.isBlank()) {
+      scalar.setType(LogicalTypeProtoAdapter.parseToProto(logicalType));
+    }
     if (upstreamOrNull != null) {
       scalar.setUpstream(upstreamOrNull);
     }

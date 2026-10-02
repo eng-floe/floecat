@@ -198,10 +198,10 @@ message RelationPinIdentity {
   /**
    * Cache/provenance token whose MEANING depends on the emitting path:
    *
-   *   - On a GetUserObjects bundle (RelationInfo.pin_identity) it is the opaque, payload-scoped
+   *   - On a ResolveQueryInputs bundle (RelationInfo.pin_identity) it is the opaque, payload-scoped
    *     POSSESSION TOKEN: a caching client keys the relation by it and serves it warm across
    *     queries, and the slim identity-only reply is gated on it
-   *     (GetUserObjectsRequest.known_table_blob_versions). The server mints it and the client only
+   *     (ResolveQueryInputsRequest.known_table_blob_versions). The server mints it and the client only
    *     stores and echoes it, so the derivation may change without a wire break — treat it as
    *     opaque. Derivation and contracts below.
    *   - On the query-pin paths (BeginQueryResponse.relation_pins, GetQuerySchema) it is the RAW

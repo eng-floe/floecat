@@ -34,7 +34,7 @@ import java.util.Objects;
  *
  * <pre>{@code
  * // Writing stats to proto
- * String typeStr = LogicalTypeProtoAdapter.encodeLogicalType(logicalType);
+ * ai.floedb.floecat.types.rpc.LogicalType type = LogicalTypeProtoAdapter.toProto(logicalType);
  * String minStr  = LogicalTypeProtoAdapter.encodeValue(logicalType, minValue);
  *
  * // Reading stats from proto
@@ -45,6 +45,9 @@ import java.util.Objects;
 public final class LogicalTypeProtoAdapter {
 
   private LogicalTypeProtoAdapter() {}
+
+  /** Reserved field number used by the legacy SchemaColumn.logical_type string. */
+  private static final int LEGACY_LOGICAL_TYPE_FIELD = 2;
 
   /**
    * Encodes a {@link LogicalType} to its canonical wire string (e.g. {@code "INT"}, {@code
@@ -301,9 +304,6 @@ public final class LogicalTypeProtoAdapter {
     return toProto(LogicalTypeFormat.parse(s));
   }
 
-  /** Reserved field number of the legacy SchemaColumn.logical_type string. */
-  private static final int LEGACY_LOGICAL_TYPE_FIELD = 2;
-
   /**
    * Recovers the type of a {@link ai.floedb.floecat.query.rpc.SchemaColumn} persisted before the
    * typed migration. The legacy {@code logical_type} string (reserved field 2) survives in the
@@ -349,8 +349,40 @@ public final class LogicalTypeProtoAdapter {
     return LogicalTypeFormat.format(columnType(column));
   }
 
+  /**
+   * Upgrades a legacy scalar-stat record that only has the canonical type string in field 2.
+   * Existing records remain readable while new writes add the structured {@code type} field.
+   */
+  public static ScalarStats upgradeLegacyScalarStats(ScalarStats stats) {
+    if (stats.hasType()) {
+      return stats;
+    }
+    String legacy = stats.getLogicalType();
+    if (!legacy.isBlank()) {
+      try {
+        return stats.toBuilder().setType(parseToProto(legacy)).build();
+      } catch (IllegalArgumentException ignored) {
+        // Preserve the record; callers report an invalid type as they did before migration.
+      }
+    }
+    return stats;
+  }
+
   public static LogicalType columnLogicalType(ScalarStats cs) {
-    return decodeLogicalType(cs.getLogicalType());
+    Objects.requireNonNull(cs, "scalar stats");
+    ScalarStats upgraded = upgradeLegacyScalarStats(cs);
+    if (!upgraded.hasType()) {
+      return decodeLogicalType(upgraded.getLogicalType());
+    }
+    return fromProto(upgraded.getType());
+  }
+
+  /** Formats a scalar statistic's structured type for display or legacy text APIs. */
+  public static String columnLogicalTypeString(ScalarStats cs) {
+    if (!cs.hasType() && cs.getLogicalType().isBlank()) {
+      return "";
+    }
+    return LogicalTypeFormat.format(columnLogicalType(cs));
   }
 
   public static Object columnMin(ScalarStats cs) {

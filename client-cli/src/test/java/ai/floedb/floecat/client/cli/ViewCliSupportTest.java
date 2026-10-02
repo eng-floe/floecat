@@ -28,12 +28,15 @@ import ai.floedb.floecat.catalog.rpc.GetViewRequest;
 import ai.floedb.floecat.catalog.rpc.GetViewResponse;
 import ai.floedb.floecat.catalog.rpc.ListViewsRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsResponse;
+import ai.floedb.floecat.catalog.rpc.Relation;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveCatalogResponse;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceResponse;
-import ai.floedb.floecat.catalog.rpc.ResolveViewRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveViewResponse;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationResult;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsResponse;
 import ai.floedb.floecat.catalog.rpc.UpdateViewRequest;
 import ai.floedb.floecat.catalog.rpc.UpdateViewResponse;
 import ai.floedb.floecat.catalog.rpc.View;
@@ -83,6 +86,7 @@ class ViewCliSupportTest {
           new PrintStream(buf),
           h.viewStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID);
 
       String out = buf.toString();
@@ -97,7 +101,13 @@ class ViewCliSupportTest {
     try (Harness h = new Harness()) {
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
       ViewCliSupport.handle(
-          "views", List.of(), new PrintStream(buf), h.viewStub, h.directoryStub, () -> ACCT_ID);
+          "views",
+          List.of(),
+          new PrintStream(buf),
+          h.viewStub,
+          h.directoryStub,
+          h.relationStub,
+          () -> ACCT_ID);
       assertTrue(buf.toString().contains("usage:"));
     }
   }
@@ -118,6 +128,7 @@ class ViewCliSupportTest {
           new PrintStream(buf),
           h.viewStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID);
 
       assertEquals(1, h.viewService.createViewCalls.get());
@@ -142,6 +153,7 @@ class ViewCliSupportTest {
           new PrintStream(buf),
           h.viewStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID);
       assertTrue(buf.toString().contains("usage:"));
     }
@@ -153,7 +165,7 @@ class ViewCliSupportTest {
   void viewGetByUuidPrintsResult() throws Exception {
     try (Harness h = new Harness()) {
       h.viewService.viewToReturn = view(UUID_1, "acme-view");
-      h.directoryService.resolvedViewId = ResourceId.newBuilder().setId(UUID_1).build();
+      h.relationService.resolvedRelationId = ResourceId.newBuilder().setId(UUID_1).build();
 
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
       ViewCliSupport.handle(
@@ -162,6 +174,7 @@ class ViewCliSupportTest {
           new PrintStream(buf),
           h.viewStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID);
 
       assertEquals(1, h.viewService.getViewCalls.get());
@@ -177,7 +190,13 @@ class ViewCliSupportTest {
     try (Harness h = new Harness()) {
       ByteArrayOutputStream buf = new ByteArrayOutputStream();
       ViewCliSupport.handle(
-          "view", List.of("get"), new PrintStream(buf), h.viewStub, h.directoryStub, () -> ACCT_ID);
+          "view",
+          List.of("get"),
+          new PrintStream(buf),
+          h.viewStub,
+          h.directoryStub,
+          h.relationStub,
+          () -> ACCT_ID);
       assertTrue(buf.toString().contains("usage:"));
     }
   }
@@ -194,6 +213,7 @@ class ViewCliSupportTest {
           new PrintStream(buf),
           h.viewStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID);
 
       assertEquals(1, h.viewService.deleteViewCalls.get());
@@ -213,6 +233,7 @@ class ViewCliSupportTest {
           new PrintStream(buf),
           h.viewStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID);
       assertTrue(buf.toString().contains("usage:"));
     }
@@ -230,6 +251,7 @@ class ViewCliSupportTest {
           new PrintStream(buf),
           h.viewStub,
           h.directoryStub,
+          h.relationStub,
           () -> ACCT_ID);
       assertTrue(buf.toString().contains("unknown subcommand"));
     }
@@ -242,23 +264,28 @@ class ViewCliSupportTest {
     final ManagedChannel channel;
     final CapturingViewService viewService;
     final CapturingDirectoryService directoryService;
+    final CapturingRelationService relationService;
     final ViewServiceGrpc.ViewServiceBlockingStub viewStub;
     final DirectoryServiceGrpc.DirectoryServiceBlockingStub directoryStub;
+    final RelationServiceGrpc.RelationServiceBlockingStub relationStub;
 
     Harness() throws Exception {
       String serverName = InProcessServerBuilder.generateName();
       this.viewService = new CapturingViewService();
       this.directoryService = new CapturingDirectoryService();
+      this.relationService = new CapturingRelationService();
       this.server =
           InProcessServerBuilder.forName(serverName)
               .directExecutor()
               .addService(viewService)
               .addService(directoryService)
+              .addService(relationService)
               .build()
               .start();
       this.channel = InProcessChannelBuilder.forName(serverName).directExecutor().build();
       this.viewStub = ViewServiceGrpc.newBlockingStub(channel);
       this.directoryStub = DirectoryServiceGrpc.newBlockingStub(channel);
+      this.relationStub = RelationServiceGrpc.newBlockingStub(channel);
     }
 
     @Override
@@ -325,7 +352,6 @@ class ViewCliSupportTest {
 
     ResourceId resolvedCatalogId = ResourceId.newBuilder().setId(UUID_1).build();
     ResourceId resolvedNamespaceId = ResourceId.newBuilder().setId(UUID_1).build();
-    ResourceId resolvedViewId = ResourceId.newBuilder().setId(UUID_1).build();
 
     @Override
     public void resolveCatalog(
@@ -343,12 +369,27 @@ class ViewCliSupportTest {
           ResolveNamespaceResponse.newBuilder().setResourceId(resolvedNamespaceId).build());
       responseObserver.onCompleted();
     }
+  }
+
+  private static final class CapturingRelationService
+      extends RelationServiceGrpc.RelationServiceImplBase {
+    ResourceId resolvedRelationId =
+        ResourceId.newBuilder().setId(UUID_1).setKind(ResourceKind.RK_VIEW).build();
 
     @Override
-    public void resolveView(
-        ResolveViewRequest request, StreamObserver<ResolveViewResponse> responseObserver) {
+    public void resolveRelations(
+        ResolveRelationsRequest request,
+        StreamObserver<ResolveRelationsResponse> responseObserver) {
       responseObserver.onNext(
-          ResolveViewResponse.newBuilder().setResourceId(resolvedViewId).build());
+          ResolveRelationsResponse.newBuilder()
+              .addResults(
+                  ResolveRelationResult.newBuilder()
+                      .setRelation(
+                          Relation.newBuilder()
+                              .setResourceId(resolvedRelationId)
+                              .setDisplayName("resolved-view")
+                              .build()))
+              .build());
       responseObserver.onCompleted();
     }
   }

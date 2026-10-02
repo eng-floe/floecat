@@ -53,6 +53,9 @@ class ResourceMutationIT {
   @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
 
+  @GrpcClient("floecat")
+  RelationServiceGrpc.RelationServiceBlockingStub relations;
+
   private final Clock clock = Clock.systemUTC();
 
   @Inject TestDataResetter resetter;
@@ -142,7 +145,7 @@ class ResourceMutationIT {
     ResourceId tblId = tbl.getResourceId();
     assertEquals(
         tblId.getId(),
-        TestSupport.resolveTableId(directory, catName, nsFullPath, "orders_it").getId());
+        TestSupport.resolveTableId(directory, relations, catName, nsFullPath, "orders_it").getId());
 
     String schemaV2 =
         """
@@ -156,12 +159,14 @@ class ResourceMutationIT {
     Table renamed = TestSupport.renameTable(table, tblId, newName);
     assertEquals(newName, renamed.getDisplayName());
     assertEquals(
-        tblId.getId(), TestSupport.resolveTableId(directory, catName, nsFullPath, newName).getId());
+        tblId.getId(),
+        TestSupport.resolveTableId(directory, relations, catName, nsFullPath, newName).getId());
 
     StatusRuntimeException oldName404 =
         assertThrows(
             StatusRuntimeException.class,
-            () -> TestSupport.resolveTableId(directory, catName, nsFullPath, "orders_it"));
+            () ->
+                TestSupport.resolveTableId(directory, relations, catName, nsFullPath, "orders_it"));
     TestSupport.assertGrpcAndMc(oldName404, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, null);
 
     StatusRuntimeException nsDelBlocked =
@@ -184,7 +189,7 @@ class ResourceMutationIT {
     StatusRuntimeException tblGone =
         assertThrows(
             StatusRuntimeException.class,
-            () -> TestSupport.resolveTableId(directory, catName, nsFullPath, newName));
+            () -> TestSupport.resolveTableId(directory, relations, catName, nsFullPath, newName));
     TestSupport.assertGrpcAndMc(tblGone, Status.Code.NOT_FOUND, ErrorCode.MC_NOT_FOUND, null);
 
     TestSupport.deleteNamespace(namespace, nsId, true);

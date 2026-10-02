@@ -22,8 +22,8 @@ import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ListCatalogsRequest;
 import ai.floedb.floecat.common.rpc.QueryInput;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
-import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
+import ai.floedb.floecat.query.rpc.ResolveQueryInputsRequest;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
@@ -172,7 +172,8 @@ class SpanDecorationIT {
   void streamingServerSpanCarriesBodySetDecorations() {
     // Closes the loop the unary test cannot: the unary decorations all land inside the tracing
     // window, so they would pass even if the duplicated-context carrier were broken. This drives a
-    // STREAMING RPC (getUserObjects) whose handler body runs on a hopped worker thread OUTSIDE the
+    // STREAMING RPC (resolveQueryInputs) whose handler body runs on a hopped worker thread OUTSIDE
+    // the
     // window; the floecat.get_user_objects.* attributes are written on Span.current() captured
     // inside that body. They only reach the real RPC span if storeSpanOnDuplicatedContext ->
     // otelContextForBody grafted the captured span onto the body's context — the mechanism this
@@ -195,15 +196,15 @@ class SpanDecorationIT {
             .build();
 
     collectUserObjectBundle(
-        GetUserObjectsRequest.newBuilder()
+        ResolveQueryInputsRequest.newBuilder()
             .setQueryId(begin.getQuery().getQueryId())
             .addTables(candidate)
             .build());
 
     SpanData span =
-        awaitServerSpan("GetUserObjects")
+        awaitServerSpan("ResolveQueryInputs")
             .orElseThrow(
-                () -> new AssertionError("no SERVER span for GetUserObjects was exported"));
+                () -> new AssertionError("no SERVER span for ResolveQueryInputs was exported"));
 
     // Written on Span.current() inside the streaming body — present only if the carrier grafted
     // the captured span onto the hopped body's OTel context.
@@ -214,13 +215,13 @@ class SpanDecorationIT {
         .isNotBlank();
   }
 
-  /** Drives the streaming getUserObjects RPC and waits for the stream to terminate. */
-  private void collectUserObjectBundle(GetUserObjectsRequest request) {
+  /** Drives the streaming resolveQueryInputs RPC and waits for the stream to terminate. */
+  private void collectUserObjectBundle(ResolveQueryInputsRequest request) {
     UserObjectsServiceGrpc.UserObjectsServiceStub async =
         UserObjectsServiceGrpc.newStub(channel).withDeadlineAfter(10, TimeUnit.SECONDS);
     CompletableFuture<List<UserObjectsBundleChunk>> future = new CompletableFuture<>();
     List<UserObjectsBundleChunk> chunks = Collections.synchronizedList(new ArrayList<>());
-    async.getUserObjects(
+    async.resolveQueryInputs(
         request,
         new StreamObserver<>() {
           @Override

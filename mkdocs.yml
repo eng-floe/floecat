@@ -78,6 +78,7 @@ nav:
       - Catalog Integration Architecture and Delivery Plan: catalog-integration-design.md
       - Catalog Integrations and Overlays: catalog-integrations.md
       - Catalog Access SPI: catalog-access-spi.md
+      - Generic Engine RPC Contract: generic-engine-rpc-contract.md
       - Metadata Graph: metadata-graph.md
       - System Objects: system-objects.md
       - System Scans: system-scans.md

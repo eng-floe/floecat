@@ -2,9 +2,9 @@
 
 System objects are the catalog-level row sources that live inside the `_system` account: `information_schema.*`, `pg_catalog.*`, and provider-contributed tables or views. Unlike user tables, these objects are not backed by persisted blobs – they are synthesised from builtin catalog metadata, cached graph snapshots, and scanners. A request selects an environment and an engine independently. The builtin catalog load/caching pipeline is described in [Builtin catalog architecture](builtin-catalog.md); `EngineCatalogProvider` supplies engine capabilities and engine-owned relations, while `CatalogEnvironmentProvider` supplies environment-owned relations.
 
-### Client contract for GetSystemObjects
+### Client contract for GetSqlObjectsRegistry
 
-**GetSystemObjects never returns namespace/table/view metadata** – it only streams the function/operator/type/cast/collation/aggregate definitions plus any registry hints. The `_system` graph view exposes the actual relations (namespaces, tables, views, `SystemTableNode`s, etc.) for scanning and planner resolution, so duplicate metadata would confuse downstream consumers and could expose synthetic tables twice. Use the `_system` graph view (`SystemGraph`/`CatalogGraphView`) whenever you need the actual relation graph; rely on `GetSystemObjects` solely for the recursive builtin registry data.
+**GetSqlObjectsRegistry never returns namespace/table/view metadata** – it only streams the function/operator/type/cast/collation/aggregate definitions plus any registry hints. The `_system` graph view exposes the actual relations (namespaces, tables, views, `SystemTableNode`s, etc.) for scanning and planner resolution, so duplicate metadata would confuse downstream consumers and could expose synthetic tables twice. Use the `_system` graph view (`SystemGraph`/`CatalogGraphView`) whenever you need the actual relation graph; rely on `GetSqlObjectsRegistry` solely for the recursive builtin registry data.
 
 ### System resource identifiers
 

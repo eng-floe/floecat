@@ -96,6 +96,7 @@ message DeleteAccountResponse {
 
 // ====== Service ======
 
+// CONTROL PLANE.
 service AccountService {
   rpc ListAccounts (ListAccountsRequest) returns (ListAccountsResponse);
   rpc GetAccount (GetAccountRequest) returns (GetAccountResponse);

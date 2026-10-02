@@ -44,7 +44,7 @@ final class StreamTelemetryState {
   /** Begin one producer step unless cancellation already won. */
   synchronized void begin(BooleanSupplier cancelled) {
     if (cancelled.getAsBoolean()) {
-      throw new CancellationException("GetUserObjects stream cancelled");
+      throw new CancellationException("ResolveQueryInputs stream cancelled");
     }
     producerActive = true;
   }

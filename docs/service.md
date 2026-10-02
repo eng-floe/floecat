@@ -146,8 +146,10 @@ helpers like `randomResourceId` (UUIDv4). Highlights:
 - **QueryServiceImpl** – Administers query leases (`BeginQuery`, `RenewQuery`, `EndQuery`,
   `GetQuery`) and exposes the scan streaming helpers (`InitScan`, `StreamDeleteFiles`,
   `StreamDataFiles`, `CloseScan`) so planners can request connector metadata safely.
-- **SystemObjectsServiceImpl** – Loads immutable builtin catalogs from disk/classpath, caches them
-  per engine version, and serves them via `GetSystemObjects`.
+- **RelationServiceImpl** – Exposes kind-neutral table/view listing, name resolution, and by-id
+  description for engine adapters. Requires `table.read` and/or `view.read` per selected kind.
+- **SqlCatalogServiceImpl** – Loads immutable builtin catalogs from disk/classpath, caches them
+  per engine version, and serves them via `GetSqlObjectsRegistry`.
 
 ## Important Internal Details
 ### BaseServiceImpl & Idempotency
@@ -380,8 +382,8 @@ Managed deployments must override retention with their authoritative-cache polic
 ### Builtin Catalog Service
 `SystemObjectsLoader` reads immutable builtin catalogs (`<engine_kind>.pb[pbtxt]`) from the
 configured location, caches them by engine kind, and exposes them through
-`SystemObjectsService.GetSystemObjects`. Clients must send both `x-engine-kind` and
-`x-engine-version`; the RPC always returns the filtered builtin bundle for the requested engine.
+`SqlCatalogService.GetSqlObjectsRegistry`. Clients must send both `x-engine-kind` and
+`x-engine-version`; the RPC returns the filtered builtin bundle for that engine.
 
 ### GC and Bootstrap
 `IdempotencyGc` runs on a configurable cadence (see `floecat.gc.*` config) and sweeps expired
@@ -450,7 +452,7 @@ Notable `application.properties` keys:
 | `floecat.query.resolver.max_parallel_inputs` | Per-request query-input snapshot-selection fan-out. Defaults to `8`; values are clamped to `1`–`16`. |
 | `floecat.query.metadata-io.max-concurrency` | Process-wide admission bound for blocking metadata I/O shared by all requests. Missing values use `64`; present malformed, blank, or out-of-range values fail startup. |
 | `floecat.snapshot.retention` / `floecat.snapshot.retention-grace` | The retention policy for every versioned catalog object (see above). OSS defaults are `0s` retention and `7d` grace; managed deployments should override retention explicitly. `0s` keeps every snapshot. |
-| `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for GetUserObjects. Defaults to `8`. |
+| `floecat.catalog.bundle.max_parallel_relations` | Per-chunk relation-build fan-out for ResolveQueryInputs. Defaults to `8`. |
 | `floecat.catalog.bundle.max_parallel_stats_warms` | Per-chunk stats-warm fan-out and shared process-wide stats-warm ceiling. Defaults to `16`; clamped to `>= 1`. |
 | `floecat.owner-publication.registration-batch-*` | Bounds one Owner `Complete` call by committed external-manifest bytes and, for registration chunks, objects and target-pointer writes. Defaults to 8 MiB, 10,000 objects, and 10,000 targets; tune downward if the caller's 120-second RPC deadline requires it. |
 | `floecat.owner-publication.reuse-lease-ttl-ms` | Renewable GC lease for an in-flight Owner publication. Defaults to 24 hours. |

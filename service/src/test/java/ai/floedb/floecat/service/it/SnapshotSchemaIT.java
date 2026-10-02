@@ -36,7 +36,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 @QuarkusTest
-class SchemaServiceIT {
+class SnapshotSchemaIT {
 
   @GrpcClient("floecat")
   CatalogServiceGrpc.CatalogServiceBlockingStub catalog;
@@ -49,9 +49,6 @@ class SchemaServiceIT {
 
   @GrpcClient("floecat")
   SnapshotServiceGrpc.SnapshotServiceBlockingStub snapshot;
-
-  @GrpcClient("floecat")
-  SchemaServiceGrpc.SchemaServiceBlockingStub schemas;
 
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
@@ -107,16 +104,17 @@ class SchemaServiceIT {
 
     // Current schema should be v2
     var currentSchema =
-        schemas
-            .getSchema(GetSchemaRequest.newBuilder().setTableId(tbl.getResourceId()).build())
+        snapshot
+            .getSnapshotSchema(
+                GetSnapshotSchemaRequest.newBuilder().setTableId(tbl.getResourceId()).build())
             .getSchema();
     assertEquals(2, currentSchema.getColumnsCount(), "current schema should reflect latest table");
 
     // Snapshot 1 should return v1 schema
     var snap1Schema =
-        schemas
-            .getSchema(
-                GetSchemaRequest.newBuilder()
+        snapshot
+            .getSnapshotSchema(
+                GetSnapshotSchemaRequest.newBuilder()
                     .setTableId(tbl.getResourceId())
                     .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snap1.getSnapshotId()))
                     .build())
@@ -126,9 +124,9 @@ class SchemaServiceIT {
 
     // Snapshot 2 should return v2 schema
     var snap2Schema =
-        schemas
-            .getSchema(
-                GetSchemaRequest.newBuilder()
+        snapshot
+            .getSnapshotSchema(
+                GetSnapshotSchemaRequest.newBuilder()
                     .setTableId(tbl.getResourceId())
                     .setSnapshot(SnapshotRef.newBuilder().setSnapshotId(snap2.getSnapshotId()))
                     .build())

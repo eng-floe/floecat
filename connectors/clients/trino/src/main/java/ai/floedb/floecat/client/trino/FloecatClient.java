@@ -19,6 +19,7 @@ package ai.floedb.floecat.client.trino;
 import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
@@ -38,6 +39,7 @@ public final class FloecatClient implements Closeable {
   private final CatalogServiceGrpc.CatalogServiceBlockingStub catalogs;
   private final NamespaceServiceGrpc.NamespaceServiceBlockingStub namespaces;
   private final DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
+  private final RelationServiceGrpc.RelationServiceBlockingStub relations;
   private final QueryServiceGrpc.QueryServiceBlockingStub queries;
   private final QueryScanServiceGrpc.QueryScanServiceBlockingStub scans;
   private final QuerySchemaServiceGrpc.QuerySchemaServiceBlockingStub schemas;
@@ -52,6 +54,7 @@ public final class FloecatClient implements Closeable {
     this.catalogs = CatalogServiceGrpc.newBlockingStub(channel);
     this.namespaces = NamespaceServiceGrpc.newBlockingStub(channel);
     this.directory = DirectoryServiceGrpc.newBlockingStub(channel);
+    this.relations = RelationServiceGrpc.newBlockingStub(channel);
     this.queries = QueryServiceGrpc.newBlockingStub(channel);
     this.scans = QueryScanServiceGrpc.newBlockingStub(channel);
     this.schemas = QuerySchemaServiceGrpc.newBlockingStub(channel);
@@ -76,6 +79,10 @@ public final class FloecatClient implements Closeable {
 
   public DirectoryServiceGrpc.DirectoryServiceBlockingStub directory() {
     return directory;
+  }
+
+  public RelationServiceGrpc.RelationServiceBlockingStub relations() {
+    return relations;
   }
 
   public QueryServiceGrpc.QueryServiceBlockingStub queries() {
