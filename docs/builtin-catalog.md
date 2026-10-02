@@ -176,15 +176,21 @@ The core envelope in `proto/src/main/proto/floecat/query/scoped_metadata_rule.pr
 
 ```proto
 message ScopedMetadataRule {
-  string engine_kind = 10;       // "postgres", ...
-  string min_version = 11;       // min engine version (inclusive)
-  string max_version = 12;       // max engine version (inclusive)
-  string payload_type = 20;      // e.g., "floe.function+proto"
-  bytes payload = 21;            // Opaque binary data
-  map<string,string> properties = 100;
+  enum Scope {
+    ENGINE = 0;
+    ENVIRONMENT = 1;
+  }
 
-  // Reserve extension numbers for plugins
-  extensions 1000 to 2000;
+  // PBtxt-readable extension blocks occupy fields 1-99.
+  extensions 1 to 99;
+
+  optional string kind = 100;             // "postgres", ...
+  optional string min_version = 101;      // inclusive lower bound
+  optional string max_version = 102;      // inclusive upper bound
+  optional Scope scope = 202 [default = ENGINE];
+  optional string payload_type = 200;      // e.g. "floe.function+proto"
+  optional bytes payload = 201;            // opaque binary data
+  map<string,string> properties = 300;
 }
 ```
 
