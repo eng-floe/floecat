@@ -2737,7 +2737,9 @@ migration.</p>
 <span class="w">  </span><span class="n">map</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span><span class="kt">string</span><span class="p">&gt;</span><span class="w"> </span><span class="na">properties</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">300</span><span class="p">;</span>
 <span class="p">}</span>
 </code></pre></div>
-<p><strong>Key Design</strong>: The message is engine-agnostic. Extensions (defined by plugins) are allowed in range 1000–2000 to support rich PBtxt files during parsing.</p>
+<p><strong>Key Design</strong>: The message is engine-agnostic. Extensions (defined by plugins) use the reserved
+range 1–99 to support rich PBtxt files during parsing. Plugins must coordinate allocations within
+that range.</p>
 <h3 id="systemcatalogprovider-spi">SystemCatalogProvider (SPI)<a class="headerlink" href="#systemcatalogprovider-spi" title="Permanent link">&para;</a></h3>
 <p>Interface for loading catalogs:</p>
 <div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">SystemCatalogProvider</span><span class="w"> </span><span class="p">{</span>
@@ -3027,15 +3029,16 @@ allocate 16GB+ to handle metadata graph + execution plans.
 <p>Plugins can define proto extensions on <code>ScopedMetadataRule</code> to support rich PBtxt syntax. The Floe plugin defines:</p>
 <div class="highlight"><pre><span></span><code><span class="c1">// my_engine.proto — define in your own plugin proto</span>
 <span class="kd">extend</span><span class="w"> </span><span class="nc">ai</span><span class="o">.</span><span class="n">floedb.floecat.query.ScopedMetadataRule</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="n">MyFunctionSpecific</span><span class="w">  </span><span class="na">my_function</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="mi">1001</span><span class="p">;</span>
-<span class="w">  </span><span class="n">MyOperatorSpecific</span><span class="w">  </span><span class="na">my_operator</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="mi">1002</span><span class="p">;</span>
-<span class="w">  </span><span class="n">MyCastSpecific</span><span class="w">      </span><span class="na">my_cast</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">1003</span><span class="p">;</span>
-<span class="w">  </span><span class="n">MyTypeSpecific</span><span class="w">      </span><span class="na">my_type</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">1004</span><span class="p">;</span>
-<span class="w">  </span><span class="n">MyAggregateSpecific</span><span class="w"> </span><span class="na">my_aggregate</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1005</span><span class="p">;</span>
-<span class="w">  </span><span class="n">MyCollationSpecific</span><span class="w"> </span><span class="na">my_collation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1006</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyFunctionSpecific</span><span class="w">  </span><span class="na">my_function</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyOperatorSpecific</span><span class="w">  </span><span class="na">my_operator</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyCastSpecific</span><span class="w">      </span><span class="na">my_cast</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyTypeSpecific</span><span class="w">      </span><span class="na">my_type</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyAggregateSpecific</span><span class="w"> </span><span class="na">my_aggregate</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyCollationSpecific</span><span class="w"> </span><span class="na">my_collation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span><span class="p">;</span>
 <span class="p">}</span>
 </code></pre></div>
-<p><strong>Important</strong>: Extensions use range 1000–2000 reserved in the core proto. Plugins must coordinate to avoid collisions (e.g., Postgres uses 1100–1199, Trino uses 1200–1299, etc.).</p>
+<p><strong>Important</strong>: Extensions use the range 1–99 reserved in the core proto. Plugins must coordinate to
+avoid collisions within that range (for example, Postgres could use 10–19 and Trino 20–29).</p>
 <h2 id="validation">Validation<a class="headerlink" href="#validation" title="Permanent link">&para;</a></h2>
 <p>The <code>SystemCatalogValidator</code> validates loaded catalogs:</p>
 <div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">validate</span><span class="p">(</span><span class="n">SystemCatalogData</span><span class="w"> </span><span class="n">catalog</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">...</span><span class="w"> </span><span class="p">}</span>
@@ -3075,7 +3078,7 @@ allocate 16GB+ to handle metadata graph + execution plans.
 <span class="kd">message</span><span class="w"> </span><span class="nc">MyEngineFunction</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span>
 
 <span class="kd">extend</span><span class="w"> </span><span class="nc">ai</span><span class="o">.</span><span class="n">floedb.floecat.query.ScopedMetadataRule</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="n">MyEngineFunction</span><span class="w"> </span><span class="na">my_function</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1100</span><span class="p">;</span><span class="w">  </span><span class="c1">// Use allocated range for your engine</span>
+<span class="w">  </span><span class="n">MyEngineFunction</span><span class="w"> </span><span class="na">my_function</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10</span><span class="p">;</span><span class="w">  </span><span class="c1">// Use an allocated field in the 1–99 range</span>
 <span class="p">}</span>
 </code></pre></div>
 <h3 id="step-4-ship-with-service-module">Step 4: Ship with Service Module<a class="headerlink" href="#step-4-ship-with-service-module" title="Permanent link">&para;</a></h3>
