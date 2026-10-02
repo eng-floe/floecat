@@ -18,7 +18,7 @@ package ai.floedb.floecat.systemcatalog.def;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import java.util.List;
 
 /**
@@ -37,7 +37,7 @@ public interface SystemObjectDef {
   NameRef name();
 
   /** Returns all engine-specific rules attached to this builtin object. */
-  List<EngineSpecificRule> engineSpecific();
+  List<ScopedMetadataRule> scopedMetadata();
 
   /** Returns the builtin kind enumeration so generic code can branch without instanceof. */
   ResourceKind kind();

@@ -17,6 +17,7 @@
 package ai.floedb.floecat.service.query.resolver;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -26,16 +27,21 @@ import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.context.EngineContextProvider;
 import ai.floedb.floecat.service.context.impl.InboundContextInterceptor;
 import ai.floedb.floecat.systemcatalog.def.SystemObjectDef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
+import ai.floedb.floecat.systemcatalog.informationschema.SchemataScanner;
+import ai.floedb.floecat.systemcatalog.provider.CatalogEnvironmentProvider;
 import ai.floedb.floecat.systemcatalog.provider.SystemObjectScannerProvider;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import io.grpc.Context;
 import java.util.List;
 import java.util.Map;
@@ -76,19 +82,59 @@ class SystemScannerResolverTest {
   }
 
   @Test
-  void fallsBackWhenEngineTableMissing() {
+  void doesNotFallBackWhenEngineTableMissing() {
     ResourceId pgId = systemTableId("pg", "missing");
-    ResourceId fallbackId = systemTableId(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "missing");
-    SystemTableNode.FloeCatSystemTableNode fallbackNode = tableNode(fallbackId, "internal-scanner");
+    SystemScannerResolver resolver = buildResolver(new TestCatalogGraphView(), Map.of());
 
-    SystemObjectScanner internalScanner = new TestSystemObjectScanner("internal-scanner");
+    assertThatThrownBy(() -> withEngineContext(ENGINE_CTX, () -> resolver.resolve("corr", pgId)))
+        .isInstanceOf(RuntimeException.class);
+  }
+
+  @Test
+  void resolvesScannerFromSelectedEnvironment() {
+    ResourceId tableId = systemTableId("pg", "foo");
+    SystemObjectScanner scanner = new TestSystemObjectScanner("environment-scanner");
     SystemScannerResolver resolver =
         buildResolver(
-            new TestCatalogGraphView().addNode(fallbackNode),
-            Map.of("internal-scanner", internalScanner));
+            new TestCatalogGraphView().addNode(tableNode(tableId, "environment-scanner")),
+            Map.of("environment-scanner", scanner));
+    resolver.providers = List.of();
+    resolver.environmentProviders =
+        List.of(new TestEnvironmentProvider(Map.of("environment-scanner", scanner)));
 
-    assertThat(withEngineContext(ENGINE_CTX, () -> resolver.resolve("corr", pgId)))
-        .isSameAs(internalScanner);
+    CatalogContext context = CatalogContext.of(EnvironmentContext.of("floe", "1"), ENGINE_CTX);
+    assertThat(resolver.resolve("corr", tableId, context, PhaseDiagnostics.NOOP)).isSameAs(scanner);
+  }
+
+  @Test
+  void selectedEnvironmentOwnsScannerLookup() {
+    ResourceId tableId = systemTableId("pg", "foo");
+    SystemObjectScanner engineScanner = new TestSystemObjectScanner("engine-scanner");
+    SystemObjectScanner environmentScanner = new TestSystemObjectScanner("environment-scanner");
+    SystemScannerResolver resolver =
+        buildResolver(
+            new TestCatalogGraphView().addNode(tableNode(tableId, "shared-scanner")),
+            Map.of("shared-scanner", engineScanner));
+    resolver.environmentProviders =
+        List.of(new TestEnvironmentProvider(Map.of("shared-scanner", environmentScanner)));
+
+    CatalogContext context = CatalogContext.of(EnvironmentContext.of("floe", "1"), ENGINE_CTX);
+
+    assertThat(resolver.resolve("corr", tableId, context, PhaseDiagnostics.NOOP))
+        .isSameAs(environmentScanner);
+  }
+
+  @Test
+  void resolvesSharedInformationSchemaScannerForSelectedEnvironment() {
+    ResourceId tableId = systemTableId("pg", "information_schema.schemata");
+    SystemScannerResolver resolver =
+        buildResolver(
+            new TestCatalogGraphView().addNode(tableNode(tableId, "schemata_scanner")), Map.of());
+
+    CatalogContext context = CatalogContext.of(EnvironmentContext.of("floe", "1"), ENGINE_CTX);
+
+    assertThat(resolver.resolve("corr", tableId, context, PhaseDiagnostics.NOOP))
+        .isInstanceOf(SchemataScanner.class);
   }
 
   private static SystemScannerResolver buildResolver(
@@ -97,6 +143,7 @@ class SystemScannerResolverTest {
     resolver.graph = graphView;
     resolver.engine = new EngineContextProvider();
     resolver.providers = List.of(new TestScannerProvider(scanners));
+    resolver.environmentProviders = List.of();
     return resolver;
   }
 
@@ -130,23 +177,41 @@ class SystemScannerResolverTest {
     }
 
     @Override
-    public List<SystemObjectDef> definitions() {
+    public List<SystemObjectDef> definitions(CatalogContext context) {
       return List.of();
     }
 
     @Override
-    public boolean supportsEngine(String engineKind) {
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
+      return Optional.ofNullable(scanners.get(scannerId));
+    }
+  }
+
+  private static final class TestEnvironmentProvider implements CatalogEnvironmentProvider {
+
+    private final Map<String, SystemObjectScanner> scanners;
+
+    private TestEnvironmentProvider(Map<String, SystemObjectScanner> scanners) {
+      this.scanners = Map.copyOf(scanners);
+    }
+
+    @Override
+    public String environmentKind() {
+      return "floe";
+    }
+
+    @Override
+    public List<SystemObjectDef> definitions(CatalogContext context) {
+      return List.of();
+    }
+
+    @Override
+    public boolean supports(NameRef name, CatalogContext context) {
       return true;
     }
 
     @Override
-    public boolean supports(NameRef name, String engineKind) {
-      return true;
-    }
-
-    @Override
-    public Optional<SystemObjectScanner> provide(
-        String scannerId, String engineKind, String engineVersion) {
+    public Optional<SystemObjectScanner> provide(String scannerId, CatalogContext context) {
       return Optional.ofNullable(scanners.get(scannerId));
     }
   }

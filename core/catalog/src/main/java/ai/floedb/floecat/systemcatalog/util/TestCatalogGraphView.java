@@ -24,6 +24,7 @@ import ai.floedb.floecat.metagraph.model.TypeNode;
 import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.utils.BaseTestCatalogGraphView;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import java.util.HashMap;
 import java.util.List;
@@ -66,11 +67,12 @@ public class TestCatalogGraphView extends BaseTestCatalogGraphView {
   }
 
   @Override
-  public Optional<ResourceId> resolveTable(String correlationId, NameRef ref) {
+  public Optional<ResourceId> resolveTable(
+      String correlationId, NameRef ref, CatalogContext catalogContext) {
     if (ref == null || ref.getName().isBlank()) {
       return Optional.empty();
     }
-    String target = NameRefUtil.canonical(ref);
+    String target = NameRefUtil.matchKey(ref);
     resolveTableLookups.computeIfAbsent(target, ignored -> new AtomicInteger()).incrementAndGet();
     for (GraphNode node : nodes.values()) {
       if (!(node instanceof UserTableNode table)) {
@@ -85,7 +87,7 @@ public class TestCatalogGraphView extends BaseTestCatalogGraphView {
       if (!namespace.displayName().isBlank()) {
         tableRefBuilder.addPath(namespace.displayName());
       }
-      if (NameRefUtil.canonical(tableRefBuilder.build()).equalsIgnoreCase(target)) {
+      if (NameRefUtil.matchKey(tableRefBuilder.build()).equals(target)) {
         return Optional.of(table.id());
       }
     }
@@ -93,13 +95,13 @@ public class TestCatalogGraphView extends BaseTestCatalogGraphView {
   }
 
   @Override
-  public List<SchemaColumn> tableSchema(ResourceId tableId) {
+  public List<SchemaColumn> tableSchema(ResourceId tableId, CatalogContext context) {
     tableSchemaLookups.computeIfAbsent(tableId, ignored -> new AtomicInteger()).incrementAndGet();
-    List<SchemaColumn> explicit = super.tableSchema(tableId);
+    List<SchemaColumn> explicit = super.tableSchema(tableId, context);
     if (!explicit.isEmpty()) {
       return explicit;
     }
-    GraphNode node = resolve(tableId).orElse(null);
+    GraphNode node = resolve(tableId, context).orElse(null);
     if (node instanceof SystemTableNode system) {
       return system.columns();
     }

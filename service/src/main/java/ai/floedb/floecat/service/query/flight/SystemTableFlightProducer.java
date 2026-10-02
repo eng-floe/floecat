@@ -32,7 +32,7 @@ import ai.floedb.floecat.scanner.spi.StatsProvider;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
-import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.ConstraintProviderFactory;
@@ -48,6 +48,7 @@ import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
 import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.telemetry.Observability;
+import ai.floedb.floecat.telemetry.PhaseDiagnostics;
 import ai.floedb.floecat.telemetry.Tag;
 import ai.floedb.floecat.telemetry.Telemetry.TagKey;
 import io.grpc.Status;
@@ -191,9 +192,9 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
             graph,
             null,
             queryCtx.getQueryDefaultCatalogId(),
-            context.engineContext(),
+            context.catalogContext(),
             statsProvider,
-            constraintFactory.provider());
+            constraintFactory.provider(context.catalogContext()));
 
     return arrowPlanner.plan(
         scanner,
@@ -214,16 +215,16 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
     if (tableId.isEmpty()) {
       return false;
     }
+    CatalogContext catalogContext = context.catalogContext();
     return graph
-        .resolve(tableId.get())
+        .resolve(tableId.get(), catalogContext)
         .filter(SystemTableNode.FloeCatSystemTableNode.class::isInstance)
         .isPresent();
   }
 
   @Override
   protected Collection<String> tableNames(ResolvedCallContext context) {
-    EngineContext ctx = context.engineContext();
-    var nodes = nodeRegistry.nodesFor(ctx);
+    var nodes = nodeRegistry.nodesFor(context.catalogContext());
     if (nodes == null) {
       return List.of();
     }
@@ -232,16 +233,17 @@ public final class SystemTableFlightProducer extends SystemTableFlightProducerBa
 
   @Override
   protected Optional<ResourceId> resolveSystemTableId(NameRef name, ResolvedCallContext context) {
-    return graph.resolveSystemTable(name);
+    return graph.resolveSystemTable(name, context.catalogContext());
   }
 
   @Override
   protected Optional<String> resolveSystemTableName(ResourceId id, ResolvedCallContext context) {
-    return graph.resolveSystemTableName(id).map(NameRefUtil::canonical);
+    return graph.resolveSystemTableName(id, context.catalogContext()).map(NameRefUtil::matchKey);
   }
 
   private SystemObjectScanner resolveScanner(ResourceId tableId, ResolvedCallContext ctx) {
-    return scannerResolver.resolve(ctx.correlationId(), tableId, ctx.engineContext());
+    return scannerResolver.resolve(
+        ctx.correlationId(), tableId, ctx.catalogContext(), PhaseDiagnostics.NOOP);
   }
 
   private static ResourceId requireTableId(Optional<ResourceId> tableId, String tableName) {

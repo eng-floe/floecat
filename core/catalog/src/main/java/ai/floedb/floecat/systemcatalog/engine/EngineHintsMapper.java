@@ -33,20 +33,23 @@ public final class EngineHintsMapper {
   private EngineHintsMapper() {}
 
   public static Map<EngineHintKey, EngineHint> toHints(
-      String engineKind, String engineVersion, List<EngineSpecificRule> rules) {
+      String engineKind, String engineVersion, List<ScopedMetadataRule> rules) {
     return toHints(engineKind, engineVersion, rules, null);
   }
 
   public static Map<EngineHintKey, EngineHint> toHints(
       String engineKind,
       String engineVersion,
-      List<EngineSpecificRule> rules,
+      List<ScopedMetadataRule> rules,
       String objectContext) {
     if (rules == null || rules.isEmpty()) {
       return Map.of();
     }
     Map<EngineHintKey, EngineHint> hints = new LinkedHashMap<>();
-    for (EngineSpecificRule rule : rules) {
+    for (ScopedMetadataRule rule : rules) {
+      if (rule.scope() != ScopedMetadataRule.Scope.ENGINE) {
+        continue;
+      }
       if (!rule.hasPayloadType()) {
         continue;
       }

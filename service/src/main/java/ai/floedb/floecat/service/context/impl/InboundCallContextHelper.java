@@ -21,6 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.service.common.AccountIds;
 import ai.floedb.floecat.service.repo.impl.AccountRepository;
 import ai.floedb.floecat.service.security.RolePermissions;
@@ -38,8 +39,8 @@ import org.eclipse.microprofile.jwt.JsonWebToken;
 import org.jboss.logging.Logger;
 
 /**
- * Protocol-agnostic helper that resolves the full inbound call context (principal, engine context,
- * correlation/query IDs, session/auth token values) from a generic header reader.
+ * Protocol-agnostic helper that resolves the full inbound call context (principal, environment and
+ * engine selection, correlation/query IDs, session/auth token values) from a generic header reader.
  *
  * <p>This class contains all auth and principal-building logic that was previously embedded in
  * {@link InboundContextInterceptor}. It is shared by:
@@ -64,7 +65,7 @@ public final class InboundCallContextHelper {
 
   public static final String HEADER_QUERY_ID = "x-query-id";
   public static final String HEADER_CORRELATION_ID = "x-correlation-id";
-  // x-engine-kind and x-engine-version are owned by EngineContext.fromHeaders()
+  // x-engine-* and x-environment-* are owned by their respective context value objects.
 
   // -------------------------------------------------------------------------
   //  Configuration
@@ -143,6 +144,7 @@ public final class InboundCallContextHelper {
         Optional.ofNullable(headerReader.apply(HEADER_QUERY_ID)).map(String::trim).orElse("");
 
     EngineContext engineContext = EngineContext.fromHeaders(headerReader);
+    EnvironmentContext environmentContext = EnvironmentContext.fromHeaders(headerReader);
 
     ResolvedPrincipal resolvedPrincipal =
         allowUnauthenticated
@@ -168,6 +170,7 @@ public final class InboundCallContextHelper {
         effectiveQueryId,
         correlationId,
         engineContext,
+        environmentContext,
         sessionHeaderValue,
         authorizationHeaderValue);
   }

@@ -60,14 +60,14 @@ public final class EngineVersionComparator {
     return (version == null || version.isBlank()) ? "0" : version.trim();
   }
 
-  public static VersionBound minBound(EngineSpecificRule rule) {
+  public static VersionBound minBound(ScopedMetadataRule rule) {
     if (rule == null || !rule.hasMinVersion()) {
       return VersionBound.negativeInfinity();
     }
     return VersionBound.finite(normalize(rule.minVersion()));
   }
 
-  public static VersionBound maxBound(EngineSpecificRule rule) {
+  public static VersionBound maxBound(ScopedMetadataRule rule) {
     if (rule == null || !rule.hasMaxVersion()) {
       return VersionBound.positiveInfinity();
     }

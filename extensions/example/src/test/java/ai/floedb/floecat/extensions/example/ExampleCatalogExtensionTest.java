@@ -19,6 +19,9 @@ package ai.floedb.floecat.extensions.example;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNoException;
 
+import ai.floedb.floecat.scanner.utils.CatalogContext;
+import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -163,7 +166,7 @@ class ExampleCatalogExtensionTest {
             .findFirst();
     assertThat(fn).isPresent();
     var rule =
-        fn.get().engineSpecific().stream().filter(r -> !r.minVersion().isEmpty()).findFirst();
+        fn.get().scopedMetadata().stream().filter(r -> !r.minVersion().isEmpty()).findFirst();
     assertThat(rule).isPresent();
     assertThat(rule.get().minVersion()).isEqualTo("2.0");
   }
@@ -175,7 +178,7 @@ class ExampleCatalogExtensionTest {
             .filter(f -> f.name().getName().equals("my_function"))
             .findFirst();
     assertThat(fn).isPresent();
-    assertThat(fn.get().engineSpecific()).allSatisfy(r -> assertThat(r.minVersion()).isEmpty());
+    assertThat(fn.get().scopedMetadata()).allSatisfy(r -> assertThat(r.minVersion()).isEmpty());
   }
 
   @Test
@@ -185,7 +188,7 @@ class ExampleCatalogExtensionTest {
             .filter(t -> t.name().getName().equals("my_type"))
             .findFirst();
     assertThat(type).isPresent();
-    var rules = type.get().engineSpecific();
+    var rules = type.get().scopedMetadata();
     assertThat(rules).isNotEmpty();
     boolean hasDescription =
         rules.stream().anyMatch(r -> r.properties().containsKey("description"));
@@ -402,14 +405,14 @@ class ExampleCatalogExtensionTest {
   }
 
   // ---------------------------------------------------------------------------
-  // engine_kind stripping
+  // kind stripping
   // ---------------------------------------------------------------------------
 
   @Test
-  void engineKindInEngineSpecificIsStripped(@TempDir Path dir) throws IOException {
-    // Write a type whose engine_specific block carries engine_kind: "wrong-engine".
+  void engineKindInScopedMetadataRuleIsStripped(@TempDir Path dir) throws IOException {
+    // Write a type whose scoped_metadata block carries kind: "wrong-engine".
     // After stripping, the rule must still be present (properties accessible) because
-    // the engine_kind filter was removed before handing the registry to fromProto().
+    // the kind filter was removed before handing the registry to fromProto().
     // If stripping were absent, fromProto() would discard the rule (wrong engine kind)
     // and the property would not appear.
     writeFile(
@@ -419,8 +422,8 @@ class ExampleCatalogExtensionTest {
         types {
           name { name: "tagged_type" path: "example" }
           category: "N"
-          engine_specific {
-            engine_kind: "wrong-engine"
+          scoped_metadata {
+            kind: "wrong-engine"
             properties { key: "marker" value: "present" }
           }
         }
@@ -433,8 +436,8 @@ class ExampleCatalogExtensionTest {
           var types = ext().loadSystemCatalog().types();
           var t = types.stream().filter(x -> x.name().getName().equals("tagged_type")).findFirst();
           assertThat(t).isPresent();
-          // The rule must survive: engine_kind was stripped so it now matches any engine.
-          var rules = t.get().engineSpecific();
+          // The rule must survive: kind was stripped so it now matches any engine.
+          var rules = t.get().scopedMetadata();
           assertThat(rules).isNotEmpty();
           boolean markerPresent =
               rules.stream().anyMatch(r -> "present".equals(r.properties().get("marker")));
@@ -501,50 +504,36 @@ class ExampleCatalogExtensionTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void supportsEngineReturnsTrueForExampleKind() {
-    assertThat(ext().supportsEngine("example")).isTrue();
+  void supportsReturnsTrueForExampleKind() {
+    assertThat(ext().supports(context("example"))).isTrue();
   }
 
   @Test
-  void supportsEngineIsCaseInsensitive() {
-    assertThat(ext().supportsEngine("EXAMPLE")).isTrue();
-    assertThat(ext().supportsEngine("Example")).isTrue();
+  void supportsIsCaseInsensitive() {
+    assertThat(ext().supports(context("EXAMPLE"))).isTrue();
+    assertThat(ext().supports(context("Example"))).isTrue();
   }
 
   @Test
-  void supportsEngineReturnsFalseForOtherKind() {
-    assertThat(ext().supportsEngine("floedb")).isFalse();
-    assertThat(ext().supportsEngine("postgres")).isFalse();
+  void supportsReturnsFalseForOtherKind() {
+    assertThat(ext().supports(context("floedb"))).isFalse();
+    assertThat(ext().supports(context("postgres"))).isFalse();
   }
 
   @Test
-  void supportsEngineRespectsConfiguredKind() {
+  void supportsRespectsConfiguredKind() {
     withProp(
         ExampleCatalogExtension.CONFIG_ENGINE_KIND,
         "my-custom",
         () -> {
-          assertThat(ext().supportsEngine("my-custom")).isTrue();
-          assertThat(ext().supportsEngine("example")).isFalse();
+          assertThat(ext().supports(context("my-custom"))).isTrue();
+          assertThat(ext().supports(context("example"))).isFalse();
         });
   }
 
   @Test
-  void supportsReturnsFalseForAnyName() {
-    // supports() always returns false — the example extension has no scanner-backed objects.
-    // Use a default (empty) NameRef to avoid depending on the NameRef builder's internal API.
-    assertThat(ext().supports(ai.floedb.floecat.common.rpc.NameRef.getDefaultInstance(), "example"))
-        .isFalse();
-    assertThat(ext().supports(null, "example")).isFalse();
-  }
-
-  @Test
-  void provideReturnsEmpty() {
-    assertThat(ext().provide("any_scanner", "example", "1.0")).isEmpty();
-  }
-
-  @Test
   void definitionsReturnsEmptyList() {
-    assertThat(ext().definitions()).isEmpty();
+    assertThat(ext().definitions(context("example"))).isEmpty();
   }
 
   @Test
@@ -555,6 +544,10 @@ class ExampleCatalogExtensionTest {
   @Test
   void onLoadErrorDoesNotThrow() {
     assertThatNoException().isThrownBy(() -> ext().onLoadError(new RuntimeException("test error")));
+  }
+
+  private static CatalogContext context(String engineKind) {
+    return CatalogContext.of(EnvironmentContext.empty(), EngineContext.of(engineKind, "1.0"));
   }
 
   @Test

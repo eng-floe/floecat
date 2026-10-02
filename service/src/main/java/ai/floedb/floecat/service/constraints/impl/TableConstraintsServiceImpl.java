@@ -111,7 +111,7 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
   }
 
   private CatalogSurfaceWritePolicy catalogSurfaceWritePolicy() {
-    return new CatalogSurfaceWritePolicy(graphView);
+    return new CatalogSurfaceWritePolicy(graphView, catalogContext());
   }
 
   /** Returns snapshot-scoped constraints for one table snapshot. */
@@ -800,7 +800,10 @@ public class TableConstraintsServiceImpl extends BaseServiceImpl
     if (!(table instanceof UserTableNode userTable)) {
       return "";
     }
-    return graphView.catalog(userTable.catalogId()).map(CatalogNode::displayName).orElse("");
+    return graphView
+        .catalog(userTable.catalogId(), catalogContext())
+        .map(CatalogNode::displayName)
+        .orElse("");
   }
 
   /** Ensures the target snapshot exists before strict snapshot-scoped writes proceed. */

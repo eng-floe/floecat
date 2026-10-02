@@ -17,7 +17,9 @@
 package ai.floedb.floecat.flight.context;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 
 /** Fully resolved per-call context shared by Flight producers and middleware. */
 public record ResolvedCallContext(
@@ -25,12 +27,41 @@ public record ResolvedCallContext(
     String queryId,
     String correlationId,
     EngineContext engineContext,
+    EnvironmentContext environmentContext,
     String sessionHeaderValue,
     String authorizationHeaderValue) {
 
+  /** External-boundary compatibility constructor for callers that do not select an environment. */
+  public ResolvedCallContext(
+      PrincipalContext principalContext,
+      String queryId,
+      String correlationId,
+      EngineContext engineContext,
+      String sessionHeaderValue,
+      String authorizationHeaderValue) {
+    this(
+        principalContext,
+        queryId,
+        correlationId,
+        engineContext,
+        EnvironmentContext.empty(),
+        sessionHeaderValue,
+        authorizationHeaderValue);
+  }
+
   public static ResolvedCallContext unauthenticated() {
     return new ResolvedCallContext(
-        PrincipalContext.getDefaultInstance(), "", "", EngineContext.empty(), null, null);
+        PrincipalContext.getDefaultInstance(),
+        "",
+        "",
+        EngineContext.empty(),
+        EnvironmentContext.empty(),
+        null,
+        null);
+  }
+
+  public CatalogContext catalogContext() {
+    return CatalogContext.forRequest(environmentContext, engineContext);
   }
 
   /**

@@ -18,8 +18,9 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.TopologyGraph;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.TopologyNames;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -29,8 +30,8 @@ import java.util.Set;
 
 class TestRefCatalogGraphView extends TestCatalogGraphView {
 
-  private final List<TopologyGraph.NamespaceRef> namespaceRefs = new ArrayList<>();
-  private final Map<ResourceId, List<TopologyGraph.RelationRef>> relationRefsByNamespace =
+  private final List<CatalogGraphView.NamespaceRef> namespaceRefs = new ArrayList<>();
+  private final Map<ResourceId, List<CatalogGraphView.RelationRef>> relationRefsByNamespace =
       new HashMap<>();
   private final Map<ResourceId, Set<String>> relationNamesByNamespace = new HashMap<>();
 
@@ -42,7 +43,8 @@ class TestRefCatalogGraphView extends TestCatalogGraphView {
 
   TestRefCatalogGraphView withNamespaceRef(
       ResourceId namespaceId, String name, ResourceId catalogId, List<String> pathSegments) {
-    namespaceRefs.add(new TopologyGraph.NamespaceRef(namespaceId, name, catalogId, pathSegments));
+    namespaceRefs.add(
+        new CatalogGraphView.NamespaceRef(namespaceId, name, catalogId, pathSegments));
     return this;
   }
 
@@ -50,7 +52,7 @@ class TestRefCatalogGraphView extends TestCatalogGraphView {
       ResourceId namespaceId, ResourceId relationId, String name, ResourceKind kind) {
     relationRefsByNamespace
         .computeIfAbsent(namespaceId, ignored -> new ArrayList<>())
-        .add(new TopologyGraph.RelationRef(relationId, name, kind));
+        .add(new CatalogGraphView.RelationRef(relationId, name, kind));
     return this;
   }
 
@@ -88,7 +90,8 @@ class TestRefCatalogGraphView extends TestCatalogGraphView {
   }
 
   @Override
-  public List<TopologyGraph.NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
+  public List<CatalogGraphView.NamespaceRef> listNamespaceRefs(
+      ResourceId catalogId, CatalogContext catalogContext) {
     if (namespaceRefsFailure != null) {
       throw new AssertionError(namespaceRefsFailure);
     }
@@ -96,8 +99,8 @@ class TestRefCatalogGraphView extends TestCatalogGraphView {
   }
 
   @Override
-  public List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(
-      ResourceId catalogId, Set<String> names) {
+  public List<CatalogGraphView.NamespaceRef> listNamespaceRefsByName(
+      ResourceId catalogId, Set<String> names, CatalogContext catalogContext) {
     if (namespaceRefsByNameFailure != null) {
       throw new AssertionError(namespaceRefsByNameFailure);
     }
@@ -108,8 +111,8 @@ class TestRefCatalogGraphView extends TestCatalogGraphView {
   }
 
   @Override
-  public List<TopologyGraph.RelationRef> listRelationRefs(
-      ResourceId catalogId, ResourceId namespaceId) {
+  public List<CatalogGraphView.RelationRef> listRelationRefs(
+      ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
     if (relationRefsFailure != null) {
       throw new AssertionError(relationRefsFailure);
     }
@@ -117,8 +120,11 @@ class TestRefCatalogGraphView extends TestCatalogGraphView {
   }
 
   @Override
-  public List<TopologyGraph.RelationRef> listRelationRefsByName(
-      ResourceId catalogId, ResourceId namespaceId, Set<String> names) {
+  public List<CatalogGraphView.RelationRef> listRelationRefsByName(
+      ResourceId catalogId,
+      ResourceId namespaceId,
+      Set<String> names,
+      CatalogContext catalogContext) {
     if (relationRefsByNameFailure != null) {
       throw new AssertionError(relationRefsByNameFailure);
     }

@@ -18,6 +18,8 @@ package ai.floedb.floecat.service.query.catalog;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -33,6 +35,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.ConstraintProvider;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.catalog.impl.TableRootCommitter;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
@@ -71,7 +74,7 @@ class ConstraintProviderFactoryTest {
     TableRepository tables = new TableRepository(pointers, blobs);
     SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
     CatalogGraphView graphView = mock(CatalogGraphView.class);
-    when(graphView.resolve(USER_TABLE)).thenReturn(Optional.empty());
+    when(graphView.resolve(eq(USER_TABLE), any())).thenReturn(Optional.empty());
 
     ConstraintProviderFactory factory =
         ConstraintProviderFactory.forTesting(
@@ -80,7 +83,7 @@ class ConstraintProviderFactoryTest {
     repository.putSnapshotConstraints(
         USER_TABLE, snapshotId, constraints(USER_TABLE, snapshotId, "pk_users"));
 
-    ConstraintProvider provider = factory.provider();
+    ConstraintProvider provider = factory.provider(CatalogContext.empty());
 
     var view = provider.constraints(USER_TABLE, OptionalLong.of(snapshotId)).orElseThrow();
     assertEquals(USER_TABLE, view.relationId());
@@ -96,11 +99,11 @@ class ConstraintProviderFactoryTest {
     TableRepository tables = new TableRepository(pointers, blobs);
     SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
     CatalogGraphView graphView = mock(CatalogGraphView.class);
-    when(graphView.resolve(USER_TABLE)).thenReturn(Optional.empty());
+    when(graphView.resolve(eq(USER_TABLE), any())).thenReturn(Optional.empty());
     ConstraintProviderFactory factory =
         ConstraintProviderFactory.forTesting(
             repository, snapshots, graphView, ConstraintProvider.NONE);
-    ConstraintProvider provider = factory.provider();
+    ConstraintProvider provider = factory.provider(CatalogContext.empty());
 
     assertTrue(provider.constraints(USER_TABLE, OptionalLong.empty()).isEmpty());
     assertEquals(0, repository.getCalls());
@@ -114,7 +117,7 @@ class ConstraintProviderFactoryTest {
     TableRepository tables = new TableRepository(pointers, blobs);
     SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
     CatalogGraphView graphView = mock(CatalogGraphView.class);
-    when(graphView.resolve(USER_TABLE)).thenReturn(Optional.empty());
+    when(graphView.resolve(eq(USER_TABLE), any())).thenReturn(Optional.empty());
 
     ConstraintProviderFactory factory =
         ConstraintProviderFactory.forTesting(
@@ -144,7 +147,7 @@ class ConstraintProviderFactoryTest {
         USER_TABLE, snapshots.getById(USER_TABLE, 200L).orElseThrow());
     publishSnapshotToRoot(pointers, blobs, tables, snapshots, USER_TABLE, 200L);
 
-    ConstraintProvider provider = factory.provider();
+    ConstraintProvider provider = factory.provider(CatalogContext.empty());
     var latest = provider.latestConstraints(USER_TABLE).orElseThrow();
     assertEquals("pk_v200", latest.constraints().get(0).getName());
   }
@@ -170,14 +173,14 @@ class ConstraintProviderFactoryTest {
     TableRepository tables = new TableRepository(pointers, blobs);
     SnapshotRepository snapshots = new SnapshotRepository(pointers, blobs, tables);
     CatalogGraphView graphView = mock(CatalogGraphView.class);
-    when(graphView.resolve(USER_TABLE)).thenReturn(Optional.empty());
+    when(graphView.resolve(eq(USER_TABLE), any())).thenReturn(Optional.empty());
 
     ConstraintProviderFactory factory =
         ConstraintProviderFactory.forTesting(
             repository, snapshots, graphView, ConstraintProvider.NONE);
     repository.putSnapshotConstraints(USER_TABLE, 100L, constraints(USER_TABLE, 100L, "pk_v100"));
 
-    ConstraintProvider provider = factory.provider();
+    ConstraintProvider provider = factory.provider(CatalogContext.empty());
     var view = provider.constraints(USER_TABLE, OptionalLong.of(100L)).orElseThrow();
 
     // The view reports the constraint bundle's pointer version, so a caller can version-tag it.
@@ -198,8 +201,8 @@ class ConstraintProviderFactoryTest {
     when(systemNode.origin()).thenReturn(GraphNodeOrigin.SYSTEM);
     when(systemNode.kind()).thenReturn(GraphNodeKind.TABLE);
     when(systemNode.id()).thenReturn(SYSTEM_TABLE);
-    when(graphView.resolve(SYSTEM_TABLE)).thenReturn(Optional.of(systemNode));
-    when(graphView.resolve(USER_TABLE)).thenReturn(Optional.empty());
+    when(graphView.resolve(eq(SYSTEM_TABLE), any())).thenReturn(Optional.of(systemNode));
+    when(graphView.resolve(eq(USER_TABLE), any())).thenReturn(Optional.empty());
 
     long snapshotId = 202L;
     repository.putSnapshotConstraints(
@@ -226,7 +229,7 @@ class ConstraintProviderFactoryTest {
 
     ConstraintProviderFactory factory =
         ConstraintProviderFactory.forTesting(repository, snapshots, graphView, systemProvider);
-    ConstraintProvider provider = factory.provider();
+    ConstraintProvider provider = factory.provider(CatalogContext.empty());
 
     var system = provider.constraints(SYSTEM_TABLE, OptionalLong.of(snapshotId)).orElseThrow();
     assertEquals("system_static", system.constraints().get(0).getName());

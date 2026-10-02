@@ -20,7 +20,7 @@
 #   state_type     — type of the running accumulator state
 #   return_type    — type returned after finalization
 #
-# Use engine_specific.properties to reference the corresponding state-transition and
+# Use scoped_metadata.properties to reference the corresponding state-transition and
 # finalizer scalar functions (which you define in 20_functions.pbtxt).
 
 # Example aggregate function.
@@ -43,7 +43,7 @@ aggregates {
     path: "example"
     name: "my_type"
   }
-  engine_specific {
+  scoped_metadata {
     payload_type: "example.properties"
     properties {
       key: "description"

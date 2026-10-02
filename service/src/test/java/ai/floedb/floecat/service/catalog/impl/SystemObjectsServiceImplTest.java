@@ -33,7 +33,7 @@ import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.systemcatalog.def.SystemNamespaceDef;
 import ai.floedb.floecat.systemcatalog.def.SystemTableDef;
 import ai.floedb.floecat.systemcatalog.def.SystemViewDef;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import ai.floedb.floecat.systemcatalog.provider.FloecatInternalProvider;
 import ai.floedb.floecat.systemcatalog.provider.StaticSystemCatalogProvider;
@@ -78,10 +78,11 @@ class SystemObjectsServiceImplTest {
                 new StaticSystemCatalogProvider(
                     Map.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, SystemCatalogData.empty()))),
             new FloecatInternalProvider(),
+            List.of(),
             List.of()) {
 
           @Override
-          public BuiltinNodes nodesFor(EngineContext ctx) {
+          public BuiltinNodes nodesFor(ai.floedb.floecat.scanner.utils.CatalogContext ctx) {
             return builtin;
           }
         };
@@ -109,7 +110,7 @@ class SystemObjectsServiceImplTest {
       assertThat(registry.getSystemNamespacesCount()).isZero();
       assertThat(registry.getSystemTablesCount()).isZero();
       assertThat(registry.getSystemViewsCount()).isZero();
-      assertThat(registry.getEngineSpecificList()).hasSize(1);
+      assertThat(registry.getScopedMetadataList()).hasSize(1);
     } finally {
       context.detach(previous);
     }
@@ -126,6 +127,7 @@ class SystemObjectsServiceImplTest {
                             EngineCatalogNames.FLOECAT_DEFAULT_CATALOG,
                             SystemCatalogData.empty()))),
                 new FloecatInternalProvider(),
+                List.of(),
                 List.of()));
 
     EngineContext ctx = EngineContext.of("pg", "1.0");
@@ -152,12 +154,18 @@ class SystemObjectsServiceImplTest {
   }
 
   private static SystemObjectsServiceImpl createService(SystemNodeRegistry nodeRegistry) {
-    SystemObjectsServiceImpl service = new SystemObjectsServiceImpl();
+    TestSystemObjectsServiceImpl service = new TestSystemObjectsServiceImpl();
     service.principal = new PrincipalProvider();
     service.authz = new Authorizer();
     service.nodeRegistry = nodeRegistry;
-    service.engineContextProvider = new EngineContextProvider();
+    service.setEngineContextProvider(new EngineContextProvider());
     return service;
+  }
+
+  private static final class TestSystemObjectsServiceImpl extends SystemObjectsServiceImpl {
+    void setEngineContextProvider(EngineContextProvider provider) {
+      this.engineContextProvider = provider;
+    }
   }
 
   private static SystemCatalogData catalogWithRelations() {
@@ -178,8 +186,8 @@ class SystemObjectsServiceImplTest {
         new SystemViewDef(
             NameRefUtil.name("sanitized", "view"), "view", "select 1", "", List.of(), List.of());
 
-    EngineSpecificRule registryHint =
-        new EngineSpecificRule("pg", "", "", "registry", new byte[] {1}, Map.of("mode", "test"));
+    ScopedMetadataRule registryHint =
+        new ScopedMetadataRule("pg", "", "", "registry", new byte[] {1}, Map.of("mode", "test"));
 
     return new SystemCatalogData(
         List.of(),

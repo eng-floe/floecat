@@ -25,6 +25,7 @@ import ai.floedb.floecat.metagraph.model.ViewNode;
 import ai.floedb.floecat.query.rpc.PinKind;
 import ai.floedb.floecat.query.rpc.RelationPinSet;
 import ai.floedb.floecat.query.rpc.TablePin;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.query.QueryContextStore;
 import ai.floedb.floecat.service.query.catalog.testsupport.UserObjectBundleTestSupport.FakeCatalogGraphView;
 import ai.floedb.floecat.service.query.impl.QueryContext;
@@ -444,9 +445,11 @@ class QueryInputResolverBehaviorTest {
               String correlationId,
               ResourceId tableId,
               SnapshotRef override,
-              Optional<Timestamp> asOfDefault) {
+              Optional<Timestamp> asOfDefault,
+              CatalogContext catalogContext) {
             snapshotCalls.incrementAndGet();
-            return super.resolvedSnapshotFor(correlationId, tableId, override, asOfDefault);
+            return super.resolvedSnapshotFor(
+                correlationId, tableId, override, asOfDefault, catalogContext);
           }
         };
     countingGraph.registerTable(TABLE, List.of(), name("cat", "table"));
@@ -472,9 +475,11 @@ class QueryInputResolverBehaviorTest {
               String correlationId,
               ResourceId tableId,
               SnapshotRef override,
-              Optional<Timestamp> asOfDefault) {
+              Optional<Timestamp> asOfDefault,
+              CatalogContext catalogContext) {
             threads.add(Thread.currentThread());
-            return super.resolvedSnapshotFor(correlationId, tableId, override, asOfDefault);
+            return super.resolvedSnapshotFor(
+                correlationId, tableId, override, asOfDefault, catalogContext);
           }
         };
     threadCheckingGraph.registerTable(TABLE, List.of(), name("cat", "table"));
@@ -509,7 +514,8 @@ class QueryInputResolverBehaviorTest {
               String correlationId,
               ResourceId tableId,
               SnapshotRef override,
-              Optional<Timestamp> asOfDefault) {
+              Optional<Timestamp> asOfDefault,
+              CatalogContext catalogContext) {
             started.countDown();
             try {
               release.await();
@@ -517,7 +523,8 @@ class QueryInputResolverBehaviorTest {
               Thread.currentThread().interrupt();
               throw new CancellationException("snapshot resolution interrupted");
             }
-            return super.resolvedSnapshotFor(correlationId, tableId, override, asOfDefault);
+            return super.resolvedSnapshotFor(
+                correlationId, tableId, override, asOfDefault, catalogContext);
           }
         };
     blockingGraph.registerTable(TABLE, List.of(), name("cat", "table"));
@@ -977,12 +984,13 @@ class QueryInputResolverBehaviorTest {
     }
 
     @Override
-    public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
+    public Optional<ResourceId> resolveName(
+        String correlationId, NameRef ref, CatalogContext catalogContext) {
       RuntimeException failure = nameFailures.get(ref);
       if (failure != null) {
         throw failure;
       }
-      return super.resolveName(correlationId, ref);
+      return super.resolveName(correlationId, ref, catalogContext);
     }
 
     @Override
@@ -990,12 +998,14 @@ class QueryInputResolverBehaviorTest {
         String correlationId,
         ResourceId tableId,
         SnapshotRef override,
-        Optional<Timestamp> asOfDefault) {
+        Optional<Timestamp> asOfDefault,
+        CatalogContext catalogContext) {
       if (failingSnapshots.contains(tableId)) {
         throw new StatusRuntimeException(Status.NOT_FOUND);
       }
       calls.add(new SnapshotCall(tableId, override, asOfDefault));
-      TablePin pin = super.resolvedSnapshotFor(correlationId, tableId, override, asOfDefault);
+      TablePin pin =
+          super.resolvedSnapshotFor(correlationId, tableId, override, asOfDefault, catalogContext);
       Long scripted =
           switch (pin.getPinKind()) {
             case PIN_KIND_CURRENT -> currentSnapshots.get(tableId);

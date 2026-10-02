@@ -26,7 +26,7 @@ import ai.floedb.floecat.catalog.rpc.ForeignKeyMatchOption;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.def.*;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import ai.floedb.floecat.systemcatalog.registry.SystemCatalogData;
 import java.util.List;
 import java.util.Map;
@@ -88,7 +88,7 @@ final class SystemCatalogValidatorTest {
             List.of(), // namespaces
             List.of(), // tables
             List.of(), // views
-            List.of() // registry engineSpecific
+            List.of() // registry scopedMetadata
             );
 
     List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
@@ -563,8 +563,8 @@ final class SystemCatalogValidatorTest {
   }
 
   @Test
-  void validate_engineSpecificRulesRequirePayloadType() {
-    EngineSpecificRule rule = new EngineSpecificRule("pg", "", "", "", new byte[0], Map.of());
+  void validate_scopedMetadataRulesRequirePayloadType() {
+    ScopedMetadataRule rule = new ScopedMetadataRule("pg", "", "", "", new byte[0], Map.of());
 
     SystemCatalogData catalog =
         new SystemCatalogData(
@@ -582,11 +582,11 @@ final class SystemCatalogValidatorTest {
             List.of());
 
     List<ValidationIssue> issues = SystemCatalogValidator.validate(catalog);
-    assertThat(codes(issues)).contains("engine_specific.payload_type.required");
+    assertThat(codes(issues)).contains("scoped_metadata.payload_type.required");
 
-    ValidationIssue issue = findFirst(issues, "engine_specific.payload_type.required");
+    ValidationIssue issue = findFirst(issues, "scoped_metadata.payload_type.required");
     assertThat(issue).isNotNull();
-    assertThat(issue.ctx()).isEqualTo("function:f.engineSpecific[0]");
+    assertThat(issue.ctx()).isEqualTo("function:f.scopedMetadata[0]");
   }
 
   @Test

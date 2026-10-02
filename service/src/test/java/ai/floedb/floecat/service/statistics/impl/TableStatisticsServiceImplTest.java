@@ -19,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -207,7 +209,7 @@ class TableStatisticsServiceImplTest {
             .setId("sys_stats_table")
             .build();
 
-    when(svc.graphView.resolve(tableId))
+    when(svc.graphView.resolve(eq(tableId), any()))
         .thenReturn(Optional.of(TestNodes.systemTableNode(tableId)));
     var pc = TestPrincipals.stubPrincipal(svc.principal, svc.authz);
 
@@ -241,7 +243,7 @@ class TableStatisticsServiceImplTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId("tbl")
             .build();
-    when(svc.graphView.resolve(tableId))
+    when(svc.graphView.resolve(eq(tableId), any()))
         .thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
     when(svc.snapshots.getById(tableId, 123L))
         .thenReturn(
@@ -288,7 +290,7 @@ class TableStatisticsServiceImplTest {
             .setKind(ResourceKind.RK_TABLE)
             .setId("tbl")
             .build();
-    when(svc.graphView.resolve(tableId))
+    when(svc.graphView.resolve(eq(tableId), any()))
         .thenReturn(Optional.of(TestNodes.tableNode(tableId, "{}")));
     when(svc.snapshots.getById(tableId, 123L))
         .thenReturn(

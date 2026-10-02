@@ -26,8 +26,8 @@ import java.util.Objects;
 /**
  * Mutable holder describing a view during bundle decoration.
  *
- * <p>Views have two independent sinks: - RelationInfo.engine_specific -
- * ViewDefinition.engine_specific
+ * <p>Views have two independent sinks: - RelationInfo.scoped_metadata -
+ * ViewDefinition.scoped_metadata
  */
 public final class ViewDecoration extends AbstractDecoration {
 
@@ -49,12 +49,12 @@ public final class ViewDecoration extends AbstractDecoration {
     this.node = node;
   }
 
-  /** Relation sink (RelationInfo.engine_specific). */
+  /** Relation sink (RelationInfo.scoped_metadata). */
   public RelationInfo.Builder relationBuilder() {
     return relationBuilder;
   }
 
-  /** View-definition sink (ViewDefinition.engine_specific). */
+  /** View-definition sink (ViewDefinition.scoped_metadata). */
   public ViewDefinition.Builder viewBuilder() {
     return viewBuilder;
   }

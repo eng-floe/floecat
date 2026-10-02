@@ -67,17 +67,17 @@ public abstract class BaseTestCatalogGraphView implements CatalogGraphView {
   }
 
   @Override
-  public Optional<GraphNode> resolve(ResourceId id) {
+  public Optional<GraphNode> resolve(ResourceId id, CatalogContext catalogContext) {
     return Optional.ofNullable(nodes.get(id));
   }
 
   @Override
-  public List<RelationNode> listRelations(ResourceId catalogId) {
+  public List<RelationNode> listRelations(ResourceId catalogId, CatalogContext catalogContext) {
     return relationsByNamespace.values().stream().flatMap(List::stream).toList();
   }
 
   @Override
-  public List<NamespaceNode> listNamespaces(ResourceId catalogId) {
+  public List<NamespaceNode> listNamespaces(ResourceId catalogId, CatalogContext catalogContext) {
     return nodes.values().stream()
         .filter(NamespaceNode.class::isInstance)
         .map(NamespaceNode.class::cast)
@@ -85,17 +85,19 @@ public abstract class BaseTestCatalogGraphView implements CatalogGraphView {
   }
 
   @Override
-  public List<RelationNode> listRelationsInNamespace(ResourceId catalogId, ResourceId namespaceId) {
+  public List<RelationNode> listRelationsInNamespace(
+      ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
     return relationsByNamespace.getOrDefault(namespaceId, List.of());
   }
 
   @Override
-  public List<FunctionNode> listFunctions(ResourceId catalogId, ResourceId namespaceId) {
+  public List<FunctionNode> listFunctions(
+      ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
     return functionsByNamespace.getOrDefault(namespaceId, List.of());
   }
 
   @Override
-  public List<TypeNode> listTypes(ResourceId catalogId) {
+  public List<TypeNode> listTypes(ResourceId catalogId, CatalogContext catalogContext) {
     return nodes.values().stream()
         .filter(TypeNode.class::isInstance)
         .map(TypeNode.class::cast)
@@ -103,27 +105,32 @@ public abstract class BaseTestCatalogGraphView implements CatalogGraphView {
   }
 
   @Override
-  public Optional<ResourceId> resolveCatalog(String correlationId, String name) {
+  public Optional<ResourceId> resolveCatalog(
+      String correlationId, String name, CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
-  public Optional<ResourceId> resolveNamespace(String correlationId, NameRef ref) {
+  public Optional<ResourceId> resolveNamespace(
+      String correlationId, NameRef ref, CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
-  public Optional<ResourceId> resolveTable(String correlationId, NameRef ref) {
+  public Optional<ResourceId> resolveTable(
+      String correlationId, NameRef ref, CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
-  public Optional<ResourceId> resolveView(String correlationId, NameRef ref) {
+  public Optional<ResourceId> resolveView(
+      String correlationId, NameRef ref, CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
-  public Optional<ResourceId> resolveName(String correlationId, NameRef ref) {
+  public Optional<ResourceId> resolveName(
+      String correlationId, NameRef ref, CatalogContext catalogContext) {
     throw unsupported();
   }
 
@@ -132,34 +139,44 @@ public abstract class BaseTestCatalogGraphView implements CatalogGraphView {
       String correlationId,
       ResourceId tableId,
       SnapshotRef override,
-      Optional<Timestamp> asOfDefault) {
+      Optional<Timestamp> asOfDefault,
+      CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
   public ResolveResult batchResolveTables(
-      String correlationId, List<NameRef> items, int limit, String token) {
+      String correlationId,
+      List<NameRef> items,
+      int limit,
+      String token,
+      CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
   public ResolveResult listTablesByPrefix(
-      String correlationId, NameRef prefix, int limit, String token) {
+      String correlationId,
+      NameRef prefix,
+      int limit,
+      String token,
+      CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
-  public Optional<ResourceId> resolveSystemTable(NameRef ref) {
+  public Optional<ResourceId> resolveSystemTable(NameRef ref, CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
-  public Optional<NameRef> resolveSystemTableName(ResourceId id) {
+  public Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
-  public Optional<TypeNode> resolveSystemType(String namespace, String typeName) {
+  public Optional<TypeNode> resolveSystemType(
+      String namespace, String typeName, CatalogContext catalogContext) {
     String canonicalNamespace = normalize(namespace);
     String canonicalTypeName = normalize(typeName);
     if (canonicalNamespace.isEmpty() || canonicalTypeName.isEmpty()) {
@@ -197,33 +214,41 @@ public abstract class BaseTestCatalogGraphView implements CatalogGraphView {
 
   @Override
   public ResolveResult batchResolveViews(
-      String correlationId, List<NameRef> items, int limit, String token) {
+      String correlationId,
+      List<NameRef> items,
+      int limit,
+      String token,
+      CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
   public ResolveResult listViewsByPrefix(
-      String correlationId, NameRef prefix, int limit, String token) {
+      String correlationId,
+      NameRef prefix,
+      int limit,
+      String token,
+      CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
-  public Optional<NameRef> namespaceName(ResourceId id) {
+  public Optional<NameRef> namespaceName(ResourceId id, CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
-  public Optional<NameRef> tableName(ResourceId id) {
+  public Optional<NameRef> tableName(ResourceId id, CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
-  public Optional<NameRef> viewName(ResourceId id) {
+  public Optional<NameRef> viewName(ResourceId id, CatalogContext catalogContext) {
     throw unsupported();
   }
 
   @Override
-  public Optional<CatalogNode> catalog(ResourceId id) {
+  public Optional<CatalogNode> catalog(ResourceId id, CatalogContext catalogContext) {
     throw unsupported();
   }
 
@@ -238,7 +263,7 @@ public abstract class BaseTestCatalogGraphView implements CatalogGraphView {
   }
 
   @Override
-  public List<SchemaColumn> tableSchema(ResourceId tableId) {
+  public List<SchemaColumn> tableSchema(ResourceId tableId, CatalogContext catalogContext) {
     return explicitSchemas.getOrDefault(tableId, List.of());
   }
 

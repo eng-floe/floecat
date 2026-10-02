@@ -21,7 +21,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.GraphNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -46,7 +46,7 @@ final class RelationResolutionMemo {
   // Engine captured at construction is threaded through every lookup: re-reading it from the
   // request context per lookup is fragile across executor hops, and an empty engine silently
   // un-resolves engine-gated system objects (eng-floe/floecat#361).
-  private final EngineContext engineContext;
+  private final CatalogContext catalogContext;
   private final TimingAccumulator timings;
 
   private final Map<NormalizedNameRef, Optional<ResourceId>> nameResolutionCache =
@@ -58,11 +58,11 @@ final class RelationResolutionMemo {
   RelationResolutionMemo(
       CatalogGraphView graphView,
       String correlationId,
-      EngineContext engineContext,
+      CatalogContext catalogContext,
       TimingAccumulator timings) {
     this.graphView = graphView;
     this.correlationId = correlationId;
-    this.engineContext = engineContext;
+    this.catalogContext = catalogContext;
     this.timings = timings;
   }
 
@@ -71,7 +71,7 @@ final class RelationResolutionMemo {
         memoize(
             nameResolutionCache,
             normalizedNameRef(ref),
-            () -> graphView.resolveName(correlationId, ref, engineContext),
+            () -> graphView.resolveName(correlationId, ref, catalogContext),
             timings::addNameResolveNanos);
     return m.value();
   }
@@ -81,7 +81,7 @@ final class RelationResolutionMemo {
         memoize(
             nodeResolutionCache,
             id,
-            () -> graphView.resolve(id, engineContext),
+            () -> graphView.resolve(id, catalogContext),
             timings::addNodeResolveNanos);
     return m.value();
   }
@@ -94,8 +94,8 @@ final class RelationResolutionMemo {
             node.id(),
             id ->
                 switch (node.kind()) {
-                  case TABLE -> graphView.tableName(id, engineContext);
-                  case VIEW -> graphView.viewName(id, engineContext);
+                  case TABLE -> graphView.tableName(id, catalogContext);
+                  case VIEW -> graphView.viewName(id, catalogContext);
                   default -> Optional.empty();
                 });
     return canonical.orElse(nameOnly);

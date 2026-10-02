@@ -33,15 +33,15 @@ import org.jboss.logging.MDC;
  * An immutable snapshot of a thread's ambient request context, for re-establishing it on another
  * thread. Request context does not follow a task across a thread hop on its own — it lives in
  * thread-locals (OpenTelemetry's {@link Context}, the resolved call context's scope) — so work
- * dispatched to an executor loses it, and ambient reads ({@code engineContext()}, principal,
+ * dispatched to an executor loses it, and ambient reads ({@code catalogContext()}, principal,
  * correlation, log MDC) silently read empty off-thread. That is how engine-gated system objects
  * become unresolvable across a fan-out (eng-floe/floecat#361).
  *
  * <p>{@link #capture()} on the originating thread, {@link #supply} on the worker thread. Four
  * carriers travel together: the OpenTelemetry context (with the call's server span grafted on), the
  * caller's live {@code io.grpc.Context}, the {@link ResolvedCallContext}, and the log MDC. The
- * {@code ResolvedCallContext} is the authoritative channel for engine, principal and correlation;
- * the gRPC context still rides along because several readers consult only its keys
+ * {@code ResolvedCallContext} is the authoritative channel for environment, engine, principal and
+ * correlation; the gRPC context still rides along because several readers consult only its keys
  * (session/authorization tokens, and the principal/engine fallbacks), and because the inbound
  * deadline lives there. Centralizing carriers here keeps every dispatch point that uses this
  * snapshot on the same context set.

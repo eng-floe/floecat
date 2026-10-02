@@ -25,7 +25,7 @@ import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.systemcatalog.def.*;
-import ai.floedb.floecat.systemcatalog.engine.EngineSpecificRule;
+import ai.floedb.floecat.systemcatalog.engine.ScopedMetadataRule;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -41,8 +41,8 @@ final class SystemCatalogProtoMapperTest {
     return NameRef.newBuilder().setName(n).build();
   }
 
-  private static EngineSpecificRule rule(String engine) {
-    return new EngineSpecificRule(
+  private static ScopedMetadataRule rule(String engine) {
+    return new ScopedMetadataRule(
         engine, "1.0.0", "9.9.9", "payload/type", new byte[] {1, 2, 3}, Map.of("k", "v"));
   }
 
@@ -94,11 +94,11 @@ final class SystemCatalogProtoMapperTest {
     // Assert function names
     assertThat(output.functions().get(0).name()).isEqualTo(input.functions().get(0).name());
 
-    // Assert EngineSpecificRule fields individually
-    EngineSpecificRule inputRule = input.functions().get(0).engineSpecific().get(0);
-    EngineSpecificRule outputRule = output.functions().get(0).engineSpecific().get(0);
+    // Assert ScopedMetadataRule fields individually
+    ScopedMetadataRule inputRule = input.functions().get(0).scopedMetadata().get(0);
+    ScopedMetadataRule outputRule = output.functions().get(0).scopedMetadata().get(0);
 
-    assertThat(outputRule.engineKind()).isEqualTo(inputRule.engineKind());
+    assertThat(outputRule.kind()).isEqualTo(inputRule.kind());
     assertThat(outputRule.minVersion()).isEqualTo(inputRule.minVersion());
     assertThat(outputRule.maxVersion()).isEqualTo(inputRule.maxVersion());
     assertThat(outputRule.payloadType()).isEqualTo(inputRule.payloadType());
@@ -112,8 +112,8 @@ final class SystemCatalogProtoMapperTest {
 
   @Test
   void fromProto_appliesDefaultEngineWhenMissing() {
-    EngineSpecificRule ruleWithoutEngine =
-        new EngineSpecificRule("", "1.0", "2.0", "payload/type", new byte[0], Map.of());
+    ScopedMetadataRule ruleWithoutEngine =
+        new ScopedMetadataRule("", "1.0", "2.0", "payload/type", new byte[0], Map.of());
 
     SystemCatalogData input =
         new SystemCatalogData(
@@ -133,9 +133,31 @@ final class SystemCatalogProtoMapperTest {
     SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
     SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto, "postgres");
 
-    EngineSpecificRule restored = output.functions().get(0).engineSpecific().get(0);
+    ScopedMetadataRule restored = output.functions().get(0).scopedMetadata().get(0);
 
-    assertThat(restored.engineKind()).isEqualTo("postgres");
+    assertThat(restored.kind()).isEqualTo("postgres");
+  }
+
+  @Test
+  void fromProto_doesNotApplyEngineDefaultToEnvironmentRule() {
+    var environmentRule =
+        ai.floedb.floecat.query.rpc.ScopedMetadataRule.newBuilder()
+            .setScope(ai.floedb.floecat.query.rpc.ScopedMetadataRule.Scope.ENVIRONMENT)
+            .setMinVersion("1")
+            .setMaxVersion("2")
+            .setPayloadType("environment.pg_class")
+            .build();
+    var proto = SystemObjectsRegistry.newBuilder().addScopedMetadata(environmentRule).build();
+
+    var output = SystemCatalogProtoMapper.fromProto(proto, "postgres");
+
+    assertThat(output.registryScopedMetadata())
+        .singleElement()
+        .satisfies(
+            rule -> {
+              assertThat(rule.scope()).isEqualTo(ScopedMetadataRule.Scope.ENVIRONMENT);
+              assertThat(rule.kind()).isEmpty();
+            });
   }
 
   // ---------------------------------------------------------------------------
@@ -173,7 +195,7 @@ final class SystemCatalogProtoMapperTest {
   // ---------------------------------------------------------------------------
 
   @Test
-  void roundTrip_emptyEngineSpecificIsPreserved() {
+  void roundTrip_emptyScopedMetadataIsPreserved() {
     SystemCatalogData input =
         new SystemCatalogData(
             List.of(
@@ -191,7 +213,7 @@ final class SystemCatalogProtoMapperTest {
     SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
     SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto);
 
-    assertThat(output.functions().get(0).engineSpecific()).isEmpty();
+    assertThat(output.functions().get(0).scopedMetadata()).isEmpty();
   }
 
   @Test
@@ -243,8 +265,8 @@ final class SystemCatalogProtoMapperTest {
   }
 
   @Test
-  void roundTrip_preservesRegistryEngineSpecific() {
-    EngineSpecificRule registryRule = rule("spark");
+  void roundTrip_preservesRegistryScopedMetadata() {
+    ScopedMetadataRule registryRule = rule("spark");
 
     SystemCatalogData input =
         new SystemCatalogData(
@@ -262,9 +284,10 @@ final class SystemCatalogProtoMapperTest {
     SystemObjectsRegistry proto = SystemCatalogProtoMapper.toProto(input);
     SystemCatalogData output = SystemCatalogProtoMapper.fromProto(proto, "spark");
 
-    assertThat(output.registryEngineSpecific()).hasSize(1);
-    EngineSpecificRule restored = output.registryEngineSpecific().get(0);
-    assertThat(restored.engineKind()).isEqualTo(registryRule.engineKind());
+    assertThat(output.registryScopedMetadata()).hasSize(1);
+    ScopedMetadataRule restored = output.registryScopedMetadata().get(0);
+    assertThat(restored.kind()).isEqualTo(registryRule.kind());
+    assertThat(restored.scope()).isEqualTo(registryRule.scope());
     assertThat(restored.payloadType()).isEqualTo(registryRule.payloadType());
     assertThat(restored.minVersion()).isEqualTo(registryRule.minVersion());
     assertThat(restored.maxVersion()).isEqualTo(registryRule.maxVersion());

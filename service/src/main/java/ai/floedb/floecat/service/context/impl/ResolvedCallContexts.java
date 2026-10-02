@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.context.impl;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.flight.context.ResolvedCallContext;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.context.Context;
 import io.smallrye.common.vertx.VertxContext;
@@ -30,8 +31,8 @@ import org.jboss.logging.Logger;
 import org.jboss.logging.MDC;
 
 /**
- * Write-once carrier for the fully resolved inbound call context (principal, correlation id, engine
- * context, query id, session/authorization header values).
+ * Write-once carrier for the fully resolved inbound call context (principal, correlation id,
+ * environment and engine context, query id, session/authorization header values).
  *
  * <p>The resolved context is carried on three channels, consulted in order of reliability:
  *
@@ -340,6 +341,13 @@ public final class ResolvedCallContexts {
     String queryId = InboundContextInterceptor.QUERY_KEY.get();
     String correlationId = InboundContextInterceptor.CORR_KEY.get();
     EngineContext engineContext = InboundContextInterceptor.ENGINE_CONTEXT_KEY.get();
+    EnvironmentContext environmentContext = InboundContextInterceptor.ENVIRONMENT_CONTEXT_KEY.get();
+    if (environmentContext == null) {
+      environmentContext =
+          EnvironmentContext.of(
+              InboundContextInterceptor.ENVIRONMENT_KIND_KEY.get(),
+              InboundContextInterceptor.ENVIRONMENT_VERSION_KEY.get());
+    }
     String sessionHeaderValue = InboundContextInterceptor.SESSION_HEADER_VALUE_KEY.get();
     String authorizationHeaderValue =
         InboundContextInterceptor.AUTHORIZATION_HEADER_VALUE_KEY.get();
@@ -348,6 +356,7 @@ public final class ResolvedCallContexts {
         queryId != null ? queryId : "",
         correlationId != null ? correlationId : "",
         engineContext != null ? engineContext : EngineContext.empty(),
+        environmentContext != null ? environmentContext : EnvironmentContext.empty(),
         sessionHeaderValue,
         authorizationHeaderValue);
   }

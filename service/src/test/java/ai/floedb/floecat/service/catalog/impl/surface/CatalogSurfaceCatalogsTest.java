@@ -32,7 +32,7 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
-import ai.floedb.floecat.service.context.EngineContextProvider;
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import io.grpc.Status;
@@ -55,18 +55,15 @@ class CatalogSurfaceCatalogsTest {
   void setup() {
     catalogRepo = mock(CatalogRepository.class);
     graphView = mock(CatalogGraphView.class);
-    EngineContextProvider engineContext = mock(EngineContextProvider.class);
+    when(graphView.catalog(any(), any())).thenReturn(Optional.empty());
 
-    when(engineContext.effectiveEngineKind()).thenReturn("floecat_internal");
-    when(graphView.catalog(any())).thenReturn(Optional.empty());
-
-    surface = new CatalogSurfaceCatalogs(catalogRepo, graphView, engineContext);
+    surface = new CatalogSurfaceCatalogs(catalogRepo, graphView, CatalogContext.empty());
   }
 
   @Test
   void listCatalogsRepoEndEmitsServiceOwnedSystemToken() {
     ResourceId canonicalSystemId = systemCatalogId();
-    when(graphView.catalog(canonicalSystemId))
+    when(graphView.catalog(eq(canonicalSystemId), any()))
         .thenReturn(Optional.of(systemCatalogNode(canonicalSystemId)));
     when(catalogRepo.count("acct")).thenReturn(1);
     when(catalogRepo.list(eq("acct"), eq(1), eq(""), any(StringBuilder.class)))
@@ -86,7 +83,7 @@ class CatalogSurfaceCatalogsTest {
     ResourceId callerScopedId = callerScopedCatalogId(canonicalSystemId);
 
     when(catalogRepo.getById(callerScopedId)).thenReturn(Optional.empty());
-    when(graphView.catalog(canonicalSystemId))
+    when(graphView.catalog(eq(canonicalSystemId), any()))
         .thenReturn(Optional.of(systemCatalogNode(canonicalSystemId)));
 
     var res =
@@ -96,7 +93,7 @@ class CatalogSurfaceCatalogsTest {
     assertEquals("floecat_internal", res.getCatalog().getDisplayName());
     assertEquals(canonicalSystemId.getId(), res.getCatalog().getResourceId().getId());
     verify(catalogRepo).getById(callerScopedId);
-    verify(graphView).catalog(canonicalSystemId);
+    verify(graphView).catalog(eq(canonicalSystemId), any());
     verifyNoMoreInteractions(catalogRepo);
   }
 
@@ -106,7 +103,7 @@ class CatalogSurfaceCatalogsTest {
     ResourceId callerScopedId = callerScopedCatalogId(canonicalSystemId);
 
     when(catalogRepo.getById(callerScopedId)).thenReturn(Optional.empty());
-    when(graphView.catalog(canonicalSystemId)).thenReturn(Optional.empty());
+    when(graphView.catalog(eq(canonicalSystemId), any())).thenReturn(Optional.empty());
 
     StatusRuntimeException ex =
         assertThrows(
@@ -117,14 +114,14 @@ class CatalogSurfaceCatalogsTest {
 
     assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
     verify(catalogRepo).getById(callerScopedId);
-    verify(graphView).catalog(canonicalSystemId);
+    verify(graphView).catalog(eq(canonicalSystemId), any());
   }
 
   @Test
   void listCatalogsAllowsRawRepoTokensWithLegacyCatalogPrefix() {
     String repoToken = "cat:repo_cursor";
     ResourceId canonicalSystemId = systemCatalogId();
-    when(graphView.catalog(canonicalSystemId))
+    when(graphView.catalog(eq(canonicalSystemId), any()))
         .thenReturn(Optional.of(systemCatalogNode(canonicalSystemId)));
     when(catalogRepo.count("acct")).thenReturn(1);
     when(catalogRepo.list(eq("acct"), eq(2), eq(repoToken), any(StringBuilder.class)))
@@ -158,13 +155,13 @@ class CatalogSurfaceCatalogsTest {
     assertEquals(1, res.getCatalogsCount());
     assertEquals("examples", res.getCatalogs(0).getDisplayName());
     verify(catalogRepo).list(eq("acct"), eq(2), eq(repoToken), any(StringBuilder.class));
-    verify(graphView).catalog(systemCatalogId());
+    verify(graphView).catalog(eq(systemCatalogId()), any());
   }
 
   @Test
   void listCatalogsHidesSystemCatalogWhenGraphViewCannotSeeIt() {
     ResourceId canonicalSystemId = systemCatalogId();
-    when(graphView.catalog(canonicalSystemId)).thenReturn(Optional.empty());
+    when(graphView.catalog(eq(canonicalSystemId), any())).thenReturn(Optional.empty());
     when(catalogRepo.count("acct")).thenReturn(1);
     when(catalogRepo.list(eq("acct"), eq(5), eq(""), any(StringBuilder.class)))
         .thenReturn(List.of(Catalog.newBuilder().setDisplayName("examples").build()));
@@ -180,7 +177,7 @@ class CatalogSurfaceCatalogsTest {
 
   @Test
   void listCatalogsRejectsSystemPhaseTokenWhenSystemCatalogIsHidden() {
-    when(graphView.catalog(systemCatalogId())).thenReturn(Optional.empty());
+    when(graphView.catalog(eq(systemCatalogId()), any())).thenReturn(Optional.empty());
     when(catalogRepo.count("acct")).thenReturn(0);
 
     var req =
@@ -192,7 +189,7 @@ class CatalogSurfaceCatalogsTest {
         assertThrows(StatusRuntimeException.class, () -> surface.listCatalogs(req, "acct", "corr"));
 
     assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
-    verify(graphView).catalog(systemCatalogId());
+    verify(graphView).catalog(eq(systemCatalogId()), any());
   }
 
   private static ResourceId systemCatalogId() {

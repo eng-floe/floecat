@@ -127,7 +127,8 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
                                       asOfDefault,
                                       Optional.of(ctx.getQueryDefaultCatalogId()),
                                       new QueryInputResolver.SnapshotSelectionMemo(),
-                                      diagnostics));
+                                      diagnostics,
+                                      catalogContext()));
                     } finally {
                       resolutionPermit.close();
                     }
@@ -309,7 +310,7 @@ public class QuerySchemaServiceImpl extends BaseServiceImpl implements QuerySche
   private SchemaDescriptor describeView(String correlationId, ResourceId rid) {
     ViewNode viewNode =
         graphView
-            .resolve(rid)
+            .resolve(rid, catalogContext())
             .filter(ViewNode.class::isInstance)
             .map(ViewNode.class::cast)
             .orElseThrow(

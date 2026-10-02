@@ -1362,7 +1362,7 @@ class TransactionIntentApplierSupportTest {
     return new ai.floedb.floecat.systemcatalog.util.TestCatalogGraphView() {
       @Override
       public java.util.Optional<ai.floedb.floecat.metagraph.model.GraphNode> resolve(
-          ResourceId id) {
+          ResourceId id, ai.floedb.floecat.scanner.utils.CatalogContext context) {
         return switch (id.getKind()) {
           case RK_CATALOG ->
               java.util.Optional.of(

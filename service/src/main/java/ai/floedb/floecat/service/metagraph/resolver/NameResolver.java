@@ -21,9 +21,8 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
-import ai.floedb.floecat.scanner.spi.TopologyGraph;
-import ai.floedb.floecat.scanner.spi.TopologyGraph.NamespaceRef;
-import ai.floedb.floecat.scanner.spi.TopologyGraph.RelationRef;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView.NamespaceRef;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView.RelationRef;
 import ai.floedb.floecat.service.concurrent.MetadataFanout;
 import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -330,13 +329,12 @@ public final class NameResolver {
   // ----------------------------------------------------------------------
 
   /** Lists lightweight namespace refs from pointers, without materializing namespace blobs. */
-  public List<TopologyGraph.NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
+  public List<NamespaceRef> listNamespaceRefs(ResourceId catalogId) {
     return namespaceRepository.listRefs(catalogId.getAccountId(), catalogId.getId());
   }
 
   /** Resolves selected namespace names by exact pointer lookup. */
-  public List<TopologyGraph.NamespaceRef> listNamespaceRefsByName(
-      ResourceId catalogId, Set<String> names) {
+  public List<NamespaceRef> listNamespaceRefsByName(ResourceId catalogId, Set<String> names) {
     if (names == null || names.isEmpty()) {
       return List.of();
     }
@@ -344,9 +342,8 @@ public final class NameResolver {
   }
 
   /** Lists lightweight table and view refs from the complete pointer index. */
-  public List<TopologyGraph.RelationRef> listRelationRefs(
-      ResourceId catalogId, ResourceId namespaceId) {
-    List<TopologyGraph.RelationRef> refs = new ArrayList<>();
+  public List<RelationRef> listRelationRefs(ResourceId catalogId, ResourceId namespaceId) {
+    List<RelationRef> refs = new ArrayList<>();
     refs.addAll(
         tableRepository.listRefs(catalogId.getAccountId(), catalogId.getId(), namespaceId.getId()));
     refs.addAll(
@@ -355,12 +352,12 @@ public final class NameResolver {
   }
 
   /** Resolves selected relation names by exact table and view pointer lookups. */
-  public List<TopologyGraph.RelationRef> listRelationRefsByName(
+  public List<RelationRef> listRelationRefsByName(
       ResourceId catalogId, ResourceId namespaceId, Set<String> names) {
     if (names == null || names.isEmpty()) {
       return List.of();
     }
-    List<TopologyGraph.RelationRef> refs = new ArrayList<>();
+    List<RelationRef> refs = new ArrayList<>();
     refs.addAll(
         tableRepository.listRefsByName(
             catalogId.getAccountId(), catalogId.getId(), namespaceId.getId(), names));

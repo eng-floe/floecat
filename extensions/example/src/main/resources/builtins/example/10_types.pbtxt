@@ -27,15 +27,15 @@
 #   is_array      — true for array/collection types; set element_type accordingly
 #   element_type  — element type ref for array types
 #
-# engine_specific blocks carry engine-specific metadata.  Required fields:
+# scoped_metadata blocks carry engine-specific metadata.  Required fields:
 #   payload_type  — identifies the payload schema (e.g. "example.properties").
 #                   Required by the catalog validator even when no binary payload is present.
 #   properties    — free-form key/value map for metadata (internal type IDs, byte
 #                   widths, storage layouts, etc.).
 #
-# Tip: omit engine_kind inside engine_specific blocks.  It defaults to the catalog's
+# Tip: omit kind inside scoped_metadata blocks.  It defaults to the catalog's
 # configured engine kind (FLOECAT_EXTENSION_ENGINE_KIND), so your files work correctly
-# regardless of what name you give your engine.  Only set engine_kind explicitly when
+# regardless of what name you give your engine.  Only set kind explicitly when
 # you need to scope a single rule to a specific engine kind within a multi-engine catalog.
 
 # Example scalar type — replace name and properties with your actual type.
@@ -55,7 +55,7 @@ types {
     path: "example"
     name: "my_type"
   }
-  engine_specific {
+  scoped_metadata {
     payload_type: "example.properties"
     properties {
       key: "description"
@@ -70,7 +70,7 @@ types {
     name: "my_type"
   }
   category: "N"
-  engine_specific {
+  scoped_metadata {
     payload_type: "example.properties"
     properties {
       key: "description"

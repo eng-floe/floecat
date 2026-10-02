@@ -26,12 +26,12 @@ import ai.floedb.floecat.metagraph.model.RelationNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.columnar.AbstractArrowBatchBuilder;
 import ai.floedb.floecat.scanner.expr.Expr;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.spi.ScanOutputFormat;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanner;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
-import ai.floedb.floecat.scanner.spi.TopologyGraph;
 import ai.floedb.floecat.systemcatalog.informationschema.NamespaceScanSupport.NamespaceEntry;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.Collections;
@@ -108,7 +108,7 @@ public final class TablesScanner implements SystemObjectScanner {
                   catalogNames.computeIfAbsent(
                       ns.catalogId(), id -> ((CatalogNode) ctx.resolve(id)).displayName());
               if (supportsLightweightRefs) {
-                List<TopologyGraph.RelationRef> refs =
+                List<CatalogGraphView.RelationRef> refs =
                     NamespaceScanSupport.relationRefs(ctx, ns.id(), request, "table_name");
                 return refs.stream()
                     .filter(ref -> matchesTableType(request, ref))
@@ -196,7 +196,7 @@ public final class TablesScanner implements SystemObjectScanner {
               }
               currentNamespace = namespaceIter.next();
               if (supportsLightweightRefs) {
-                List<TopologyGraph.RelationRef> refs =
+                List<CatalogGraphView.RelationRef> refs =
                     NamespaceScanSupport.relationRefs(
                         ctx, currentNamespace.id(), request, "table_name");
                 entryIterator =
@@ -221,7 +221,7 @@ public final class TablesScanner implements SystemObjectScanner {
   }
 
   private static boolean matchesTableType(
-      SystemScanRequest request, TopologyGraph.RelationRef ref) {
+      SystemScanRequest request, CatalogGraphView.RelationRef ref) {
     return request
         .constraints()
         .values("table_type")
@@ -244,7 +244,7 @@ public final class TablesScanner implements SystemObjectScanner {
   }
 
   private static SystemObjectRow rowForRef(
-      String catalogName, String schemaName, TopologyGraph.RelationRef ref) {
+      String catalogName, String schemaName, CatalogGraphView.RelationRef ref) {
     return new SystemObjectRow(
         new Object[] {catalogName, schemaName, ref.name(), refKindString(ref.kind())});
   }

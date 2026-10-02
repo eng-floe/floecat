@@ -27,7 +27,7 @@ syntax = "proto3";
 package ai.floedb.floecat.query;
 
 import "floecat/common/common.proto";
-import "floecat/query/engine_specific.proto";
+import "floecat/query/scoped_metadata_rule.proto";
 import "floecat/query/pinning.proto";
 import "floecat/query/sql_objects.proto";
 import "floecat/query/system_objects_registry.proto";
@@ -280,7 +280,7 @@ message RelationInfo {
   RelationPinIdentity pin_identity = 11;
 
   /** Optional engine-specific metadata extensions. */
-  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+  repeated ai.floedb.floecat.query.ScopedMetadataRule scoped_metadata = 99;
 }
 
 /** Status of a resolved relation column. */
@@ -471,7 +471,7 @@ message ColumnInfo {
   ai.floedb.floecat.query.Origin origin = 6;
 
   /** Engine-specific metadata extensions (optional). */
-  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+  repeated ai.floedb.floecat.query.ScopedMetadataRule scoped_metadata = 99;
 }
 
 /**
@@ -507,5 +507,5 @@ message ViewDefinition {
   repeated SqlDefinition sql_definitions = 5;
 
   /** Engine-specific metadata extensions (collations, hints, etc.). */
-  repeated ai.floedb.floecat.query.EngineSpecific engine_specific = 99;
+  repeated ai.floedb.floecat.query.ScopedMetadataRule scoped_metadata = 99;
 }

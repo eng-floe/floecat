@@ -18,8 +18,10 @@ package ai.floedb.floecat.systemcatalog.registry;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
 import ai.floedb.floecat.scanner.utils.EngineContext;
+import ai.floedb.floecat.scanner.utils.EnvironmentContext;
 import ai.floedb.floecat.systemcatalog.provider.SystemCatalogProvider;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -35,9 +37,9 @@ final class SystemDefinitionRegistryTest {
     SystemCatalogProvider provider =
         new SystemCatalogProvider() {
           @Override
-          public SystemEngineCatalog load(EngineContext ctx) {
+          public SystemEngineCatalog load(CatalogContext context) {
             loadCount.incrementAndGet();
-            return SystemEngineCatalog.empty(ctx.effectiveEngineKind());
+            return SystemEngineCatalog.empty(context.engine().effectiveEngineKind());
           }
 
           @Override
@@ -48,9 +50,9 @@ final class SystemDefinitionRegistryTest {
 
     SystemDefinitionRegistry registry = new SystemDefinitionRegistry(provider);
 
-    SystemEngineCatalog c1 = registry.catalog(EngineContext.of("Spark", ""));
-    SystemEngineCatalog c2 = registry.catalog(EngineContext.of("spark", ""));
-    SystemEngineCatalog c3 = registry.catalog(EngineContext.of("SPARK", ""));
+    SystemEngineCatalog c1 = registry.catalog(context(EngineContext.of("Spark", "")));
+    SystemEngineCatalog c2 = registry.catalog(context(EngineContext.of("spark", "")));
+    SystemEngineCatalog c3 = registry.catalog(context(EngineContext.of("SPARK", "")));
 
     // Same instance due to lowercasing + caching
     assertThat(c1).isSameAs(c2);
@@ -67,9 +69,9 @@ final class SystemDefinitionRegistryTest {
     SystemCatalogProvider provider =
         new SystemCatalogProvider() {
           @Override
-          public SystemEngineCatalog load(EngineContext ctx) {
+          public SystemEngineCatalog load(CatalogContext context) {
             loadCount.incrementAndGet();
-            return SystemEngineCatalog.empty(ctx.effectiveEngineKind());
+            return SystemEngineCatalog.empty(context.engine().effectiveEngineKind());
           }
 
           @Override
@@ -80,13 +82,13 @@ final class SystemDefinitionRegistryTest {
 
     SystemDefinitionRegistry registry = new SystemDefinitionRegistry(provider);
 
-    SystemEngineCatalog first = registry.catalog(EngineContext.of("spark", ""));
+    SystemEngineCatalog first = registry.catalog(context(EngineContext.of("spark", "")));
     assertThat(loadCount.get()).isEqualTo(1);
 
     // Clear cache
     registry.clear();
 
-    SystemEngineCatalog second = registry.catalog(EngineContext.of("spark", ""));
+    SystemEngineCatalog second = registry.catalog(context(EngineContext.of("spark", "")));
     assertThat(loadCount.get()).isEqualTo(2);
 
     // Different instance after clear
@@ -94,18 +96,19 @@ final class SystemDefinitionRegistryTest {
   }
 
   @Test
-  void catalog_blankEngineUsesInternalDefault() {
+  void catalog_emptyContextRemainsDistinctFromExplicitInternal() {
     AtomicInteger loadCount = new AtomicInteger();
-    AtomicReference<String> lastKind = new AtomicReference<>();
+    AtomicReference<Boolean> lastHasEngineKind = new AtomicReference<>();
 
     SystemCatalogProvider provider =
         new SystemCatalogProvider() {
           @Override
-          public SystemEngineCatalog load(EngineContext ctx) {
-            String engineKind = ctx.effectiveEngineKind();
-            lastKind.set(engineKind);
+          public SystemEngineCatalog load(CatalogContext context) {
+            lastHasEngineKind.set(context.engine().hasEngineKind());
             loadCount.incrementAndGet();
-            return SystemEngineCatalog.from(engineKind, SystemCatalogData.empty());
+            return SystemEngineCatalog.from(
+                context.engine().hasEngineKind() ? context.engine().normalizedKind() : "",
+                SystemCatalogData.empty());
           }
 
           @Override
@@ -116,10 +119,54 @@ final class SystemDefinitionRegistryTest {
 
     SystemDefinitionRegistry registry = new SystemDefinitionRegistry(provider);
 
-    SystemEngineCatalog catalog = registry.catalog(EngineContext.empty());
+    SystemEngineCatalog empty = registry.catalog(CatalogContext.empty());
+    assertThat(lastHasEngineKind.get()).isFalse();
 
     assertThat(loadCount.get()).isEqualTo(1);
-    assertThat(lastKind.get()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
-    assertThat(catalog.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+
+    SystemEngineCatalog internal =
+        registry.catalog(
+            CatalogContext.of(
+                EnvironmentContext.empty(),
+                EngineContext.of(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG, "")));
+
+    assertThat(loadCount.get()).isEqualTo(2);
+    assertThat(internal).isNotSameAs(empty);
+    assertThat(internal.engineKind()).isEqualTo(EngineCatalogNames.FLOECAT_DEFAULT_CATALOG);
+  }
+
+  @Test
+  void catalog_differentEnvironmentsDoNotShareCache() {
+    AtomicInteger loadCount = new AtomicInteger();
+
+    SystemCatalogProvider provider =
+        new SystemCatalogProvider() {
+          @Override
+          public SystemEngineCatalog load(CatalogContext context) {
+            loadCount.incrementAndGet();
+            return SystemEngineCatalog.empty(context.engine().effectiveEngineKind());
+          }
+
+          @Override
+          public List<String> engineKinds() {
+            return List.of("spark");
+          }
+        };
+
+    SystemDefinitionRegistry registry = new SystemDefinitionRegistry(provider);
+    EngineContext engine = EngineContext.of("spark", "");
+
+    SystemEngineCatalog first =
+        registry.catalog(CatalogContext.of(EnvironmentContext.of("env-a", ""), engine));
+    SystemEngineCatalog second =
+        registry.catalog(CatalogContext.of(EnvironmentContext.of("env-b", ""), engine));
+
+    assertThat(first).isNotSameAs(second);
+    assertThat(loadCount.get()).isEqualTo(2);
+  }
+
+  private static CatalogContext context(EngineContext engine) {
+    return CatalogContext.of(
+        EnvironmentContext.of(engine.engineKind(), engine.engineVersion()), engine);
   }
 }
