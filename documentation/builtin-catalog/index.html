@@ -1252,9 +1252,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#override-precedence-contract" class="md-nav__link">
+  <a href="#composition-contract" class="md-nav__link">
     <span class="md-ellipsis">
-      Override precedence contract
+      Composition contract
     </span>
   </a>
   
@@ -1284,9 +1284,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#plugin-implementations" class="md-nav__link">
+  <a href="#provider-implementations" class="md-nav__link">
     <span class="md-ellipsis">
-      Plugin Implementations
+      Provider Implementations
     </span>
   </a>
   
@@ -1317,9 +1317,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#enginespecific-proto" class="md-nav__link">
+  <a href="#scopedmetadatarule-proto" class="md-nav__link">
     <span class="md-ellipsis">
-      EngineSpecific (Proto)
+      ScopedMetadataRule (Proto)
     </span>
   </a>
   
@@ -1368,9 +1368,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#enginebuiltinextension-spi" class="md-nav__link">
+  <a href="#enginecatalogprovider-and-catalogenvironmentprovider-spi" class="md-nav__link">
     <span class="md-ellipsis">
-      EngineBuiltinExtension (SPI)
+      EngineCatalogProvider and CatalogEnvironmentProvider (SPI)
     </span>
   </a>
   
@@ -1548,9 +1548,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#step-1-implement-enginesystemcatalogextension" class="md-nav__link">
+  <a href="#step-1-implement-enginecatalogprovider" class="md-nav__link">
     <span class="md-ellipsis">
-      Step 1: Implement EngineSystemCatalogExtension
+      Step 1: Implement EngineCatalogProvider
     </span>
   </a>
   
@@ -2132,9 +2132,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#override-precedence-contract" class="md-nav__link">
+  <a href="#composition-contract" class="md-nav__link">
     <span class="md-ellipsis">
-      Override precedence contract
+      Composition contract
     </span>
   </a>
   
@@ -2164,9 +2164,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#plugin-implementations" class="md-nav__link">
+  <a href="#provider-implementations" class="md-nav__link">
     <span class="md-ellipsis">
-      Plugin Implementations
+      Provider Implementations
     </span>
   </a>
   
@@ -2197,9 +2197,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#enginespecific-proto" class="md-nav__link">
+  <a href="#scopedmetadatarule-proto" class="md-nav__link">
     <span class="md-ellipsis">
-      EngineSpecific (Proto)
+      ScopedMetadataRule (Proto)
     </span>
   </a>
   
@@ -2248,9 +2248,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#enginebuiltinextension-spi" class="md-nav__link">
+  <a href="#enginecatalogprovider-and-catalogenvironmentprovider-spi" class="md-nav__link">
     <span class="md-ellipsis">
-      EngineBuiltinExtension (SPI)
+      EngineCatalogProvider and CatalogEnvironmentProvider (SPI)
     </span>
   </a>
   
@@ -2428,9 +2428,9 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#step-1-implement-enginesystemcatalogextension" class="md-nav__link">
+  <a href="#step-1-implement-enginecatalogprovider" class="md-nav__link">
     <span class="md-ellipsis">
-      Step 1: Implement EngineSystemCatalogExtension
+      Step 1: Implement EngineCatalogProvider
     </span>
   </a>
   
@@ -2554,27 +2554,30 @@
 
 <h1 id="builtin-catalog-architecture">Builtin Catalog Architecture<a class="headerlink" href="#builtin-catalog-architecture" title="Permanent link">&para;</a></h1>
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
-<p>Floecat's builtin catalog system provides engine-specific metadata (functions, operators, types, casts, collations, aggregates) to query planners. This enables the planner to understand and rewrite queries against heterogeneous engines (Floe, Postgres, Trino, Spark, etc.) without embedding engine-specific logic.</p>
-<p>The architecture is <strong>plugin-based</strong>: each engine implements a builtin catalog plugin that provides structured, versioned metadata matching the engine's capabilities.</p>
+<p>Floecat's builtin catalog system provides engine-specific metadata (functions, operators, types, casts, collations, aggregates) and environment-owned system relations to query planners. A catalog request selects both an environment and an engine, so the two sources can be composed without making either one part of the other.</p>
+<p>The architecture is <strong>provider-based</strong>: an engine provider supplies engine capabilities and
+engine-owned relations, while an environment provider supplies environment-owned relations.
+Either provider may obtain metadata from static PBtxt or from a live runtime; live providers do
+not need to duplicate changing engine metadata in PBtxt.</p>
 <h2 id="design-principles">Design Principles<a class="headerlink" href="#design-principles" title="Permanent link">&para;</a></h2>
 <ol>
-<li><strong>Engine-Agnostic Core</strong> – The core proto (<code>engine_specific.proto</code>) defines only the envelope; engines plug in without modifying the core.</li>
+<li><strong>Engine-Agnostic Core</strong> – The core proto (<code>scoped_metadata_rule.proto</code>) defines only the envelope; engines plug in without modifying the core.</li>
 <li><strong>ServiceLoader Discovery</strong> – Plugins are discovered automatically via Java's <code>ServiceLoader</code> mechanism at runtime.</li>
-<li><strong>Proto Extensions</strong> – Plugins define proto extensions on the core <code>EngineSpecific</code> message to allow rich PBtxt files while preserving core simplicity.</li>
+<li><strong>Proto Extensions</strong> – Plugins define proto extensions on the core <code>ScopedMetadataRule</code> message to allow rich PBtxt files while preserving core simplicity.</li>
 <li><strong>Versioned Metadata</strong> – Each plugin defines metadata per engine version; the planner can request version-specific capabilities.</li>
 </ol>
 <h2 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>┌──────────────┐
 │ Planner      │
-│ (engine_kind,│
-│  engine_ver) │
+│ (environment,│
+│  engine)     │
 └──────┬───────┘
        │ gRPC GetSystemObjects
        ▼
 ┌────────────────────────────────────────────────────────────┐
 │ SystemObjectsServiceImpl (service)                        │
 │ - validates headers + correlation id                        │
-│ - calls SystemNodeRegistry.nodesFor(kind, version)          │
+│ - calls SystemNodeRegistry.nodesFor(CatalogContext)          │
 │ - maps SystemCatalogData → SystemObjectsRegistry via              │
 │   SystemCatalogProtoMapper                                    │
 └──────┬──────────────────────────────────────────────────────┘
@@ -2582,24 +2585,24 @@
        ▼
 ┌────────────────────────────────────────────────────────────┐
 │ SystemNodeRegistry (core/catalog)                           │
-│ - caches BuiltinNodes per (engineKind, engineVersion)       │
-│ - filters SystemCatalogData with EngineSpecificMatcher       │
+│ - caches BuiltinNodes per complete CatalogContext           │
+│ - filters SystemCatalogData with ScopedMetadataMatcher       │
 │ - materialises GraphNodes + SystemTable/Table/View defs     │
 └──────┬──────────────────────────────────────────────────────┘
        │
        ▼
 ┌────────────────────────────────────────────────────────────┐
 │ SystemDefinitionRegistry                                    │
-│ - caches SystemEngineCatalog per engine kind                │
+│ - caches SystemEngineCatalog per complete CatalogContext    │
 │ - hands off to SystemCatalogProvider                        │
 └──────┬──────────────────────────────────────────────────────┘
        │
        ▼
 ┌────────────────────────────────────────────────────────────┐
 │ ServiceLoaderSystemCatalogProvider                          │
-│ - discovers EngineSystemCatalogExtension via ServiceLoader   │
-│ - returns the raw SystemCatalogData for the normalized kind  │
-│ - fingerprints the kind-level catalog without provider merges│
+│ - discovers engine and environment providers                │
+│ - loads the selected engine&#39;s static catalog, if any        │
+│ - leaves live provider composition to SystemNodeRegistry    │
 └──────┬──────────────────────────────────────────────────────┘
        │
    ┌───┴───┬───────────────────────┐
@@ -2624,38 +2627,54 @@
     10_types.pbtxt
     …
 </code></pre></div>
-<p>The <code>_index.txt</code> file lists fragments in the order they should be merged. Lines that are blank or start with <code>#</code> are ignored. Each fragment is a proto-text encoding of <code>SystemObjectsRegistry</code> (see <a href="https://github.com/eng-floe/floecat/blob/main/core/proto/src/main/proto/floecat/query/system_objects_registry.proto"><code>system_objects_registry.proto</code></a>). During startup Floe catalogs parse each fragment into a <code>SystemObjectsRegistry.Builder</code> and apply them sequentially via <code>SystemObjectsRegistryMerger</code>, which merges builder→builder to avoid extra allocations. The merged result is then rewritten by <code>SystemCatalogProtoMapper</code> and cached as <code>SystemCatalogData</code>.</p>
-<p>The loader always applies <code>floecat_internal</code> first, then overlays the engine-specific catalog (for instance, <code>floedb</code>), and finally allows scanner-provided overlays from <code>SystemObjectScannerProvider</code> implementations when the request carried engine headers. Overrides happen deterministically because each stage stores entries in a <code>LinkedHashMap</code> keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging.</p>
-<h4 id="override-precedence-contract">Override precedence contract<a class="headerlink" href="#override-precedence-contract" title="Permanent link">&para;</a></h4>
+<p>The <code>_index.txt</code> file lists fragments in the order they should be merged. Lines that are blank or start with <code>#</code> are ignored. Each fragment is a proto-text encoding of <code>SystemObjectsRegistry</code> (see <a href="https://github.com/eng-floe/floecat/blob/main/core/proto/src/main/proto/floecat/query/system_objects_registry.proto"><code>system_objects_registry.proto</code></a>). During startup Floecat parses each fragment into a <code>SystemObjectsRegistry.Builder</code> and applies them sequentially via <code>SystemObjectsRegistryMerger</code>, which merges builder→builder to avoid extra allocations. The merged result is then rewritten by <code>SystemCatalogProtoMapper</code> and cached as <code>SystemCatalogData</code>. This static layout is optional for dynamic providers: an engine or environment provider may return live definitions directly from its SPI.</p>
+<p>The loader resolves the selected engine and environment independently. The registry composes only the selected providers; <code>floecat_internal</code> is not added as a hidden base layer. Providers contribute to one logical catalog, and the registry validates ownership and identity while composing it.</p>
+<h4 id="composition-contract">Composition contract<a class="headerlink" href="#composition-contract" title="Permanent link">&para;</a></h4>
 <ol>
-<li><code>floecat_internal</code> (shared information_schema) seeds every catalog with namespaces/tables/views.</li>
-<li>The plugin catalog returned by <code>SystemDefinitionRegistry</code> overlays the base definitions.</li>
-<li>When engine headers are present and the normalized kind is not <code>floecat_internal</code>, each <code>SystemObjectScannerProvider</code> that supports that kind can overlay definitions for the specific <code>(engineKind, engineVersion)</code> tuple.</li>
-<li>Within each stage, later fragments override earlier ones (controlled by <code>_index.txt</code> ordering); identical canonical names always respect the last writer.</li>
+<li>An explicitly selected engine contributes its static catalog.</li>
+<li>The selected engine provider can contribute live definitions for the complete <code>CatalogContext</code>. Engine-owned tables use <code>TABLE_BACKEND_KIND_ENGINE</code>.</li>
+<li>The selected environment provider contributes environment-owned relations for the complete catalog context. Environment tables use <code>TABLE_BACKEND_KIND_FLOECAT</code> or <code>TABLE_BACKEND_KIND_STORAGE</code>.</li>
+<li><code>floecat_internal</code> contributes only when explicitly selected. A request boundary may turn a completely absent selection into that explicit selection for compatibility.</li>
+<li>Every canonical identity has one definition in the materialized catalog. Structurally identical duplicates are deduplicated. Incompatible duplicates fail; no provider silently overrides another provider.</li>
 </ol>
-<p>When headers are absent or the engine kind is unknown, <code>EngineContext.effectiveEngineKind()</code> resolves to <code>floecat_internal</code>, so only the shared base relations are loaded.</p>
+<p>When no environment is selected, the request uses the empty environment context. An engine selection never derives an environment selection.</p>
+<p>The system catalog identity is the name of the one logical system catalog produced by the merge. It
+is not a precedence rule: it does not allow one provider to replace another provider's object. The
+selected engine kind names that catalog when present; otherwise the selected environment kind names
+it. At an external request boundary, <code>CatalogContext.forRequest(...)</code> converts a request with neither
+axis selected into the explicit <code>floecat_internal</code> context. <code>CatalogContext.empty()</code> is the neutral
+unselected context used inside the model and tests; it does not implicitly load <code>floecat_internal</code>.</p>
+<p>For example, <code>environment=env_a, engine=engine_b</code> produces one catalog named <code>engine_b</code>. The engine
+provider contributes engine-owned objects such as <code>pg_type</code> and <code>pg_proc</code>; the environment provider
+can contribute distinct environment-owned relations such as <code>sys.*</code>. If both providers define the same canonical object,
+identical definitions are deduplicated and incompatible definitions fail with provenance.</p>
 <h3 id="system-table-backend-contract">System table backend contract<a class="headerlink" href="#system-table-backend-contract" title="Permanent link">&para;</a></h3>
 <p><code>SystemTableDef</code> records a <code>TableBackendKind</code> (proto <code>TABLE_BACKEND_KIND_*</code>) plus backend-specific metadata:<br />
 | Backend | Description | Required field | Scanner policy |
 | --- | --- | --- | --- |
 | <code>FLOECAT</code> | Rows produced by Floecat scanners (information_schema, system tables, plugin metadata tables). | <code>scannerId</code> (non-blank) | <code>SystemScannerResolver</code> accepts only <code>FloeCatSystemTableNode</code> instances, so only FLOECAT tables can be scanned through <code>SystemScannerResolver</code>. |
-| <code>ENGINE</code> | Rows produced directly by an engine backend (e.g., engine information tables). | - | Metadata-only: not scanable through <code>SystemScannerResolver</code> and exposed solely for planners to reason about engine-provided hints. |
-| <code>STORAGE</code> | Tables whose rows are stored on disk. | <code>storagePath</code> | Metadata-only: not scanable via <code>SystemScannerResolver</code> and often serve as hints in downstream planning (e.g., partitions or external tables). |</p>
+| <code>ENGINE</code> | Rows produced directly by the selected engine. | - | Not resolved through <code>SystemScannerResolver</code>; execution is delegated to the engine. |
+| <code>STORAGE</code> | Tables whose rows are supplied by storage or Flight. | <code>storagePath</code>, <code>storageEndpointKey</code>, or <code>flightEndpoint</code> | Not resolved through <code>SystemScannerResolver</code>; execution is delegated to the storage path or endpoint. |</p>
 <p><code>SystemTableDef</code> throws at construction time when the required backend-specific value is missing, guaranteeing the graph never exposes partially-specified tables.</p>
 <h3 id="engine-specific-hint-contract">Engine-specific hint contract<a class="headerlink" href="#engine-specific-hint-contract" title="Permanent link">&para;</a></h3>
-<p>Every <code>EngineSpecificRule</code> with a <code>payloadType</code> is mapped to a metagraph <code>EngineHint</code> whose key is <code>(engineKind, engineVersion, payloadType)</code> and whose value contains the payload bytes plus properties. The <code>EngineHintsMapper</code> replaces null payloads with an empty byte array to avoid NPEs, and it throws <code>IllegalStateException</code> if two rules share the same <code>(engineKind, engineVersion, payloadType)</code> triple. Column-level hints are grouped per column name; duplicate column names are already rejected by <code>SystemTableDef</code> so the per-column maps stay one-to-one with the schema. These hints drive scanner/table metadata, so when you add engine-specific definitions ensure each <code>EngineSpecificRule</code> has a unique payload type per engine/version.</p>
-<p><code>ServiceLoaderSystemCatalogProvider</code> is the gatekeeper for engine plugins: it discovers every <code>EngineSystemCatalogExtension</code>, loads the normalized catalog snapshot for each engine kind, and fingerprints the raw data without applying any provider overlays. <code>SystemDefinitionRegistry</code> caches those snapshots keyed by <code>EngineContext.effectiveEngineKind()</code> (so blank headers collapse to <code>floecat_internal</code>) so the kind-level catalog only needs to parse once. The real layering happens in <code>SystemNodeRegistry</code>: on a cache miss it seeds the result with <code>FloecatInternalProvider</code> (the <code>floecat_internal</code> base that always brings <code>information_schema</code>), overlays the plugin catalog, and finally applies <code>SystemObjectScannerProvider.definitions(engineKind, engineVersion)</code> entries when overlays are enabled (i.e., headers are present and the plugin exists). The floecat_internal layer only contributes namespace/table/view metadata (the shared <code>information_schema</code>/<code>pg_catalog</code> relations and their hints) so functions/operators/types/casts/aggregates are never merged from this internal layer; those object classes must come from engine plugins/providers. Overrides happen deterministically because each step puts entries into a LinkedHashMap keyed by canonical names; we also log overrides at DEBUG to make the behavior visible during debugging. When headers are absent or the engine kind is unknown, <code>EngineContext.effectiveEngineKind()</code> resolves to <code>floecat_internal</code> and overlays are skipped, but the base definitions (and the shared <code>information_schema</code>) remain available. <code>SystemGraph</code> continues to reuse the merged <code>BuiltinNodes</code> to build <code>_system</code> snapshots (namespace buckets, relation map, <code>SystemTableNode</code>s) that <code>MetaGraph</code> exposes as <code>CatalogGraphView</code>/<code>SystemObjectGraphView</code>. That merged <code>_system</code> view (load + scan) is documented in <a href="../system-objects/">System objects</a>.</p>
-<h3 id="plugin-implementations">Plugin Implementations<a class="headerlink" href="#plugin-implementations" title="Permanent link">&para;</a></h3>
-<p>Plugins implement <code>EngineSystemCatalogExtension</code> directly and provide:</p>
+<p>Every <code>ScopedMetadataRule</code> with a <code>payloadType</code> is mapped to a metagraph <code>EngineHint</code> whose key is <code>(engineKind, engineVersion, payloadType)</code> and whose value contains the payload bytes plus properties. The <code>EngineHintsMapper</code> replaces null payloads with an empty byte array to avoid NPEs, and it throws <code>IllegalStateException</code> if two rules share the same <code>(engineKind, engineVersion, payloadType)</code> triple. Column-level hints are grouped per column name; duplicate column names are already rejected by <code>SystemTableDef</code> so the per-column maps stay one-to-one with the schema. These hints drive scanner/table metadata, so when you add engine-specific definitions ensure each <code>ScopedMetadataRule</code> has a unique payload type per engine/version.</p>
+<p><code>ServiceLoaderSystemCatalogProvider</code> discovers engine providers and environment providers separately. It loads optional static catalog data from the selected engine provider; <code>SystemDefinitionRegistry</code> caches that result by the complete <code>CatalogContext</code>. <code>SystemNodeRegistry</code> composes the static engine data, live engine definitions, and live environment definitions, validating ownership and conflicts along the way. The resulting <code>BuiltinNodes</code> are exposed through <code>SystemGraph</code> and <code>CatalogGraphView</code> for metadata resolution and scanning. That merged <code>_system</code> view (load + scan) is documented in <a href="../system-objects/">System objects</a>.</p>
+<h3 id="provider-implementations">Provider Implementations<a class="headerlink" href="#provider-implementations" title="Permanent link">&para;</a></h3>
+<p>Providers implement one of the two specialized SPIs:</p>
 <ol>
-<li><strong>Engine Kind</strong> – A stable identifier (e.g., <code>”example”</code>)</li>
-<li><strong>Catalog Data</strong> – Loads <code>.pbtxt</code> resources and returns a <code>SystemCatalogData</code> snapshot</li>
-<li><strong>Discovery</strong> – Registered via ServiceLoader for automatic runtime discovery</li>
+<li><strong><code>EngineCatalogProvider</code></strong> – A stable engine identifier, optional static catalog data, and/or
+   live engine metadata definitions. Engine-owned tables use <code>TABLE_BACKEND_KIND_ENGINE</code>; their
+   rows are produced by the engine and do not have Floecat scanners.</li>
+<li><strong><code>CatalogEnvironmentProvider</code></strong> – A stable environment identifier plus environment-owned
+   definitions and scanners. Its methods receive the complete <code>CatalogContext</code>, including the
+   selected engine.</li>
+<li><strong>Discovery</strong> – Register the relevant SPI with <code>ServiceLoader</code> for automatic runtime discovery.</li>
 </ol>
-<p>See <code>extensions/example/</code> for a complete reference implementation.</p>
+<p>See <code>extensions/example/</code> for a static engine-provider reference implementation. A dynamic engine
+provider only needs to implement the context-aware definition method and does not need one
+PBtxt file per engine function or relation.</p>
 <h3 id="hint-lifecycle">Hint Lifecycle<a class="headerlink" href="#hint-lifecycle" title="Permanent link">&para;</a></h3>
-<p><code>EngineSystemCatalogExtension</code> extends <code>SystemObjectScannerProvider</code>, so every plugin can also
-serve system-table definitions and scanners. Plugins that persist engine hints (metadata attached
+<p>Plugins that persist engine hints (metadata attached
 to catalog objects at runtime) can control when those hints are invalidated by implementing
 <code>decideHintClear</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="k">default</span><span class="w"> </span><span class="n">HintClearDecision</span><span class="w"> </span><span class="nf">decideHintClear</span><span class="p">(</span><span class="n">EngineContext</span><span class="w"> </span><span class="n">ctx</span><span class="p">,</span><span class="w"> </span><span class="n">HintClearContext</span><span class="w"> </span><span class="n">context</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
@@ -2669,31 +2688,39 @@ snapshots. <code>HintClearDecision</code> controls what to clear:</p>
 <li>Fine-grained constructor — clears only specific <code>payloadType</code> sets or individual column IDs, for
   plugins that want to avoid unnecessary hint recomputation on unrelated schema changes</li>
 </ul>
-<p><code>SystemNodeRegistry</code> automatically materializes each object's matching <code>engine_specific</code> rules as
+<p><code>SystemNodeRegistry</code> automatically materializes each object's matching <code>scoped_metadata</code> rules as
 <code>EngineHint</code> entries keyed by <code>(engineKind, engineVersion, payloadType)</code>. Plugins that rely solely
 on <code>properties</code>-based metadata in their <code>.pbtxt</code> files get immutable system hints without a second
 provider or cache path. <code>decideHintClear</code> applies only to legacy property-backed user hints during
 migration.</p>
 <h2 id="core-components">Core Components<a class="headerlink" href="#core-components" title="Permanent link">&para;</a></h2>
-<h3 id="enginespecific-proto">EngineSpecific (Proto)<a class="headerlink" href="#enginespecific-proto" title="Permanent link">&para;</a></h3>
-<p>The core envelope in <code>proto/src/main/proto/floecat/query/engine_specific.proto</code>:</p>
-<div class="highlight"><pre><span></span><code><span class="kd">message</span><span class="w"> </span><span class="nc">EngineSpecific</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="na">engine_kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10</span><span class="p">;</span><span class="w">       </span><span class="c1">// &quot;postgres&quot;, ...</span>
-<span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="na">min_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">11</span><span class="p">;</span><span class="w">       </span><span class="c1">// min engine version (inclusive)</span>
-<span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="na">max_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">12</span><span class="p">;</span><span class="w">       </span><span class="c1">// max engine version (inclusive)</span>
-<span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="na">payload_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">20</span><span class="p">;</span><span class="w">      </span><span class="c1">// e.g., &quot;floe.function+proto&quot;</span>
-<span class="w">  </span><span class="kt">bytes</span><span class="w"> </span><span class="na">payload</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">21</span><span class="p">;</span><span class="w">            </span><span class="c1">// Opaque binary data</span>
-<span class="w">  </span><span class="n">map</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span><span class="kt">string</span><span class="p">&gt;</span><span class="w"> </span><span class="na">properties</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span>
+<h3 id="scopedmetadatarule-proto">ScopedMetadataRule (Proto)<a class="headerlink" href="#scopedmetadatarule-proto" title="Permanent link">&para;</a></h3>
+<p>The core envelope in <code>proto/src/main/proto/floecat/query/scoped_metadata_rule.proto</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">message</span><span class="w"> </span><span class="nc">ScopedMetadataRule</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kd">enum</span><span class="w"> </span><span class="n">Scope</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="na">ENGINE</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<span class="w">    </span><span class="na">ENVIRONMENT</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">  </span><span class="p">}</span>
 
-<span class="w">  </span><span class="c1">// Reserve extension numbers for plugins</span>
-<span class="w">  </span><span class="k">extensions</span><span class="w"> </span><span class="mi">1000</span><span class="w"> </span><span class="k">to</span><span class="w"> </span><span class="mi">2000</span><span class="p">;</span>
+<span class="w">  </span><span class="c1">// PBtxt-readable extension blocks occupy fields 1-99.</span>
+<span class="w">  </span><span class="k">extensions</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="k">to</span><span class="w"> </span><span class="mi">99</span><span class="p">;</span>
+
+<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="na">kind</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">100</span><span class="p">;</span><span class="w">             </span><span class="c1">// &quot;postgres&quot;, ...</span>
+<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="na">min_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">101</span><span class="p">;</span><span class="w">      </span><span class="c1">// inclusive lower bound</span>
+<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="na">max_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">102</span><span class="p">;</span><span class="w">      </span><span class="c1">// inclusive upper bound</span>
+<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="n">Scope</span><span class="w"> </span><span class="na">scope</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">202</span><span class="w"> </span><span class="p">[</span><span class="k">default</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">ENGINE</span><span class="p">];</span>
+<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="na">payload_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">200</span><span class="p">;</span><span class="w">      </span><span class="c1">// e.g. &quot;floe.function+proto&quot;</span>
+<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="kt">bytes</span><span class="w"> </span><span class="na">payload</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">201</span><span class="p">;</span><span class="w">            </span><span class="c1">// opaque binary data</span>
+<span class="w">  </span><span class="n">map</span><span class="p">&lt;</span><span class="kt">string</span><span class="p">,</span><span class="kt">string</span><span class="p">&gt;</span><span class="w"> </span><span class="na">properties</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">300</span><span class="p">;</span>
 <span class="p">}</span>
 </code></pre></div>
-<p><strong>Key Design</strong>: The message is engine-agnostic. Extensions (defined by plugins) are allowed in range 1000–2000 to support rich PBtxt files during parsing.</p>
+<p><strong>Key Design</strong>: The message is engine-agnostic. Extensions (defined by plugins) use the reserved
+range 1–99 to support rich PBtxt files during parsing. Plugins must coordinate allocations within
+that range.</p>
 <h3 id="systemcatalogprovider-spi">SystemCatalogProvider (SPI)<a class="headerlink" href="#systemcatalogprovider-spi" title="Permanent link">&para;</a></h3>
 <p>Interface for loading catalogs:</p>
 <div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">SystemCatalogProvider</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="n">SystemEngineCatalog</span><span class="w"> </span><span class="nf">load</span><span class="p">(</span><span class="n">EngineContext</span><span class="w"> </span><span class="n">ctx</span><span class="p">);</span>
+<span class="w">  </span><span class="n">SystemEngineCatalog</span><span class="w"> </span><span class="nf">load</span><span class="p">(</span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">ctx</span><span class="p">);</span>
 <span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">engineKinds</span><span class="p">();</span>
 <span class="p">}</span>
 </code></pre></div>
@@ -2701,19 +2728,29 @@ migration.</p>
 - <strong>ServiceLoaderSystemCatalogProvider</strong> – Discovers plugin catalogs via ServiceLoader, exposes the list of available engine kinds, and returns the raw <code>SystemCatalogData</code> for the normalized kind. It does not merge provider definitions—the merged view is computed later in <code>SystemNodeRegistry</code>—so the kind-level fingerprint stays stable.
 - <strong>StaticSystemCatalogProvider</strong> – For tests; allows programmatic registration</p>
 <h3 id="enginecontext-header-semantics">EngineContext &amp; header semantics<a class="headerlink" href="#enginecontext-header-semantics" title="Permanent link">&para;</a></h3>
-<p>Every <code>SystemCatalogProvider</code> receives an <code>EngineContext</code> (engine kind + version) derived from request headers. <code>EngineContext.effectiveEngineKind()</code> folds missing or blank headers to <code>floecat_internal</code> (which is also the registered <code>FloeCatInternalProvider</code>), so the base catalog is always available even when no headers are sent. When headers are present the normalized engine kind identifies the plugin whose catalog is cached in <code>SystemDefinitionRegistry</code>; the normalized version is used later by <code>SystemNodeRegistry</code> for version filtering. <code>SystemNodeRegistry</code> seeds every catalog build with the floecat_internal definitions, overlays the plugin snapshot when one exists, and only applies <code>SystemObjectScannerProvider</code> overlays when <code>EngineContext.enginePluginOverlaysEnabled()</code> is true (that is, headers were present and the normalized kind is not <code>floecat_internal</code>). Unknown engine kinds resolve to <code>floecat_internal</code>, so the shared base catalog remains available and provider overlays are not applied.</p>
+<p>Every provider receives a complete <code>CatalogContext</code> containing an environment and an engine. Requests
+carry the two axes independently in <code>x-environment-kind</code> / <code>x-environment-version</code> and
+<code>x-engine-kind</code> / <code>x-engine-version</code>; the resolved call context propagates both together across
+internal RPCs and worker hops. The engine context selects capability providers and the environment
+context selects environment-owned relation providers. <code>SystemNodeRegistry</code> applies both axes
+independently, so a live environment can be paired with any engine without copying the engine's
+types or functions into environment definitions.</p>
 <h3 id="caching-architecture">Caching Architecture<a class="headerlink" href="#caching-architecture" title="Permanent link">&para;</a></h3>
 <p>Builtins are cached at every stage of the pipeline:</p>
 <div class="highlight"><pre><span></span><code>┌──────────────────────────────────┐
 │ SystemDefinitionRegistry         │
-│ key = effectiveEngineKind        │
+│ key = (environmentKind,          │
+│        environmentVersion,       │
+│        engineKind, engineVersion)│
 │ value = SystemEngineCatalog       │
 │ (raw SystemCatalogData snapshot)  │
 └──────────────────────────────────┘
                 │
 ┌──────────────────────────────────┐
 │ SystemNodeRegistry               │
-│ key = (engineKind, engineVersion) │
+│ key = (environmentKind,           │
+│        environmentVersion,        │
+│        engineKind, engineVersion) │
 │ value = BuiltinNodes (GraphNodes +│
 │         merged SystemCatalogData │
 │         and overlays)             │
@@ -2721,17 +2758,17 @@ migration.</p>
                 │
 ┌──────────────────────────────────┐
 │ SystemGraph snapshot cache       │
-│ key = (engineKind, engineVersion) │
+│ key = complete CatalogContext     │
 │ value = GraphSnapshot (namespace →│
 │         relations + lookup map)   │
 └──────────────────────────────────┘
 </code></pre></div>
 <ol>
 <li>
-<p><strong>SystemDefinitionRegistry</strong> – normalizes the engine kind (<code>Locale.ROOT</code>, case-insensitive) and caches the immutable <code>SystemEngineCatalog</code> produced by the <code>SystemCatalogProvider</code> under <code>EngineContext.effectiveEngineKind()</code>, so the layer-1 cache is kind-only. Every catalog is fingerprinted once before provider overlays are applied, making the kind-level fingerprint stable even if later merges change the result. Tests can reset this cache via <code>clear()</code>.</p>
+<p><strong>SystemDefinitionRegistry</strong> – caches the immutable <code>SystemEngineCatalog</code> produced by the <code>SystemCatalogProvider</code> under the normalized environment/engine tuple. Static engine catalogs remain separate from live environment contributions. Tests can reset this cache via <code>clear()</code>.</p>
 </li>
 <li>
-<p><strong>SystemNodeRegistry</strong> – filters the cached catalog through <code>EngineSpecificMatcher</code> (per <code>min_version</code>, <code>max_version</code> rules) and merges floecat_internal + plugin catalogs + provider overlays when overlays are enabled. The resulting <code>BuiltinNodes</code> record keeps copies of the filtered and merged <code>SystemCatalogData</code> (functions, types, casts, tables, etc.), so the same snapshot serves both the catalog service and the system graph; this layer’s fingerprint reflects the post-merge catalog that includes overlays. <code>VersionKey</code> is the <code>(engineKind, engineVersion)</code> tuple stored in a <code>ConcurrentHashMap</code>.
+<p><strong>SystemNodeRegistry</strong> – filters the cached catalog through <code>ScopedMetadataMatcher</code> (per <code>min_version</code>, <code>max_version</code> rules) and composes static/live engine contributions with live environment contributions. The resulting <code>BuiltinNodes</code> record keeps copies of the filtered and merged <code>SystemCatalogData</code> (functions, types, casts, tables, etc.), so the same snapshot serves both the catalog service and the system graph. <code>VersionKey</code> is the normalized <code>(environmentKind, environmentVersion, engineKind, engineVersion)</code> tuple stored in a <code>ConcurrentHashMap</code>. Identical definitions are deduplicated; conflicting definitions fail rather than using stage order as precedence.
    Canonical names remain fully qualified for identity and namespace mapping, while node display labels are materialized separately (functions/operators/types/collations/aggregates default to leaf names unless a provider overrides them).
    Catalog validation is enforced at load time: providers fail fast on <code>Severity.ERROR</code> issues. The default namespace-scope policy currently requires known namespaces for <code>function/type/table/view</code> and leaves <code>operator/cast/collation/aggregate</code> relaxed unless a stricter policy is selected.</p>
 </li>
@@ -2741,18 +2778,34 @@ migration.</p>
 </ol>
 <p><code>SystemObjectsServiceImpl</code> itself stays cache-less: it simply fetches the prebuilt <code>BuiltinNodes</code>, hands the embedded <code>SystemCatalogData</code> to <code>SystemCatalogProtoMapper.toProto()</code>, and responds. Because all heavy work (parsing, filtering, node construction, snapshotting) happens before the gRPC layer, repeated requests hit the cache in &lt;1ms.</p>
 <h2 id="plugin-architecture">Plugin Architecture<a class="headerlink" href="#plugin-architecture" title="Permanent link">&para;</a></h2>
-<h3 id="enginebuiltinextension-spi">EngineBuiltinExtension (SPI)<a class="headerlink" href="#enginebuiltinextension-spi" title="Permanent link">&para;</a></h3>
-<p>Plugins implement this interface (defined in <code>extensions/builtin/spi/</code>):</p>
-<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">EngineBuiltinExtension</span><span class="w"> </span><span class="p">{</span>
+<h3 id="enginecatalogprovider-and-catalogenvironmentprovider-spi">EngineCatalogProvider and CatalogEnvironmentProvider (SPI)<a class="headerlink" href="#enginecatalogprovider-and-catalogenvironmentprovider-spi" title="Permanent link">&para;</a></h3>
+<p>Engine providers implement the engine SPI:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">EngineCatalogProvider</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="n">String</span><span class="w"> </span><span class="nf">engineKind</span><span class="p">();</span>
-<span class="w">  </span><span class="n">SystemCatalogData</span><span class="w"> </span><span class="nf">loadSystemCatalog</span><span class="p">();</span>
-<span class="w">  </span><span class="k">default</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="nf">onLoadError</span><span class="p">(</span><span class="n">Exception</span><span class="w"> </span><span class="n">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="k">default</span><span class="w"> </span><span class="n">SystemCatalogData</span><span class="w"> </span><span class="nf">loadSystemCatalog</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">SystemCatalogData</span><span class="p">.</span><span class="na">empty</span><span class="p">();</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">SystemObjectDef</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">definitions</span><span class="p">(</span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+<span class="w">  </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">SystemObjectScanner</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">provide</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">scannerId</span><span class="p">,</span><span class="w"> </span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
 <span class="p">}</span>
 </code></pre></div>
+<p>Environment providers implement the environment SPI:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">interface</span> <span class="nc">CatalogEnvironmentProvider</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">String</span><span class="w"> </span><span class="nf">environmentKind</span><span class="p">();</span>
+<span class="w">  </span><span class="n">List</span><span class="o">&lt;</span><span class="n">SystemObjectDef</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">definitions</span><span class="p">(</span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+<span class="w">  </span><span class="kt">boolean</span><span class="w"> </span><span class="nf">supports</span><span class="p">(</span><span class="n">NameRef</span><span class="w"> </span><span class="n">name</span><span class="p">,</span><span class="w"> </span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+<span class="w">  </span><span class="n">Optional</span><span class="o">&lt;</span><span class="n">SystemObjectScanner</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">provide</span><span class="p">(</span><span class="n">String</span><span class="w"> </span><span class="n">scannerId</span><span class="p">,</span><span class="w"> </span><span class="n">CatalogContext</span><span class="w"> </span><span class="n">context</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>The actual interfaces also provide default hooks for validation, type mapping, and provider
+selection. The important distinction is ownership: engine relations use <code>TABLE_BACKEND_KIND_ENGINE</code>;
+environment relations use <code>TABLE_BACKEND_KIND_FLOECAT</code> or <code>TABLE_BACKEND_KIND_STORAGE</code>.</p>
 <h3 id="reference-implementation">Reference Implementation<a class="headerlink" href="#reference-implementation" title="Permanent link">&para;</a></h3>
-<p>The bundled <code>extensions/example/</code> module (<code>ExampleCatalogExtension</code>) is the canonical reference.
-It loads <code>.pbtxt</code> files from either a configured filesystem directory or from classpath resources
-under <code>builtins/&lt;engine-kind&gt;/</code>, reading fragment order from <code>_index.txt</code>.</p>
+<p>The bundled <code>extensions/example/</code> module (<code>ExampleCatalogExtension</code>) is the canonical static
+engine-provider reference. It loads <code>.pbtxt</code> files from either a configured filesystem directory
+or from classpath resources under <code>builtins/&lt;engine-kind&gt;/</code>, reading fragment order from <code>_index.txt</code>.
+An engine with live metadata can instead leave <code>loadSystemCatalog()</code> empty and implement the
+context-aware definition methods. It does not need one PBtxt file per engine function or relation.</p>
 <p>Each fragment independently defines the repeated field(s) it needs; the loader appends them in
 order to a single <code>SystemObjectsRegistry.Builder</code>.</p>
 <p>Resource layout:</p>
@@ -2769,40 +2822,45 @@ order to a single <code>SystemObjectsRegistry.Builder</code>.</p>
       60_aggregates.pbtxt
 </code></pre></div>
 <h3 id="serviceloader-registration">ServiceLoader Registration<a class="headerlink" href="#serviceloader-registration" title="Permanent link">&para;</a></h3>
-<p>Each plugin registers itself in <code>META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension</code>:</p>
-<div class="highlight"><pre><span></span><code>com.example.MyEngineCatalogExtension
+<p>Each plugin registers itself in <code>META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider</code>:</p>
+<div class="highlight"><pre><span></span><code>com.example.MyEngineCatalogProvider
 </code></pre></div>
 <h2 id="data-flow">Data Flow<a class="headerlink" href="#data-flow" title="Permanent link">&para;</a></h2>
 <h3 id="request-flow-planner-floecat">Request Flow (Planner → Floecat)<a class="headerlink" href="#request-flow-planner-floecat" title="Permanent link">&para;</a></h3>
 <ol>
-<li><strong>Planner</strong> sends <code>GetSystemObjectsRequest</code> with headers:</li>
-<li><code>x-engine-kind: "example"</code></li>
-<li><code>x-engine-version: "1.0"</code></li>
-<li><strong>SystemObjectsServiceImpl</strong> validates the headers and calls <code>SystemNodeRegistry.nodesFor("example", "1.0")</code>.</li>
-<li><strong>SystemNodeRegistry</strong> normalizes the kind, looks up <code>(engineKind, engineVersion)</code> in its cache, and, on a miss, asks <code>SystemDefinitionRegistry</code> for the raw <code>SystemEngineCatalog</code>.</li>
-<li><strong>SystemDefinitionRegistry</strong> delegates to <code>ServiceLoaderSystemCatalogProvider</code> when it needs to load a raw catalog snapshot for the normalized engine kind.</li>
-<li><strong>SystemNodeRegistry</strong> takes that snapshot, seeds it with <code>floecat_internal</code> + <code>InformationSchema</code> definitions, overlays the plugin catalog and any <code>SystemObjectScannerProvider.definitions(engineKind, engineVersion)</code> entries, re-fingerprints the merged catalog, and caches the result per <code>(engineKind, engineVersion)</code>. Plugin/provider overlays only occur when engine headers are present (engine-plugin overlays).</li>
-<li><strong>SystemNodeRegistry</strong> filters the catalog by version (<code>EngineSpecificMatcher</code>), applies engine-specific rules, and materialises <code>BuiltinNodes</code> (graph nodes + filtered <code>SystemCatalogData</code>). The <code>BuiltinNodes</code> instance is cached for future requests for the same version.</li>
+<li><strong>Planner</strong> sends <code>GetSystemObjectsRequest</code> with the selected catalog context:</li>
+<li><code>x-environment-kind: "env_a"</code></li>
+<li><code>x-environment-version: "1.0"</code></li>
+<li><code>x-engine-kind: "engine_b"</code></li>
+<li><code>x-engine-version: "1.0"</code>
+   The request boundary converts these headers into one <code>CatalogContext</code>. If both axes are absent,
+   it uses <code>CatalogContext.forRequest(...)</code> to select <code>floecat_internal</code>. <code>CatalogContext.empty()</code>
+   is reserved for neutral internal/test contexts and is not the request-defaulting function.</li>
+<li><strong>SystemObjectsServiceImpl</strong> validates the request and calls <code>SystemNodeRegistry.nodesFor(CatalogContext)</code>.</li>
+<li><strong>SystemNodeRegistry</strong> looks up the complete <code>(environmentKind, environmentVersion, engineKind, engineVersion)</code> context in its cache, and, on a miss, asks <code>SystemDefinitionRegistry</code> for the engine catalog data.</li>
+<li><strong>SystemDefinitionRegistry</strong> delegates to <code>ServiceLoaderSystemCatalogProvider</code> when it needs to load the engine's static catalog snapshot.</li>
+<li><strong>SystemNodeRegistry</strong> composes static engine data, live engine definitions, and live environment definitions. It caches the result per complete <code>CatalogContext</code>.</li>
+<li><strong>SystemNodeRegistry</strong> filters the catalog by version (<code>ScopedMetadataMatcher</code>), applies engine-specific rules, and materialises <code>BuiltinNodes</code> (graph nodes + filtered <code>SystemCatalogData</code>). The <code>BuiltinNodes</code> instance is cached for future requests for the same context.</li>
 <li><strong>SystemObjectsServiceImpl</strong> receives the cached <code>BuiltinNodes</code>, hands its embedded <code>SystemCatalogData</code> to <code>SystemCatalogProtoMapper.toProto()</code>, and streams the <code>GetSystemObjectsResponse</code> back to the planner.</li>
 <li><strong>SystemGraph</strong> reuses the same <code>BuiltinNodes</code> to build <code>_system</code> catalog snapshots (namespace buckets, relation map, <code>SystemTableNode</code>s) that <code>MetaGraph</code> exposes as <code>CatalogGraphView</code>/<code>SystemObjectGraphView</code> for system object scanning.</li>
-<li>The scanner-visible system relations (information_schema, pg_catalog, etc.) are seeded from <code>floecat_internal</code> and merged into every engine namespace for <code>_system</code> scans. They are <strong>not</strong> emitted by <code>GetSystemObjects</code>, which only returns engine-visible SQL objects produced by plugins/providers.</li>
+<li>The scanner-visible system relations (information_schema, pg_catalog, etc.) are seeded from the shared provider and merged into the selected catalog context for <code>_system</code> scans.</li>
 </ol>
 <h3 id="systemnoderegistry-caching">SystemNodeRegistry Caching<a class="headerlink" href="#systemnoderegistry-caching" title="Permanent link">&para;</a></h3>
 <p>All caches are case-normalized and thread-safe:
-* <code>SystemDefinitionRegistry</code> keeps one <code>SystemEngineCatalog</code> per engine kind in a <code>ConcurrentHashMap</code>. Loading once per kind is enough because <code>SystemEngineCatalog</code> references a parsed <code>SystemCatalogData</code> snapshot that contains every supported version.
-* <code>SystemNodeRegistry</code> caches <code>BuiltinNodes</code> per <code>VersionKey(engineKind, engineVersion)</code> via <code>ConcurrentHashMap.computeIfAbsent</code>. The result stores stable <code>ResourceId</code>s (via <code>SystemNodeRegistry.resourceId</code>) and a copy of the filtered <code>SystemCatalogData</code>.<br />
-<code>SystemNodeRegistry.resourceId</code> derives a deterministic UUID (engine kind + resource kind + object signature) instead of concatenating readable <code>engine:suffix</code> strings, so every owner of a system node should call the helper rather than inventing their own IDs.
-* <code>SystemGraph</code> keeps a synchronized, access-ordered <code>LinkedHashMap</code> of <code>GraphSnapshot</code>s per version. Each snapshot already groups namespace relations and indexes every <code>GraphNode</code> so that <code>_system</code> list/lookups take constant time.</p>
+* <code>SystemDefinitionRegistry</code> keeps one <code>SystemEngineCatalog</code> per normalized catalog context in a <code>ConcurrentHashMap</code>. The engine's static catalog may be reused across versions internally, but the public cache key remains the complete context so environment/engine composition cannot collide.
+* <code>SystemNodeRegistry</code> caches <code>BuiltinNodes</code> per normalized <code>(environmentKind, environmentVersion, engineKind, engineVersion)</code> via <code>ConcurrentHashMap.computeIfAbsent</code>. The result stores stable <code>ResourceId</code>s (via <code>SystemNodeRegistry.resourceId</code>) and a copy of the filtered and merged <code>SystemCatalogData</code>.
+  <code>SystemNodeRegistry.resourceId</code> derives a deterministic UUID (catalog kind + resource kind + object signature) instead of concatenating readable <code>catalog:suffix</code> strings, so every owner of a system node should call the helper rather than inventing their own IDs.
+* <code>SystemGraph</code> keeps a synchronized, access-ordered <code>LinkedHashMap</code> of <code>GraphSnapshot</code>s per complete catalog context. Each snapshot already groups namespace relations and indexes every <code>GraphNode</code> so that <code>_system</code> list/lookups take constant time.</p>
 <h2 id="version-matching">Version Matching<a class="headerlink" href="#version-matching" title="Permanent link">&para;</a></h2>
 <p>Each rule in the builtin catalog carries <code>min_version</code> and <code>max_version</code> constraints:</p>
-<div class="highlight"><pre><span></span><code><span class="n">EngineSpecific</span><span class="w"> </span><span class="p">{</span>
+<div class="highlight"><pre><span></span><code><span class="n">ScopedMetadataRule</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="n">min_version</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;9.5&quot;</span>
 <span class="w">  </span><span class="n">max_version</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;13.0&quot;</span>
 <span class="w">  </span><span class="c1">// ...</span>
 <span class="p">}</span>
 </code></pre></div>
 <p>The planner can filter or match rules based on the requested version. The versioning semantics are engine-defined; plugins document their version scheme in their documentation.</p>
-<p>The actual predicate is implemented by <code>EngineSpecificMatcher.matches(rules, engineKind, engineVersion)</code>, which is used by <code>SystemNodeRegistry</code> to compute exactly which objects survive the version filter.</p>
+<p>The actual predicate is implemented by <code>ScopedMetadataMatcher.matches(rules, engineKind, engineVersion)</code>, which is used by <code>SystemNodeRegistry</code> to compute exactly which objects survive the version filter.</p>
 <h2 id="scalability-performance">Scalability &amp; Performance<a class="headerlink" href="#scalability-performance" title="Permanent link">&para;</a></h2>
 <h3 id="catalog-size-considerations">Catalog Size Considerations<a class="headerlink" href="#catalog-size-considerations" title="Permanent link">&para;</a></h3>
 <p>PostgreSQL has a massive builtin catalog:
@@ -2945,18 +3003,19 @@ allocate 16GB+ to handle metadata graph + execution plans.
 - <strong>Very large .pbtxt files</strong> (&gt; 10MB): Parsing could timeout; consider compression or lazy loading</p>
 <p><strong>Recommendation</strong>: For PG-scale engines, pre-warm cache by loading all expected versions at service startup rather than lazy-loading on first planner request.</p>
 <h2 id="proto-extensions-advanced">Proto Extensions (Advanced)<a class="headerlink" href="#proto-extensions-advanced" title="Permanent link">&para;</a></h2>
-<p>Plugins can define proto extensions on <code>EngineSpecific</code> to support rich PBtxt syntax. The Floe plugin defines:</p>
+<p>Plugins can define proto extensions on <code>ScopedMetadataRule</code> to support rich PBtxt syntax. The Floe plugin defines:</p>
 <div class="highlight"><pre><span></span><code><span class="c1">// my_engine.proto — define in your own plugin proto</span>
-<span class="kd">extend</span><span class="w"> </span><span class="nc">ai</span><span class="o">.</span><span class="n">floedb.floecat.query.EngineSpecific</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="n">MyFunctionSpecific</span><span class="w">  </span><span class="na">my_function</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="mi">1001</span><span class="p">;</span>
-<span class="w">  </span><span class="n">MyOperatorSpecific</span><span class="w">  </span><span class="na">my_operator</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="mi">1002</span><span class="p">;</span>
-<span class="w">  </span><span class="n">MyCastSpecific</span><span class="w">      </span><span class="na">my_cast</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">1003</span><span class="p">;</span>
-<span class="w">  </span><span class="n">MyTypeSpecific</span><span class="w">      </span><span class="na">my_type</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">1004</span><span class="p">;</span>
-<span class="w">  </span><span class="n">MyAggregateSpecific</span><span class="w"> </span><span class="na">my_aggregate</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1005</span><span class="p">;</span>
-<span class="w">  </span><span class="n">MyCollationSpecific</span><span class="w"> </span><span class="na">my_collation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1006</span><span class="p">;</span>
+<span class="kd">extend</span><span class="w"> </span><span class="nc">ai</span><span class="o">.</span><span class="n">floedb.floecat.query.ScopedMetadataRule</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">MyFunctionSpecific</span><span class="w">  </span><span class="na">my_function</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyOperatorSpecific</span><span class="w">  </span><span class="na">my_operator</span><span class="w">  </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyCastSpecific</span><span class="w">      </span><span class="na">my_cast</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyTypeSpecific</span><span class="w">      </span><span class="na">my_type</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyAggregateSpecific</span><span class="w"> </span><span class="na">my_aggregate</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span><span class="p">;</span>
+<span class="w">  </span><span class="n">MyCollationSpecific</span><span class="w"> </span><span class="na">my_collation</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span><span class="p">;</span>
 <span class="p">}</span>
 </code></pre></div>
-<p><strong>Important</strong>: Extensions use range 1000–2000 reserved in the core proto. Plugins must coordinate to avoid collisions (e.g., Postgres uses 1100–1199, Trino uses 1200–1299, etc.).</p>
+<p><strong>Important</strong>: Extensions use the range 1–99 reserved in the core proto. Plugins must coordinate to
+avoid collisions within that range (for example, Postgres could use 10–19 and Trino 20–29).</p>
 <h2 id="validation">Validation<a class="headerlink" href="#validation" title="Permanent link">&para;</a></h2>
 <p>The <code>SystemCatalogValidator</code> validates loaded catalogs:</p>
 <div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">static</span><span class="w"> </span><span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span><span class="w"> </span><span class="nf">validate</span><span class="p">(</span><span class="n">SystemCatalogData</span><span class="w"> </span><span class="n">catalog</span><span class="p">)</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="p">...</span><span class="w"> </span><span class="p">}</span>
@@ -2969,9 +3028,9 @@ allocate 16GB+ to handle metadata graph + execution plans.
 - Required fields present</p>
 <p>Validation errors are logged; invalid catalogs are still returned (planner must handle gracefully).</p>
 <h2 id="creating-a-new-plugin">Creating a New Plugin<a class="headerlink" href="#creating-a-new-plugin" title="Permanent link">&para;</a></h2>
-<h3 id="step-1-implement-enginesystemcatalogextension">Step 1: Implement EngineSystemCatalogExtension<a class="headerlink" href="#step-1-implement-enginesystemcatalogextension" title="Permanent link">&para;</a></h3>
-<p><code>EngineSystemCatalogExtension</code> lives in <code>ai.floedb.floecat.systemcatalog.spi</code> and already extends <code>SystemObjectScannerProvider</code>, so every plugin can also supply system table definitions and scanners without extra wiring.</p>
-<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">MyEngineCatalogExtension</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">EngineSystemCatalogExtension</span><span class="w"> </span><span class="p">{</span>
+<h3 id="step-1-implement-enginecatalogprovider">Step 1: Implement EngineCatalogProvider<a class="headerlink" href="#step-1-implement-enginecatalogprovider" title="Permanent link">&para;</a></h3>
+<p><code>EngineCatalogProvider</code> lives in <code>ai.floedb.floecat.systemcatalog.spi</code> and supplies engine metadata. Engine-owned system tables do not require a Floecat scanner; the engine executes their rows.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">public</span><span class="w"> </span><span class="kd">class</span> <span class="nc">MyEngineCatalogExtension</span><span class="w"> </span><span class="kd">implements</span><span class="w"> </span><span class="n">EngineCatalogProvider</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nd">@Override</span>
 <span class="w">  </span><span class="kd">public</span><span class="w"> </span><span class="n">String</span><span class="w"> </span><span class="nf">engineKind</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="s">&quot;my-engine&quot;</span><span class="p">;</span>
@@ -2983,21 +3042,20 @@ allocate 16GB+ to handle metadata graph + execution plans.
 <span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">SystemCatalogData</span><span class="p">(...);</span>
 <span class="w">  </span><span class="p">}</span>
 
-<span class="w">  </span><span class="c1">// Implement SystemObjectScannerProvider methods if you expose new rows.</span>
 <span class="p">}</span>
 </code></pre></div>
 <h3 id="step-2-register-with-serviceloader">Step 2: Register with ServiceLoader<a class="headerlink" href="#step-2-register-with-serviceloader" title="Permanent link">&para;</a></h3>
-<p>Create <code>resources/META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineSystemCatalogExtension</code>:</p>
+<p>Create <code>resources/META-INF/services/ai.floedb.floecat.systemcatalog.spi.EngineCatalogProvider</code>:</p>
 <div class="highlight"><pre><span></span><code>com.example.MyEngineCatalogExtension
 </code></pre></div>
 <h3 id="step-3-define-proto-extensions-optional">Step 3: Define Proto Extensions (Optional)<a class="headerlink" href="#step-3-define-proto-extensions-optional" title="Permanent link">&para;</a></h3>
 <p>If using PBtxt with custom fields, define proto extensions:</p>
-<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="s">&quot;query/engine_specific.proto&quot;</span><span class="p">;</span>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="s">&quot;query/scoped_metadata_rule.proto&quot;</span><span class="p">;</span>
 
 <span class="kd">message</span><span class="w"> </span><span class="nc">MyEngineFunction</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* ... */</span><span class="w"> </span><span class="p">}</span>
 
-<span class="kd">extend</span><span class="w"> </span><span class="nc">ai</span><span class="o">.</span><span class="n">floedb.floecat.query.EngineSpecific</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="n">MyEngineFunction</span><span class="w"> </span><span class="na">my_function</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1100</span><span class="p">;</span><span class="w">  </span><span class="c1">// Use allocated range for your engine</span>
+<span class="kd">extend</span><span class="w"> </span><span class="nc">ai</span><span class="o">.</span><span class="n">floedb.floecat.query.ScopedMetadataRule</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">MyEngineFunction</span><span class="w"> </span><span class="na">my_function</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">10</span><span class="p">;</span><span class="w">  </span><span class="c1">// Use an allocated field in the 1–99 range</span>
 <span class="p">}</span>
 </code></pre></div>
 <h3 id="step-4-ship-with-service-module">Step 4: Ship with Service Module<a class="headerlink" href="#step-4-ship-with-service-module" title="Permanent link">&para;</a></h3>
@@ -3020,7 +3078,7 @@ allocate 16GB+ to handle metadata graph + execution plans.
 <span class="w">  </span><span class="p">}</span>
 
 <span class="w">  </span><span class="nd">@Test</span>
-<span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="nf">catalogDataPreservesEngineSpecificRules</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kt">void</span><span class="w"> </span><span class="nf">catalogDataPreservesScopedMetadataRules</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="kd">var</span><span class="w"> </span><span class="n">extension</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">new</span><span class="w"> </span><span class="n">ExampleCatalogExtension</span><span class="p">();</span>
 <span class="w">    </span><span class="n">SystemCatalogData</span><span class="w"> </span><span class="n">catalog</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">extension</span><span class="p">.</span><span class="na">loadSystemCatalog</span><span class="p">();</span>
 
@@ -3032,7 +3090,7 @@ allocate 16GB+ to handle metadata graph + execution plans.
 <span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">var</span><span class="w"> </span><span class="n">func</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">functionsWithRules</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">      </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">var</span><span class="w"> </span><span class="n">rule</span><span class="w"> </span><span class="p">:</span><span class="w"> </span><span class="n">func</span><span class="p">.</span><span class="na">engineSpecific</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="k">assert</span><span class="w"> </span><span class="o">!</span><span class="n">rule</span><span class="p">.</span><span class="na">payloadType</span><span class="p">().</span><span class="na">isBlank</span><span class="p">()</span><span class="w"> </span><span class="p">:</span>
-<span class="w">            </span><span class="s">&quot;engine_specific rules must have a non-blank payload_type&quot;</span><span class="p">;</span>
+<span class="w">            </span><span class="s">&quot;scoped_metadata rules must have a non-blank payload_type&quot;</span><span class="p">;</span>
 <span class="w">      </span><span class="p">}</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>

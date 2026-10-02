@@ -2129,7 +2129,7 @@ CLI, and reconciler.</p>
 <tr>
 <td><code>SystemObjectsService</code></td>
 <td><code>GetSystemObjects</code></td>
-<td>Returns the builtin catalog filtered by the <code>x-engine-kind</code> / <code>x-engine-version</code> headers supplied with the request.</td>
+<td>Returns the builtin catalog selected by the independent <code>x-environment-kind</code> / <code>x-environment-version</code> and <code>x-engine-kind</code> / <code>x-engine-version</code> headers supplied with the request.</td>
 </tr>
 </tbody>
 </table>
@@ -2152,7 +2152,7 @@ case-sensitive. Each path selects that namespace subtree.</p>
 - <code>ScanFileContent</code> enumerates the delete/data categories.</p>
 <p><code>query/system_objects_registry.proto</code> exposes immutable builtin metadata via <code>SystemObjectsService.GetSystemObjects</code>
 so planners can hydrate functions/operators/types once per engine version. Clients send the
-<code>x-engine-kind</code> and <code>x-engine-version</code> headers and always receive the filtered catalog for that
+<code>x-environment-kind</code> / <code>x-environment-version</code> and <code>x-engine-kind</code> / <code>x-engine-version</code> headers and always receive the composed catalog for that
 engine release.</p>
 <h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
 <ul>

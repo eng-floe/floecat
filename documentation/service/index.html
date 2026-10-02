@@ -2428,7 +2428,8 @@ catalog has no parent namespace, so its parent fence is empty and the catalog fe
 standing between it and a concurrent delete.</p>
 <p>Namespace deletes assert nothing about their catalog. Removal is the direction that orphans nothing.</p>
 <h3 id="security-and-context">Security and Context<a class="headerlink" href="#security-and-context" title="Permanent link">&para;</a></h3>
-<p><code>InboundContextInterceptor</code> reads <code>x-query-id</code>, <code>x-engine-version</code>, and <code>x-correlation-id</code> headers,
+<p><code>InboundContextInterceptor</code> reads <code>x-query-id</code>, <code>x-engine-kind</code>, <code>x-engine-version</code>,
+<code>x-environment-kind</code>, <code>x-environment-version</code>, and <code>x-correlation-id</code> headers,
 plus optional OIDC session/authorization headers, validates account membership, hydrates
 MDC/OpenTelemetry attributes, and enforces the configured <code>floecat.auth.mode</code>.
 <code>OutboundContextClientInterceptor</code> mirrors the same headers for internal gRPC calls

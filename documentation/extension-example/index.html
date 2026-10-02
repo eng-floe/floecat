@@ -1263,9 +1263,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#engine_specific-blocks" class="md-nav__link">
+  <a href="#scoped_metadata-blocks" class="md-nav__link">
     <span class="md-ellipsis">
-      engine_specific blocks
+      scoped_metadata blocks
     </span>
   </a>
   
@@ -1980,9 +1980,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#engine_specific-blocks" class="md-nav__link">
+  <a href="#scoped_metadata-blocks" class="md-nav__link">
     <span class="md-ellipsis">
-      engine_specific blocks
+      scoped_metadata blocks
     </span>
   </a>
   
@@ -2032,7 +2032,7 @@
 
 <h1 id="example-catalog-extension">Example Catalog Extension<a class="headerlink" href="#example-catalog-extension" title="Permanent link">&para;</a></h1>
 <p><code>floecat-extension-example</code> is a zero-code, file-based
-<code>EngineSystemCatalogExtension</code>
+<code>EngineCatalogProvider</code>
 that serves any engine's catalog from user-authored <code>.pbtxt</code> files — no Java required.</p>
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
 <p>The extension reads one or more <code>.pbtxt</code> files that describe your engine's built-in types,
@@ -2144,8 +2144,8 @@ system properties, <code>application.properties</code>) works.</p>
 <td><code>WARN</code> log; file skipped; other files still load</td>
 </tr>
 <tr>
-<td><code>engine_kind</code> inside an <code>engine_specific</code> block</td>
-<td>Silently stripped (see <a href="#engine_specific-blocks">engine_specific blocks</a>)</td>
+<td><code>kind</code> inside an <code>scoped_metadata</code> block</td>
+<td>Silently stripped (see <a href="#scoped_metadata-blocks">scoped_metadata blocks</a>)</td>
 </tr>
 </tbody>
 </table>
@@ -2228,7 +2228,7 @@ is required; every <code>name.path</code> value used in other files must referen
 <td>Element type reference: <code>name</code> + <code>path</code>.</td>
 </tr>
 <tr>
-<td><code>engine_specific.properties</code></td>
+<td><code>scoped_metadata.properties</code></td>
 <td>map&lt;string,string&gt;</td>
 <td>no</td>
 <td>Free-form metadata for your runtime (type IDs, byte widths, storage layouts, etc.).</td>
@@ -2239,7 +2239,7 @@ is required; every <code>name.path</code> value used in other files must referen
 <span class="n">types</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">  </span><span class="n">category</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;N&quot;</span>
-<span class="w">  </span><span class="n">engine_specific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">scoped_metadata</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;description&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;32-bit signed integer&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;size_bytes&quot;</span><span class="w">  </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;4&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
@@ -2302,19 +2302,19 @@ is required; every <code>name.path</code> value used in other files must referen
 <td><code>true</code> for window functions.</td>
 </tr>
 <tr>
-<td><code>engine_specific.min_version</code></td>
+<td><code>scoped_metadata.min_version</code></td>
 <td>string</td>
 <td>no</td>
 <td>Earliest engine version that supports this function (inclusive).</td>
 </tr>
 <tr>
-<td><code>engine_specific.max_version</code></td>
+<td><code>scoped_metadata.max_version</code></td>
 <td>string</td>
 <td>no</td>
 <td>Latest engine version that supports this function (inclusive).</td>
 </tr>
 <tr>
-<td><code>engine_specific.properties</code></td>
+<td><code>scoped_metadata.properties</code></td>
 <td>map&lt;string,string&gt;</td>
 <td>no</td>
 <td>Free-form metadata (description, volatility, internal IDs, …).</td>
@@ -2326,7 +2326,7 @@ is required; every <code>name.path</code> value used in other files must referen
 <span class="w">  </span><span class="n">name</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_abs&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">  </span><span class="n">argument_types</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">  </span><span class="n">return_type</span><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
-<span class="w">  </span><span class="n">engine_specific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">scoped_metadata</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;volatility&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;immutable&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
@@ -2337,7 +2337,7 @@ is required; every <code>name.path</code> value used in other files must referen
 <span class="w">  </span><span class="n">argument_types</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_text&quot;</span><span class="w">    </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">  </span><span class="n">argument_types</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_text&quot;</span><span class="w">    </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">  </span><span class="n">return_type</span><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_text&quot;</span><span class="w">    </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
-<span class="w">  </span><span class="n">engine_specific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">scoped_metadata</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">min_version</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;2.0&quot;</span>
 <span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;volatility&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;immutable&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
@@ -2536,7 +2536,7 @@ functions — those are defined as <code>functions</code> with <code>is_aggregat
 <td>Type returned after finalization.</td>
 </tr>
 <tr>
-<td><code>engine_specific.properties</code></td>
+<td><code>scoped_metadata.properties</code></td>
 <td>map&lt;string,string&gt;</td>
 <td>no</td>
 <td>Free-form metadata.  Conventionally used to reference state-transition and finalizer functions (<code>state_function</code>, <code>final_function</code>).</td>
@@ -2548,16 +2548,16 @@ functions — those are defined as <code>functions</code> with <code>is_aggregat
 <span class="w">  </span><span class="n">argument_types</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_integer&quot;</span><span class="w"> </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">  </span><span class="n">state_type</span><span class="w">     </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_bigint&quot;</span><span class="w">  </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">  </span><span class="n">return_type</span><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="n">name</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_bigint&quot;</span><span class="w">  </span><span class="n">path</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_schema&quot;</span><span class="w"> </span><span class="p">}</span>
-<span class="w">  </span><span class="n">engine_specific</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">scoped_metadata</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;state_function&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_sum_state&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">    </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;final_function&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;my_sum_final&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </code></pre></div>
-<h2 id="engine_specific-blocks"><code>engine_specific</code> blocks<a class="headerlink" href="#engine_specific-blocks" title="Permanent link">&para;</a></h2>
-<p>Every catalog object type accepts an <code>engine_specific</code> block for version constraints and
+<h2 id="scoped_metadata-blocks"><code>scoped_metadata</code> blocks<a class="headerlink" href="#scoped_metadata-blocks" title="Permanent link">&para;</a></h2>
+<p>Every catalog object type accepts an <code>scoped_metadata</code> block for version constraints and
 free-form metadata:</p>
-<div class="highlight"><pre><span></span><code><span class="n">engine_specific</span><span class="w"> </span><span class="p">{</span>
+<div class="highlight"><pre><span></span><code><span class="n">scoped_metadata</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="n">min_version</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;2.0&quot;</span><span class="w">          </span><span class="err">#</span><span class="w"> </span><span class="n">inclusive</span><span class="w"> </span><span class="n">lower</span><span class="w"> </span><span class="n">bound</span><span class="p">;</span><span class="w"> </span><span class="n">omit</span><span class="w"> </span><span class="n">if</span><span class="w"> </span><span class="n">no</span><span class="w"> </span><span class="n">minimum</span>
 <span class="w">  </span><span class="n">max_version</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;5.9&quot;</span><span class="w">          </span><span class="err">#</span><span class="w"> </span><span class="n">inclusive</span><span class="w"> </span><span class="n">upper</span><span class="w"> </span><span class="n">bound</span><span class="p">;</span><span class="w"> </span><span class="n">omit</span><span class="w"> </span><span class="n">if</span><span class="w"> </span><span class="n">no</span><span class="w"> </span><span class="n">maximum</span>
 <span class="w">  </span><span class="n">properties</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">key</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;volatility&quot;</span><span class="w"> </span><span class="n">value</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;immutable&quot;</span><span class="w"> </span><span class="p">}</span>
@@ -2565,15 +2565,15 @@ free-form metadata:</p>
 <span class="p">}</span>
 </code></pre></div>
 <p><strong>Version filtering.</strong>  <code>min_version</code> and <code>max_version</code> are compared against the engine version
-sent in the <code>x-engine-version</code> gRPC header.  <code>EngineSpecificMatcher</code> evaluates the comparison
+sent in the <code>x-engine-version</code> gRPC header.  <code>ScopedMetadataMatcher</code> evaluates the comparison
 using lexicographic semver-style ordering.  Planners that send a version outside the declared
-range will not see the object.  Objects with no <code>engine_specific</code> block (or no version fields)
+range will not see the object.  Objects with no <code>scoped_metadata</code> block (or no version fields)
 are always included.</p>
 <p><strong><code>properties</code>.</strong>  A free-form <code>map&lt;string,string&gt;</code> for any metadata your engine needs at
 runtime — internal type or function IDs, byte widths, volatility, storage layout hints, etc.
 Floecat does not interpret property keys or values; they are passed through to the planner as-is.</p>
-<p><strong><code>engine_kind</code> is not supported.</strong>  If an <code>engine_kind</code> field appears inside an
-<code>engine_specific</code> block it is silently stripped before the catalog is served.  The catalog's
+<p><strong><code>kind</code> is not supported.</strong>  If an <code>kind</code> field appears inside an
+<code>scoped_metadata</code> block it is silently stripped before the catalog is served.  The catalog's
 configured engine kind (<code>FLOECAT_EXTENSION_ENGINE_KIND</code>) always applies uniformly — one
 extension instance serves exactly one engine kind, so a per-rule filter is unnecessary and would
 cause subtle scoping bugs if the engine kind is ever renamed.</p>
