@@ -1113,7 +1113,7 @@ public class SystemNodeRegistry {
     String kind = rule.kind() == null ? "" : rule.kind();
     String min = rule.minVersion() == null ? "" : rule.minVersion();
     String max = rule.maxVersion() == null ? "" : rule.maxVersion();
-    return String.join("|", payloadType, kind, min, max);
+    return String.join("|", rule.scope().name(), payloadType, kind, min, max);
   }
 
   private static boolean matches(

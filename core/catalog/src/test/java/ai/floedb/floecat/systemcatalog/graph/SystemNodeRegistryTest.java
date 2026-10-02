@@ -1074,7 +1074,7 @@ class SystemNodeRegistryTest {
     var environmentRule =
         new ScopedMetadataRule(
             ScopedMetadataRule.Scope.ENVIRONMENT,
-            "floe",
+            FLOE_KIND,
             "",
             "",
             "dict.shared",
@@ -1101,7 +1101,7 @@ class SystemNodeRegistryTest {
         nodeRegistry
             .nodesFor(
                 CatalogContext.of(
-                    EnvironmentContext.of("floe", "1"), EngineContext.of(FLOE_KIND, "16.0")))
+                    EnvironmentContext.of(FLOE_KIND, "16.0"), EngineContext.of(FLOE_KIND, "16.0")))
             .catalogData()
             .registryScopedMetadata();
 

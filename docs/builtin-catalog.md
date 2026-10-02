@@ -194,7 +194,9 @@ message ScopedMetadataRule {
 }
 ```
 
-**Key Design**: The message is engine-agnostic. Extensions (defined by plugins) are allowed in range 1000–2000 to support rich PBtxt files during parsing.
+**Key Design**: The message is engine-agnostic. Extensions (defined by plugins) use the reserved
+range 1–99 to support rich PBtxt files during parsing. Plugins must coordinate allocations within
+that range.
 
 ### SystemCatalogProvider (SPI)
 
@@ -466,16 +468,17 @@ Plugins can define proto extensions on `ScopedMetadataRule` to support rich PBtx
 ```proto
 // my_engine.proto — define in your own plugin proto
 extend ai.floedb.floecat.query.ScopedMetadataRule {
-  MyFunctionSpecific  my_function  = 1001;
-  MyOperatorSpecific  my_operator  = 1002;
-  MyCastSpecific      my_cast      = 1003;
-  MyTypeSpecific      my_type      = 1004;
-  MyAggregateSpecific my_aggregate = 1005;
-  MyCollationSpecific my_collation = 1006;
+  MyFunctionSpecific  my_function  = 1;
+  MyOperatorSpecific  my_operator  = 2;
+  MyCastSpecific      my_cast      = 3;
+  MyTypeSpecific      my_type      = 4;
+  MyAggregateSpecific my_aggregate = 5;
+  MyCollationSpecific my_collation = 6;
 }
 ```
 
-**Important**: Extensions use range 1000–2000 reserved in the core proto. Plugins must coordinate to avoid collisions (e.g., Postgres uses 1100–1199, Trino uses 1200–1299, etc.).
+**Important**: Extensions use the range 1–99 reserved in the core proto. Plugins must coordinate to
+avoid collisions within that range (for example, Postgres could use 10–19 and Trino 20–29).
 
 ## Validation
 
@@ -534,7 +537,7 @@ import "query/scoped_metadata_rule.proto";
 message MyEngineFunction { /* ... */ }
 
 extend ai.floedb.floecat.query.ScopedMetadataRule {
-  MyEngineFunction my_function = 1100;  // Use allocated range for your engine
+  MyEngineFunction my_function = 10;  // Use an allocated field in the 1–99 range
 }
 ```
 
