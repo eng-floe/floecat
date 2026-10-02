@@ -19,11 +19,13 @@ package ai.floedb.floecat.storage.aws.secrets;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.storage.aws.AwsClients;
+import ai.floedb.floecat.storage.aws.CredentialResolutionForbiddenAwsClients;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
@@ -52,6 +54,39 @@ import software.amazon.awssdk.services.secretsmanager.model.ResourceExistsExcept
 import software.amazon.awssdk.services.sts.StsClient;
 
 class ProdSecretsManagerTest {
+
+  @Test
+  void getUsesTheConfiguredSecretsManagerClientWithoutAnIndependentCredentialPreflight() {
+    ClientHandle configuredClient =
+        ClientHandle.secretsValue(Base64.getEncoder().encodeToString("alpha".getBytes()));
+    AwsClients awsClients = new CredentialResolutionForbiddenAwsClients();
+    ProdSecretsManager manager =
+        new ProdSecretsManager(
+            awsClients, configuredClient.secretsClient, ClientHandle.sts().stsClient);
+
+    assertArrayEquals(
+        "alpha".getBytes(), manager.get("acct", "connectors", "secret").orElseThrow());
+    manager.shutdown();
+  }
+
+  @Test
+  void actualSecretsManagerRequestFailurePropagatesWithoutSecretValues() {
+    SdkClientException requestFailure = SdkClientException.create("Secrets Manager request failed");
+    ClientHandle failingClient = ClientHandle.secretsFailure(requestFailure);
+    ProdSecretsManager manager =
+        new ProdSecretsManager(failingClient.secretsClient, ClientHandle.sts().stsClient);
+    byte[] secretValue = "do-not-disclose".getBytes();
+
+    SdkClientException thrown =
+        assertThrows(
+            SdkClientException.class,
+            () -> manager.put("acct", "connectors", "secret", secretValue));
+
+    assertSame(requestFailure, thrown);
+    assertFalse(thrown.toString().contains("do-not-disclose"));
+    assertFalse(thrown.toString().contains(Base64.getEncoder().encodeToString(secretValue)));
+    manager.shutdown();
+  }
 
   @Test
   void deleteTreatsAlreadyScheduledSecretAsDeleted() {
@@ -531,9 +566,6 @@ class ProdSecretsManagerTest {
       handle.boundStsClient = activeStsClient;
       return handle.secretsClient;
     }
-
-    @Override
-    public void ensureCredentialsAvailable() {}
   }
 
   private static final class ClientHandle implements InvocationHandler {

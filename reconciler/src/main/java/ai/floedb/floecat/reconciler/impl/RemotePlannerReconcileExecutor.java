@@ -24,7 +24,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileJobStore;
 import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
-import ai.floedb.floecat.storage.AwsCredentialsUnavailableException;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.util.EnumSet;
@@ -377,13 +376,6 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
     if (normalized instanceof ReconcileFailureException) {
       return normalized;
     }
-    if (hasAwsCredentialsUnavailable(error)) {
-      return new ReconcileFailureException(
-          ExecutionResult.FailureKind.INTERNAL,
-          ExecutionResult.RetryDisposition.TERMINAL,
-          error.getMessage(),
-          error);
-    }
     if (error instanceof IllegalArgumentException || error instanceof IllegalStateException) {
       return new ReconcileFailureException(
           ExecutionResult.FailureKind.INTERNAL,
@@ -413,19 +405,6 @@ public class RemotePlannerReconcileExecutor implements ReconcileExecutor {
       cur = cur.getCause();
     }
     return last;
-  }
-
-  private static boolean hasAwsCredentialsUnavailable(Throwable error) {
-    var seen = new java.util.HashSet<Throwable>();
-    Throwable cur = error;
-    while (cur != null && !seen.contains(cur)) {
-      if (cur instanceof AwsCredentialsUnavailableException) {
-        return true;
-      }
-      seen.add(cur);
-      cur = cur.getCause();
-    }
-    return false;
   }
 
   private static String blankToEmpty(String value) {

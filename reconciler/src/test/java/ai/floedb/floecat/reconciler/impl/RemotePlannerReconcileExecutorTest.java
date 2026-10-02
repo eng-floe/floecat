@@ -37,7 +37,6 @@ import ai.floedb.floecat.reconciler.jobs.ReconcileScope;
 import ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotSelection;
 import ai.floedb.floecat.reconciler.jobs.ReconcileTableTask;
 import ai.floedb.floecat.reconciler.jobs.ReconcileViewTask;
-import ai.floedb.floecat.storage.AwsCredentialsUnavailableException;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
@@ -120,81 +119,6 @@ class RemotePlannerReconcileExecutorTest {
             ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
             ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR,
             "Destination table id does not exist: missing_table");
-  }
-
-  @Test
-  void executeMarksMissingAwsCredentialsTerminal() {
-    ReconcilerService reconcilerService = mock(ReconcilerService.class);
-    RemotePlannerWorkerClient workerClient = mock(RemotePlannerWorkerClient.class);
-    ReconcileWorkerAuthProvider authProvider =
-        ignored -> java.util.Optional.of("Bearer worker-token");
-    var executor =
-        new RemotePlannerReconcileExecutor(reconcilerService, workerClient, authProvider, true);
-
-    ReconcileJobStore.LeasedJob lease =
-        new ReconcileJobStore.LeasedJob(
-            "job-1",
-            "acct",
-            "connector-1",
-            false,
-            ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
-            ReconcileScope.empty(),
-            ReconcileExecutionPolicy.defaults(),
-            "lease-1",
-            "",
-            "",
-            ReconcileJobKind.PLAN_CONNECTOR,
-            ai.floedb.floecat.reconciler.jobs.ReconcileTableTask.empty(),
-            ai.floedb.floecat.reconciler.jobs.ReconcileViewTask.empty(),
-            ai.floedb.floecat.reconciler.jobs.ReconcileSnapshotTask.empty(),
-            ai.floedb.floecat.reconciler.jobs.ReconcileFileGroupTask.empty(),
-            "");
-    RemoteLeasedJob remoteLease = new RemoteLeasedJob(lease);
-    ResourceId connectorId =
-        ResourceId.newBuilder()
-            .setAccountId("acct")
-            .setKind(ResourceKind.RK_CONNECTOR)
-            .setId("connector-1")
-            .build();
-    when(workerClient.getPlanConnectorInput(remoteLease))
-        .thenReturn(
-            new StandalonePlanConnectorPayload(
-                lease.jobId,
-                lease.leaseEpoch,
-                connectorId,
-                ReconcilerService.CaptureMode.METADATA_AND_CAPTURE,
-                false,
-                ReconcileScope.empty(),
-                ReconcileExecutionPolicy.defaults(),
-                ""));
-    when(reconcilerService.planTableTasks(any(), eq(connectorId), any(), eq("Bearer worker-token")))
-        .thenThrow(
-            new AwsCredentialsUnavailableException(
-                "AWS credentials are unavailable", new IllegalStateException("missing")));
-    when(workerClient.submitPlanConnectorFailure(
-            any(),
-            eq(ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL),
-            eq(ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL),
-            eq(ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR),
-            eq("AWS credentials are unavailable")))
-        .thenReturn(true);
-
-    ReconcileExecutor.ExecutionResult result =
-        executor.execute(
-            new ReconcileExecutor.ExecutionContext(
-                lease, () -> false, (a, b, c, d, e, f, g, h) -> {}));
-
-    assertFalse(result.ok());
-    assertNotNull(result.error);
-    assertEquals(
-        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL, result.retryDisposition);
-    verify(workerClient)
-        .submitPlanConnectorFailure(
-            remoteLease,
-            ReconcileExecutor.ExecutionResult.FailureKind.INTERNAL,
-            ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL,
-            ReconcileExecutor.ExecutionResult.RetryClass.TRANSIENT_ERROR,
-            "AWS credentials are unavailable");
   }
 
   @Test
