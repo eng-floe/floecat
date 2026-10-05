@@ -22,7 +22,7 @@ import jakarta.inject.Inject;
 @GrpcService
 public class SystemObjectsServiceCompat implements SystemObjectsService {
 
-  @Inject SqlCatalogServiceImpl delegate;
+  @Inject @GrpcService SqlCatalogServiceImpl delegate;
 
   @Override
   public Uni<GetSystemObjectsResponse> getSystemObjects(GetSystemObjectsRequest request) {
