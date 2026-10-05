@@ -48,6 +48,8 @@ public class OwnerReuseLeaseRepository {
   // best-effort cross-publication optimization; the direct own-lease probe below preserves the
   // restart path even when the current publication falls outside this window.
   private static final int LEASE_SCAN_LIMIT = 1024;
+  static final int LEASE_SCAN_PAGE_LIMIT =
+      (LEASE_SCAN_LIMIT + LEASE_SCAN_PAGE_SIZE - 1) / LEASE_SCAN_PAGE_SIZE + 1;
 
   public record AcquireResult(
       long expiresAtEpochMs, List<SnapshotReuseManifestRef> inProgressManifests) {}
@@ -254,12 +256,16 @@ public class OwnerReuseLeaseRepository {
             }
             for (SnapshotReuseManifestRef candidate : candidates) {
               String candidatePrefix = partialManifestPrefix(tableId, candidate);
+              boolean alreadyOwned =
+                  candidatePrefix.equals(captureManifestPrefix)
+                      || protectedManifestPrefixes.contains(candidatePrefix);
               protectedManifestPrefixes.add(candidatePrefix);
-              if (!candidatePrefix.equals(captureManifestPrefix)) {
+              if (!alreadyOwned) {
                 discoveredManifestPrefixes.add(candidatePrefix);
               }
             }
             if (inProgressManifest != null) {
+              protectedManifestPrefixes.add(partialManifestPrefix(tableId, inProgressManifest));
               currentInProgressManifest = inProgressManifest;
               currentInProgressManifestUpdatedAt = now;
             }
@@ -321,6 +327,7 @@ public class OwnerReuseLeaseRepository {
     Set<String> seenTokens = new HashSet<>();
     Map<String, OwnerPublicationLease> active = new HashMap<>();
     int scanned = 0;
+    int pages = 0;
     int unreadable = 0;
     Throwable firstReadFailure = null;
     do {
@@ -356,6 +363,7 @@ public class OwnerReuseLeaseRepository {
           break;
         }
       }
+      pages++;
       String nextToken = next.toString();
       if (!nextToken.isBlank() && !seenTokens.add(nextToken)) {
         LOG.warnf(
@@ -365,7 +373,12 @@ public class OwnerReuseLeaseRepository {
       } else {
         token = nextToken;
       }
-    } while (!token.isBlank() && scanned < LEASE_SCAN_LIMIT);
+    } while (!token.isBlank() && scanned < LEASE_SCAN_LIMIT && pages < LEASE_SCAN_PAGE_LIMIT);
+    if (!token.isBlank() && pages >= LEASE_SCAN_PAGE_LIMIT) {
+      LOG.warnf(
+          "stopped Owner reuse candidate discovery for publication %s after %d pointer pages",
+          publicationId, pages);
+    }
     boolean truncated = !token.isBlank() && scanned >= LEASE_SCAN_LIMIT;
     if (unreadable > 0) {
       LOG.warnf(
@@ -435,7 +448,11 @@ public class OwnerReuseLeaseRepository {
         || lease.getExpiresAtEpochMs() <= 0L
         || (lease.hasInProgressReuseManifestRef()
             && (lease.getInProgressReuseManifestUpdatedAtEpochMs() <= 0L
-                || !isValidPartialManifest(tableId, lease.getInProgressReuseManifestRef())))
+                || !isValidPartialManifest(tableId, lease.getInProgressReuseManifestRef())
+                || !lease
+                    .getProtectedCaptureManifestPrefixesList()
+                    .contains(
+                        partialManifestPrefix(tableId, lease.getInProgressReuseManifestRef()))))
         || !new HashSet<>(lease.getProtectedCaptureManifestPrefixesList())
             .containsAll(lease.getDiscoveredCaptureManifestPrefixesList())
         || (!lease.getReuseSourceCaptureManifestUri().isBlank()

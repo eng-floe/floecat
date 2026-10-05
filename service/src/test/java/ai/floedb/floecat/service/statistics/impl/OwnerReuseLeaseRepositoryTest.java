@@ -155,6 +155,18 @@ class OwnerReuseLeaseRepositoryTest {
   }
 
   @Test
+  void publishingPartialExplicitlyPinsItsCaptureNamespace() throws Exception {
+    repository.acquire(TABLE, PUBLICATION, CAPTURE_PREFIX, null);
+    var partial = partialManifest(40L, (byte) 3);
+
+    repository.publishInProgressManifest(TABLE, PUBLICATION, partial);
+
+    assertThat(currentLease().getProtectedCaptureManifestPrefixesList())
+        .containsExactlyInAnyOrder(CAPTURE_PREFIX, capturePrefix(40L));
+    assertThat(currentLease().getInProgressReuseManifestRef()).isEqualTo(partial);
+  }
+
+  @Test
   void acquireKeepsOwnPartialWhenNewerCandidatesFillTheLimit() {
     var now = new AtomicLong(1_000L);
     repository.nowMillis = now::get;
@@ -229,6 +241,23 @@ class OwnerReuseLeaseRepositoryTest {
         .doesNotContain(capturePrefix(40L));
     assertThat(currentLease().getDiscoveredCaptureManifestPrefixesList())
         .containsExactly(capturePrefix(41L));
+  }
+
+  @Test
+  void discoveredCandidateDoesNotReclassifyAnOwnedCaptureNamespace() throws Exception {
+    repository.acquireWithCandidates(TABLE, PUBLICATION, capturePrefix(40L), null, () -> {});
+    repository.acquire(TABLE, "producer", capturePrefix(40L), null);
+    repository.publishInProgressManifest(TABLE, "producer", partialManifest(40L, (byte) 6));
+
+    repository.acquireWithCandidates(TABLE, PUBLICATION, capturePrefix(41L), null, () -> {});
+    assertThat(currentLease().getDiscoveredCaptureManifestPrefixesList())
+        .doesNotContain(capturePrefix(40L));
+
+    repository.release(TABLE, "producer");
+    repository.acquireWithCandidates(TABLE, PUBLICATION, capturePrefix(41L), null, () -> {});
+
+    assertThat(currentLease().getProtectedCaptureManifestPrefixesList())
+        .contains(capturePrefix(40L), capturePrefix(41L));
   }
 
   @Test
@@ -324,6 +353,28 @@ class OwnerReuseLeaseRepositoryTest {
     repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, () -> {});
 
     verify(repeatingPointers, times(2))
+        .listPointersByPrefix(anyString(), anyInt(), anyString(), any(StringBuilder.class));
+  }
+
+  @Test
+  void candidateDiscoveryStopsAfterBoundedEmptyPagesWithFreshTokens() {
+    var freshTokenPointers = spy(new InMemoryPointerStore());
+    var pages = new AtomicLong();
+    doAnswer(
+            invocation -> {
+              invocation
+                  .getArgument(3, StringBuilder.class)
+                  .append("fresh-token-")
+                  .append(pages.incrementAndGet());
+              return java.util.List.of();
+            })
+        .when(freshTokenPointers)
+        .listPointersByPrefix(anyString(), anyInt(), anyString(), any(StringBuilder.class));
+    repository.pointers = freshTokenPointers;
+
+    repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, () -> {});
+
+    verify(freshTokenPointers, times(OwnerReuseLeaseRepository.LEASE_SCAN_PAGE_LIMIT))
         .listPointersByPrefix(anyString(), anyInt(), anyString(), any(StringBuilder.class));
   }
 
