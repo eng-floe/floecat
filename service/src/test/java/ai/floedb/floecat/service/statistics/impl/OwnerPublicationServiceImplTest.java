@@ -1538,7 +1538,7 @@ class OwnerPublicationServiceImplTest {
             java.util.List.of(
                 new StatsStore.PublicationPointerUpdate(
                     "/snapshots/by-id/42", 0, Pointer.getDefaultInstance())));
-    when(service.graphView.resolve(any()))
+    when(service.graphView.resolve(any(), any()))
         .thenReturn(Optional.of(TestNodes.tableNode(tableId(), "{}")));
     when(service.statsStore.statsGenerationExists(any(), anyLong(), anyString())).thenReturn(true);
     when(service.persistence.prepareStatsGenerationForPublication(

@@ -130,7 +130,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                 () -> {
                   ResourceId tableId = authorizedTable(request.getTableId());
                   long snapshotId = requireSnapshotId(request.getSnapshotId());
-                  new CatalogSurfaceWritePolicy(graphView)
+                  new CatalogSurfaceWritePolicy(graphView, catalogContext())
                       .requireWritableTable(tableId, correlationId());
                   String generationId = generationId(request, requireCallerSubject());
                   boolean reuseSourceLeased = false;
@@ -221,7 +221,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                 () -> {
                   ResourceId tableId = authorizedTable(request.getTableId());
                   long snapshotId = requireSnapshotId(request.getSnapshotId());
-                  new CatalogSurfaceWritePolicy(graphView)
+                  new CatalogSurfaceWritePolicy(graphView, catalogContext())
                       .requireWritableTable(tableId, correlationId());
                   String publicationId =
                       requirePublicationCapability(
@@ -264,7 +264,8 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
   private CompleteOwnerPublicationResponse complete(CompleteOwnerPublicationRequest request) {
     ResourceId tableId = authorizedTable(request.getTableId());
     long snapshotId = requireSnapshotId(request.getSnapshotId());
-    new CatalogSurfaceWritePolicy(graphView).requireWritableTable(tableId, correlationId());
+    new CatalogSurfaceWritePolicy(graphView, catalogContext())
+        .requireWritableTable(tableId, correlationId());
     Snapshot snapshot = publicationSnapshot(request, tableId, snapshotId);
     PublicationId publication = requirePublicationId(request.getPublicationId());
     String generationId = publication.value();
