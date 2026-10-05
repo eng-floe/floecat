@@ -39,6 +39,16 @@ message OwnerPublicationLease {
   // Snapshot-scoped upload namespace returned by Begin. It protects the capture manifest,
   // registration payload, and commitment indexes before their exact names are known to Floecat.
   repeated string protected_capture_manifest_prefixes = 8;
+  // Most recent self-contained partial coverage manifest published by this live Owner.
+  SnapshotReuseManifestRef in_progress_reuse_manifest_ref = 9;
+  uint64 in_progress_reuse_manifest_updated_at_epoch_ms = 10;
+  // Candidate capture namespaces discovered by the most recent Begin. A repeated Begin replaces
+  // only these prefixes, preserving the publication's source and its own upload namespace. Each
+  // candidate deliberately retains the entire snapshot capture namespace for the lease lifetime.
+  repeated string discovered_capture_manifest_prefixes = 11;
+  // Finalized reuse source selected by Begin. A retry without a source preserves this root; an
+  // explicitly different source replaces it rather than accumulating a full manifest walk.
+  string reuse_source_capture_manifest_uri = 12;
 }
 
 message BeginOwnerPublicationRequest {
@@ -85,6 +95,27 @@ message BeginOwnerPublicationResponse {
   uint64 external_manifest_chunk_max_bytes = 11;
   uint64 registration_chunk_max_objects = 12;
   uint64 registration_chunk_max_targets = 13;
+  // Newest live partial manifests first within a bounded, best-effort lease scan. The current
+  // publication's own live partial is included even when its lease falls outside the scan window.
+  // Their capture-manifest namespaces are pinned by this publication's lease before Begin returns.
+  repeated SnapshotReuseManifestRef in_progress_reuse_manifest_refs = 14;
+}
+
+message PublishOwnerReuseManifestRequest {
+  ai.floedb.floecat.common.ResourceId table_id = 1;
+  int64 snapshot_id = 2;
+  string publication_id = 3;
+  string owner_id = 4;
+  string owner_generation_id = 5;
+  // The Owner must upload this content-addressed object before publishing its reference. Floecat
+  // trusts Owner-produced manifest contents and validates only this reference's metadata; it does
+  // not fetch the blob on this RPC.
+  SnapshotReuseManifestRef manifest = 6;
+}
+
+message PublishOwnerReuseManifestResponse {
+  SnapshotReuseManifestRef manifest = 1;
+  uint64 reuse_lease_expires_at_epoch_ms = 2;
 }
 
 message CompleteOwnerPublicationRequest {
@@ -122,6 +153,8 @@ message CompleteOwnerPublicationResponse {
 service OwnerPublicationService {
   rpc BeginOwnerPublication(BeginOwnerPublicationRequest)
       returns (BeginOwnerPublicationResponse);
+  rpc PublishOwnerReuseManifest(PublishOwnerReuseManifestRequest)
+      returns (PublishOwnerReuseManifestResponse);
   rpc CompleteOwnerPublication(CompleteOwnerPublicationRequest)
       returns (CompleteOwnerPublicationResponse);
 }

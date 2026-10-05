@@ -23,6 +23,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 public final class Keys {
   public static final int ACCOUNT_DELETION_FENCE_SHARDS = 64;
@@ -1022,6 +1023,42 @@ public final class Keys {
     return snapshotIndexArtifactCaptureManifestBlobPrefix(accountId, tableId, snapshotId)
         + encode(req("sha256", sha256))
         + ".pb";
+  }
+
+  public static boolean isSnapshotIndexArtifactCaptureManifestBlobPrefix(
+      String accountId, String tableId, String prefix) {
+    if (prefix == null) {
+      return false;
+    }
+    String snapshotPrefix = tableSnapshotBlobPrefix(accountId, tableId);
+    if (!prefix.startsWith(snapshotPrefix) || !prefix.endsWith(SEG_INDEX_CAPTURE_MANIFESTS)) {
+      return false;
+    }
+    String snapshotId =
+        prefix.substring(
+            snapshotPrefix.length(), prefix.length() - SEG_INDEX_CAPTURE_MANIFESTS.length());
+    return snapshotId.length() == 19
+        && snapshotId.chars().allMatch(value -> value >= '0' && value <= '9');
+  }
+
+  public static Optional<String> snapshotIndexArtifactCaptureManifestBlobPrefixForUri(
+      String accountId, String tableId, String uri) {
+    if (uri == null) {
+      return Optional.empty();
+    }
+    int filenameOffset = uri.lastIndexOf('/') + 1;
+    String prefix = uri.substring(0, filenameOffset);
+    String filename = uri.substring(filenameOffset);
+    if (!isSnapshotIndexArtifactCaptureManifestBlobPrefix(accountId, tableId, prefix)
+        || filename.length() != 67
+        || !filename.endsWith(".pb")
+        || !filename
+            .substring(0, 64)
+            .chars()
+            .allMatch(value -> value >= '0' && value <= '9' || value >= 'a' && value <= 'f')) {
+      return Optional.empty();
+    }
+    return Optional.of(prefix);
   }
 
   public static String snapshotOwnerRegistrationManifestBlobUri(

@@ -59,6 +59,9 @@ enum SnapshotReuseManifestKind {
   SRMK_UNSPECIFIED = 0;
   SRMK_RECONCILER = 1;
   SRMK_OWNER_V2 = 2;
+  // Owner-v2 coverage published before its generation is finalized. The manifest may contain
+  // any subset of the generation's reusable shards and deliberately has no aggregation root.
+  SRMK_OWNER_V2_PARTIAL = 3;
 }
 
 message CurrentSnapshotPointer {

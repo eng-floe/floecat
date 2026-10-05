@@ -13,6 +13,8 @@ import ai.floedb.floecat.catalog.rpc.CompleteOwnerPublicationRequest;
 import ai.floedb.floecat.catalog.rpc.CompleteOwnerPublicationResponse;
 import ai.floedb.floecat.catalog.rpc.OwnerPublicationManifestRef;
 import ai.floedb.floecat.catalog.rpc.OwnerPublicationService;
+import ai.floedb.floecat.catalog.rpc.PublishOwnerReuseManifestRequest;
+import ai.floedb.floecat.catalog.rpc.PublishOwnerReuseManifestResponse;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
@@ -149,10 +151,10 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                   }
                   // Every publication leases the reusable namespace before returning upload
                   // prefixes. A reuse source additionally roots its exact capture manifest.
-                  long leaseExpiresAt;
+                  OwnerReuseLeaseRepository.AcquireResult lease;
                   try {
-                    leaseExpiresAt =
-                        reuseLeases.acquire(
+                    lease =
+                        reuseLeases.acquireWithCandidates(
                             tableId,
                             generationId,
                             Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
@@ -191,7 +193,8 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                           Keys.tableReusableArtifactBlobPrefix(
                               tableId.getAccountId(), tableId.getId()))
                       .setReuseSourceLeased(reuseSourceLeased)
-                      .setReuseLeaseExpiresAtEpochMs(leaseExpiresAt)
+                      .setReuseLeaseExpiresAtEpochMs(lease.expiresAtEpochMs())
+                      .addAllInProgressReuseManifestRefs(lease.inProgressManifests())
                       .setExternalManifestChunkMaxBytes(registrationBatchBytes)
                       .setRegistrationChunkMaxObjects(registrationBatchObjects)
                       .setRegistrationChunkMaxTargets(registrationBatchTargets)
@@ -200,6 +203,52 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                       .putArtifactStorageProperties(
                           "s3.path-style-access", Boolean.toString(storageAwsPathStyleAccess))
                       .putAllArtifactStorageProperties(artifactEndpointProperty())
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(log::fail)
+        .onItem()
+        .invoke(log::ok);
+  }
+
+  @Override
+  public Uni<PublishOwnerReuseManifestResponse> publishOwnerReuseManifest(
+      PublishOwnerReuseManifestRequest request) {
+    var log = LogHelper.start(LOG, "PublishOwnerReuseManifest");
+    return mapFailures(
+            run(
+                () -> {
+                  ResourceId tableId = authorizedTable(request.getTableId());
+                  long snapshotId = requireSnapshotId(request.getSnapshotId());
+                  new CatalogSurfaceWritePolicy(graphView, catalogContext())
+                      .requireWritableTable(tableId, correlationId());
+                  String publicationId =
+                      requirePublicationCapability(
+                          tableId,
+                          snapshotId,
+                          request.getPublicationId(),
+                          request.getOwnerId(),
+                          request.getOwnerGenerationId());
+                  if (!request.hasManifest()) {
+                    throw GrpcErrors.invalidArgument(
+                        correlationId(), null, Map.of("field", "manifest"));
+                  }
+                  SnapshotReuseManifestRef manifest = request.getManifest();
+                  validateInProgressManifest(tableId, snapshotId, manifest);
+                  long expiresAt;
+                  try {
+                    expiresAt =
+                        reuseLeases.publishInProgressManifest(tableId, publicationId, manifest);
+                  } catch (OwnerReuseLeaseRepository.LeaseContinuityException error) {
+                    throw GrpcErrors.preconditionFailed(
+                        correlationId(),
+                        GeneratedErrorMessages.MessageKey.PUBLICATION_NOT_BEGUN,
+                        Map.of("publication_id", publicationId));
+                  }
+                  return PublishOwnerReuseManifestResponse.newBuilder()
+                      .setManifest(manifest)
+                      .setReuseLeaseExpiresAtEpochMs(expiresAt)
                       .build();
                 }),
             correlationId())
@@ -1084,6 +1133,57 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
         publicationId,
         publicationId.charAt(OWNER_GENERATION_PREFIX.length()) == '1',
         publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 1) == '1');
+  }
+
+  private String requirePublicationCapability(
+      ResourceId tableId,
+      long snapshotId,
+      String publicationId,
+      String ownerId,
+      String ownerGenerationId) {
+    PublicationId publication = requirePublicationId(publicationId);
+    String expected =
+        generationId(
+            ownerId,
+            ownerGenerationId,
+            publication.publishFileStats(),
+            publication.publishIndexes(),
+            requireCallerSubject());
+    if (!MessageDigest.isEqual(
+        publication.value().getBytes(StandardCharsets.UTF_8),
+        expected.getBytes(StandardCharsets.UTF_8))) {
+      throw GrpcErrors.permissionDenied(correlationId(), null, null);
+    }
+    if (!statsStore.statsGenerationExists(tableId, snapshotId, publication.value())) {
+      throw GrpcErrors.preconditionFailed(
+          correlationId(),
+          GeneratedErrorMessages.MessageKey.PUBLICATION_NOT_BEGUN,
+          Map.of("publication_id", publication.value()));
+    }
+    return publication.value();
+  }
+
+  /**
+   * Validates the reference only. Owner-produced manifest contents are trusted, so this RPC never
+   * fetches or parses the object: the Owner publishes a reference it has already uploaded.
+   */
+  private void validateInProgressManifest(
+      ResourceId tableId, long snapshotId, SnapshotReuseManifestRef manifest) {
+    byte[] digest = manifest.getPayloadSha256().toByteArray();
+    String expectedUri =
+        Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
+                tableId.getAccountId(), tableId.getId(), snapshotId)
+            + HexFormat.of().formatHex(digest)
+            + ".pb";
+    if (manifest.getFormatVersion() != 1
+        || manifest.getKind() != SnapshotReuseManifestKind.SRMK_OWNER_V2_PARTIAL
+        || manifest.getPayloadBytes() <= 0L
+        || manifest.getPayloadBytes() > MAX_MANIFEST_BYTES
+        || digest.length != 32
+        || !manifest.getStatsGenerationManifestUri().isBlank()
+        || !expectedUri.equals(manifest.getUri())) {
+      throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "manifest"));
+    }
   }
 
   private record PublicationId(String value, boolean publishFileStats, boolean publishIndexes) {}
