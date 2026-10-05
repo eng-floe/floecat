@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.storage.impl;
 import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.spi.LogSafeText;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.StorageAuthorityRepository;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
@@ -31,6 +32,10 @@ import java.util.Map;
 
 @ApplicationScoped
 public class ServerSideFileIoPropertiesResolver {
+  private static final org.jboss.logging.Logger LOG =
+      org.jboss.logging.Logger.getLogger(ServerSideFileIoPropertiesResolver.class);
+  private static final int MAX_DIAGNOSTIC_CHARS = 512;
+
   /**
    * The FileIO properties a resolved storage answer owns end to end -- replaced wholesale rather
    * than merged, so a stale value never survives alongside a fresh credential.
@@ -95,8 +100,31 @@ public class ServerSideFileIoPropertiesResolver {
       // Integration that cannot vend does not reach here -- it throws, naming the cause, because
       // there is no authority for it to fall back to.
     }
-    ResolveStorageAuthorityResponse response =
-        resolver.buildResponse(authority, tableId.getAccountId(), true);
+    ResolveStorageAuthorityResponse response;
+    try {
+      response = resolver.buildResponse(authority, tableId.getAccountId(), true);
+    } catch (RuntimeException error) {
+      var aws =
+          AwsCredentialFailureGrpcStatus.findTerminalAuthenticationFailure(error).orElse(null);
+      if (aws == null) {
+        throw error;
+      }
+      String description =
+          LogSafeText.bounded(
+              "Storage authority could not vend credentials for table "
+                  + tableId.getId()
+                  + " at "
+                  + LogSafeText.location(locationPrefix, MAX_DIAGNOSTIC_CHARS),
+              MAX_DIAGNOSTIC_CHARS);
+      LOG.warnf(error, "%s", description);
+      // This is an in-process scan path, not the storage RPC, so the enclosing query service adds
+      // the floecat Error detail. Preserve the typed auth verdict here instead of letting its
+      // generic mapper turn the raw AWS exception into an opaque INTERNAL.
+      throw io.grpc.Status.fromCode(aws.grpcCode())
+          .withDescription(description)
+          .withCause(error)
+          .asRuntimeException();
+    }
     return ResolvedStorage.from(response);
   }
 
