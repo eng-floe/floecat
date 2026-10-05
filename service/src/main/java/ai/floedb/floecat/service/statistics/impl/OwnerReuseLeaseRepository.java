@@ -318,8 +318,7 @@ public class OwnerReuseLeaseRepository {
     do {
       StringBuilder next = new StringBuilder();
       int pageSize = Math.min(LEASE_SCAN_PAGE_SIZE, LEASE_SCAN_LIMIT - scanned);
-      for (Pointer pointer :
-          pointers.listPointersByPrefixConsistent(prefix, pageSize, token, next)) {
+      for (Pointer pointer : pointers.listPointersByPrefix(prefix, pageSize, token, next)) {
         scanned++;
         try {
           byte[] leaseBytes = blobs.get(pointer.getBlobUri());
