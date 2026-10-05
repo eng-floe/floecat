@@ -17,6 +17,7 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -25,6 +26,7 @@ import static org.mockito.Mockito.when;
 import ai.floedb.floecat.catalog.rpc.BeginOwnerPublicationRequest;
 import ai.floedb.floecat.catalog.rpc.CompleteOwnerPublicationRequest;
 import ai.floedb.floecat.catalog.rpc.OwnerPublicationManifestRef;
+import ai.floedb.floecat.catalog.rpc.PublishOwnerReuseManifestRequest;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
@@ -141,7 +143,7 @@ class OwnerPublicationServiceImplTest {
 
     assertTrue(response.getReuseSourceLeased());
     verify(service.reuseLeases)
-        .acquire(
+        .acquireWithCandidates(
             eq(tableId()),
             eq(response.getGenerationId()),
             eq(
@@ -179,7 +181,7 @@ class OwnerPublicationServiceImplTest {
 
     assertFalse(response.getReuseSourceLeased());
     verify(service.reuseLeases)
-        .acquire(
+        .acquireWithCandidates(
             eq(tableId()),
             eq(response.getGenerationId()),
             eq(
@@ -187,6 +189,59 @@ class OwnerPublicationServiceImplTest {
                     tableId().getAccountId(), tableId().getId(), SNAPSHOT)),
             org.mockito.ArgumentMatchers.isNull(),
             any());
+  }
+
+  @Test
+  void beginReturnsLivePartialReuseCandidates() {
+    var service = service();
+    var candidate = partialManifest("/candidate.pb", (byte) 5);
+    doAnswer(
+            invocation -> {
+              invocation.getArgument(4, Runnable.class).run();
+              return new OwnerReuseLeaseRepository.AcquireResult(
+                  Long.MAX_VALUE, java.util.List.of(candidate));
+            })
+        .when(service.reuseLeases)
+        .acquireWithCandidates(any(), anyString(), anyString(), any(), any());
+
+    var response = service.beginOwnerPublication(begin()).await().indefinitely();
+
+    assertEquals(java.util.List.of(candidate), response.getInProgressReuseManifestRefsList());
+  }
+
+  @Test
+  void publishReuseManifestUpdatesTheActiveLease() {
+    var service = service();
+    var publication = service.beginOwnerPublication(begin()).await().indefinitely();
+    byte[] digest = new byte[32];
+    java.util.Arrays.fill(digest, (byte) 6);
+    var manifest =
+        partialManifest(
+            publication.getManifestObjectPrefix()
+                + java.util.HexFormat.of().formatHex(digest)
+                + ".pb",
+            (byte) 6);
+    when(service.reuseLeases.publishInProgressManifest(any(), anyString(), any()))
+        .thenReturn(1234L);
+
+    var response =
+        service
+            .publishOwnerReuseManifest(
+                PublishOwnerReuseManifestRequest.newBuilder()
+                    .setTableId(tableId())
+                    .setSnapshotId(SNAPSHOT)
+                    .setPublicationId(publication.getPublicationId())
+                    .setOwnerId(begin().getOwnerId())
+                    .setOwnerGenerationId(begin().getOwnerGenerationId())
+                    .setManifest(manifest)
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertEquals(manifest, response.getManifest());
+    assertEquals(1234L, response.getReuseLeaseExpiresAtEpochMs());
+    verify(service.reuseLeases)
+        .publishInProgressManifest(tableId(), publication.getPublicationId(), manifest);
   }
 
   @Test
@@ -1431,6 +1486,18 @@ class OwnerPublicationServiceImplTest {
     }
   }
 
+  private static SnapshotReuseManifestRef partialManifest(String uri, byte fill) {
+    byte[] digest = new byte[32];
+    java.util.Arrays.fill(digest, fill);
+    return SnapshotReuseManifestRef.newBuilder()
+        .setFormatVersion(1)
+        .setKind(SnapshotReuseManifestKind.SRMK_OWNER_V2_PARTIAL)
+        .setUri(uri)
+        .setPayloadBytes(10)
+        .setPayloadSha256(ByteString.copyFrom(digest))
+        .build();
+  }
+
   private static OwnerPublicationServiceImpl service() {
     var service = new OwnerPublicationServiceImpl();
     service.statsStore = org.mockito.Mockito.mock(StatsStore.class);
@@ -1443,11 +1510,12 @@ class OwnerPublicationServiceImplTest {
     service.blobStore = org.mockito.Mockito.mock(BlobStore.class);
     service.manifestCommitments = ExternalManifestCommitmentCache.forTesting();
     service.reuseLeases = org.mockito.Mockito.mock(OwnerReuseLeaseRepository.class);
-    when(service.reuseLeases.acquire(any(), anyString(), anyString(), any(), any()))
+    when(service.reuseLeases.acquireWithCandidates(any(), anyString(), anyString(), any(), any()))
         .thenAnswer(
             invocation -> {
               invocation.getArgument(4, Runnable.class).run();
-              return Long.MAX_VALUE;
+              return new OwnerReuseLeaseRepository.AcquireResult(
+                  Long.MAX_VALUE, java.util.List.of());
             });
     when(service.reuseLeases.renew(any(), anyString(), any())).thenReturn(Long.MAX_VALUE);
     when(service.reuseLeases.progress(any(), anyString(), anyString()))
@@ -1470,7 +1538,7 @@ class OwnerPublicationServiceImplTest {
             java.util.List.of(
                 new StatsStore.PublicationPointerUpdate(
                     "/snapshots/by-id/42", 0, Pointer.getDefaultInstance())));
-    when(service.graphView.resolve(any(), any()))
+    when(service.graphView.resolve(any()))
         .thenReturn(Optional.of(TestNodes.tableNode(tableId(), "{}")));
     when(service.statsStore.statsGenerationExists(any(), anyLong(), anyString())).thenReturn(true);
     when(service.persistence.prepareStatsGenerationForPublication(

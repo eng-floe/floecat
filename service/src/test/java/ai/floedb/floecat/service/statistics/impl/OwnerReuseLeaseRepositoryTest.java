@@ -98,6 +98,119 @@ class OwnerReuseLeaseRepositoryTest {
   }
 
   @Test
+  void acquireReturnsNewestLivePartialManifestsAndPinsThem() throws Exception {
+    var now = new AtomicLong(1_000L);
+    repository.nowMillis = now::get;
+    repository.leaseTtlMs = 1_000L;
+    repository.acquire(TABLE, "publication-a", CAPTURE_PREFIX, null);
+    var older = partialManifest("/capture/older.pb", (byte) 1);
+    repository.publishInProgressManifest(TABLE, "publication-a", older);
+
+    now.set(1_001L);
+    repository.acquire(TABLE, "publication-b", CAPTURE_PREFIX, null);
+    var newer = partialManifest("/capture/newer.pb", (byte) 2);
+    repository.publishInProgressManifest(TABLE, "publication-b", newer);
+
+    now.set(1_002L);
+    var acquired =
+        repository.acquireWithCandidates(TABLE, "publication-c", CAPTURE_PREFIX, null, () -> {});
+
+    assertThat(acquired.inProgressManifests()).containsExactly(newer, older);
+    assertThat(currentLease("publication-c").getProtectedCaptureManifestUrisList())
+        .containsExactlyInAnyOrder(newer.getUri(), older.getUri());
+  }
+
+  @Test
+  void acquireReturnsOwnPartialManifestAfterRestart() throws Exception {
+    repository.acquire(TABLE, PUBLICATION, CAPTURE_PREFIX, null);
+    var partial = partialManifest("/capture/current.pb", (byte) 3);
+    repository.publishInProgressManifest(TABLE, PUBLICATION, partial);
+
+    var reacquired =
+        repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, () -> {});
+
+    assertThat(reacquired.inProgressManifests()).containsExactly(partial);
+    assertThat(currentLease().getInProgressReuseManifestRef()).isEqualTo(partial);
+  }
+
+  @Test
+  void acquireKeepsOwnPartialWhenNewerCandidatesFillTheLimit() {
+    var now = new AtomicLong(1_000L);
+    repository.nowMillis = now::get;
+    repository.leaseTtlMs = 10_000L;
+    repository.acquire(TABLE, PUBLICATION, CAPTURE_PREFIX, null);
+    var own = partialManifest("/capture/own.pb", (byte) 8);
+    repository.publishInProgressManifest(TABLE, PUBLICATION, own);
+    for (int index = 0; index < 16; index++) {
+      now.incrementAndGet();
+      String sibling = "publication-" + index;
+      repository.acquire(TABLE, sibling, CAPTURE_PREFIX, null);
+      repository.publishInProgressManifest(
+          TABLE,
+          sibling,
+          partialManifest("/capture/sibling-" + index + ".pb", (byte) (index + 16)));
+    }
+
+    now.incrementAndGet();
+    var reacquired =
+        repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, () -> {});
+
+    assertThat(reacquired.inProgressManifests()).hasSize(16).contains(own);
+  }
+
+  @Test
+  void expiredPartialManifestIsNotReturned() {
+    var now = new AtomicLong(1_000L);
+    repository.nowMillis = now::get;
+    repository.leaseTtlMs = 100L;
+    repository.acquire(TABLE, "publication-a", CAPTURE_PREFIX, null);
+    repository.publishInProgressManifest(
+        TABLE, "publication-a", partialManifest("/capture/expired.pb", (byte) 4));
+    now.set(1_100L);
+
+    var acquired =
+        repository.acquireWithCandidates(TABLE, "publication-b", CAPTURE_PREFIX, null, () -> {});
+
+    assertThat(acquired.inProgressManifests()).isEmpty();
+  }
+
+  @Test
+  void corruptSiblingLeaseDoesNotBlockBegin() throws Exception {
+    repository.acquire(TABLE, "publication-a", CAPTURE_PREFIX, null);
+    repository.publishInProgressManifest(
+        TABLE, "publication-a", partialManifest("/capture/corrupt.pb", (byte) 5));
+    var pointer =
+        pointers
+            .get(Keys.tableOwnerReuseLeasePointer("acct", "table", "publication-a"))
+            .orElseThrow();
+    blobs.delete(pointer.getBlobUri());
+
+    var acquired =
+        repository.acquireWithCandidates(TABLE, "publication-b", CAPTURE_PREFIX, null, () -> {});
+
+    assertThat(acquired.inProgressManifests()).isEmpty();
+    assertThat(currentLease("publication-b").getPublicationId()).isEqualTo("publication-b");
+  }
+
+  @Test
+  void repeatedBeginReplacesStaleCandidatePins() throws Exception {
+    repository.acquire(TABLE, "producer", CAPTURE_PREFIX, null);
+    var oldCandidate = partialManifest("/capture/old.pb", (byte) 6);
+    repository.publishInProgressManifest(TABLE, "producer", oldCandidate);
+    repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, () -> {});
+    assertThat(currentLease().getProtectedCaptureManifestUrisList())
+        .contains(oldCandidate.getUri());
+
+    var newCandidate = partialManifest("/capture/new.pb", (byte) 7);
+    repository.publishInProgressManifest(TABLE, "producer", newCandidate);
+    repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, () -> {});
+
+    assertThat(currentLease().getProtectedCaptureManifestUrisList())
+        .contains(newCandidate.getUri())
+        .doesNotContain(oldCandidate.getUri());
+  }
+
+  @Test
   void progressIsDurableMonotonicAndBoundToOneCaptureManifest() {
     var initial = OwnerReuseLeaseRepository.RegistrationProgress.initial();
     var complete = new OwnerReuseLeaseRepository.RegistrationProgress(1L, 0L, 0L, 2L, 3L, 4L, 5L);
@@ -159,8 +272,26 @@ class OwnerReuseLeaseRepositoryTest {
   }
 
   private OwnerPublicationLease currentLease() throws Exception {
+    return currentLease(PUBLICATION);
+  }
+
+  private OwnerPublicationLease currentLease(String publicationId) throws Exception {
     var pointer =
-        pointers.get(Keys.tableOwnerReuseLeasePointer("acct", "table", PUBLICATION)).orElseThrow();
+        pointers
+            .get(Keys.tableOwnerReuseLeasePointer("acct", "table", publicationId))
+            .orElseThrow();
     return OwnerPublicationLease.parseFrom(blobs.get(pointer.getBlobUri()));
+  }
+
+  private static SnapshotReuseManifestRef partialManifest(String uri, byte fill) {
+    byte[] digest = new byte[32];
+    java.util.Arrays.fill(digest, fill);
+    return SnapshotReuseManifestRef.newBuilder()
+        .setFormatVersion(1)
+        .setKind(SnapshotReuseManifestKind.SRMK_OWNER_V2_PARTIAL)
+        .setUri(uri)
+        .setPayloadBytes(10)
+        .setPayloadSha256(ByteString.copyFrom(digest))
+        .build();
   }
 }
