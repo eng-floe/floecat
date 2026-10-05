@@ -470,8 +470,15 @@ message ColumnInfo {
   // Column name.
   string name = 2;
 
+  /**
+   * Legacy logical type identifier for clients generated before the structured type migration.
+   *
+   * <p>Keep field 3 and its wire type forever while older Core clients may still decode it.
+   */
+  ai.floedb.floecat.common.NameRef legacy_type = 3 [deprecated = true];
+
   /** Canonical recursive logical type for the column. */
-  ai.floedb.floecat.types.LogicalType type = 3;
+  ai.floedb.floecat.types.LogicalType type = 7;
 
   /** Whether NULL is allowed. */
   bool nullable = 4;
