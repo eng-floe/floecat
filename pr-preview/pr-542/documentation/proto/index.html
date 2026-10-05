@@ -2086,8 +2086,8 @@ CLI, and reconciler.</p>
 </tr>
 <tr>
 <td><code>OwnerPublicationService</code></td>
-<td><code>BeginOwnerPublication</code>, <code>CompleteOwnerPublication</code></td>
-<td>Reserves an Owner generation and activates it through sequential, bounded completion calls. External registration and coverage manifests remain format v1 but are split into independently hashed, record-aligned chunks committed by a small content-addressed index. <code>Complete</code> accepts and returns an opaque phase/chunk cursor and verifies at most one committed chunk per call.</td>
+<td><code>BeginOwnerPublication</code>, <code>PublishOwnerReuseManifest</code>, <code>CompleteOwnerPublication</code></td>
+<td>Reserves an Owner generation, publishes trusted partial reuse-manifest references, and activates the generation through sequential, bounded completion calls. External registration and coverage manifests remain format v1 but are split into independently hashed, record-aligned chunks committed by a small content-addressed index. <code>Complete</code> accepts and returns an opaque phase/chunk cursor and verifies at most one committed chunk per call.</td>
 </tr>
 <tr>
 <td><code>TableConstraintsService</code></td>
@@ -2187,6 +2187,8 @@ case-sensitive. Each path selects that namespace subtree.</p>
 so planners can hydrate functions/operators/types once per engine version. Clients send the
 <code>x-environment-kind</code> / <code>x-environment-version</code> and <code>x-engine-kind</code> / <code>x-engine-version</code> headers and always receive the composed catalog for that
 engine release.</p>
+<p><code>SystemObjectsService.GetSystemObjects</code> remains as a deprecated wire-compatible alias during the
+client rollout. It returns the same registry and uses the same authorization capability.</p>
 <h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Field numbering</strong> – All proto files reserve low numbers for required identity fields and push
@@ -2212,6 +2214,16 @@ engine release.</p>
    registration/coverage chunk positions, cumulative counts, and ordering keys, and activates only
    after every commitment and global total has been checked. Callers keep the 120-second RPC
    deadline, send <code>Complete</code> sequentially, and retry an uncertain call with the same opaque cursor.</li>
+<li><strong>Owner partial reuse publication</strong> – <code>PublishOwnerReuseManifest</code> records an
+  <code>SRMK_OWNER_V2_PARTIAL</code> reference in the active publication lease. The Owner must upload the
+  content-addressed manifest before publishing it. Floecat trusts Owner-produced manifest contents
+  and validates the reference metadata and canonical URI without fetching the manifest on this
+  RPC. A later <code>BeginOwnerPublication</code> may return a bounded, best-effort set of live partials from
+  the bounded lease scan. Their capture-manifest namespaces are leased without asking GC to parse
+  them as finalized manifests; the current publication's own namespace is retained even when its
+  partial falls outside that scan window. This deliberately retains every object in each selected
+  snapshot's capture-manifest namespace for the lease lifetime, including superseded publication
+  metadata, in exchange for avoiding manifest reads in Floecat.</li>
 <li><strong>External reusable-index compatibility</strong> – external planner and finalizer deployments must
   regenerate bindings for <code>ReusableArtifactIndexReference</code> format 1 and its immutable sorted-run,
   run-manifest, and block messages. The old trie-root representation has no compatibility reader.
