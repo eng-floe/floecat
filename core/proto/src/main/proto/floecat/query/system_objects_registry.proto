@@ -214,3 +214,18 @@ enum TableBackendKind {
   TABLE_BACKEND_KIND_ENGINE = 2; // rows generated directly in the engine
   TABLE_BACKEND_KIND_STORAGE = 3; // rows written in files in storage
 }
+
+// Compatibility surface for Core versions that predate SqlCatalogService.  Keep these messages
+// and field numbers unchanged until all deployed clients use GetSqlObjectsRegistry.
+message GetSystemObjectsRequest {
+  string engine_kind = 1 [deprecated = true];
+  string engine_version = 2 [deprecated = true];
+}
+
+message GetSystemObjectsResponse {
+  SystemObjectsRegistry registry = 1;
+}
+
+service SystemObjectsService {
+  rpc GetSystemObjects(GetSystemObjectsRequest) returns (GetSystemObjectsResponse);
+}

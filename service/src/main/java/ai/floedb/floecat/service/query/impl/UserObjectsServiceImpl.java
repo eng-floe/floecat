@@ -18,6 +18,7 @@ package ai.floedb.floecat.service.query.impl;
 
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
+import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.ResolveQueryInputsRequest;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsService;
@@ -51,6 +52,18 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
   @Inject UserObjectBundleService bundles;
 
   private static final Logger LOG = Logger.getLogger(UserObjectsServiceImpl.class);
+
+  /** Compatibility alias for clients that have not migrated to ResolveQueryInputs yet. */
+  @ActivateRequestContext
+  @Override
+  public Multi<UserObjectsBundleChunk> getUserObjects(GetUserObjectsRequest request) {
+    return resolveQueryInputs(
+        ResolveQueryInputsRequest.newBuilder()
+            .setQueryId(request.getQueryId())
+            .addAllTables(request.getTablesList())
+            .addAllKnownTableBlobVersions(request.getKnownTableBlobVersionsList())
+            .build());
+  }
 
   @ActivateRequestContext
   @Override

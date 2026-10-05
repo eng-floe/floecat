@@ -22,6 +22,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.query.rpc.GetSqlObjectsRegistryRequest;
 import ai.floedb.floecat.query.rpc.GetSqlObjectsRegistryResponse;
+import ai.floedb.floecat.query.rpc.GetSystemObjectsRequest;
+import ai.floedb.floecat.query.rpc.GetSystemObjectsResponse;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
 import ai.floedb.floecat.scanner.utils.EngineCatalogNames;
@@ -111,6 +113,15 @@ class SqlCatalogServiceImplTest {
       assertThat(registry.getSystemTablesCount()).isZero();
       assertThat(registry.getSystemViewsCount()).isZero();
       assertThat(registry.getScopedMetadataList()).hasSize(1);
+
+      SystemObjectsServiceCompat compatibility = new SystemObjectsServiceCompat();
+      compatibility.delegate = service;
+      GetSystemObjectsResponse legacy =
+          compatibility
+              .getSystemObjects(GetSystemObjectsRequest.getDefaultInstance())
+              .await()
+              .indefinitely();
+      assertThat(legacy.getRegistry()).isEqualTo(registry);
     } finally {
       context.detach(previous);
     }

@@ -42,6 +42,9 @@ option java_outer_classname = "UserObjectsProto";
  */
 // ENGINE.
 service UserObjectsService {
+  /** Deprecated compatibility alias for clients that still use GetUserObjects. */
+  rpc GetUserObjects(GetUserObjectsRequest) returns (stream UserObjectsBundleChunk);
+
   /**
    * ResolveQueryInputs resolves each requested logical reference and streams results.
    */
@@ -87,6 +90,13 @@ message ResolveQueryInputsRequest {
    * full payload as equally correct.
    */
   repeated string known_table_blob_versions = 3;
+}
+
+/** Deprecated compatibility request; fields are identical to ResolveQueryInputsRequest. */
+message GetUserObjectsRequest {
+  string query_id = 1 [deprecated = true];
+  repeated TableReferenceCandidate tables = 2 [deprecated = true];
+  repeated string known_table_blob_versions = 3 [deprecated = true];
 }
 
 /**

@@ -62,7 +62,12 @@ public class SqlCatalogServiceImpl extends BaseServiceImpl implements SqlCatalog
               try {
                 var principalContext = diagnostics.time("principal_get", principal::get);
                 diagnostics.time(
-                    "authz", () -> authz.require(principalContext, "sql-objects.read"));
+                    // Accept the legacy permission while old Core clients use the compatibility
+                    // RPC. Both names authorize the same read-only operation during the rollout.
+                    "authz",
+                    () ->
+                        authz.require(
+                            principalContext, List.of("sql-objects.read", "system-objects.read")));
                 CatalogContext catalogContext = catalogContext();
                 EngineContext ctx = diagnostics.time("engine_context", catalogContext::engine);
                 diagnostics.put("engine_kind", ctx.engineKind());

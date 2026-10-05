@@ -116,6 +116,9 @@ so planners can hydrate functions/operators/types once per engine version. Clien
 `x-environment-kind` / `x-environment-version` and `x-engine-kind` / `x-engine-version` headers and always receive the composed catalog for that
 engine release.
 
+`SystemObjectsService.GetSystemObjects` remains as a deprecated wire-compatible alias during the
+client rollout. It returns the same registry and uses the same authorization capability.
+
 ## Important Internal Details
 - **Field numbering** – All proto files reserve low numbers for required identity fields and push
   experimental metadata to `map<string,string> properties = 99`. Adapt new fields by appending to

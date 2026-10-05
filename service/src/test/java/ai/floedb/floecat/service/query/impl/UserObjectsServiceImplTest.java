@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.ResolveQueryInputsRequest;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
@@ -139,6 +140,19 @@ class UserObjectsServiceImplTest {
       List<UserObjectsBundleChunk> chunks =
           service.resolveQueryInputs(request).collect().asList().await().indefinitely();
       assertFalse(chunks.isEmpty(), "Expected at least one chunk");
+
+      List<UserObjectsBundleChunk> legacyChunks =
+          service
+              .getUserObjects(
+                  GetUserObjectsRequest.newBuilder()
+                      .setQueryId("q-1")
+                      .addTables(TableReferenceCandidate.getDefaultInstance())
+                      .build())
+              .collect()
+              .asList()
+              .await()
+              .indefinitely();
+      assertEquals(chunks, legacyChunks, "The legacy alias must stream the same result");
     } finally {
       grpcCtx.detach(previous);
     }
