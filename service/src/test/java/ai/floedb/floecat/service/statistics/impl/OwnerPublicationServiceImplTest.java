@@ -245,6 +245,41 @@ class OwnerPublicationServiceImplTest {
   }
 
   @Test
+  void publishReuseManifestRejectsAProtectionGap() {
+    var service = service();
+    var publication = service.beginOwnerPublication(begin()).await().indefinitely();
+    byte[] digest = new byte[32];
+    java.util.Arrays.fill(digest, (byte) 6);
+    var manifest =
+        partialManifest(
+            publication.getManifestObjectPrefix()
+                + java.util.HexFormat.of().formatHex(digest)
+                + ".pb",
+            (byte) 6);
+    when(service.reuseLeases.publishInProgressManifest(any(), anyString(), any()))
+        .thenThrow(new OwnerReuseLeaseRepository.LeaseContinuityException("lease was released"));
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .publishOwnerReuseManifest(
+                        PublishOwnerReuseManifestRequest.newBuilder()
+                            .setTableId(tableId())
+                            .setSnapshotId(SNAPSHOT)
+                            .setPublicationId(publication.getPublicationId())
+                            .setOwnerId(begin().getOwnerId())
+                            .setOwnerGenerationId(begin().getOwnerGenerationId())
+                            .setManifest(manifest)
+                            .build())
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+  }
+
+  @Test
   void completeRejectsPublicationThatWasNotBegun() {
     var service = service();
     when(service.statsStore.statsGenerationExists(any(), anyLong(), anyString())).thenReturn(false);

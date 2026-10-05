@@ -2377,15 +2377,7 @@ public class CasBlobGc {
 
   private static boolean isOwnerCaptureManifestPrefix(
       String accountId, String tableId, String prefix) {
-    String snapshotPrefix = Keys.tableSnapshotBlobPrefix(accountId, tableId);
-    if (!prefix.startsWith(snapshotPrefix) || !prefix.endsWith(Keys.SEG_INDEX_CAPTURE_MANIFESTS)) {
-      return false;
-    }
-    String snapshotId =
-        prefix.substring(
-            snapshotPrefix.length(), prefix.length() - Keys.SEG_INDEX_CAPTURE_MANIFESTS.length());
-    return snapshotId.length() == 19
-        && snapshotId.chars().allMatch(value -> value >= '0' && value <= '9');
+    return Keys.isSnapshotIndexArtifactCaptureManifestBlobPrefix(accountId, tableId, prefix);
   }
 
   private static byte[] sha256(byte[] bytes) {

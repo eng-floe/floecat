@@ -2373,6 +2373,133 @@ class CasBlobGcTest {
   }
 
   @Test
+  void ownerReuseLeaseProtectsPartialCaptureNamespaceWithoutWalkingIt() throws Exception {
+    seedCurrentTable();
+    long snapshotId = 8L;
+    String capturePrefix =
+        Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(ACCOUNT_ID, TABLE_ID, snapshotId);
+    String coverageUri = capturePrefix + "reuse-index-partial.bin";
+    String commitmentUri = capturePrefix + "commitment-coverage-partial.pb";
+    byte[] digest = new byte[32];
+    java.util.Arrays.fill(digest, (byte) 7);
+    byte[] manifestBytes =
+        ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifest.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setTableId(TABLE_ID)
+            .setSnapshotId(snapshotId)
+            .setManifestKind(
+                ai.floedb.floecat.reconciler.rpc.SnapshotCaptureManifestKind.SCMK_OWNER_V2)
+            .setReusableCoverageManifest(
+                ai.floedb.floecat.reconciler.rpc.ReusableCoverageManifestRef.newBuilder()
+                    .setFormatVersion(1)
+                    .setUri(coverageUri)
+                    .setPayloadBytes(1L)
+                    .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(digest))
+                    .setShardCount(1L)
+                    .setShardIndexRecordBytes(ReusableCoverageManifest.SHARD_INDEX_RECORD_BYTES)
+                    .setShardRecordBytes(ReusableCoverageManifest.RECORD_BYTES)
+                    .setCommitmentIndex(
+                        ai.floedb.floecat.reconciler.rpc.ExternalManifestCommitmentIndexRef
+                            .newBuilder()
+                            .setFormatVersion(1)
+                            .setDomain(
+                                ai.floedb.floecat.reconciler.rpc.ExternalManifestDomain
+                                    .EMD_REUSABLE_COVERAGE)
+                            .setUri(commitmentUri)
+                            .setPayloadBytes(1L)
+                            .setPayloadSha256(com.google.protobuf.ByteString.copyFrom(digest))
+                            .setChunkCount(1L)))
+            .build()
+            .toByteArray();
+    String manifestUri =
+        Keys.snapshotIndexArtifactCaptureManifestBlobUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            snapshotId,
+            java.util.HexFormat.of()
+                .formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256").digest(manifestBytes)));
+    blobs.put(manifestUri, manifestBytes, "application/x-protobuf");
+    blobs.put(coverageUri, new byte[] {1}, "application/octet-stream");
+    blobs.put(commitmentUri, new byte[] {2}, "application/x-protobuf");
+
+    byte[] leaseBytes =
+        ai.floedb.floecat.catalog.rpc.OwnerPublicationLease.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setTableId(TABLE_ID)
+            .setPublicationId("partial-consumer")
+            .setReusableNamespacePrefix(Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID))
+            .setExpiresAtEpochMs(Long.MAX_VALUE)
+            .addProtectedCaptureManifestPrefixes(capturePrefix)
+            .addDiscoveredCaptureManifestPrefixes(capturePrefix)
+            .build()
+            .toByteArray();
+    String leaseUri =
+        Keys.ownerPublicationLeaseBlobUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            "partial-consumer",
+            java.util.HexFormat.of()
+                .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(leaseBytes)));
+    blobs.put(leaseUri, leaseBytes, "application/x-protobuf");
+    putPointer(
+        Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, "partial-consumer"), leaseUri);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(result.poisoned());
+    assertEquals(1, result.ownerReuseLeasesScanned());
+    assertEquals(0, result.ownerReuseLeasesMalformed());
+    assertTrue(blobs.head(manifestUri).isPresent());
+    assertTrue(blobs.head(coverageUri).isPresent());
+    assertTrue(blobs.head(commitmentUri).isPresent());
+  }
+
+  @Test
+  void expiredOwnerReuseLeaseReleasesPartialCaptureNamespace() throws Exception {
+    seedCurrentTable();
+    long snapshotId = 8L;
+    String capturePrefix =
+        Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(ACCOUNT_ID, TABLE_ID, snapshotId);
+    String partialUri = capturePrefix + "partial.pb";
+    String coverageUri = capturePrefix + "reuse-index-partial.bin";
+    blobs.put(partialUri, new byte[] {1}, "application/x-protobuf");
+    blobs.put(coverageUri, new byte[] {2}, "application/octet-stream");
+
+    byte[] leaseBytes =
+        ai.floedb.floecat.catalog.rpc.OwnerPublicationLease.newBuilder()
+            .setFormatVersion(1)
+            .setAccountId(ACCOUNT_ID)
+            .setTableId(TABLE_ID)
+            .setPublicationId("expired-partial-consumer")
+            .setReusableNamespacePrefix(Keys.tableReusableArtifactBlobPrefix(ACCOUNT_ID, TABLE_ID))
+            .setExpiresAtEpochMs(1L)
+            .addProtectedCaptureManifestPrefixes(capturePrefix)
+            .addDiscoveredCaptureManifestPrefixes(capturePrefix)
+            .build()
+            .toByteArray();
+    String leaseUri =
+        Keys.ownerPublicationLeaseBlobUri(
+            ACCOUNT_ID,
+            TABLE_ID,
+            "expired-partial-consumer",
+            java.util.HexFormat.of()
+                .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(leaseBytes)));
+    blobs.put(leaseUri, leaseBytes, "application/x-protobuf");
+    putPointer(
+        Keys.tableOwnerReuseLeasePointer(ACCOUNT_ID, TABLE_ID, "expired-partial-consumer"),
+        leaseUri);
+
+    var result = gc.runForAccount(ACCOUNT_ID);
+
+    assertFalse(result.poisoned());
+    assertTrue(blobs.head(partialUri).isEmpty());
+    assertTrue(blobs.head(coverageUri).isEmpty());
+  }
+
+  @Test
   void expiredOwnerReuseLeaseDoesNotProtectReusableNamespace() throws Exception {
     seedCurrentTable();
     String generationId = "expired-owner-generation";

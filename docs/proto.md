@@ -67,7 +67,7 @@ CLI, and reconciler.
 | `SnapshotService` | `ListSnapshots`, `GetSnapshot`, `GetLatestFinalizedSnapshot`, `CreateSnapshot`, `DeleteSnapshot` | Pins upstream checkpoints and timestamps. The bounded latest-finalized lookup selects a root-published reuse basis without scanning snapshot history. Finalized snapshots expose a system-owned `reuse_manifest_ref`; `SnapshotSpec` does not accept that field. |
 | `TableStatisticsService` | `GetTargetStats`, `ListTargetStats`, client-streaming `PutTargetStats` | Accepts per-snapshot target stats envelopes (table/column/expression/file). `ListTargetStats` supports target-kind filtering (currently at most one kind per request); streaming writes collapse multiple batches into a single call. |
 | `TableIndexService` | `GetIndexArtifact`, `GetIndexCaptureStatus`, `ListIndexArtifacts`, client-streaming `PutIndexArtifacts` | Stores and resolves snapshot-scoped parquet sidecar artifact metadata and bounded-cost finalized capture status keyed by table and snapshot. |
-| `OwnerPublicationService` | `BeginOwnerPublication`, `CompleteOwnerPublication` | Reserves an Owner generation and activates it through sequential, bounded completion calls. External registration and coverage manifests remain format v1 but are split into independently hashed, record-aligned chunks committed by a small content-addressed index. `Complete` accepts and returns an opaque phase/chunk cursor and verifies at most one committed chunk per call. |
+| `OwnerPublicationService` | `BeginOwnerPublication`, `PublishOwnerReuseManifest`, `CompleteOwnerPublication` | Reserves an Owner generation, publishes trusted partial reuse-manifest references, and activates the generation through sequential, bounded completion calls. External registration and coverage manifests remain format v1 but are split into independently hashed, record-aligned chunks committed by a small content-addressed index. `Complete` accepts and returns an opaque phase/chunk cursor and verifies at most one committed chunk per call. |
 | `TableConstraintsService` | `GetTableConstraints`, `ListTableConstraints`, `PutTableConstraints`, `MergeTableConstraints`, `AppendTableConstraints`, `DeleteTableConstraints`, `AddTableConstraint`, `DeleteTableConstraint` | Snapshot-scoped constraints CRUD for user tables. `PutTableConstraints` is full-bundle upsert, `MergeTableConstraints` is server-side merge by `constraint.name` plus shallow merge of bundle `properties` (incoming keys win), `AppendTableConstraints` is server-side append-only (duplicate names rejected), and `AddTableConstraint`/`DeleteTableConstraint` are single-constraint partial mutations. All write operations require snapshot existence (`NOT_FOUND` when missing). |
 | `DirectoryService` | `Resolve*` & `Lookup*` RPCs | Translates between names and `ResourceId`s with pagination for batched lookups. |
 | `AccountService` | Account CRUD. |
@@ -134,6 +134,16 @@ engine release.
    registration/coverage chunk positions, cumulative counts, and ordering keys, and activates only
    after every commitment and global total has been checked. Callers keep the 120-second RPC
    deadline, send `Complete` sequentially, and retry an uncertain call with the same opaque cursor.
+- **Owner partial reuse publication** – `PublishOwnerReuseManifest` records an
+  `SRMK_OWNER_V2_PARTIAL` reference in the active publication lease. The Owner must upload the
+  content-addressed manifest before publishing it. Floecat trusts Owner-produced manifest contents
+  and validates the reference metadata and canonical URI without fetching the manifest on this
+  RPC. A later `BeginOwnerPublication` may return a bounded, best-effort set of live partials from
+  the bounded lease scan. Their capture-manifest namespaces are leased without asking GC to parse
+  them as finalized manifests; the current publication's own namespace is retained even when its
+  partial falls outside that scan window. This deliberately retains every object in each selected
+  snapshot's capture-manifest namespace for the lease lifetime, including superseded publication
+  metadata, in exchange for avoiding manifest reads in Floecat.
 - **External reusable-index compatibility** – external planner and finalizer deployments must
   regenerate bindings for `ReusableArtifactIndexReference` format 1 and its immutable sorted-run,
   run-manifest, and block messages. The old trie-root representation has no compatibility reader.

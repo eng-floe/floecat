@@ -236,8 +236,16 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                   }
                   SnapshotReuseManifestRef manifest = request.getManifest();
                   validateInProgressManifest(tableId, snapshotId, manifest);
-                  long expiresAt =
-                      reuseLeases.publishInProgressManifest(tableId, publicationId, manifest);
+                  long expiresAt;
+                  try {
+                    expiresAt =
+                        reuseLeases.publishInProgressManifest(tableId, publicationId, manifest);
+                  } catch (OwnerReuseLeaseRepository.LeaseContinuityException error) {
+                    throw GrpcErrors.preconditionFailed(
+                        correlationId(),
+                        GeneratedErrorMessages.MessageKey.PUBLICATION_NOT_BEGUN,
+                        Map.of("publication_id", publicationId));
+                  }
                   return PublishOwnerReuseManifestResponse.newBuilder()
                       .setManifest(manifest)
                       .setReuseLeaseExpiresAtEpochMs(expiresAt)
@@ -1155,6 +1163,10 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     return publication.value();
   }
 
+  /**
+   * Validates the reference only. Owner-produced manifest contents are trusted, so this RPC never
+   * fetches or parses the object: the Owner publishes a reference it has already uploaded.
+   */
   private void validateInProgressManifest(
       ResourceId tableId, long snapshotId, SnapshotReuseManifestRef manifest) {
     byte[] digest = manifest.getPayloadSha256().toByteArray();
@@ -1166,6 +1178,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     if (manifest.getFormatVersion() != 1
         || manifest.getKind() != SnapshotReuseManifestKind.SRMK_OWNER_V2_PARTIAL
         || manifest.getPayloadBytes() <= 0L
+        || manifest.getPayloadBytes() > MAX_MANIFEST_BYTES
         || digest.length != 32
         || !manifest.getStatsGenerationManifestUri().isBlank()
         || !expectedUri.equals(manifest.getUri())) {

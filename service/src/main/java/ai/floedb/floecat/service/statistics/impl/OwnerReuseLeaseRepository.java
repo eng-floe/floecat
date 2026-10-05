@@ -21,8 +21,10 @@ import jakarta.inject.Inject;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
@@ -162,20 +164,13 @@ public class OwnerReuseLeaseRepository {
             || source.getPayloadSha256().size() != 32)) {
       throw new IllegalArgumentException("complete reuse source manifest metadata is required");
     }
-    if (inProgressManifest != null
-        && (inProgressManifest.getFormatVersion() != 1
-            || inProgressManifest.getKind() != SnapshotReuseManifestKind.SRMK_OWNER_V2_PARTIAL
-            || inProgressManifest.getUri().isBlank()
-            || inProgressManifest.getPayloadBytes() <= 0L
-            || inProgressManifest.getPayloadSha256().size() != 32
-            || !inProgressManifest.getStatsGenerationManifestUri().isBlank())) {
+    if (inProgressManifest != null && !isValidPartialManifest(tableId, inProgressManifest)) {
       throw new IllegalArgumentException("partial Owner reuse manifest metadata is required");
     }
     if (!requireContinuousLease
         && (captureManifestPrefix == null
-            || !captureManifestPrefix.startsWith(
-                Keys.tableSnapshotBlobPrefix(tableId.getAccountId(), tableId.getId()))
-            || !captureManifestPrefix.endsWith(Keys.SEG_INDEX_CAPTURE_MANIFESTS))) {
+            || !Keys.isSnapshotIndexArtifactCaptureManifestBlobPrefix(
+                tableId.getAccountId(), tableId.getId(), captureManifestPrefix))) {
       throw new IllegalArgumentException("snapshot capture-manifest prefix is required");
     }
     reachability.publishing(
@@ -195,7 +190,9 @@ public class OwnerReuseLeaseRepository {
             Pointer current = pointers.get(key).orElse(null);
             TreeSet<String> protectedManifests = new TreeSet<>();
             TreeSet<String> protectedManifestPrefixes = new TreeSet<>();
+            TreeSet<String> discoveredManifestPrefixes = new TreeSet<>();
             boolean reclaimExpired = false;
+            String currentReuseSourceManifestUri = "";
             SnapshotReuseManifestRef currentInProgressManifest = null;
             long currentInProgressManifestUpdatedAt = 0L;
             if (current == null && requireContinuousLease) {
@@ -227,6 +224,9 @@ public class OwnerReuseLeaseRepository {
                 protectedManifests.addAll(currentLease.getProtectedCaptureManifestUrisList());
                 protectedManifestPrefixes.addAll(
                     currentLease.getProtectedCaptureManifestPrefixesList());
+                discoveredManifestPrefixes.addAll(
+                    currentLease.getDiscoveredCaptureManifestPrefixesList());
+                currentReuseSourceManifestUri = currentLease.getReuseSourceCaptureManifestUri();
                 if (currentLease.hasInProgressReuseManifestRef()) {
                   currentInProgressManifest = currentLease.getInProgressReuseManifestRef();
                   currentInProgressManifestUpdatedAt =
@@ -235,30 +235,33 @@ public class OwnerReuseLeaseRepository {
               }
             }
             if (discoverCandidates) {
-              // Begin replaces the prior planning inputs. Do not accumulate stale candidate roots
-              // across repeated restarts of the same publication.
-              protectedManifests.clear();
-              protectedManifestPrefixes.clear();
-              if (currentInProgressManifest != null) {
-                protectedManifests.add(currentInProgressManifest.getUri());
-              }
+              // Begin replaces only the prior discovered planning inputs. Source and self-published
+              // roots have independent lifetimes and must survive a repeated Begin.
+              protectedManifestPrefixes.removeAll(discoveredManifestPrefixes);
+              discoveredManifestPrefixes.clear();
             }
-            if (source != null) {
+            if (!requireContinuousLease && source != null) {
+              if (!currentReuseSourceManifestUri.isBlank()) {
+                protectedManifests.remove(currentReuseSourceManifestUri);
+              }
+              currentReuseSourceManifestUri = source.getUri();
+              protectedManifests.add(currentReuseSourceManifestUri);
+            } else if (source != null) {
               protectedManifests.add(source.getUri());
             }
             if (captureManifestPrefix != null) {
               protectedManifestPrefixes.add(captureManifestPrefix);
             }
             for (SnapshotReuseManifestRef candidate : candidates) {
-              protectedManifests.add(candidate.getUri());
+              String candidatePrefix = partialManifestPrefix(tableId, candidate);
+              protectedManifestPrefixes.add(candidatePrefix);
+              if (!candidatePrefix.equals(captureManifestPrefix)) {
+                discoveredManifestPrefixes.add(candidatePrefix);
+              }
             }
             if (inProgressManifest != null) {
-              if (currentInProgressManifest != null) {
-                protectedManifests.remove(currentInProgressManifest.getUri());
-              }
               currentInProgressManifest = inProgressManifest;
               currentInProgressManifestUpdatedAt = now;
-              protectedManifests.add(inProgressManifest.getUri());
             }
             OwnerPublicationLease.Builder leaseBuilder =
                 OwnerPublicationLease.newBuilder()
@@ -271,7 +274,11 @@ public class OwnerReuseLeaseRepository {
                             tableId.getAccountId(), tableId.getId()))
                     .addAllProtectedCaptureManifestUris(protectedManifests)
                     .addAllProtectedCaptureManifestPrefixes(protectedManifestPrefixes)
+                    .addAllDiscoveredCaptureManifestPrefixes(discoveredManifestPrefixes)
                     .setExpiresAtEpochMs(expiresAt);
+            if (!currentReuseSourceManifestUri.isBlank()) {
+              leaseBuilder.setReuseSourceCaptureManifestUri(currentReuseSourceManifestUri);
+            }
             if (currentInProgressManifest != null) {
               leaseBuilder
                   .setInProgressReuseManifestRef(currentInProgressManifest)
@@ -311,6 +318,7 @@ public class OwnerReuseLeaseRepository {
       ResourceId tableId, String publicationId, long now) {
     String prefix = Keys.tableOwnerReuseLeasePointerPrefix(tableId.getAccountId(), tableId.getId());
     String token = "";
+    Set<String> seenTokens = new HashSet<>();
     Map<String, OwnerPublicationLease> active = new HashMap<>();
     int scanned = 0;
     int unreadable = 0;
@@ -348,7 +356,15 @@ public class OwnerReuseLeaseRepository {
           break;
         }
       }
-      token = next.toString();
+      String nextToken = next.toString();
+      if (!nextToken.isBlank() && !seenTokens.add(nextToken)) {
+        LOG.warnf(
+            "stopped Owner reuse candidate discovery for publication %s after pointer pagination repeated token %s",
+            publicationId, nextToken);
+        token = "";
+      } else {
+        token = nextToken;
+      }
     } while (!token.isBlank() && scanned < LEASE_SCAN_LIMIT);
     boolean truncated = !token.isBlank() && scanned >= LEASE_SCAN_LIMIT;
     if (unreadable > 0) {
@@ -419,13 +435,40 @@ public class OwnerReuseLeaseRepository {
         || lease.getExpiresAtEpochMs() <= 0L
         || (lease.hasInProgressReuseManifestRef()
             && (lease.getInProgressReuseManifestUpdatedAtEpochMs() <= 0L
-                || lease.getInProgressReuseManifestRef().getKind()
-                    != SnapshotReuseManifestKind.SRMK_OWNER_V2_PARTIAL))
+                || !isValidPartialManifest(tableId, lease.getInProgressReuseManifestRef())))
+        || !new HashSet<>(lease.getProtectedCaptureManifestPrefixesList())
+            .containsAll(lease.getDiscoveredCaptureManifestPrefixesList())
+        || (!lease.getReuseSourceCaptureManifestUri().isBlank()
+            && !lease
+                .getProtectedCaptureManifestUrisList()
+                .contains(lease.getReuseSourceCaptureManifestUri()))
         || !Keys.tableReusableArtifactBlobPrefix(tableId.getAccountId(), tableId.getId())
             .equals(lease.getReusableNamespacePrefix())
         || !expectedUri.equals(leaseUri)) {
       throw new BaseResourceRepository.CorruptionException("invalid Owner reuse lease", null);
     }
+  }
+
+  private static String partialManifestPrefix(
+      ResourceId tableId, SnapshotReuseManifestRef manifest) {
+    return Keys.snapshotIndexArtifactCaptureManifestBlobPrefixForUri(
+            tableId.getAccountId(), tableId.getId(), manifest.getUri())
+        .orElseThrow(
+            () ->
+                new IllegalArgumentException(
+                    "canonical partial Owner reuse manifest URI is required"));
+  }
+
+  private static boolean isValidPartialManifest(
+      ResourceId tableId, SnapshotReuseManifestRef manifest) {
+    return manifest.getFormatVersion() == 1
+        && manifest.getKind() == SnapshotReuseManifestKind.SRMK_OWNER_V2_PARTIAL
+        && manifest.getPayloadBytes() > 0L
+        && manifest.getPayloadSha256().size() == 32
+        && manifest.getStatsGenerationManifestUri().isBlank()
+        && Keys.snapshotIndexArtifactCaptureManifestBlobPrefixForUri(
+                tableId.getAccountId(), tableId.getId(), manifest.getUri())
+            .isPresent();
   }
 
   public void release(ResourceId tableId, String publicationId) {
