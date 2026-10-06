@@ -28,7 +28,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.apache.arrow.vector.BigIntVector;
@@ -58,7 +60,10 @@ public final class ArrowRecordWriters {
   private ArrowRecordWriters() {}
 
   public static <T extends Record> ArrowRecordWriter<T> fromRecordClass(Class<T> recordClass) {
-    SchemaAndWriters<T> sw = buildSchemaAndWriters(recordClass);
+    return writer(buildSchemaAndWriters(recordClass));
+  }
+
+  private static <T extends Record> ArrowRecordWriter<T> writer(SchemaAndWriters<T> sw) {
     return new ArrowRecordWriter<>() {
       @Override
       public Schema schema() {
@@ -80,10 +85,36 @@ public final class ArrowRecordWriters {
         }
         root.setRowCount(rows.size());
       }
+
+      @Override
+      public ArrowRecordWriter<T> project(List<String> requiredColumns) {
+        List<String> requested = RequiredColumns.normalize(requiredColumns);
+        return requested.isEmpty() ? this : writer(sw.select(requested));
+      }
     };
   }
 
-  private record SchemaAndWriters<T>(Schema schema, List<ComponentWriter<T>> writers) {}
+  private record SchemaAndWriters<T>(Schema schema, List<ComponentWriter<T>> writers) {
+
+    /** The fields named by {@code normalizedNames}, in that order; unknown names are dropped. */
+    SchemaAndWriters<T> select(List<String> normalizedNames) {
+      List<Field> fields = schema.getFields();
+      Map<String, Integer> indexByName = new HashMap<>(fields.size());
+      for (int i = 0; i < fields.size(); i++) {
+        indexByName.putIfAbsent(RequiredColumns.key(fields.get(i).getName()), i);
+      }
+      List<Field> selectedFields = new ArrayList<>(normalizedNames.size());
+      List<ComponentWriter<T>> selectedWriters = new ArrayList<>(normalizedNames.size());
+      for (String name : normalizedNames) {
+        Integer index = indexByName.get(name);
+        if (index != null) {
+          selectedFields.add(fields.get(index));
+          selectedWriters.add(writers.get(index));
+        }
+      }
+      return new SchemaAndWriters<>(new Schema(selectedFields), selectedWriters);
+    }
+  }
 
   private interface ComponentWriter<T> {
     void write(VectorSchemaRoot root, int rowIndex, T row);

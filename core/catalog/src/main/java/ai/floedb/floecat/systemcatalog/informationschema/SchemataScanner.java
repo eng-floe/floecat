@@ -19,6 +19,7 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 import ai.floedb.floecat.arrow.ArrowSchemaUtil;
 import ai.floedb.floecat.arrow.ArrowValueWriters;
 import ai.floedb.floecat.arrow.ColumnarBatch;
+import ai.floedb.floecat.arrow.RequiredColumns;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -37,7 +38,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.function.Consumer;
@@ -114,7 +114,7 @@ public final class SchemataScanner implements SystemObjectScanner {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
     Objects.requireNonNull(request, "request");
-    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(request.requiredColumns());
+    List<String> requiredSet = RequiredColumns.normalize(request.requiredColumns());
     Iterator<NamespaceEntry> namespaceIterator =
         NamespaceScanSupport.entries(ctx, request, "schema_name").iterator();
     Spliterator<ColumnarBatch> spliterator =
@@ -166,13 +166,13 @@ public final class SchemataScanner implements SystemObjectScanner {
     private final boolean includeCatalog;
     private final boolean includeSchema;
 
-    private SchemataBatchBuilder(BufferAllocator allocator, Set<String> requiredColumns) {
+    private SchemataBatchBuilder(BufferAllocator allocator, List<String> requiredColumns) {
       super(ARROW_SCHEMA, allocator);
       List<FieldVector> vectors = root().getFieldVectors();
       this.catalogName = (VarCharVector) vectors.get(0);
       this.schemaName = (VarCharVector) vectors.get(1);
-      this.includeCatalog = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "catalog_name");
-      this.includeSchema = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "schema_name");
+      this.includeCatalog = RequiredColumns.includes(requiredColumns, "catalog_name");
+      this.includeSchema = RequiredColumns.includes(requiredColumns, "schema_name");
     }
 
     private boolean isFull() {

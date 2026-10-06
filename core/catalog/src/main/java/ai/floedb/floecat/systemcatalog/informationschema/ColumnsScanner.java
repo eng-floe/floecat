@@ -19,6 +19,7 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 import ai.floedb.floecat.arrow.ArrowSchemaUtil;
 import ai.floedb.floecat.arrow.ArrowValueWriters;
 import ai.floedb.floecat.arrow.ColumnarBatch;
+import ai.floedb.floecat.arrow.RequiredColumns;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
@@ -45,7 +46,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.function.Consumer;
@@ -144,7 +144,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
     Objects.requireNonNull(request, "request");
-    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(request.requiredColumns());
+    List<String> requiredSet = RequiredColumns.normalize(request.requiredColumns());
     Iterator<NamespaceEntry> namespaceIterator =
         NamespaceScanSupport.entries(ctx, request, "table_schema").iterator();
     Spliterator<ColumnarBatch> spliterator =
@@ -435,7 +435,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
     private final boolean includeType;
     private final boolean includeOrdinal;
 
-    private ColumnsBatchBuilder(BufferAllocator allocator, Set<String> requiredColumns) {
+    private ColumnsBatchBuilder(BufferAllocator allocator, List<String> requiredColumns) {
       super(ARROW_SCHEMA, allocator);
       List<FieldVector> vectors = root().getFieldVectors();
       this.tableCatalog = (VarCharVector) vectors.get(0);
@@ -444,13 +444,12 @@ public final class ColumnsScanner implements SystemObjectScanner {
       this.columnName = (VarCharVector) vectors.get(3);
       this.dataType = (VarCharVector) vectors.get(4);
       this.ordinalPosition = (BigIntVector) vectors.get(5);
-      this.includeCatalog = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_catalog");
-      this.includeSchema = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_schema");
-      this.includeTable = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "table_name");
-      this.includeColumn = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "column_name");
-      this.includeType = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "data_type");
-      this.includeOrdinal =
-          ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "ordinal_position");
+      this.includeCatalog = RequiredColumns.includes(requiredColumns, "table_catalog");
+      this.includeSchema = RequiredColumns.includes(requiredColumns, "table_schema");
+      this.includeTable = RequiredColumns.includes(requiredColumns, "table_name");
+      this.includeColumn = RequiredColumns.includes(requiredColumns, "column_name");
+      this.includeType = RequiredColumns.includes(requiredColumns, "data_type");
+      this.includeOrdinal = RequiredColumns.includes(requiredColumns, "ordinal_position");
     }
 
     private boolean isFull() {
