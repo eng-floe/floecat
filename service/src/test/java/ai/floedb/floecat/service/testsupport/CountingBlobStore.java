@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class CountingBlobStore extends InMemoryBlobStore {
   private final AtomicInteger pointGets = new AtomicInteger();
   private final AtomicInteger batchGets = new AtomicInteger();
+  private final AtomicInteger batchedBodies = new AtomicInteger();
   private final AtomicInteger rangeGets = new AtomicInteger();
   private final AtomicInteger heads = new AtomicInteger();
   private final Map<String, Integer> puts = new ConcurrentHashMap<>();
@@ -42,6 +43,7 @@ public final class CountingBlobStore extends InMemoryBlobStore {
   @Override
   public Map<String, byte[]> getBatch(List<String> uris) {
     batchGets.incrementAndGet();
+    batchedBodies.addAndGet(uris.size());
     return super.getBatch(uris);
   }
 
@@ -80,6 +82,11 @@ public final class CountingBlobStore extends InMemoryBlobStore {
     return rangeGets.get();
   }
 
+  /** Bodies requested by point and batch reads. */
+  public int bodies() {
+    return pointGets.get() + batchedBodies.get();
+  }
+
   public int heads() {
     return heads.get();
   }
@@ -92,6 +99,7 @@ public final class CountingBlobStore extends InMemoryBlobStore {
   public void resetReads() {
     pointGets.set(0);
     batchGets.set(0);
+    batchedBodies.set(0);
     rangeGets.set(0);
     heads.set(0);
   }

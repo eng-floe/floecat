@@ -97,7 +97,8 @@ public class AccountRepository {
   }
 
   public List<Account> list(int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefix(Keys.accountPointerByNamePrefix(), limit, pageToken, nextOut);
+    return repo.listByPrefixForRelisting(
+        Keys.accountPointerByNamePrefix(), limit, pageToken, nextOut);
   }
 
   public int count() {

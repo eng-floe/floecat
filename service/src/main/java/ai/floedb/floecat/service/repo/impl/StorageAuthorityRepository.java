@@ -106,7 +106,7 @@ public class StorageAuthorityRepository {
 
   public List<StorageAuthority> list(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefix(
+    return repo.listByPrefixForRelisting(
         Keys.storageAuthorityPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
