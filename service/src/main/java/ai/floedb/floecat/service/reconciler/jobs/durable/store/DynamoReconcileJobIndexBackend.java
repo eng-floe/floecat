@@ -138,6 +138,9 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
           JobIndexBackendSupport.terminalRetentionSortKey(retentionKey),
           JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY);
     }
+    if (JobIndexBackendSupport.validCleanupPointerKey(pointerKey)) {
+      return loadGenericPointer(pointerKey);
+    }
     return Optional.empty();
   }
 
@@ -462,6 +465,8 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
       for (ReconcileJobIndexStore.JobIndexWriteOp op : batch.writes()) {
         if (op instanceof ReconcileJobIndexStore.JobIndexUpsert upsert) {
           tx.addAll(buildPointerUpsert(upsert));
+        } else if (op instanceof ReconcileJobIndexStore.JobIndexUnconditionalUpsert upsert) {
+          tx.add(buildPointerUnconditionalUpsert(upsert));
         } else if (op instanceof ReconcileJobIndexStore.JobIndexDelete delete) {
           tx.addAll(buildPointerDelete(delete));
         } else if (op instanceof ReconcileJobIndexStore.JobIndexCheck check) {
@@ -819,8 +824,59 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
               upsert,
               JobIndexBackendSupport.ATTR_CANONICAL_POINTER_KEY));
     }
+    if (JobIndexBackendSupport.validCleanupPointerKey(upsert.pointerKey())) {
+      PointerStore.CasUpsert generic =
+          new PointerStore.CasUpsert(
+              upsert.pointerKey(),
+              upsert.expectedVersion(),
+              JobIndexWriteBatchSupport.pointer(
+                  upsert.pointerKey(),
+                  upsert.blobUri(),
+                  upsert.expectedVersion() + 1L,
+                  upsert.referenceKind()));
+      return List.of(buildGenericPointerUpsert(table, generic));
+    }
     throw new IllegalArgumentException(
         "Unsupported reconcile job index upsert key: " + upsert.pointerKey());
+  }
+
+  private TransactWriteItem buildPointerUnconditionalUpsert(
+      ReconcileJobIndexStore.JobIndexUnconditionalUpsert upsert) {
+    if (!JobIndexBackendSupport.validCleanupPointerKey(upsert.pointerKey())) {
+      throw new IllegalArgumentException(
+          "Unsupported reconcile job index unconditional upsert key: " + upsert.pointerKey());
+    }
+    return buildGenericPointerUnconditionalUpsert(
+        table,
+        new PointerStore.UnconditionalUpsert(
+            upsert.pointerKey(),
+            JobIndexWriteBatchSupport.pointer(
+                upsert.pointerKey(), upsert.blobUri(), upsert.version(), upsert.referenceKind())));
+  }
+
+  private Optional<JobIndexEntrySnapshot> loadGenericPointer(String pointerKey) {
+    GenericPointerKey key = genericPointerKey(pointerKey);
+    var response =
+        dynamoCaller.call(
+            dynamoDbClientManager,
+            client ->
+                client.getItem(
+                    GetItemRequest.builder()
+                        .tableName(table)
+                        .consistentRead(true)
+                        .key(
+                            Map.of(
+                                ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()),
+                                ATTR_SORT_KEY, AttributeValue.fromS(key.sortKey())))
+                        .build()));
+    if (!response.hasItem() || response.item().isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        new JobIndexEntrySnapshot(
+            pointerKey,
+            stringAttr(response.item(), ATTR_GENERIC_BLOB_URI),
+            longAttr(response.item(), ATTR_VERSION)));
   }
 
   private List<TransactWriteItem> buildPointerDelete(ReconcileJobIndexStore.JobIndexDelete delete) {
@@ -1097,6 +1153,11 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   private TransactWriteItem buildPut(Map<String, AttributeValue> item, long expectedVersion) {
+    return buildPut(table, item, expectedVersion);
+  }
+
+  private static TransactWriteItem buildPut(
+      String table, Map<String, AttributeValue> item, long expectedVersion) {
     Put.Builder put = Put.builder().tableName(table).item(item);
     if (expectedVersion == 0L) {
       put.conditionExpression("attribute_not_exists(#pk)")
@@ -1111,6 +1172,10 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
   }
 
   private TransactWriteItem buildGenericPointerUpsert(PointerStore.CasUpsert upsert) {
+    return buildGenericPointerUpsert(table, upsert);
+  }
+
+  static TransactWriteItem buildGenericPointerUpsert(String table, PointerStore.CasUpsert upsert) {
     GenericPointerKey key = genericPointerKey(upsert.key());
     Map<String, AttributeValue> item = new HashMap<>();
     item.put(ATTR_PARTITION_KEY, AttributeValue.fromS(key.partitionKey()));
@@ -1124,7 +1189,7 @@ public class DynamoReconcileJobIndexBackend implements ReconcileJobIndexBackend 
           ATTR_GENERIC_REFERENCE_KIND,
           AttributeValue.fromS(upsert.next().getReferenceKind().name()));
     }
-    return buildPut(item, upsert.expectedVersion());
+    return buildPut(table, item, upsert.expectedVersion());
   }
 
   private TransactWriteItem buildGenericPointerUnconditionalUpsert(
