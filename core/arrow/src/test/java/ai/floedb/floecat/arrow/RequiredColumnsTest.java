@@ -18,6 +18,7 @@ package ai.floedb.floecat.arrow;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -43,5 +44,17 @@ class RequiredColumnsTest {
     assertThat(RequiredColumns.includes(required, "NAME")).isTrue();
     assertThat(RequiredColumns.includes(required, "id")).isFalse();
     assertThat(RequiredColumns.includes(List.of(), "id")).isTrue();
+  }
+
+  @Test
+  void indexOf_matchesUnderTheNameRules() {
+    List<SchemaColumn> schema =
+        List.of(
+            SchemaColumn.newBuilder().setName("Id").build(),
+            SchemaColumn.newBuilder().setName("name").build());
+
+    assertThat(RequiredColumns.indexOf(schema, " NAME ")).isEqualTo(1);
+    assertThat(RequiredColumns.indexOf(schema, "id")).isZero();
+    assertThat(RequiredColumns.indexOf(schema, "missing")).isEqualTo(-1);
   }
 }

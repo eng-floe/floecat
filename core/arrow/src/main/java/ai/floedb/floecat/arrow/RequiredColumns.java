@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.arrow;
 
+import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -55,6 +56,17 @@ public final class RequiredColumns {
   /** Lookup key for a column name, comparable with the names {@link #normalize} returns. */
   public static String key(String columnName) {
     return columnName.trim().toLowerCase(Locale.ROOT);
+  }
+
+  /** Position of {@code column} in {@code schema}, or -1 when the schema has no such column. */
+  public static int indexOf(List<SchemaColumn> schema, String column) {
+    String key = key(column);
+    for (int i = 0; i < schema.size(); i++) {
+      if (key(schema.get(i).getName()).equals(key)) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   /**
