@@ -25,7 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
-/** Direct tests for the GetUserObjects wire-protocol framer. */
+/** Direct tests for the ResolveQueryInputs wire-protocol framer. */
 class BundleStreamFramerTest {
 
   private static final int MAX = 25;

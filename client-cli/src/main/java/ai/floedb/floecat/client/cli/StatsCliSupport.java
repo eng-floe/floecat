@@ -51,6 +51,7 @@ import ai.floedb.floecat.reconciler.rpc.CapturePolicy;
 import ai.floedb.floecat.reconciler.rpc.CaptureScope;
 import ai.floedb.floecat.reconciler.rpc.DefaultColumnScope;
 import ai.floedb.floecat.reconciler.rpc.ReconcileControlGrpc;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import com.google.protobuf.Duration;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageOrBuilder;
@@ -638,7 +639,7 @@ final class StatsCliSupport {
           "%-8s %-28s %-12s %-12s %-10s %-10s %-24s %-24s %-24s %-24s%n",
           c.getTarget().getColumn().getColumnId(),
           CliUtils.trunc(scalar.getDisplayName(), 28),
-          CliUtils.trunc(scalar.getLogicalType(), 12),
+          CliUtils.trunc(LogicalTypeProtoAdapter.columnLogicalTypeString(scalar), 12),
           Long.toString(scalar.getRowCount()),
           Long.toString(nullCount),
           Long.toString(nanCount),
@@ -683,7 +684,7 @@ final class StatsCliSupport {
                   + " ndv=%s%n",
               c.getColumnId(),
               CliUtils.trunc(columnName, 24),
-              CliUtils.trunc(scalar.getLogicalType(), 10),
+              CliUtils.trunc(LogicalTypeProtoAdapter.columnLogicalTypeString(scalar), 10),
               Long.toString(scalar.getRowCount()),
               nullCount,
               nanCount,

@@ -103,7 +103,7 @@ class GrpcTelemetryServerInterceptorTest {
     GrpcTelemetryServerInterceptor interceptor =
         new GrpcTelemetryServerInterceptor(observability, "svc");
     TestServerCall call =
-        new TestServerCall("ai.floedb.floecat.query.UserObjectsService/GetUserObjects");
+        new TestServerCall("ai.floedb.floecat.query.UserObjectsService/ResolveQueryInputs");
     AtomicReference<ServerCall<Void, Void>> activeCall = new AtomicReference<>();
     interceptor.interceptCall(
         call,

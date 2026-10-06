@@ -35,6 +35,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.TableBackendKind;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.systemcatalog.graph.model.SystemTableNode;
@@ -79,13 +80,14 @@ class CatalogSurfaceTablesTest {
   @Test
   void listTablesKeepsRepoPhaseBeforeSystemPhase() {
     Table userTable = table("orders");
-    when(tableRepo.list(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq(""), any()))
+    when(tableRepo.listRefs(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq(""), any()))
         .thenAnswer(
             invocation -> {
               StringBuilder nextOut = invocation.getArgument(5);
               nextOut.append("repo-next");
-              return List.of(userTable);
+              return List.of(ref(userTable));
             });
+    when(tableRepo.getById(userTable.getResourceId())).thenReturn(java.util.Optional.of(userTable));
     when(tableRepo.count(ACCOUNT_ID, "cat", "ns")).thenReturn(1);
     graphView.addRelation(namespaceId, systemTable("z_system"));
     graphView.addRelation(namespaceId, systemTable("a_system"));
@@ -103,7 +105,7 @@ class CatalogSurfaceTablesTest {
     assertEquals("repo-next", firstPage.getPage().getNextPageToken());
     assertEquals(3, firstPage.getPage().getTotalSize());
 
-    when(tableRepo.list(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq("repo-next"), any()))
+    when(tableRepo.listRefs(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq("repo-next"), any()))
         .thenAnswer(
             invocation -> {
               StringBuilder nextOut = invocation.getArgument(5);
@@ -138,8 +140,8 @@ class CatalogSurfaceTablesTest {
             CORRELATION_ID);
 
     assertEquals(List.of("z_system"), names(systemPage.getTablesList()));
-    assertTrue(systemPage.getPage().getNextPageToken().startsWith("tbl:"));
-    verify(tableRepo).list(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq("repo-next"), any());
+    assertTrue(systemPage.getPage().getNextPageToken().isBlank());
+    verify(tableRepo).listRefs(eq(ACCOUNT_ID), eq("cat"), eq("ns"), eq(1), eq("repo-next"), any());
   }
 
   @Test
@@ -176,6 +178,11 @@ class CatalogSurfaceTablesTest {
 
   private static List<String> names(List<Table> tables) {
     return tables.stream().map(Table::getDisplayName).toList();
+  }
+
+  private static CatalogGraphView.RelationRef ref(Table table) {
+    return new CatalogGraphView.RelationRef(
+        table.getResourceId(), table.getDisplayName(), ResourceKind.RK_TABLE);
   }
 
   private Table table(String displayName) {

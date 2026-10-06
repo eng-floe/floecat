@@ -255,6 +255,7 @@ message ValidateConnectorResponse {
   map<string,string> capabilities = 3;
 }
 
+// CONTROL PLANE.
 service Connectors {
   rpc GetConnector(GetConnectorRequest) returns (GetConnectorResponse);
   rpc ListConnectors(ListConnectorsRequest) returns (ListConnectorsResponse);

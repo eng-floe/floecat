@@ -25,7 +25,6 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
-import ai.floedb.floecat.systemcatalog.util.NameRefUtil;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -113,16 +112,27 @@ public final class UserObjectBundleUtils {
   }
 
   public static ColumnInfo columnInfo(SchemaColumn column, Origin origin) {
+    var logicalType =
+        column.hasType()
+            ? LogicalTypeProtoAdapter.toProto(LogicalTypeProtoAdapter.columnType(column))
+            : ai.floedb.floecat.types.rpc.LogicalType.getDefaultInstance();
     ColumnInfo.Builder builder =
         ColumnInfo.newBuilder()
             .setId(column.getId())
             .setName(column.getName())
-            .setType(
-                NameRefUtil.name(
-                    column.hasType() ? LogicalTypeProtoAdapter.columnTypeString(column) : ""))
+            .setType(logicalType)
             .setNullable(column.getNullable())
             .setOrdinal(column.getOrdinal())
             .setOrigin(origin);
+
+    if (column.hasType()) {
+      builder.setLegacyType(
+          NameRef.newBuilder()
+              .setName(
+                  LogicalTypeProtoAdapter.encodeLogicalType(
+                      LogicalTypeProtoAdapter.columnType(column)))
+              .build());
+    }
 
     return builder.build();
   }

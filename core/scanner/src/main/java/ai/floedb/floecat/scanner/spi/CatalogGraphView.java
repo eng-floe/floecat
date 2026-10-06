@@ -80,25 +80,16 @@ public interface CatalogGraphView {
   }
 
   /**
-   * Whether this graph view can enumerate lightweight refs without materializing full graph nodes.
-   *
-   * <p>Default implementations below are correct but derive refs from full objects, so callers that
-   * need a true no-hydration path should check this before relying on refs for performance.
+   * Lists namespace refs for callers that only need topology metadata. Implementations should use a
+   * pointer path when available.
    */
-  default boolean supportsLightweightRefs() {
-    return false;
-  }
+  List<NamespaceRef> listNamespaceRefs(ResourceId catalogId, CatalogContext catalogContext);
 
   /**
-   * Lists namespace refs for callers that only need topology metadata. Implementations should use a
-   * cache-backed pointer path when available; the default derives refs from full namespace nodes.
+   * Resolves a namespace's lightweight topology ref without materializing its namespace node.
+   * Implementations must provide this for namespace-scoped listings.
    */
-  default List<NamespaceRef> listNamespaceRefs(
-      ResourceId catalogId, CatalogContext catalogContext) {
-    return listNamespaces(catalogId, catalogContext).stream()
-        .map(ns -> new NamespaceRef(ns.id(), ns.displayName(), ns.catalogId(), ns.pathSegments()))
-        .toList();
-  }
+  Optional<NamespaceRef> namespaceRef(ResourceId namespaceId, CatalogContext catalogContext);
 
   /** Lists namespace refs whose rendered information_schema names match the supplied set. */
   default List<NamespaceRef> listNamespaceRefsByName(
@@ -113,22 +104,10 @@ public interface CatalogGraphView {
 
   /**
    * Lists relation refs for callers that only need relation name/id/kind. Implementations should
-   * use a cache-backed pointer path when available; the default derives refs from full relation
-   * nodes.
+   * use a pointer path when available.
    */
-  default List<RelationRef> listRelationRefs(
-      ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext) {
-    return listRelationsInNamespace(catalogId, namespaceId, catalogContext).stream()
-        .map(
-            rel -> {
-              ResourceKind kind =
-                  rel.id().getKind() == ResourceKind.RK_VIEW
-                      ? ResourceKind.RK_VIEW
-                      : ResourceKind.RK_TABLE;
-              return new RelationRef(rel.id(), rel.displayName(), kind);
-            })
-        .toList();
-  }
+  List<RelationRef> listRelationRefs(
+      ResourceId catalogId, ResourceId namespaceId, CatalogContext catalogContext);
 
   /** Lists matching relation refs using the selected catalog context. */
   default List<RelationRef> listRelationRefsByName(
@@ -186,7 +165,7 @@ public interface CatalogGraphView {
    * concurrent resolution. Opting in permits {@link #catalog}, {@link #resolve}, {@code
    * resolveName(s)}, and {@link #resolvedSnapshotFor} callbacks to execute concurrently and off the
    * caller thread, together with graph-view schema/name callbacks used while assembling
-   * GetUserObjects relations ({@link #schemaFor}, {@link #tableSchema}, {@link
+   * ResolveQueryInputs relations ({@link #schemaFor}, {@link #tableSchema}, {@link
    * #tableName(ResourceId, EngineContext)}, and {@link #viewName(ResourceId, EngineContext)}). It
    * does not change the caller-thread contract of separately injected stats or engine-decoration
    * collaborators. Implementations opting in must make the listed graph-view callbacks thread-safe
@@ -200,8 +179,8 @@ public interface CatalogGraphView {
   /** Resolves a system table name without involving the user graph. */
   Optional<ResourceId> resolveSystemTable(NameRef ref, CatalogContext catalogContext);
 
-  /** Resolves a system table id back to name without involving the user graph. */
-  Optional<NameRef> resolveSystemTableName(ResourceId id, CatalogContext catalogContext);
+  /** Resolves a system relation id back to name without involving the user graph. */
+  Optional<NameRef> resolveSystemRelationName(ResourceId id, CatalogContext catalogContext);
 
   /** Resolves a system type by namespace + type name without involving the user graph. */
   Optional<TypeNode> resolveSystemType(
@@ -249,13 +228,18 @@ public interface CatalogGraphView {
   Optional<CatalogNode> catalog(ResourceId id, CatalogContext catalogContext);
 
   /**
+   * Returns a catalog display name without requiring a catalog blob when the implementation can
+   * obtain it from pointer metadata. Generic listings use this to keep returned names resolvable.
+   */
+  default Optional<String> catalogName(ResourceId id, CatalogContext catalogContext) {
+    return catalog(id, catalogContext).map(CatalogNode::displayName);
+  }
+
+  /**
    * Resolve the schema for a snapshot-resolved query. {@code tableBlobUri} names the resolved table
    * snapshot blob and {@code snapshotBlobUri} the resolved snapshot blob, so both the table
    * metadata and the snapshot-sourced schema are read from those immutable blobs rather than the
-   * live pointers. A concurrent {@code ALTER} advances the current table pointer, and an in-place
-   * {@code UpdateSnapshot} can repoint the {@code (table, snapshot id)} pointer to a new snapshot
-   * blob after the pin was built; reading the pinned uris cannot drift to either. Empty uris read
-   * the current pointers.
+   * live pointers. Empty uris read the current pointers.
    */
   SchemaResolution schemaFor(
       String correlationId,
@@ -281,6 +265,7 @@ public interface CatalogGraphView {
 
   record SchemaResolution(UserTableNode table, String schemaJson) {}
 
+  /** A lightweight namespace identity; {@code pathSegments} contains parent names only. */
   record NamespaceRef(ResourceId id, String name, ResourceId catalogId, List<String> pathSegments) {
     public NamespaceRef(ResourceId id, String name) {
       this(id, name, null, List.of());

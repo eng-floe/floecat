@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.query.impl;
 import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.MessageKey.*;
 
 import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
+import ai.floedb.floecat.query.rpc.ResolveQueryInputsRequest;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsService;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
@@ -52,10 +53,22 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
 
   private static final Logger LOG = Logger.getLogger(UserObjectsServiceImpl.class);
 
+  /** Compatibility alias for clients that have not migrated to ResolveQueryInputs yet. */
   @ActivateRequestContext
   @Override
   public Multi<UserObjectsBundleChunk> getUserObjects(GetUserObjectsRequest request) {
-    var L = LogHelper.start(LOG, "GetUserObjects");
+    return resolveQueryInputs(
+        ResolveQueryInputsRequest.newBuilder()
+            .setQueryId(request.getQueryId())
+            .addAllTables(request.getTablesList())
+            .addAllKnownTableBlobVersions(request.getKnownTableBlobVersionsList())
+            .build());
+  }
+
+  @ActivateRequestContext
+  @Override
+  public Multi<UserObjectsBundleChunk> resolveQueryInputs(ResolveQueryInputsRequest request) {
+    var L = LogHelper.start(LOG, "ResolveQueryInputs");
     long startNs = System.nanoTime();
     AtomicLong workStartNs = new AtomicLong(0L);
     AtomicBoolean completed = new AtomicBoolean(false);
@@ -122,7 +135,7 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
               double dispatchMs = workNs <= 0L ? 0.0 : (workNs - startNs) / 1_000_000.0;
               if (failed.get()) {
                 LOG.warnf(
-                    "op=GetUserObjects terminated query_id=%s correlation_id=%s tables=%d"
+                    "op=ResolveQueryInputs terminated query_id=%s correlation_id=%s tables=%d"
                         + " dispatchMs=%.1f outcome=failed",
                     request.getQueryId(),
                     correlationRef.get(),
@@ -132,7 +145,7 @@ public class UserObjectsServiceImpl extends BaseServiceImpl implements UserObjec
               }
               if (!completed.get()) {
                 LOG.warnf(
-                    "op=GetUserObjects terminated query_id=%s correlation_id=%s tables=%d"
+                    "op=ResolveQueryInputs terminated query_id=%s correlation_id=%s tables=%d"
                         + " dispatchMs=%.1f outcome=cancelled",
                     request.getQueryId(),
                     correlationRef.get(),

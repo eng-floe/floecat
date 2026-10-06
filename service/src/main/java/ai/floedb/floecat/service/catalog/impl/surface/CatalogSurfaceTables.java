@@ -28,6 +28,7 @@ import ai.floedb.floecat.metagraph.model.GraphNodeOrigin;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.metagraph.model.TableNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.spi.CatalogGraphView.NamespaceRef;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -41,12 +42,14 @@ public final class CatalogSurfaceTables {
   private final TableRepository tableRepo;
   private final CatalogGraphView graphView;
   private final CatalogSurfaceWritePolicy writePolicy;
+  private final CatalogContext context;
 
   public CatalogSurfaceTables(
       TableRepository tableRepo, CatalogGraphView graphView, CatalogContext context) {
     this.tableRepo = Objects.requireNonNull(tableRepo, "table repository is required");
     this.graphView = graphView;
     this.writePolicy = new CatalogSurfaceWritePolicy(graphView, context);
+    this.context = context;
   }
 
   public ListTablesResponse listTables(ListTablesRequest request, String accountId, String corr) {
@@ -56,25 +59,34 @@ public final class CatalogSurfaceTables {
     var namespaceId = request.getNamespaceId();
     NamespaceNode nsNode = writePolicy.requireVisibleNamespace(namespaceId, corr);
 
-    var result =
-        CatalogSurfaceRelationPager.list(
-            want,
-            pageIn.token,
-            new CatalogSurfaceTablePageSource(
-                tableRepo, graphView, accountId, nsNode, namespaceId, writePolicy.context()),
-            corr);
+    var source =
+        new CatalogSurfaceTablePageSource(
+            tableRepo, graphView, accountId, nsNode, namespaceId, writePolicy.context());
+    var result = CatalogSurfaceRelationPager.listRefs(want, pageIn.token, source, corr);
 
-    var page = MutationOps.pageOut(result.nextToken(), result.totalSize());
-    return ListTablesResponse.newBuilder().addAllTables(result.items()).setPage(page).build();
+    var tables = result.relations().stream().map(ref -> source.hydrate(ref, corr)).toList();
+    var page = MutationOps.pageOut(result.nextToken(), CatalogSurfaceRelationPager.total(source));
+    return ListTablesResponse.newBuilder().addAllTables(tables).setPage(page).build();
+  }
+
+  CatalogSurfaceTablePageSource pageSource(NamespaceRef namespace, String accountId) {
+    return new CatalogSurfaceTablePageSource(tableRepo, graphView, accountId, namespace, context);
+  }
+
+  /** The visible table, without the wire envelope, for in-process callers. */
+  public Table byId(ResourceId tableId, String corr) {
+    TableNode node = writePolicy.requireVisibleTable(tableId, corr);
+    return tableFromGraphNodeOrRepo(node, tableId, corr);
   }
 
   public GetTableResponse getTable(GetTableRequest request, String corr) {
-    TableNode node = writePolicy.requireVisibleTable(request.getTableId(), corr);
-    Table table = tableFromGraphNodeOrRepo(node, request.getTableId(), corr);
+    ResourceId tableId = request.getTableId();
+    TableNode node = writePolicy.requireVisibleTable(tableId, corr);
+    Table table = tableFromGraphNodeOrRepo(node, tableId, corr);
     MutationMeta meta =
         node.origin() == GraphNodeOrigin.SYSTEM
             ? MutationMeta.getDefaultInstance()
-            : tableRepo.metaForSafe(request.getTableId());
+            : tableRepo.metaForSafe(tableId);
 
     return GetTableResponse.newBuilder().setTable(table).setMeta(meta).build();
   }

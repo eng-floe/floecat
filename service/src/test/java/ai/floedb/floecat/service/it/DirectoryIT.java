@@ -16,22 +16,35 @@
 
 package ai.floedb.floecat.service.it;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import ai.floedb.floecat.catalog.rpc.*;
+import ai.floedb.floecat.catalog.rpc.Catalog;
+import ai.floedb.floecat.catalog.rpc.CatalogServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.GetRelationRequest;
+import ai.floedb.floecat.catalog.rpc.ListRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.ListTablesRequest;
+import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.RelationReference;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.ResolveRelationsRequest;
+import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
+import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.util.TestDataResetter;
 import ai.floedb.floecat.service.util.TestSupport;
-import com.google.protobuf.FieldMask;
-import io.grpc.StatusRuntimeException;
 import io.quarkus.grpc.GrpcClient;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
+import java.util.ArrayList;
 import java.util.List;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 @QuarkusTest
 class DirectoryIT {
@@ -47,6 +60,9 @@ class DirectoryIT {
   @GrpcClient("floecat")
   TableServiceGrpc.TableServiceBlockingStub table;
 
+  @GrpcClient("floecat")
+  RelationServiceGrpc.RelationServiceBlockingStub relation;
+
   @Inject TestDataResetter resetter;
   @Inject SeedRunner seeder;
 
@@ -57,377 +73,185 @@ class DirectoryIT {
   }
 
   @Test
-  void resolveAndLookupCatalog() {
-    var cat = TestSupport.createCatalog(catalog, "resolveAndLookupCatalog", "");
+  void directoryKeepsCatalogAndNamespaceIdentity() {
+    Catalog cat = TestSupport.createCatalog(catalog, "directory_identity", "");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "");
 
-    var ref = NameRef.newBuilder().setCatalog("resolveAndLookupCatalog").build();
-    var r = directory.resolveCatalog(ResolveCatalogRequest.newBuilder().setRef(ref).build());
-    assertEquals(cat.getResourceId().getAccountId(), r.getResourceId().getAccountId());
+    var catalogId =
+        directory
+            .resolveCatalog(
+                ai.floedb.floecat.catalog.rpc.ResolveCatalogRequest.newBuilder()
+                    .setRef(NameRef.newBuilder().setCatalog(cat.getDisplayName()))
+                    .build())
+            .getResourceId();
+    assertEquals(cat.getResourceId(), catalogId);
 
-    var l =
-        directory.lookupCatalog(
-            LookupCatalogRequest.newBuilder().setResourceId(r.getResourceId()).build());
-    assertTrue(
-        l.getDisplayName().equals("resolveAndLookupCatalog") || l.getDisplayName().isEmpty());
+    var namespaceRef =
+        directory
+            .lookupNamespace(
+                ai.floedb.floecat.catalog.rpc.LookupNamespaceRequest.newBuilder()
+                    .setResourceId(ns.getResourceId())
+                    .build())
+            .getRef();
+    assertEquals(cat.getDisplayName(), namespaceRef.getCatalog());
+    assertEquals("core", namespaceRef.getName());
   }
 
   @Test
-  void resolveAndLookupNamespace() {
-    var cat = TestSupport.createCatalog(catalog, "resolveAndLookupNamespace", "");
-
-    var ns =
-        TestSupport.createNamespace(
-            namespace, cat.getResourceId(), "2025", List.of("staging"), "core ns");
-
-    var ref =
-        NameRef.newBuilder()
-            .setCatalog(cat.getDisplayName())
-            .addPath("staging")
-            .setName("2025")
-            .build();
-
-    directory.resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(ref).build());
-
-    var lookup =
-        directory.lookupNamespace(
-            LookupNamespaceRequest.newBuilder().setResourceId(ns.getResourceId()).build());
-
-    assertEquals(cat.getDisplayName(), lookup.getRef().getCatalog());
-    assertEquals(List.of("staging"), lookup.getRef().getPathList());
-    assertEquals("2025", lookup.getRef().getName());
-  }
-
-  @Test
-  void resolveAndLookupTable() {
-    var cat = TestSupport.createCatalog(catalog, "resolveAndLookupTable", "");
-
-    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "core ns");
+  void relationNamesAreMatchedExactly() {
+    Catalog cat = TestSupport.createCatalog(catalog, "relation_case", "");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "");
     TestSupport.createTable(
-        table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
+        table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://orders", "{}", "");
 
-    var nameRef =
+    // One policy: a relation is keyed by its exact stored name, so another spelling is a different
+    // name and resolves to nothing. This holds for a builtin as much as for a user relation.
+    NameRef shoutedUser =
         NameRef.newBuilder()
             .setCatalog(cat.getDisplayName())
             .addPath("core")
-            .setName("orders")
+            .setName("ORDERS")
             .build();
-
-    var resolved = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(nameRef).build());
-
-    var lookup =
-        directory.lookupTable(
-            LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
-
-    assertEquals(cat.getDisplayName(), lookup.getName().getCatalog());
-    assertEquals(List.of("core"), lookup.getName().getPathList());
-    assertEquals("orders", lookup.getName().getName());
-  }
-
-  @Test
-  void resolveTableNotFound() {
-    var missing =
+    NameRef shoutedBuiltin =
         NameRef.newBuilder()
-            .setCatalog("examples")
-            .addPath("iceberg")
-            .setName("does_not_exist")
+            .setCatalog(cat.getDisplayName())
+            .addPath("INFORMATION_SCHEMA")
+            .setName("TABLES")
+            .build();
+    NameRef storedBuiltin =
+        NameRef.newBuilder()
+            .setCatalog(cat.getDisplayName())
+            .addPath("information_schema")
+            .setName("tables")
             .build();
 
-    var ex =
-        assertThrows(
-            io.grpc.StatusRuntimeException.class,
-            () -> directory.resolveTable(ResolveTableRequest.newBuilder().setRef(missing).build()));
+    var response =
+        relation.resolveRelations(
+            ResolveRelationsRequest.newBuilder()
+                .addReferences(RelationReference.newBuilder().addCandidates(shoutedUser))
+                .addReferences(RelationReference.newBuilder().addCandidates(shoutedBuiltin))
+                .addReferences(RelationReference.newBuilder().addCandidates(storedBuiltin))
+                .build());
 
-    assertEquals(io.grpc.Status.NOT_FOUND.getCode(), ex.getStatus().getCode());
+    assertTrue(response.getResults(0).hasError());
+    assertEquals(ErrorCode.MC_NOT_FOUND, response.getResults(0).getError().getCode());
+
+    assertTrue(response.getResults(1).hasError());
+    assertEquals(ErrorCode.MC_NOT_FOUND, response.getResults(1).getError().getCode());
+
+    // Positive control: the stored spelling resolves, so the two misses above are about case and
+    // not about the builtin being absent from this catalog.
+    assertTrue(response.getResults(2).hasRelation());
+    assertEquals("tables", response.getResults(2).getResolvedName().getName());
   }
 
   @Test
-  void lookupTableByRefReturnsResourceIdWhenPresent() {
-    var cat =
-        TestSupport.createCatalog(catalog, "lookupTableByRefReturnsResourceIdWhenPresent", "");
-    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "core ns");
+  void relationServiceResolvesListsAndGetsRelations() {
+    Catalog cat = TestSupport.createCatalog(catalog, "relation_surface", "");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "");
     var created =
         TestSupport.createTable(
-            table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
-
-    var nameRef =
+            table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://orders", "{}", "");
+    NameRef ref =
         NameRef.newBuilder()
             .setCatalog(cat.getDisplayName())
             .addPath("core")
             .setName("orders")
             .build();
 
-    var lookup =
-        directory.lookupTableByRef(LookupTableByRefRequest.newBuilder().setRef(nameRef).build());
-
-    assertEquals(created.getResourceId(), lookup.getResourceId());
-  }
-
-  @Test
-  void lookupTableByRefReturnsEmptyWhenMissing() {
-    var missing =
-        NameRef.newBuilder()
-            .setCatalog("examples")
-            .addPath("iceberg")
-            .setName("does_not_exist")
-            .build();
-
-    var lookup =
-        directory.lookupTableByRef(LookupTableByRefRequest.newBuilder().setRef(missing).build());
-
-    assertFalse(lookup.hasResourceId());
-  }
-
-  @Test
-  void resolveFullyQualifiedTables() {
-    var cat =
-        TestSupport.createCatalog(
-            catalog, "resolveFQTables_prefix_salesCore_returnsOrdersAndLineitem", "");
-
-    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "core ns");
-    TestSupport.createTable(
-        table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
-    TestSupport.createTable(
-        table, cat.getResourceId(), ns.getResourceId(), "lineitem", "s3://barf", "{}", "none");
-
-    var prefix = NameRef.newBuilder().setCatalog(cat.getDisplayName()).addPath("core").build();
-
-    var resp =
-        directory.resolveFQTables(ResolveFQTablesRequest.newBuilder().setPrefix(prefix).build());
-
-    assertTrue(resp.getTablesCount() == 2);
-    var names = resp.getTablesList().stream().map(e -> e.getName().getName()).toList();
-    assertTrue(names.contains("orders"));
-    assertTrue(names.contains("lineitem"));
-
-    for (var e : resp.getTablesList()) {
-      assertEquals(cat.getDisplayName(), e.getName().getCatalog());
-      assertEquals(List.of("core"), e.getName().getPathList());
-      assertFalse(e.getResourceId().getId().isEmpty());
-    }
-  }
-
-  @Test
-  void resolveFullyQualifiedTablesNestedNamespace() {
-    var cat =
-        TestSupport.createCatalog(
-            catalog, "resolveFQTables_prefix_salesStaging2025_returnsTwo", "");
-
-    var ns =
-        TestSupport.createNamespace(
-            namespace, cat.getResourceId(), "2025", List.of("staging"), "core ns");
-    TestSupport.createTable(
-        table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
-    TestSupport.createTable(
-        table, cat.getResourceId(), ns.getResourceId(), "lineitem", "s3://barf", "{}", "none");
-
-    var prefix =
-        NameRef.newBuilder()
-            .setCatalog(cat.getDisplayName())
-            .addPath("staging")
-            .addPath("2025")
-            .build();
-
-    var resp =
-        directory.resolveFQTables(ResolveFQTablesRequest.newBuilder().setPrefix(prefix).build());
-
-    assertTrue(resp.getTablesCount() == 2);
-    for (var e : resp.getTablesList()) {
-      assertEquals(cat.getDisplayName(), e.getName().getCatalog());
-      assertEquals(List.of("staging", "2025"), e.getName().getPathList());
-      assertFalse(e.getName().getName().isEmpty());
-      assertFalse(e.getResourceId().getId().isEmpty());
-    }
-  }
-
-  @Test
-  void renameTableReflectedInDirectoryService() {
-    var cat = TestSupport.createCatalog(catalog, "barf1", "barf cat");
-
-    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "core ns");
-    TestSupport.createTable(
-        table, cat.getResourceId(), ns.getResourceId(), "t0", "s3://barf", "{}", "none");
-    var path = List.of("core");
-
-    var oldRef =
-        NameRef.newBuilder()
-            .setCatalog(cat.getDisplayName())
-            .addAllPath(path)
-            .setName("t0")
-            .build();
-    var id =
-        directory
-            .resolveTable(ResolveTableRequest.newBuilder().setRef(oldRef).build())
-            .getResourceId();
-
-    TestSupport.renameTable(table, id, "t1");
-
-    assertThrows(
-        io.grpc.StatusRuntimeException.class,
-        () -> directory.resolveTable(ResolveTableRequest.newBuilder().setRef(oldRef).build()));
-
-    var newRef =
-        NameRef.newBuilder()
-            .setCatalog(cat.getDisplayName())
-            .addAllPath(path)
-            .setName("t1")
-            .build();
-    var resolved = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(newRef).build());
-    var looked =
-        directory.lookupTable(
-            LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
-    assertEquals("t1", looked.getName().getName());
-  }
-
-  @Test
-  void renameNamespaceReflectedInDirectoryService() {
-    var cat = TestSupport.createCatalog(catalog, "barf2", "barf cat");
-
-    var ns =
-        TestSupport.createNamespace(namespace, cat.getResourceId(), "a", List.of("p"), "core ns");
-    var id = ns.getResourceId();
-    var oldRef =
-        NameRef.newBuilder().setCatalog(cat.getDisplayName()).addPath("p").addPath("a").build();
-
-    FieldMask mask_name = FieldMask.newBuilder().addPaths("display_name").build();
-    var nsSpec = NamespaceSpec.newBuilder().setDisplayName("b").build();
-    namespace
-        .updateNamespace(
-            UpdateNamespaceRequest.newBuilder()
-                .setNamespaceId(id)
-                .setSpec(nsSpec)
-                .setUpdateMask(mask_name)
-                .build())
-        .getNamespace();
-
-    assertThrows(
-        StatusRuntimeException.class,
-        () ->
-            directory.resolveNamespace(
-                ResolveNamespaceRequest.newBuilder().setRef(oldRef).build()));
-
-    var newRef =
-        NameRef.newBuilder().setCatalog(cat.getDisplayName()).addPath("p").addPath("b").build();
     var resolved =
-        directory.resolveNamespace(ResolveNamespaceRequest.newBuilder().setRef(newRef).build());
+        relation
+            .resolveRelations(
+                ResolveRelationsRequest.newBuilder()
+                    .addReferences(RelationReference.newBuilder().addCandidates(ref))
+                    .build())
+            .getResults(0);
+    assertTrue(resolved.hasRelation());
+    assertEquals(created.getResourceId(), resolved.getRelation().getResourceId());
+    assertEquals(ref, resolved.getRelation().getName());
 
-    var looked =
-        directory.lookupNamespace(
-            LookupNamespaceRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
-    assertEquals(List.of("p"), looked.getRef().getPathList());
-    assertEquals("b", looked.getRef().getName());
+    var listed =
+        relation
+            .listRelations(
+                ListRelationsRequest.newBuilder()
+                    .setNamespaceId(ns.getResourceId())
+                    .addKinds(ResourceKind.RK_TABLE)
+                    .setPage(PageRequest.newBuilder().setPageSize(1))
+                    .build())
+            .getResultsList()
+            .stream()
+            .filter(result -> result.hasRelation())
+            .map(result -> result.getRelation())
+            .toList();
+    assertEquals(List.of("orders"), listed.stream().map(r -> r.getDisplayName()).toList());
+
+    var fetched =
+        relation
+            .getRelation(
+                GetRelationRequest.newBuilder().setRelationId(created.getResourceId()).build())
+            .getRelation();
+    assertEquals(created.getResourceId(), fetched.getResourceId());
   }
 
   @Test
-  void resolveFullyQualifiedTablesPaging() {
-    var cat =
-        TestSupport.createCatalog(catalog, "resolveFQTables_list_selector_paging_and_errors", "");
-
-    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "core ns");
-    TestSupport.createTable(
-        table, cat.getResourceId(), ns.getResourceId(), "orders", "s3://barf", "{}", "none");
-    TestSupport.createTable(
-        table, cat.getResourceId(), ns.getResourceId(), "lineitem", "s3://barf", "{}", "none");
-
-    var names =
-        List.of(
-            NameRef.newBuilder()
-                .setCatalog(cat.getDisplayName())
-                .addPath("core")
-                .setName("orders")
-                .build(),
-            NameRef.newBuilder()
-                .setCatalog(cat.getDisplayName())
-                .addPath("core")
-                .setName("lineitem")
-                .build());
-    var req =
-        ResolveFQTablesRequest.newBuilder()
-            .setList(NameList.newBuilder().addAllNames(names))
-            .build();
-
-    var page1 =
-        directory.resolveFQTables(
-            ResolveFQTablesRequest.newBuilder(req)
-                .setPage(PageRequest.newBuilder().setPageSize(1))
-                .build());
-    assertEquals(1, page1.getTablesCount());
-    var token = page1.getPage().getNextPageToken();
-
-    var page2 =
-        directory.resolveFQTables(
-            ResolveFQTablesRequest.newBuilder(req)
-                .setPage(PageRequest.newBuilder().setPageToken(token).setPageSize(1))
-                .build());
-    assertEquals(1, page2.getTablesCount());
-
-    assertThrows(
-        StatusRuntimeException.class,
-        () ->
-            directory.resolveFQTables(
-                ResolveFQTablesRequest.newBuilder(req)
-                    .setPage(PageRequest.newBuilder().setPageToken("not-an-int"))
-                    .build()));
+  void relationResolutionReturnsPerReferenceNotFound() {
+    var result =
+        relation
+            .resolveRelations(
+                ResolveRelationsRequest.newBuilder()
+                    .addReferences(
+                        RelationReference.newBuilder()
+                            .addCandidates(
+                                NameRef.newBuilder()
+                                    .setCatalog("missing")
+                                    .addPath("core")
+                                    .setName("orders")))
+                    .build())
+            .getResults(0);
+    assertFalse(result.hasRelation());
+    assertTrue(result.hasError());
   }
 
   @Test
-  void resolveAndLookupUnicodeAndSpaces() {
-    var cat = TestSupport.createCatalog(catalog, "barf3", "barf cat");
+  void typedAndGenericTableListingsShareRowsAndOrder() {
+    Catalog cat = TestSupport.createCatalog(catalog, "listing_parity", "");
+    var ns = TestSupport.createNamespace(namespace, cat.getResourceId(), "core", null, "");
+    for (String name : List.of("alpha", "bravo", "charlie")) {
+      TestSupport.createTable(
+          table, cat.getResourceId(), ns.getResourceId(), name, "s3://" + name, "{}", "");
+    }
 
-    var ns =
-        TestSupport.createNamespace(
-            namespace, cat.getResourceId(), "2025", List.of("staging"), "2025 ns");
-    TestSupport.createTable(
-        table,
-        cat.getResourceId(),
-        ns.getResourceId(),
-        "staging events 🧪",
-        "s3://barf",
-        "{}",
-        "none");
+    var typed = new ArrayList<String>();
+    String typedToken = "";
+    do {
+      var response =
+          table.listTables(
+              ListTablesRequest.newBuilder()
+                  .setNamespaceId(ns.getResourceId())
+                  .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken(typedToken))
+                  .build());
+      typed.addAll(response.getTablesList().stream().map(t -> t.getDisplayName()).toList());
+      typedToken = response.getPage().getNextPageToken();
+    } while (!typedToken.isBlank());
 
-    var nameRef =
-        NameRef.newBuilder()
-            .setCatalog("barf3")
-            .addPath("staging")
-            .addPath("2025")
-            .setName("staging events 🧪")
-            .build();
+    var generic = new ArrayList<String>();
+    String genericToken = "";
+    do {
+      var response =
+          relation.listRelations(
+              ListRelationsRequest.newBuilder()
+                  .setNamespaceId(ns.getResourceId())
+                  .addKinds(ResourceKind.RK_TABLE)
+                  .setPage(PageRequest.newBuilder().setPageSize(1).setPageToken(genericToken))
+                  .build());
+      generic.addAll(
+          response.getResultsList().stream()
+              .filter(result -> result.hasRelation())
+              .map(result -> result.getRelation().getDisplayName())
+              .toList());
+      genericToken = response.getPage().getNextPageToken();
+    } while (!genericToken.isBlank());
 
-    var resolved = directory.resolveTable(ResolveTableRequest.newBuilder().setRef(nameRef).build());
-    var lookup =
-        directory.lookupTable(
-            LookupTableRequest.newBuilder().setResourceId(resolved.getResourceId()).build());
-    assertEquals(List.of("staging", "2025"), lookup.getName().getPathList());
-    assertEquals("staging events 🧪", lookup.getName().getName());
-  }
-
-  @Test
-  void lookupUnknownReturnsEmpty() {
-    var bogus =
-        ai.floedb.floecat.common.rpc.ResourceId.newBuilder()
-            .setAccountId(TestSupport.DEFAULT_SEED_ACCOUNT)
-            .setId("nope")
-            .setKind(ResourceKind.RK_UNSPECIFIED)
-            .build();
-
-    var lcat =
-        directory.lookupCatalog(LookupCatalogRequest.newBuilder().setResourceId(bogus).build());
-    assertTrue(lcat.getDisplayName().isEmpty());
-
-    var lns =
-        directory.lookupNamespace(LookupNamespaceRequest.newBuilder().setResourceId(bogus).build());
-    assertFalse(lns.hasRef());
-
-    var ltbl = directory.lookupTable(LookupTableRequest.newBuilder().setResourceId(bogus).build());
-    assertFalse(ltbl.hasName());
-  }
-
-  @Test
-  void fullyQualifiedTableLookupPreservesCase() {
-    var bad =
-        NameRef.newBuilder().setCatalog("Sales").addPath("core/extra").setName("orders").build();
-    assertThrows(
-        StatusRuntimeException.class,
-        () -> directory.resolveTable(ResolveTableRequest.newBuilder().setRef(bad).build()));
+    assertEquals(typed, generic);
   }
 }

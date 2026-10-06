@@ -20,6 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ai.floedb.floecat.common.rpc.PrincipalContext;
+import ai.floedb.floecat.query.rpc.GetSqlObjectsRegistryRequest;
+import ai.floedb.floecat.query.rpc.GetSqlObjectsRegistryResponse;
 import ai.floedb.floecat.query.rpc.GetSystemObjectsRequest;
 import ai.floedb.floecat.query.rpc.GetSystemObjectsResponse;
 import ai.floedb.floecat.query.rpc.SystemObjectsRegistry;
@@ -46,10 +48,10 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
-class SystemObjectsServiceImplTest {
+class SqlCatalogServiceImplTest {
 
   @Test
-  void getSystemObjectsSanitizesRelations() {
+  void getSqlObjectsRegistrySanitizesRelations() {
     SystemCatalogData catalog = catalogWithRelations();
     SystemNodeRegistry.BuiltinNodes builtin =
         new SystemNodeRegistry.BuiltinNodes(
@@ -86,14 +88,14 @@ class SystemObjectsServiceImplTest {
             return builtin;
           }
         };
-    SystemObjectsServiceImpl service = createService(nodeRegistry);
+    SqlCatalogServiceImpl service = createService(nodeRegistry);
 
     EngineContext ctx = EngineContext.of("pg", "1.0");
     PrincipalContext principal =
         PrincipalContext.newBuilder()
             .setAccountId("acct-1")
             .setSubject("tester")
-            .addPermissions("system-objects.read")
+            .addPermissions("sql-objects.read")
             .build();
     Context context =
         Context.current()
@@ -101,9 +103,9 @@ class SystemObjectsServiceImplTest {
             .withValue(PrincipalProvider.KEY, principal);
     Context previous = context.attach();
     try {
-      GetSystemObjectsResponse response =
+      GetSqlObjectsRegistryResponse response =
           service
-              .getSystemObjects(GetSystemObjectsRequest.getDefaultInstance())
+              .getSqlObjectsRegistry(GetSqlObjectsRegistryRequest.getDefaultInstance())
               .await()
               .indefinitely();
       SystemObjectsRegistry registry = response.getRegistry();
@@ -111,14 +113,23 @@ class SystemObjectsServiceImplTest {
       assertThat(registry.getSystemTablesCount()).isZero();
       assertThat(registry.getSystemViewsCount()).isZero();
       assertThat(registry.getScopedMetadataList()).hasSize(1);
+
+      SystemObjectsServiceCompat compatibility = new SystemObjectsServiceCompat();
+      compatibility.delegate = service;
+      GetSystemObjectsResponse legacy =
+          compatibility
+              .getSystemObjects(GetSystemObjectsRequest.getDefaultInstance())
+              .await()
+              .indefinitely();
+      assertThat(legacy.getRegistry()).isEqualTo(registry);
     } finally {
       context.detach(previous);
     }
   }
 
   @Test
-  void getSystemObjectsRequiresSystemObjectsReadPermission() {
-    SystemObjectsServiceImpl service =
+  void getSqlObjectsRegistryRequiresSqlObjectsReadPermission() {
+    SqlCatalogServiceImpl service =
         createService(
             new SystemNodeRegistry(
                 new SystemDefinitionRegistry(
@@ -142,7 +153,7 @@ class SystemObjectsServiceImplTest {
       assertThatThrownBy(
               () ->
                   service
-                      .getSystemObjects(GetSystemObjectsRequest.getDefaultInstance())
+                      .getSqlObjectsRegistry(GetSqlObjectsRegistryRequest.getDefaultInstance())
                       .await()
                       .indefinitely())
           .isInstanceOf(io.grpc.StatusRuntimeException.class)
@@ -153,8 +164,8 @@ class SystemObjectsServiceImplTest {
     }
   }
 
-  private static SystemObjectsServiceImpl createService(SystemNodeRegistry nodeRegistry) {
-    TestSystemObjectsServiceImpl service = new TestSystemObjectsServiceImpl();
+  private static SqlCatalogServiceImpl createService(SystemNodeRegistry nodeRegistry) {
+    TestSqlCatalogServiceImpl service = new TestSqlCatalogServiceImpl();
     service.principal = new PrincipalProvider();
     service.authz = new Authorizer();
     service.nodeRegistry = nodeRegistry;
@@ -162,7 +173,7 @@ class SystemObjectsServiceImplTest {
     return service;
   }
 
-  private static final class TestSystemObjectsServiceImpl extends SystemObjectsServiceImpl {
+  private static final class TestSqlCatalogServiceImpl extends SqlCatalogServiceImpl {
     void setEngineContextProvider(EngineContextProvider provider) {
       this.engineContextProvider = provider;
     }

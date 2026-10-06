@@ -43,6 +43,10 @@ class UserObjectBundleUtilsTest {
     assertThat(info.getName()).isEqualTo("ts");
     assertThat(info.getNullable()).isTrue();
     assertThat(info.getOrdinal()).isEqualTo(1);
+    assertThat(info.getType()).isEqualTo(LogicalTypeProtoAdapter.parseToProto("TIMESTAMPTZ"));
+    assertThat(info.getLegacyType().getName()).isEqualTo("TIMESTAMPTZ");
+    assertThat(info.getDescriptorForType().findFieldByName("legacy_type").getNumber()).isEqualTo(3);
+    assertThat(info.getDescriptorForType().findFieldByName("type").getNumber()).isEqualTo(7);
   }
 
   @Test

@@ -32,6 +32,18 @@ import org.junit.jupiter.api.Test;
 
 class GrpcErrorsTest {
   @Test
+  void relationScopedPolicyIsCentralized() {
+    assertTrue(GrpcErrors.isRelationScoped(io.grpc.Status.NOT_FOUND.asRuntimeException()));
+    assertTrue(GrpcErrors.isRelationScoped(io.grpc.Status.PERMISSION_DENIED.asRuntimeException()));
+    assertTrue(GrpcErrors.isRelationScoped(io.grpc.Status.INVALID_ARGUMENT.asRuntimeException()));
+    assertTrue(
+        GrpcErrors.isRelationScoped(io.grpc.Status.FAILED_PRECONDITION.asRuntimeException()));
+    assertTrue(GrpcErrors.isRelationScoped(io.grpc.Status.INTERNAL.asRuntimeException()));
+    assertFalse(GrpcErrors.isRelationScoped(io.grpc.Status.UNAVAILABLE.asRuntimeException()));
+    assertFalse(GrpcErrors.isRelationScoped(new IllegalStateException("not grpc")));
+  }
+
+  @Test
   void invalidArgumentAddsBadRequestAndMessage() {
     StatusRuntimeException ex =
         GrpcErrors.invalidArgument(

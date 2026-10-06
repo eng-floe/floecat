@@ -99,6 +99,7 @@ message ExecuteFileGroupResponse {
   string message = 31;
 }
 
+// INTERNAL.
 service CaptureExecutionService {
   rpc ExecuteFileGroup(ExecuteFileGroupRequest) returns (ExecuteFileGroupResponse);
 }

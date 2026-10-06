@@ -40,8 +40,8 @@ import ai.floedb.floecat.connector.rpc.ConnectorsGrpc;
 import ai.floedb.floecat.connector.rpc.DestinationTarget;
 import ai.floedb.floecat.connector.rpc.SourceSelector;
 import ai.floedb.floecat.query.rpc.BeginQueryRequest;
-import ai.floedb.floecat.query.rpc.GetUserObjectsRequest;
 import ai.floedb.floecat.query.rpc.QueryServiceGrpc;
+import ai.floedb.floecat.query.rpc.ResolveQueryInputsRequest;
 import ai.floedb.floecat.query.rpc.TableReferenceCandidate;
 import ai.floedb.floecat.query.rpc.UserObjectsBundleChunk;
 import ai.floedb.floecat.query.rpc.UserObjectsServiceGrpc;
@@ -157,7 +157,7 @@ class WarmRequestStoreCostIT {
         TestSupport.createNamespace(
             namespace, cat.getResourceId(), "cost_ns", List.of("table"), "cost namespace");
 
-    var requestBuilder = GetUserObjectsRequest.newBuilder();
+    var requestBuilder = ResolveQueryInputsRequest.newBuilder();
     for (int i = 0; i < tableCount; i++) {
       String tableName = "cost_orders_" + i;
       var tbl =
@@ -306,18 +306,18 @@ class WarmRequestStoreCostIT {
         expectedTables, end.getEnd().getFoundCount(), "the request must have resolved every table");
   }
 
-  private List<UserObjectsBundleChunk> collect(GetUserObjectsRequest request) {
+  private List<UserObjectsBundleChunk> collect(ResolveQueryInputsRequest request) {
     return collectAsync(request).toCompletableFuture().join();
   }
 
   private CompletionStage<List<UserObjectsBundleChunk>> collectAsync(
-      GetUserObjectsRequest request) {
+      ResolveQueryInputsRequest request) {
     UserObjectsServiceGrpc.UserObjectsServiceStub async =
         UserObjectsServiceGrpc.newStub(channel)
             .withDeadlineAfter(COLLECT_DEADLINE.toSeconds(), TimeUnit.SECONDS);
     CompletableFuture<List<UserObjectsBundleChunk>> future = new CompletableFuture<>();
     List<UserObjectsBundleChunk> chunks = Collections.synchronizedList(new ArrayList<>());
-    async.getUserObjects(
+    async.resolveQueryInputs(
         request,
         new StreamObserver<UserObjectsBundleChunk>() {
           @Override

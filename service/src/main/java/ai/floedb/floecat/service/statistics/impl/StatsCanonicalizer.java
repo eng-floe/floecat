@@ -29,6 +29,7 @@ import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.common.Canonicalizer;
 import ai.floedb.floecat.stats.identity.StatsTargetIdentity;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
@@ -66,7 +67,7 @@ final class StatsCanonicalizer {
           "scalar_value",
           g -> {
             var scalar = record.getScalar();
-            g.scalar("logical_type", scalar.getLogicalType());
+            g.scalar("logical_type", LogicalTypeProtoAdapter.columnLogicalTypeString(scalar));
             canonicalUpstream(g, "upstream", scalar.hasUpstream() ? scalar.getUpstream() : null);
             g.scalar("row_count", scalar.getRowCount());
             g.scalar("null_count", scalar.getNullCount());
@@ -100,7 +101,7 @@ final class StatsCanonicalizer {
    */
   static byte[] canonicalFingerprint(ScalarStats stats) {
     var c = new Canonicalizer();
-    c.scalar("logical_type", stats.getLogicalType());
+    c.scalar("logical_type", LogicalTypeProtoAdapter.columnLogicalTypeString(stats));
     canonicalUpstream(c, "upstream", stats.hasUpstream() ? stats.getUpstream() : null);
     c.scalar("row_count", stats.getRowCount());
     c.scalar("null_count", stats.getNullCount());

@@ -1,0 +1,52 @@
+// Copyright 2026 Yellowbrick Data, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+package ai.floedb.floecat.query;
+
+option java_multiple_files = true;
+option java_package = "ai.floedb.floecat.query.rpc";
+
+import "floecat/query/system_objects_registry.proto";
+
+// ENGINE. Binder and type-system objects: types, functions, operators, casts, collations and
+// aggregates. Relations are not here; they are FROM-clause objects served by RelationService.
+
+/**
+ * Request to fetch the built-in SQL objects.
+ *
+ * The engine selector comes from the inbound `x-engine-kind` / `x-engine-version` headers, so the
+ * request carries no engine fields.
+ */
+message GetSqlObjectsRegistryRequest {
+  reserved 1, 2;
+  reserved "engine_kind", "engine_version";
+}
+
+/**
+ * Response containing the built-in SQL objects registry.
+ */
+message GetSqlObjectsRegistryResponse {
+  /** Resolved registry for the engine/version named by the inbound headers. */
+  SystemObjectsRegistry registry = 1;
+}
+
+/**
+ * Service that exposes the engine's SQL object registry.
+ */
+// ENGINE. Binder and type-system objects, not relations.
+service SqlCatalogService {
+  /** Returns the SQL object registry for the engine/version named by the inbound headers. */
+  rpc GetSqlObjectsRegistry(GetSqlObjectsRegistryRequest) returns (GetSqlObjectsRegistryResponse);
+}

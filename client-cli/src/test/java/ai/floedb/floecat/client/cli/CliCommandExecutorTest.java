@@ -34,6 +34,7 @@ import ai.floedb.floecat.catalog.rpc.ListTablesResponse;
 import ai.floedb.floecat.catalog.rpc.ListViewsRequest;
 import ai.floedb.floecat.catalog.rpc.ListViewsResponse;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.SnapshotServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableConstraintsServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.TableIndexServiceGrpc;
@@ -299,6 +300,7 @@ class CliCommandExecutorTest {
           .accounts(AccountServiceGrpc.newBlockingStub(channel))
           .catalogs(CatalogServiceGrpc.newBlockingStub(channel))
           .directory(DirectoryServiceGrpc.newBlockingStub(channel))
+          .relations(RelationServiceGrpc.newBlockingStub(channel))
           .namespaces(NamespaceServiceGrpc.newBlockingStub(channel))
           .tables(TableServiceGrpc.newBlockingStub(channel))
           .viewService(ViewServiceGrpc.newBlockingStub(channel))

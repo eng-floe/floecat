@@ -20,10 +20,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import ai.floedb.floecat.catalog.rpc.*;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
-import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.PageRequest;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.util.TestDataResetter;
@@ -56,6 +56,9 @@ class BackendStorageIT {
 
   @GrpcClient("floecat")
   TableServiceGrpc.TableServiceBlockingStub table;
+
+  @GrpcClient("floecat")
+  RelationServiceGrpc.RelationServiceBlockingStub relation;
 
   @Inject PointerStore ptr;
   @Inject BlobStore blobs;
@@ -123,7 +126,9 @@ class BackendStorageIT {
     assertTrue(blobs.head(tblPtr.getBlobUri()).isPresent(), "table blob header missing");
 
     var tblLookup =
-        directory.lookupTable(LookupTableRequest.newBuilder().setResourceId(tblId).build());
+        relation
+            .getRelation(GetRelationRequest.newBuilder().setRelationId(tblId).build())
+            .getRelation();
     assertEquals(cat.getDisplayName(), tblLookup.getName().getCatalog());
     assertEquals(List.of("db_it", "schema_it", "it_ns"), tblLookup.getName().getPathList());
     assertEquals("it_tbl", tblLookup.getName().getName());
@@ -210,42 +215,47 @@ class BackendStorageIT {
           "d");
     }
 
-    var prefixRef =
-        NameRef.newBuilder()
-            .setCatalog(cat.getDisplayName())
-            .addAllPath(nsPath)
-            .addPath("ns_pg")
-            .build();
-
     int pageSize = 2;
     String token = "";
     var p1 =
-        directory.resolveFQTables(
-            ResolveFQTablesRequest.newBuilder()
-                .setPrefix(prefixRef)
+        relation.listRelations(
+            ListRelationsRequest.newBuilder()
+                .setNamespaceId(ns.getResourceId())
+                .addKinds(ResourceKind.RK_TABLE)
                 .setPage(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(token))
                 .build());
     String t1 = p1.getPage().getNextPageToken();
 
     var p2 =
-        directory.resolveFQTables(
-            ResolveFQTablesRequest.newBuilder()
-                .setPrefix(prefixRef)
+        relation.listRelations(
+            ListRelationsRequest.newBuilder()
+                .setNamespaceId(ns.getResourceId())
+                .addKinds(ResourceKind.RK_TABLE)
                 .setPage(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(t1))
                 .build());
     String t2 = p2.getPage().getNextPageToken();
 
     var p3 =
-        directory.resolveFQTables(
-            ResolveFQTablesRequest.newBuilder()
-                .setPrefix(prefixRef)
+        relation.listRelations(
+            ListRelationsRequest.newBuilder()
+                .setNamespaceId(ns.getResourceId())
+                .addKinds(ResourceKind.RK_TABLE)
                 .setPage(PageRequest.newBuilder().setPageSize(pageSize).setPageToken(t2))
                 .build());
 
     var all = new LinkedHashSet<String>();
-    p1.getTablesList().forEach(e -> all.add(e.getName().getName()));
-    p2.getTablesList().forEach(e -> all.add(e.getName().getName()));
-    p3.getTablesList().forEach(e -> all.add(e.getName().getName()));
+    p1.getResultsList().stream()
+        .filter(result -> result.hasRelation())
+        .map(result -> result.getRelation())
+        .forEach(e -> all.add(e.getDisplayName()));
+    p2.getResultsList().stream()
+        .filter(result -> result.hasRelation())
+        .map(result -> result.getRelation())
+        .forEach(e -> all.add(e.getDisplayName()));
+    p3.getResultsList().stream()
+        .filter(result -> result.hasRelation())
+        .map(result -> result.getRelation())
+        .forEach(e -> all.add(e.getDisplayName()));
     assertEquals(5, all.size());
     String t3 = p3.getPage().getNextPageToken();
     assertTrue(t3.isEmpty(), "final page should clear nextToken");
@@ -276,20 +286,14 @@ class BackendStorageIT {
         "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}",
         "d");
 
-    var prefixRef =
-        NameRef.newBuilder()
-            .setCatalog(cat.getDisplayName())
-            .addAllPath(nsPath)
-            .addPath("ns_enc")
-            .build();
-
     var page =
-        directory.resolveFQTables(
-            ResolveFQTablesRequest.newBuilder()
-                .setPrefix(prefixRef)
+        relation.listRelations(
+            ListRelationsRequest.newBuilder()
+                .setNamespaceId(ns.getResourceId())
+                .addKinds(ResourceKind.RK_TABLE)
                 .setPage(PageRequest.newBuilder().setPageSize(100))
                 .build());
-    assertTrue(page.getTablesCount() >= 2);
+    assertTrue(page.getResultsList().stream().filter(result -> result.hasRelation()).count() >= 2);
 
     String key =
         Keys.tablePointerByName(

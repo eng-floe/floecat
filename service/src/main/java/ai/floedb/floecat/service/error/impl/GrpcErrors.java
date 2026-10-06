@@ -36,6 +36,24 @@ import org.eclipse.microprofile.config.ConfigProvider;
 
 public final class GrpcErrors {
 
+  /**
+   * Whether a gRPC failure can be isolated to one relation in a batch operation.
+   *
+   * <p>INTERNAL counts: it is what reading one relation raises when that relation is the problem,
+   * and a batch reports it in that relation's error envelope rather than failing every other
+   * relation with it. A failure that is not a gRPC status, such as the CorruptionException a lost
+   * blob raises, is not scoped and fails the whole call.
+   */
+  public static boolean isRelationScoped(Throwable failure) {
+    if (!(failure instanceof StatusRuntimeException status)) {
+      return false;
+    }
+    return switch (status.getStatus().getCode()) {
+      case NOT_FOUND, PERMISSION_DENIED, INVALID_ARGUMENT, FAILED_PRECONDITION, INTERNAL -> true;
+      default -> false;
+    };
+  }
+
   public static StatusRuntimeException aborted(
       String corrId, Map<String, String> params, Throwable t) {
     return build(io.grpc.Status.ABORTED, ErrorCode.MC_ABORT_RETRYABLE, corrId, params, null, t);

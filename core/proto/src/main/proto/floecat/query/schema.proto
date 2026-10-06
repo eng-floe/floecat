@@ -114,6 +114,7 @@ message DescribeInputsResponse {
 /**
  * Schema resolution service used by query planning components.
  */
+// ENGINE.
 service QuerySchemaService {
   /**
    * DescribeInputs resolves logical schemas for each requested query input.

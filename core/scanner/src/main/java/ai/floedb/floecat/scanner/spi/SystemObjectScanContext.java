@@ -177,22 +177,17 @@ public record SystemObjectScanContext(
     return graph.resolve(id, catalogContext);
   }
 
-  /** Lightweight namespace refs from the graph view; production avoids full node hydration. */
+  /** Lightweight namespace refs from the graph view. */
   public List<CatalogGraphView.NamespaceRef> listNamespaceRefs() {
     return graph.listNamespaceRefs(queryDefaultCatalogId, catalogContext);
   }
 
-  /** Lightweight namespace refs matching the supplied information_schema names. */
+  /** Lightweight namespace refs matching the supplied information-schema names. */
   public List<CatalogGraphView.NamespaceRef> listNamespaceRefsByName(java.util.Set<String> names) {
     return graph.listNamespaceRefsByName(queryDefaultCatalogId, names, catalogContext);
   }
 
-  /** Whether the graph view has a true lightweight ref implementation. */
-  public boolean supportsLightweightRefs() {
-    return graph.supportsLightweightRefs();
-  }
-
-  /** Lightweight relation refs for a namespace; production avoids full node hydration. */
+  /** Lightweight relation refs for a namespace. */
   public List<CatalogGraphView.RelationRef> listRelationRefs(ResourceId namespaceId) {
     return graph.listRelationRefs(queryDefaultCatalogId, namespaceId, catalogContext);
   }

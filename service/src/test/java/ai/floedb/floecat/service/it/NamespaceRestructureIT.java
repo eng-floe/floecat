@@ -26,13 +26,14 @@ import ai.floedb.floecat.catalog.rpc.DeleteTableRequest;
 import ai.floedb.floecat.catalog.rpc.DirectoryServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.NamespaceSpec;
+import ai.floedb.floecat.catalog.rpc.RelationServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.ResolveNamespaceRequest;
-import ai.floedb.floecat.catalog.rpc.ResolveTableRequest;
 import ai.floedb.floecat.catalog.rpc.TableServiceGrpc;
 import ai.floedb.floecat.catalog.rpc.UpdateNamespaceRequest;
 import ai.floedb.floecat.catalog.rpc.ViewServiceGrpc;
 import ai.floedb.floecat.common.rpc.NameRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.bootstrap.impl.SeedRunner;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.util.TestDataResetter;
@@ -78,6 +79,9 @@ class NamespaceRestructureIT {
 
   @GrpcClient("floecat")
   DirectoryServiceGrpc.DirectoryServiceBlockingStub directory;
+
+  @GrpcClient("floecat")
+  RelationServiceGrpc.RelationServiceBlockingStub relations;
 
   @Inject PointerStore ptr;
   @Inject TestDataResetter resetter;
@@ -238,7 +242,7 @@ class NamespaceRestructureIT {
         TestSupport.createNamespace(namespace, cat.getResourceId(), "transient", List.of(), "ns");
     String account = cat.getResourceId().getAccountId();
     String children = Keys.namespaceChildrenMarker(account, ns.getResourceId().getId());
-    String relations = Keys.namespaceRelationsMarker(account, ns.getResourceId().getId());
+    String relationsMarker = Keys.namespaceRelationsMarker(account, ns.getResourceId().getId());
 
     // Give both markers a version, so the delete has something to remove rather than to require
     // absent.
@@ -251,22 +255,21 @@ class NamespaceRestructureIT {
         "s3://bucket/t_gone",
         "{\"type\":\"struct\",\"fields\":[{\"id\":1,\"name\":\"id\",\"type\":\"int\",\"required\":true}]}",
         "a table");
-    assertTrue(version(children) > 0 && version(relations) > 0, "both markers exist to be removed");
+    assertTrue(
+        version(children) > 0 && version(relationsMarker) > 0, "both markers exist to be removed");
 
     // Empty it, then delete it.
     table.deleteTable(
         DeleteTableRequest.newBuilder()
             .setTableId(
-                directory
-                    .resolveTable(
-                        ResolveTableRequest.newBuilder()
-                            .setRef(
-                                NameRef.newBuilder()
-                                    .setCatalog(cat.getDisplayName())
-                                    .addAllPath(List.of("transient"))
-                                    .setName("t_gone"))
-                            .build())
-                    .getResourceId())
+                TestSupport.resolveRelationId(
+                    this.relations,
+                    NameRef.newBuilder()
+                        .setCatalog(cat.getDisplayName())
+                        .addAllPath(List.of("transient"))
+                        .setName("t_gone")
+                        .build(),
+                    ResourceKind.RK_TABLE))
             .build());
     namespace.deleteNamespace(
         DeleteNamespaceRequest.newBuilder()
@@ -285,7 +288,7 @@ class NamespaceRestructureIT {
         DeleteNamespaceRequest.newBuilder().setNamespaceId(ns.getResourceId()).build());
 
     assertEquals(0L, version(children), "the child marker goes with the namespace");
-    assertEquals(0L, version(relations), "so does the relation marker");
+    assertEquals(0L, version(relationsMarker), "so does the relation marker");
   }
 
   private void rename(ResourceId namespaceId, String newName) {
