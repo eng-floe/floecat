@@ -761,6 +761,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../generic-engine-rpc-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Generic Engine RPC Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../metadata-graph/" class="md-nav__link">
         
   
@@ -2572,10 +2595,10 @@ not need to duplicate changing engine metadata in PBtxt.</p>
 │ (environment,│
 │  engine)     │
 └──────┬───────┘
-       │ gRPC GetSystemObjects
+       │ gRPC GetSqlObjectsRegistry
        ▼
 ┌────────────────────────────────────────────────────────────┐
-│ SystemObjectsServiceImpl (service)                        │
+│ SqlCatalogServiceImpl (service)                            │
 │ - validates headers + correlation id                        │
 │ - calls SystemNodeRegistry.nodesFor(CatalogContext)          │
 │ - maps SystemCatalogData → SystemObjectsRegistry via              │
@@ -2776,7 +2799,7 @@ types or functions into environment definitions.</p>
 <p><strong>SystemGraph snapshot cache</strong> – <code>SystemGraph</code> consumes <code>BuiltinNodes</code> to build a <code>GraphSnapshot</code> that buckets namespace→relations, indexes every <code>GraphNode</code> by <code>ResourceId</code>, and keeps <code>_system</code> catalog metadata ready for <code>CatalogGraphView</code>. Snapshots are stored in a synchronized <code>LinkedHashMap</code> configured by <code>floecat.system.graph.snapshot-cache-size</code> (defaults to 16) and evict the oldest entry when the cache is full.</p>
 </li>
 </ol>
-<p><code>SystemObjectsServiceImpl</code> itself stays cache-less: it simply fetches the prebuilt <code>BuiltinNodes</code>, hands the embedded <code>SystemCatalogData</code> to <code>SystemCatalogProtoMapper.toProto()</code>, and responds. Because all heavy work (parsing, filtering, node construction, snapshotting) happens before the gRPC layer, repeated requests hit the cache in &lt;1ms.</p>
+<p><code>SqlCatalogServiceImpl</code> itself stays cache-less: it simply fetches the prebuilt <code>BuiltinNodes</code>, hands the embedded <code>SystemCatalogData</code> to <code>SystemCatalogProtoMapper.toProto()</code>, and responds. Because all heavy work (parsing, filtering, node construction, snapshotting) happens before the gRPC layer, repeated requests hit the cache in &lt;1ms. The deprecated <code>SystemObjectsService.GetSystemObjects</code> RPC is a compatibility alias for the same implementation.</p>
 <h2 id="plugin-architecture">Plugin Architecture<a class="headerlink" href="#plugin-architecture" title="Permanent link">&para;</a></h2>
 <h3 id="enginecatalogprovider-and-catalogenvironmentprovider-spi">EngineCatalogProvider and CatalogEnvironmentProvider (SPI)<a class="headerlink" href="#enginecatalogprovider-and-catalogenvironmentprovider-spi" title="Permanent link">&para;</a></h3>
 <p>Engine providers implement the engine SPI:</p>
@@ -2828,7 +2851,7 @@ order to a single <code>SystemObjectsRegistry.Builder</code>.</p>
 <h2 id="data-flow">Data Flow<a class="headerlink" href="#data-flow" title="Permanent link">&para;</a></h2>
 <h3 id="request-flow-planner-floecat">Request Flow (Planner → Floecat)<a class="headerlink" href="#request-flow-planner-floecat" title="Permanent link">&para;</a></h3>
 <ol>
-<li><strong>Planner</strong> sends <code>GetSystemObjectsRequest</code> with the selected catalog context:</li>
+<li><strong>Planner</strong> sends <code>GetSqlObjectsRegistryRequest</code> with the selected catalog context:</li>
 <li><code>x-environment-kind: "env_a"</code></li>
 <li><code>x-environment-version: "1.0"</code></li>
 <li><code>x-engine-kind: "engine_b"</code></li>
@@ -2836,12 +2859,12 @@ order to a single <code>SystemObjectsRegistry.Builder</code>.</p>
    The request boundary converts these headers into one <code>CatalogContext</code>. If both axes are absent,
    it uses <code>CatalogContext.forRequest(...)</code> to select <code>floecat_internal</code>. <code>CatalogContext.empty()</code>
    is reserved for neutral internal/test contexts and is not the request-defaulting function.</li>
-<li><strong>SystemObjectsServiceImpl</strong> validates the request and calls <code>SystemNodeRegistry.nodesFor(CatalogContext)</code>.</li>
+<li><strong>SqlCatalogServiceImpl</strong> validates the request and calls <code>SystemNodeRegistry.nodesFor(CatalogContext)</code>.</li>
 <li><strong>SystemNodeRegistry</strong> looks up the complete <code>(environmentKind, environmentVersion, engineKind, engineVersion)</code> context in its cache, and, on a miss, asks <code>SystemDefinitionRegistry</code> for the engine catalog data.</li>
 <li><strong>SystemDefinitionRegistry</strong> delegates to <code>ServiceLoaderSystemCatalogProvider</code> when it needs to load the engine's static catalog snapshot.</li>
 <li><strong>SystemNodeRegistry</strong> composes static engine data, live engine definitions, and live environment definitions. It caches the result per complete <code>CatalogContext</code>.</li>
 <li><strong>SystemNodeRegistry</strong> filters the catalog by version (<code>ScopedMetadataMatcher</code>), applies engine-specific rules, and materialises <code>BuiltinNodes</code> (graph nodes + filtered <code>SystemCatalogData</code>). The <code>BuiltinNodes</code> instance is cached for future requests for the same context.</li>
-<li><strong>SystemObjectsServiceImpl</strong> receives the cached <code>BuiltinNodes</code>, hands its embedded <code>SystemCatalogData</code> to <code>SystemCatalogProtoMapper.toProto()</code>, and streams the <code>GetSystemObjectsResponse</code> back to the planner.</li>
+<li><strong>SqlCatalogServiceImpl</strong> receives the cached <code>BuiltinNodes</code>, hands its embedded <code>SystemCatalogData</code> to <code>SystemCatalogProtoMapper.toProto()</code>, and streams the <code>GetSqlObjectsRegistryResponse</code> back to the planner.</li>
 <li><strong>SystemGraph</strong> reuses the same <code>BuiltinNodes</code> to build <code>_system</code> catalog snapshots (namespace buckets, relation map, <code>SystemTableNode</code>s) that <code>MetaGraph</code> exposes as <code>CatalogGraphView</code>/<code>SystemObjectGraphView</code> for system object scanning.</li>
 <li>The scanner-visible system relations (information_schema, pg_catalog, etc.) are seeded from the shared provider and merged into the selected catalog context for <code>_system</code> scans.</li>
 </ol>
@@ -3115,7 +3138,7 @@ avoid collisions within that range (for example, Postgres could use 10–19 and 
 - Resource files are present and readable
 - Invalid/malformed <code>.pbtxt</code> syntax fails fast</p>
 <h3 id="core-engine-tests">Core Engine Tests<a class="headerlink" href="#core-engine-tests" title="Permanent link">&para;</a></h3>
-<p><strong>SystemObjectsServiceIT</strong> – Full gRPC flow:
+<p><strong>SqlCatalogServiceIT</strong> – Full gRPC flow:
 - Valid engine headers return full catalog
 - Version filtering returns only version-matched objects
 - Missing headers trigger INVALID_ARGUMENT errors</p>
@@ -3132,7 +3155,7 @@ avoid collisions within that range (for example, Postgres could use 10–19 and 
 mvn<span class="w"> </span>-pl<span class="w"> </span>extensions/plugins/floedb<span class="w"> </span><span class="nb">test</span>
 
 <span class="c1"># Run core engine tests</span>
-mvn<span class="w"> </span>-pl<span class="w"> </span>service<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>SystemObjectsServiceIT
+mvn<span class="w"> </span>-pl<span class="w"> </span>service<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>SqlCatalogServiceIT
 mvn<span class="w"> </span>-pl<span class="w"> </span>core/catalog<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>SystemNodeRegistryTest
 mvn<span class="w"> </span>-pl<span class="w"> </span>core/catalog<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>SystemCatalogValidator*
 
@@ -3182,7 +3205,7 @@ mvn<span class="w"> </span>-pl<span class="w"> </span>service,extensions/floedb,
 </tr>
 <tr>
 <td>ServiceLoader discovers plugin</td>
-<td>SystemObjectsServiceIT</td>
+<td>SqlCatalogServiceIT</td>
 <td>Dynamic runtime discovery</td>
 </tr>
 <tr>

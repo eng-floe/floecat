@@ -761,6 +761,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../generic-engine-rpc-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Generic Engine RPC Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../metadata-graph/" class="md-nav__link">
         
   
@@ -1956,7 +1979,9 @@
 <h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
 <p>Floecat's public surface is entirely gRPC. The <code>core/proto/</code> module defines canonical protobuf
 structures for resource identifiers, catalog services, query lifecycle metadata, connectors, statistics, and
-helper schemas. Every other module depends on these contracts for serialization, validation, and
+helper schemas. <code>core/proto/README.md</code> maps every service to the audience that binds it, and
+<a href="../generic-engine-rpc-contract/">Generic Engine RPC Contract</a> states what an engine adapter
+binds and what it must handle. Every other module depends on these contracts for serialization, validation, and
 compatibility.</p>
 <h3 id="remote-executor-versioning">Remote executor versioning<a class="headerlink" href="#remote-executor-versioning" title="Permanent link">&para;</a></h3>
 <p><code>LeaseReconcileJobRequest.worker_affinity</code> identifies the job-tree contract implemented by a
@@ -1992,9 +2017,12 @@ CLI, and reconciler.</p>
   operations.</li>
 <li><strong><code>query/lifecycle.proto</code></strong> – Query lifecycle (<code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>, <code>GetQuery</code>) and the
   resolved snapshot metadata sent down to the SQL planner.</li>
-<li><strong><code>query/system_objects_registry.proto</code></strong> – <code>GetSystemObjects</code> plus message definitions for builtin functions,
+<li><strong><code>catalog/relation.proto</code></strong> – kind-neutral table/view read model for engine adapters:
+  <code>ListRelations</code>, <code>ResolveRelations</code> (per-item errors), and <code>GetRelation</code>.</li>
+<li><strong><code>query/sql_catalog.proto</code></strong> – <code>SqlCatalogService.GetSqlObjectsRegistry</code>.</li>
+<li><strong><code>query/system_objects_registry.proto</code></strong> – message definitions for builtin functions,
   operators, casts, collations, aggregates, and types loaded from static files.</li>
-<li><strong><code>query/user_objects_bundle.proto</code></strong> – <code>GetUserObjects</code> streams resolved relation metadata for planner binding, including per-column <code>ColumnResult</code> outcomes (<code>READY</code> with <code>ColumnInfo</code> or <code>FAILED</code> with <code>ColumnFailure</code>).</li>
+<li><strong><code>query/user_objects_bundle.proto</code></strong> – <code>ResolveQueryInputs</code> streams resolved relation metadata for planner binding, including per-column <code>ColumnResult</code> outcomes (<code>READY</code> with <code>ColumnInfo</code> or <code>FAILED</code> with <code>ColumnFailure</code>).</li>
 <li><strong><code>execution/scan.proto</code></strong> – Scan metadata (data/delete files + per-file stats) produced by
   connectors and consumed at execution time.</li>
 <li><strong><code>execution/capture.proto</code></strong> – File-group execution RPCs used by the combined stats/index
@@ -2037,8 +2065,13 @@ CLI, and reconciler.</p>
 <td></td>
 </tr>
 <tr>
+<td><code>RelationService</code></td>
+<td><code>ListRelations</code>, <code>ResolveRelations</code>, <code>GetRelation</code></td>
+<td>Kind-neutral table/view read API for engine adapters. Scopes by <code>namespace_id</code> (with <code>recursive</code>) or <code>catalog_id</code>, like <code>ListNamespacesRequest</code>. <code>kinds</code> accepts <code>RK_TABLE</code>/<code>RK_VIEW</code> only; page tokens are opaque and bound to the account, scope, filters, and listing semantics that minted them.</td>
+</tr>
+<tr>
 <td><code>SnapshotService</code></td>
-<td><code>ListSnapshots</code>, <code>GetSnapshot</code>, <code>GetLatestFinalizedSnapshot</code>, <code>CreateSnapshot</code>, <code>DeleteSnapshot</code></td>
+<td><code>ListSnapshots</code>, <code>GetSnapshot</code>, <code>GetLatestFinalizedSnapshot</code>, <code>GetCurrentSnapshotPointer</code>, <code>GetSnapshotSchema</code>, <code>CreateSnapshot</code>, <code>DeleteSnapshot</code>, <code>UpdateSnapshot</code></td>
 <td>Pins upstream checkpoints and timestamps. The bounded latest-finalized lookup selects a root-published reuse basis without scanning snapshot history. Finalized snapshots expose a system-owned <code>reuse_manifest_ref</code>; <code>SnapshotSpec</code> does not accept that field.</td>
 </tr>
 <tr>
@@ -2118,7 +2151,7 @@ CLI, and reconciler.</p>
 </tr>
 <tr>
 <td><code>UserObjectsService</code></td>
-<td><code>GetUserObjects</code></td>
+<td><code>ResolveQueryInputs</code></td>
 <td>Streams catalog metadata chunks (header → relations → end) as the service resolves each relation so planners can start binding earlier.</td>
 </tr>
 <tr>
@@ -2127,8 +2160,8 @@ CLI, and reconciler.</p>
 <td>Clients read <code>UserObjectsBundleChunk</code> in three phases: 1) header chunk (cheap metadata), 2) zero or more <code>resolutions</code> chunk batches where each <code>RelationResolution</code> carries <code>input_index</code> + FOUND/NOT_FOUND/ERROR, and 3) a single end chunk with summary counts. Use <code>input_index</code> to map back to planner <code>TableReferenceCandidate</code>s and bind as soon as a <code>FOUND</code> arrives. For each <code>RelationInfo</code>, inspect <code>columns[*].status</code>: <code>COLUMN_STATUS_OK</code> exposes <code>columns[*].column</code>, while <code>COLUMN_STATUS_FAILED</code> exposes <code>columns[*].failure</code> with typed <code>ColumnFailureCode</code> plus details. Extension-defined failures must use <code>COLUMN_FAILURE_CODE_ENGINE_EXTENSION</code> and set <code>extension_code_value</code>; clients branch on <code>extension_code_value</code> inside the engine domain (for FloeDB, see <code>FloeDecorationFailureCode</code> in <code>extensions/floedb/src/main/proto/engine_floe.proto</code>).</td>
 </tr>
 <tr>
-<td><code>SystemObjectsService</code></td>
-<td><code>GetSystemObjects</code></td>
+<td><code>SqlCatalogService</code></td>
+<td><code>GetSqlObjectsRegistry</code></td>
 <td>Returns the builtin catalog selected by the independent <code>x-environment-kind</code> / <code>x-environment-version</code> and <code>x-engine-kind</code> / <code>x-engine-version</code> headers supplied with the request.</td>
 </tr>
 </tbody>
@@ -2150,10 +2183,12 @@ case-sensitive. Each path selects that namespace subtree.</p>
 - <code>ScanFile</code> entries include the file path, size, record count, format, per-column stats, and whether
   the file is data vs equality/position deletes.
 - <code>ScanFileContent</code> enumerates the delete/data categories.</p>
-<p><code>query/system_objects_registry.proto</code> exposes immutable builtin metadata via <code>SystemObjectsService.GetSystemObjects</code>
+<p><code>query/sql_catalog.proto</code> exposes immutable builtin metadata via <code>SqlCatalogService.GetSqlObjectsRegistry</code>
 so planners can hydrate functions/operators/types once per engine version. Clients send the
 <code>x-environment-kind</code> / <code>x-environment-version</code> and <code>x-engine-kind</code> / <code>x-engine-version</code> headers and always receive the composed catalog for that
 engine release.</p>
+<p><code>SystemObjectsService.GetSystemObjects</code> remains as a deprecated wire-compatible alias during the
+client rollout. It returns the same registry and uses the same authorization capability.</p>
 <h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>Field numbering</strong> – All proto files reserve low numbers for required identity fields and push

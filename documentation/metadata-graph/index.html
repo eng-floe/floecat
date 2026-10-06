@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://eng-floe.github.io/floecat/documentation/metadata-graph/">
       
       
-        <link rel="prev" href="../catalog-access-spi/">
+        <link rel="prev" href="../generic-engine-rpc-contract/">
       
       
         <link rel="next" href="../system-objects/">
@@ -744,6 +744,29 @@
   
   <span class="md-ellipsis">
     Catalog Access SPI
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../generic-engine-rpc-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Generic Engine RPC Contract
     
   </span>
   
@@ -2142,10 +2165,10 @@ per engine kind, materialises immutable relation nodes, and caches the result pe
 definitions using those rules so a planner that sets <code>x-engine-kind=postgres</code> and
 <code>x-engine-version=16.0</code> only sees builtin nodes that actually exist in that release. Callers that omit
 either header simply receive an empty builtin bundle (the catalog files stay untouched), and
-<code>GetSystemObjects</code> rejects the request until both headers are provided.</p>
+<code>GetSqlObjectsRegistry</code> rejects the request until both headers are provided.</p>
 <p>Each <code>scoped_metadata</code> block may also attach arbitrary key/value <code>properties</code>. When the registry
 materialises a <code>(engine_kind, engine_version)</code> bundle it keeps only the rules that match the requested
-engine/version, so the filtered catalog (and <code>GetSystemObjects</code> response) contains exactly the
+engine/version, so the filtered catalog (and <code>GetSqlObjectsRegistry</code> response) contains exactly the
 entries that apply to the caller. Pbtxt authors rarely need to repeat the engine kind in every rule;
 entries that omit it inherit the file’s engine kind. The registry materializes matching rules as
 immutable node hints under publisher-defined payload types (the <code>payload_type</code> field in the catalog
@@ -2161,10 +2184,10 @@ given <code>(engine_kind, engine_version)</code> pair, only the rules that match
 boundaries are retained. The <code>BuiltinNodes</code> returned by <code>SystemNodeRegistry.nodesFor</code> therefore already
 represent the exact set applicable for that engine release. <code>SystemGraph</code> consumes those nodes to build
 a <code>_system</code> <code>GraphSnapshot</code> that <code>MetaGraph</code> exposes via <code>CatalogGraphView</code>, so pg_catalog-style system
-objects live alongside the user metadata when scanners run. <code>SystemObjectsServiceImpl</code> reuses the same
-<code>SystemNodeRegistry</code>/<code>SystemCatalogProtoMapper</code> pipeline to answer <code>GetSystemObjects()</code> calls without
-recomputing the catalog data, and because builtin catalogs are immutable per engine version the registry
-keeps them entirely in memory until FloeCAT restarts.</p>
+objects live alongside the user metadata when scanners run. <code>SqlCatalogServiceImpl</code> reuses the same
+<code>SystemNodeRegistry</code>/<code>SystemCatalogProtoMapper</code> pipeline to answer <code>GetSqlObjectsRegistry()</code> calls
+without recomputing the catalog data, and because builtin catalogs are immutable per engine version
+the registry keeps them entirely in memory until FloeCAT restarts.</p>
 <h3 id="deterministic-hint-caching">Deterministic Hint Caching<a class="headerlink" href="#deterministic-hint-caching" title="Permanent link">&para;</a></h3>
 <p><code>HintCache</code> owns the only dynamic hint cache. Its key includes account, relation, exact engine
 identity, and the content-addressed hint blob URI. A pointer move therefore selects a new decoded
@@ -2276,7 +2299,7 @@ contents.</p>
   and versioned so planners/executors can safely down-level or up-level between releases.</li>
 </ul>
 <h2 id="query-catalog-service">Query Catalog Service<a class="headerlink" href="#query-catalog-service" title="Permanent link">&para;</a></h2>
-<p><code>UserObjectsService.GetUserObjects</code> streams <code>UserObjectsBundleChunk</code>s directly from the metadata
+<p><code>UserObjectsService.ResolveQueryInputs</code> streams <code>UserObjectsBundleChunk</code>s directly from the metadata
 graph. Each chunk carries a header, batched relation resolutions (<code>RelationResolutions</code>) and a final
 summary, so planners can start binding as soon as the service resolves each relation. The service
 shares the same <code>QueryContext</code> as the other query RPCs and relies on <code>CatalogGraphView.resolve</code>,
@@ -2284,9 +2307,9 @@ shares the same <code>QueryContext</code> as the other query RPCs and relies on 
 and view definitions without issuing a second RPC batch.
 Resolved tables/views also go through <code>QueryInputResolver</code> so their snapshot selections are merged into
 <code>QueryContext</code> before the response hits the planner—<code>QueryScanService.InitScan</code> can therefore find
-the same selections later in the lifecycle. Builtins remain behind <code>GetSystemObjects</code>; the <code>information_schema</code>/<code>pg_catalog</code>
-relations are materialized in the engine-specific overlays for <code>_system</code> scans but do not appear in the RPC
-response to avoid exposing synthetic tables twice.
+the same selections later in the lifecycle. Builtins remain behind <code>GetSqlObjectsRegistry</code>; the
+<code>information_schema</code>/<code>pg_catalog</code> relations are materialized in the engine-specific overlays for
+<code>_system</code> scans but do not appear in the RPC response to avoid exposing synthetic tables twice.
 Column decorations are surfaced per column via <code>RelationInfo.columns[*]</code> (<code>ColumnResult</code>), so a relation can
 still resolve as <code>FOUND</code> while individual columns report <code>COLUMN_STATUS_FAILED</code> with structured failure reasons.</p>
 <h2 id="metrics">Metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h2>

@@ -761,6 +761,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../generic-engine-rpc-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Generic Engine RPC Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../metadata-graph/" class="md-nav__link">
         
   
@@ -1745,12 +1768,12 @@ and is expected to split into a narrower vend permission later.</p>
 <tr>
 <td><code>administrator</code></td>
 <td>Full tenant-scoped administration of metadata, catalog integrations, catalog overlays, and legacy connectors.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.write</code>, <code>catalog-overlay.reconcile</code>, <code>catalog-overlay.delete</code>, <code>system-objects.read</code>, <code>account.delete</code></td>
+<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.write</code>, <code>catalog-overlay.reconcile</code>, <code>catalog-overlay.delete</code>, <code>sql-objects.read</code>, <code>account.delete</code></td>
 </tr>
 <tr>
 <td><code>developer</code></td>
 <td>Development-role equivalent of <code>administrator</code>.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.write</code>, <code>catalog-overlay.reconcile</code>, <code>catalog-overlay.delete</code>, <code>system-objects.read</code>, <code>account.delete</code></td>
+<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.write</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.write</code>, <code>catalog-overlay.reconcile</code>, <code>catalog-overlay.delete</code>, <code>sql-objects.read</code>, <code>account.delete</code></td>
 </tr>
 <tr>
 <td><code>platform-admin</code> (or configured value of <code>floecat.auth.platform-admin.role</code>)</td>
@@ -1768,14 +1791,14 @@ and is expected to split into a narrower vend permission later.</p>
 <td><code>account.delete</code></td>
 </tr>
 <tr>
-<td><code>system-objects</code></td>
-<td>Minimal role for SystemObjects/GetSystemObjects access.</td>
-<td><code>system-objects.read</code></td>
+<td><code>sql-objects</code> (alias: <code>system-objects</code>)</td>
+<td>Minimal role for <code>SqlCatalogService.GetSqlObjectsRegistry</code> access. Both names grant the same permission, so an IdP group rename is not required.</td>
+<td><code>sql-objects.read</code></td>
 </tr>
 <tr>
 <td><code>reconcile-worker</code></td>
 <td>Dedicated machine principal for reconciler background gRPC work.</td>
-<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.reconcile</code>, <code>system-objects.read</code>, <code>storage-authority.resolve-internal</code>, <code>reconcile-executor-control.internal</code></td>
+<td><code>account.read</code>, <code>catalog.read</code>, <code>catalog.write</code>, <code>namespace.read</code>, <code>namespace.write</code>, <code>table.read</code>, <code>table.write</code>, <code>view.read</code>, <code>view.write</code>, <code>connector.manage</code>, <code>catalog-integration.read</code>, <code>catalog-integration.use</code>, <code>catalog-overlay.read</code>, <code>catalog-overlay.reconcile</code>, <code>sql-objects.read</code>, <code>storage-authority.resolve-internal</code>, <code>reconcile-executor-control.internal</code></td>
 </tr>
 </tbody>
 </table>

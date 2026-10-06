@@ -1001,6 +1001,29 @@
   
   
     <li class="md-nav__item">
+      <a href="../generic-engine-rpc-contract/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    Generic Engine RPC Contract
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../metadata-graph/" class="md-nav__link">
         
   
@@ -2221,8 +2244,10 @@ helpers like <code>randomResourceId</code> (UUIDv4). Highlights:</p>
 <li><strong>QueryServiceImpl</strong> – Administers query leases (<code>BeginQuery</code>, <code>RenewQuery</code>, <code>EndQuery</code>,
   <code>GetQuery</code>) and exposes the scan streaming helpers (<code>InitScan</code>, <code>StreamDeleteFiles</code>,
   <code>StreamDataFiles</code>, <code>CloseScan</code>) so planners can request connector metadata safely.</li>
-<li><strong>SystemObjectsServiceImpl</strong> – Loads immutable builtin catalogs from disk/classpath, caches them
-  per engine version, and serves them via <code>GetSystemObjects</code>.</li>
+<li><strong>RelationServiceImpl</strong> – Exposes kind-neutral table/view listing, name resolution, and by-id
+  description for engine adapters. Requires <code>table.read</code> and/or <code>view.read</code> per selected kind.</li>
+<li><strong>SqlCatalogServiceImpl</strong> – Loads immutable builtin catalogs from disk/classpath, caches them
+  per engine version, and serves them via <code>GetSqlObjectsRegistry</code>.</li>
 </ul>
 <h2 id="important-internal-details">Important Internal Details<a class="headerlink" href="#important-internal-details" title="Permanent link">&para;</a></h2>
 <h3 id="baseserviceimpl-idempotency">BaseServiceImpl &amp; Idempotency<a class="headerlink" href="#baseserviceimpl-idempotency" title="Permanent link">&para;</a></h3>
@@ -2496,8 +2521,8 @@ Managed deployments must override retention with their authoritative-cache polic
 <h3 id="builtin-catalog-service">Builtin Catalog Service<a class="headerlink" href="#builtin-catalog-service" title="Permanent link">&para;</a></h3>
 <p><code>SystemObjectsLoader</code> reads immutable builtin catalogs (<code>&lt;engine_kind&gt;.pb[pbtxt]</code>) from the
 configured location, caches them by engine kind, and exposes them through
-<code>SystemObjectsService.GetSystemObjects</code>. Clients must send both <code>x-engine-kind</code> and
-<code>x-engine-version</code>; the RPC always returns the filtered builtin bundle for the requested engine.</p>
+<code>SqlCatalogService.GetSqlObjectsRegistry</code>. Clients must send both <code>x-engine-kind</code> and
+<code>x-engine-version</code>; the RPC returns the filtered builtin bundle for that engine.</p>
 <h3 id="gc-and-bootstrap">GC and Bootstrap<a class="headerlink" href="#gc-and-bootstrap" title="Permanent link">&para;</a></h3>
 <p><code>IdempotencyGc</code> runs on a configurable cadence (see <code>floecat.gc.*</code> config) and sweeps expired
 idempotency records in slices to avoid starvation. <code>CasBlobGc</code> performs a reachability-based sweep
@@ -2593,7 +2618,7 @@ rows upserted after all batches have been consumed.</p>
 </tr>
 <tr>
 <td><code>floecat.catalog.bundle.max_parallel_relations</code></td>
-<td>Per-chunk relation-build fan-out for GetUserObjects. Defaults to <code>8</code>.</td>
+<td>Per-chunk relation-build fan-out for ResolveQueryInputs. Defaults to <code>8</code>.</td>
 </tr>
 <tr>
 <td><code>floecat.catalog.bundle.max_parallel_stats_warms</code></td>
