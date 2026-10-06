@@ -19,7 +19,6 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 import ai.floedb.floecat.arrow.ArrowSchemaUtil;
 import ai.floedb.floecat.arrow.ArrowValueWriters;
 import ai.floedb.floecat.arrow.ColumnarBatch;
-import ai.floedb.floecat.arrow.RequiredColumns;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.RelationNode;
@@ -144,7 +143,6 @@ public final class ColumnsScanner implements SystemObjectScanner {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
     Objects.requireNonNull(request, "request");
-    List<String> requiredSet = RequiredColumns.normalize(request.requiredColumns());
     Iterator<NamespaceEntry> namespaceIterator =
         NamespaceScanSupport.entries(ctx, request, "table_schema").iterator();
     Spliterator<ColumnarBatch> spliterator =
@@ -163,7 +161,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
               while (true) {
                 if (columnIter.hasNext()) {
                   if (builder == null) {
-                    builder = new ColumnsBatchBuilder(allocator, requiredSet);
+                    builder = new ColumnsBatchBuilder(allocator, request);
                   }
                   builder.append(columnIter.next());
                   if (builder.isFull()) {
@@ -435,7 +433,7 @@ public final class ColumnsScanner implements SystemObjectScanner {
     private final boolean includeType;
     private final boolean includeOrdinal;
 
-    private ColumnsBatchBuilder(BufferAllocator allocator, List<String> requiredColumns) {
+    private ColumnsBatchBuilder(BufferAllocator allocator, SystemScanRequest request) {
       super(ARROW_SCHEMA, allocator);
       List<FieldVector> vectors = root().getFieldVectors();
       this.tableCatalog = (VarCharVector) vectors.get(0);
@@ -444,12 +442,12 @@ public final class ColumnsScanner implements SystemObjectScanner {
       this.columnName = (VarCharVector) vectors.get(3);
       this.dataType = (VarCharVector) vectors.get(4);
       this.ordinalPosition = (BigIntVector) vectors.get(5);
-      this.includeCatalog = RequiredColumns.includes(requiredColumns, "table_catalog");
-      this.includeSchema = RequiredColumns.includes(requiredColumns, "table_schema");
-      this.includeTable = RequiredColumns.includes(requiredColumns, "table_name");
-      this.includeColumn = RequiredColumns.includes(requiredColumns, "column_name");
-      this.includeType = RequiredColumns.includes(requiredColumns, "data_type");
-      this.includeOrdinal = RequiredColumns.includes(requiredColumns, "ordinal_position");
+      this.includeCatalog = request.needs("table_catalog");
+      this.includeSchema = request.needs("table_schema");
+      this.includeTable = request.needs("table_name");
+      this.includeColumn = request.needs("column_name");
+      this.includeType = request.needs("data_type");
+      this.includeOrdinal = request.needs("ordinal_position");
     }
 
     private boolean isFull() {

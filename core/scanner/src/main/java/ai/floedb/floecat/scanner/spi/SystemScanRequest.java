@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.scanner.spi;
 
+import ai.floedb.floecat.arrow.RequiredColumns;
 import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.expr.PredicateConstraints;
 import java.util.List;
@@ -35,5 +36,30 @@ public record SystemScanRequest(
 
   public static SystemScanRequest empty() {
     return of(null, List.of());
+  }
+
+  /**
+   * Whether the scan must produce {@code column}: the request names it, names no column (every
+   * column), or the predicate reads it. The predicate is evaluated before projection, so a column
+   * it reads is needed even when the caller does not keep it.
+   */
+  public boolean needs(String column) {
+    return RequiredColumns.includes(RequiredColumns.normalize(requiredColumns), column)
+        || readsColumn(predicate, RequiredColumns.key(column));
+  }
+
+  private static boolean readsColumn(Expr expr, String key) {
+    return switch (expr) {
+      case null -> false;
+      case Expr.ColumnRef ref -> RequiredColumns.key(ref.name()).equals(key);
+      case Expr.Literal literal -> false;
+      case Expr.BooleanLiteral literal -> false;
+      case Expr.Eq eq -> readsColumn(eq.left(), key) || readsColumn(eq.right(), key);
+      case Expr.And and -> readsColumn(and.left(), key) || readsColumn(and.right(), key);
+      case Expr.Or or -> readsColumn(or.left(), key) || readsColumn(or.right(), key);
+      case Expr.Gt gt -> readsColumn(gt.left(), key) || readsColumn(gt.right(), key);
+      case Expr.IsNull isNull -> readsColumn(isNull.expression(), key);
+      case Expr.Not not -> readsColumn(not.expression(), key);
+    };
   }
 }

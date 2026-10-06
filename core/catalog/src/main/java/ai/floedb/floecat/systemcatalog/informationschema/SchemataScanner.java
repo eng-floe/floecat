@@ -19,7 +19,6 @@ package ai.floedb.floecat.systemcatalog.informationschema;
 import ai.floedb.floecat.arrow.ArrowSchemaUtil;
 import ai.floedb.floecat.arrow.ArrowValueWriters;
 import ai.floedb.floecat.arrow.ColumnarBatch;
-import ai.floedb.floecat.arrow.RequiredColumns;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
@@ -114,7 +113,6 @@ public final class SchemataScanner implements SystemObjectScanner {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
     Objects.requireNonNull(request, "request");
-    List<String> requiredSet = RequiredColumns.normalize(request.requiredColumns());
     Iterator<NamespaceEntry> namespaceIterator =
         NamespaceScanSupport.entries(ctx, request, "schema_name").iterator();
     Spliterator<ColumnarBatch> spliterator =
@@ -136,7 +134,7 @@ public final class SchemataScanner implements SystemObjectScanner {
                   return true;
                 }
                 if (builder == null) {
-                  builder = new SchemataBatchBuilder(allocator, requiredSet);
+                  builder = new SchemataBatchBuilder(allocator, request);
                 }
                 NamespaceEntry namespace = nsIter.next();
                 ResourceId catalogId = namespace.catalogId();
@@ -166,13 +164,13 @@ public final class SchemataScanner implements SystemObjectScanner {
     private final boolean includeCatalog;
     private final boolean includeSchema;
 
-    private SchemataBatchBuilder(BufferAllocator allocator, List<String> requiredColumns) {
+    private SchemataBatchBuilder(BufferAllocator allocator, SystemScanRequest request) {
       super(ARROW_SCHEMA, allocator);
       List<FieldVector> vectors = root().getFieldVectors();
       this.catalogName = (VarCharVector) vectors.get(0);
       this.schemaName = (VarCharVector) vectors.get(1);
-      this.includeCatalog = RequiredColumns.includes(requiredColumns, "catalog_name");
-      this.includeSchema = RequiredColumns.includes(requiredColumns, "schema_name");
+      this.includeCatalog = request.needs("catalog_name");
+      this.includeSchema = request.needs("schema_name");
     }
 
     private boolean isFull() {

@@ -25,6 +25,7 @@ import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.metagraph.model.NamespaceNode;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
+import ai.floedb.floecat.scanner.columnar.ArrowFilterOperator;
 import ai.floedb.floecat.scanner.expr.Expr;
 import ai.floedb.floecat.scanner.spi.SystemObjectScanContext;
 import ai.floedb.floecat.scanner.spi.SystemScanRequest;
@@ -167,6 +168,32 @@ class SchemataScannerTest {
               .toList();
 
       assertThat(arrowRows).isEqualTo(expected);
+    }
+  }
+
+  @Test
+  void scanArrow_writesPredicateColumnsTheCallerDoesNotKeep() {
+    var builder = TestTableScanContextBuilder.builder("main_catalog");
+    builder.addNamespace("public");
+    builder.addNamespace("sales");
+    SystemObjectScanContext ctx = builder.build();
+    Expr predicate = new Expr.Eq(new Expr.ColumnRef("schema_name"), new Expr.Literal("sales"));
+    SystemScanRequest request = SystemScanRequest.of(predicate, List.of("catalog_name"));
+
+    try (BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE)) {
+      long rows =
+          new SchemataScanner()
+              .scanArrow(ctx, request, allocator)
+              .map(batch -> ArrowFilterOperator.filter(batch, predicate, allocator))
+              .mapToLong(
+                  batch -> {
+                    try (batch) {
+                      return batch.root().getRowCount();
+                    }
+                  })
+              .sum();
+
+      assertThat(rows).isEqualTo(1);
     }
   }
 
