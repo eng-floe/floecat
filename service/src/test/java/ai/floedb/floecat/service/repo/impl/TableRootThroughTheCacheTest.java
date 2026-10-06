@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.service.testsupport.CountingBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -194,25 +195,14 @@ class TableRootThroughTheCacheTest {
     // recent AS_OF) matches in the head page and must cost exactly ONE page read — never a
     // serial full-chain walk to build the index.
     var coldReader = cachedRepo(pointers, blobs);
-    blobs.gets.set(0);
+    blobs.resetReads();
     assertEquals(
         newest,
         SnapshotManifests.findEntry(coldReader, head, newest).orElseThrow().getSnapshotId());
-    assertEquals(1, blobs.gets.get(), "a head-page match must not walk older pages");
+    assertEquals(1, blobs.pointGets(), "a head-page match must not walk older pages");
 
     // A lookup that has to go deeper builds the index and still resolves.
     assertEquals(1, SnapshotManifests.findEntry(coldReader, head, 1).orElseThrow().getSnapshotId());
-  }
-
-  /** Blob store that counts get() calls so page-read budgets are directly assertable. */
-  private static final class CountingBlobStore extends InMemoryBlobStore {
-    final AtomicInteger gets = new AtomicInteger();
-
-    @Override
-    public byte[] get(String uri) {
-      gets.incrementAndGet();
-      return super.get(uri);
-    }
   }
 
   @Test
