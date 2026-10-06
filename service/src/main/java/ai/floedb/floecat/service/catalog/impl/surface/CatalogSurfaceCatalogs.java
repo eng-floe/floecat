@@ -25,6 +25,8 @@ import ai.floedb.floecat.catalog.rpc.ListCatalogsResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanContext.CatalogEntry;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanContext.CatalogListingProvider;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.common.MutationOps;
 import ai.floedb.floecat.service.error.impl.GrpcErrors;
@@ -46,6 +48,7 @@ public final class CatalogSurfaceCatalogs {
   private static final String PAGE_TOKEN_USER_PAYLOAD_PREFIX = "u:";
   private static final String SYSTEM_CATALOG_DESCRIPTION =
       "System catalog (global; visible from all catalogs)";
+  private static final int SYSTEM_SCAN_PAGE_SIZE = 1_000;
 
   private final CatalogRepository catalogRepo;
   private final CatalogGraphView graphView;
@@ -106,6 +109,34 @@ public final class CatalogSurfaceCatalogs {
     return ListCatalogsResponse.newBuilder().addAllCatalogs(catalogs).setPage(page).build();
   }
 
+  /** The catalogs {@code accountId} sees, as sys.catalog lists them. */
+  public CatalogListingProvider catalogListing(String accountId) {
+    return includeDescription -> listCatalogEntries(accountId, includeDescription);
+  }
+
+  List<CatalogEntry> listCatalogEntries(String accountId, boolean includeDescription) {
+    List<CatalogEntry> entries = new ArrayList<>();
+    if (includeDescription) {
+      String token = "";
+      do {
+        var next = new StringBuilder();
+        for (Catalog catalog : catalogRepo.list(accountId, SYSTEM_SCAN_PAGE_SIZE, token, next)) {
+          entries.add(catalogEntry(catalog));
+        }
+        token = next.toString();
+      } while (!token.isBlank());
+    } else {
+      catalogRepo
+          .listRefs(accountId)
+          .forEach(
+              ref ->
+                  entries.add(new CatalogEntry(ref.id(), displayName(ref.name(), ref.id()), null)));
+    }
+
+    visibleSystemCatalogForCurrentEngine().map(this::catalogEntry).ifPresent(entries::add);
+    return entries;
+  }
+
   public GetCatalogResponse getCatalog(GetCatalogRequest request, String corr) {
     var catalogId = request.getCatalogId();
     Catalog catalog =
@@ -128,6 +159,20 @@ public final class CatalogSurfaceCatalogs {
         .setDisplayName(engineKind)
         .setDescription(SYSTEM_CATALOG_DESCRIPTION)
         .build();
+  }
+
+  private CatalogEntry catalogEntry(Catalog catalog) {
+    String description = catalog.getDescription();
+    if (description != null && description.isBlank()) {
+      description = null;
+    }
+    ResourceId id = catalog.getResourceId();
+    return new CatalogEntry(id, displayName(catalog.getDisplayName(), id), description);
+  }
+
+  /** A catalog's listed name: its display name, or its id when it has none. */
+  private static String displayName(String name, ResourceId id) {
+    return name == null || name.isBlank() ? id.getId() : name;
   }
 
   private CatalogPageCursor parseCatalogPageToken(String token, String corr) {

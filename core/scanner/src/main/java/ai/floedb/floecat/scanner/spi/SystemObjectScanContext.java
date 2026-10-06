@@ -47,6 +47,7 @@ public record SystemObjectScanContext(
     CatalogContext catalogContext,
     StatsProvider statsProvider,
     ConstraintProvider constraintProvider,
+    CatalogListingProvider catalogListingProvider,
     ConcurrentMap<Object, Object> memoizedValues)
     implements MetadataResolutionContext {
 
@@ -56,7 +57,23 @@ public record SystemObjectScanContext(
     catalogContext = Objects.requireNonNull(catalogContext, "catalogContext");
     statsProvider = statsProvider == null ? StatsProvider.NONE : statsProvider;
     constraintProvider = constraintProvider == null ? ConstraintProvider.NONE : constraintProvider;
+    catalogListingProvider =
+        catalogListingProvider == null ? CatalogListingProvider.NONE : catalogListingProvider;
     memoizedValues = memoizedValues == null ? new ConcurrentHashMap<>() : memoizedValues;
+  }
+
+  /** A catalog as sys.catalog lists it; {@code description} is null when not loaded. */
+  public record CatalogEntry(ResourceId id, String name, String description) {}
+
+  /**
+   * Lists the catalogs visible to the scanning account. {@code includeDescription} false lets the
+   * implementation skip loading catalog objects.
+   */
+  @FunctionalInterface
+  public interface CatalogListingProvider {
+    CatalogListingProvider NONE = includeDescription -> List.of();
+
+    List<CatalogEntry> listVisibleCatalogs(boolean includeDescription);
   }
 
   public SystemObjectScanContext(
@@ -71,6 +88,7 @@ public record SystemObjectScanContext(
         catalogContext,
         StatsProvider.NONE,
         ConstraintProvider.NONE,
+        CatalogListingProvider.NONE,
         new ConcurrentHashMap<>());
   }
 
@@ -87,6 +105,7 @@ public record SystemObjectScanContext(
         catalogContext,
         statsProvider,
         ConstraintProvider.NONE,
+        CatalogListingProvider.NONE,
         new ConcurrentHashMap<>());
   }
 
@@ -104,6 +123,26 @@ public record SystemObjectScanContext(
         catalogContext,
         statsProvider,
         constraintProvider,
+        CatalogListingProvider.NONE,
+        new ConcurrentHashMap<>());
+  }
+
+  public SystemObjectScanContext(
+      CatalogGraphView graph,
+      NameRef name,
+      ResourceId queryDefaultCatalogId,
+      CatalogContext catalogContext,
+      StatsProvider statsProvider,
+      ConstraintProvider constraintProvider,
+      CatalogListingProvider catalogListingProvider) {
+    this(
+        graph,
+        name,
+        queryDefaultCatalogId,
+        catalogContext,
+        statsProvider,
+        constraintProvider,
+        catalogListingProvider,
         new ConcurrentHashMap<>());
   }
 
@@ -119,6 +158,7 @@ public record SystemObjectScanContext(
         catalogContext(engineContext),
         StatsProvider.NONE,
         ConstraintProvider.NONE,
+        CatalogListingProvider.NONE,
         new ConcurrentHashMap<>());
   }
 
@@ -135,6 +175,7 @@ public record SystemObjectScanContext(
         catalogContext(engineContext),
         statsProvider,
         ConstraintProvider.NONE,
+        CatalogListingProvider.NONE,
         new ConcurrentHashMap<>());
   }
 
@@ -152,6 +193,7 @@ public record SystemObjectScanContext(
         catalogContext(engineContext),
         statsProvider,
         constraintProvider,
+        CatalogListingProvider.NONE,
         new ConcurrentHashMap<>());
   }
 
@@ -180,6 +222,18 @@ public record SystemObjectScanContext(
   /** Lightweight namespace refs from the graph view. */
   public List<CatalogGraphView.NamespaceRef> listNamespaceRefs() {
     return graph.listNamespaceRefs(queryDefaultCatalogId, catalogContext);
+  }
+
+  /**
+   * Catalogs visible to the scanning account, for account-level system objects such as sys.catalog.
+   * Empty when the context was built without a catalog listing, which is distinct from an account
+   * with no catalogs.
+   */
+  public Optional<List<CatalogEntry>> listVisibleCatalogs(boolean includeDescription) {
+    if (catalogListingProvider == CatalogListingProvider.NONE) {
+      return Optional.empty();
+    }
+    return Optional.of(catalogListingProvider.listVisibleCatalogs(includeDescription));
   }
 
   /** Lightweight namespace refs matching the supplied information-schema names. */

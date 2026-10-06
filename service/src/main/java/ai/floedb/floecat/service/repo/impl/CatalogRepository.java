@@ -143,6 +143,15 @@ public class CatalogRepository {
     return repo.listByPrefix(Keys.catalogPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
+  /** Lists catalog refs from pointer metadata without fetching catalog blobs. */
+  public List<CatalogRef> listRefs(String accountId) {
+    String prefix = Keys.catalogPointerByNamePrefix(accountId);
+    return repo.listRefsByPrefix(prefix).stream()
+        .map(pointer -> toCatalogRef(accountId, pointer))
+        .flatMap(Optional::stream)
+        .toList();
+  }
+
   public List<Catalog> listConsistent(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
     return repo.listByPrefixForMutation(
@@ -198,12 +207,7 @@ public class CatalogRepository {
   }
 
   public List<ResourceId> listIds(String accountId) {
-    String prefix = Keys.catalogPointerByNamePrefix(accountId);
-    return repo.listRefsByPrefix(prefix).stream()
-        .map(pointer -> toCatalogRef(accountId, pointer))
-        .flatMap(Optional::stream)
-        .map(CatalogRef::id)
-        .toList();
+    return listRefs(accountId).stream().map(CatalogRef::id).toList();
   }
 
   private static Optional<CatalogRef> toCatalogRef(
