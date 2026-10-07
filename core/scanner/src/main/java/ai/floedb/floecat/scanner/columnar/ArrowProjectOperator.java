@@ -17,14 +17,12 @@
 package ai.floedb.floecat.scanner.columnar;
 
 import ai.floedb.floecat.arrow.ColumnarBatch;
+import ai.floedb.floecat.arrow.RequiredColumns;
 import ai.floedb.floecat.arrow.SimpleColumnarBatch;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.VectorSchemaRoot;
@@ -33,12 +31,12 @@ import org.apache.arrow.vector.util.TransferPair;
 /**
  * Columnar projection operator that reuses existing vectors via {@link TransferPair}s.
  *
- * <p>Unknown column names are silently ignored and duplicate requests are collapsed so each column
- * appears at most once in its first requested position.
+ * <p>Column names follow {@link RequiredColumns}. Names the batch does not have are dropped, so a
+ * request naming only unknown columns yields a zero-column batch that keeps the row count.
  *
- * <p>When projection is executed (non-empty required list), the input batch is closed and the
- * projected batch owns a new {@link VectorSchemaRoot}. If no columns are requested the original
- * batch is returned untouched.
+ * <p>When projection is executed (at least one non-blank name requested), the input batch is closed
+ * and the projected batch owns a new {@link VectorSchemaRoot}. If no columns are requested the
+ * original batch is returned untouched.
  */
 public final class ArrowProjectOperator {
 
@@ -46,33 +44,20 @@ public final class ArrowProjectOperator {
 
   public static ColumnarBatch project(
       ColumnarBatch batch, List<String> requiredColumns, BufferAllocator allocator) {
-    if (requiredColumns.isEmpty()) {
+    List<String> requested = RequiredColumns.normalize(requiredColumns);
+    if (requested.isEmpty()) {
       return batch;
     }
 
     VectorSchemaRoot root = batch.root();
     Map<String, FieldVector> vectorsByName = new HashMap<>();
     for (FieldVector vector : root.getFieldVectors()) {
-      vectorsByName.put(vector.getField().getName().toLowerCase(Locale.ROOT), vector);
+      vectorsByName.putIfAbsent(RequiredColumns.key(vector.getField().getName()), vector);
     }
 
-    List<String> normalizedOrder = new ArrayList<>();
-    Set<String> seen = new HashSet<>();
-    for (String column : requiredColumns) {
-      if (column == null) {
-        continue;
-      }
-      String normalized = column.trim().toLowerCase(Locale.ROOT);
-      if (normalized.isEmpty()) {
-        continue;
-      }
-      if (seen.add(normalized)) {
-        normalizedOrder.add(normalized);
-      }
-    }
-
+    int rowCount = root.getRowCount();
     List<FieldVector> selected = new ArrayList<>();
-    for (String column : normalizedOrder) {
+    for (String column : requested) {
       FieldVector vector = vectorsByName.get(column);
       if (vector == null) {
         continue;
@@ -80,15 +65,10 @@ public final class ArrowProjectOperator {
       TransferPair transfer = vector.getTransferPair(allocator);
       transfer.transfer();
       FieldVector target = (FieldVector) transfer.getTo();
-      target.setValueCount(root.getRowCount());
+      target.setValueCount(rowCount);
       selected.add(target);
     }
 
-    if (selected.isEmpty()) {
-      return batch;
-    }
-
-    int rowCount = root.getRowCount();
     batch.close();
 
     VectorSchemaRoot projectedRoot = new VectorSchemaRoot(selected);

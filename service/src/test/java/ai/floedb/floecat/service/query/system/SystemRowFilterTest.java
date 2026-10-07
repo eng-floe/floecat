@@ -233,6 +233,19 @@ class SystemRowFilterTest {
     assertThat(not.expression()).isInstanceOf(Expr.IsNull.class);
   }
 
+  @Test
+  void predicateColumnFollowsTheRequiredColumnsNameRules() {
+    var rows =
+        List.of(
+            new SystemObjectRow(new Object[] {"a", "b"}),
+            new SystemObjectRow(new Object[] {"c", "d"}));
+
+    Predicate predicate =
+        Predicate.newBuilder().setColumn(" COL_A ").setOp(Operator.OP_EQ).addValues("a").build();
+
+    assertThat(SystemRowFilter.applyPredicates(rows, SCHEMA, List.of(predicate))).hasSize(1);
+  }
+
   private static Predicate predicate(String column, Operator op, String... values) {
     Predicate.Builder builder = Predicate.newBuilder().setColumn(column).setOp(op);
     for (String value : values) {

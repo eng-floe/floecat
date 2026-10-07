@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.query.system;
 
+import ai.floedb.floecat.arrow.RequiredColumns;
 import ai.floedb.floecat.common.rpc.Predicate;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.expr.Expr;
@@ -55,7 +56,7 @@ public final class SystemRowFilter {
 
   private static boolean matches(SystemObjectRow row, List<SchemaColumn> schema, Predicate p) {
 
-    int idx = columnIndex(schema, p.getColumn());
+    int idx = RequiredColumns.indexOf(schema, p.getColumn());
     if (idx < 0) return false;
 
     Object value = row.values()[idx];
@@ -68,16 +69,6 @@ public final class SystemRowFilter {
       default ->
           throw new UnsupportedOperationException("Predicate not yet supported: " + p.getOp());
     };
-  }
-
-  private static int columnIndex(List<SchemaColumn> schema, String name) {
-
-    for (int i = 0; i < schema.size(); i++) {
-      if (schema.get(i).getName().equalsIgnoreCase(name)) {
-        return i;
-      }
-    }
-    return -1;
   }
 
   private SystemRowFilter() {}

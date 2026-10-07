@@ -17,6 +17,7 @@
 package ai.floedb.floecat.scanner.columnar;
 
 import ai.floedb.floecat.arrow.ColumnarBatch;
+import ai.floedb.floecat.arrow.RequiredColumns;
 import ai.floedb.floecat.arrow.SimpleColumnarBatch;
 import ai.floedb.floecat.scanner.expr.Expr;
 import java.nio.charset.StandardCharsets;
@@ -131,7 +132,7 @@ public final class ArrowFilterOperator {
       this.rowCount = root.getRowCount();
       Map<String, FieldVector> columns = new HashMap<>();
       for (FieldVector vector : root.getFieldVectors()) {
-        columns.put(vector.getField().getName().toLowerCase(Locale.ROOT), vector);
+        columns.putIfAbsent(RequiredColumns.key(vector.getField().getName()), vector);
       }
       this.vectorsByName = columns;
     }
@@ -446,8 +447,7 @@ public final class ArrowFilterOperator {
       if (name == null) {
         return null;
       }
-      String normalized = name.trim().toLowerCase(Locale.ROOT);
-      return vectorsByName.get(normalized);
+      return vectorsByName.get(RequiredColumns.key(name));
     }
 
     private ColumnLiteral columnLiteralPair(Expr left, Expr right) {

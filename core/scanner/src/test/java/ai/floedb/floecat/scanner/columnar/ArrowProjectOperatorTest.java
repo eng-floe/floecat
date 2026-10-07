@@ -187,7 +187,7 @@ class ArrowProjectOperatorTest {
   }
 
   @Test
-  void returnsOriginalBatchWhenOnlyUnknownColumnsRequested() {
+  void projectsToZeroColumnsWhenOnlyUnknownColumnsRequested() {
     List<SchemaColumn> schema =
         List.of(
             SchemaColumn.newBuilder()
@@ -212,11 +212,13 @@ class ArrowProjectOperatorTest {
 
       ColumnarBatch projected =
           ArrowProjectOperator.project(batch, List.of("does_not_exist"), allocator);
-      assertThat(projected).isSameAs(batch);
       try (projected) {
-        assertThat(projected.root().getFieldVectors()).hasSize(2);
+        assertThat(projected).isNotSameAs(batch);
+        assertThat(projected.root().getSchema().getFields()).isEmpty();
+        assertThat(projected.root().getFieldVectors()).isEmpty();
         assertThat(projected.root().getRowCount()).isEqualTo(2);
       }
+      assertThat(allocator.getAllocatedMemory()).isZero();
     }
   }
 

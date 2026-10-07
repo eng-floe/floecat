@@ -32,4 +32,11 @@ public interface ArrowRecordWriter<T extends Record> {
    * the writer must not close the root.
    */
   void write(VectorSchemaRoot root, List<T> rows);
+
+  /**
+   * This writer narrowed to {@code requiredColumns} under {@link RequiredColumns} rules: its schema
+   * holds only the matching columns and {@link #write} fills only those. Empty means every column;
+   * names matching nothing give a zero-column writer that still sets the row count.
+   */
+  ArrowRecordWriter<T> project(List<String> requiredColumns);
 }

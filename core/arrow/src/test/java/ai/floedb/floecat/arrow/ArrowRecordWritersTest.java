@@ -212,6 +212,44 @@ class ArrowRecordWritersTest {
         .hasMessageContaining("Unsupported component type");
   }
 
+  @Test
+  void project_writesOnlyRequestedColumnsInRequestedOrder() {
+    ArrowRecordWriter<TestRow> writer =
+        ArrowRecordWriters.fromRecordClass(TestRow.class)
+            .project(List.of("ID", " name ", "id", "missing"));
+    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(writer.schema(), allocator)) {
+      writer.write(root, List.of(new TestRow("alpha", 1), new TestRow("beta", 2)));
+
+      assertThat(writer.schema().getFields()).extracting("name").containsExactly("id", "name");
+      assertThat(root.getRowCount()).isEqualTo(2);
+      assertThat(((IntVector) root.getVector("id")).get(1)).isEqualTo(2);
+      assertThat(root.getVector("name").getObject(0).toString()).isEqualTo("alpha");
+    }
+  }
+
+  @Test
+  void project_withNoNamedColumnsKeepsTheFullWriter() {
+    ArrowRecordWriter<TestRow> writer = ArrowRecordWriters.fromRecordClass(TestRow.class);
+
+    assertThat(writer.project(List.of())).isSameAs(writer);
+    assertThat(writer.project(List.of(" ", ""))).isSameAs(writer);
+  }
+
+  @Test
+  void project_toUnknownColumnsWritesZeroColumnsAndKeepsTheRowCount() {
+    ArrowRecordWriter<TestRow> writer =
+        ArrowRecordWriters.fromRecordClass(TestRow.class).project(List.of("missing"));
+    try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+        VectorSchemaRoot root = VectorSchemaRoot.create(writer.schema(), allocator)) {
+      writer.write(root, List.of(new TestRow("alpha", 1), new TestRow("beta", 2)));
+
+      assertThat(writer.schema().getFields()).isEmpty();
+      assertThat(root.getFieldVectors()).isEmpty();
+      assertThat(root.getRowCount()).isEqualTo(2);
+    }
+  }
+
   private record TestRow(String name, int id) {}
 
   private record AliasedRow(@ArrowFieldName("display_name") String label) {}
