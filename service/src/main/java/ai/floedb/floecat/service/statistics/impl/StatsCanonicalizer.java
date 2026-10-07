@@ -75,8 +75,12 @@ final class StatsCanonicalizer {
             canonicalNdv(g, "ndv", scalar.hasNdv() ? scalar.getNdv() : null);
             g.scalar("min", scalar.getMin());
             g.scalar("max", scalar.getMax());
-            g.scalar("min_value", scalar.hasMinValue() ? scalar.getMinValue().toByteArray() : null);
-            g.scalar("max_value", scalar.hasMaxValue() ? scalar.getMaxValue().toByteArray() : null);
+            if (scalar.hasMinValue()) {
+              g.scalar("min_value", scalar.getMinValue().toByteArray());
+            }
+            if (scalar.hasMaxValue()) {
+              g.scalar("max_value", scalar.getMaxValue().toByteArray());
+            }
             if (scalar.hasAvgWidthBytes()) g.scalar("avg_width_bytes", scalar.getAvgWidthBytes());
             var sketches = new ArrayList<>(scalar.getSketchesList());
             sketches.sort(sketchOrder());
@@ -111,8 +115,12 @@ final class StatsCanonicalizer {
     canonicalNdv(c, "ndv", stats.hasNdv() ? stats.getNdv() : null);
     c.scalar("min", stats.getMin());
     c.scalar("max", stats.getMax());
-    c.scalar("min_value", stats.hasMinValue() ? stats.getMinValue().toByteArray() : null);
-    c.scalar("max_value", stats.hasMaxValue() ? stats.getMaxValue().toByteArray() : null);
+    if (stats.hasMinValue()) {
+      c.scalar("min_value", stats.getMinValue().toByteArray());
+    }
+    if (stats.hasMaxValue()) {
+      c.scalar("max_value", stats.getMaxValue().toByteArray());
+    }
     if (stats.hasAvgWidthBytes()) c.scalar("avg_width_bytes", stats.getAvgWidthBytes());
     var sketches = new ArrayList<>(stats.getSketchesList());
     sketches.sort(sketchOrder());

@@ -229,7 +229,7 @@ public final class LogicalType {
    * Creates a temporal logical type with an optional precision (fractional seconds digits).
    *
    * @param kind TIME, TIMESTAMP, or TIMESTAMPTZ
-   * @param temporalPrecision fractional second precision (0..6) or null if unspecified
+   * @param temporalPrecision fractional second precision (0..9) or null if unspecified
    * @return a new temporal {@code LogicalType}
    * @throws IllegalArgumentException if the kind is not temporal or precision is out of range
    */
