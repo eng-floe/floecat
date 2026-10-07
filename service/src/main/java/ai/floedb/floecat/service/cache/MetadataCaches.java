@@ -261,6 +261,15 @@ public class MetadataCaches {
   }
 
   /**
+   * Hit, miss and load events for a cache outside the budgeted families, reported under {@code
+   * operation} and {@code cacheName}.
+   */
+  public static CacheEvents cacheEvents(
+      Observability observability, String operation, String cacheName) {
+    return events(new CacheMetrics(observability, "service", operation, cacheName));
+  }
+
+  /**
    * Counts hits and misses and times the loads. Enough, with the gauges below, to answer the
    * questions asked of a cache that is behaving oddly: whether it is on, whether it is being used,
    * what a miss costs, how full it is, whether loads are failing, and whether it retains what it

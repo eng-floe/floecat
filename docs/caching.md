@@ -22,6 +22,9 @@ selected snapshot unavailable.
   immutable content-addressed values remain the exact value named by the resolved selection. The complete pointer
   index is deliberately different: after its account load completes, a missing addressing key is
   authoritative absence.
+- **Answers from outside Floecat expire.** A credential vended by a source catalog is not content
+  and has a lifetime, so the cache that holds it serves each answer for part of that lifetime and
+  its expiry is part of correctness. It uses `ExpiringCache`, not `MemoryCache`.
 
 ## Warm and cold reads
 
@@ -37,6 +40,7 @@ identity; they do not replace a value in an existing key.
 | Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | Account addressing state: names, identities, and each table's `root/current` and `snapshots/current`. Rows keyed by snapshot -- snapshot history, constraints, stats generations, index artifacts -- are durable-only, because a table can commit snapshots far faster than its schema or addressing state changes. | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter. |
 | Objects | `ObjectCache` | Decoded relation metadata, mapped schemas, constraints, immutable generation-scoped snapshot facts and target-stat records | Entries are keyed by immutable content or generation identity. A live/newest stats read is read-through and is never retained. Account eviction removes every object entry for that account. |
 | Blobs | `DiskBlobCache` behind `BlobCacheAccess` | Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe | Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mapped content stays retained until its scoped read closes. The disk budget and kill switch are `floecat.cache.blob.disk.*`; it is independent of the heap budget. |
+| Vended credentials | `VendedCredentialCache` on `ExpiringCache` | Source-catalog vend answers, per Connector or Integration configuration and upstream table | An answer is served while at least `floecat.storage.source-catalog.vend-cache.min-remaining-fraction` of its lifetime and five minutes remain. Answers without an expiry, answers no caller could use, and credentials exchanged from the caller's token are not held. See [catalog integrations](catalog-integrations.md). |
 | Per-query state | `QueryContextStore` and per-query memos | Snapshot selections, expansion map, and scan/session bookkeeping keyed by query ID | Rebuildable process-local optimization, not a GC root. If the selected snapshot is deleted or collected, the query receives the snapshot-unavailable error. |
 
 An owned pointer partition can be warmed in the background when ownership is granted. The first
@@ -103,7 +107,9 @@ sizing harness use the same arithmetic.
 | Piece | What it is |
 |-------|------------|
 | `MemoryCache<K, V>` | Read-through `get`; batch `getAll`; uncounted `peek`; `evict` by key and `evictPartition` by caller-supplied membership; `bytes()`/`entryCount()` for the budget. Values are immutable and keyed by durable identity, so there is no generic replacement, publication fence, or in-flight map. Eviction is an infrequent O(n) memory-hygiene scan. Pointer version ordering deliberately is not part of this generic contract. |
-| `CaffeineMemoryCache` | The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction. |
+| `ExpiringCache<K, V>` | Read-through `get` for answers that expire, loaded from a source that may be slow. Each value is held for a duration derived from it when it loads. A miss loads on the calling thread, keeping its request context; callers that miss the same key together each load. A load that throws or returns null is not held. |
+| `CaffeineExpiringCache` | The implementation, on a synchronous Caffeine cache read with `getIfPresent` and filled with `put`, so no load runs under the map's locks and a slow load holds up no other key. |
+| `CaffeineMemoryCache` | The one `MemoryCache` implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction. |
 | `CacheWeights` | Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (`WeightedValue` first, then protobuf, text, `byte[]`, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte. |
 | `CacheFamily` | The independently budgeted in-memory families that use this module. Pointer planning state is not a `MemoryCache` family: it is a complete index with a separate admission budget and no entry eviction. `OBJECT` is decoded metadata, `HINT` is decoded engine-specific metadata, and `MANIFEST_COMMITMENT` is validated content-addressed Owner manifest indexes. Disk blob caching has its own volume budget. |
 | `CacheBudget` / `CacheBudgetResolver` | One total split across the families. Pure arithmetic in `CacheBudget.split`; `CacheBudgetResolver` (`service/cache/`) reads the configuration and runs it at startup. |
@@ -114,6 +120,10 @@ A memory-cache loader may read durable storage and assemble its value, but it mu
 and its underlying map rejects recursive updates. Resolve another cached dependency first, then
 enter the loader for the value that depends on it. This is a loader rule, not an application-level
 in-flight mechanism.
+
+An expiring-cache loader runs on the calling thread outside any lock, so it may make a remote call
+that takes seconds without holding up other keys. Same-key misses are not merged: the source sees
+one load per concurrent miss, and none while a value is held.
 
 Budgets resolve from the container rather than from a compiled-in figure. The JVM already sizes its
 heap from the container memory limit, so `floecat.cache.heap-share` (0.5) of the maximum heap
@@ -142,6 +152,9 @@ index for planner keys and durable KV for operational keys.
 A cache built on the `core/cache` contract publishes the same series, tagged by cache name, so
 those are comparable and a new one brings its telemetry with it. The disk blob cache adds mapping,
 corruption and sweep signals because those are file-lifecycle events rather than heap-cache events.
+
+The vended-credential cache reports hit, miss, load-time and error series only: it is bounded by
+entry count rather than weight, and it has no enabled or entries gauge.
 
 | question | series |
 |---|---|

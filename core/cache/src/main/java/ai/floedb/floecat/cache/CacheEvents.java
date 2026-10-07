@@ -62,8 +62,9 @@ public interface CacheEvents {
   default void admissionRejected() {}
 
   /**
-   * An entry dropped to stay within budget, releasing {@code weightBytes}. Nothing expires, so this
-   * is the signal a budget is too small; the weight tells many small evictions from a few large.
+   * An entry dropped to stay within budget, releasing {@code weightBytes}. Expiry is not eviction,
+   * so this is the signal a budget is too small; the weight tells many small evictions from a few
+   * large.
    *
    * <p>Raised while the implementation holds its eviction lock, and an implementation may swallow
    * anything thrown here. Do no work in it that can block.

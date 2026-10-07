@@ -28,6 +28,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -43,9 +44,12 @@ import ai.floedb.floecat.catalog.rpc.Table;
 import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
+import ai.floedb.floecat.connector.rpc.AuthConfig;
+import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ConnectorKind;
 import ai.floedb.floecat.connector.rpc.ConnectorState;
+import ai.floedb.floecat.connector.spi.CredentialResolver;
 import ai.floedb.floecat.connector.spi.DatabricksAccessDelegation;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.connector.spi.SourceCatalogAccessException;
@@ -55,6 +59,7 @@ import ai.floedb.floecat.service.integration.CatalogIntegrationAccess;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.ConnectorRepository;
 import ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus;
+import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.time.Clock;
@@ -65,6 +70,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -1394,6 +1402,309 @@ class SourceCatalogCredentialVendorTest {
     assertThat(response.getStorageCredentialsList().get(0).getConfigMap())
         .containsEntry("s3.access-key-id", "key")
         .doesNotContainKey("s3.access-point");
+  }
+
+  @Test
+  void anIntegrationVendIsReusedForHalfItsLifetime() {
+    AtomicLong nanos = new AtomicLong();
+    useVendCache(nanos::get);
+    when(client.capabilities())
+        .thenReturn(CatalogCapabilities.of(CatalogCapability.VEND_STORAGE_CREDENTIALS));
+    when(client.vendStorageCredentials(new CatalogObjectName(NamespacePath.of("sales"), "orders")))
+        .thenReturn(Optional.of(integrationCredentials(EXPIRY)));
+
+    var first = vendIntegrationQuery("s3://warehouse/orders/a.parquet");
+    var second = vendIntegrationQuery("s3://warehouse/orders/b.parquet");
+
+    verify(access, times(1)).open(integration);
+    // Each call still stamps the location it was asked for.
+    assertEquals("s3://warehouse/orders/a.parquet", first.getStorageCredentials(0).getPrefix());
+    assertEquals("s3://warehouse/orders/b.parquet", second.getStorageCredentials(0).getPrefix());
+    assertEquals(
+        "ASIA-VENDED", second.getStorageCredentials(0).getConfigMap().get("s3.access-key-id"));
+
+    // Vended at 14:00 for an hour: held for thirty minutes, so half the lifetime always remains.
+    nanos.addAndGet(Duration.ofMinutes(29).toNanos());
+    vendIntegrationQuery("s3://warehouse/orders/a.parquet");
+    verify(access, times(1)).open(integration);
+    nanos.addAndGet(Duration.ofMinutes(1).toNanos());
+    vendIntegrationQuery("s3://warehouse/orders/a.parquet");
+    verify(access, times(2)).open(integration);
+  }
+
+  @Test
+  void aCachedIntegrationVendStillRequiresTheVendPermission() {
+    useVendCache();
+    when(client.capabilities())
+        .thenReturn(CatalogCapabilities.of(CatalogCapability.VEND_STORAGE_CREDENTIALS));
+    when(client.vendStorageCredentials(new CatalogObjectName(NamespacePath.of("sales"), "orders")))
+        .thenReturn(Optional.of(integrationCredentials(EXPIRY)));
+    vendor.vendForTable(
+        integrationTable(),
+        "s3://warehouse/orders",
+        SourceCatalogCredentialVendor.CredentialUse.QUERY);
+
+    when(vendor.principal.get())
+        .thenReturn(
+            ai.floedb.floecat.common.rpc.PrincipalContext.newBuilder()
+                .setAccountId("acct")
+                .setCorrelationId("corr")
+                .addPermissions("table.read")
+                .build());
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                vendor.vendForTable(
+                    integrationTable(),
+                    "s3://warehouse/orders",
+                    SourceCatalogCredentialVendor.CredentialUse.QUERY));
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, failure.getStatus().getCode());
+  }
+
+  @Test
+  void aConnectorVendIsReusedUntilTheConnectorChanges() {
+    Connector connector = delegatingConnector("conn-1");
+    when(vendor.connectorRepo.getById(connector.getResourceId()))
+        .thenReturn(Optional.of(connector));
+    AtomicInteger builds = countingSource("ASIA-CONNECTOR");
+    useVendCache();
+
+    for (int i = 0; i < 2; i++) {
+      assertEquals(
+          "ASIA-CONNECTOR",
+          vendQuery(connector.getResourceId())
+              .getStorageCredentials(0)
+              .getConfigMap()
+              .get("s3.access-key-id"));
+    }
+    assertEquals(1, builds.get());
+
+    // A reconfigured connector is a different source, so its first vend goes upstream.
+    when(vendor.connectorRepo.getById(connector.getResourceId()))
+        .thenReturn(
+            Optional.of(connector.toBuilder().putProperties("s3.region", "eu-west-1").build()));
+    vendQuery(connector.getResourceId());
+    assertEquals(2, builds.get());
+  }
+
+  @Test
+  void onlyTokenExchangeCredentialsAreCallerScoped() {
+    Map<AuthCredentials.CredentialCase, Boolean> expected =
+        Map.of(
+            AuthCredentials.CredentialCase.BEARER, false,
+            AuthCredentials.CredentialCase.CLIENT, false,
+            AuthCredentials.CredentialCase.CLI, false,
+            AuthCredentials.CredentialCase.AWS, false,
+            AuthCredentials.CredentialCase.AWS_WEB_IDENTITY, false,
+            AuthCredentials.CredentialCase.AWS_ASSUME_ROLE, false,
+            AuthCredentials.CredentialCase.RFC8693_TOKEN_EXCHANGE, true,
+            AuthCredentials.CredentialCase.AZURE_TOKEN_EXCHANGE, true,
+            AuthCredentials.CredentialCase.GCP_TOKEN_EXCHANGE, true,
+            AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET, false);
+    // A new credential kind must be classified here before it can be cached.
+    assertThat(expected.keySet())
+        .containsExactlyInAnyOrder(AuthCredentials.CredentialCase.values());
+    expected.forEach(
+        (credentialCase, callerScoped) ->
+            assertEquals(
+                callerScoped,
+                SourceCatalogCredentialVendor.exchangesCallerToken(
+                    credentialsOfCase(credentialCase)),
+                credentialCase.name()));
+  }
+
+  @Test
+  void aClientCredentialExchangeRunsOnlyWhenNoAnswerIsHeld() throws Exception {
+    AtomicInteger tokenRequests = new AtomicInteger();
+    com.sun.net.httpserver.HttpServer tokenServer =
+        com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+    tokenServer.createContext(
+        "/token",
+        exchange -> {
+          tokenRequests.incrementAndGet();
+          byte[] body =
+              "{\"access_token\":\"tok\",\"token_type\":\"bearer\",\"expires_in\":3600}"
+                  .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+          exchange.getResponseHeaders().add("Content-Type", "application/json");
+          exchange.sendResponseHeaders(200, body.length);
+          exchange.getResponseBody().write(body);
+          exchange.close();
+        });
+    tokenServer.start();
+    // The token endpoint is loopback; the auth module refuses that unless explicitly allowed.
+    System.setProperty("floecat.security.allow-loopback-token-endpoints", "true");
+    try {
+      Connector connector =
+          delegatingConnector("conn-oauth").toBuilder()
+              .setAuth(AuthConfig.newBuilder().setScheme("oauth2"))
+              .build();
+      when(vendor.connectorRepo.getById(connector.getResourceId()))
+          .thenReturn(Optional.of(connector));
+      vendor.credentialResolver = mock(CredentialResolver.class);
+      when(vendor.credentialResolver.resolve("acct", "conn-oauth"))
+          .thenReturn(
+              Optional.of(
+                  AuthCredentials.newBuilder()
+                      .setClient(
+                          AuthCredentials.ClientCredentials.newBuilder()
+                              .setEndpoint(
+                                  "http://127.0.0.1:"
+                                      + tokenServer.getAddress().getPort()
+                                      + "/token")
+                              .setClientId("id")
+                              .setClientSecret("secret"))
+                      .build()));
+      AtomicInteger builds = countingSource("ASIA-OAUTH");
+      useVendCache();
+
+      for (int i = 0; i < 2; i++) {
+        vendQuery(connector.getResourceId());
+      }
+
+      assertEquals(1, tokenRequests.get());
+      assertEquals(1, builds.get());
+    } finally {
+      System.clearProperty("floecat.security.allow-loopback-token-endpoints");
+      tokenServer.stop(0);
+    }
+  }
+
+  @Test
+  void connectorAnswersThatDelegateNothingAreNotHeld() {
+    useVendCache();
+
+    // A catalog that vends an empty credential.
+    Connector empty = delegatingConnector("conn-empty");
+    when(vendor.connectorRepo.getById(empty.getResourceId())).thenReturn(Optional.of(empty));
+    FloecatConnector emptySource = mock(FloecatConnector.class);
+    when(emptySource.vendStorageCredentials("cat.schema", "orders"))
+        .thenReturn(
+            Optional.of(new FloecatConnector.VendedStorageCredentials(Map.of(), null, EXPIRY)));
+    AtomicInteger emptyBuilds = countingFactory(emptySource);
+    for (int i = 0; i < 2; i++) {
+      assertThat(vendQuery(empty.getResourceId())).isNull();
+    }
+    assertEquals(2, emptyBuilds.get());
+
+    // A catalog that ignored the delegation header and echoed the connector's own key.
+    Connector own =
+        delegatingConnector("conn-own").toBuilder()
+            .putProperties("s3.access-key-id", "AKIA-OWN")
+            .build();
+    when(vendor.connectorRepo.getById(own.getResourceId())).thenReturn(Optional.of(own));
+    AtomicInteger ownBuilds = countingSource("AKIA-OWN");
+    for (int i = 0; i < 2; i++) {
+      assertThat(vendQuery(own.getResourceId())).isNull();
+    }
+    assertEquals(2, ownBuilds.get());
+  }
+
+  @Test
+  void aFailedConnectorVendIsNotHeld() {
+    useVendCache();
+    Connector connector = delegatingConnector("conn-flaky");
+    when(vendor.connectorRepo.getById(connector.getResourceId()))
+        .thenReturn(Optional.of(connector));
+    FloecatConnector source = mock(FloecatConnector.class);
+    when(source.vendStorageCredentials("cat.schema", "orders"))
+        .thenThrow(new IllegalStateException("catalog unavailable"))
+        .thenReturn(Optional.of(connectorCredentials("ASIA-RECOVERED")));
+    AtomicInteger builds = countingFactory(source);
+
+    assertThrows(StatusRuntimeException.class, () -> vendQuery(connector.getResourceId()));
+    for (int i = 0; i < 2; i++) {
+      var response = vendQuery(connector.getResourceId());
+      assertEquals(
+          "ASIA-RECOVERED",
+          response.getStorageCredentials(0).getConfigMap().get("s3.access-key-id"));
+    }
+    assertEquals(2, builds.get());
+  }
+
+  private void useVendCache() {
+    useVendCache(System::nanoTime);
+  }
+
+  private void useVendCache(LongSupplier ticker) {
+    vendor.vendCache = VendedCredentialCache.of(0.5, 100, vendor.clock, ticker);
+  }
+
+  /** A query vend for the integration table, stamped for {@code location}. */
+  private ResolveStorageAuthorityResponse vendIntegrationQuery(String location) {
+    return vendor.vendForTable(
+        integrationTable(), location, SourceCatalogCredentialVendor.CredentialUse.QUERY);
+  }
+
+  /** A query vend for the {@code cat.schema.orders} table behind {@code connectorId}. */
+  private ResolveStorageAuthorityResponse vendQuery(ResourceId connectorId) {
+    return vendor.vendForTable(
+        tableFor(connectorId),
+        "s3://warehouse/orders/data.parquet",
+        SourceCatalogCredentialVendor.CredentialUse.QUERY);
+  }
+
+  /** A REST Iceberg connector in account {@code acct} that asks its catalog to vend. */
+  private static Connector delegatingConnector(String id) {
+    return Connector.newBuilder()
+        .setResourceId(
+            ResourceId.newBuilder()
+                .setAccountId("acct")
+                .setKind(ResourceKind.RK_CONNECTOR)
+                .setId(id))
+        .setKind(ConnectorKind.CK_ICEBERG)
+        .setState(ConnectorState.CS_ACTIVE)
+        .putProperties("iceberg.source", "rest")
+        .putProperties("header.X-Iceberg-Access-Delegation", "vended-credentials")
+        .build();
+  }
+
+  private static FloecatConnector.VendedStorageCredentials connectorCredentials(String accessKey) {
+    return new FloecatConnector.VendedStorageCredentials(
+        Map.of(
+            "s3.access-key-id", accessKey,
+            "s3.secret-access-key", "secret",
+            "s3.session-token", "session"),
+        "s3://warehouse/orders",
+        EXPIRY);
+  }
+
+  /** Installs a source vending {@code accessKey} and returns how many times it is built. */
+  private AtomicInteger countingSource(String accessKey) {
+    FloecatConnector source = mock(FloecatConnector.class);
+    when(source.vendStorageCredentials("cat.schema", "orders"))
+        .thenReturn(Optional.of(connectorCredentials(accessKey)));
+    return countingFactory(source);
+  }
+
+  private AtomicInteger countingFactory(FloecatConnector source) {
+    AtomicInteger builds = new AtomicInteger();
+    vendor.connectorFactory =
+        ignored -> {
+          builds.incrementAndGet();
+          return source;
+        };
+    return builds;
+  }
+
+  /** An {@code AuthCredentials} with the given oneof case set to its empty message. */
+  private static AuthCredentials credentialsOfCase(AuthCredentials.CredentialCase credentialCase) {
+    if (credentialCase == AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
+      return AuthCredentials.getDefaultInstance();
+    }
+    var field = AuthCredentials.getDescriptor().findFieldByNumber(credentialCase.getNumber());
+    AuthCredentials.Builder builder = AuthCredentials.newBuilder();
+    return builder.setField(field, builder.newBuilderForField(field).build()).build();
+  }
+
+  private static VendedStorageCredentials integrationCredentials(Instant expiresAt) {
+    return new VendedStorageCredentials(
+        Map.of(
+            "s3.access-key-id", "ASIA-VENDED",
+            "s3.secret-access-key", "secret-vended",
+            "s3.session-token", "session-vended"),
+        "s3://warehouse/orders",
+        Optional.of(expiresAt));
   }
 
   private static Table tableFor(ResourceId connectorId) {
