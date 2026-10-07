@@ -54,6 +54,7 @@ import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.catalog.ViewCatalog;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
+import org.apache.iceberg.exceptions.NoSuchTableException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.StorageCredential;
@@ -1060,6 +1061,30 @@ class IcebergRestCatalogClientTest {
 
     assertEquals(CatalogAccessException.Code.NOT_FOUND, error.code());
     assertFalse(error.getMessage().contains("secret-detail"));
+  }
+
+  @Test
+  void translatesNonIcebergTableLoadsToNotFoundWithoutLeakingTheirMessage() {
+    NoSuchTableException failure =
+        new NoSuchTableException("Input table is not an iceberg table: secret-detail");
+
+    CatalogAccessException error =
+        assertThrows(
+            CatalogAccessException.class,
+            () -> {
+              throw IcebergRestCatalogErrors.translate("table loading", failure);
+            });
+
+    assertEquals(CatalogAccessException.Code.NOT_FOUND, error.code());
+    assertEquals("Upstream catalog table loading failed", error.getMessage());
+    assertSame(failure, error.getCause());
+  }
+
+  @Test
+  void leavesUnrelatedRuntimeFailuresUnmodified() {
+    IllegalStateException failure = new IllegalStateException("unexpected implementation fault");
+
+    assertSame(failure, IcebergRestCatalogErrors.translate("table loading", failure));
   }
 
   @Test

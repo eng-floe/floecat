@@ -1130,7 +1130,7 @@ public class CatalogOverlayReconciler {
   }
 
   /**
-   * Whether something the operator named is at or below this namespace.
+   * Whether something the operator named is strictly below this namespace.
    *
    * <p>The question a failed {@code listNamespaces} asks: if an include sits underneath this
    * branch, the walk had to enumerate it to reach what was asked for, and a denial there means the
@@ -1139,7 +1139,10 @@ public class CatalogOverlayReconciler {
    */
   private static boolean mustDescendToReachASelection(CatalogOverlay overlay, NamespacePath path) {
     return overlay.getIncludeNamespacesList().stream()
-        .anyMatch(include -> startsWith(include.getSegmentsList(), path.segments()));
+        .anyMatch(
+            include ->
+                include.getSegmentsCount() > path.segments().size()
+                    && startsWith(include.getSegmentsList(), path.segments()));
   }
 
   private static boolean selected(CatalogOverlay overlay, NamespacePath path) {

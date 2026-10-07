@@ -42,6 +42,7 @@ import ai.floedb.floecat.catalog.access.CatalogViewDefinition;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.catalog.iceberg.rest.IcebergRestCatalogClientTestFactory;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -84,6 +85,7 @@ class CatalogOverlayReconcilerTest {
   private CatalogIntegration integration;
   private CatalogOverlay overlay;
   private FakeCatalogClient client;
+  private CatalogIntegrationAccess access;
   private InMemoryPointerStore pointers;
 
   @BeforeEach
@@ -122,7 +124,7 @@ class CatalogOverlayReconcilerTest {
     overlays.create(overlay);
 
     client = new FakeCatalogClient();
-    var access = mock(CatalogIntegrationAccess.class);
+    access = mock(CatalogIntegrationAccess.class);
     when(access.open(integration)).thenReturn(client);
     reconciler = new CatalogOverlayReconciler();
     reconciler.access = access;
@@ -385,6 +387,88 @@ class CatalogOverlayReconcilerTest {
         tables
             .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
             .isPresent());
+  }
+
+  @Test
+  void aNonIcebergObjectFromTheIcebergRestClientIsSkippedWithoutUnsafeRetirement() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName callCenter = new CatalogObjectName(sales, "call_center");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(callCenter, catalogTable(callCenter, "call-center-uuid"));
+
+    reconcile();
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "call_center")
+            .isPresent());
+
+    CatalogClient icebergRestClient =
+        IcebergRestCatalogClientTestFactory.catalogWithNonIcebergTable(sales, callCenter);
+    when(access.open(integration)).thenReturn(icebergRestClient);
+
+    var result = reconcile();
+
+    assertEquals(1, result.objectsSkipped());
+    assertEquals(0, result.tablesDeleted());
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "call_center")
+            .isPresent());
+  }
+
+  @Test
+  void anExactIncludeToleratesUnsupportedChildTraversalAfterReconcilingItsTables() {
+    NamespacePath database = NamespacePath.of("yb_customer_workloads_zurich_sf10000");
+    CatalogObjectName orders = new CatalogObjectName(database, "orders");
+    client.children.put(NamespacePath.root(), List.of(database));
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+    client.invalidNamespaceListings.add(database);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("yb_customer_workloads_zurich_sf10000"))
+            .build();
+
+    var result = reconcileWith(included);
+
+    assertEquals(1, result.tablesCreated());
+    assertEquals(1, result.branchesSkipped());
+    var namespace =
+        namespaces
+            .getByPath("acct", "catalog", List.of("yb_customer_workloads_zurich_sf10000"))
+            .orElseThrow();
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .isPresent());
+  }
+
+  @Test
+  void aDeeperIncludeStillRequiresChildTraversal() {
+    NamespacePath database = NamespacePath.of("glue_database");
+    client.children.put(NamespacePath.root(), List.of(database));
+    client.invalidNamespaceListings.add(database);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("glue_database")
+                    .addSegments("nested"))
+            .build();
+
+    var error =
+        assertThrows(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.class,
+            () -> reconcileWith(included));
+
+    assertEquals(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.Code.INVALID_CONFIGURATION,
+        error.code());
   }
 
   /** A partial reconcile says so, because zeros alone cannot distinguish it from a quiet one. */
@@ -1378,8 +1462,16 @@ class CatalogOverlayReconcilerTest {
     /** Branches whose schema listing the principal cannot enumerate. */
     final java.util.Set<NamespacePath> deniedNamespaceListings = new java.util.HashSet<>();
 
+    /** Branches whose provider does not support enumerating child namespaces. */
+    final java.util.Set<NamespacePath> invalidNamespaceListings = new java.util.HashSet<>();
+
     @Override
     public List<NamespacePath> listNamespaces(NamespacePath parent) {
+      if (invalidNamespaceListings.contains(parent)) {
+        throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.Code.INVALID_CONFIGURATION,
+            "provider does not support child namespaces under " + parent);
+      }
       if (deniedNamespaceListings.contains(parent)) {
         throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
             ai.floedb.floecat.catalog.access.CatalogAccessException.Code.PERMISSION_DENIED,

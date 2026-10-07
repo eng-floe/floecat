@@ -188,6 +188,30 @@ class CatalogIntegrationDiscoveryTest {
     verify(client).validateStorageAccess(callCenter, vended);
   }
 
+  @Test
+  void validationSkipsANonIcebergListedObjectAndContinuesToAnIcebergTable() {
+    NamespacePath defaults = NamespacePath.of("glue_database");
+    CatalogObjectName callCenter = new CatalogObjectName(defaults, "call_center");
+    CatalogObjectName orders = new CatalogObjectName(defaults, "orders");
+    var vended = new VendedStorageCredentials(Map.of("key", "value"), "", Optional.empty());
+    when(client.capabilities()).thenReturn(validationCapabilities());
+    when(client.listTables(NamespacePath.root())).thenReturn(List.of());
+    when(client.listNamespaces(NamespacePath.root())).thenReturn(List.of(defaults));
+    when(client.listTables(defaults)).thenReturn(List.of(callCenter, orders));
+    when(client.vendStorageCredentials(callCenter))
+        .thenThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.NOT_FOUND, "listed object is not an Iceberg table"));
+    when(client.vendStorageCredentials(orders)).thenReturn(Optional.of(vended));
+
+    var result = discovery.validate(integration);
+
+    assertTrue(result.valid());
+    verify(client).vendStorageCredentials(callCenter);
+    verify(client).vendStorageCredentials(orders);
+    verify(client).validateStorageAccess(orders, vended);
+  }
+
   /**
    * A failure that will answer identically for every remaining table stops the search where it
    * stands: walking the rest only spends the budget to rediscover what is already known.
