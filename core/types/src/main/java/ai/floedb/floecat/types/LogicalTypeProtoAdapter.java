@@ -29,13 +29,15 @@ import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Adapter between Floecat {@link LogicalType} objects and their protobuf wire representations
  * ({@code ScalarStats}, {@code UpstreamStamp}).
  *
- * <p>Encoding and decoding of type strings is delegated to {@link LogicalTypeFormat}. Encoding and
- * decoding of min/max values is delegated to {@link ValueEncoders}.
+ * <p>Encoding and decoding of type strings is delegated to {@link LogicalTypeFormat}. Typed bounds
+ * use {@link #encodeTypedValue} and {@link #decodeValue(LogicalType, ScalarValue)}; the legacy
+ * string fields remain delegated to {@link ValueEncoders} for compatibility.
  *
  * <p>Typical usage:
  *
@@ -150,18 +152,17 @@ public final class LogicalTypeProtoAdapter {
       case TIMESTAMP ->
           ScalarValue.newBuilder()
               .setTs(
-                  temporalUnits(
-                      ((LocalDateTime) value).toInstant(ZoneOffset.UTC).getEpochSecond()
-                              * 1_000_000_000L
-                          + ((LocalDateTime) value).getNano(),
+                  temporalEpochUnits(
+                      ((LocalDateTime) value).toInstant(ZoneOffset.UTC).getEpochSecond(),
+                      ((LocalDateTime) value).getNano(),
                       type.temporalPrecision()))
               .build();
       case TIMESTAMPTZ ->
           ScalarValue.newBuilder()
               .setTstz(
-                  temporalUnits(
-                      ((Instant) value).getEpochSecond() * 1_000_000_000L
-                          + ((Instant) value).getNano(),
+                  temporalEpochUnits(
+                      ((Instant) value).getEpochSecond(),
+                      ((Instant) value).getNano(),
                       type.temporalPrecision()))
               .build();
       case DECIMAL -> ScalarValue.newBuilder().setDec(((BigDecimal) value).toPlainString()).build();
@@ -173,6 +174,24 @@ public final class LogicalTypeProtoAdapter {
       case STRING, UUID, JSON -> ScalarValue.newBuilder().setS(value.toString()).build();
       default -> throw new IllegalArgumentException("typed min/max unsupported for " + type.kind());
     };
+  }
+
+  /**
+   * Encodes a typed bound when its numeric representation is in range. An out-of-range temporal
+   * bound is simply unavailable for pruning; callers should keep the legacy value, if any.
+   */
+  public static Optional<ScalarValue> tryEncodeTypedValue(LogicalType type, Object value) {
+    try {
+      return Optional.of(encodeTypedValue(type, value));
+    } catch (ArithmeticException overflow) {
+      return Optional.empty();
+    }
+  }
+
+  private static long temporalEpochUnits(long epochSecond, int nano, Integer precision) {
+    long scale = temporalScale(precision);
+    long unitsPerSecond = 1_000_000_000L / scale;
+    return Math.addExact(Math.multiplyExact(epochSecond, unitsPerSecond), nano / scale);
   }
 
   public static Object columnMinValue(ScalarStats stats) {
@@ -518,16 +537,18 @@ public final class LogicalTypeProtoAdapter {
   }
 
   private static LocalDateTime temporalTimestamp(long units, Integer precision) {
-    long nanos = temporalNanos(units, precision);
-    long seconds = Math.floorDiv(nanos, 1_000_000_000L);
-    int nano = (int) Math.floorMod(nanos, 1_000_000_000L);
+    long scale = temporalScale(precision);
+    long unitsPerSecond = 1_000_000_000L / scale;
+    long seconds = Math.floorDiv(units, unitsPerSecond);
+    int nano = (int) Math.multiplyExact(Math.floorMod(units, unitsPerSecond), scale);
     return LocalDateTime.ofEpochSecond(seconds, nano, ZoneOffset.UTC);
   }
 
   private static Instant temporalInstant(long units, Integer precision) {
-    long nanos = temporalNanos(units, precision);
-    long seconds = Math.floorDiv(nanos, 1_000_000_000L);
-    int nano = (int) Math.floorMod(nanos, 1_000_000_000L);
+    long scale = temporalScale(precision);
+    long unitsPerSecond = 1_000_000_000L / scale;
+    long seconds = Math.floorDiv(units, unitsPerSecond);
+    int nano = (int) Math.multiplyExact(Math.floorMod(units, unitsPerSecond), scale);
     return Instant.ofEpochSecond(seconds, nano);
   }
 

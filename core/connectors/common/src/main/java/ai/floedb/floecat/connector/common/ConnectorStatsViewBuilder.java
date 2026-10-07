@@ -95,8 +95,12 @@ public final class ConnectorStatsViewBuilder {
       ScalarValue min = null;
       ScalarValue max = null;
       if (lt != null && LogicalComparators.isStatsOrderable(lt)) {
-        if (agg.min() != null) min = LogicalTypeProtoAdapter.encodeTypedValue(lt, agg.min());
-        if (agg.max() != null) max = LogicalTypeProtoAdapter.encodeTypedValue(lt, agg.max());
+        if (agg.min() != null) {
+          min = LogicalTypeProtoAdapter.tryEncodeTypedValue(lt, agg.min()).orElse(null);
+        }
+        if (agg.max() != null) {
+          max = LogicalTypeProtoAdapter.tryEncodeTypedValue(lt, agg.max()).orElse(null);
+        }
       }
 
       Ndv ndv = null;

@@ -34,6 +34,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.stats.identity.TargetStatsRecords;
+import ai.floedb.floecat.types.rpc.LogicalType;
+import ai.floedb.floecat.types.rpc.ScalarValue;
 import com.google.protobuf.ByteString;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -108,6 +110,77 @@ class FileGroupTargetStatsRollupSketchTest {
     assertFalse(lowerUnknown.hasMin(), "an unknown contributor minimum must remain unknown");
     assertTrue(lowerUnknown.hasMax());
     assertEquals("z", lowerUnknown.getMax());
+  }
+
+  @Test
+  void fileRecordRollup_requiresLegacyBoundsFromEveryContributor() {
+    ScalarStats legacy =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
+            .setLogicalType("INT")
+            .setRowCount(10)
+            .setMin("1")
+            .setMax("10")
+            .build();
+    ScalarStats typedOnly =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
+            .setLogicalType("INT")
+            .setType(LogicalType.newBuilder().setKind(LogicalType.Kind.TK_INT).build())
+            .setRowCount(10)
+            .setMinValue(ScalarValue.newBuilder().setI64(2).build())
+            .setMaxValue(ScalarValue.newBuilder().setI64(9).build())
+            .build();
+
+    ScalarStats merged =
+        onlyScalar(
+            FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+                TABLE,
+                1L,
+                Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+                List.of(fileRecord(1L, legacy), fileRecord(1L, typedOnly))));
+
+    assertFalse(merged.hasMin());
+    assertFalse(merged.hasMax());
+    assertTrue(merged.hasMinValue());
+    assertTrue(merged.hasMaxValue());
+  }
+
+  @Test
+  void fileRecordRollup_keepsMostSpecificTemporalDescriptorRegardlessOfOrder() {
+    ScalarStats legacyTimestamp =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
+            .setLogicalType("TIMESTAMP")
+            .setType(LogicalType.newBuilder().setKind(LogicalType.Kind.TK_TIMESTAMP).build())
+            .setRowCount(10)
+            .setMin("1")
+            .setMax("10")
+            .build();
+    ScalarStats nanosecondTimestamp =
+        legacyTimestamp.toBuilder()
+            .setType(
+                LogicalType.newBuilder()
+                    .setKind(LogicalType.Kind.TK_TIMESTAMP)
+                    .setTemporalPrecision(9)
+                    .build())
+            .build();
+
+    for (List<ScalarStats> order :
+        List.of(
+            List.of(legacyTimestamp, nanosecondTimestamp),
+            List.of(nanosecondTimestamp, legacyTimestamp))) {
+      ScalarStats merged =
+          onlyScalar(
+              FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+                  TABLE,
+                  1L,
+                  Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+                  order.stream().map(scalar -> fileRecord(1L, scalar)).toList()));
+
+      assertTrue(merged.hasType());
+      assertEquals(9, merged.getType().getTemporalPrecision());
+    }
   }
 
   @Test

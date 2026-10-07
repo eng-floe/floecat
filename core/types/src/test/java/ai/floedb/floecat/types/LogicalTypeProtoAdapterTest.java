@@ -17,6 +17,7 @@
 package ai.floedb.floecat.types;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
@@ -83,5 +84,35 @@ class LogicalTypeProtoAdapterTest {
         ScalarStats.newBuilder().setLogicalType("INT").setMin("42").setMax("99").build();
     assertEquals(42L, LogicalTypeProtoAdapter.columnMinValue(stats));
     assertEquals(99L, LogicalTypeProtoAdapter.columnMaxValue(stats));
+  }
+
+  @Test
+  void temporalBoundsOutsideEpochNanosRangeAreDroppedInsteadOfWrapped() {
+    LogicalType type = LogicalType.temporal(LogicalKind.TIMESTAMPTZ, 9);
+
+    assertEquals(
+        java.util.Optional.empty(),
+        LogicalTypeProtoAdapter.tryEncodeTypedValue(type, Instant.parse("9999-12-31T00:00:00Z")));
+    assertEquals(
+        java.util.Optional.empty(),
+        LogicalTypeProtoAdapter.tryEncodeTypedValue(type, Instant.parse("0001-01-01T00:00:00Z")));
+
+    LogicalType micros = LogicalType.temporal(LogicalKind.TIMESTAMPTZ, 6);
+    Instant sentinel = Instant.parse("9999-12-31T00:00:00Z");
+    ScalarValue encoded =
+        LogicalTypeProtoAdapter.tryEncodeTypedValue(micros, sentinel).orElseThrow();
+    assertEquals(sentinel, LogicalTypeProtoAdapter.decodeValue(micros, encoded));
+  }
+
+  @Test
+  void temporalBoundsOutsideEpochNanosRangeAreIgnoredWhenDecoded() {
+    LogicalType type = LogicalType.temporal(LogicalKind.TIMESTAMPTZ, 0);
+    ScalarStats stats =
+        ScalarStats.newBuilder()
+            .setType(LogicalTypeProtoAdapter.toProto(type))
+            .setMaxValue(ScalarValue.newBuilder().setTstz(Long.MAX_VALUE).build())
+            .build();
+
+    assertNull(LogicalTypeProtoAdapter.columnMaxValue(stats));
   }
 }
