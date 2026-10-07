@@ -261,6 +261,11 @@
     </dependency>
 
     <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>sts</artifactId>
+    </dependency>
+
+    <dependency>
       <groupId>ai.floedb.floecat</groupId>
       <artifactId>floecat-metagraph</artifactId>
       <version>${project.version}</version>

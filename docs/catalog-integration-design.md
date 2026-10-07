@@ -279,10 +279,14 @@ The SPI validates persistable configuration so secrets, credential-provider hand
 secret-bearing headers cannot cross the configuration boundary. Secret values are supplied
 separately through `ResolvedCatalogCredentials`.
 
-The service adapter translates OAuth client credentials, bearer tokens, and explicit static AWS
-SigV4 credentials from the Integration protobuf and `CatalogIntegrationCredentialStore` onto the
-SPI's authentication schemes. Ambient and assume-role AWS resolution are not yet wired into this
-adapter and fail explicitly. Integration authentication is required, so the adapter never selects
+The service adapter translates OAuth client credentials, bearer tokens, and AWS SigV4 credentials
+from the Integration protobuf and `CatalogIntegrationCredentialStore` onto the SPI's authentication
+schemes. Static access keys come from the credential store. Ambient and assume-role sources are
+resolved into renewable, process-local catalog credential registrations. Ambient credentials are
+protected by deployment-owned enablement; assume-role targets are authorized by AWS identity and
+role trust policies so customers can add roles without deployment configuration changes. Integration
+credentials are reused from a bounded, expiry-aware cache, with concurrent misses coalesced and
+transient STS failures retried. Integration authentication is required, so the adapter never selects
 the SPI's `NONE` scheme. Dedicated Integration RPCs validate the catalog and storage credential
 boundaries and provide paginated, read-only upstream namespace and object listing. Scheduling
 remains deferred.

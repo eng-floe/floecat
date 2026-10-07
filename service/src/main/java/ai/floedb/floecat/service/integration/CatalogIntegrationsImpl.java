@@ -98,6 +98,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
   @Inject CatalogIntegrationDiscovery discovery;
   @Inject CatalogOverlayReconciler overlayReconciler;
+  @Inject CatalogIntegrationAwsCredentialPolicy awsCredentialPolicy;
 
   @Override
   public Uni<ListCatalogIntegrationsResponse> listCatalogIntegrations(
@@ -375,6 +376,8 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                           corr);
                   validateAuthenticationType(
                       spec.getType(), preparedAuthentication.authentication(), corr);
+                  validateAwsCredentialPolicy(
+                      preparedAuthentication.authentication(), awsCredentialPolicy, corr);
                   byte[] fingerprint =
                       new Canonicalizer()
                           .scalar("display_name", name)
@@ -707,6 +710,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                           corr);
                   validateAuthenticationType(
                       current.value().getType(), prepared.authentication(), corr);
+                  validateAwsCredentialPolicy(prepared.authentication(), awsCredentialPolicy, corr);
                   long allocatedGeneration =
                       credentialStore.storeRotation(
                           id,
@@ -926,6 +930,20 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
         && configuration != CatalogAuthentication.ConfigurationCase.BEARER) {
       throw GrpcErrors.invalidArgument(
           corr, FIELD, Map.of("field", "authentication.configuration"));
+    }
+  }
+
+  private static void validateAwsCredentialPolicy(
+      CatalogAuthentication authentication,
+      CatalogIntegrationAwsCredentialPolicy policy,
+      String corr) {
+    if (authentication.getConfigurationCase() != CatalogAuthentication.ConfigurationCase.AWS_SIGV4)
+      return;
+    try {
+      policy.requireAllowed(authentication.getAwsSigv4());
+    } catch (IllegalArgumentException failure) {
+      throw GrpcErrors.invalidArgument(
+          corr, FIELD, Map.of("field", "authentication.aws_sigv4.credentials"));
     }
   }
 

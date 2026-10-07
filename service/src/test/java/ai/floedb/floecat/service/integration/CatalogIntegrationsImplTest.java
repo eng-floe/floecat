@@ -29,6 +29,7 @@ import ai.floedb.floecat.common.rpc.PrincipalContext;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.integration.rpc.AwsAssumeRoleAuthentication;
+import ai.floedb.floecat.integration.rpc.AwsDefaultAuthentication;
 import ai.floedb.floecat.integration.rpc.AwsSigV4Authentication;
 import ai.floedb.floecat.integration.rpc.BearerAuthentication;
 import ai.floedb.floecat.integration.rpc.CatalogAuthentication;
@@ -94,6 +95,8 @@ class CatalogIntegrationsImplTest {
     service.credentialCleanup.integrations = service.integrations;
     service.credentialCleanup.credentials = service.credentialStore;
     service.discovery = mock(CatalogIntegrationDiscovery.class);
+    service.awsCredentialPolicy = new CatalogIntegrationAwsCredentialPolicy();
+    service.awsCredentialPolicy.defaultCredentialsEnabled = true;
     when(secretsManager.putIfAbsent(any(), any(), any(), any())).thenReturn(true);
     installBasePrincipal(service, service.principal);
     when(service.principal.get()).thenReturn(principal());
@@ -678,6 +681,50 @@ class CatalogIntegrationsImplTest {
 
     assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
     verify(service.integrations, never()).createWithMeta(any());
+  }
+
+  @Test
+  void createRejectsAmbientAwsCredentialsWhenDisabledByDeploymentPolicy() {
+    service.awsCredentialPolicy.defaultCredentialsEnabled = false;
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogIntegration(
+                        createRequestWithAuthentication(
+                            CatalogAuthentication.newBuilder()
+                                .setAwsSigv4(
+                                    AwsSigV4Authentication.newBuilder()
+                                        .setRegion("us-east-1")
+                                        .setAwsDefault(
+                                            AwsDefaultAuthentication.getDefaultInstance()))
+                                .build()))
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(service.integrations, never()).createWithMeta(any());
+  }
+
+  @Test
+  void createAcceptsCustomerManagedAssumeRoleArn() {
+    service
+        .createCatalogIntegration(
+            createRequestWithAuthentication(
+                CatalogAuthentication.newBuilder()
+                    .setAwsSigv4(
+                        AwsSigV4Authentication.newBuilder()
+                            .setRegion("us-east-1")
+                            .setAwsAssumeRole(
+                                AwsAssumeRoleAuthentication.newBuilder()
+                                    .setRoleArn("arn:aws:iam::987654321098:role/customer-catalog")))
+                    .build()))
+        .await()
+        .indefinitely();
+
+    verify(service.integrations).createWithMeta(any());
   }
 
   @Test

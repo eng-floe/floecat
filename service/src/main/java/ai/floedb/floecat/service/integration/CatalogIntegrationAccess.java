@@ -9,11 +9,21 @@ package ai.floedb.floecat.service.integration;
 
 import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.catalog.access.CatalogAuthenticationScheme;
+import ai.floedb.floecat.catalog.access.CatalogCapabilities;
 import ai.floedb.floecat.catalog.access.CatalogClient;
 import ai.floedb.floecat.catalog.access.CatalogClientFactory;
 import ai.floedb.floecat.catalog.access.CatalogConnectionConfig;
+import ai.floedb.floecat.catalog.access.CatalogObjectName;
 import ai.floedb.floecat.catalog.access.CatalogProtocol;
+import ai.floedb.floecat.catalog.access.CatalogTable;
+import ai.floedb.floecat.catalog.access.CatalogView;
+import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.ResolvedCatalogCredentials;
+import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
+import ai.floedb.floecat.catalog.iceberg.rest.auth.AwsCredentialScope;
+import ai.floedb.floecat.catalog.iceberg.rest.auth.AwsCredentialValue;
+import ai.floedb.floecat.catalog.iceberg.rest.auth.RefreshingAwsCredentialsRegistry;
+import ai.floedb.floecat.integration.rpc.AwsSigV4Authentication;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -22,6 +32,10 @@ import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.function.Supplier;
+import software.amazon.awssdk.core.exception.SdkClientException;
+import software.amazon.awssdk.services.sts.model.StsException;
 
 /** Resolves one persisted Catalog Integration into a short-lived catalog-access client. */
 @ApplicationScoped
@@ -33,6 +47,16 @@ public class CatalogIntegrationAccess {
   interface ClientOpener {
     CatalogClient open(
         CatalogConnectionConfig config, ResolvedCatalogCredentials resolvedCredentials);
+  }
+
+  @FunctionalInterface
+  interface AwsCredentialSourceResolver {
+    ResolvedAwsCredentials resolve(AwsSigV4Authentication authentication);
+  }
+
+  @FunctionalInterface
+  interface AwsCredentialRegistrar {
+    AwsCredentialRegistration register(Supplier<ResolvedAwsCredentials> resolver);
   }
 
   /**
@@ -73,6 +97,7 @@ public class CatalogIntegrationAccess {
   java.time.Clock clock = java.time.Clock.systemUTC();
 
   @Inject CatalogIntegrationCredentialStore credentialStore;
+  @Inject CatalogIntegrationAwsCredentialPolicy awsCredentialPolicy;
 
   /**
    * The region a provider should assume when the integration names none.
@@ -92,11 +117,37 @@ public class CatalogIntegrationAccess {
   // Package-private so unit tests can install a provider without using ServiceLoader.
   ClientOpener clientOpener = CatalogClientFactory.load()::open;
 
+  @Inject CatalogIntegrationAwsCredentialResolver integrationAwsCredentialResolver;
+  AwsCredentialSourceResolver awsCredentialSourceResolver =
+      authentication -> integrationAwsCredentialResolver.resolve(authentication);
+  AwsCredentialRegistrar awsCredentialRegistrar = CatalogIntegrationAccess::registerAwsCredentials;
+
   public CatalogClient open(CatalogIntegration integration) {
+    ResolvedAccess resolved = null;
     try {
-      var resolved = resolve(integration);
-      return clientOpener.open(resolved.config(), resolved.credentials());
+      resolved = resolve(integration);
+      CatalogClient client = clientOpener.open(resolved.config(), resolved.credentials());
+      return resolved.registration() == null
+          ? client
+          : new RegisteredCatalogClient(client, resolved.registration());
     } catch (CatalogAccessException failure) {
+      throw failure;
+    } catch (StsException failure) {
+      throw translateStsFailure(failure);
+    } catch (CatalogIntegrationAwsCredentialResolver.MissingAwsCredentialsException failure) {
+      throw new CatalogAccessException(
+          CatalogAccessException.Code.INVALID_CONFIGURATION,
+          "AWS credentials are not available for the Catalog Integration",
+          failure);
+    } catch (CatalogIntegrationAwsCredentialResolver.CredentialWaitTimeoutException failure) {
+      throw new CatalogAccessException(
+          CatalogAccessException.Code.TIMEOUT,
+          "Timed out waiting for AWS Catalog Integration credentials",
+          failure);
+    } catch (SdkClientException failure) {
+      if (resolved == null) throw translateSdkClientFailure(failure);
+      throw translateClientInitializationFailure(failure);
+    } catch (java.util.concurrent.CancellationException failure) {
       throw failure;
     } catch (IllegalArgumentException failure) {
       throw new CatalogAccessException(
@@ -113,6 +164,12 @@ public class CatalogIntegrationAccess {
           CatalogAccessException.Code.INTERNAL,
           "Catalog Integration credentials or provider state is invalid",
           failure);
+    } finally {
+      if (resolved != null
+          && resolved.registration() != null
+          && resolved.registration().unclaimed()) {
+        resolved.registration().close();
+      }
     }
   }
 
@@ -132,6 +189,8 @@ public class CatalogIntegrationAccess {
     var stored = credentialStore.resolve(integration);
     Map<String, String> authenticationProperties = new LinkedHashMap<>();
     Map<String, String> credentialProperties = new LinkedHashMap<>();
+    AwsCredentialRegistration registration = null;
+    Supplier<ResolvedAwsCredentials> renewableAwsCredentials = null;
     CatalogAuthenticationScheme scheme;
 
     switch (persisted.getConfigurationCase()) {
@@ -169,23 +228,29 @@ public class CatalogIntegrationAccess {
         if (sigv4.hasSigningName()) {
           authenticationProperties.put("signing-name", sigv4.getSigningName());
         }
-        if (sigv4.getCredentialsCase()
-            != ai.floedb.floecat.integration.rpc.AwsSigV4Authentication.CredentialsCase
-                .AWS_ACCESS_KEY) {
-          throw new CatalogAccessException(
-              CatalogAccessException.Code.UNSUPPORTED,
-              "Ambient and assumed AWS Catalog Integration credentials are not supported");
-        }
-        var secret =
-            requireStored(
-                    integration,
-                    stored,
-                    CatalogIntegrationCredentials.CredentialCase.AWS_ACCESS_KEY)
-                .getAwsAccessKey();
-        credentialProperties.put("rest.access-key-id", sigv4.getAwsAccessKey().getAccessKeyId());
-        credentialProperties.put("rest.secret-access-key", secret.getSecretAccessKey());
-        if (secret.hasSessionToken()) {
-          credentialProperties.put("rest.session-token", secret.getSessionToken());
+        switch (sigv4.getCredentialsCase()) {
+          case AWS_DEFAULT, AWS_ASSUME_ROLE -> {
+            awsCredentialPolicy.requireAllowed(sigv4);
+            renewableAwsCredentials = () -> awsCredentialSourceResolver.resolve(sigv4);
+          }
+          case AWS_ACCESS_KEY -> {
+            var secret =
+                requireStored(
+                        integration,
+                        stored,
+                        CatalogIntegrationCredentials.CredentialCase.AWS_ACCESS_KEY)
+                    .getAwsAccessKey();
+            credentialProperties.put(
+                "rest.access-key-id", sigv4.getAwsAccessKey().getAccessKeyId());
+            credentialProperties.put("rest.secret-access-key", secret.getSecretAccessKey());
+            if (secret.hasSessionToken()) {
+              credentialProperties.put("rest.session-token", secret.getSessionToken());
+            }
+          }
+          case CREDENTIALS_NOT_SET ->
+              throw new CatalogAccessException(
+                  CatalogAccessException.Code.INVALID_CONFIGURATION,
+                  "AWS SigV4 credential source is not configured");
         }
       }
       case AWS_ASSUME_ROLE, AWS_ACCESS_KEY ->
@@ -202,15 +267,115 @@ public class CatalogIntegrationAccess {
               "Catalog Integration authentication is not recognized");
     }
 
+    URI endpoint = URI.create(integration.getCatalogUri());
+    Map<String, String> connectionProperties = withDefaultRegion(integration, protocol);
     var config =
         new CatalogConnectionConfig(
             protocol,
-            URI.create(integration.getCatalogUri()),
-            withDefaultRegion(integration, protocol),
+            endpoint,
+            connectionProperties,
             new ai.floedb.floecat.catalog.access.CatalogAuthentication(
                 scheme, Map.copyOf(authenticationProperties)));
+    if (renewableAwsCredentials != null) {
+      registration = awsCredentialRegistrar.register(renewableAwsCredentials);
+      credentialProperties.putAll(registration.properties());
+    }
     return new ResolvedAccess(
-        config, new ResolvedCatalogCredentials(Map.copyOf(credentialProperties), Map.of(), null));
+        config,
+        new ResolvedCatalogCredentials(Map.copyOf(credentialProperties), Map.of(), null),
+        registration);
+  }
+
+  private static CatalogAccessException translateStsFailure(StsException failure) {
+    int status = failure.statusCode();
+    CatalogAccessException.Code code =
+        isStsThrottling(failure)
+            ? CatalogAccessException.Code.UNAVAILABLE
+            : status == 401
+                ? CatalogAccessException.Code.UNAUTHENTICATED
+                : status == 403
+                    ? CatalogAccessException.Code.PERMISSION_DENIED
+                    : status == 429 || status >= 500
+                        ? CatalogAccessException.Code.UNAVAILABLE
+                        : CatalogAccessException.Code.INVALID_CONFIGURATION;
+    return new CatalogAccessException(
+        code, "AWS STS could not resolve Catalog Integration credentials", failure);
+  }
+
+  static boolean isStsThrottling(StsException failure) {
+    if (failure.isThrottlingException()) return true;
+    String errorCode =
+        failure.awsErrorDetails() == null ? null : failure.awsErrorDetails().errorCode();
+    return errorCode != null && errorCode.toLowerCase(java.util.Locale.ROOT).contains("throttl");
+  }
+
+  private static CatalogAccessException translateSdkClientFailure(SdkClientException failure) {
+    return new CatalogAccessException(
+        CatalogAccessException.Code.UNAVAILABLE,
+        "AWS credential resolution is temporarily unavailable",
+        failure);
+  }
+
+  private static CatalogAccessException translateClientInitializationFailure(
+      SdkClientException failure) {
+    CatalogAccessException.Code code =
+        hasTransientIoCause(failure)
+            ? CatalogAccessException.Code.UNAVAILABLE
+            : CatalogAccessException.Code.INVALID_CONFIGURATION;
+    return new CatalogAccessException(code, "Catalog client initialization failed", failure);
+  }
+
+  private static boolean hasTransientIoCause(Throwable failure) {
+    for (Throwable current = failure; current != null; current = current.getCause()) {
+      if (current instanceof java.net.UnknownHostException) return false;
+      if (current instanceof java.net.SocketTimeoutException
+          || current instanceof java.net.ConnectException
+          || current instanceof java.net.SocketException
+          || current instanceof java.io.InterruptedIOException
+          || current instanceof java.util.concurrent.TimeoutException) return true;
+    }
+    return false;
+  }
+
+  private static RuntimeException translateAwsFailure(RuntimeException failure) {
+    for (Throwable current = failure; current != null; current = current.getCause()) {
+      if (current instanceof StsException sts) return translateStsFailure(sts);
+      if (current
+          instanceof CatalogIntegrationAwsCredentialResolver.MissingAwsCredentialsException) {
+        return new CatalogAccessException(
+            CatalogAccessException.Code.INVALID_CONFIGURATION,
+            "AWS credentials are not available for the Catalog Integration",
+            failure);
+      }
+      if (current
+          instanceof CatalogIntegrationAwsCredentialResolver.CredentialWaitTimeoutException) {
+        return new CatalogAccessException(
+            CatalogAccessException.Code.TIMEOUT,
+            "Timed out waiting for AWS Catalog Integration credentials",
+            failure);
+      }
+    }
+    return failure;
+  }
+
+  private static AwsCredentialRegistration registerAwsCredentials(
+      Supplier<ResolvedAwsCredentials> resolver) {
+    ResolvedAwsCredentials initial = resolver.get();
+    var registration =
+        RefreshingAwsCredentialsRegistry.register(
+            toProviderCredentials(initial), () -> toProviderCredentials(resolver.get()));
+    Map<String, String> properties = new LinkedHashMap<>();
+    properties.putAll(
+        RefreshingAwsCredentialsRegistry.propertiesFor(registration, AwsCredentialScope.CATALOG));
+    return new AwsCredentialRegistration(Map.copyOf(properties), registration);
+  }
+
+  private static AwsCredentialValue toProviderCredentials(ResolvedAwsCredentials credentials) {
+    return new AwsCredentialValue(
+        credentials.accessKeyId(),
+        credentials.secretAccessKey(),
+        credentials.sessionToken(),
+        credentials.expiresAt());
   }
 
   /**
@@ -364,5 +529,131 @@ public class CatalogIntegrationAccess {
     }
   }
 
-  record ResolvedAccess(CatalogConnectionConfig config, ResolvedCatalogCredentials credentials) {}
+  record ResolvedAccess(
+      CatalogConnectionConfig config,
+      ResolvedCatalogCredentials credentials,
+      AwsCredentialRegistration registration) {}
+
+  static final class AwsCredentialRegistration implements AutoCloseable {
+    private final Map<String, String> properties;
+    private final AutoCloseable delegate;
+    private boolean claimed;
+    private boolean closed;
+
+    AwsCredentialRegistration(Map<String, String> properties, AutoCloseable delegate) {
+      this.properties = Map.copyOf(properties);
+      this.delegate = delegate;
+    }
+
+    Map<String, String> properties() {
+      return properties;
+    }
+
+    synchronized void claim() {
+      if (closed || claimed) {
+        throw new IllegalStateException("AWS credential registration is unavailable");
+      }
+      claimed = true;
+    }
+
+    synchronized boolean unclaimed() {
+      return !claimed && !closed;
+    }
+
+    @Override
+    public synchronized void close() {
+      if (closed) return;
+      closed = true;
+      try {
+        delegate.close();
+      } catch (RuntimeException failure) {
+        throw failure;
+      } catch (Exception failure) {
+        throw new IllegalStateException("Failed closing AWS credential registration", failure);
+      }
+    }
+  }
+
+  private static final class RegisteredCatalogClient implements CatalogClient {
+    private final CatalogClient delegate;
+    private final AwsCredentialRegistration registration;
+
+    private RegisteredCatalogClient(
+        CatalogClient delegate, AwsCredentialRegistration registration) {
+      this.delegate = delegate;
+      this.registration = registration;
+      registration.claim();
+    }
+
+    @Override
+    public CatalogCapabilities capabilities() {
+      return callWithAwsTranslation(delegate::capabilities);
+    }
+
+    @Override
+    public void validate() {
+      runWithAwsTranslation(delegate::validate);
+    }
+
+    @Override
+    public List<NamespacePath> listNamespaces(NamespacePath parent) {
+      return callWithAwsTranslation(() -> delegate.listNamespaces(parent));
+    }
+
+    @Override
+    public List<CatalogObjectName> listTables(NamespacePath namespace) {
+      return callWithAwsTranslation(() -> delegate.listTables(namespace));
+    }
+
+    @Override
+    public CatalogTable loadTable(CatalogObjectName table) {
+      return callWithAwsTranslation(() -> delegate.loadTable(table));
+    }
+
+    @Override
+    public List<CatalogObjectName> listViews(NamespacePath namespace) {
+      return callWithAwsTranslation(() -> delegate.listViews(namespace));
+    }
+
+    @Override
+    public CatalogView loadView(CatalogObjectName view) {
+      return callWithAwsTranslation(() -> delegate.loadView(view));
+    }
+
+    @Override
+    public Optional<VendedStorageCredentials> vendStorageCredentials(CatalogObjectName table) {
+      return callWithAwsTranslation(() -> delegate.vendStorageCredentials(table));
+    }
+
+    @Override
+    public void validateStorageAccess(
+        CatalogObjectName table, VendedStorageCredentials vendedStorageCredentials) {
+      runWithAwsTranslation(() -> delegate.validateStorageAccess(table, vendedStorageCredentials));
+    }
+
+    @Override
+    public void close() {
+      try {
+        delegate.close();
+      } finally {
+        registration.close();
+      }
+    }
+
+    private static <T> T callWithAwsTranslation(Supplier<T> action) {
+      try {
+        return action.get();
+      } catch (RuntimeException failure) {
+        throw translateAwsFailure(failure);
+      }
+    }
+
+    private static void runWithAwsTranslation(Runnable action) {
+      callWithAwsTranslation(
+          () -> {
+            action.run();
+            return null;
+          });
+    }
+  }
 }
