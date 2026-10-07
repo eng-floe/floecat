@@ -78,11 +78,11 @@ that process. That lock protects file lifecycle and mappings; it is not a generi
 
 A batch read sends the misses of every partition it touches to the source in one call, so a listing
 that spans accounts costs one batch read. Repository listings use `BYPASS_FILL`, except the account,
-connector and storage-authority listings (`listByPrefixForRelisting`), which use `FILL`; mutation
-listings read the source directly and skip the cache. The reconcile planner lists accounts and
-connectors on every pass, and each scan's credential resolution lists the account's storage
-authorities. Persisted storage authorities carry no credentials; those are held in the secrets
-manager.
+connector, storage-authority, Catalog Integration and Catalog Overlay listings
+(`listByPrefixForRelisting`), which use `FILL`; mutation listings read the source directly and skip
+the cache. The reconcile planner lists accounts and connectors on every pass, and each scan's
+credential resolution lists the account's storage authorities. Persisted storage authorities carry
+no credentials; those are held in the secrets manager.
 
 ## The shared cache contract (`core/cache`)
 

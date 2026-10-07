@@ -23,6 +23,8 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.rpc.ReconcilePolicy;
+import ai.floedb.floecat.integration.rpc.CatalogIntegration;
+import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.service.concurrent.MetadataIoRunner;
 import ai.floedb.floecat.service.concurrent.MetadataResourceReader;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
@@ -117,6 +119,44 @@ class ListingBlobCacheFillTest {
   }
 
   @Test
+  void aRepeatCatalogIntegrationListingIsServedFromTheBlobCache() {
+    CatalogIntegrationRepository writer = new CatalogIntegrationRepository(pointers, blobs);
+    for (String id : List.of("int-a", "int-b")) {
+      writer.create(integration("acct", id));
+    }
+    CatalogIntegrationRepository integrations =
+        new CatalogIntegrationRepository(pointers, pointers, blobs, cache);
+
+    assertListingReadsOnce(() -> integrations.list("acct", 50, "", new StringBuilder()), 2);
+  }
+
+  @Test
+  void aRepeatCatalogOverlayListingIsServedFromTheBlobCache() {
+    CatalogOverlayRepository writer = new CatalogOverlayRepository(pointers, blobs);
+    for (String id : List.of("ov-a", "ov-b")) {
+      writer.create(overlay("acct", id, "int-a"));
+    }
+    CatalogOverlayRepository overlays =
+        new CatalogOverlayRepository(pointers, pointers, blobs, cache);
+
+    assertListingReadsOnce(() -> overlays.list("acct", 50, "", new StringBuilder()), 2);
+  }
+
+  @Test
+  void aRepeatCatalogOverlayListingByIntegrationIsServedFromTheBlobCache() {
+    CatalogOverlayRepository writer = new CatalogOverlayRepository(pointers, blobs);
+    for (String id : List.of("ov-a", "ov-b")) {
+      writer.create(overlay("acct", id, "int-a"));
+    }
+    writer.create(overlay("acct", "ov-c", "int-b"));
+    CatalogOverlayRepository overlays =
+        new CatalogOverlayRepository(pointers, pointers, blobs, cache);
+
+    assertListingReadsOnce(
+        () -> overlays.listByIntegration("acct", "int-a", 50, "", new StringBuilder()), 2);
+  }
+
+  @Test
   void aCachedConnectorListingSeesUpdatesCreatesAndDeletes() {
     ConnectorRepository writer = new ConnectorRepository(pointers, blobs);
     for (String id : List.of("conn-a", "conn-b")) {
@@ -206,6 +246,40 @@ class ListingBlobCacheFillTest {
                 .build())
         .setDisplayName("name-" + id)
         .setPolicy(ReconcilePolicy.newBuilder().setEnabled(policyEnabled))
+        .build();
+  }
+
+  private static CatalogIntegration integration(String accountId, String id) {
+    return CatalogIntegration.newBuilder()
+        .setResourceId(
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(id)
+                .setKind(ResourceKind.RK_CATALOG_INTEGRATION)
+                .build())
+        .setDisplayName("name-" + id)
+        .build();
+  }
+
+  private static CatalogOverlay overlay(String accountId, String id, String integrationId) {
+    return CatalogOverlay.newBuilder()
+        .setResourceId(
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(id)
+                .setKind(ResourceKind.RK_CATALOG_OVERLAY)
+                .build())
+        .setDisplayName("name-" + id)
+        .setIntegrationId(
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId(integrationId)
+                .setKind(ResourceKind.RK_CATALOG_INTEGRATION))
+        .setCatalogId(
+            ResourceId.newBuilder()
+                .setAccountId(accountId)
+                .setId("cat-" + id)
+                .setKind(ResourceKind.RK_CATALOG))
         .build();
   }
 
