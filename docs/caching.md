@@ -95,7 +95,9 @@ sizing harness use the same arithmetic.
 | Piece | What it is |
 |-------|------------|
 | `MemoryCache<K, V>` | Read-through `get`; batch `getAll`; uncounted `peek`; `evict` by key and `evictPartition` by caller-supplied membership; `bytes()`/`entryCount()` for the budget. Values are immutable and keyed by durable identity, so there is no generic replacement, publication fence, or in-flight map. Eviction is an infrequent O(n) memory-hygiene scan. Pointer version ordering deliberately is not part of this generic contract. |
-| `CaffeineMemoryCache` | The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction. |
+| `ExpiringCache<K, V>` | Read-through `get` for answers that expire, loaded from a source that may be slow. Each value is held for a duration derived from it when it loads. A miss loads on the calling thread, keeping its request context; callers that miss the same key together each load. A load that throws or returns null is not held. |
+| `CaffeineExpiringCache` | The implementation, on a synchronous Caffeine cache read with `getIfPresent` and filled with `put`, so no load runs under the map's locks and a slow load holds up no other key. |
+| `CaffeineMemoryCache` | The one `MemoryCache` implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction. |
 | `CacheWeights` | Retained-heap estimate: entry machinery plus the key's bytes plus a walk of the value (`WeightedValue` first, then protobuf, text, `byte[]`, maps and collections). A shape it cannot walk throws rather than taking a flat default, so a value retaining megabytes cannot be charged a kilobyte. |
 | `CacheFamily` | The independently budgeted in-memory families that use this module. Pointer planning state is not a `MemoryCache` family: it is a complete index with a separate admission budget and no entry eviction. `OBJECT` is decoded metadata, `HINT` is decoded engine-specific metadata, and `MANIFEST_COMMITMENT` is validated content-addressed Owner manifest indexes. Disk blob caching has its own volume budget. |
 | `CacheBudget` / `CacheBudgetResolver` | One total split across the families. Pure arithmetic in `CacheBudget.split`; `CacheBudgetResolver` (`service/cache/`) reads the configuration and runs it at startup. |
@@ -106,6 +108,10 @@ A memory-cache loader may read durable storage and assemble its value, but it mu
 and its underlying map rejects recursive updates. Resolve another cached dependency first, then
 enter the loader for the value that depends on it. This is a loader rule, not an application-level
 in-flight mechanism.
+
+An expiring-cache loader runs on the calling thread outside any lock, so it may make a remote call
+that takes seconds without holding up other keys. Same-key misses are not merged: the source sees
+one load per concurrent miss, and none while a value is held.
 
 Budgets resolve from the container rather than from a compiled-in figure. The JVM already sizes its
 heap from the container memory limit, so `floecat.cache.heap-share` (0.5) of the maximum heap
