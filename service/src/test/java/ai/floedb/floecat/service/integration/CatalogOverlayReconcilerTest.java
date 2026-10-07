@@ -1023,6 +1023,74 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void expiredStsTokenDuringCredentialRefreshAbortsMidWalk() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName first = new CatalogObjectName(sales, "first");
+    CatalogObjectName second = new CatalogObjectName(sales, "second");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(first, catalogTable(first, "first-id"));
+    client.tables.put(second, catalogTable(second, "second-id"));
+    client.credentialFailures.add(second);
+    integration =
+        integration.toBuilder()
+            .setAuthentication(
+                ai.floedb.floecat.integration.rpc.CatalogAuthentication.newBuilder()
+                    .setAwsSigv4(
+                        ai.floedb.floecat.integration.rpc.AwsSigV4Authentication.newBuilder()
+                            .setRegion("us-east-1")
+                            .setAwsAssumeRole(
+                                ai.floedb.floecat.integration.rpc.AwsAssumeRoleAuthentication
+                                    .newBuilder()
+                                    .setRoleArn("arn:aws:iam::123456789012:role/catalog"))))
+            .build();
+    var access = new CatalogIntegrationAccess();
+    access.credentialStore = mock(CatalogIntegrationCredentialStore.class);
+    access.awsCredentialPolicy = new CatalogIntegrationAwsCredentialPolicy();
+    var resolutions = new java.util.concurrent.atomic.AtomicInteger();
+    access.awsCredentialSourceResolver =
+        (accountId, configured) -> {
+          if (resolutions.incrementAndGet() == 1) {
+            return new ResolvedAwsCredentials(
+                "access", "secret", "session", java.time.Instant.now().minusSeconds(1));
+          }
+          throw software.amazon.awssdk.services.sts.model.StsException.builder()
+              .statusCode(400)
+              .awsErrorDetails(
+                  software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
+                      .errorCode("ExpiredTokenException")
+                      .build())
+              .build();
+        };
+    access.clientOpener =
+        (config, credentials) -> {
+          String providerId =
+              credentials
+                  .properties()
+                  .get(
+                      ai.floedb.floecat.catalog.iceberg.rest.auth.RefreshingAwsCredentialsRegistry
+                          .CATALOG_PROVIDER_ID);
+          client.credentialRefresh =
+              () ->
+                  ai.floedb.floecat.catalog.iceberg.rest.auth.RefreshingAwsCredentialsRegistry
+                      .resolve(
+                          providerId,
+                          ai.floedb.floecat.catalog.iceberg.rest.auth.AwsCredentialScope.CATALOG);
+          return client;
+        };
+    reconciler.access = access;
+
+    var failure =
+        assertThrows(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.class, this::reconcile);
+
+    assertEquals(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE,
+        failure.code());
+    assertEquals(2, resolutions.get());
+  }
+
+  @Test
   void staleOverlayGenerationCannotPublish() {
     NamespacePath sales = NamespacePath.of("sales");
     client.children.put(NamespacePath.root(), List.of(sales));
@@ -1291,7 +1359,7 @@ class CatalogOverlayReconcilerTest {
 
   private static final class FakeCatalogClient implements CatalogClient {
     private final Map<NamespacePath, List<NamespacePath>> children = new HashMap<>();
-    private final Map<CatalogObjectName, CatalogTable> tables = new HashMap<>();
+    private final Map<CatalogObjectName, CatalogTable> tables = new java.util.LinkedHashMap<>();
     private final Map<CatalogObjectName, CatalogView> views = new HashMap<>();
 
     @Override
@@ -1336,8 +1404,21 @@ class CatalogOverlayReconcilerTest {
     /** Tables that list but will not load, as a lenient listing and a strict read can disagree. */
     final java.util.Set<CatalogObjectName> unloadableTables = new java.util.HashSet<>();
 
+    /** Tables whose load observes a catalog-wide credential refresh failure. */
+    final java.util.Set<CatalogObjectName> credentialFailures = new java.util.HashSet<>();
+
+    Runnable credentialRefresh =
+        () -> {
+          throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+              ai.floedb.floecat.catalog.access.CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE,
+              "catalog credentials can no longer be refreshed");
+        };
+
     @Override
     public CatalogTable loadTable(CatalogObjectName table) {
+      if (credentialFailures.contains(table)) {
+        credentialRefresh.run();
+      }
       if (unloadableTables.contains(table)) {
         throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
             ai.floedb.floecat.catalog.access.CatalogAccessException.Code.NOT_FOUND,

@@ -43,8 +43,12 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
 import software.amazon.awssdk.core.exception.SdkClientException;
+import software.amazon.awssdk.core.retry.RetryMode;
+import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
+import software.amazon.awssdk.services.sts.model.AssumeRoleResponse;
 import software.amazon.awssdk.services.sts.model.Credentials;
 
 class CatalogIntegrationAwsCredentialResolverTest {
@@ -58,7 +62,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
             .setRegion("us-east-1")
             .build();
 
-    ResolvedAwsCredentials resolved = resolver.resolve(authentication);
+    ResolvedAwsCredentials resolved = resolver.resolve("account", authentication);
 
     assertEquals("access", resolved.accessKeyId());
     assertEquals("secret", resolved.secretAccessKey());
@@ -96,7 +100,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
             .setSigningName("glue")
             .build();
 
-    ResolvedAwsCredentials resolved = resolver.resolve(authentication);
+    ResolvedAwsCredentials resolved = resolver.resolve("account", authentication);
 
     assertEquals("us-east-1", stsRegion.get());
     assertEquals("arn:aws:iam::123456789012:role/catalog", request.get().roleArn());
@@ -128,7 +132,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
             .setRegion("eu-central-1")
             .build();
 
-    resolver.resolve(authentication);
+    resolver.resolve("account", authentication);
 
     assertEquals("eu-central-1", stsRegion.get());
   }
@@ -157,8 +161,8 @@ class CatalogIntegrationAwsCredentialResolverTest {
             .setRegion("us-east-1")
             .build();
 
-    resolver.resolve(authentication);
-    resolver.resolve(authentication);
+    resolver.resolve("account", authentication);
+    resolver.resolve("account", authentication);
 
     assertEquals(1, calls.get());
   }
@@ -185,37 +189,29 @@ class CatalogIntegrationAwsCredentialResolverTest {
             .setRegion("us-east-1")
             .build();
 
-    resolver.resolve(authentication);
+    resolver.resolve("account", authentication);
     resolver.clock = Clock.fixed(now.plus(Duration.ofMinutes(56)), ZoneOffset.UTC);
-    ResolvedAwsCredentials refreshed = resolver.resolve(authentication);
+    ResolvedAwsCredentials refreshed = resolver.resolve("account", authentication);
 
     assertEquals(2, calls.get());
     assertEquals("access-2", refreshed.accessKeyId());
   }
 
   @Test
-  void retriesHttp400StsThrottling() {
+  void doesNotStackRetriesAroundTheSdkClient() {
     var resolver = new CatalogIntegrationAwsCredentialResolver();
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
-    resolver.retryPause = attempt -> {};
     AtomicInteger calls = new AtomicInteger();
     resolver.assumeRole =
         (region, configured) -> {
-          if (calls.incrementAndGet() == 1) {
-            throw software.amazon.awssdk.services.sts.model.StsException.builder()
-                .statusCode(400)
-                .awsErrorDetails(
-                    software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
-                        .errorCode("Throttling")
-                        .build())
-                .build();
-          }
-          return Credentials.builder()
-              .accessKeyId("access")
-              .secretAccessKey("secret")
-              .sessionToken("session")
-              .expiration(now.plus(Duration.ofHours(1)))
+          calls.incrementAndGet();
+          throw software.amazon.awssdk.services.sts.model.StsException.builder()
+              .statusCode(400)
+              .awsErrorDetails(
+                  software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
+                      .errorCode("Throttling")
+                      .build())
               .build();
         };
     var authentication =
@@ -226,7 +222,86 @@ class CatalogIntegrationAwsCredentialResolverTest {
             .setRegion("us-east-1")
             .build();
 
-    resolver.resolve(authentication);
+    assertThrows(
+        software.amazon.awssdk.services.sts.model.StsException.class,
+        () -> resolver.resolve("account", authentication));
+
+    assertEquals(1, calls.get());
+  }
+
+  @Test
+  void configuresOneStandardSdkRetryLayerAndTheActiveCallTimeout() {
+    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    resolver.nanoTime = () -> 0L;
+    resolver.defaultCredentials =
+        () -> AwsSessionCredentials.create("source-access", "source-secret", "source-session");
+    var sts = mock(StsClient.class);
+    Instant expiration = Instant.parse("2026-10-07T15:00:00Z");
+    when(sts.assumeRole(org.mockito.ArgumentMatchers.any(AssumeRoleRequest.class)))
+        .thenReturn(
+            AssumeRoleResponse.builder().credentials(credentials("access", expiration)).build());
+    AtomicReference<Duration> timeout = new AtomicReference<>();
+    resolver.stsClientFactory =
+        (region, sourceCredentials, callTimeout) -> {
+          assertEquals("us-east-1", region);
+          assertEquals("source-access", sourceCredentials.accessKeyId());
+          timeout.set(callTimeout);
+          return sts;
+        };
+
+    ResolvedAwsCredentials resolved =
+        CatalogUpstreamBudget.start(Duration.ofSeconds(7), () -> 0L)
+            .call(() -> resolver.resolve("account", assumeRoleAuthentication("catalog")));
+
+    assertEquals("access", resolved.accessKeyId());
+    assertEquals(Duration.ofSeconds(7), timeout.get());
+    assertEquals(
+        java.util.Optional.of(RetryMode.STANDARD),
+        CatalogIntegrationAwsCredentialResolver.stsOverrideConfiguration(Duration.ofSeconds(7))
+            .retryMode());
+    verify(sts).assumeRole(org.mockito.ArgumentMatchers.any(AssumeRoleRequest.class));
+    verify(sts).close();
+  }
+
+  @Test
+  void boundsAmbientCredentialResolutionBeforeCreatingTheStsClient() {
+    var resolver = new CatalogIntegrationAwsCredentialResolver(2, Duration.ofMillis(20));
+    CountDownLatch release = new CountDownLatch(1);
+    resolver.defaultCredentials =
+        () -> {
+          await(release);
+          return AwsSessionCredentials.create("access", "secret", "session");
+        };
+    AtomicInteger clients = new AtomicInteger();
+    resolver.stsClientFactory =
+        (region, sourceCredentials, callTimeout) -> {
+          clients.incrementAndGet();
+          return mock(StsClient.class);
+        };
+
+    try {
+      assertThrows(
+          CatalogIntegrationAwsCredentialResolver.CredentialSourceTimeoutException.class,
+          () -> resolver.resolve("account", assumeRoleAuthentication("catalog")));
+      assertEquals(0, clients.get());
+    } finally {
+      release.countDown();
+    }
+  }
+
+  @Test
+  void doesNotCacheCallerSpecificApiCallTimeouts() {
+    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    AtomicInteger calls = new AtomicInteger();
+    resolver.assumeRole =
+        (region, configured) -> {
+          calls.incrementAndGet();
+          throw ApiCallTimeoutException.create(1);
+        };
+    AwsSigV4Authentication authentication = assumeRoleAuthentication("catalog");
+
+    assertThrows(ApiCallTimeoutException.class, () -> resolver.resolve("account", authentication));
+    assertThrows(ApiCallTimeoutException.class, () -> resolver.resolve("account", authentication));
 
     assertEquals(2, calls.get());
   }
@@ -261,8 +336,10 @@ class CatalogIntegrationAwsCredentialResolverTest {
   }
 
   @Test
-  void waitersReceiveOwnerFailureAndFailuresAreNotCached() throws Exception {
+  void waitersReceiveOwnerFailureAndNewOpensBackOffBeforeRetrying() throws Exception {
     var resolver = new CatalogIntegrationAwsCredentialResolver();
+    Instant now = Instant.parse("2026-10-07T14:00:00Z");
+    resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     AtomicInteger calls = new AtomicInteger();
     CountDownLatch entered = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
@@ -296,7 +373,13 @@ class CatalogIntegrationAwsCredentialResolverTest {
     assertSame(ownerFailure, assertThrows(CompletionException.class, second::join).getCause());
     assertThrows(
         software.amazon.awssdk.services.sts.model.StsException.class,
-        () -> resolver.resolve(authentication));
+        () -> resolver.resolve("account", authentication));
+    assertEquals(1, calls.get());
+
+    resolver.clock = Clock.fixed(now.plusSeconds(5), ZoneOffset.UTC);
+    assertThrows(
+        software.amazon.awssdk.services.sts.model.StsException.class,
+        () -> resolver.resolve("account", authentication));
     assertEquals(2, calls.get());
   }
 
@@ -344,7 +427,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
     assertThrows(
         CatalogIntegrationAwsCredentialResolver.CredentialWaitTimeoutException.class,
-        () -> resolver.resolve(authentication));
+        () -> resolver.resolve("account", authentication));
     assertEquals(1, resolver.cacheSize());
 
     release.countDown();
@@ -355,7 +438,6 @@ class CatalogIntegrationAwsCredentialResolverTest {
   void missingSourceCredentialsAreNotRetried() {
     var resolver = new CatalogIntegrationAwsCredentialResolver();
     AtomicInteger calls = new AtomicInteger();
-    resolver.retryPause = attempt -> {};
     resolver.assumeRole =
         (region, configured) -> {
           calls.incrementAndGet();
@@ -365,25 +447,26 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
     assertThrows(
         CatalogIntegrationAwsCredentialResolver.MissingAwsCredentialsException.class,
-        () -> resolver.resolve(assumeRoleAuthentication("catalog")));
+        () -> resolver.resolve("account", assumeRoleAuthentication("catalog")));
     assertEquals(1, calls.get());
   }
 
   @Test
-  void cancelledOwnerStopsBeforeAnotherStsAttempt() {
+  void interruptedOwnerStopsBeforeCallingSts() {
     var resolver = new CatalogIntegrationAwsCredentialResolver();
     AtomicInteger calls = new AtomicInteger();
     resolver.assumeRole =
         (region, configured) -> {
           calls.incrementAndGet();
-          throw SdkClientException.create("temporary failure");
+          return credentials("unused", Instant.now());
         };
-    resolver.retryPause = attempt -> Thread.currentThread().interrupt();
 
     try {
+      Thread.currentThread().interrupt();
       assertThrows(
-          CancellationException.class, () -> resolver.resolve(assumeRoleAuthentication("catalog")));
-      assertEquals(1, calls.get());
+          CancellationException.class,
+          () -> resolver.resolve("account", assumeRoleAuthentication("catalog")));
+      assertEquals(0, calls.get());
       assertTrue(Thread.currentThread().isInterrupted());
     } finally {
       Thread.interrupted();
@@ -457,7 +540,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
                           budgetClockReads.getAndIncrement() < 2
                               ? 0L
                               : Duration.ofMillis(900).toNanos())
-                  .call(() -> resolver.resolve(authentication)));
+                  .call(() -> resolver.resolve("account", authentication)));
     } finally {
       release.countDown();
     }
@@ -482,12 +565,31 @@ class CatalogIntegrationAwsCredentialResolverTest {
             .setRegion("us-east-1")
             .build();
 
-    resolver.resolve(authentication);
-    resolver.resolve(authentication);
+    resolver.resolve("account", authentication);
+    resolver.resolve("account", authentication);
     resolver.close();
 
     assertEquals(1, builds.get());
     verify(provider).close();
+  }
+
+  @Test
+  void doesNotShareAssumeRoleCredentialsAcrossAccounts() {
+    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    Instant now = Instant.parse("2026-10-07T14:00:00Z");
+    resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
+    AtomicInteger calls = new AtomicInteger();
+    resolver.assumeRole =
+        (region, configured) ->
+            credentials("account-" + calls.incrementAndGet(), now.plus(Duration.ofHours(1)));
+    AwsSigV4Authentication authentication = assumeRoleAuthentication("catalog");
+
+    ResolvedAwsCredentials first = resolver.resolve("account-one", authentication);
+    ResolvedAwsCredentials second = resolver.resolve("account-two", authentication);
+
+    assertEquals("account-1", first.accessKeyId());
+    assertEquals("account-2", second.accessKeyId());
+    assertEquals(2, calls.get());
   }
 
   private static AwsSigV4Authentication assumeRoleAuthentication(String roleName) {
@@ -523,7 +625,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
             () -> {
               resolvingThread.set(Thread.currentThread());
               try {
-                result.complete(resolver.resolve(authentication));
+                result.complete(resolver.resolve("account", authentication));
               } catch (Throwable failure) {
                 result.completeExceptionally(failure);
               }

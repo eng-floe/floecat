@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.access.CatalogClientFactory;
 import ai.floedb.floecat.catalog.access.CatalogProtocol;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.AwsCredentialScope;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.RefreshingAwsCredentialsRegistry;
+import ai.floedb.floecat.catalog.iceberg.rest.auth.TerminalCredentialRefreshException;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.integration.rpc.AwsAccessKeyAuthentication;
@@ -274,7 +275,7 @@ class CatalogIntegrationAccessTest {
     AtomicBoolean resolved = new AtomicBoolean();
     AtomicBoolean closed = new AtomicBoolean();
     access.awsCredentialSourceResolver =
-        configured -> {
+        (accountId, configured) -> {
           assertEquals(
               AwsSigV4Authentication.CredentialsCase.AWS_DEFAULT, configured.getCredentialsCase());
           resolved.set(true);
@@ -313,7 +314,7 @@ class CatalogIntegrationAccessTest {
   void registersAndUnregistersTheRealRenewableCatalogProvider() {
     var authentication = assumeRoleAuthentication();
     access.awsCredentialSourceResolver =
-        configured ->
+        (accountId, configured) ->
             new ResolvedAwsCredentials(
                 "assumed-access",
                 "assumed-secret",
@@ -364,7 +365,7 @@ class CatalogIntegrationAccessTest {
     AtomicReference<AwsSigV4Authentication> resolvedAuthentication = new AtomicReference<>();
     AtomicBoolean closed = new AtomicBoolean();
     access.awsCredentialSourceResolver =
-        configured -> {
+        (accountId, configured) -> {
           resolvedAuthentication.set(configured);
           return new ResolvedAwsCredentials(
               "assumed-access",
@@ -478,7 +479,7 @@ class CatalogIntegrationAccessTest {
   void translatesStsAuthorizationAndTransientFailures() {
     var authentication = assumeRoleAuthentication();
     access.awsCredentialSourceResolver =
-        configured -> {
+        (accountId, configured) -> {
           throw StsException.builder().statusCode(403).message("denied").build();
         };
     assertEquals(
@@ -487,7 +488,7 @@ class CatalogIntegrationAccessTest {
             .code());
 
     access.awsCredentialSourceResolver =
-        configured -> {
+        (accountId, configured) -> {
           throw StsException.builder().statusCode(503).message("unavailable").build();
         };
     assertEquals(
@@ -499,7 +500,7 @@ class CatalogIntegrationAccessTest {
   @Test
   void translatesHttp400StsThrottlingAsUnavailable() {
     access.awsCredentialSourceResolver =
-        configured -> {
+        (accountId, configured) -> {
           throw StsException.builder()
               .statusCode(400)
               .awsErrorDetails(
@@ -520,7 +521,7 @@ class CatalogIntegrationAccessTest {
   @Test
   void translatesAwsCredentialFailuresRaisedByAClientOperation() {
     access.awsCredentialSourceResolver =
-        configured ->
+        (accountId, configured) ->
             new ResolvedAwsCredentials(
                 "access", "secret", "session", java.time.Instant.now().plusSeconds(3600));
     access.awsCredentialRegistrar = resolver -> registration(new AtomicBoolean());
@@ -546,9 +547,157 @@ class CatalogIntegrationAccessTest {
   }
 
   @Test
+  void translatesRejectedCredentialRefreshAsCatalogWideEvenWhenRetryable() {
+    access.awsCredentialSourceResolver =
+        (accountId, configured) ->
+            new ResolvedAwsCredentials(
+                "access", "secret", "session", java.time.Instant.now().plusSeconds(3600));
+    access.awsCredentialRegistrar = resolver -> registration(new AtomicBoolean());
+    var delegate = mock(ai.floedb.floecat.catalog.access.CatalogClient.class);
+    when(delegate.listNamespaces(any()))
+        .thenThrow(
+            StsException.builder()
+                .statusCode(400)
+                .awsErrorDetails(
+                    software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
+                        .errorCode("ExpiredTokenException")
+                        .build())
+                .build());
+    access.clientOpener = (config, runtimeCredentials) -> delegate;
+    var client = access.open(integration(assumeRoleAuthentication()));
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> client.listNamespaces(null));
+
+    assertEquals(CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE, error.code());
+    assertFalse(
+        ai.floedb.floecat.catalog.access.CatalogTraversalFailures.describesOneBranch(error));
+    client.close();
+  }
+
+  @Test
+  void translatesTerminalCredentialRefreshAsCatalogWide() {
+    access.awsCredentialSourceResolver =
+        (accountId, configured) ->
+            new ResolvedAwsCredentials(
+                "access", "secret", "session", java.time.Instant.now().plusSeconds(3600));
+    access.awsCredentialRegistrar = resolver -> registration(new AtomicBoolean());
+    var delegate = mock(ai.floedb.floecat.catalog.access.CatalogClient.class);
+    when(delegate.listNamespaces(any()))
+        .thenThrow(
+            new RuntimeException(
+                new TerminalCredentialRefreshException(
+                    "refresh rejected",
+                    StsException.builder().statusCode(403).message("denied").build())));
+    access.clientOpener = (config, runtimeCredentials) -> delegate;
+    var client = access.open(integration(assumeRoleAuthentication()));
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> client.listNamespaces(null));
+
+    assertEquals(CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE, error.code());
+    assertFalse(
+        ai.floedb.floecat.catalog.access.CatalogTraversalFailures.describesOneBranch(error));
+    client.close();
+  }
+
+  @Test
+  void marksOnlyNonRetryableCredentialRefreshFailuresAsTerminal() {
+    StsException denied =
+        (StsException)
+            StsException.builder()
+                .statusCode(403)
+                .message("denied")
+                .awsErrorDetails(
+                    software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
+                        .errorCode("AccessDenied")
+                        .build())
+                .build();
+    StsException unavailable =
+        (StsException) StsException.builder().statusCode(503).message("unavailable").build();
+    StsException expired =
+        (StsException)
+            StsException.builder()
+                .statusCode(400)
+                .message("expired")
+                .awsErrorDetails(
+                    software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
+                        .errorCode("ExpiredToken")
+                        .build())
+                .build();
+    var missing =
+        new CatalogIntegrationAwsCredentialResolver.MissingAwsCredentialsException(
+            SdkClientException.create("temporary metadata failure"));
+    var disabledRegion =
+        software.amazon.awssdk.services.sts.model.RegionDisabledException.builder()
+            .statusCode(403)
+            .message("disabled")
+            .build();
+
+    assertTrue(
+        CatalogIntegrationAccess.terminalRefreshFailure(denied)
+            instanceof TerminalCredentialRefreshException);
+    assertSame(unavailable, CatalogIntegrationAccess.terminalRefreshFailure(unavailable));
+    assertSame(expired, CatalogIntegrationAccess.terminalRefreshFailure(expired));
+    assertSame(missing, CatalogIntegrationAccess.terminalRefreshFailure(missing));
+    assertTrue(
+        CatalogIntegrationAccess.terminalRefreshFailure(disabledRegion)
+            instanceof TerminalCredentialRefreshException);
+  }
+
+  @Test
+  void stsRejectionDuringRegistryRefreshBecomesCatalogWideAndStaysTerminal() {
+    var resolutions = new java.util.concurrent.atomic.AtomicInteger();
+    access.awsCredentialSourceResolver =
+        (accountId, configured) -> {
+          if (resolutions.incrementAndGet() == 1) {
+            return new ResolvedAwsCredentials(
+                "access", "secret", "session", java.time.Instant.now().minusSeconds(1));
+          }
+          throw StsException.builder()
+              .statusCode(403)
+              .message("denied")
+              .awsErrorDetails(
+                  software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
+                      .errorCode("AccessDenied")
+                      .build())
+              .build();
+        };
+    access.clientOpener =
+        (config, runtimeCredentials) -> {
+          String providerId =
+              runtimeCredentials
+                  .properties()
+                  .get(RefreshingAwsCredentialsRegistry.CATALOG_PROVIDER_ID);
+          var delegate = mock(ai.floedb.floecat.catalog.access.CatalogClient.class);
+          when(delegate.listNamespaces(any()))
+              .thenAnswer(
+                  ignored -> {
+                    RefreshingAwsCredentialsRegistry.resolve(
+                        providerId, AwsCredentialScope.CATALOG);
+                    return List.of();
+                  });
+          return delegate;
+        };
+    var client = access.open(integration(assumeRoleAuthentication()));
+
+    CatalogAccessException first =
+        assertThrows(CatalogAccessException.class, () -> client.listNamespaces(null));
+    CatalogAccessException cached =
+        assertThrows(CatalogAccessException.class, () -> client.listNamespaces(null));
+
+    assertEquals(CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE, first.code());
+    assertEquals(CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE, cached.code());
+    assertFalse(
+        ai.floedb.floecat.catalog.access.CatalogTraversalFailures.describesOneBranch(first));
+    assertEquals(2, resolutions.get());
+    client.close();
+  }
+
+  @Test
   void preservesCatalogAccessFailureAlreadyClassifiedByTheProvider() {
     access.awsCredentialSourceResolver =
-        configured ->
+        (accountId, configured) ->
             new ResolvedAwsCredentials(
                 "access", "secret", "session", java.time.Instant.now().plusSeconds(3600));
     access.awsCredentialRegistrar = resolver -> registration(new AtomicBoolean());
@@ -579,7 +728,7 @@ class CatalogIntegrationAccessTest {
                     .setRegion("us-east-1"))
             .build();
     access.awsCredentialSourceResolver =
-        configured -> {
+        (accountId, configured) -> {
           throw new CatalogIntegrationAwsCredentialResolver.MissingAwsCredentialsException(
               SdkClientException.create("no credentials"));
         };

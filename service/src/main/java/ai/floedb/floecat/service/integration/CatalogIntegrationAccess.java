@@ -23,6 +23,7 @@ import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.AwsCredentialScope;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.AwsCredentialValue;
 import ai.floedb.floecat.catalog.iceberg.rest.auth.RefreshingAwsCredentialsRegistry;
+import ai.floedb.floecat.catalog.iceberg.rest.auth.TerminalCredentialRefreshException;
 import ai.floedb.floecat.integration.rpc.AwsSigV4Authentication;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
@@ -35,6 +36,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 import software.amazon.awssdk.core.exception.SdkClientException;
+import software.amazon.awssdk.services.sts.model.MalformedPolicyDocumentException;
+import software.amazon.awssdk.services.sts.model.PackedPolicyTooLargeException;
+import software.amazon.awssdk.services.sts.model.RegionDisabledException;
 import software.amazon.awssdk.services.sts.model.StsException;
 
 /** Resolves one persisted Catalog Integration into a short-lived catalog-access client. */
@@ -51,7 +55,7 @@ public class CatalogIntegrationAccess {
 
   @FunctionalInterface
   interface AwsCredentialSourceResolver {
-    ResolvedAwsCredentials resolve(AwsSigV4Authentication authentication);
+    ResolvedAwsCredentials resolve(String accountId, AwsSigV4Authentication authentication);
   }
 
   @FunctionalInterface
@@ -119,7 +123,8 @@ public class CatalogIntegrationAccess {
 
   @Inject CatalogIntegrationAwsCredentialResolver integrationAwsCredentialResolver;
   AwsCredentialSourceResolver awsCredentialSourceResolver =
-      authentication -> integrationAwsCredentialResolver.resolve(authentication);
+      (accountId, authentication) ->
+          integrationAwsCredentialResolver.resolve(accountId, authentication);
   AwsCredentialRegistrar awsCredentialRegistrar = CatalogIntegrationAccess::registerAwsCredentials;
 
   public CatalogClient open(CatalogIntegration integration) {
@@ -143,6 +148,11 @@ public class CatalogIntegrationAccess {
       throw new CatalogAccessException(
           CatalogAccessException.Code.TIMEOUT,
           "Timed out waiting for AWS Catalog Integration credentials",
+          failure);
+    } catch (CatalogIntegrationAwsCredentialResolver.CredentialSourceTimeoutException failure) {
+      throw new CatalogAccessException(
+          CatalogAccessException.Code.TIMEOUT,
+          "Timed out resolving AWS source credentials",
           failure);
     } catch (SdkClientException failure) {
       if (resolved == null) throw translateSdkClientFailure(failure);
@@ -231,7 +241,10 @@ public class CatalogIntegrationAccess {
         switch (sigv4.getCredentialsCase()) {
           case AWS_DEFAULT, AWS_ASSUME_ROLE -> {
             awsCredentialPolicy.requireAllowed(sigv4);
-            renewableAwsCredentials = () -> awsCredentialSourceResolver.resolve(sigv4);
+            renewableAwsCredentials =
+                () ->
+                    awsCredentialSourceResolver.resolve(
+                        integration.getResourceId().getAccountId(), sigv4);
           }
           case AWS_ACCESS_KEY -> {
             var secret =
@@ -339,12 +352,18 @@ public class CatalogIntegrationAccess {
 
   private static RuntimeException translateAwsFailure(RuntimeException failure) {
     for (Throwable current = failure; current != null; current = current.getCause()) {
-      if (current instanceof StsException sts) return translateStsFailure(sts);
+      if (current instanceof TerminalCredentialRefreshException) {
+        return new CatalogAccessException(
+            CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE,
+            "AWS credentials for the Catalog Integration can no longer be refreshed",
+            failure);
+      }
+      if (current instanceof StsException sts) return translateRefreshStsFailure(sts, failure);
       if (current
           instanceof CatalogIntegrationAwsCredentialResolver.MissingAwsCredentialsException) {
         return new CatalogAccessException(
-            CatalogAccessException.Code.INVALID_CONFIGURATION,
-            "AWS credentials are not available for the Catalog Integration",
+            CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE,
+            "AWS credentials for the Catalog Integration are temporarily unavailable",
             failure);
       }
       if (current
@@ -352,6 +371,13 @@ public class CatalogIntegrationAccess {
         return new CatalogAccessException(
             CatalogAccessException.Code.TIMEOUT,
             "Timed out waiting for AWS Catalog Integration credentials",
+            failure);
+      }
+      if (current
+          instanceof CatalogIntegrationAwsCredentialResolver.CredentialSourceTimeoutException) {
+        return new CatalogAccessException(
+            CatalogAccessException.Code.TIMEOUT,
+            "Timed out resolving AWS source credentials",
             failure);
       }
     }
@@ -363,11 +389,56 @@ public class CatalogIntegrationAccess {
     ResolvedAwsCredentials initial = resolver.get();
     var registration =
         RefreshingAwsCredentialsRegistry.register(
-            toProviderCredentials(initial), () -> toProviderCredentials(resolver.get()));
+            toProviderCredentials(initial),
+            () -> {
+              try {
+                return toProviderCredentials(resolver.get());
+              } catch (RuntimeException failure) {
+                throw terminalRefreshFailure(failure);
+              }
+            });
     Map<String, String> properties = new LinkedHashMap<>();
     properties.putAll(
         RefreshingAwsCredentialsRegistry.propertiesFor(registration, AwsCredentialScope.CATALOG));
     return new AwsCredentialRegistration(Map.copyOf(properties), registration);
+  }
+
+  static RuntimeException terminalRefreshFailure(RuntimeException failure) {
+    if (failure instanceof TerminalCredentialRefreshException) return failure;
+    for (Throwable current = failure; current != null; current = current.getCause()) {
+      if (current instanceof StsException sts && isTerminalStsRefreshFailure(sts)) {
+        return new TerminalCredentialRefreshException(
+            "AWS STS rejected credential refresh", failure);
+      }
+    }
+    return failure;
+  }
+
+  private static boolean isTerminalStsRefreshFailure(StsException failure) {
+    if (failure instanceof MalformedPolicyDocumentException
+        || failure instanceof PackedPolicyTooLargeException
+        || failure instanceof RegionDisabledException) return true;
+    if (isStsThrottling(failure) || failure.awsErrorDetails() == null) return false;
+    String errorCode = failure.awsErrorDetails().errorCode();
+    if (errorCode == null) return false;
+    return switch (errorCode) {
+      case "AccessDenied", "AccessDeniedException" -> true;
+      default -> false;
+    };
+  }
+
+  private static CatalogAccessException translateRefreshStsFailure(
+      StsException sts, RuntimeException failure) {
+    if (isStsThrottling(sts) || sts.statusCode() == 429 || sts.statusCode() >= 500) {
+      return new CatalogAccessException(
+          CatalogAccessException.Code.UNAVAILABLE,
+          "AWS STS credential refresh is temporarily unavailable",
+          failure);
+    }
+    return new CatalogAccessException(
+        CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE,
+        "AWS credentials for the Catalog Integration could not be refreshed",
+        failure);
   }
 
   private static AwsCredentialValue toProviderCredentials(ResolvedAwsCredentials credentials) {

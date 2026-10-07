@@ -21,40 +21,46 @@ import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.locks.LockSupport;
 import java.util.function.BiFunction;
-import java.util.function.IntConsumer;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.exception.ApiCallTimeoutException;
 import software.amazon.awssdk.core.exception.SdkClientException;
+import software.amazon.awssdk.core.retry.RetryMode;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.services.sts.model.Credentials;
-import software.amazon.awssdk.services.sts.model.StsException;
 
 /** Resolves renewable AWS credential sources configured on Catalog Integrations. */
 @ApplicationScoped
 class CatalogIntegrationAwsCredentialResolver {
+  @FunctionalInterface
+  interface StsClientFactory {
+    StsClient create(String region, AwsCredentials sourceCredentials, Duration callTimeout);
+  }
+
   private static final Duration CACHE_REFRESH_SKEW = Duration.ofMinutes(5);
-  private static final int MAX_ATTEMPTS = 3;
-  private static final long RETRY_BASE_MILLIS = 50L;
+  private static final Duration FAILURE_BACKOFF = Duration.ofSeconds(5);
   private static final int CACHE_MAX_ENTRIES = 1024;
   private static final Duration CACHE_WAIT_TIMEOUT = Duration.ofSeconds(30);
 
   private final Object cacheLock = new Object();
-  private final LinkedHashMap<AssumeRoleCacheKey, CompletableFuture<ResolvedAwsCredentials>> cache =
+  private final LinkedHashMap<AssumeRoleCacheKey, CachedResolution> cache =
       new LinkedHashMap<>(16, 0.75f, true);
   private final int cacheMaxEntries;
   private final Duration cacheWaitTimeout;
@@ -64,8 +70,9 @@ class CatalogIntegrationAwsCredentialResolver {
       () -> DefaultCredentialsProvider.builder().build();
   Supplier<AwsCredentials> defaultCredentials = this::resolveDefaultCredentials;
   BiFunction<String, AssumeRoleRequest, Credentials> assumeRole = this::assumeRole;
-  IntConsumer retryPause = CatalogIntegrationAwsCredentialResolver::pauseBeforeRetry;
+  StsClientFactory stsClientFactory = this::buildStsClient;
   Clock clock = Clock.systemUTC();
+  LongSupplier nanoTime = System::nanoTime;
 
   CatalogIntegrationAwsCredentialResolver() {
     this(CACHE_MAX_ENTRIES, CACHE_WAIT_TIMEOUT);
@@ -79,30 +86,34 @@ class CatalogIntegrationAwsCredentialResolver {
             : cacheWaitTimeout;
   }
 
-  ResolvedAwsCredentials resolve(AwsSigV4Authentication authentication) {
+  ResolvedAwsCredentials resolve(String accountId, AwsSigV4Authentication authentication) {
     return switch (authentication.getCredentialsCase()) {
       case AWS_DEFAULT -> fromDefault(defaultCredentials.get());
-      case AWS_ASSUME_ROLE -> cachedAssumeRole(authentication);
+      case AWS_ASSUME_ROLE -> cachedAssumeRole(accountId, authentication);
       case AWS_ACCESS_KEY, CREDENTIALS_NOT_SET ->
           throw new IllegalArgumentException("AWS credential source is not renewable");
     };
   }
 
-  private ResolvedAwsCredentials cachedAssumeRole(AwsSigV4Authentication authentication) {
+  private ResolvedAwsCredentials cachedAssumeRole(
+      String accountId, AwsSigV4Authentication authentication) {
+    String tenant = requireNonBlank(accountId, "account_id");
     String region = requireNonBlank(authentication.getRegion(), "region");
     AssumeRoleRequest request = assumeRoleRequest(authentication.getAwsAssumeRole());
-    AssumeRoleCacheKey key = AssumeRoleCacheKey.of(region, request);
+    AssumeRoleCacheKey key = AssumeRoleCacheKey.of(tenant, region, request);
     for (; ; ) {
-      CompletableFuture<ResolvedAwsCredentials> existing;
+      CachedResolution existing;
       synchronized (cacheLock) {
         existing = cache.get(key);
       }
       if (existing != null) {
         try {
           ResolvedAwsCredentials credentials =
-              existing.get(
-                  CatalogUpstreamBudget.currentRemainingNanos(cacheWaitTimeout.toNanos()),
-                  TimeUnit.NANOSECONDS);
+              existing
+                  .future()
+                  .get(
+                      CatalogUpstreamBudget.currentRemainingNanos(cacheWaitTimeout.toNanos()),
+                      TimeUnit.NANOSECONDS);
           if (isFresh(credentials)) return credentials;
         } catch (InterruptedException failure) {
           Thread.currentThread().interrupt();
@@ -116,14 +127,21 @@ class CatalogIntegrationAwsCredentialResolver {
           remove(key, existing);
           continue;
         } catch (ExecutionException failure) {
-          remove(key, existing);
+          if (failure.getCause() instanceof CancellationException) {
+            remove(key, existing);
+            continue;
+          }
+          if (!existing.failureBackoffActive(clock.instant())) {
+            remove(key, existing);
+            continue;
+          }
           throw propagate(failure.getCause());
         }
         remove(key, existing);
         continue;
       }
 
-      CompletableFuture<ResolvedAwsCredentials> created = new CompletableFuture<>();
+      CachedResolution created = new CachedResolution(new CompletableFuture<>());
       boolean inserted = false;
       synchronized (cacheLock) {
         existing = cache.get(key);
@@ -136,35 +154,34 @@ class CatalogIntegrationAwsCredentialResolver {
         }
       }
       if (existing != null) continue;
-      if (!inserted) return assumeRoleWithRetry(region, request);
+      if (!inserted) return assumeRoleOnce(region, request);
       try {
-        ResolvedAwsCredentials credentials = assumeRoleWithRetry(region, request);
-        created.complete(credentials);
+        ResolvedAwsCredentials credentials = assumeRoleOnce(region, request);
+        created.future().complete(credentials);
         if (!isFresh(credentials)) remove(key, created);
         return credentials;
       } catch (Throwable failure) {
-        created.completeExceptionally(failure);
-        remove(key, created);
+        if (failure instanceof CancellationException || failure instanceof Error) {
+          remove(key, created);
+        } else if (!shouldCacheFailure(failure)) {
+          remove(key, created);
+        } else {
+          created.backOffUntil(clock.instant().plus(FAILURE_BACKOFF));
+        }
+        created.future().completeExceptionally(failure);
         throw propagate(failure);
       }
     }
   }
 
-  private ResolvedAwsCredentials assumeRoleWithRetry(String region, AssumeRoleRequest request) {
-    RuntimeException lastFailure = null;
-    for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  private ResolvedAwsCredentials assumeRoleOnce(String region, AssumeRoleRequest request) {
+    throwIfInterrupted();
+    try {
+      return fromAssumed(assumeRole.apply(region, request));
+    } catch (RuntimeException failure) {
       throwIfInterrupted();
-      try {
-        return fromAssumed(assumeRole.apply(region, request));
-      } catch (RuntimeException failure) {
-        throwIfInterrupted();
-        if (!retryable(failure) || attempt == MAX_ATTEMPTS) throw failure;
-        lastFailure = failure;
-        retryPause.accept(attempt);
-        throwIfInterrupted();
-      }
+      throw failure;
     }
-    throw lastFailure;
   }
 
   private static void throwIfInterrupted() {
@@ -179,7 +196,7 @@ class CatalogIntegrationAwsCredentialResolver {
         && clock.instant().plus(CACHE_REFRESH_SKEW).isBefore(credentials.expiresAt());
   }
 
-  private void remove(AssumeRoleCacheKey key, CompletableFuture<ResolvedAwsCredentials> expected) {
+  private void remove(AssumeRoleCacheKey key, CachedResolution expected) {
     synchronized (cacheLock) {
       cache.remove(key, expected);
     }
@@ -189,27 +206,8 @@ class CatalogIntegrationAwsCredentialResolver {
     if (cache.size() <= targetSize) return;
     var iterator = cache.entrySet().iterator();
     while (cache.size() > targetSize && iterator.hasNext()) {
-      if (iterator.next().getValue().isDone()) iterator.remove();
+      if (iterator.next().getValue().future().isDone()) iterator.remove();
     }
-  }
-
-  private static boolean retryable(Throwable failure) {
-    for (Throwable current = failure; current != null; current = current.getCause()) {
-      if (current instanceof MissingAwsCredentialsException) return false;
-      if (current instanceof SdkClientException) return true;
-      if (current instanceof StsException sts
-          && (CatalogIntegrationAccess.isStsThrottling(sts)
-              || sts.statusCode() == 429
-              || sts.statusCode() >= 500)) return true;
-    }
-    return false;
-  }
-
-  private static void pauseBeforeRetry(int failedAttempt) {
-    long upperBound = RETRY_BASE_MILLIS << Math.max(0, failedAttempt - 1);
-    long delayMillis =
-        ThreadLocalRandom.current().nextLong(Math.max(1L, upperBound / 2), upperBound + 1);
-    LockSupport.parkNanos(Duration.ofMillis(delayMillis).toNanos());
   }
 
   private static RuntimeException propagate(Throwable failure) {
@@ -263,11 +261,70 @@ class CatalogIntegrationAwsCredentialResolver {
   }
 
   private Credentials assumeRole(String region, AssumeRoleRequest request) {
-    var provider = StaticCredentialsProvider.create(resolveDefaultCredentials());
-    try (var sts =
-        StsClient.builder().credentialsProvider(provider).region(Region.of(region)).build()) {
+    long startedAt = nanoTime.getAsLong();
+    long totalNanos = CatalogUpstreamBudget.currentRemainingNanos(cacheWaitTimeout.toNanos());
+    long deadline = saturatedAdd(startedAt, totalNanos);
+    AwsCredentials sourceCredentials =
+        resolveDefaultCredentialsWithin(Duration.ofNanos(remainingNanos(deadline)));
+    Duration stsTimeout = Duration.ofNanos(remainingNanos(deadline));
+    try (var sts = stsClientFactory.create(region, sourceCredentials, stsTimeout)) {
       return sts.assumeRole(request).credentials();
     }
+  }
+
+  private StsClient buildStsClient(
+      String region, AwsCredentials sourceCredentials, Duration callTimeout) {
+    return StsClient.builder()
+        .credentialsProvider(StaticCredentialsProvider.create(sourceCredentials))
+        .region(Region.of(region))
+        .overrideConfiguration(stsOverrideConfiguration(callTimeout))
+        .build();
+  }
+
+  private AwsCredentials resolveDefaultCredentialsWithin(Duration timeout) {
+    FutureTask<AwsCredentials> lookup = new FutureTask<>(defaultCredentials::get);
+    Thread.ofVirtual().name("catalog-integration-aws-credentials").start(lookup);
+    try {
+      return lookup.get(timeout.toNanos(), TimeUnit.NANOSECONDS);
+    } catch (TimeoutException failure) {
+      lookup.cancel(true);
+      throw new CredentialSourceTimeoutException(failure);
+    } catch (InterruptedException failure) {
+      lookup.cancel(true);
+      Thread.currentThread().interrupt();
+      throw new CancellationException("AWS credential resolution was cancelled");
+    } catch (ExecutionException failure) {
+      throw propagate(failure.getCause());
+    }
+  }
+
+  private long remainingNanos(long deadline) {
+    long remaining = deadline - nanoTime.getAsLong();
+    if (remaining <= 0L) {
+      throw new CredentialSourceTimeoutException(null);
+    }
+    return remaining;
+  }
+
+  private static long saturatedAdd(long left, long right) {
+    long result = left + right;
+    return ((left ^ result) & (right ^ result)) < 0 ? Long.MAX_VALUE : result;
+  }
+
+  private static boolean shouldCacheFailure(Throwable failure) {
+    for (Throwable current = failure; current != null; current = current.getCause()) {
+      if (current instanceof ApiCallTimeoutException
+          || current instanceof CredentialWaitTimeoutException
+          || current instanceof CredentialSourceTimeoutException) return false;
+    }
+    return true;
+  }
+
+  static ClientOverrideConfiguration stsOverrideConfiguration(Duration callTimeout) {
+    return ClientOverrideConfiguration.builder()
+        .apiCallTimeout(callTimeout)
+        .retryStrategy(RetryMode.STANDARD)
+        .build();
   }
 
   private static ResolvedAwsCredentials fromDefault(AwsCredentials credentials) {
@@ -302,10 +359,33 @@ class CatalogIntegrationAwsCredentialResolver {
   }
 
   private record AssumeRoleCacheKey(
-      String region, String roleArn, String externalId, String roleSessionName) {
-    private static AssumeRoleCacheKey of(String region, AssumeRoleRequest request) {
+      String accountId, String region, String roleArn, String externalId, String roleSessionName) {
+    private static AssumeRoleCacheKey of(
+        String accountId, String region, AssumeRoleRequest request) {
       return new AssumeRoleCacheKey(
-          region, request.roleArn(), request.externalId(), request.roleSessionName());
+          accountId, region, request.roleArn(), request.externalId(), request.roleSessionName());
+    }
+  }
+
+  private static final class CachedResolution {
+    private final CompletableFuture<ResolvedAwsCredentials> future;
+    private volatile Instant backOffUntil;
+
+    private CachedResolution(CompletableFuture<ResolvedAwsCredentials> future) {
+      this.future = future;
+    }
+
+    private CompletableFuture<ResolvedAwsCredentials> future() {
+      return future;
+    }
+
+    private void backOffUntil(Instant retryAt) {
+      backOffUntil = retryAt;
+    }
+
+    private boolean failureBackoffActive(Instant now) {
+      Instant retryAt = backOffUntil;
+      return retryAt != null && now.isBefore(retryAt);
     }
   }
 
@@ -318,6 +398,12 @@ class CatalogIntegrationAwsCredentialResolver {
   static final class CredentialWaitTimeoutException extends RuntimeException {
     CredentialWaitTimeoutException(Throwable cause) {
       super("Timed out waiting for AWS credential resolution", cause);
+    }
+  }
+
+  static final class CredentialSourceTimeoutException extends RuntimeException {
+    CredentialSourceTimeoutException(Throwable cause) {
+      super("Timed out resolving AWS source credentials", cause);
     }
   }
 

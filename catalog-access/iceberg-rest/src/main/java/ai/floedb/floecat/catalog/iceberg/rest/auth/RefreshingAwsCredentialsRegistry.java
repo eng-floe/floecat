@@ -46,6 +46,7 @@ public final class RefreshingAwsCredentialsRegistry {
   static final String CLIENT_PROVIDER_PREFIX = CLIENT_PROVIDER + ".";
 
   private static final Duration DEFAULT_REFRESH_SKEW = Duration.ofMinutes(5);
+  private static final Duration REFRESH_FAILURE_BACKOFF = Duration.ofSeconds(5);
   private static final ConcurrentMap<String, Entry> REGISTRY = new ConcurrentHashMap<>();
 
   private RefreshingAwsCredentialsRegistry() {}
@@ -219,6 +220,7 @@ public final class RefreshingAwsCredentialsRegistry {
     private final Set<AwsCredentialScope> observedScopes = ConcurrentHashMap.newKeySet();
     private volatile CredentialState currentState;
     private volatile TerminalCredentialRefreshException terminalFailure;
+    private volatile RefreshFailure refreshFailure;
 
     private Entry(
         String providerId,
@@ -253,6 +255,11 @@ public final class RefreshingAwsCredentialsRegistry {
       }
       Instant now = clock.instant();
       if (shouldRefresh(snapshot, now)) {
+        RefreshFailure backedOff = activeRefreshFailure(now);
+        if (backedOff != null) {
+          if (isUsable(snapshot, now)) return toAwsCredentials(snapshot.credentials());
+          throw backedOff.failure();
+        }
         synchronized (this) {
           terminal = terminalFailure;
           if (terminal != null) {
@@ -261,6 +268,11 @@ public final class RefreshingAwsCredentialsRegistry {
           snapshot = currentState;
           now = clock.instant();
           if (shouldRefresh(snapshot, now)) {
+            backedOff = activeRefreshFailure(now);
+            if (backedOff != null) {
+              if (isUsable(snapshot, now)) return toAwsCredentials(snapshot.credentials());
+              throw backedOff.failure();
+            }
             try {
               AwsCredentialValue refreshed =
                   Objects.requireNonNull(refresher.get(), "refresher returned null");
@@ -271,6 +283,7 @@ public final class RefreshingAwsCredentialsRegistry {
                       refreshed,
                       computeRefreshSkew(refreshed, defaultRefreshSkew, refreshedAt),
                       refreshedAt);
+              refreshFailure = null;
               LOG.log(
                   Level.INFO,
                   "Refreshed catalog-access AWS credentials; providerRef={0}, scope={1},"
@@ -287,8 +300,10 @@ public final class RefreshingAwsCredentialsRegistry {
                 terminalFailure = terminalRefresh;
                 throw terminalRefresh;
               }
+              Instant failedAt = clock.instant();
+              refreshFailure = new RefreshFailure(e, failedAt.plus(REFRESH_FAILURE_BACKOFF));
               if (snapshot.credentials().expiresAt() != null
-                  && clock.instant().isBefore(snapshot.credentials().expiresAt())) {
+                  && failedAt.isBefore(snapshot.credentials().expiresAt())) {
                 return toAwsCredentials(snapshot.credentials());
               }
               throw e;
@@ -299,8 +314,20 @@ public final class RefreshingAwsCredentialsRegistry {
       }
       return toAwsCredentials(snapshot.credentials());
     }
+
+    private RefreshFailure activeRefreshFailure(Instant now) {
+      RefreshFailure recent = refreshFailure;
+      return recent != null && now.isBefore(recent.retryAt()) ? recent : null;
+    }
+
+    private static boolean isUsable(CredentialState state, Instant now) {
+      return state.credentials().expiresAt() != null
+          && now.isBefore(state.credentials().expiresAt());
+    }
   }
 
   private record CredentialState(
       AwsCredentialValue credentials, Duration refreshSkew, Instant refreshedAt) {}
+
+  private record RefreshFailure(RuntimeException failure, Instant retryAt) {}
 }

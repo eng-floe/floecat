@@ -216,10 +216,10 @@ Ambient credentials are deployment-gated because they expose the Floecat service
 tenant-authored Catalog Integrations. They are disabled by default; enable them only in a trusted
 deployment with `floecat.catalog-integrations.aws.default-credentials-enabled=true`. Assume-role
 targets are customer-managed and are authorized by Floecat's `sts:AssumeRole` policy and the target
-role's trust policy. Assume-role credentials are not yet isolated between Floecat tenants: the
-tenant currently supplies `external_id`, so it cannot serve as a Floecat-enforced tenant boundary.
-A follow-up will replace this with a Floecat-issued external ID suitable for enforcing tenant
-isolation in the target role's trust policy.
+role's trust policy. Cached assume-role credentials are scoped by Floecat account, but the tenant
+currently supplies `external_id`, so the target role's trust policy does not yet have a
+Floecat-enforced tenant boundary. A follow-up will replace this with a Floecat-issued external ID
+suitable for enforcing tenant isolation in the target role's trust policy.
 
 `--props` supplies non-secret provider connection properties. For Iceberg REST catalogs such as
 Polaris, `warehouse=<catalog-name>` selects the upstream catalog without putting a query parameter in
