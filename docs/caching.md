@@ -22,6 +22,9 @@ selected snapshot unavailable.
   immutable content-addressed values remain the exact value named by the resolved selection. The complete pointer
   index is deliberately different: after its account load completes, a missing addressing key is
   authoritative absence.
+- **Answers from outside Floecat expire.** A credential vended by a source catalog is not content
+  and has a lifetime, so the cache that holds it serves each answer for part of that lifetime and
+  its expiry is part of correctness. It uses `ExpiringCache`, not `MemoryCache`.
 
 ## Warm and cold reads
 
@@ -37,6 +40,7 @@ identity; they do not replace a value in an existing key.
 | Pointers | `PlanningPointerIndex` behind `IndexedPointerStore` | Account addressing state: names, identities, and each table's `root/current` and `snapshots/current`. Rows keyed by snapshot -- snapshot history, constraints, stats generations, index artifacts -- are durable-only, because a table can commit snapshots far faster than its schema or addressing state changes. | Not a cache. A partition is either `LOADING` or `COMPLETE`. While loading, reads use durable KV; after completion, point reads, listings and counts are served from the sorted in-memory index and absence is authoritative. A point mutation commits to durable KV and publishes the result while holding the account read lock and that key's lock; prefix and account-wide mutations use the account write lock. Operational pointers remain on the durable adapter. |
 | Objects | `ObjectCache` | Decoded relation metadata, mapped schemas, constraints, immutable generation-scoped snapshot facts and target-stat records | Entries are keyed by immutable content or generation identity. A live/newest stats read is read-through and is never retained. Account eviction removes every object entry for that account. |
 | Blobs | `DiskBlobCache` behind `BlobCacheAccess` | Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe | Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mapped content stays retained until its scoped read closes. The disk budget and kill switch are `floecat.cache.blob.disk.*`; it is independent of the heap budget. |
+| Vended credentials | `VendedCredentialCache` on `ExpiringCache` | Source-catalog vend answers, per Connector or Integration configuration and upstream table | An answer is served while at least `floecat.storage.source-catalog.vend-cache.min-remaining-fraction` of its lifetime and five minutes remain. Answers without an expiry, answers no caller could use, and credentials exchanged from the caller's token are not held. See [catalog integrations](catalog-integrations.md). |
 | Per-query state | `QueryContextStore` and per-query memos | Snapshot selections, expansion map, and scan/session bookkeeping keyed by query ID | Rebuildable process-local optimization, not a GC root. If the selected snapshot is deleted or collected, the query receives the snapshot-unavailable error. |
 
 An owned pointer partition can be warmed in the background when ownership is granted. The first
@@ -140,6 +144,9 @@ index for planner keys and durable KV for operational keys.
 A cache built on the `core/cache` contract publishes the same series, tagged by cache name, so
 those are comparable and a new one brings its telemetry with it. The disk blob cache adds mapping,
 corruption and sweep signals because those are file-lifecycle events rather than heap-cache events.
+
+The vended-credential cache reports hit, miss, load-time and error series only: it is bounded by
+entry count rather than weight, and it has no enabled or entries gauge.
 
 | question | series |
 |---|---|

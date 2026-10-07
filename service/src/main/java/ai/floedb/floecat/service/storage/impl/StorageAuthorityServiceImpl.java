@@ -739,10 +739,9 @@ public class StorageAuthorityServiceImpl extends BaseServiceImpl implements Stor
    * catalog does not delegate" and lets the caller fail with the usual missing-authority error; it
    * does not swallow a catalog that delegates but refused, which surfaces as a thrown exception.
    *
-   * <p>NOTE: builds a connector per call, which for an Iceberg REST catalog means an OAuth exchange
-   * and a fresh HTTP client. Vending happens per file group, so this wants a cache keyed on the
-   * table and bounded by the credential expiry before it carries production traffic. Left out here
-   * because the invalidation policy is a design decision, not an implementation detail.
+   * <p>Vending happens per file group. The vendor reuses a held answer for the same source and
+   * upstream table ({@link VendedCredentialCache}), so the catalog is asked only when none is held
+   * or the credential is exchanged from the caller's token.
    */
   private ResolveStorageAuthorityResponse vendFromSourceCatalog(
       String accountId,

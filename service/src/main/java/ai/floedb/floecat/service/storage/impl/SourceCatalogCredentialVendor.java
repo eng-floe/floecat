@@ -58,12 +58,14 @@ import jakarta.inject.Inject;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -187,6 +189,7 @@ public class SourceCatalogCredentialVendor {
   Function<ConnectorConfig, FloecatConnector> connectorFactory = ConnectorFactory::create;
   @Inject CatalogIntegrationRepository catalogIntegrationRepo;
   @Inject CatalogIntegrationAccess catalogIntegrationAccess;
+  @Inject VendedCredentialCache vendCache = VendedCredentialCache.disabled();
 
   @ConfigProperty(name = "floecat.storage.aws.region", defaultValue = "us-east-1")
   String defaultRegion;
@@ -289,84 +292,30 @@ public class SourceCatalogCredentialVendor {
       return null;
     }
 
-    ConnectorConfig resolvedConfig = resolveConnectorCredentials(connector);
-    String configuredAccessKey = resolvedConfig.options().get("s3.access-key-id");
-
+    ConnectorAuth auth = connectorAuth(connector);
     String namespaceFq = String.join(".", upstream.getNamespacePathList());
-    Optional<FloecatConnector.VendedStorageCredentials> vended;
-    // One deadline across building the connector and the vend it makes. Building an Iceberg REST
-    // connector is itself a config round trip and a SigV4/OAuth exchange, and
-    // vendStorageCredentials
-    // adds a delegated loadTable; an upstream that accepts the connection and then stalls -- Glue's
-    // Lake Formation vend, a Databricks Uniform loadTable -- puts no socket bound on the sum and
-    // would hold this gRPC handler with no limit, leaving the reconcile job in no terminal state.
-    // vendFromCatalogIntegration budgets the same calls for the same reason; the Connector path was
-    // missing it.
-    CatalogUpstreamBudget budget = CatalogUpstreamBudget.start(upstreamTimeout, nanoTime);
-    // Not try-with-resources: the build is itself budgeted, so a connector that arrives after the
-    // deadline must be closed rather than leaked -- the close is the budget's abandoned-result
-    // cleanup, and the ordinary close runs bounded in the finally.
-    FloecatConnector source = null;
-    try {
-      source =
-          budget.call(
-              () -> connectorFactory.apply(resolvedConfig),
-              SourceCatalogCredentialVendor::closeQuietly);
-      FloecatConnector opened = source;
-      vended =
-          budget.call(
-              () -> opened.vendStorageCredentials(namespaceFq, upstream.getTableDisplayName()));
-    } catch (StatusRuntimeException e) {
-      throw e;
-    } catch (java.util.concurrent.CancellationException e) {
-      // The budget raises this when the wait is interrupted, and BaseServiceImpl.toStatus maps it
-      // to
-      // CANCELLED. Folding it into the classification below would report a caller who went away as
-      // a
-      // catalog fault, and put a cancelled reconcile attempt on the retry path.
-      throw e;
-    } catch (RuntimeException e) {
-      // A catalog that refuses us is a permanent condition: bad credentials, a revoked grant, a
-      // principal without TABLE_READ_DATA. Letting it escape as INTERNAL makes the reconciler treat
-      // it as transient and retry the job forever, so classify it terminally. Anything that is not
-      // recognisably an authorization refusal stays retryable -- a budget timeout among them, so a
-      // catalog that recovers is retried rather than permanently failed.
-      throw catalogFailureStatus(e, connector, namespaceFq, upstream.getTableDisplayName(), use);
-    } finally {
-      closeWithinBudget(source);
-    }
-    // Empty and absent are the same answer. A connector that hands back a credential object with
-    // no properties has vended nothing, and falling through would reach requireUsableCredentials
-    // and fail the job terminally on a condition the caller can recover from by using a storage
-    // authority. Partial credentials are deliberately *not* screened here -- those do reach the
-    // usability check, which is where "the catalog vended something unusable" belongs.
-    if (vended.isEmpty() || vended.get().isEmpty()) {
-      LOG.infof(
-          "source-catalog vending skipped: connector %s returned no credentials for %s"
-              + " (catalog does not delegate)",
-          connector.getResourceId().getId(),
-          boundedTable(namespaceFq, upstream.getTableDisplayName()));
-      return null;
-    }
-
-    // Delegation was declared, but a catalog that silently ignored the header leaves only the
-    // connector's own configured credentials on the FileIO. If what came back is exactly what we
-    // configured the connector with, nothing was vended -- fall back rather than pass the
-    // connector's static credentials down the vend path as if they were catalog-scoped.
-    String vendedAccessKey = vended.get().properties().get("s3.access-key-id");
-    if (configuredAccessKey != null && configuredAccessKey.equals(vendedAccessKey)) {
-      LOG.infof(
-          "source-catalog vending skipped: connector %s returned its own configured credentials"
-              + " for %s (catalog did not delegate)",
-          connector.getResourceId().getId(),
-          boundedTable(namespaceFq, upstream.getTableDisplayName()));
+    Supplier<Optional<FloecatConnector.VendedStorageCredentials>> vend =
+        () -> vendDelegated(connector, auth, namespaceFq, upstream, use);
+    // A credential obtained by exchanging the caller's own token is that caller's alone.
+    Optional<FloecatConnector.VendedStorageCredentials> vended =
+        auth.exchangesCallerToken()
+            ? vend.get()
+            : vendCache.connectorVend(
+                connector,
+                auth.credentials(),
+                namespaceFq,
+                upstream.getTableDisplayName(),
+                vend,
+                SourceCatalogCredentialVendor::connectorExpiry);
+    if (vended.isEmpty()) {
       return null;
     }
 
     return credentialResponse(
         vended.get().properties(),
         vended.get().expiresAt(),
-        resolvedConfig.options(),
+        // Routing keys only, which applying a credential never adds.
+        ConnectorConfigMapper.fromProto(connector).options(),
         responsePrefix(
             vended.get(), responseLocationPrefix, namespaceFq, upstream.getTableDisplayName()),
         "connector=" + connector.getResourceId().getId(),
@@ -410,7 +359,144 @@ public class SourceCatalogCredentialVendor {
     CatalogObjectName tableName =
         new CatalogObjectName(
             new NamespacePath(upstream.getNamespacePathList()), upstream.getTableDisplayName());
-    Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials> vended;
+    Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials> vended =
+        vendCache.integrationVend(
+            integration,
+            namespaceFq,
+            tableName.name(),
+            () -> vendThroughIntegration(integration, namespaceFq, tableName, use),
+            SourceCatalogCredentialVendor::integrationExpiry);
+    if (vended.isEmpty()) {
+      throw integrationCannotVend(
+          "Catalog Integration "
+              + integration.getResourceId().getId()
+              + " vended no storage credentials for "
+              + boundedTable(namespaceFq, tableName.name()));
+    }
+
+    var credentials = vended.get();
+    // The same helper the connector path uses. It resolves all three relations between the vended
+    // scope and the location the caller was authorized for: a broader scope narrows to the request,
+    // a narrower one is stamped as itself, and a disjoint one returns the request with a warning.
+    // Admitting only the first would turn a catalog that legitimately scopes to a subtree of the
+    // request -- vend s3://b/db/tbl/data for request s3://b/db/tbl -- into a missing-authority
+    // error.
+    //
+    // Nothing is gained by refusing the disjoint case either: this path is reached only once no
+    // storage authority matched, so falling back means failing, while stamping the request lets the
+    // read attempt proceed and lets S3 -- which knows the real grant -- have the final say.
+    String stampedPrefix =
+        responsePrefix(
+            credentials.scopePrefix(), responseLocationPrefix, namespaceFq, tableName.name());
+    return credentialResponse(
+        credentials.properties(),
+        credentials.expiresAt().orElse(null),
+        integration.getPropertiesMap(),
+        stampedPrefix,
+        "catalog-integration=" + integration.getResourceId().getId(),
+        namespaceFq,
+        tableName.name(),
+        use,
+        VendSource.CATALOG_INTEGRATION);
+  }
+
+  /**
+   * Applies the connector's credential, vends through its catalog, and returns the vended
+   * credentials, or empty when the catalog delegated nothing.
+   */
+  private Optional<FloecatConnector.VendedStorageCredentials> vendDelegated(
+      Connector connector,
+      ConnectorAuth auth,
+      String namespaceFq,
+      UpstreamRef upstream,
+      CredentialUse use) {
+    ConnectorConfig resolvedConfig = applyConnectorAuth(connector, auth);
+    String configuredAccessKey = resolvedConfig.options().get("s3.access-key-id");
+    Optional<FloecatConnector.VendedStorageCredentials> vended =
+        vendThroughConnector(resolvedConfig, connector, namespaceFq, upstream, use);
+    // Empty and absent are the same answer. A connector that hands back a credential object with
+    // no properties has vended nothing, and falling through would reach requireUsableCredentials
+    // and fail the job terminally on a condition the caller can recover from by using a storage
+    // authority. Partial credentials are deliberately *not* screened here -- those do reach the
+    // usability check, which is where "the catalog vended something unusable" belongs.
+    if (vended.isEmpty() || vended.get().isEmpty()) {
+      LOG.infof(
+          "source-catalog vending skipped: connector %s returned no credentials for %s"
+              + " (catalog does not delegate)",
+          connector.getResourceId().getId(),
+          boundedTable(namespaceFq, upstream.getTableDisplayName()));
+      return Optional.empty();
+    }
+
+    // Delegation was declared, but a catalog that silently ignored the header leaves only the
+    // connector's own configured credentials on the FileIO. If what came back is exactly what we
+    // configured the connector with, nothing was vended -- fall back rather than pass the
+    // connector's static credentials down the vend path as if they were catalog-scoped.
+    String vendedAccessKey = vended.get().properties().get("s3.access-key-id");
+    if (configuredAccessKey != null && configuredAccessKey.equals(vendedAccessKey)) {
+      LOG.infof(
+          "source-catalog vending skipped: connector %s returned its own configured credentials"
+              + " for %s (catalog did not delegate)",
+          connector.getResourceId().getId(),
+          boundedTable(namespaceFq, upstream.getTableDisplayName()));
+      return Optional.empty();
+    }
+
+    return vended;
+  }
+
+  /** Builds the connector and asks its catalog to vend, within one upstream budget. */
+  private Optional<FloecatConnector.VendedStorageCredentials> vendThroughConnector(
+      ConnectorConfig resolvedConfig,
+      Connector connector,
+      String namespaceFq,
+      UpstreamRef upstream,
+      CredentialUse use) {
+    // One deadline across building the connector and the vend it makes. Building an Iceberg REST
+    // connector is itself a config round trip and a SigV4/OAuth exchange, and the vend adds a
+    // delegated loadTable; an upstream that accepts the connection and then stalls -- Glue's Lake
+    // Formation vend, a Databricks Uniform loadTable -- puts no socket bound on the sum and would
+    // hold this gRPC handler with no limit, leaving the reconcile job in no terminal state.
+    // vendThroughIntegration budgets the same calls for the same reason.
+    CatalogUpstreamBudget budget = CatalogUpstreamBudget.start(upstreamTimeout, nanoTime);
+    // Not try-with-resources: the build is itself budgeted, so a connector that arrives after the
+    // deadline must be closed rather than leaked -- the close is the budget's abandoned-result
+    // cleanup, and the ordinary close runs bounded in the finally.
+    FloecatConnector source = null;
+    try {
+      source =
+          budget.call(
+              () -> connectorFactory.apply(resolvedConfig),
+              SourceCatalogCredentialVendor::closeQuietly);
+      FloecatConnector opened = source;
+      return budget.call(
+          () -> opened.vendStorageCredentials(namespaceFq, upstream.getTableDisplayName()));
+    } catch (StatusRuntimeException e) {
+      throw e;
+    } catch (java.util.concurrent.CancellationException e) {
+      // The budget raises this when the wait is interrupted, and BaseServiceImpl.toStatus maps it
+      // to CANCELLED. Folding it into the classification below would report a caller who went
+      // away as a catalog fault, and put a cancelled reconcile attempt on the retry path.
+      throw e;
+    } catch (RuntimeException e) {
+      // A catalog that refuses us is a permanent condition: bad credentials, a revoked grant, a
+      // principal without TABLE_READ_DATA. Letting it escape as INTERNAL makes the reconciler treat
+      // it as transient and retry the job forever, so classify it terminally. Anything that is not
+      // recognisably an authorization refusal stays retryable -- a budget timeout among them, so a
+      // catalog that recovers is retried rather than permanently failed.
+      throw catalogFailureStatus(e, connector, namespaceFq, upstream.getTableDisplayName(), use);
+    } finally {
+      closeWithinBudget(source);
+    }
+  }
+
+  /** Opens the integration's catalog client and asks it to vend, within one upstream budget. */
+  private Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials>
+      vendThroughIntegration(
+          CatalogIntegration integration,
+          String namespaceFq,
+          CatalogObjectName tableName,
+          CredentialUse use) {
     // One deadline across the whole conversation with the upstream catalog: opening the client is
     // itself a config round trip and an OAuth exchange, and loadTable is a third. A catalog that
     // accepts the connection and then stalls would otherwise hold this thread -- a gRPC handler on
@@ -435,7 +521,7 @@ public class SourceCatalogCredentialVendor {
                 + integration.getResourceId().getId()
                 + " does not support storage credential vending");
       }
-      vended = budget.call(() -> opened.vendStorageCredentials(tableName));
+      return budget.call(() -> opened.vendStorageCredentials(tableName));
     } catch (StatusRuntimeException e) {
       throw e;
     } catch (java.util.concurrent.CancellationException e) {
@@ -449,38 +535,6 @@ public class SourceCatalogCredentialVendor {
     } finally {
       closeWithinBudget(source);
     }
-    if (vended.isEmpty()) {
-      throw integrationCannotVend(
-          "Catalog Integration "
-              + integration.getResourceId().getId()
-              + " vended no storage credentials for "
-              + boundedTable(namespaceFq, tableName.name()));
-    }
-
-    var credentials = vended.get();
-    // The same helper the connector path uses, rather than a second rule beside it. It resolves all
-    // three relations between the vended scope and the location the caller was authorized for: a
-    // broader scope narrows to the request, a narrower one is stamped as itself, and a disjoint one
-    // returns the request with a warning. An earlier inline check here admitted only the first,
-    // which turned a catalog that legitimately scoped to a subtree of the request -- vend
-    // s3://b/db/tbl/data for request s3://b/db/tbl -- into a missing-authority error.
-    //
-    // Nothing is gained by refusing the disjoint case either: this path is reached only once no
-    // storage authority matched, so falling back means failing, while stamping the request lets the
-    // read attempt proceed and lets S3 -- which knows the real grant -- have the final say.
-    String stampedPrefix =
-        responsePrefix(
-            credentials.scopePrefix(), responseLocationPrefix, namespaceFq, tableName.name());
-    return credentialResponse(
-        credentials.properties(),
-        credentials.expiresAt().orElse(null),
-        integration.getPropertiesMap(),
-        stampedPrefix,
-        "catalog-integration=" + integration.getResourceId().getId(),
-        namespaceFq,
-        tableName.name(),
-        use,
-        VendSource.CATALOG_INTEGRATION);
   }
 
   private ResolveStorageAuthorityResponse credentialResponse(
@@ -739,12 +793,12 @@ public class SourceCatalogCredentialVendor {
    *
    * <p>Which of those apply is decided by {@link VendSource} first and {@link CredentialUse}
    * second, because the two sources hold different things. An integration vends only from a
-   * temporary session, so it owes the full triple on either path -- see the reasoning at the {@code
-   * requireSessionTriple} assignment. A connector can legitimately hold a long-lived static key,
-   * and for one of those {@link CredentialUse#QUERY} hands credentials straight to the scan
-   * engine's FileIO for reads that happen now and registers no refresh provider, so the renewal
-   * requirement has no meaning there: enforcing it would reject credentials that read perfectly
-   * well, and reject them terminally on a path where nothing is retrying.
+   * temporary session, so it owes the full triple on either path -- see the reasoning in {@link
+   * #missingFields}. A connector can legitimately hold a long-lived static key, and for one of
+   * those {@link CredentialUse#QUERY} hands credentials straight to the scan engine's FileIO for
+   * reads that happen now and registers no refresh provider, so the renewal requirement has no
+   * meaning there: enforcing it would reject credentials that read perfectly well, and reject them
+   * terminally on a path where nothing is retrying.
    *
    * <p>An expiry that has already passed is the third requirement, split out into {@link
    * #requireLiveExpiry} because it is the one condition here whose answer depends on how far past
@@ -761,14 +815,46 @@ public class SourceCatalogCredentialVendor {
         vended.properties(), vended.expiresAt(), now, namespaceFq, tableName, use, source);
   }
 
-  private static void requireUsableCredentials(
-      Map<String, String> props,
-      Instant expiresAt,
-      Instant now,
-      String namespaceFq,
-      String tableName,
-      CredentialUse use,
-      VendSource source) {
+  /**
+   * The expiry a connector answer is cached against, or null for one not worth caching: refused for
+   * every use.
+   */
+  static Instant connectorExpiry(Optional<FloecatConnector.VendedStorageCredentials> answer) {
+    return answer
+        .filter(
+            vended ->
+                usableForSomeUse(vended.properties(), vended.expiresAt(), VendSource.CONNECTOR))
+        .map(FloecatConnector.VendedStorageCredentials::expiresAt)
+        .orElse(null);
+  }
+
+  /**
+   * The expiry an integration answer is cached against, or null for one not worth caching: refused
+   * for every use.
+   */
+  static Instant integrationExpiry(
+      Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials> answer) {
+    return answer
+        .filter(
+            vended ->
+                usableForSomeUse(
+                    vended.properties(),
+                    vended.expiresAt().orElse(null),
+                    VendSource.CATALOG_INTEGRATION))
+        .flatMap(ai.floedb.floecat.catalog.access.VendedStorageCredentials::expiresAt)
+        .orElse(null);
+  }
+
+  /** Whether some use accepts the answer, so it can serve the next caller whatever their use. */
+  private static boolean usableForSomeUse(
+      Map<String, String> props, Instant expiresAt, VendSource source) {
+    return Arrays.stream(CredentialUse.values())
+        .anyMatch(use -> missingFields(props, expiresAt, use, source).isEmpty());
+  }
+
+  /** The fields {@code use} requires of an answer from {@code source} that it lacks. */
+  private static List<String> missingFields(
+      Map<String, String> props, Instant expiresAt, CredentialUse use, VendSource source) {
     // A tuple with neither a session token nor an expiry is a long-lived static key, not a session
     // credential missing its renewal fields, and reconcile can use one: it fails
     // isRefreshableExecutionCredential, so the merge path embeds it statically -- the right answer
@@ -817,11 +903,23 @@ public class SourceCatalogCredentialVendor {
     // Exempts the static key above, which has nothing to expire. What stays terminal is a
     // session token whose expiry is absent: that one cannot be renewed and would lapse
     // mid-capture. Only absent, not past -- the two are disjoint, and an expiry already in the
-    // past belongs to requireLiveExpiry at the end of this method, which weighs it against the
-    // skew tolerance and the calling path instead of folding it in here as a missing field.
+    // past belongs to requireLiveExpiry, which weighs it against the skew tolerance and the calling
+    // path instead of folding it in here as a missing field.
     if (requireSessionTriple && expiresAt == null) {
       missing.add("s3.session-token-expires-at-ms");
     }
+    return missing;
+  }
+
+  private static void requireUsableCredentials(
+      Map<String, String> props,
+      Instant expiresAt,
+      Instant now,
+      String namespaceFq,
+      String tableName,
+      CredentialUse use,
+      VendSource source) {
+    List<String> missing = missingFields(props, expiresAt, use, source);
     if (!missing.isEmpty()) {
       // The whole tuple, not just the expiry. An access key and secret with an expiry but no
       // session token satisfies isExecutionBoundStorageCredential yet fails
@@ -1325,31 +1423,64 @@ public class SourceCatalogCredentialVendor {
     return null;
   }
 
-  /** Mirrors the resolution the reconciler uses so a connector authenticates identically here. */
-  private ConnectorConfig resolveConnectorCredentials(Connector connector) {
-    ConnectorConfig base = ConnectorConfigMapper.fromProto(connector);
+  /**
+   * A connector's credential before it is applied: the inline one, the one read from the credential
+   * store ({@code resolved}), or none.
+   */
+  private record ConnectorAuth(AuthCredentials credentials, boolean resolved) {
+    /**
+     * Whether applying the credential exchanges the caller's own token, making the result theirs.
+     */
+    boolean exchangesCallerToken() {
+      return resolved && SourceCatalogCredentialVendor.exchangesCallerToken(credentials);
+    }
+  }
+
+  /** Reads the connector's credential without applying it. */
+  private ConnectorAuth connectorAuth(Connector connector) {
     AuthConfig auth = connector.getAuth();
     if (auth.hasCredentials()
         && auth.getCredentials().getCredentialCase()
             != AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET) {
-      return CredentialResolverSupport.apply(base, auth.getCredentials());
+      return new ConnectorAuth(auth.getCredentials(), false);
     }
     if (!connector.hasResourceId()
         || auth.getScheme().isBlank()
         || "none".equalsIgnoreCase(auth.getScheme())) {
-      return base;
+      return new ConnectorAuth(AuthCredentials.getDefaultInstance(), false);
+    }
+    return credentialResolver
+        .resolve(connector.getResourceId().getAccountId(), connector.getResourceId().getId())
+        .map(credentials -> new ConnectorAuth(credentials, true))
+        .orElse(new ConnectorAuth(AuthCredentials.getDefaultInstance(), false));
+  }
+
+  /** Mirrors the resolution the reconciler uses so a connector authenticates identically here. */
+  private ConnectorConfig applyConnectorAuth(Connector connector, ConnectorAuth auth) {
+    ConnectorConfig base = ConnectorConfigMapper.fromProto(connector);
+    if (!auth.resolved()) {
+      return auth.credentials().getCredentialCase()
+              == AuthCredentials.CredentialCase.CREDENTIAL_NOT_SET
+          ? base
+          : CredentialResolverSupport.apply(base, auth.credentials());
     }
     // Carry the inbound request context, not an empty one. Token-exchange schemes
     // (RFC8693/AZURE/GCP) need the caller's subject token to mint connector credentials; with an
     // empty context CredentialResolverSupport cannot resolve them, so a delegating catalog on any
     // of those auth modes would fail to build before it could vend. The storage RPC has the
     // inbound authorization/session headers available here, same as the normal connector path.
-    return credentialResolver
-        .resolve(connector.getResourceId().getAccountId(), connector.getResourceId().getId())
-        .map(
-            c ->
-                CredentialResolverSupport.apply(
-                    base, c, AuthResolutionContexts.fromInboundContext()))
-        .orElse(base);
+    return CredentialResolverSupport.apply(
+        base, auth.credentials(), AuthResolutionContexts.fromInboundContext());
+  }
+
+  /**
+   * Whether applying {@code credentials} exchanges the caller's own token: RFC 8693, Azure
+   * on-behalf-of and GCP domain-wide delegation, the three that read the subject token.
+   */
+  static boolean exchangesCallerToken(AuthCredentials credentials) {
+    return switch (credentials.getCredentialCase()) {
+      case RFC8693_TOKEN_EXCHANGE, AZURE_TOKEN_EXCHANGE, GCP_TOKEN_EXCHANGE -> true;
+      default -> false;
+    };
   }
 }
