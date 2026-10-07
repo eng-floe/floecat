@@ -24,6 +24,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotConstraints;
 import ai.floedb.floecat.catalog.rpc.TargetStatsRecord;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.execution.rpc.ScanFile;
+import ai.floedb.floecat.types.rpc.ScalarValue;
 import java.io.Closeable;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -704,8 +705,8 @@ public interface FloecatConnector extends Closeable {
       Long rowCount,
       Long nullCount,
       Long nanCount,
-      String min,
-      String max,
+      ScalarValue min,
+      ScalarValue max,
       Ndv ndv,
       // Average uncompressed width in bytes per row, from the Parquet footer (ceil, min 1).
       Long avgWidthBytes,

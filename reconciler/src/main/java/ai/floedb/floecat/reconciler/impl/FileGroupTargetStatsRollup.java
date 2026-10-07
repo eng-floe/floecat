@@ -397,6 +397,8 @@ public final class FileGroupTargetStatsRollup {
     private Long nanCount;
     private String min;
     private String max;
+    private Object minValue;
+    private Object maxValue;
     private boolean minComplete = true;
     private boolean maxComplete = true;
     private final ColumnNdv ndv = new ColumnNdv();
@@ -436,10 +438,16 @@ public final class FileGroupTargetStatsRollup {
       if (decodedLogicalType == null && !logicalType.isBlank()) {
         decodedLogicalType = LogicalTypeProtoAdapter.decodeLogicalType(logicalType);
       }
-      minComplete &= scalar.hasMin() && !scalar.getMin().isBlank();
-      maxComplete &= scalar.hasMax() && !scalar.getMax().isBlank();
+      Object candidateMin =
+          decodedLogicalType == null ? null : LogicalTypeProtoAdapter.columnMinValue(scalar);
+      Object candidateMax =
+          decodedLogicalType == null ? null : LogicalTypeProtoAdapter.columnMaxValue(scalar);
+      minComplete &= candidateMin != null;
+      maxComplete &= candidateMax != null;
       min = pickEncoded(decodedLogicalType, min, scalar.hasMin() ? scalar.getMin() : null, true);
       max = pickEncoded(decodedLogicalType, max, scalar.hasMax() ? scalar.getMax() : null, false);
+      minValue = pickValue(decodedLogicalType, minValue, candidateMin, true);
+      maxValue = pickValue(decodedLogicalType, maxValue, candidateMax, false);
       mergeNdv(scalar);
       /* Guard > 0: files with avg_width_bytes=0 (e.g. all-null columns or zero-row files)
        * are excluded from the weighted average to prevent them from pulling the result toward 0. */
@@ -483,6 +491,12 @@ public final class FileGroupTargetStatsRollup {
       }
       if (maxComplete && max != null) {
         builder.setMax(max);
+      }
+      if (decodedLogicalType != null && minComplete && minValue != null) {
+        builder.setMinValue(LogicalTypeProtoAdapter.encodeTypedValue(decodedLogicalType, minValue));
+      }
+      if (decodedLogicalType != null && maxComplete && maxValue != null) {
+        builder.setMaxValue(LogicalTypeProtoAdapter.encodeTypedValue(decodedLogicalType, maxValue));
       }
       Ndv aggregatedNdv = aggregateNdv();
       if (aggregatedNdv != null) {
@@ -674,6 +688,19 @@ public final class FileGroupTargetStatsRollup {
       if (type == null || !LogicalComparators.isStatsOrderable(type)) return current;
       try {
         int cmp = LogicalTypeProtoAdapter.compareEncoded(type, candidate, current);
+        return (wantLower ? cmp < 0 : cmp > 0) ? candidate : current;
+      } catch (RuntimeException ignored) {
+        return current;
+      }
+    }
+
+    private static Object pickValue(
+        LogicalType type, Object current, Object candidate, boolean wantLower) {
+      if (candidate == null) return current;
+      if (current == null) return candidate;
+      if (type == null || !LogicalComparators.isStatsOrderable(type)) return current;
+      try {
+        int cmp = LogicalComparators.compare(type, candidate, current);
         return (wantLower ? cmp < 0 : cmp > 0) ? candidate : current;
       } catch (RuntimeException ignored) {
         return current;

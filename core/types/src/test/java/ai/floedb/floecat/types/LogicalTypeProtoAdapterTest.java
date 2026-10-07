@@ -20,6 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
+import ai.floedb.floecat.types.rpc.ScalarValue;
+import java.time.Instant;
 import org.junit.jupiter.api.Test;
 
 class LogicalTypeProtoAdapterTest {
@@ -58,5 +60,28 @@ class LogicalTypeProtoAdapterTest {
     assertEquals(
         LogicalTypeProtoAdapter.parseToProto("BIGINT"),
         LogicalTypeProtoAdapter.upgradeLegacyScalarStats(legacy).getType());
+  }
+
+  @Test
+  void scalarBounds_preferTypedValues_andPreserveNanoseconds() {
+    LogicalType type = LogicalType.temporal(LogicalKind.TIMESTAMPTZ, 9);
+    Instant instant = Instant.parse("2026-10-07T12:34:56.123456789Z");
+    ScalarStats stats =
+        ScalarStats.newBuilder()
+            .setType(LogicalTypeProtoAdapter.toProto(type))
+            .setMin("not-used")
+            .setMinValue(LogicalTypeProtoAdapter.encodeTypedValue(type, instant))
+            .build();
+
+    assertEquals(instant, LogicalTypeProtoAdapter.columnMinValue(stats));
+    assertEquals(ScalarValue.VCase.TSTZ, stats.getMinValue().getVCase());
+  }
+
+  @Test
+  void scalarBounds_fallBackToLegacyStrings() {
+    ScalarStats stats =
+        ScalarStats.newBuilder().setLogicalType("INT").setMin("42").setMax("99").build();
+    assertEquals(42L, LogicalTypeProtoAdapter.columnMinValue(stats));
+    assertEquals(99L, LogicalTypeProtoAdapter.columnMaxValue(stats));
   }
 }
