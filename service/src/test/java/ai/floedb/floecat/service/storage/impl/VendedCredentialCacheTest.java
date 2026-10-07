@@ -19,6 +19,8 @@ package ai.floedb.floecat.service.storage.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ai.floedb.floecat.catalog.access.CatalogObjectName;
+import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
@@ -28,6 +30,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -42,6 +45,7 @@ class VendedCredentialCacheTest {
       Connector.newBuilder().setResourceId(ResourceId.newBuilder().setId("c1")).build();
   private static final CatalogIntegration INTEGRATION =
       CatalogIntegration.newBuilder().setResourceId(ResourceId.newBuilder().setId("i1")).build();
+  private static final List<String> NAMESPACE = List.of("cat", "schema");
   private static final AuthCredentials SECRET =
       AuthCredentials.newBuilder()
           .setBearer(AuthCredentials.BearerToken.newBuilder().setToken("t1"))
@@ -104,7 +108,7 @@ class VendedCredentialCacheTest {
       cache.connectorVend(
           SOURCE,
           SECRET,
-          "cat.schema",
+          NAMESPACE,
           "orders",
           () -> {
             vends.incrementAndGet();
@@ -125,7 +129,7 @@ class VendedCredentialCacheTest {
       cache.connectorVend(
           SOURCE,
           SECRET,
-          "cat.schema",
+          NAMESPACE,
           "orders",
           () -> {
             vends.incrementAndGet();
@@ -140,15 +144,12 @@ class VendedCredentialCacheTest {
     for (int i = 0; i < 2; i++) {
       cache.integrationVend(
           INTEGRATION,
-          "cat.schema",
-          "orders",
+          new CatalogObjectName(new NamespacePath(NAMESPACE), "orders"),
           () -> {
             vends.incrementAndGet();
-            return Optional.of(
-                new ai.floedb.floecat.catalog.access.VendedStorageCredentials(
-                    Map.of("s3.access-key-id", "ASIA", "s3.secret-access-key", "s"),
-                    "",
-                    Optional.of(ONE_HOUR)));
+            // No session token, which an integration always owes.
+            return integrationCredentials(
+                Map.of("s3.access-key-id", "ASIA", "s3.secret-access-key", "s"));
           },
           SourceCatalogCredentialVendor::integrationExpiry);
     }
@@ -166,7 +167,7 @@ class VendedCredentialCacheTest {
       cache.connectorVend(
           SOURCE,
           SECRET,
-          "cat.schema",
+          NAMESPACE,
           "orders",
           () -> {
             vends.incrementAndGet();
@@ -191,7 +192,7 @@ class VendedCredentialCacheTest {
             cache.connectorVend(
                 SOURCE.toBuilder().putProperties("s3.region", "eu-west-1").build(),
                 SECRET,
-                "cat.schema",
+                NAMESPACE,
                 "orders",
                 () -> credentials("RECONFIGURED", ONE_HOUR),
                 SourceCatalogCredentialVendor::connectorExpiry))
@@ -205,12 +206,22 @@ class VendedCredentialCacheTest {
             cache.connectorVend(
                 SOURCE,
                 rotated,
-                "cat.schema",
+                NAMESPACE,
                 "orders",
                 () -> credentials("ROTATED", ONE_HOUR),
                 SourceCatalogCredentialVendor::connectorExpiry))
         .hasValueSatisfying(answer -> assertThat(answer.properties()).containsValue("ROTATED"));
     assertThat(vend(cache, vends, ONE_HOUR)).isEqualTo("ASIA-1");
+  }
+
+  @Test
+  void namespaceSegmentsAreNotJoined() {
+    VendedCredentialCache cache = cache(0.5);
+
+    assertThat(integrationKey(cache, List.of("a.b", "c"), "FIRST")).isEqualTo("FIRST");
+    // Different upstream tables, though both read a.b.c.
+    assertThat(integrationKey(cache, List.of("a", "b.c"), "SECOND")).isEqualTo("SECOND");
+    assertThat(integrationKey(cache, List.of("a.b", "c"), "UNUSED")).isEqualTo("FIRST");
   }
 
   @Test
@@ -240,13 +251,44 @@ class VendedCredentialCacheTest {
         .connectorVend(
             SOURCE,
             SECRET,
-            "cat.schema",
+            NAMESPACE,
             "orders",
             () -> credentials("ASIA-" + vends.incrementAndGet(), expiresAt),
             SourceCatalogCredentialVendor::connectorExpiry)
         .orElseThrow()
         .properties()
         .get("s3.access-key-id");
+  }
+
+  /**
+   * The access key an integration vend of orders in {@code namespace} returns, vending {@code key}.
+   */
+  private static String integrationKey(
+      VendedCredentialCache cache, List<String> namespace, String key) {
+    return cache
+        .integrationVend(
+            INTEGRATION,
+            new CatalogObjectName(new NamespacePath(namespace), "orders"),
+            () ->
+                integrationCredentials(
+                    Map.of(
+                        "s3.access-key-id",
+                        key,
+                        "s3.secret-access-key",
+                        "s",
+                        "s3.session-token",
+                        "t")),
+            SourceCatalogCredentialVendor::integrationExpiry)
+        .orElseThrow()
+        .properties()
+        .get("s3.access-key-id");
+  }
+
+  private static Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials>
+      integrationCredentials(Map<String, String> properties) {
+    return Optional.of(
+        new ai.floedb.floecat.catalog.access.VendedStorageCredentials(
+            properties, "", Optional.of(ONE_HOUR)));
   }
 
   private static Optional<FloecatConnector.VendedStorageCredentials> credentials(

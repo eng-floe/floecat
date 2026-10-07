@@ -19,6 +19,7 @@ package ai.floedb.floecat.service.storage.impl;
 import ai.floedb.floecat.cache.CacheEvents;
 import ai.floedb.floecat.cache.CaffeineExpiringCache;
 import ai.floedb.floecat.cache.ExpiringCache;
+import ai.floedb.floecat.catalog.access.CatalogObjectName;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
 import ai.floedb.floecat.connector.rpc.Connector;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
@@ -32,6 +33,7 @@ import jakarta.inject.Inject;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
@@ -58,11 +60,14 @@ public class VendedCredentialCache {
   /** The Iceberg client refreshes a vended credential this long before it expires. */
   static final Duration MIN_REMAINING = Duration.ofMinutes(5);
 
-  /** One upstream table as seen through one source configuration. */
-  private record Key(Message source, String namespaceFq, String tableName) {
+  /**
+   * One upstream table as seen through one source configuration. The namespace keeps its segments,
+   * so {@code [a.b, c]} and {@code [a, b.c]} are different tables.
+   */
+  private record Key(Message source, List<String> namespacePath, String tableName) {
     Key {
       Objects.requireNonNull(source, "source");
-      Objects.requireNonNull(namespaceFq, "namespaceFq");
+      namespacePath = List.copyOf(Objects.requireNonNull(namespacePath, "namespacePath"));
       Objects.requireNonNull(tableName, "tableName");
     }
   }
@@ -135,14 +140,14 @@ public class VendedCredentialCache {
   }
 
   /**
-   * A vend of {@code namespaceFq.tableName} through {@code connector} authenticating with {@code
-   * credentials}: a held answer, or {@code vend}'s, held against {@code expiresAt(answer)} and not
-   * at all when that is null.
+   * A vend of {@code tableName} in {@code namespacePath} through {@code connector} authenticating
+   * with {@code credentials}: a held answer, or {@code vend}'s, held against {@code
+   * expiresAt(answer)} and not at all when that is null.
    */
   Optional<FloecatConnector.VendedStorageCredentials> connectorVend(
       Connector connector,
       AuthCredentials credentials,
-      String namespaceFq,
+      List<String> namespacePath,
       String tableName,
       Supplier<Optional<FloecatConnector.VendedStorageCredentials>> vend,
       Function<Optional<FloecatConnector.VendedStorageCredentials>, Instant> expiresAt) {
@@ -153,24 +158,28 @@ public class VendedCredentialCache {
             connector.toBuilder()
                 .setAuth(connector.getAuth().toBuilder().setCredentials(credentials))
                 .build(),
-            namespaceFq,
+            namespacePath,
             tableName),
         vend,
         expiresAt);
   }
 
   /**
-   * A vend of {@code namespaceFq.tableName} through {@code integration}: a held answer, or {@code
-   * vend}'s, held against {@code expiresAt(answer)} and not at all when that is null.
+   * A vend of {@code table} through {@code integration}: a held answer, or {@code vend}'s, held
+   * against {@code expiresAt(answer)} and not at all when that is null.
    */
   Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials> integrationVend(
       CatalogIntegration integration,
-      String namespaceFq,
-      String tableName,
+      CatalogObjectName table,
       Supplier<Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials>> vend,
       Function<Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials>, Instant>
           expiresAt) {
-    return get(integrationVends, new Key(integration, namespaceFq, tableName), vend, expiresAt);
+    // The name the integration vends, so the key is exactly the upstream table.
+    return get(
+        integrationVends,
+        new Key(integration, table.namespace().segments(), table.name()),
+        vend,
+        expiresAt);
   }
 
   private <T> T get(

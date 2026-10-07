@@ -303,7 +303,7 @@ public class SourceCatalogCredentialVendor {
             : vendCache.connectorVend(
                 connector,
                 auth.credentials(),
-                namespaceFq,
+                upstream.getNamespacePathList(),
                 upstream.getTableDisplayName(),
                 vend,
                 SourceCatalogCredentialVendor::connectorExpiry);
@@ -362,8 +362,7 @@ public class SourceCatalogCredentialVendor {
     Optional<ai.floedb.floecat.catalog.access.VendedStorageCredentials> vended =
         vendCache.integrationVend(
             integration,
-            namespaceFq,
-            tableName.name(),
+            tableName,
             () -> vendThroughIntegration(integration, namespaceFq, tableName, use),
             SourceCatalogCredentialVendor::integrationExpiry);
     if (vended.isEmpty()) {
