@@ -1963,10 +1963,10 @@ properties instead of silently dropping them.</p>
 tenant-authored Catalog Integrations. They are disabled by default; enable them only in a trusted
 deployment with <code>floecat.catalog-integrations.aws.default-credentials-enabled=true</code>. Assume-role
 targets are customer-managed and are authorized by Floecat's <code>sts:AssumeRole</code> policy and the target
-role's trust policy. Assume-role credentials are not yet isolated between Floecat tenants: the
-tenant currently supplies <code>external_id</code>, so it cannot serve as a Floecat-enforced tenant boundary.
-A follow-up will replace this with a Floecat-issued external ID suitable for enforcing tenant
-isolation in the target role's trust policy.</p>
+role's trust policy. Cached assume-role credentials are scoped by Floecat account, but the tenant
+currently supplies <code>external_id</code>, so the target role's trust policy does not yet have a
+Floecat-enforced tenant boundary. A follow-up will replace this with a Floecat-issued external ID
+suitable for enforcing tenant isolation in the target role's trust policy.</p>
 <p><code>--props</code> supplies non-secret provider connection properties. For Iceberg REST catalogs such as
 Polaris, <code>warehouse=&lt;catalog-name&gt;</code> selects the upstream catalog without putting a query parameter in
 the base URI. Iceberg REST integrations request <code>vended-credentials</code> by default. Set
