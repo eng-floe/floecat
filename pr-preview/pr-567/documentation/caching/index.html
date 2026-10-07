@@ -1946,6 +1946,13 @@ the bytes without admission. The key is immutable, so a late fill can only recre
 unreachable identity; it cannot overwrite the bytes named by a newer pointer. Account deletion
 retirements use the disk partition lock to prevent a deleted account from being admitted again in
 that process. That lock protects file lifecycle and mappings; it is not a generic cache fence.</p>
+<p>A batch read sends the misses of every partition it touches to the source in one call, so a listing
+that spans accounts costs one batch read. Repository listings use <code>BYPASS_FILL</code>, except the account,
+connector, storage-authority, Catalog Integration and Catalog Overlay listings
+(<code>listByPrefixForRelisting</code>), which use <code>FILL</code>; mutation listings read the source directly and skip
+the cache. The reconcile planner lists accounts and connectors on every pass, and each scan's
+credential resolution lists the account's storage authorities. Persisted storage authorities carry
+no credentials; those are held in the secrets manager.</p>
 <h2 id="the-shared-cache-contract-corecache">The shared cache contract (<code>core/cache</code>)<a class="headerlink" href="#the-shared-cache-contract-corecache" title="Permanent link">&para;</a></h2>
 <p>The cache module provides one small read-through primitive. Callers use repositories and do not
 choose cache tiers or coordinate in-flight requests. Caffeine owns same-key load coordination; the
