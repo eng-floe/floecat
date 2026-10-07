@@ -36,6 +36,7 @@ import ai.floedb.floecat.service.common.IdempotencyInProgressException;
 import ai.floedb.floecat.service.repo.IdempotencyRepository;
 import ai.floedb.floecat.service.repo.cache.BlobCacheAccess;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.testsupport.CountingBlobStore;
 import ai.floedb.floecat.storage.errors.StorageTransactionConflictException;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -101,12 +102,12 @@ class ConstraintRepositoryTest {
         constraintsForSnapshot(
             tableId, 102L, List.of(definition("pk_orders", ConstraintType.CT_PRIMARY_KEY)));
     assertTrue(constraints.putSnapshotConstraints(tableId, 102L, payload));
-    blobs.gets.set(0);
+    blobs.resetReads();
 
     assertTrue(constraints.getSnapshotConstraints(tableId, 102L).isPresent());
     assertTrue(constraints.getSnapshotConstraints(tableId, 102L).isPresent());
 
-    assertEquals(1, blobs.gets.get());
+    assertEquals(1, blobs.pointGets());
   }
 
   @Test
@@ -574,16 +575,6 @@ class ConstraintRepositoryTest {
               .build());
     }
     return builder.build();
-  }
-
-  private static final class CountingBlobStore extends InMemoryBlobStore {
-    private final AtomicInteger gets = new AtomicInteger();
-
-    @Override
-    public byte[] get(String uri) {
-      gets.incrementAndGet();
-      return super.get(uri);
-    }
   }
 
   private static final class ConflictFirstBatchPointerStore

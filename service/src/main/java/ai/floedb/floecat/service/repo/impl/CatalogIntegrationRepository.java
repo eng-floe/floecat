@@ -232,7 +232,7 @@ public class CatalogIntegrationRepository {
 
   public List<CatalogIntegration> list(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefix(
+    return repo.listByPrefixForRelisting(
         Keys.catalogIntegrationPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 

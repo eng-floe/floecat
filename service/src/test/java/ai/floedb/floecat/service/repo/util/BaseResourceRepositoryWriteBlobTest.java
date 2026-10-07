@@ -26,6 +26,7 @@ import ai.floedb.floecat.service.repo.model.AccountKey;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.model.Schemas;
+import ai.floedb.floecat.service.testsupport.CountingBlobStore;
 import ai.floedb.floecat.service.testsupport.DiskBlobCacheTestSupport;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
@@ -33,9 +34,6 @@ import com.google.protobuf.StringValue;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -48,23 +46,6 @@ import org.junit.jupiter.api.io.TempDir;
 class BaseResourceRepositoryWriteBlobTest {
 
   @TempDir Path tempDir;
-
-  private static final class CountingBlobStore extends InMemoryBlobStore {
-    final Map<String, Integer> puts = new HashMap<>();
-    final AtomicInteger heads = new AtomicInteger();
-
-    @Override
-    public void put(String uri, byte[] bytes, String contentType) {
-      puts.merge(uri, 1, Integer::sum);
-      super.put(uri, bytes, contentType);
-    }
-
-    @Override
-    public java.util.Optional<ai.floedb.floecat.common.rpc.BlobHeader> head(String uri) {
-      heads.incrementAndGet();
-      return super.head(uri);
-    }
-  }
 
   private static GenericResourceRepository<Account, AccountKey> repo(CountingBlobStore blobs) {
     return new GenericResourceRepository<>(
@@ -109,7 +90,7 @@ class BaseResourceRepositoryWriteBlobTest {
     repo.putBlob(uri, value);
     repo.putBlob(uri, value);
 
-    assertEquals(2, blobs.puts.get(uri), "an identical re-write must still PUT");
+    assertEquals(2, blobs.puts(uri), "an identical re-write must still PUT");
   }
 
   @Test
@@ -122,7 +103,7 @@ class BaseResourceRepositoryWriteBlobTest {
     repo.putBlobStrictBytes(uri, bytes);
     repo.putBlobStrictBytes(uri, bytes);
 
-    assertEquals(2, blobs.puts.get(uri), "an identical strict re-write must still PUT");
+    assertEquals(2, blobs.puts(uri), "an identical strict re-write must still PUT");
   }
 
   @Test
@@ -141,11 +122,11 @@ class BaseResourceRepositoryWriteBlobTest {
             .build();
 
     repo.create(value);
-    blobs.heads.set(0);
+    blobs.resetReads();
 
     var meta = repo.metaForSafe(new AccountKey("acct-1"));
 
-    assertEquals(0, blobs.heads.get(), "CAS metadata must not HEAD the immutable blob");
+    assertEquals(0, blobs.heads(), "CAS metadata must not HEAD the immutable blob");
     assertEquals(
         BaseResourceRepository.sha256B64(value.toByteArray()),
         meta.getEtag(),

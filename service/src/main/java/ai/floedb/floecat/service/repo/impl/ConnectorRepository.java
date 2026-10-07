@@ -110,7 +110,7 @@ public class ConnectorRepository {
 
   public List<Connector> list(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefix(
+    return repo.listByPrefixForRelisting(
         Keys.connectorPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
