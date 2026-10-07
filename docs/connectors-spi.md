@@ -44,9 +44,10 @@ Unity Catalog, etc.), translating its schemas, snapshots, and metrics into Floec
 
 ### Column bounds encoding
 
-When connectors emit `ScalarStats.min`/`max`, they must use the canonical string format documented in
-`floecat/catalog/stats.proto`. Each of these bounds is optional—`hasMin()`/`hasMax()` indicate the
-field was populated (even when the string itself is empty). In brief:
+New connectors should populate the typed `ScalarStats.min_value`/`max_value` fields. The legacy
+`min`/`max` strings remain readable for records written before typed bounds were introduced and may
+be dual-written during rollout. Each bound is optional; readers prefer the typed field and fall
+back to the legacy string.
 
   * Bounds are UTF-8 strings reflecting the logical ordering (not engine collation) and should be
     left unset when unknown.
@@ -58,10 +59,8 @@ field was populated (even when the string itself is empty). In brief:
     * Decimal → plain base-10 string with optional `-`, no exponent, normalized by trimming leading
       zeros in the integer part and trailing zeros in the fractional part; `ValueEncoders.encodeToString(lt, value)`
       already follows this normalization routine and collapses `-0` → `0`.
-    * Date/Time/Timestamp → ISO-8601 (`YYYY-MM-DD`, `HH:MM:SS[.fffffffff]`, `YYYY-MM-DDTHH:MM:SS[.fffffffff]`
-      for `TIMESTAMP`, `YYYY-MM-DDTHH:MM:SS[.fffffffff]Z` for `TIMESTAMPTZ`). If the logical type
-      includes a temporal precision suffix (e.g. `TIMESTAMP(3)`), emit exactly that many fractional
-      digits (0..6). Otherwise Floecat defaults to microsecond precision with ISO formatting.
+    * Legacy Date/Time/Timestamp strings use ISO-8601. Typed temporal values use the integer epoch
+      unit declared by `LogicalType.temporal_precision` (0..9); unset means microseconds.
     * UUID → lowercase 8-4-4-4-12 hex.
     * String → literal UTF-8 content.
     * Binary → base64 (RFC 4648) without line breaks (padding `=` is OK).

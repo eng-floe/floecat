@@ -19,6 +19,7 @@ package ai.floedb.floecat.scanner.spi;
 import ai.floedb.floecat.catalog.rpc.Ndv;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.rpc.ScalarValue;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -129,15 +130,11 @@ public interface StatsProvider {
     /** NaN count when explicitly reported. */
     OptionalLong nanCountValue();
 
-    /**
-     * Canonical min bound (UTF-8 string following the rules documented in {@code
-     * floecat/catalog/stats.proto}). Presence indicates the bound was observed even when the string
-     * content is empty.
-     */
-    Optional<String> minValue();
+    /** Typed minimum bound; temporal units come from {@link #logicalType()}. */
+    Optional<ScalarValue> minValue();
 
-    /** Canonical max bound (UTF-8 string, same encoding as {@link #minValue()}). */
-    Optional<String> maxValue();
+    /** Typed maximum bound; temporal units come from {@link #logicalType()}. */
+    Optional<ScalarValue> maxValue();
 
     /** NDV summary (exact or approximate) if available. */
     Optional<Ndv> ndv();

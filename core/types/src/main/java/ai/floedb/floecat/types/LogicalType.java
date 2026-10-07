@@ -64,7 +64,7 @@ import java.util.Objects;
  */
 public final class LogicalType {
   public static final int DEFAULT_TEMPORAL_PRECISION = 6;
-  public static final int MAX_TEMPORAL_PRECISION = 6;
+  public static final int MAX_TEMPORAL_PRECISION = 9;
 
   public final LogicalKind kind;
   public final Integer precision;

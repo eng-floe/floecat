@@ -51,7 +51,7 @@ message LogicalType {
   Kind kind = 1;
   int32 precision = 2;
   int32 scale = 3;
-  // Fractional second precision for TIME/TIMESTAMP/TIMESTAMPTZ (0..6). Unset means default.
+  // Fractional second precision for TIME/TIMESTAMP/TIMESTAMPTZ (0..9). Unset means microseconds.
   optional int32 temporal_precision = 4;
   // Range/qualifier for INTERVAL types (optional).
   optional IntervalRange interval_range = 5;
@@ -111,8 +111,8 @@ message ScalarValue {
     string dec = 6;
     int32 date = 7;
     int64 time  = 8;
-    int64 ts = 9;       // TIMESTAMP: micros since epoch from LocalDateTime interpreted in UTC (timezone-naive semantic; no UTC normalisation)
-    int64 tstz = 10;     // TIMESTAMPTZ: microseconds-since-epoch UTC
+    int64 ts = 9;       // TIMESTAMP: epoch units selected by the enclosing logical type precision
+    int64 tstz = 10;     // TIMESTAMPTZ: epoch units selected by the enclosing logical type precision
     string interval = 11; // INTERVAL: ISO-8601 duration string
   }
 }

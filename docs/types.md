@@ -249,8 +249,8 @@ The lookup is case-insensitive and collapses internal whitespace. Unknown names 
   leave bounds unset. `INTERVAL` encodings can be stored but are ignored by stats comparisons.
 - **Comparators** – `LogicalComparators` provides specialised comparators for lexical ordering of
   encoded min/max values so histogram builders can operate on encoded strings.
-- **Encoders** – `ValueEncoders` normalises values before storing them in stats to guarantee
-  consistent lexical ordering across connectors.
+- **Encoders** – new stats carry typed `ScalarValue` bounds, with the logical type supplying the
+  temporal unit. `ValueEncoders` remains the compatibility path for legacy string bounds.
 
 ## Data Flow & Lifecycle
 ```
