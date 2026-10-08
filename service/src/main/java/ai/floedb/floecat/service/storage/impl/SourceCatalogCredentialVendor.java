@@ -1270,7 +1270,7 @@ public class SourceCatalogCredentialVendor {
           SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(detail);
       // Deterministic descriptions of the Integration, not of this attempt: an auth mode the SPI
       // does not implement, or a provider reporting that what it holds does not cover the table.
-      case UNSUPPORTED, CREDENTIAL_SCOPE_INVALID ->
+      case UNSUPPORTED, CREDENTIAL_SCOPE_INVALID, CREDENTIAL_CONFIGURATION_INVALID ->
           SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused(detail);
       case CREDENTIAL_UNAVAILABLE, CREDENTIAL_EXPIRED -> retryableVendFailure(detail, cause);
       // The upstream stalled or fell over: a 503, a RESTException, a socket timeout, this path's

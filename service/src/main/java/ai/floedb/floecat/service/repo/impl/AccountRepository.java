@@ -92,6 +92,11 @@ public class AccountRepository {
     return repo.getByKey(new AccountKey(accountResourceId.getId()));
   }
 
+  public Optional<GenericResourceRepository.ResourceWithMeta<Account>> getByIdWithMetaForMutation(
+      ResourceId accountResourceId) {
+    return repo.getByKeyWithMetaForMutation(new AccountKey(accountResourceId.getId()));
+  }
+
   public Optional<Account> getByName(String displayName) {
     return repo.get(Keys.accountPointerByName(displayName));
   }

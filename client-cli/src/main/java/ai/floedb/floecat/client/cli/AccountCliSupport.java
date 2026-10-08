@@ -22,6 +22,7 @@ import ai.floedb.floecat.account.rpc.AccountSpec;
 import ai.floedb.floecat.account.rpc.CreateAccountRequest;
 import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
 import ai.floedb.floecat.account.rpc.GetAccountRequest;
+import ai.floedb.floecat.account.rpc.GetAwsTrustConfigurationRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.client.cli.util.CliUtils;
 import ai.floedb.floecat.client.cli.util.Quotes;
@@ -66,6 +67,7 @@ final class AccountCliSupport {
       case "list" -> accountList(out, accounts);
       case "get" -> accountGet(tail, out, accounts);
       case "create" -> accountCreate(tail, out, accounts);
+      case "aws-trust-configuration" -> awsTrustConfiguration(out, accounts, getCurrentAccountId);
       case "delete" -> accountDelete(tail, out, accounts, getCurrentAccountId, setCurrentAccountId);
       default -> {
         String t = sub.trim();
@@ -78,6 +80,39 @@ final class AccountCliSupport {
         out.println("account set: " + resolved);
       }
     }
+  }
+
+  private static void awsTrustConfiguration(
+      PrintStream out,
+      AccountServiceGrpc.AccountServiceBlockingStub accounts,
+      Supplier<String> getCurrentAccountId) {
+    String accountId = getCurrentAccountId.get();
+    if (accountId == null || accountId.isBlank()) {
+      throw new IllegalStateException("No account set. Use: account <accountId>");
+    }
+    var configuration =
+        accounts
+            .getAwsTrustConfiguration(GetAwsTrustConfigurationRequest.getDefaultInstance())
+            .getConfiguration();
+    out.println("AWS external ID: " + configuration.getExternalId());
+    out.println("AWS role session name: " + configuration.getRoleSessionName());
+    out.println("AWS IAM trust policy:");
+    out.println("{");
+    out.println("  \"Version\": \"2012-10-17\",");
+    out.println("  \"Statement\": [{");
+    out.println("    \"Effect\": \"Allow\",");
+    out.println("    \"Principal\": { \"AWS\": [");
+    for (int i = 0; i < configuration.getServicePrincipalArnsCount(); i++) {
+      String comma = i + 1 == configuration.getServicePrincipalArnsCount() ? "" : ",";
+      out.println("      \"" + configuration.getServicePrincipalArns(i) + "\"" + comma);
+    }
+    out.println("    ] },");
+    out.println("    \"Action\": \"sts:AssumeRole\",");
+    out.println("    \"Condition\": { \"StringEquals\": {");
+    out.println("      \"sts:ExternalId\": \"" + configuration.getExternalId() + "\"");
+    out.println("    } }");
+    out.println("  }]");
+    out.println("}");
   }
 
   private static void accountList(

@@ -140,6 +140,56 @@ class IntegrationCliSupportTest {
   }
 
   @Test
+  void createsIntegrationWithSigV4AssumeRoleCredentials() throws Exception {
+    try (Harness h = new Harness()) {
+      h.run(
+          "integration",
+          List.of(
+              "create",
+              "glue",
+              "iceberg-rest",
+              "https://glue.us-east-1.amazonaws.com/iceberg/",
+              "--auth-type",
+              "aws-sigv4",
+              "--auth",
+              "region=us-east-1",
+              "signing_name=glue",
+              "credential_source=assume-role",
+              "role_arn=arn:aws:iam::153499698604:role/floecat-prod-s3-readonly"));
+
+      var auth = h.integrations.lastCreate.getSpec().getAuthentication().getAwsSigv4();
+      assertEquals("us-east-1", auth.getRegion());
+      assertEquals("glue", auth.getSigningName());
+      assertEquals(
+          "arn:aws:iam::153499698604:role/floecat-prod-s3-readonly",
+          auth.getAwsAssumeRole().getRoleArn());
+    }
+  }
+
+  @Test
+  void rejectsTopLevelAssumeRoleAuthenticationType() throws Exception {
+    try (Harness h = new Harness()) {
+      var error =
+          assertThrows(
+              IllegalArgumentException.class,
+              () ->
+                  h.run(
+                      "integration",
+                      List.of(
+                          "create",
+                          "glue",
+                          "iceberg-rest",
+                          "https://glue.us-east-1.amazonaws.com/iceberg/",
+                          "--auth-type",
+                          "aws-assume-role",
+                          "--auth",
+                          "role_arn=arn:aws:iam::153499698604:role/catalog")));
+
+      assertEquals("Unsupported --auth-type: AWS-ASSUME-ROLE", error.getMessage());
+    }
+  }
+
+  @Test
   void listsAndGetsIntegrationByName() throws Exception {
     try (Harness h = new Harness()) {
       assertTrue(h.run("integration", List.of("get", "lakehouse")).contains("lakehouse"));

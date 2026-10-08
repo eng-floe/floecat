@@ -17,6 +17,8 @@ import java.util.function.Supplier;
 import org.apache.iceberg.exceptions.BadRequestException;
 import org.apache.iceberg.exceptions.ForbiddenException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
+import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.exceptions.NoSuchViewException;
 import org.apache.iceberg.exceptions.NotAuthorizedException;
 import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.exceptions.RESTException;
@@ -57,7 +59,10 @@ final class IcebergRestCatalogErrors {
       return new CatalogAccessException(
           CatalogAccessException.Code.PERMISSION_DENIED, safeMessage, failure);
     }
-    if (failure instanceof NotFoundException || failure instanceof NoSuchNamespaceException) {
+    if (failure instanceof NotFoundException
+        || failure instanceof NoSuchNamespaceException
+        || failure instanceof NoSuchTableException
+        || failure instanceof NoSuchViewException) {
       return new CatalogAccessException(
           CatalogAccessException.Code.NOT_FOUND, safeMessage, failure);
     }

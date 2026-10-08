@@ -98,6 +98,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
   @Inject CatalogIntegrationCredentialCleanup credentialCleanup;
   @Inject CatalogIntegrationDiscovery discovery;
   @Inject CatalogOverlayReconciler overlayReconciler;
+  @Inject CatalogIntegrationAwsCredentialPolicy awsCredentialPolicy;
 
   @Override
   public Uni<ListCatalogIntegrationsResponse> listCatalogIntegrations(
@@ -375,6 +376,8 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                           corr);
                   validateAuthenticationType(
                       spec.getType(), preparedAuthentication.authentication(), corr);
+                  validateAwsCredentialPolicy(
+                      preparedAuthentication.authentication(), awsCredentialPolicy, corr);
                   byte[] fingerprint =
                       new Canonicalizer()
                           .scalar("display_name", name)
@@ -707,6 +710,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
                           corr);
                   validateAuthenticationType(
                       current.value().getType(), prepared.authentication(), corr);
+                  validateAwsCredentialPolicy(prepared.authentication(), awsCredentialPolicy, corr);
                   long allocatedGeneration =
                       credentialStore.storeRotation(
                           id,
@@ -913,6 +917,10 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
       CatalogIntegrationType integrationType, CatalogAuthentication authentication, String corr) {
     var configuration = authentication.getConfigurationCase();
     if (configuration == CatalogAuthentication.ConfigurationCase.CONFIGURATION_NOT_SET) return;
+    if (configuration == CatalogAuthentication.ConfigurationCase.AWS_ASSUME_ROLE) {
+      throw GrpcErrors.invalidArgument(
+          corr, FIELD, Map.of("field", "authentication.aws_assume_role"));
+    }
     // A Delta Sharing recipient authenticates with the token its provider issued and nothing else.
     // The protocol defines no other scheme, so an AWS or OAuth block on one is a configuration
     // error rather than an unused field.
@@ -926,6 +934,20 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
         && configuration != CatalogAuthentication.ConfigurationCase.BEARER) {
       throw GrpcErrors.invalidArgument(
           corr, FIELD, Map.of("field", "authentication.configuration"));
+    }
+  }
+
+  private static void validateAwsCredentialPolicy(
+      CatalogAuthentication authentication,
+      CatalogIntegrationAwsCredentialPolicy policy,
+      String corr) {
+    if (authentication.getConfigurationCase() != CatalogAuthentication.ConfigurationCase.AWS_SIGV4)
+      return;
+    try {
+      policy.requireAllowed(authentication.getAwsSigv4());
+    } catch (IllegalArgumentException failure) {
+      throw GrpcErrors.invalidArgument(
+          corr, FIELD, Map.of("field", "authentication.aws_sigv4.credentials"));
     }
   }
 
@@ -1054,12 +1076,9 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
             credential, CatalogIntegrationCredentials.CredentialCase.BEARER_TOKEN, corr);
         requireNonBlank(credentials.getBearerToken().getValue(), "credentials", corr);
       }
-      case AWS_ASSUME_ROLE -> {
-        var config = requested.getAwsAssumeRole();
-        validateAssumeRole(config, corr);
-        requireCredentialCase(
-            credential, CatalogIntegrationCredentials.CredentialCase.CREDENTIAL_NOT_SET, corr);
-      }
+      case AWS_ASSUME_ROLE ->
+          throw GrpcErrors.invalidArgument(
+              corr, FIELD, Map.of("field", "authentication.aws_assume_role"));
       case AWS_ACCESS_KEY -> {
         requireNonBlank(
             requested.getAwsAccessKey().getAccessKeyId(), "authentication.access_key_id", corr);
@@ -1081,6 +1100,14 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
           case AWS_ASSUME_ROLE -> {
             var assume = config.getAwsAssumeRole();
             validateAssumeRole(assume, corr);
+            normalizedRequested =
+                requested.toBuilder()
+                    .setAwsSigv4(
+                        config.toBuilder()
+                            .setAwsAssumeRole(
+                                AwsAssumeRoleAuthentication.newBuilder()
+                                    .setRoleArn(assume.getRoleArn().trim())))
+                    .build();
             requireCredentialCase(
                 credential, CatalogIntegrationCredentials.CredentialCase.CREDENTIAL_NOT_SET, corr);
           }
@@ -1110,12 +1137,6 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
 
   private static void validateAssumeRole(AwsAssumeRoleAuthentication config, String corr) {
     requireNonBlank(config.getRoleArn(), "authentication.role_arn", corr);
-    if (config.hasExternalId()) {
-      requireNonBlank(config.getExternalId(), "authentication.external_id", corr);
-    }
-    if (config.hasRoleSessionName()) {
-      requireNonBlank(config.getRoleSessionName(), "authentication.role_session_name", corr);
-    }
   }
 
   private static void validateAccessKeySecret(
@@ -1255,6 +1276,7 @@ public class CatalogIntegrationsImpl extends BaseServiceImpl implements CatalogI
           PERMISSION_DENIED,
           UNSUPPORTED,
           CREDENTIAL_EXPIRED,
+          CREDENTIAL_CONFIGURATION_INVALID,
           CREDENTIAL_SCOPE_INVALID ->
           GrpcErrors.preconditionFailed(corr, null, Map.of());
       case NOT_FOUND -> GrpcErrors.notFound(corr, null, Map.of());

@@ -607,12 +607,14 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       String requested,
       String manifestIdentity,
       OwnerReuseLeaseRepository.RegistrationProgress progress) {
-    if (progress.equals(OwnerReuseLeaseRepository.RegistrationProgress.initial())) {
-      if (!requested.isEmpty()) {
-        throw GrpcErrors.invalidArgument(
-            correlationId(), null, Map.of("field", "completion_cursor"));
-      }
+    // An Owner may lose its last response cursor when it restarts. The authenticated publication,
+    // generation, and manifest identity have already been validated, so an empty cursor resumes
+    // from Floecat's authoritative durable progress rather than restarting registration.
+    if (requested.isEmpty()) {
       return;
+    }
+    if (progress.equals(OwnerReuseLeaseRepository.RegistrationProgress.initial())) {
+      throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "completion_cursor"));
     }
     String current = completionCursor(manifestIdentity, progress);
     OwnerReuseLeaseRepository.RegistrationProgress predecessor;

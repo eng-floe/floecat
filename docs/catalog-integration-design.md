@@ -279,13 +279,30 @@ The SPI validates persistable configuration so secrets, credential-provider hand
 secret-bearing headers cannot cross the configuration boundary. Secret values are supplied
 separately through `ResolvedCatalogCredentials`.
 
-The service adapter translates OAuth client credentials, bearer tokens, and explicit static AWS
-SigV4 credentials from the Integration protobuf and `CatalogIntegrationCredentialStore` onto the
-SPI's authentication schemes. Ambient and assume-role AWS resolution are not yet wired into this
-adapter and fail explicitly. Integration authentication is required, so the adapter never selects
+The service adapter translates OAuth client credentials, bearer tokens, and AWS SigV4 credentials
+from the Integration protobuf and `CatalogIntegrationCredentialStore` onto the SPI's authentication
+schemes. Static access keys come from the credential store. Ambient and assume-role sources are
+resolved into renewable, process-local catalog credential registrations. Ambient credentials are
+protected by deployment-owned enablement. For AssumeRole, Floecat issues and persists a stable
+external ID on each account, exposes it together with the configured service principal ARN through
+an account-scoped trust-configuration RPC, and supplies that ID plus a server-generated account
+session name to STS. Tenants configure only the target role ARN on a Catalog Integration and cannot
+substitute another account's external ID. Storage Authorities and Connectors retain their existing
+AssumeRole behavior until separate migrations. Integration
+credentials are reused from a bounded, expiry-aware cache, with concurrent misses coalesced and
+transient STS failures retried. Integration authentication is required, so the adapter never selects
 the SPI's `NONE` scheme. Dedicated Integration RPCs validate the catalog and storage credential
 boundaries and provide paginated, read-only upstream namespace and object listing. Scheduling
 remains deferred.
+
+The credential cache is checked before resolving the account external ID. On a cache miss, the
+provider first uses the repository's cached account read and enters the raw compare-and-set path
+only for a legacy account whose ID has not yet been initialized. That initialization advances the
+account version and is fenced against account deletion. No separate account or external-ID cache is
+maintained. A credential-cache hit therefore continues to use its unexpired credentials after an
+account deletion until the next refresh observes the missing account. AssumeRole remains fail-closed
+unless Floecat can resolve the account-owned external ID and the configured service identity can
+assume the customer's role under its trust policy.
 
 The catalog client owns external I/O only. Capture planning, Floecat persistence, scheduling, and
 name resolution remain outside it.

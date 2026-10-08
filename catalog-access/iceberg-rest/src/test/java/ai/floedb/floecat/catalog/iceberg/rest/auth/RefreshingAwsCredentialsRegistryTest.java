@@ -218,6 +218,85 @@ class RefreshingAwsCredentialsRegistryTest {
     }
   }
 
+  @Test
+  void backsOffAfterTransientRefreshFailureWhileOldCredentialsRemainValid() {
+    Instant start = Instant.parse("2026-08-05T12:00:00Z");
+    MutableClock clock = new MutableClock(start);
+    AtomicInteger refreshes = new AtomicInteger();
+    try (var registration =
+        RefreshingAwsCredentialsRegistry.register(
+            "refresh-backoff-test",
+            credentials("old", start.plus(Duration.ofHours(1))),
+            () -> {
+              refreshes.incrementAndGet();
+              throw new IllegalStateException("refresh failed");
+            },
+            Duration.ofMinutes(5),
+            clock)) {
+      clock.advance(Duration.ofMinutes(56));
+
+      var first =
+          RefreshingAwsCredentialsRegistry.resolve(
+              registration.providerId(), AwsCredentialScope.CATALOG);
+      var backedOff =
+          RefreshingAwsCredentialsRegistry.resolve(
+              registration.providerId(), AwsCredentialScope.CATALOG);
+
+      assertEquals("access-old", first.accessKeyId());
+      assertEquals("access-old", backedOff.accessKeyId());
+      assertEquals(1, refreshes.get());
+
+      clock.advance(Duration.ofSeconds(5));
+      RefreshingAwsCredentialsRegistry.resolve(
+          registration.providerId(), AwsCredentialScope.CATALOG);
+      assertEquals(2, refreshes.get());
+    }
+  }
+
+  @Test
+  void rethrowsBackedOffRefreshFailureWhenOldCredentialsAreExpired() {
+    Instant start = Instant.parse("2026-08-05T12:00:00Z");
+    MutableClock clock = new MutableClock(start);
+    AtomicInteger refreshes = new AtomicInteger();
+    IllegalStateException refreshFailure = new IllegalStateException("refresh failed");
+    try (var registration =
+        RefreshingAwsCredentialsRegistry.register(
+            "expired-refresh-backoff-test",
+            credentials("old", start.minusSeconds(1)),
+            () -> {
+              refreshes.incrementAndGet();
+              throw refreshFailure;
+            },
+            Duration.ofMinutes(5),
+            clock)) {
+      assertSame(
+          refreshFailure,
+          assertThrows(
+              IllegalStateException.class,
+              () ->
+                  RefreshingAwsCredentialsRegistry.resolve(
+                      registration.providerId(), AwsCredentialScope.CATALOG)));
+      assertSame(
+          refreshFailure,
+          assertThrows(
+              IllegalStateException.class,
+              () ->
+                  RefreshingAwsCredentialsRegistry.resolve(
+                      registration.providerId(), AwsCredentialScope.CATALOG)));
+      assertEquals(1, refreshes.get());
+
+      clock.advance(Duration.ofSeconds(5));
+      assertSame(
+          refreshFailure,
+          assertThrows(
+              IllegalStateException.class,
+              () ->
+                  RefreshingAwsCredentialsRegistry.resolve(
+                      registration.providerId(), AwsCredentialScope.CATALOG)));
+      assertEquals(2, refreshes.get());
+    }
+  }
+
   private static Map<String, String> providerProperties(
       RefreshingAwsCredentialsRegistry.Registration registration, AwsCredentialScope scope) {
     String providerId =

@@ -30,6 +30,8 @@ message Account {
   string display_name = 2;
   optional string description = 3;
   google.protobuf.Timestamp created_at = 10;
+  // Floecat-issued value customers place in AWS role trust policies. Output only.
+  string aws_external_id = 11;
   // Free-form key/value tags used to scope which floecat instance manages the
   // account (e.g. a CI run stamps `ci-run=<run-id>`; see the planner tag filter).
   map<string, string> tags = 99;
@@ -72,6 +74,18 @@ message GetAccountResponse {
   Account account = 1;
 }
 
+message GetAwsTrustConfigurationRequest {}
+
+message AwsTrustConfiguration {
+  repeated string service_principal_arns = 1;
+  string external_id = 2;
+  string role_session_name = 3;
+}
+
+message GetAwsTrustConfigurationResponse {
+  AwsTrustConfiguration configuration = 1;
+}
+
 message UpdateAccountRequest {
   ai.floedb.floecat.common.ResourceId account_id = 1;
   AccountSpec spec = 2;
@@ -100,6 +114,7 @@ message DeleteAccountResponse {
 service AccountService {
   rpc ListAccounts (ListAccountsRequest) returns (ListAccountsResponse);
   rpc GetAccount (GetAccountRequest) returns (GetAccountResponse);
+  rpc GetAwsTrustConfiguration (GetAwsTrustConfigurationRequest) returns (GetAwsTrustConfigurationResponse);
   rpc CreateAccount (CreateAccountRequest) returns (CreateAccountResponse);
   rpc UpdateAccount (UpdateAccountRequest) returns (UpdateAccountResponse);
   rpc DeleteAccount (DeleteAccountRequest) returns (DeleteAccountResponse);

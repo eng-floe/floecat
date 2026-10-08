@@ -42,8 +42,8 @@ message BearerAuthentication {}
 
 message AwsAssumeRoleAuthentication {
   string role_arn = 1;
-  optional string external_id = 2;
-  optional string role_session_name = 3;
+  reserved 2, 3;
+  reserved "external_id", "role_session_name";
 }
 
 message AwsAccessKeyAuthentication {

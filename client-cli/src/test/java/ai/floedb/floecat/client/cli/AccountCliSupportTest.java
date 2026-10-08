@@ -22,12 +22,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.account.rpc.AccountServiceGrpc;
+import ai.floedb.floecat.account.rpc.AwsTrustConfiguration;
 import ai.floedb.floecat.account.rpc.CreateAccountRequest;
 import ai.floedb.floecat.account.rpc.CreateAccountResponse;
 import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
 import ai.floedb.floecat.account.rpc.DeleteAccountResponse;
 import ai.floedb.floecat.account.rpc.GetAccountRequest;
 import ai.floedb.floecat.account.rpc.GetAccountResponse;
+import ai.floedb.floecat.account.rpc.GetAwsTrustConfigurationRequest;
+import ai.floedb.floecat.account.rpc.GetAwsTrustConfigurationResponse;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsResponse;
 import ai.floedb.floecat.common.rpc.ResourceId;
@@ -151,6 +154,24 @@ class AccountCliSupportTest {
       AccountCliSupport.handle(
           List.of("create"), new PrintStream(buf), h.stub, () -> null, ignored -> {});
       assertTrue(buf.toString().contains("usage:"));
+    }
+  }
+
+  @Test
+  void awsTrustConfigurationPrintsCopyablePolicy() throws Exception {
+    try (Harness h = new Harness()) {
+      ByteArrayOutputStream buf = new ByteArrayOutputStream();
+      AccountCliSupport.handle(
+          List.of("aws-trust-configuration"),
+          new PrintStream(buf),
+          h.stub,
+          () -> UUID_1,
+          ignored -> {});
+
+      String output = buf.toString();
+      assertTrue(output.contains("arn:aws:iam::123456789012:role/floecat"));
+      assertTrue(output.contains("\"sts:ExternalId\": \"floecat-external-id\""));
+      assertTrue(output.contains("floecat-session"));
     }
   }
 
@@ -298,6 +319,21 @@ class AccountCliSupportTest {
       getAccountCalls.incrementAndGet();
       lastGetRequest = request;
       responseObserver.onNext(GetAccountResponse.newBuilder().setAccount(accountToReturn).build());
+      responseObserver.onCompleted();
+    }
+
+    @Override
+    public void getAwsTrustConfiguration(
+        GetAwsTrustConfigurationRequest request,
+        StreamObserver<GetAwsTrustConfigurationResponse> responseObserver) {
+      responseObserver.onNext(
+          GetAwsTrustConfigurationResponse.newBuilder()
+              .setConfiguration(
+                  AwsTrustConfiguration.newBuilder()
+                      .addServicePrincipalArns("arn:aws:iam::123456789012:role/floecat")
+                      .setExternalId("floecat-external-id")
+                      .setRoleSessionName("floecat-session"))
+              .build());
       responseObserver.onCompleted();
     }
 

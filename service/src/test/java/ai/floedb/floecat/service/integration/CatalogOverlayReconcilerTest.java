@@ -84,6 +84,7 @@ class CatalogOverlayReconcilerTest {
   private CatalogIntegration integration;
   private CatalogOverlay overlay;
   private FakeCatalogClient client;
+  private CatalogIntegrationAccess access;
   private InMemoryPointerStore pointers;
 
   @BeforeEach
@@ -122,7 +123,7 @@ class CatalogOverlayReconcilerTest {
     overlays.create(overlay);
 
     client = new FakeCatalogClient();
-    var access = mock(CatalogIntegrationAccess.class);
+    access = mock(CatalogIntegrationAccess.class);
     when(access.open(integration)).thenReturn(client);
     reconciler = new CatalogOverlayReconciler();
     reconciler.access = access;
@@ -380,11 +381,141 @@ class CatalogOverlayReconcilerTest {
     client.unloadableTables.add(orders);
     var result = reconcile();
 
+    assertEquals(1, result.objectsSkipped());
     assertEquals(0, result.tablesDeleted(), "a failed load is not evidence the table is gone");
     assertTrue(
         tables
             .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
             .isPresent());
+  }
+
+  @Test
+  void aNotFoundViewLoadIsSkippedWithoutUnsafeRetirement() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName report = new CatalogObjectName(sales, "report");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.views.put(report, catalogView(report, "report-uuid"));
+
+    reconcile();
+    var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
+    assertTrue(
+        views
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "report")
+            .isPresent());
+
+    client.unloadableViews.add(report);
+
+    var result = reconcile();
+
+    assertEquals(1, result.objectsSkipped());
+    assertEquals(0, result.viewsDeleted());
+    assertTrue(
+        views
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "report")
+            .isPresent());
+  }
+
+  @Test
+  void anExactIncludeToleratesInvalidChildTraversalAfterReconcilingItsTables() {
+    NamespacePath database = NamespacePath.of("yb_customer_workloads_zurich_sf10000");
+    CatalogObjectName orders = new CatalogObjectName(database, "orders");
+    client.children.put(NamespacePath.root(), List.of(database));
+    client.tables.put(orders, catalogTable(orders, "orders-uuid"));
+    client.invalidNamespaceListings.add(database);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("yb_customer_workloads_zurich_sf10000"))
+            .build();
+
+    var result = reconcileWith(included);
+
+    assertEquals(1, result.tablesCreated());
+    assertEquals(1, result.branchesSkipped());
+    var namespace =
+        namespaces
+            .getByPath("acct", "catalog", List.of("yb_customer_workloads_zurich_sf10000"))
+            .orElseThrow();
+    assertTrue(
+        tables
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
+            .isPresent());
+  }
+
+  @Test
+  void anExactIncludeDoesNotTolerateDeniedChildTraversal() {
+    NamespacePath database = NamespacePath.of("glue_database");
+    client.children.put(NamespacePath.root(), List.of(database));
+    client.deniedNamespaceListings.add(database);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("glue_database"))
+            .build();
+
+    var error =
+        assertThrows(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.class,
+            () -> reconcileWith(included));
+
+    assertEquals(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.Code.PERMISSION_DENIED,
+        error.code());
+  }
+
+  @Test
+  void anExactIncludeDoesNotHideADeeperIncludeWhenChildTraversalIsInvalid() {
+    NamespacePath main = NamespacePath.of("main");
+    client.children.put(NamespacePath.root(), List.of(main));
+    client.invalidNamespaceListings.add(main);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder().addSegments("main"))
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("main")
+                    .addSegments("sub"))
+            .build();
+
+    var error =
+        assertThrows(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.class,
+            () -> reconcileWith(included));
+
+    assertEquals(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.Code.INVALID_CONFIGURATION,
+        error.code());
+  }
+
+  @Test
+  void aDeeperIncludeStillRequiresChildTraversal() {
+    NamespacePath database = NamespacePath.of("glue_database");
+    client.children.put(NamespacePath.root(), List.of(database));
+    client.invalidNamespaceListings.add(database);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("glue_database")
+                    .addSegments("nested"))
+            .build();
+
+    var error =
+        assertThrows(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.class,
+            () -> reconcileWith(included));
+
+    assertEquals(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.Code.INVALID_CONFIGURATION,
+        error.code());
   }
 
   /** A partial reconcile says so, because zeros alone cannot distinguish it from a quiet one. */
@@ -1023,6 +1154,74 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
+  void expiredStsTokenDuringCredentialRefreshAbortsMidWalk() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName first = new CatalogObjectName(sales, "first");
+    CatalogObjectName second = new CatalogObjectName(sales, "second");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(first, catalogTable(first, "first-id"));
+    client.tables.put(second, catalogTable(second, "second-id"));
+    client.credentialFailures.add(second);
+    integration =
+        integration.toBuilder()
+            .setAuthentication(
+                ai.floedb.floecat.integration.rpc.CatalogAuthentication.newBuilder()
+                    .setAwsSigv4(
+                        ai.floedb.floecat.integration.rpc.AwsSigV4Authentication.newBuilder()
+                            .setRegion("us-east-1")
+                            .setAwsAssumeRole(
+                                ai.floedb.floecat.integration.rpc.AwsAssumeRoleAuthentication
+                                    .newBuilder()
+                                    .setRoleArn("arn:aws:iam::123456789012:role/catalog"))))
+            .build();
+    var access = new CatalogIntegrationAccess();
+    access.credentialStore = mock(CatalogIntegrationCredentialStore.class);
+    access.awsCredentialPolicy = new CatalogIntegrationAwsCredentialPolicy();
+    var resolutions = new java.util.concurrent.atomic.AtomicInteger();
+    access.awsCredentialSourceResolver =
+        (accountId, configured) -> {
+          if (resolutions.incrementAndGet() == 1) {
+            return new ResolvedAwsCredentials(
+                "access", "secret", "session", java.time.Instant.now().minusSeconds(1));
+          }
+          throw software.amazon.awssdk.services.sts.model.StsException.builder()
+              .statusCode(400)
+              .awsErrorDetails(
+                  software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
+                      .errorCode("ExpiredTokenException")
+                      .build())
+              .build();
+        };
+    access.clientOpener =
+        (config, credentials) -> {
+          String providerId =
+              credentials
+                  .properties()
+                  .get(
+                      ai.floedb.floecat.catalog.iceberg.rest.auth.RefreshingAwsCredentialsRegistry
+                          .CATALOG_PROVIDER_ID);
+          client.credentialRefresh =
+              () ->
+                  ai.floedb.floecat.catalog.iceberg.rest.auth.RefreshingAwsCredentialsRegistry
+                      .resolve(
+                          providerId,
+                          ai.floedb.floecat.catalog.iceberg.rest.auth.AwsCredentialScope.CATALOG);
+          return client;
+        };
+    reconciler.access = access;
+
+    var failure =
+        assertThrows(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.class, this::reconcile);
+
+    assertEquals(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE,
+        failure.code());
+    assertEquals(2, resolutions.get());
+  }
+
+  @Test
   void staleOverlayGenerationCannotPublish() {
     NamespacePath sales = NamespacePath.of("sales");
     client.children.put(NamespacePath.root(), List.of(sales));
@@ -1291,7 +1490,7 @@ class CatalogOverlayReconcilerTest {
 
   private static final class FakeCatalogClient implements CatalogClient {
     private final Map<NamespacePath, List<NamespacePath>> children = new HashMap<>();
-    private final Map<CatalogObjectName, CatalogTable> tables = new HashMap<>();
+    private final Map<CatalogObjectName, CatalogTable> tables = new java.util.LinkedHashMap<>();
     private final Map<CatalogObjectName, CatalogView> views = new HashMap<>();
 
     @Override
@@ -1310,8 +1509,16 @@ class CatalogOverlayReconcilerTest {
     /** Branches whose schema listing the principal cannot enumerate. */
     final java.util.Set<NamespacePath> deniedNamespaceListings = new java.util.HashSet<>();
 
+    /** Branches whose provider does not support enumerating child namespaces. */
+    final java.util.Set<NamespacePath> invalidNamespaceListings = new java.util.HashSet<>();
+
     @Override
     public List<NamespacePath> listNamespaces(NamespacePath parent) {
+      if (invalidNamespaceListings.contains(parent)) {
+        throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.Code.INVALID_CONFIGURATION,
+            "provider does not support child namespaces under " + parent);
+      }
       if (deniedNamespaceListings.contains(parent)) {
         throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
             ai.floedb.floecat.catalog.access.CatalogAccessException.Code.PERMISSION_DENIED,
@@ -1336,8 +1543,21 @@ class CatalogOverlayReconcilerTest {
     /** Tables that list but will not load, as a lenient listing and a strict read can disagree. */
     final java.util.Set<CatalogObjectName> unloadableTables = new java.util.HashSet<>();
 
+    /** Tables whose load observes a catalog-wide credential refresh failure. */
+    final java.util.Set<CatalogObjectName> credentialFailures = new java.util.HashSet<>();
+
+    Runnable credentialRefresh =
+        () -> {
+          throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+              ai.floedb.floecat.catalog.access.CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE,
+              "catalog credentials can no longer be refreshed");
+        };
+
     @Override
     public CatalogTable loadTable(CatalogObjectName table) {
+      if (credentialFailures.contains(table)) {
+        credentialRefresh.run();
+      }
       if (unloadableTables.contains(table)) {
         throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
             ai.floedb.floecat.catalog.access.CatalogAccessException.Code.NOT_FOUND,
@@ -1348,6 +1568,9 @@ class CatalogOverlayReconcilerTest {
 
     /** Namespaces whose view listing the principal cannot read. */
     final java.util.Set<NamespacePath> deniedViewListings = new java.util.HashSet<>();
+
+    /** Views that list but disappear before their detail load. */
+    final java.util.Set<CatalogObjectName> unloadableViews = new java.util.HashSet<>();
 
     @Override
     public List<CatalogObjectName> listViews(NamespacePath namespace) {
@@ -1361,6 +1584,11 @@ class CatalogOverlayReconcilerTest {
 
     @Override
     public CatalogView loadView(CatalogObjectName view) {
+      if (unloadableViews.contains(view)) {
+        throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.Code.NOT_FOUND,
+            "view vanished between listing and load: " + view);
+      }
       return views.get(view);
     }
 

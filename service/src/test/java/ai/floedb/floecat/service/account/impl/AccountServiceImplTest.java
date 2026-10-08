@@ -22,6 +22,7 @@ import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.account.rpc.AccountSpec;
 import ai.floedb.floecat.account.rpc.CreateAccountRequest;
 import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
+import ai.floedb.floecat.account.rpc.GetAwsTrustConfigurationRequest;
 import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.IdempotencyKey;
@@ -55,6 +56,7 @@ import io.grpc.StatusRuntimeException;
 import jakarta.enterprise.inject.Instance;
 import java.lang.reflect.Field;
 import java.util.Base64;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -85,6 +87,8 @@ class AccountServiceImplTest {
     service.objects = ObjectCache.forTesting();
     service.hints = mock(HintCache.class);
     service.blobs = mock(BlobCacheAccess.class);
+    service.awsExternalIds = mock(AccountAwsExternalIdProvider.class);
+    service.awsServicePrincipalArn = Optional.of("arn:aws:iam::123456789012:role/floecat");
     installBasePrincipal(service, service.principal);
     when(service.principal.get())
         .thenReturn(
@@ -100,6 +104,109 @@ class AccountServiceImplTest {
             .setId("acct")
             .setKind(ResourceKind.RK_ACCOUNT)
             .build();
+  }
+
+  @Test
+  void createIssuesAnAwsExternalId() {
+    when(service.accountRepo.getByName("alpha")).thenReturn(Optional.empty());
+    when(service.accountRepo.metaForSafe(accountId)).thenReturn(MutationMeta.getDefaultInstance());
+
+    var response =
+        service
+            .createAccount(
+                CreateAccountRequest.newBuilder()
+                    .setAccountId(accountId)
+                    .setSpec(AccountSpec.newBuilder().setDisplayName("alpha"))
+                    .build())
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getAccount().getAwsExternalId().startsWith("floecat-"));
+    verify(service.accountRepo).create(response.getAccount());
+  }
+
+  @Test
+  void trustConfigurationReturnsTheAccountIssuedValues() {
+    when(service.awsExternalIds.getOrCreate("acct")).thenReturn("floecat-external-id");
+
+    var response =
+        service
+            .getAwsTrustConfiguration(GetAwsTrustConfigurationRequest.getDefaultInstance())
+            .await()
+            .indefinitely()
+            .getConfiguration();
+
+    assertEquals(
+        List.of("arn:aws:iam::123456789012:role/floecat"), response.getServicePrincipalArnsList());
+    assertEquals("floecat-external-id", response.getExternalId());
+    assertEquals(
+        AccountAwsExternalIdProvider.roleSessionName("acct"), response.getRoleSessionName());
+  }
+
+  @Test
+  void trustConfigurationFailsClosedWithoutAServicePrincipalArn() {
+    service.awsServicePrincipalArn = Optional.empty();
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .getAwsTrustConfiguration(GetAwsTrustConfigurationRequest.getDefaultInstance())
+                    .await()
+                    .indefinitely());
+
+    FloecatStatus decoded = FloecatStatus.fromThrowable(failure);
+    assertEquals(Status.Code.FAILED_PRECONDITION, decoded.canonicalCode());
+    assertEquals("aws.trust.configuration.unavailable", decoded.messageKey());
+  }
+
+  @Test
+  void trustConfigurationFailsClosedForANonIamPrincipalArn() {
+    service.awsServicePrincipalArn =
+        Optional.of("arn:aws:sts::123456789012:assumed-role/floecat/session");
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .getAwsTrustConfiguration(GetAwsTrustConfigurationRequest.getDefaultInstance())
+                    .await()
+                    .indefinitely());
+
+    FloecatStatus decoded = FloecatStatus.fromThrowable(failure);
+    assertEquals(Status.Code.FAILED_PRECONDITION, decoded.canonicalCode());
+    assertEquals("aws.trust.configuration.unavailable", decoded.messageKey());
+  }
+
+  @Test
+  void updatePreservesTheAwsExternalId() {
+    MutationMeta meta = MutationMeta.newBuilder().setPointerVersion(7L).build();
+    Account current =
+        Account.newBuilder()
+            .setResourceId(accountId)
+            .setDisplayName("alpha")
+            .setAwsExternalId("floecat-external-id")
+            .build();
+    when(service.accountRepo.metaFor(accountId)).thenReturn(meta);
+    when(service.accountRepo.getById(accountId)).thenReturn(Optional.of(current));
+    when(service.accountRepo.update(any(Account.class), eq(7L))).thenReturn(true);
+    when(service.accountRepo.metaForSafe(accountId)).thenReturn(meta);
+
+    service
+        .updateAccount(
+            UpdateAccountRequest.newBuilder()
+                .setAccountId(accountId)
+                .setSpec(AccountSpec.newBuilder().setDisplayName("beta"))
+                .setUpdateMask(FieldMask.newBuilder().addPaths("display_name"))
+                .build())
+        .await()
+        .indefinitely();
+
+    var updated = org.mockito.ArgumentCaptor.forClass(Account.class);
+    verify(service.accountRepo).update(updated.capture(), eq(7L));
+    assertEquals("floecat-external-id", updated.getValue().getAwsExternalId());
   }
 
   @Test

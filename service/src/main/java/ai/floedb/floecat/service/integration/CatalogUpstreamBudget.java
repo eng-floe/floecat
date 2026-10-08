@@ -34,7 +34,10 @@ import java.util.function.Supplier;
  * cap a legitimately long reconcile.
  *
  * <p>The window is this budget's alone. It deliberately does not consult the caller's own gRPC
- * deadline: see {@link #remainingNanos()} for why reading one here is unsafe.
+ * deadline: see {@link #remainingNanos()} for why reading one here is unsafe. The scoped {@link
+ * #ACTIVE} thread-local below carries this budget only inside the per-call virtual thread and is
+ * restored or removed before that thread can be reused; it does not sample an ambient caller
+ * deadline.
  *
  * <p>The operation runs on a virtual thread so the deadline can be enforced on a provider that
  * ignores interruption. An abandoned call may still produce a value that owns resources -- a client
@@ -42,6 +45,8 @@ import java.util.function.Supplier;
  * consumer, and a result that arrives after the deadline is closed rather than leaked.
  */
 public record CatalogUpstreamBudget(long deadlineNanos, LongSupplier nanoTime) {
+  private static final ThreadLocal<CatalogUpstreamBudget> ACTIVE = new ThreadLocal<>();
+
   public static CatalogUpstreamBudget start(Duration timeout, LongSupplier nanoTime) {
     long timeoutNanos = Math.max(0L, timeout.toNanos());
     return new CatalogUpstreamBudget(nanoTime.getAsLong() + timeoutNanos, nanoTime);
@@ -61,7 +66,10 @@ public record CatalogUpstreamBudget(long deadlineNanos, LongSupplier nanoTime) {
     PropagatedContext context = PropagatedContext.capture();
     AbandonedResult<T> result = new AbandonedResult<>(context, abandonedResult);
     FutureTask<T> task =
-        new FutureTask<>(() -> context.supply(() -> result.publish(operation.get())));
+        new FutureTask<>(
+            () ->
+                context.supply(
+                    () -> withActiveBudget(this, () -> result.publish(operation.get()))));
     Thread.ofVirtual().name("catalog-integration-upstream").start(task);
     try {
       T value = task.get(remainingNanos, TimeUnit.NANOSECONDS);
@@ -123,6 +131,30 @@ public record CatalogUpstreamBudget(long deadlineNanos, LongSupplier nanoTime) {
       throw timeout(null);
     }
     return remaining;
+  }
+
+  /**
+   * Uses the active operation budget when present. If it is already spent, {@link
+   * #remainingNanos()} deliberately reports the operation-level timeout rather than a
+   * credential-wait timeout.
+   */
+  static long currentRemainingNanos(long fallbackNanos) {
+    CatalogUpstreamBudget active = ACTIVE.get();
+    return active == null ? fallbackNanos : active.remainingNanos();
+  }
+
+  private static <T> T withActiveBudget(CatalogUpstreamBudget budget, Supplier<T> operation) {
+    CatalogUpstreamBudget previous = ACTIVE.get();
+    ACTIVE.set(budget);
+    try {
+      return operation.get();
+    } finally {
+      if (previous == null) {
+        ACTIVE.remove();
+      } else {
+        ACTIVE.set(previous);
+      }
+    }
   }
 
   private static CatalogAccessException timeout(Throwable cause) {
