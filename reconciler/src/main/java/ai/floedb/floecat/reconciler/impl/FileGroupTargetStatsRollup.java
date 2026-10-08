@@ -430,8 +430,7 @@ public final class FileGroupTargetStatsRollup {
       }
       if (scalar.hasType()) {
         LogicalType candidateLogicalType = LogicalTypeProtoAdapter.fromProto(scalar.getType());
-        if (logicalType.isBlank()
-            || isMoreSpecific(candidateLogicalType, decodedLogicalType)) {
+        if (logicalType.isBlank() || isMoreSpecific(candidateLogicalType, decodedLogicalType)) {
           logicalType = LogicalTypeProtoAdapter.encodeLogicalType(candidateLogicalType);
           decodedLogicalType = candidateLogicalType;
         }
@@ -466,8 +465,7 @@ public final class FileGroupTargetStatsRollup {
       }
     }
 
-    private static boolean isMoreSpecific(
-        LogicalType candidate, LogicalType current) {
+    private static boolean isMoreSpecific(LogicalType candidate, LogicalType current) {
       return current != null
           && candidate.kind() == current.kind()
           && java.util.Objects.equals(candidate.precision(), current.precision())
