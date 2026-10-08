@@ -48,6 +48,7 @@ import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.services.sts.model.AssumeRoleResponse;
 import software.amazon.awssdk.services.sts.model.Credentials;
+import software.amazon.awssdk.services.sts.model.StsException;
 
 class StorageAuthorityResolverTest {
   private StorageAuthorityResolver resolver;
@@ -532,6 +533,7 @@ class StorageAuthorityResolverTest {
             return clientBuilds.getAndIncrement() == 0 ? failedClient : refreshedClient;
           }
         };
+    assumeRoleResolver.externalIdForAccount = accountId -> "floecat-issued-" + accountId;
 
     ResolvedStorageCredentials credentials =
         assumeRoleResolver.assumeRoleFromAmbientSource(
@@ -579,6 +581,7 @@ class StorageAuthorityResolverTest {
           @Override
           void pauseBeforeAssumeRoleRetry(int failedAttempt) {}
         };
+    assumeRoleResolver.externalIdForAccount = accountId -> "floecat-issued-" + accountId;
 
     ResolvedStorageCredentials credentials =
         assumeRoleResolver.assumeRoleFromAmbientSource(
@@ -588,6 +591,85 @@ class StorageAuthorityResolverTest {
 
     assertEquals("temp-akid", credentials.accessKeyId());
     assertEquals(2, clientBuilds.get());
+  }
+
+  @Test
+  void ambientAssumeRoleUsesTheAccountExternalId() {
+    ArrayList<AssumeRoleRequest> requests = new ArrayList<>();
+    StsClient sts = mock(StsClient.class);
+    when(sts.assumeRole(any(AssumeRoleRequest.class)))
+        .thenAnswer(
+            invocation -> {
+              requests.add(invocation.getArgument(0));
+              return successfulAssumeRoleResponse();
+            });
+    StorageAuthorityResolver assumeRoleResolver =
+        resolverWithStsClient(sts, accountId -> "floecat-issued-" + accountId);
+
+    assumeRoleResolver.assumeRoleFromAmbientSource(
+        authority().toBuilder()
+            .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+            .setAssumeRoleExternalId("legacy-external-id")
+            .build());
+
+    assertEquals(1, requests.size());
+    assertEquals("floecat-issued-acct", requests.getFirst().externalId());
+  }
+
+  @Test
+  void ambientAssumeRoleFallsBackToTheLegacyExternalIdWhenAccountIdIsDenied() {
+    ArrayList<AssumeRoleRequest> requests = new ArrayList<>();
+    StsClient sts = mock(StsClient.class);
+    when(sts.assumeRole(any(AssumeRoleRequest.class)))
+        .thenAnswer(
+            invocation -> {
+              AssumeRoleRequest request = invocation.getArgument(0);
+              requests.add(request);
+              if (requests.size() == 1) {
+                throw stsFailure(403, "AccessDenied");
+              }
+              return successfulAssumeRoleResponse();
+            });
+    StorageAuthorityResolver assumeRoleResolver =
+        resolverWithStsClient(sts, accountId -> "floecat-issued-" + accountId);
+
+    ResolvedStorageCredentials credentials =
+        assumeRoleResolver.assumeRoleFromAmbientSource(
+            authority().toBuilder()
+                .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+                .setAssumeRoleExternalId("legacy-external-id")
+                .build());
+
+    assertEquals("temp-akid", credentials.accessKeyId());
+    assertEquals(2, requests.size());
+    assertEquals("floecat-issued-acct", requests.get(0).externalId());
+    assertEquals("legacy-external-id", requests.get(1).externalId());
+  }
+
+  @Test
+  void ambientAssumeRoleDoesNotUseLegacyExternalIdForOtherStsFailures() {
+    ArrayList<AssumeRoleRequest> requests = new ArrayList<>();
+    StsClient sts = mock(StsClient.class);
+    when(sts.assumeRole(any(AssumeRoleRequest.class)))
+        .thenAnswer(
+            invocation -> {
+              requests.add(invocation.getArgument(0));
+              throw stsFailure(403, "SignatureDoesNotMatch");
+            });
+    StorageAuthorityResolver assumeRoleResolver =
+        resolverWithStsClient(sts, accountId -> "floecat-issued-" + accountId);
+
+    assertThrows(
+        StsException.class,
+        () ->
+            assumeRoleResolver.assumeRoleFromAmbientSource(
+                authority().toBuilder()
+                    .setAssumeRoleArn("arn:aws:iam::123456789012:role/customer-ro")
+                    .setAssumeRoleExternalId("legacy-external-id")
+                    .build()));
+
+    assertEquals(1, requests.size());
+    assertEquals("floecat-issued-acct", requests.getFirst().externalId());
   }
 
   @Test
@@ -696,6 +778,47 @@ class StorageAuthorityResolverTest {
         .setEndpoint("http://localhost:4566")
         .setPathStyleAccess(true)
         .build();
+  }
+
+  private static StorageAuthorityResolver resolverWithStsClient(
+      StsClient sts, java.util.function.Function<String, String> externalIdForAccount) {
+    StorageAuthorityResolver resolver =
+        new StorageAuthorityResolver() {
+          @Override
+          AwsCredentialsProvider ambientCredentialsProvider() {
+            return mock(AwsCredentialsProvider.class);
+          }
+
+          @Override
+          StsClient buildStsClient(StorageAuthority authority, AwsCredentialsProvider provider) {
+            return sts;
+          }
+        };
+    resolver.externalIdForAccount = externalIdForAccount;
+    return resolver;
+  }
+
+  private static AssumeRoleResponse successfulAssumeRoleResponse() {
+    return AssumeRoleResponse.builder()
+        .credentials(
+            Credentials.builder()
+                .accessKeyId("temp-akid")
+                .secretAccessKey("temp-secret")
+                .sessionToken("temp-token")
+                .expiration(Instant.now().plusSeconds(3600))
+                .build())
+        .build();
+  }
+
+  private static StsException stsFailure(int statusCode, String errorCode) {
+    return (StsException)
+        StsException.builder()
+            .statusCode(statusCode)
+            .awsErrorDetails(
+                software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
+                    .errorCode(errorCode)
+                    .build())
+            .build();
   }
 
   private static final class StaticSecretsManager implements SecretsManager {
