@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.types;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -84,6 +85,20 @@ class LogicalTypeProtoAdapterTest {
         ScalarStats.newBuilder().setLogicalType("INT").setMin("42").setMax("99").build();
     assertEquals(42L, LogicalTypeProtoAdapter.columnMinValue(stats));
     assertEquals(99L, LogicalTypeProtoAdapter.columnMaxValue(stats));
+  }
+
+  @Test
+  void binaryTypedBoundsEncodeComparatorValues() {
+    LogicalType type = LogicalType.of(LogicalKind.BINARY);
+    Object normalized = LogicalComparators.normalize(type, new byte[] {0x01, (byte) 0xff});
+
+    ScalarValue encoded = LogicalTypeProtoAdapter.encodeTypedValue(type, normalized);
+
+    assertEquals(
+        com.google.protobuf.ByteString.copyFrom(new byte[] {0x01, (byte) 0xff}), encoded.getBin());
+    assertArrayEquals(
+        new byte[] {0x01, (byte) 0xff},
+        (byte[]) LogicalTypeProtoAdapter.decodeValue(type, encoded));
   }
 
   @Test
