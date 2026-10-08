@@ -236,6 +236,14 @@ mutation read. There is no separate external-ID cache. Consequently, deleting an
 observed when the cached credentials next require a refresh, rather than by re-reading the account
 on every Catalog Integration open.
 
+Before Floecat obtains credentials with the account-owned external ID, it attempts the target role
+with a random incorrect external ID. AWS STS must reject that probe with `AccessDenied`; if it
+succeeds, or if enforcement cannot be verified, Floecat fails closed and does not use or cache the
+target credentials. The check is repeated whenever assumed-role credentials are renewed, so a role
+whose trust policy is later weakened stops refreshing. Each check intentionally produces one denied
+`AssumeRole` event in the target account's CloudTrail history. Deployments should expect these probe
+events and account for them in alerts on denied STS calls.
+
 The trust-configuration RPC fails closed if `service-principal-arn` is absent or is not an IAM
 principal ARN. Top-level AWS AssumeRole authentication is not supported; configure AssumeRole as
 the credential source inside AWS SigV4.

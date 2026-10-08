@@ -25,13 +25,13 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -48,6 +48,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.services.sts.model.Credentials;
+import software.amazon.awssdk.services.sts.model.StsException;
 
 /** Resolves renewable AWS credential sources configured on Catalog Integrations. */
 @ApplicationScoped
@@ -55,6 +56,16 @@ class CatalogIntegrationAwsCredentialResolver {
   @FunctionalInterface
   interface StsClientFactory {
     StsClient create(String region, AwsCredentials sourceCredentials, Duration callTimeout);
+  }
+
+  @FunctionalInterface
+  interface AssumeRoleCall {
+    Credentials call(String region, AssumeRoleRequest request, long deadlineNanos);
+  }
+
+  @FunctionalInterface
+  interface ExternalIdEnforcement {
+    void verify(String region, AssumeRoleRequest request, long deadlineNanos);
   }
 
   private static final Duration CACHE_REFRESH_SKEW = Duration.ofMinutes(5);
@@ -74,8 +85,10 @@ class CatalogIntegrationAwsCredentialResolver {
   Supplier<DefaultCredentialsProvider> ambientProviderFactory =
       () -> DefaultCredentialsProvider.builder().build();
   Supplier<AwsCredentials> defaultCredentials = this::resolveDefaultCredentials;
-  BiFunction<String, AssumeRoleRequest, Credentials> assumeRole = this::assumeRole;
+  AssumeRoleCall assumeRole = this::assumeRole;
+  ExternalIdEnforcement externalIdEnforcement = this::requireExternalIdEnforced;
   Function<String, String> externalIdForAccount = this::externalIdForAccount;
+  Supplier<String> externalIdProbe = () -> UUID.randomUUID().toString();
   StsClientFactory stsClientFactory = this::buildStsClient;
   Clock clock = Clock.systemUTC();
   LongSupplier nanoTime = System::nanoTime;
@@ -162,11 +175,13 @@ class CatalogIntegrationAwsCredentialResolver {
       }
       if (existing != null) continue;
       try {
+        long deadline = credentialResolutionDeadline();
         String externalId = externalIdForAccount.apply(tenant);
         AssumeRoleRequest request =
             assumeRoleRequest(authentication.getAwsAssumeRole(), externalId, sessionName);
-        if (!inserted) return assumeRoleOnce(region, request);
-        ResolvedAwsCredentials credentials = assumeRoleOnce(region, request);
+        externalIdEnforcement.verify(region, request, deadline);
+        if (!inserted) return assumeRoleOnce(region, request, deadline);
+        ResolvedAwsCredentials credentials = assumeRoleOnce(region, request, deadline);
         created.future().complete(credentials);
         if (!isFresh(credentials)) remove(key, created);
         return credentials;
@@ -184,14 +199,53 @@ class CatalogIntegrationAwsCredentialResolver {
     }
   }
 
-  private ResolvedAwsCredentials assumeRoleOnce(String region, AssumeRoleRequest request) {
+  private ResolvedAwsCredentials assumeRoleOnce(
+      String region, AssumeRoleRequest request, long deadlineNanos) {
     throwIfInterrupted();
     try {
-      return fromAssumed(assumeRole.apply(region, request));
+      return fromAssumed(assumeRole.call(region, request, deadlineNanos));
     } catch (RuntimeException failure) {
       throwIfInterrupted();
       throw failure;
     }
+  }
+
+  /**
+   * Proves that the target role rejects an external ID other than the account-owned value.
+   *
+   * <p>Including an external ID in AssumeRole does not prove that the target role checked it. An
+   * incorrect value is a stronger negative test than omitting the value because it also rejects a
+   * policy that merely requires some external ID to be present. The probe deliberately bypasses the
+   * credential cache and runs before credentials obtained with the correct value can be returned or
+   * cached.
+   */
+  private void requireExternalIdEnforced(
+      String region, AssumeRoleRequest correctRequest, long deadlineNanos) {
+    String incorrectExternalId;
+    do {
+      incorrectExternalId = requireNonBlank(externalIdProbe.get(), "external_id_probe");
+    } while (incorrectExternalId.equals(correctRequest.externalId()));
+
+    AssumeRoleRequest probeRequest =
+        correctRequest.toBuilder().externalId(incorrectExternalId).build();
+    throwIfInterrupted();
+    try {
+      assumeRole.call(region, probeRequest, deadlineNanos);
+    } catch (StsException failure) {
+      throwIfInterrupted();
+      if (isAccessDenied(failure)) return;
+      throw new ExternalIdProbeException(failure);
+    } catch (RuntimeException failure) {
+      throwIfInterrupted();
+      throw failure;
+    }
+    throw new ExternalIdNotEnforcedException(correctRequest.roleArn());
+  }
+
+  private static boolean isAccessDenied(StsException failure) {
+    String errorCode =
+        failure.awsErrorDetails() == null ? null : failure.awsErrorDetails().errorCode();
+    return "AccessDenied".equals(errorCode);
   }
 
   private static void throwIfInterrupted() {
@@ -269,13 +323,16 @@ class CatalogIntegrationAwsCredentialResolver {
     if (provider != null) provider.close();
   }
 
-  private Credentials assumeRole(String region, AssumeRoleRequest request) {
-    long startedAt = nanoTime.getAsLong();
-    long totalNanos = CatalogUpstreamBudget.currentRemainingNanos(cacheWaitTimeout.toNanos());
-    long deadline = saturatedAdd(startedAt, totalNanos);
+  private long credentialResolutionDeadline() {
+    return saturatedAdd(
+        nanoTime.getAsLong(),
+        CatalogUpstreamBudget.currentRemainingNanos(cacheWaitTimeout.toNanos()));
+  }
+
+  private Credentials assumeRole(String region, AssumeRoleRequest request, long deadlineNanos) {
     AwsCredentials sourceCredentials =
-        resolveDefaultCredentialsWithin(Duration.ofNanos(remainingNanos(deadline)));
-    Duration stsTimeout = Duration.ofNanos(remainingNanos(deadline));
+        resolveDefaultCredentialsWithin(Duration.ofNanos(remainingNanos(deadlineNanos)));
+    Duration stsTimeout = Duration.ofNanos(remainingNanos(deadlineNanos));
     try (var sts = stsClientFactory.create(region, sourceCredentials, stsTimeout)) {
       return sts.assumeRole(request).credentials();
     }
@@ -407,6 +464,18 @@ class CatalogIntegrationAwsCredentialResolver {
   static final class CredentialSourceTimeoutException extends RuntimeException {
     CredentialSourceTimeoutException(Throwable cause) {
       super("Timed out resolving AWS source credentials", cause);
+    }
+  }
+
+  static final class ExternalIdNotEnforcedException extends RuntimeException {
+    ExternalIdNotEnforcedException(String roleArn) {
+      super("AWS role does not require the Floecat-issued external ID: " + roleArn);
+    }
+  }
+
+  static final class ExternalIdProbeException extends RuntimeException {
+    ExternalIdProbeException(StsException cause) {
+      super("AWS STS external-ID enforcement probe was inconclusive", cause);
     }
   }
 

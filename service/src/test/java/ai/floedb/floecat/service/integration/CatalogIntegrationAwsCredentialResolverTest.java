@@ -50,8 +50,129 @@ import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.services.sts.model.AssumeRoleResponse;
 import software.amazon.awssdk.services.sts.model.Credentials;
+import software.amazon.awssdk.services.sts.model.StsException;
 
 class CatalogIntegrationAwsCredentialResolverTest {
+  @Test
+  void requiresTheTargetRoleToRejectAnIncorrectExternalId() {
+    var resolver = resolverWithExternalIdEnforcement();
+    Instant now = Instant.parse("2026-10-07T14:00:00Z");
+    resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
+    resolver.externalIdProbe = () -> "incorrect-external-id";
+    var requests = new java.util.ArrayList<AssumeRoleRequest>();
+    var deadlines = new java.util.ArrayList<Long>();
+    resolver.assumeRole =
+        (region, request, deadline) -> {
+          requests.add(request);
+          deadlines.add(deadline);
+          if (request.externalId().equals("incorrect-external-id")) {
+            throw accessDenied();
+          }
+          return credentials("access", now.plus(Duration.ofHours(1)));
+        };
+
+    ResolvedAwsCredentials resolved =
+        resolver.resolve("account", assumeRoleAuthentication("catalog"));
+
+    assertEquals("access", resolved.accessKeyId());
+    assertEquals(2, requests.size());
+    assertEquals("incorrect-external-id", requests.get(0).externalId());
+    assertEquals("floecat-issued-account", requests.get(1).externalId());
+    assertEquals(deadlines.get(0), deadlines.get(1), "probe and real call share one deadline");
+  }
+
+  @Test
+  void rejectsATargetRoleThatAcceptsAnIncorrectExternalId() {
+    var resolver = resolverWithExternalIdEnforcement();
+    Instant now = Instant.parse("2026-10-07T14:00:00Z");
+    resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
+    resolver.externalIdProbe = () -> "incorrect-external-id";
+    AtomicInteger calls = new AtomicInteger();
+    resolver.assumeRole =
+        (region, request, deadline) -> {
+          calls.incrementAndGet();
+          return credentials("unsafe", now.plus(Duration.ofHours(1)));
+        };
+
+    assertThrows(
+        CatalogIntegrationAwsCredentialResolver.ExternalIdNotEnforcedException.class,
+        () -> resolver.resolve("account", assumeRoleAuthentication("catalog")));
+
+    assertEquals(1, calls.get(), "the correctly identified request must not be attempted");
+  }
+
+  @Test
+  void cannotTreatAnUnavailableProbeAsProofOfExternalIdEnforcement() {
+    var resolver = resolverWithExternalIdEnforcement();
+    resolver.externalIdProbe = () -> "incorrect-external-id";
+    StsException unavailable =
+        (StsException) StsException.builder().statusCode(503).message("unavailable").build();
+    resolver.assumeRole =
+        (region, request, deadline) -> {
+          throw unavailable;
+        };
+
+    var failure =
+        assertThrows(
+            CatalogIntegrationAwsCredentialResolver.ExternalIdProbeException.class,
+            () -> resolver.resolve("account", assumeRoleAuthentication("catalog")));
+    assertSame(unavailable, failure.getCause());
+  }
+
+  @Test
+  void cannotTreatANonAccessDenied403AsProofOfExternalIdEnforcement() {
+    var resolver = resolverWithExternalIdEnforcement();
+    resolver.externalIdProbe = () -> "incorrect-external-id";
+    StsException signatureFailure =
+        (StsException)
+            StsException.builder()
+                .statusCode(403)
+                .awsErrorDetails(
+                    software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
+                        .errorCode("SignatureDoesNotMatch")
+                        .build())
+                .build();
+    resolver.assumeRole =
+        (region, request, deadline) -> {
+          throw signatureFailure;
+        };
+
+    var failure =
+        assertThrows(
+            CatalogIntegrationAwsCredentialResolver.ExternalIdProbeException.class,
+            () -> resolver.resolve("account", assumeRoleAuthentication("catalog")));
+    assertSame(signatureFailure, failure.getCause());
+  }
+
+  @Test
+  void verifiesExternalIdEnforcementAgainWhenCredentialsRefresh() {
+    var resolver = resolverWithExternalIdEnforcement();
+    Instant now = Instant.parse("2026-10-07T14:00:00Z");
+    resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
+    resolver.externalIdProbe = () -> "incorrect-external-id";
+    AtomicInteger probes = new AtomicInteger();
+    AtomicInteger resolutions = new AtomicInteger();
+    resolver.assumeRole =
+        (region, request, deadline) -> {
+          if (request.externalId().equals("incorrect-external-id")) {
+            probes.incrementAndGet();
+            throw accessDenied();
+          }
+          return credentials(
+              "access-" + resolutions.incrementAndGet(),
+              resolver.clock.instant().plus(Duration.ofHours(1)));
+        };
+
+    resolver.resolve("account", assumeRoleAuthentication("catalog"));
+    resolver.clock = Clock.fixed(now.plus(Duration.ofMinutes(56)), ZoneOffset.UTC);
+    ResolvedAwsCredentials refreshed =
+        resolver.resolve("account", assumeRoleAuthentication("catalog"));
+
+    assertEquals("access-2", refreshed.accessKeyId());
+    assertEquals(2, probes.get());
+    assertEquals(2, resolutions.get());
+  }
+
   @Test
   void resolvesTheAmbientAwsChainWithoutAnyCatalogFormatDependency() {
     var resolver = newResolver();
@@ -79,7 +200,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     Instant expiration = now.plus(Duration.ofHours(1));
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           stsRegion.set(region);
           request.set(configured);
           return Credentials.builder()
@@ -117,7 +238,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     var resolver = newResolver();
     AtomicReference<String> stsRegion = new AtomicReference<>();
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           stsRegion.set(region);
           return Credentials.builder()
               .accessKeyId("access")
@@ -151,7 +272,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
           return "floecat-issued-" + accountId;
         };
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           calls.incrementAndGet();
           return Credentials.builder()
               .accessKeyId("access")
@@ -182,7 +303,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     AtomicInteger calls = new AtomicInteger();
     resolver.assumeRole =
-        (region, configured) ->
+        (region, configured, deadline) ->
             Credentials.builder()
                 .accessKeyId("access-" + calls.incrementAndGet())
                 .secretAccessKey("secret")
@@ -212,7 +333,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     AtomicInteger calls = new AtomicInteger();
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           calls.incrementAndGet();
           throw software.amazon.awssdk.services.sts.model.StsException.builder()
               .statusCode(400)
@@ -302,7 +423,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     var resolver = newResolver();
     AtomicInteger calls = new AtomicInteger();
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           calls.incrementAndGet();
           throw ApiCallTimeoutException.create(1);
         };
@@ -329,7 +450,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
           return "floecat-issued-" + accountId;
         };
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           stsCalls.incrementAndGet();
           return credentials("access", now.plus(Duration.ofHours(1)));
         };
@@ -353,7 +474,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     CountDownLatch entered = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           calls.incrementAndGet();
           entered.countDown();
           await(release);
@@ -374,6 +495,42 @@ class CatalogIntegrationAwsCredentialResolverTest {
   }
 
   @Test
+  void concurrentWaitersShareAndBackOffAProbeFailure() throws Exception {
+    var resolver = resolverWithExternalIdEnforcement();
+    Instant now = Instant.parse("2026-10-07T14:00:00Z");
+    resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
+    resolver.externalIdProbe = () -> "incorrect-external-id";
+    AtomicInteger probes = new AtomicInteger();
+    CountDownLatch entered = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    resolver.assumeRole =
+        (region, request, deadline) -> {
+          probes.incrementAndGet();
+          entered.countDown();
+          await(release);
+          return credentials("unsafe", now.plus(Duration.ofHours(1)));
+        };
+    AwsSigV4Authentication authentication = assumeRoleAuthentication("catalog");
+
+    CompletableFuture<ResolvedAwsCredentials> owner = asyncResolve(resolver, authentication);
+    assertTrue(entered.await(2, TimeUnit.SECONDS));
+    CompletableFuture<ResolvedAwsCredentials> waiter = asyncResolve(resolver, authentication);
+    Thread.sleep(20);
+    assertFalse(waiter.isDone());
+    release.countDown();
+
+    Throwable ownerFailure = assertThrows(CompletionException.class, owner::join).getCause();
+    assertTrue(
+        ownerFailure
+            instanceof CatalogIntegrationAwsCredentialResolver.ExternalIdNotEnforcedException);
+    assertSame(ownerFailure, assertThrows(CompletionException.class, waiter::join).getCause());
+    assertSame(
+        ownerFailure,
+        assertThrows(RuntimeException.class, () -> resolver.resolve("account", authentication)));
+    assertEquals(1, probes.get());
+  }
+
+  @Test
   void waitersReceiveOwnerFailureAndNewOpensBackOffBeforeRetrying() throws Exception {
     var resolver = newResolver();
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
@@ -387,7 +544,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
             .message("denied")
             .build();
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           if (calls.incrementAndGet() == 1) {
             entered.countDown();
             await(release);
@@ -429,7 +586,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     CountDownLatch entered = new CountDownLatch(3);
     CountDownLatch release = new CountDownLatch(1);
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           entered.countDown();
           await(release);
           return credentials(configured.roleArn(), now.plus(Duration.ofHours(1)));
@@ -454,7 +611,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     CountDownLatch entered = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           entered.countDown();
           await(release);
           return credentials("access", now.plus(Duration.ofHours(1)));
@@ -477,7 +634,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     var resolver = newResolver();
     AtomicInteger calls = new AtomicInteger();
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           calls.incrementAndGet();
           throw new CatalogIntegrationAwsCredentialResolver.MissingAwsCredentialsException(
               SdkClientException.create("no source credentials"));
@@ -494,7 +651,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     var resolver = newResolver();
     AtomicInteger calls = new AtomicInteger();
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           calls.incrementAndGet();
           return credentials("unused", Instant.now());
         };
@@ -520,7 +677,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     AtomicReference<Thread> ownerThread = new AtomicReference<>();
     CountDownLatch ownerEntered = new CountDownLatch(1);
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           if (calls.incrementAndGet() == 1) {
             ownerThread.set(Thread.currentThread());
             ownerEntered.countDown();
@@ -558,7 +715,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     CountDownLatch entered = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
     resolver.assumeRole =
-        (region, configured) -> {
+        (region, configured, deadline) -> {
           entered.countDown();
           await(release);
           return credentials("access", now.plus(Duration.ofHours(1)));
@@ -618,7 +775,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     AtomicInteger calls = new AtomicInteger();
     resolver.assumeRole =
-        (region, configured) ->
+        (region, configured, deadline) ->
             credentials("account-" + calls.incrementAndGet(), now.plus(Duration.ofHours(1)));
     AwsSigV4Authentication authentication = assumeRoleAuthentication("catalog");
 
@@ -648,6 +805,17 @@ class CatalogIntegrationAwsCredentialResolverTest {
         .build();
   }
 
+  private static StsException accessDenied() {
+    return (StsException)
+        StsException.builder()
+            .statusCode(403)
+            .awsErrorDetails(
+                software.amazon.awssdk.awscore.exception.AwsErrorDetails.builder()
+                    .errorCode("AccessDenied")
+                    .build())
+            .build();
+  }
+
   private static CatalogIntegrationAwsCredentialResolver newResolver() {
     return withExternalId(new CatalogIntegrationAwsCredentialResolver());
   }
@@ -660,6 +828,13 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   private static CatalogIntegrationAwsCredentialResolver withExternalId(
       CatalogIntegrationAwsCredentialResolver resolver) {
+    resolver.externalIdForAccount = accountId -> "floecat-issued-" + accountId;
+    resolver.externalIdEnforcement = (region, request, deadline) -> {};
+    return resolver;
+  }
+
+  private static CatalogIntegrationAwsCredentialResolver resolverWithExternalIdEnforcement() {
+    var resolver = new CatalogIntegrationAwsCredentialResolver();
     resolver.externalIdForAccount = accountId -> "floecat-issued-" + accountId;
     return resolver;
   }

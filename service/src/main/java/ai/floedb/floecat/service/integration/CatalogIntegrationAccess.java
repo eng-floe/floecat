@@ -155,6 +155,13 @@ public class CatalogIntegrationAccess {
           CatalogAccessException.Code.TIMEOUT,
           "Timed out resolving AWS source credentials",
           failure);
+    } catch (CatalogIntegrationAwsCredentialResolver.ExternalIdNotEnforcedException failure) {
+      throw new CatalogAccessException(
+          CatalogAccessException.Code.CREDENTIAL_CONFIGURATION_INVALID,
+          "The AWS role does not enforce the Floecat-issued external ID",
+          failure);
+    } catch (CatalogIntegrationAwsCredentialResolver.ExternalIdProbeException failure) {
+      throw translateStsFailure((StsException) failure.getCause());
     } catch (AccountAwsExternalIdProvider.AccountMissingException failure) {
       throw new CatalogAccessException(
           CatalogAccessException.Code.CREDENTIAL_CONFIGURATION_INVALID,
@@ -394,6 +401,13 @@ public class CatalogIntegrationAccess {
             "Timed out resolving AWS source credentials",
             failure);
       }
+      if (current
+          instanceof CatalogIntegrationAwsCredentialResolver.ExternalIdNotEnforcedException) {
+        return new CatalogAccessException(
+            CatalogAccessException.Code.CREDENTIAL_CONFIGURATION_INVALID,
+            "The AWS role no longer enforces the Floecat-issued external ID",
+            failure);
+      }
     }
     return failure;
   }
@@ -423,6 +437,11 @@ public class CatalogIntegrationAccess {
       if (current instanceof AccountAwsExternalIdProvider.AccountMissingException) {
         return new TerminalCredentialRefreshException(
             "The Floecat account for this Catalog Integration no longer exists", failure);
+      }
+      if (current
+          instanceof CatalogIntegrationAwsCredentialResolver.ExternalIdNotEnforcedException) {
+        return new TerminalCredentialRefreshException(
+            "The AWS role no longer enforces the Floecat-issued external ID", failure);
       }
       if (current instanceof StsException sts && isTerminalStsRefreshFailure(sts)) {
         return new TerminalCredentialRefreshException(

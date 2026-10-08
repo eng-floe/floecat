@@ -516,6 +516,22 @@ class CatalogIntegrationAccessTest {
   }
 
   @Test
+  void rejectsARoleThatDoesNotEnforceTheAccountExternalId() {
+    access.awsCredentialSourceResolver =
+        (accountId, configured) -> {
+          throw new CatalogIntegrationAwsCredentialResolver.ExternalIdNotEnforcedException(
+              configured.getAwsAssumeRole().getRoleArn());
+        };
+
+    CatalogAccessException error =
+        assertThrows(
+            CatalogAccessException.class,
+            () -> access.open(integration(assumeRoleAuthentication())));
+
+    assertEquals(CatalogAccessException.Code.CREDENTIAL_CONFIGURATION_INVALID, error.code());
+  }
+
+  @Test
   void translatesAwsCredentialFailuresRaisedByAClientOperation() {
     access.awsCredentialSourceResolver =
         (accountId, configured) ->
@@ -632,6 +648,9 @@ class CatalogIntegrationAccessTest {
             .build();
     var missingAccount =
         new AccountAwsExternalIdProvider.AccountMissingException("deleted-account");
+    var externalIdNotEnforced =
+        new CatalogIntegrationAwsCredentialResolver.ExternalIdNotEnforcedException(
+            "arn:aws:iam::123456789012:role/catalog");
 
     assertTrue(
         CatalogIntegrationAccess.terminalRefreshFailure(denied)
@@ -644,6 +663,9 @@ class CatalogIntegrationAccessTest {
             instanceof TerminalCredentialRefreshException);
     assertTrue(
         CatalogIntegrationAccess.terminalRefreshFailure(missingAccount)
+            instanceof TerminalCredentialRefreshException);
+    assertTrue(
+        CatalogIntegrationAccess.terminalRefreshFailure(externalIdNotEnforced)
             instanceof TerminalCredentialRefreshException);
   }
 
