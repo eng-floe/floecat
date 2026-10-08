@@ -33,12 +33,12 @@ import ai.floedb.floecat.metagraph.model.UserTableNode;
 import ai.floedb.floecat.scanner.utils.EngineContext;
 import ai.floedb.floecat.service.repo.impl.RelationHintsRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.testsupport.CountingBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class HintCacheTest {
@@ -216,13 +216,13 @@ class HintCacheTest {
     HintCache.forTesting(repository)
         .persist(
             table.id(), relationMeta(table, pointers), "floedb", "1", "type", bytes(1), List.of());
-    blobs.gets.set(0);
+    blobs.resetReads();
     var coldCache = HintCache.forTesting(repository);
 
     coldCache.attach(table, EngineContext.of("floedb", "1"));
     coldCache.attach(table, EngineContext.of("floedb", "1"));
 
-    assertThat(blobs.gets).hasValue(1);
+    assertThat(blobs.pointGets()).isEqualTo(1);
   }
 
   @Test
@@ -294,15 +294,5 @@ class HintCacheTest {
         List.of(),
         Map.of(),
         Map.of());
-  }
-
-  private static final class CountingBlobStore extends InMemoryBlobStore {
-    private final AtomicInteger gets = new AtomicInteger();
-
-    @Override
-    public byte[] get(String uri) {
-      gets.incrementAndGet();
-      return super.get(uri);
-    }
   }
 }

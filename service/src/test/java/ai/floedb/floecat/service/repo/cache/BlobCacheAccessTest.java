@@ -23,17 +23,15 @@ import ai.floedb.floecat.cache.BlobCacheEvents;
 import ai.floedb.floecat.cache.DiskBlobCache;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.testsupport.CountingBlobStore;
 import ai.floedb.floecat.service.testsupport.DiskBlobCacheTestSupport;
-import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.spi.BlobStore;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -72,11 +70,11 @@ class BlobCacheAccessTest {
             delegate, DiskBlobCacheTestSupport.create(tempDir.resolve("batch")));
 
     assertThat(cached.getBatch(List.of("/accounts/a/one", "/accounts/a/two"))).hasSize(2);
-    assertThat(delegate.batchGets).hasValue(1);
-    delegate.pointGets.set(0);
+    assertThat(delegate.batchGets()).isEqualTo(1);
+    delegate.resetReads();
 
     assertThat(cached.get("/accounts/a/one")).containsExactly(1);
-    assertThat(delegate.pointGets).hasValue(0);
+    assertThat(delegate.pointGets()).isZero();
   }
 
   @Test
@@ -92,8 +90,8 @@ class BlobCacheAccessTest {
         .isEqualTo("bcd".getBytes(StandardCharsets.UTF_8));
     assertThat(cached.getRange("/accounts/a/pack", 1L, 3))
         .isEqualTo("bcd".getBytes(StandardCharsets.UTF_8));
-    assertThat(delegate.rangeGets).hasValue(1);
-    assertThat(delegate.pointGets).hasValue(0);
+    assertThat(delegate.rangeGets()).isEqualTo(1);
+    assertThat(delegate.pointGets()).isZero();
   }
 
   @Test
@@ -108,7 +106,7 @@ class BlobCacheAccessTest {
     cached.put(uri, new byte[] {2}, "application/octet-stream");
 
     assertThat(cached.get(uri)).containsExactly(2);
-    assertThat(delegate.pointGets).hasValue(1);
+    assertThat(delegate.pointGets()).isEqualTo(1);
   }
 
   @Test
@@ -126,7 +124,7 @@ class BlobCacheAccessTest {
         .isEqualTo("bcd".getBytes(StandardCharsets.UTF_8));
     assertThat(cached.getRange("/accounts/a/pack", 1L, 3))
         .isEqualTo("bcd".getBytes(StandardCharsets.UTF_8));
-    assertThat(delegate.rangeGets).hasValue(2);
+    assertThat(delegate.rangeGets()).isEqualTo(2);
   }
 
   @Test
@@ -141,8 +139,8 @@ class BlobCacheAccessTest {
     assertThat(cached.get(uri)).isEqualTo("abcdef".getBytes(StandardCharsets.UTF_8));
     assertThat(cached.getRange(uri, 1L, 3)).isEqualTo("bcd".getBytes(StandardCharsets.UTF_8));
 
-    assertThat(delegate.pointGets).hasValue(1);
-    assertThat(delegate.rangeGets).hasValue(0);
+    assertThat(delegate.pointGets()).isEqualTo(1);
+    assertThat(delegate.rangeGets()).isZero();
   }
 
   @Test
@@ -156,12 +154,12 @@ class BlobCacheAccessTest {
     var cached = new CachedImmutableBlobStore(delegate, new BlobCacheAccess(disk));
 
     try (BlobStore.ScopedObjects ignored = cached.getBatchScoped(List.of(uri))) {
-      assertThat(delegate.batchGets).hasValue(1);
+      assertThat(delegate.batchGets()).isEqualTo(1);
     }
     try (BlobStore.ScopedObjects bodies = cached.getBatchScoped(List.of(uri))) {
       assertThat(bodies.get(uri)).isNotNull();
       assertThat(disk.liveMappings()).isEqualTo(1);
-      assertThat(delegate.batchGets).hasValue(1);
+      assertThat(delegate.batchGets()).isEqualTo(1);
     }
     assertThat(disk.liveMappings()).isZero();
   }
@@ -239,36 +237,6 @@ class BlobCacheAccessTest {
     @Override
     public ai.floedb.floecat.cache.CacheFamily family() {
       return ai.floedb.floecat.cache.CacheFamily.BLOB;
-    }
-  }
-
-  private static final class CountingBlobStore extends InMemoryBlobStore {
-    private final AtomicInteger pointGets = new AtomicInteger();
-    private final AtomicInteger batchGets = new AtomicInteger();
-    private final AtomicInteger rangeGets = new AtomicInteger();
-
-    @Override
-    public byte[] get(String uri) {
-      pointGets.incrementAndGet();
-      return super.get(uri);
-    }
-
-    @Override
-    public Map<String, byte[]> getBatch(List<String> uris) {
-      batchGets.incrementAndGet();
-      return uris.stream()
-          .filter(uri -> head(uri).isPresent())
-          .collect(java.util.stream.Collectors.toMap(uri -> uri, super::get));
-    }
-
-    @Override
-    public byte[] getRange(String uri, long offset, int length) {
-      rangeGets.incrementAndGet();
-      byte[] bytes = super.get(uri);
-      if (bytes == null) {
-        return null;
-      }
-      return Arrays.copyOfRange(bytes, Math.toIntExact(offset), Math.toIntExact(offset) + length);
     }
   }
 

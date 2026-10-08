@@ -206,7 +206,7 @@ public class CatalogOverlayRepository {
 
   public List<CatalogOverlay> list(
       String accountId, int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefix(
+    return repo.listByPrefixForRelisting(
         Keys.catalogOverlayPointerByNamePrefix(accountId), limit, pageToken, nextOut);
   }
 
@@ -224,7 +224,7 @@ public class CatalogOverlayRepository {
 
   public List<CatalogOverlay> listByIntegration(
       String accountId, String integrationId, int limit, String pageToken, StringBuilder nextOut) {
-    return repo.listByPrefix(
+    return repo.listByPrefixForRelisting(
         Keys.catalogOverlayPointerByIntegrationPrefix(accountId, integrationId),
         limit,
         pageToken,

@@ -18,8 +18,10 @@ package ai.floedb.floecat.service.catalog.impl.surface;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
@@ -32,8 +34,10 @@ import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.metagraph.model.CatalogNode;
 import ai.floedb.floecat.scanner.spi.CatalogGraphView;
+import ai.floedb.floecat.scanner.spi.SystemObjectScanContext.CatalogEntry;
 import ai.floedb.floecat.scanner.utils.CatalogContext;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
+import ai.floedb.floecat.service.repo.impl.CatalogRepository.CatalogRef;
 import ai.floedb.floecat.systemcatalog.graph.SystemNodeRegistry;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
@@ -190,6 +194,67 @@ class CatalogSurfaceCatalogsTest {
 
     assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
     verify(graphView).catalog(eq(systemCatalogId()), any());
+  }
+
+  @Test
+  void listCatalogEntriesWithoutDescriptionReadsPointersOnly() {
+    ResourceId catalogId = userCatalogId("cat-1");
+    when(catalogRepo.listRefs("acct")).thenReturn(List.of(new CatalogRef(catalogId, "examples")));
+
+    List<CatalogEntry> entries = surface.listCatalogEntries("acct", false);
+
+    assertEquals(List.of(new CatalogEntry(catalogId, "examples", null)), entries);
+    verify(catalogRepo, never()).list(any(), anyInt(), any(), any());
+  }
+
+  @Test
+  void listCatalogEntriesWithDescriptionPagesCatalogObjectsAndAppendsSystemCatalog() {
+    ResourceId canonicalSystemId = systemCatalogId();
+    when(graphView.catalog(eq(canonicalSystemId), any()))
+        .thenReturn(Optional.of(systemCatalogNode(canonicalSystemId)));
+    ResourceId first = userCatalogId("cat-1");
+    ResourceId second = userCatalogId("cat-2");
+    when(catalogRepo.list(eq("acct"), anyInt(), eq(""), any(StringBuilder.class)))
+        .thenAnswer(
+            inv -> {
+              inv.getArgument(3, StringBuilder.class).append("next");
+              return List.of(
+                  Catalog.newBuilder()
+                      .setResourceId(first)
+                      .setDisplayName("examples")
+                      .setDescription("primary")
+                      .build());
+            });
+    when(catalogRepo.list(eq("acct"), anyInt(), eq("next"), any(StringBuilder.class)))
+        .thenReturn(
+            List.of(Catalog.newBuilder().setResourceId(second).setDescription("  ").build()));
+
+    List<CatalogEntry> entries = surface.listCatalogEntries("acct", true);
+
+    assertEquals(3, entries.size());
+    assertEquals(new CatalogEntry(first, "examples", "primary"), entries.get(0));
+    assertEquals(new CatalogEntry(second, "cat-2", null), entries.get(1));
+    assertEquals("floecat_internal", entries.get(2).name());
+    verify(catalogRepo, never()).listRefs(any());
+  }
+
+  @Test
+  void listCatalogEntriesNamesAnUnnamedCatalogByIdOnBothPaths() {
+    ResourceId id = userCatalogId("cat-1");
+    when(catalogRepo.listRefs("acct")).thenReturn(List.of(new CatalogRef(id, "")));
+    when(catalogRepo.list(eq("acct"), anyInt(), eq(""), any(StringBuilder.class)))
+        .thenReturn(List.of(Catalog.newBuilder().setResourceId(id).build()));
+
+    assertEquals("cat-1", surface.listCatalogEntries("acct", false).get(0).name());
+    assertEquals("cat-1", surface.listCatalogEntries("acct", true).get(0).name());
+  }
+
+  private static ResourceId userCatalogId(String id) {
+    return ResourceId.newBuilder()
+        .setAccountId("acct")
+        .setKind(ResourceKind.RK_CATALOG)
+        .setId(id)
+        .build();
   }
 
   private static ResourceId systemCatalogId() {

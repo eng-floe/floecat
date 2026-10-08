@@ -754,32 +754,49 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
 
   public record KeyedValue<T>(String key, T value) {}
 
+  /** Consumes resident blob-cache entries; source misses are not admitted. */
   @Override
   public List<T> listByPrefix(String prefix, int limit, String token, StringBuilder nextOut) {
-    return listByPrefixWithKeys(prefix, limit, token, nextOut).stream()
-        .map(KeyedValue::value)
-        .toList();
+    return values(listByPrefixWithKeys(prefix, limit, token, nextOut));
   }
 
+  /** Reads mutation pointers and source blobs; the blob cache is not used. */
   public List<T> listByPrefixForMutation(
       String prefix, int limit, String token, StringBuilder nextOut) {
-    return listByPrefixWithKeys(prefix, limit, token, nextOut, true, BlobCache.Fill.FILL).stream()
-        .map(KeyedValue::value)
-        .toList();
+    return values(listByPrefixWithKeys(prefix, limit, token, nextOut, ListingRead.CONSISTENT));
+  }
+
+  /**
+   * {@link #listByPrefix} that admits source misses to the blob cache, for resource sets that are
+   * re-listed often and change rarely.
+   */
+  public List<T> listByPrefixForRelisting(
+      String prefix, int limit, String token, StringBuilder nextOut) {
+    return values(listByPrefixWithKeys(prefix, limit, token, nextOut, ListingRead.ADMITTING));
+  }
+
+  private static <T> List<T> values(List<KeyedValue<T>> rows) {
+    return rows.stream().map(KeyedValue::value).toList();
   }
 
   protected List<KeyedValue<T>> listByPrefixWithKeys(
       String prefix, int limit, String token, StringBuilder nextOut) {
-    return listByPrefixWithKeys(prefix, limit, token, nextOut, false, BlobCache.Fill.BYPASS_FILL);
+    return listByPrefixWithKeys(prefix, limit, token, nextOut, ListingRead.RESIDENT);
+  }
+
+  /** How a listing reads the bodies its pointers name. */
+  private enum ListingRead {
+    /** Mutation pointers and source blobs; the blob cache is not used. */
+    CONSISTENT,
+    /** Resident blob-cache entries are consumed; misses are not admitted. */
+    RESIDENT,
+    /** Misses are admitted to the blob cache. */
+    ADMITTING
   }
 
   private List<KeyedValue<T>> listByPrefixWithKeys(
-      String prefix,
-      int limit,
-      String token,
-      StringBuilder nextOut,
-      boolean consistentRead,
-      BlobCache.Fill fill) {
+      String prefix, int limit, String token, StringBuilder nextOut, ListingRead read) {
+    boolean consistentRead = read == ListingRead.CONSISTENT;
     return observeRepository(
         consistentRead ? "list_by_prefix_consistent" : "list_by_prefix",
         () -> {
@@ -807,7 +824,7 @@ public abstract class BaseResourceRepository<T> implements ResourceRepository<T>
           try (BlobCacheAccess.Contents contents =
               blobCache.referencedContents(
                   rows,
-                  fill,
+                  read == ListingRead.ADMITTING ? BlobCache.Fill.FILL : BlobCache.Fill.BYPASS_FILL,
                   row -> referencedBlobImmutable(row.getKey(), row.getBlobUri()),
                   blobReads::getBatch)) {
             return parseListedRows(rows, null, contents);

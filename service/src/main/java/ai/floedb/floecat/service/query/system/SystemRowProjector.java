@@ -16,12 +16,10 @@
 
 package ai.floedb.floecat.service.query.system;
 
+import ai.floedb.floecat.arrow.RequiredColumns;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.scanner.spi.SystemObjectRow;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
-import java.util.SequencedSet;
 import java.util.stream.Stream;
 
 public final class SystemRowProjector {
@@ -29,7 +27,7 @@ public final class SystemRowProjector {
   public static List<SystemObjectRow> project(
       List<SystemObjectRow> rows, List<SchemaColumn> schema, List<String> requiredColumns) {
 
-    if (requiredColumns.isEmpty()) return rows;
+    if (RequiredColumns.normalize(requiredColumns).isEmpty()) return rows;
 
     return project(rows.stream(), schema, requiredColumns).toList();
   }
@@ -37,29 +35,16 @@ public final class SystemRowProjector {
   public static Stream<SystemObjectRow> project(
       Stream<SystemObjectRow> rows, List<SchemaColumn> schema, List<String> requiredColumns) {
 
-    if (requiredColumns.isEmpty()) return rows;
+    List<String> requested = RequiredColumns.normalize(requiredColumns);
+    if (requested.isEmpty()) return rows;
 
     int[] indexes =
-        normalizedRequiredColumns(requiredColumns).stream()
-            .mapToInt(c -> indexOf(schema, c))
+        requested.stream()
+            .mapToInt(c -> RequiredColumns.indexOf(schema, c))
             .filter(i -> i >= 0)
             .toArray();
 
     return rows.map(r -> projectRow(r, indexes));
-  }
-
-  private static SequencedSet<String> normalizedRequiredColumns(List<String> requiredColumns) {
-    SequencedSet<String> normalized = new LinkedHashSet<>();
-    for (String column : requiredColumns) {
-      if (column == null) {
-        continue;
-      }
-      String name = column.trim().toLowerCase(Locale.ROOT);
-      if (!name.isEmpty()) {
-        normalized.add(name);
-      }
-    }
-    return normalized;
   }
 
   private static SystemObjectRow projectRow(SystemObjectRow row, int[] idxs) {
@@ -72,16 +57,6 @@ public final class SystemRowProjector {
     }
 
     return new SystemObjectRow(dst);
-  }
-
-  private static int indexOf(List<SchemaColumn> schema, String name) {
-
-    for (int i = 0; i < schema.size(); i++) {
-      if (schema.get(i).getName().equalsIgnoreCase(name)) {
-        return i;
-      }
-    }
-    return -1;
   }
 
   private SystemRowProjector() {}

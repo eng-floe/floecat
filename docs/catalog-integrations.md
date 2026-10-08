@@ -251,6 +251,22 @@ storage configuration needed by the downstream reader. In that mode, source-cata
 vending is skipped and normal storage-authority resolution is used instead. Updating properties
 replaces the complete map; passing `--props` with no values clears it.
 
+Each Floecat process caches source-catalog vends, keyed by the Connector or Integration
+configuration and the upstream table. An answer is reused only while at least
+`floecat.storage.source-catalog.vend-cache.min-remaining-fraction` of its lifetime (default `0.5`)
+and at least five minutes remain. With a fraction of `0`, an answer is reused until five minutes
+before it expires, which is when an Iceberg client refreshes a vended credential; the default keeps
+half the lifetime for readers that do not refresh. Answers without an expiry are not cached, nor are
+answers missing a field every use requires, nor credentials a Connector obtains by exchanging the
+caller's own token. `floecat.storage.source-catalog.vend-cache.max-entries` (default 10000) bounds
+the cache for each source kind; a value of zero or less disables it. Vends of a table that arrive
+together before an answer is held each go upstream. The vend permission check runs on every call. A
+Connector's key includes the credential it authenticates with, so rotating its secret in the
+credential store misses. An Integration's key is its record, which carries its credential
+generation, so rotating its secret through the API misses as well. Only an edit of the stored secret
+made outside Floecat keeps serving answers vended with the old secret until their reuse window ends.
+The cache reports `floecat_core_cache_*` series tagged `cache="vended-credential"`.
+
 For Delta Sharing, supported properties are `http.connect.ms`, `http.read.ms`,
 `delta.sharing.strict-access-modes`, `delta.sharing.reader-features`, `s3.region`, `s3.endpoint`,
 `client.region`, and `s3.path-style-access`. The S3 properties route reads of credentials the share

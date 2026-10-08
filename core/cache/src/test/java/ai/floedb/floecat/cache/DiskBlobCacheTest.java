@@ -317,6 +317,7 @@ class DiskBlobCacheTest {
       assertThat(raced.join())
           .containsEntry(first, new byte[] {1})
           .containsEntry(second, new byte[] {2});
+      assertThat(cache.entryCount()).isZero();
 
       AtomicInteger reloads = new AtomicInteger();
       assertThat(read(cache, first, BlobCache.Fill.FILL, () -> load(reloads, new byte[] {3})))
@@ -324,6 +325,91 @@ class DiskBlobCacheTest {
       assertThat(read(cache, second, BlobCache.Fill.FILL, () -> load(reloads, new byte[] {4})))
           .containsExactly(4);
       assertThat(reloads).hasValue(2);
+    }
+  }
+
+  @Test
+  void aBatchAcrossPartitionsLoadsEveryMissInOneCall() throws Exception {
+    BlobCache.Key resident = new BlobCache.Key("account-a", "resident");
+    BlobCache.Key a = new BlobCache.Key("account-a", "a");
+    BlobCache.Key b = new BlobCache.Key("account-b", "b");
+    BlobCache.Key c = new BlobCache.Key("account-c", "c");
+    List<List<BlobCache.Key>> calls = new ArrayList<>();
+
+    try (var cache = cache()) {
+      cache.put(resident, new byte[] {9});
+      assertThat(
+              readAll(
+                  cache,
+                  List.of(resident, a, b, c),
+                  keys -> {
+                    calls.add(List.copyOf(keys));
+                    return Map.of(a, new byte[] {1}, b, new byte[] {2}, c, new byte[] {3});
+                  }))
+          .containsEntry(resident, new byte[] {9})
+          .containsEntry(a, new byte[] {1})
+          .containsEntry(b, new byte[] {2})
+          .containsEntry(c, new byte[] {3});
+      assertThat(calls).containsExactly(List.of(a, b, c));
+
+      // Each fill landed in its own partition: dropping one partition reloads only its key.
+      cache.evictPartition("account-b");
+      calls.clear();
+      assertThat(
+              readAll(
+                  cache,
+                  List.of(a, b, c),
+                  keys -> {
+                    calls.add(List.copyOf(keys));
+                    return Map.of(b, new byte[] {4});
+                  }))
+          .containsEntry(a, new byte[] {1})
+          .containsEntry(b, new byte[] {4})
+          .containsEntry(c, new byte[] {3});
+      assertThat(calls).containsExactly(List.of(b));
+    }
+  }
+
+  @Test
+  void partitionEvictionDuringACrossPartitionBatchKeepsOnlyThatPartitionOut() throws Exception {
+    BlobCache.Key retired = new BlobCache.Key("account-a", "retired");
+    BlobCache.Key live = new BlobCache.Key("account-b", "live");
+    CountDownLatch loading = new CountDownLatch(1);
+    CountDownLatch finishLoad = new CountDownLatch(1);
+
+    try (var cache = cache()) {
+      CompletableFuture<Map<BlobCache.Key, byte[]>> raced =
+          CompletableFuture.supplyAsync(
+              () ->
+                  readAll(
+                      cache,
+                      List.of(retired, live),
+                      keys -> {
+                        loading.countDown();
+                        try {
+                          finishLoad.await();
+                        } catch (InterruptedException e) {
+                          Thread.currentThread().interrupt();
+                          throw new IllegalStateException(e);
+                        }
+                        return Map.of(retired, new byte[] {1}, live, new byte[] {2});
+                      }));
+      loading.await();
+      cache.evictPartition("account-a");
+      finishLoad.countDown();
+      assertThat(raced.join())
+          .containsEntry(retired, new byte[] {1})
+          .containsEntry(live, new byte[] {2});
+      // Counted on disk, not read back: a retired partition never serves reads, so a stray
+      // admission there would be invisible to the reads below.
+      assertThat(cache.entryCount()).isEqualTo(1L);
+
+      AtomicInteger reloads = new AtomicInteger();
+      assertThat(read(cache, retired, BlobCache.Fill.FILL, () -> load(reloads, new byte[] {3})))
+          .containsExactly(3);
+      assertThat(read(cache, live, BlobCache.Fill.FILL, () -> load(reloads, new byte[] {4})))
+          .containsExactly(2);
+      assertThat(reloads).hasValue(1);
     }
   }
 

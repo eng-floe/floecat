@@ -20,11 +20,8 @@ import ai.floedb.floecat.query.rpc.SchemaColumn;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.SequencedSet;
 import java.util.function.Supplier;
 import org.apache.arrow.vector.types.pojo.Schema;
 
@@ -106,23 +103,13 @@ public final class ArrowBatchSerializer {
 
   public static List<SchemaColumn> schemaColumnsFor(
       List<SchemaColumn> scannerSchema, List<String> requiredColumns) {
-    if (requiredColumns == null || requiredColumns.isEmpty()) {
-      return scannerSchema;
-    }
-    // Build ordered de-duplicated set of lower-cased requested column names.
-    SequencedSet<String> requested = new LinkedHashSet<>();
-    for (String col : requiredColumns) {
-      if (col != null && !col.isBlank()) {
-        requested.add(col.trim().toLowerCase(Locale.ROOT));
-      }
-    }
+    List<String> requested = RequiredColumns.normalize(requiredColumns);
     if (requested.isEmpty()) {
       return scannerSchema;
     }
-    // Build a lookup map once to avoid re-scanning the schema for each requested column.
     Map<String, SchemaColumn> schemaByName = new HashMap<>(scannerSchema.size());
     for (SchemaColumn col : scannerSchema) {
-      schemaByName.putIfAbsent(col.getName().toLowerCase(Locale.ROOT), col);
+      schemaByName.putIfAbsent(RequiredColumns.key(col.getName()), col);
     }
     List<SchemaColumn> projected = new ArrayList<>(requested.size());
     for (String reqName : requested) {
@@ -130,7 +117,6 @@ public final class ArrowBatchSerializer {
       if (match != null) {
         projected.add(match);
       }
-      // unknown names are silently dropped
     }
     return projected;
   }

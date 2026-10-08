@@ -226,40 +226,31 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
       }
       byPartition.computeIfAbsent(key.partition(), ignored -> new ArrayList<>()).add(key);
     }
-    Map<Key, Content> result = new LinkedHashMap<>();
-    try {
-      for (List<Key> partitionKeys : byPartition.values()) {
-        result.putAll(getAllFromPartition(partitionKeys, fill, loader));
-      }
-      return result;
-    } catch (RuntimeException | Error failure) {
-      result.values().forEach(Content::close);
-      throw failure;
-    }
-  }
-
-  private Map<Key, Content> getAllFromPartition(List<Key> keys, Fill fill, BatchLoader loader) {
     long started = System.nanoTime();
-    PartitionState partition = partition(keys.getFirst().partition());
     Map<Key, Content> result = new LinkedHashMap<>();
+    // Misses from every partition go to the loader together, so a batch costs one source read
+    // however many partitions it spans.
     List<Key> misses = new ArrayList<>();
-    int hits = 0;
-    partition.lock.readLock().lock();
     try {
-      for (Key key : keys) {
-        Optional<Content> cached =
-            partition.retired ? Optional.empty() : readCached(entryPath(key));
-        if (cached.isPresent()) {
-          result.put(key, cached.orElseThrow());
-          hits++;
-          continue;
+      int hits = 0;
+      for (List<Key> partitionKeys : byPartition.values()) {
+        PartitionState partition = partition(partitionKeys.getFirst().partition());
+        partition.lock.readLock().lock();
+        try {
+          for (Key key : partitionKeys) {
+            Optional<Content> cached =
+                partition.retired ? Optional.empty() : readCached(entryPath(key));
+            if (cached.isPresent()) {
+              result.put(key, cached.orElseThrow());
+              hits++;
+              continue;
+            }
+            misses.add(key);
+          }
+        } finally {
+          partition.lock.readLock().unlock();
         }
-        misses.add(key);
       }
-    } finally {
-      partition.lock.readLock().unlock();
-    }
-    try {
       for (int i = 0; i < hits; i++) {
         events.hit(Duration.ofNanos(System.nanoTime() - started));
       }
@@ -272,6 +263,7 @@ public final class DiskBlobCache implements BlobCache, AutoCloseable {
         byte[] bytes = fetched.get(key);
         if (bytes != null) {
           if (fill == Fill.FILL) {
+            PartitionState partition = partition(key.partition());
             partition.lock.writeLock().lock();
             try {
               if (!partition.retired) {

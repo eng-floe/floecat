@@ -78,11 +78,9 @@ public class ServerSideFileIoPropertiesResolver {
       // path is what lets such a table be *read back*. Without it capture succeeds through
       // delegation and every scan of the result dies on NO_MATCHING_STORAGE_AUTHORITY.
       //
-      // NOTE: this runs once per scan session and builds a connector each time, which for an
-      // Iceberg REST catalog means an OAuth exchange and a fresh HTTP client. The same caching
-      // work already noted on vendFromSourceCatalog -- keyed on the table, bounded by the
-      // credential expiry -- has to cover this call site too, or queries against a delegated
-      // table keep paying a catalog round-trip per scan.
+      // Runs once per scan session. The vendor reuses a held answer for the same source and
+      // upstream table, so a scan reaches the catalog only when none is held or the credential is
+      // exchanged from the caller's token.
       ResolveStorageAuthorityResponse vended =
           sourceCatalogVendor.vendForTable(
               table, locationPrefix, SourceCatalogCredentialVendor.CredentialUse.QUERY);

@@ -37,7 +37,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.function.Consumer;
@@ -114,7 +113,6 @@ public final class SchemataScanner implements SystemObjectScanner {
     Objects.requireNonNull(ctx, "ctx");
     Objects.requireNonNull(allocator, "allocator");
     Objects.requireNonNull(request, "request");
-    Set<String> requiredSet = ArrowSchemaUtil.normalizeRequiredColumns(request.requiredColumns());
     Iterator<NamespaceEntry> namespaceIterator =
         NamespaceScanSupport.entries(ctx, request, "schema_name").iterator();
     Spliterator<ColumnarBatch> spliterator =
@@ -136,7 +134,7 @@ public final class SchemataScanner implements SystemObjectScanner {
                   return true;
                 }
                 if (builder == null) {
-                  builder = new SchemataBatchBuilder(allocator, requiredSet);
+                  builder = new SchemataBatchBuilder(allocator, request);
                 }
                 NamespaceEntry namespace = nsIter.next();
                 ResourceId catalogId = namespace.catalogId();
@@ -166,13 +164,13 @@ public final class SchemataScanner implements SystemObjectScanner {
     private final boolean includeCatalog;
     private final boolean includeSchema;
 
-    private SchemataBatchBuilder(BufferAllocator allocator, Set<String> requiredColumns) {
+    private SchemataBatchBuilder(BufferAllocator allocator, SystemScanRequest request) {
       super(ARROW_SCHEMA, allocator);
       List<FieldVector> vectors = root().getFieldVectors();
       this.catalogName = (VarCharVector) vectors.get(0);
       this.schemaName = (VarCharVector) vectors.get(1);
-      this.includeCatalog = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "catalog_name");
-      this.includeSchema = ArrowSchemaUtil.shouldIncludeColumn(requiredColumns, "schema_name");
+      this.includeCatalog = request.needs("catalog_name");
+      this.includeSchema = request.needs("schema_name");
     }
 
     private boolean isFull() {
