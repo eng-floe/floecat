@@ -1963,6 +1963,11 @@ integration namespaces lakehouse
 integration objects lakehouse prod.sales --kinds table,view
 overlay reconcile sales-overlay
 </code></pre></div>
+<p>For an AWS AssumeRole Catalog Integration, select the account and run
+<code>account aws-trust-configuration</code>. The command prints the Floecat-issued external ID, the service
+principal ARN, and a sample IAM trust policy. After applying that policy to the customer role,
+configure the integration with <code>credential_source=assume-role</code> and <code>role_arn</code>; the external ID and
+role session name are supplied by Floecat.</p>
 <p><code>connector jobs</code> shows a parent-job summary table by default. Use
 <code>connector jobs --child &lt;parent-job-id&gt;</code> to render the descendant job tree rooted at that job.
 Both commands support <code>--json</code> for machine-readable output, while <code>connector job &lt;id&gt;</code> remains a

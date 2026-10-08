@@ -1940,11 +1940,6 @@ recipient token the share does not accept fails validation.</p>
 <td><code>token</code></td>
 </tr>
 <tr>
-<td><code>aws-assume-role</code></td>
-<td><code>role_arn</code>; optional <code>external_id</code>, <code>role_session_name</code></td>
-<td>none</td>
-</tr>
-<tr>
 <td><code>aws-access-key</code></td>
 <td><code>access_key_id</code></td>
 <td><code>secret_access_key</code>; optional <code>session_token</code></td>
@@ -1956,17 +1951,33 @@ recipient token the share does not accept fails validation.</p>
 </tr>
 </tbody>
 </table>
-<p>For SigV4, <code>credential_source</code> is <code>default</code>, <code>assume-role</code>, or <code>access-key</code>. Assume-role uses the
-role properties above. Access-key uses the access-key properties above. The CLI rejects unknown
-properties instead of silently dropping them.</p>
+<p>For SigV4, <code>credential_source</code> is <code>default</code>, <code>assume-role</code>, or <code>access-key</code>. Assume-role requires
+<code>role_arn</code>; access-key requires <code>access_key_id</code> plus its secret credential properties. The CLI
+rejects unknown properties instead of silently dropping them.</p>
 <p>Ambient credentials are deployment-gated because they expose the Floecat service's AWS identity to
 tenant-authored Catalog Integrations. They are disabled by default; enable them only in a trusted
-deployment with <code>floecat.catalog-integrations.aws.default-credentials-enabled=true</code>. Assume-role
-targets are customer-managed and are authorized by Floecat's <code>sts:AssumeRole</code> policy and the target
-role's trust policy. Cached assume-role credentials are scoped by Floecat account, but the tenant
-currently supplies <code>external_id</code>, so the target role's trust policy does not yet have a
-Floecat-enforced tenant boundary. A follow-up will replace this with a Floecat-issued external ID
-suitable for enforcing tenant isolation in the target role's trust policy.</p>
+deployment with <code>floecat.catalog-integrations.aws.default-credentials-enabled=true</code>.</p>
+<p>AssumeRole is always available as a Catalog Integration AWS SigV4 credential source; it has no
+deployment enablement switch. Configure
+<code>floecat.catalog-integrations.aws.service-principal-arn</code> with the IAM principal ARN used by the
+Floecat service so the trust-configuration RPC and CLI can produce customer onboarding material.
+Select the account in the CLI and run <code>account aws-trust-configuration</code> to obtain that principal
+ARN, the stable Floecat-issued external ID for the account, and a sample AWS IAM trust policy. The
+customer configures that policy on the target role, then creates the Catalog Integration with
+<code>--auth-type aws-sigv4</code>, <code>credential_source=assume-role</code>, and <code>role_arn</code>; tenants cannot choose the
+external ID or complete role session name sent to STS. Existing accounts receive an external ID
+atomically on first trust-configuration request or first AssumeRole use. That first write advances
+the account resource version, so an account update holding the prior version must reload before
+retrying. Account records are the source of truth. A fresh credential-cache hit performs no account
+lookup; other reads use the normal repository cache, and only first-time initialization uses the raw
+mutation read. There is no separate external-ID cache. Consequently, deleting an account is
+observed when the cached credentials next require a refresh, rather than by re-reading the account
+on every Catalog Integration open.</p>
+<p>The trust-configuration RPC fails closed if <code>service-principal-arn</code> is absent or is not an IAM
+principal ARN. Top-level AWS AssumeRole authentication is not supported; configure AssumeRole as
+the credential source inside AWS SigV4.</p>
+<p>This behavior is specific to Catalog Integrations. Storage Authorities and Connectors retain their
+existing AssumeRole configuration and external-ID behavior pending separate migrations.</p>
 <p><code>--props</code> supplies non-secret provider connection properties. For Iceberg REST catalogs such as
 Polaris, <code>warehouse=&lt;catalog-name&gt;</code> selects the upstream catalog without putting a query parameter in
 the base URI. Iceberg REST integrations request <code>vended-credentials</code> by default. Set
@@ -1974,6 +1985,21 @@ the base URI. Iceberg REST integrations request <code>vended-credentials</code> 
 storage configuration needed by the downstream reader. In that mode, source-catalog credential
 vending is skipped and normal storage-authority resolution is used instead. Updating properties
 replaces the complete map; passing <code>--props</code> with no values clears it.</p>
+<p>Each Floecat process caches source-catalog vends, keyed by the Connector or Integration
+configuration and the upstream table. An answer is reused only while at least
+<code>floecat.storage.source-catalog.vend-cache.min-remaining-fraction</code> of its lifetime (default <code>0.5</code>)
+and at least five minutes remain. With a fraction of <code>0</code>, an answer is reused until five minutes
+before it expires, which is when an Iceberg client refreshes a vended credential; the default keeps
+half the lifetime for readers that do not refresh. Answers without an expiry are not cached, nor are
+answers missing a field every use requires, nor credentials a Connector obtains by exchanging the
+caller's own token. <code>floecat.storage.source-catalog.vend-cache.max-entries</code> (default 10000) bounds
+the cache for each source kind; a value of zero or less disables it. Vends of a table that arrive
+together before an answer is held each go upstream. The vend permission check runs on every call. A
+Connector's key includes the credential it authenticates with, so rotating its secret in the
+credential store misses. An Integration's key is its record, which carries its credential
+generation, so rotating its secret through the API misses as well. Only an edit of the stored secret
+made outside Floecat keeps serving answers vended with the old secret until their reuse window ends.
+The cache reports <code>floecat_core_cache_*</code> series tagged <code>cache="vended-credential"</code>.</p>
 <p>For Delta Sharing, supported properties are <code>http.connect.ms</code>, <code>http.read.ms</code>,
 <code>delta.sharing.strict-access-modes</code>, <code>delta.sharing.reader-features</code>, <code>s3.region</code>, <code>s3.endpoint</code>,
 <code>client.region</code>, and <code>s3.path-style-access</code>. The S3 properties route reads of credentials the share

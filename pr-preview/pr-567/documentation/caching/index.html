@@ -1871,6 +1871,9 @@ selected snapshot unavailable.</p>
   immutable content-addressed values remain the exact value named by the resolved selection. The complete pointer
   index is deliberately different: after its account load completes, a missing addressing key is
   authoritative absence.</li>
+<li><strong>Answers from outside Floecat expire.</strong> A credential vended by a source catalog is not content
+  and has a lifetime, so the cache that holds it serves each answer for part of that lifetime and
+  its expiry is part of correctness. It uses <code>ExpiringCache</code>, not <code>MemoryCache</code>.</li>
 </ul>
 <h2 id="warm-and-cold-reads">Warm and cold reads<a class="headerlink" href="#warm-and-cold-reads" title="Permanent link">&para;</a></h2>
 <p>A warm read reuses the process-local value. A cold read, a disabled cache, or a cache miss follows
@@ -1905,6 +1908,12 @@ identity; they do not replace a value in an existing key.</p>
 <td><code>DiskBlobCache</code> behind <code>BlobCacheAccess</code></td>
 <td>Immutable serialized CAS bodies, manifest pages, generation manifests and reusable-artifact bundles/indexes on local NVMe</td>
 <td>Files are addressed by immutable URI or pointer/version identity, written through a staging file and atomic rename. A miss can fill the disk cache or bypass filling for wide scans. Corrupt entries are discarded and reloaded; mapped content stays retained until its scoped read closes. The disk budget and kill switch are <code>floecat.cache.blob.disk.*</code>; it is independent of the heap budget.</td>
+</tr>
+<tr>
+<td>Vended credentials</td>
+<td><code>VendedCredentialCache</code> on <code>ExpiringCache</code></td>
+<td>Source-catalog vend answers, per Connector or Integration configuration and upstream table</td>
+<td>An answer is served while at least <code>floecat.storage.source-catalog.vend-cache.min-remaining-fraction</code> of its lifetime and five minutes remain. Answers without an expiry, answers no caller could use, and credentials exchanged from the caller's token are not held. See <a href="../catalog-integrations/">catalog integrations</a>.</td>
 </tr>
 <tr>
 <td>Per-query state</td>
@@ -1978,8 +1987,16 @@ sizing harness use the same arithmetic.</p>
 <td>Read-through <code>get</code>; batch <code>getAll</code>; uncounted <code>peek</code>; <code>evict</code> by key and <code>evictPartition</code> by caller-supplied membership; <code>bytes()</code>/<code>entryCount()</code> for the budget. Values are immutable and keyed by durable identity, so there is no generic replacement, publication fence, or in-flight map. Eviction is an infrequent O(n) memory-hygiene scan. Pointer version ordering deliberately is not part of this generic contract.</td>
 </tr>
 <tr>
+<td><code>ExpiringCache&lt;K, V&gt;</code></td>
+<td>Read-through <code>get</code> for answers that expire, loaded from a source that may be slow. Each value is held for a duration derived from it when it loads. A miss loads on the calling thread, keeping its request context; callers that miss the same key together each load. A load that throws or returns null is not held.</td>
+</tr>
+<tr>
+<td><code>CaffeineExpiringCache</code></td>
+<td>The implementation, on a synchronous Caffeine cache read with <code>getIfPresent</code> and filled with <code>put</code>, so no load runs under the map's locks and a slow load holds up no other key.</td>
+</tr>
+<tr>
 <td><code>CaffeineMemoryCache</code></td>
-<td>The one implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction.</td>
+<td>The one <code>MemoryCache</code> implementation. W-TinyLFU admission, so a wide listing or a statistics sweep does not flush the hot set. Refuses a non-positive budget at construction.</td>
 </tr>
 <tr>
 <td><code>CacheWeights</code></td>
@@ -2004,6 +2021,9 @@ sizing harness use the same arithmetic.</p>
 and its underlying map rejects recursive updates. Resolve another cached dependency first, then
 enter the loader for the value that depends on it. This is a loader rule, not an application-level
 in-flight mechanism.</p>
+<p>An expiring-cache loader runs on the calling thread outside any lock, so it may make a remote call
+that takes seconds without holding up other keys. Same-key misses are not merged: the source sees
+one load per concurrent miss, and none while a value is held.</p>
 <p>Budgets resolve from the container rather than from a compiled-in figure. The JVM already sizes its
 heap from the container memory limit, so <code>floecat.cache.heap-share</code> (0.5) of the maximum heap
 follows the container without reading cgroups; <code>floecat.cache.total-bytes</code> pins the total instead
@@ -2027,6 +2047,8 @@ index for planner keys and durable KV for operational keys.</p>
 <p>A cache built on the <code>core/cache</code> contract publishes the same series, tagged by cache name, so
 those are comparable and a new one brings its telemetry with it. The disk blob cache adds mapping,
 corruption and sweep signals because those are file-lifecycle events rather than heap-cache events.</p>
+<p>The vended-credential cache reports hit, miss, load-time and error series only: it is bounded by
+entry count rather than weight, and it has no enabled or entries gauge.</p>
 <table>
 <thead>
 <tr>
