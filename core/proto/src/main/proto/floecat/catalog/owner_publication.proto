@@ -132,8 +132,10 @@ message CompleteOwnerPublicationRequest {
   // the deterministic publication capability without retaining mutable reservation state.
   string owner_id = 6;
   string owner_generation_id = 7;
-  // Opaque phase/chunk cursor returned by the preceding bounded call. Empty starts completion.
-  // Repeating the immediately preceding cursor is safe after a lost response.
+  // Opaque phase/chunk cursor returned by the preceding bounded call. Empty starts completion or
+  // resumes it from Floecat's durable progress after a caller restart. Repeating the immediately
+  // preceding cursor is safe after a lost response. The cursor detects out-of-order callers;
+  // concurrent completion is serialized server-side using durable progress.
   string completion_cursor = 8;
 }
 

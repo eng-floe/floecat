@@ -397,8 +397,24 @@ class OwnerPublicationServiceImplTest {
     var service = service();
     var publication = begin();
     String generationId = OwnerPublicationServiceImpl.generationId(publication, CALLER_SUBJECT);
+    var durableProgress =
+        new java.util.concurrent.atomic.AtomicReference<>(
+            OwnerReuseLeaseRepository.RegistrationProgress.initial());
+    when(service.reuseLeases.progress(any(), anyString(), anyString()))
+        .thenAnswer(invocation -> durableProgress.get());
+    doAnswer(
+            invocation -> {
+              assertEquals(
+                  durableProgress.get(),
+                  invocation.getArgument(3, OwnerReuseLeaseRepository.RegistrationProgress.class));
+              durableProgress.set(
+                  invocation.getArgument(4, OwnerReuseLeaseRepository.RegistrationProgress.class));
+              return null;
+            })
+        .when(service.reuseLeases)
+        .advanceProgress(any(), anyString(), anyString(), any(), any());
     var manifest = baseManifest(generationId).clearFinalStats().setFinalStatsRecordCount(0);
-    int recordCount = 300;
+    int recordCount = 600;
     String largeSegment = "finalizer-outputs/" + "x".repeat(32 * 1024);
     for (int index = 0; index < recordCount; index++) {
       manifest.addFinalStats(
@@ -423,26 +439,35 @@ class OwnerPublicationServiceImplTest {
     assertFalse(first.getActivated());
     assertEquals(Long.MAX_VALUE, first.getReuseLeaseExpiresAtEpochMs());
     assertFalse(first.getNextCompletionCursor().isBlank());
-    var nextProgress = ArgumentCaptor.<OwnerReuseLeaseRepository.RegistrationProgress>captor();
-    verify(service.reuseLeases)
-        .advanceProgress(
-            eq(tableId()),
-            eq(generationId),
-            anyString(),
-            eq(OwnerReuseLeaseRepository.RegistrationProgress.initial()),
-            nextProgress.capture());
-    assertEquals(1L, nextProgress.getValue().registrationChunk());
+    assertEquals(1L, durableProgress.get().registrationChunk());
     verify(service.persistence, never())
         .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
 
-    when(service.reuseLeases.progress(any(), anyString(), anyString()))
-        .thenReturn(nextProgress.getValue());
+    var invalidCursor =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .completeOwnerPublication(
+                        firstRequest.toBuilder().setCompletionCursor("invalid").build())
+                    .await()
+                    .indefinitely());
+    assertEquals(Status.Code.INVALID_ARGUMENT, invalidCursor.getStatus().getCode());
+    assertEquals(1L, durableProgress.get().registrationChunk());
+
     var secondRequest =
         firstRequest.toBuilder().setCompletionCursor(first.getNextCompletionCursor()).build();
     var second = service.completeOwnerPublication(secondRequest).await().indefinitely();
 
-    assertTrue(second.getActivated());
-    verify(service.statsStore, times(2))
+    assertFalse(second.getActivated());
+    assertEquals(2L, durableProgress.get().registrationChunk());
+
+    // Simulate an Owner restart: it retains the publication manifest but loses the response cursor.
+    var resumed = service.completeOwnerPublication(firstRequest).await().indefinitely();
+
+    assertTrue(resumed.getActivated());
+    assertEquals(3L, durableProgress.get().registrationChunk());
+    verify(service.statsStore, times(3))
         .registerPrewrittenStatsReferencesInGeneration(any(), anyLong(), anyString(), any());
     verify(service.persistence)
         .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
@@ -459,37 +484,36 @@ class OwnerPublicationServiceImplTest {
     var manifest =
         baseManifest(generationId).setReusableCoverageManifest(reuseDescriptor(coverage)).build();
     var request = complete(service, begin(), manifest);
-    var progress = ArgumentCaptor.<OwnerReuseLeaseRepository.RegistrationProgress>captor();
+    var durableProgress =
+        new java.util.concurrent.atomic.AtomicReference<>(
+            OwnerReuseLeaseRepository.RegistrationProgress.initial());
+    when(service.reuseLeases.progress(any(), anyString(), anyString()))
+        .thenAnswer(invocation -> durableProgress.get());
+    doAnswer(
+            invocation -> {
+              assertEquals(
+                  durableProgress.get(),
+                  invocation.getArgument(3, OwnerReuseLeaseRepository.RegistrationProgress.class));
+              durableProgress.set(
+                  invocation.getArgument(4, OwnerReuseLeaseRepository.RegistrationProgress.class));
+              return null;
+            })
+        .when(service.reuseLeases)
+        .advanceProgress(any(), anyString(), anyString(), any(), any());
 
     var registration = service.completeOwnerPublication(request).await().indefinitely();
     assertFalse(registration.getActivated());
-    verify(service.reuseLeases)
-        .advanceProgress(any(), anyString(), anyString(), any(), progress.capture());
-    when(service.reuseLeases.progress(any(), anyString(), anyString()))
-        .thenReturn(progress.getValue());
+    assertEquals(1L, durableProgress.get().registrationChunk());
+    assertEquals(0L, durableProgress.get().coverageChunk());
 
-    var coverageResponse =
-        service
-            .completeOwnerPublication(
-                request.toBuilder()
-                    .setCompletionCursor(registration.getNextCompletionCursor())
-                    .build())
-            .await()
-            .indefinitely();
+    // Simulate a restart after registration, before the Owner processes coverage.
+    var coverageResponse = service.completeOwnerPublication(request).await().indefinitely();
     assertFalse(coverageResponse.getActivated());
-    verify(service.reuseLeases, times(2))
-        .advanceProgress(any(), anyString(), anyString(), any(), progress.capture());
-    when(service.reuseLeases.progress(any(), anyString(), anyString()))
-        .thenReturn(progress.getAllValues().getLast());
+    assertEquals(1L, durableProgress.get().registrationChunk());
+    assertEquals(1L, durableProgress.get().coverageChunk());
 
-    var activated =
-        service
-            .completeOwnerPublication(
-                request.toBuilder()
-                    .setCompletionCursor(coverageResponse.getNextCompletionCursor())
-                    .build())
-            .await()
-            .indefinitely();
+    // Simulate another restart after the coverage response is lost, before activation.
+    var activated = service.completeOwnerPublication(request).await().indefinitely();
 
     assertTrue(activated.getActivated());
     verify(service.blobStore)
