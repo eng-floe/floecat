@@ -29,7 +29,7 @@ import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.types.LogicalComparators;
 import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
-import ai.floedb.floecat.types.ValueEncoders;
+import ai.floedb.floecat.types.rpc.ScalarValue;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
@@ -92,11 +92,15 @@ public final class ConnectorStatsViewBuilder {
 
       String logicalTypeStr = (lt == null) ? "" : LogicalTypeProtoAdapter.encodeLogicalType(lt);
 
-      String min = null;
-      String max = null;
+      ScalarValue min = null;
+      ScalarValue max = null;
       if (lt != null && LogicalComparators.isStatsOrderable(lt)) {
-        if (agg.min() != null) min = ValueEncoders.encodeToString(lt, agg.min());
-        if (agg.max() != null) max = ValueEncoders.encodeToString(lt, agg.max());
+        if (agg.min() != null) {
+          min = LogicalTypeProtoAdapter.tryEncodeTypedValue(lt, agg.min()).orElse(null);
+        }
+        if (agg.max() != null) {
+          max = LogicalTypeProtoAdapter.tryEncodeTypedValue(lt, agg.max()).orElse(null);
+        }
       }
 
       Ndv ndv = null;

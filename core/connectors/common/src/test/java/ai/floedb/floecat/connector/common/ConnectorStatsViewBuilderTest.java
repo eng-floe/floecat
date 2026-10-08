@@ -24,6 +24,7 @@ import ai.floedb.floecat.connector.common.ndv.ColumnNdv;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.types.LogicalKind;
 import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.rpc.ScalarValue;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -148,6 +149,19 @@ class ConnectorStatsViewBuilderTest {
     assertEquals(123.0, approx.getEstimate());
     assertEquals(
         tableTotalRows, approx.getRowsTotal(), "rowsTotal should fallback to tableTotalRows");
+  }
+
+  @Test
+  void toColumnStatsView_encodesTypedBounds() {
+    Map<String, StatsEngine.ColumnAgg> cols = new LinkedHashMap<>();
+    cols.put("col", new Agg(10L, 0L, 0L, 1L, 5L, null, null));
+
+    var out =
+        ConnectorStatsViewBuilder.toColumnStatsView(
+            cols, k -> k, k -> k, k -> 1, k -> 0, k -> LogicalType.of(LogicalKind.INT), 10L);
+
+    assertEquals(ScalarValue.newBuilder().setI64(1).build(), out.get(0).min());
+    assertEquals(ScalarValue.newBuilder().setI64(5).build(), out.get(0).max());
   }
 
   @Test

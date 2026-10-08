@@ -19,16 +19,25 @@ package ai.floedb.floecat.types;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.catalog.rpc.TableFormat;
 import ai.floedb.floecat.catalog.rpc.UpstreamStamp;
+import ai.floedb.floecat.types.rpc.ScalarValue;
 import com.google.protobuf.Timestamp;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Adapter between Floecat {@link LogicalType} objects and their protobuf wire representations
  * ({@code ScalarStats}, {@code UpstreamStamp}).
  *
- * <p>Encoding and decoding of type strings is delegated to {@link LogicalTypeFormat}. Encoding and
- * decoding of min/max values is delegated to {@link ValueEncoders}.
+ * <p>Encoding and decoding of type strings is delegated to {@link LogicalTypeFormat}. Typed bounds
+ * use {@link #encodeTypedValue} and {@link #decodeValue(LogicalType, ScalarValue)}; the legacy
+ * string fields remain delegated to {@link ValueEncoders} for compatibility.
  *
  * <p>Typical usage:
  *
@@ -77,8 +86,9 @@ public final class LogicalTypeProtoAdapter {
   }
 
   /**
-   * Encodes a stat value to its canonical string (for storage in {@code ScalarStats.min/max}).
-   * Returns an empty string for null values.
+   * Encodes a stat value to its canonical string (for compatibility storage in {@code
+   * ScalarStats.min/max}). Typed bounds use {@link #encodeTypedValue} instead. Returns an empty
+   * string for null values.
    *
    * @param type the logical type governing encoding semantics
    * @param value the value to encode (null → {@code ""})
@@ -106,6 +116,121 @@ public final class LogicalTypeProtoAdapter {
     }
 
     return ValueEncoders.decodeFromString(type, encoded);
+  }
+
+  /** Decodes a typed bound. The enclosing logical type supplies the temporal unit. */
+  public static Object decodeValue(LogicalType type, ScalarValue value) {
+    if (value == null || value.getVCase() == ScalarValue.VCase.V_NOT_SET) return null;
+    return switch (value.getVCase()) {
+      case B -> value.getB();
+      case I64 -> value.getI64();
+      case F64 -> value.getF64();
+      case S -> value.getS();
+      case BIN -> value.getBin().toByteArray();
+      case DEC -> new BigDecimal(value.getDec());
+      case DATE -> LocalDate.ofEpochDay(value.getDate());
+      case TIME -> temporalTime(value.getTime(), type.temporalPrecision());
+      case TS -> temporalTimestamp(value.getTs(), type.temporalPrecision());
+      case TSTZ -> temporalInstant(value.getTstz(), type.temporalPrecision());
+      case INTERVAL -> value.getInterval();
+      case V_NOT_SET -> null;
+    };
+  }
+
+  /** Encodes a typed bound without going through the lossy legacy string representation. */
+  public static ScalarValue encodeTypedValue(LogicalType type, Object value) {
+    if (value == null) return ScalarValue.getDefaultInstance();
+    return switch (type.kind()) {
+      case BOOLEAN -> ScalarValue.newBuilder().setB((Boolean) value).build();
+      case INT -> ScalarValue.newBuilder().setI64(((Number) value).longValue()).build();
+      case FLOAT, DOUBLE -> ScalarValue.newBuilder().setF64(((Number) value).doubleValue()).build();
+      case DATE -> ScalarValue.newBuilder().setDate((int) ((LocalDate) value).toEpochDay()).build();
+      case TIME ->
+          ScalarValue.newBuilder()
+              .setTime(temporalUnits(((LocalTime) value).toNanoOfDay(), type.temporalPrecision()))
+              .build();
+      case TIMESTAMP ->
+          ScalarValue.newBuilder()
+              .setTs(
+                  temporalEpochUnits(
+                      ((LocalDateTime) value).toInstant(ZoneOffset.UTC).getEpochSecond(),
+                      ((LocalDateTime) value).getNano(),
+                      type.temporalPrecision()))
+              .build();
+      case TIMESTAMPTZ ->
+          ScalarValue.newBuilder()
+              .setTstz(
+                  temporalEpochUnits(
+                      ((Instant) value).getEpochSecond(),
+                      ((Instant) value).getNano(),
+                      type.temporalPrecision()))
+              .build();
+      case DECIMAL -> ScalarValue.newBuilder().setDec(((BigDecimal) value).toPlainString()).build();
+      case BINARY ->
+          ScalarValue.newBuilder()
+              .setBin(com.google.protobuf.ByteString.copyFrom(binaryBytes(value)))
+              .build();
+      case INTERVAL -> ScalarValue.newBuilder().setInterval(value.toString()).build();
+      case STRING, UUID, JSON -> ScalarValue.newBuilder().setS(value.toString()).build();
+      default -> throw new IllegalArgumentException("typed min/max unsupported for " + type.kind());
+    };
+  }
+
+  /**
+   * Encodes a typed bound when its numeric representation is in range. An out-of-range temporal
+   * bound is simply unavailable for pruning; callers should keep the legacy value, if any.
+   */
+  public static Optional<ScalarValue> tryEncodeTypedValue(LogicalType type, Object value) {
+    try {
+      return Optional.of(encodeTypedValue(type, value));
+    } catch (ArithmeticException overflow) {
+      return Optional.empty();
+    }
+  }
+
+  /** Returns the canonical binary bytes accepted by both connectors and stats comparators. */
+  private static byte[] binaryBytes(Object value) {
+    if (value instanceof byte[] bytes) {
+      return bytes;
+    }
+    if (value instanceof LogicalComparators.ByteArrayComparable comparable) {
+      return comparable.copy();
+    }
+    throw new IllegalArgumentException("BINARY value must be byte[] or ByteArrayComparable");
+  }
+
+  private static long temporalEpochUnits(long epochSecond, int nano, Integer precision) {
+    long scale = temporalScale(precision);
+    long unitsPerSecond = 1_000_000_000L / scale;
+    return Math.addExact(Math.multiplyExact(epochSecond, unitsPerSecond), nano / scale);
+  }
+
+  public static Object columnMinValue(ScalarStats stats) {
+    return columnBoundValue(stats, true);
+  }
+
+  public static Object columnMaxValue(ScalarStats stats) {
+    return columnBoundValue(stats, false);
+  }
+
+  private static Object columnBoundValue(ScalarStats stats, boolean minimum) {
+    LogicalType type = columnLogicalType(stats);
+    try {
+      Object typed =
+          minimum && stats.hasMinValue()
+              ? decodeValue(type, stats.getMinValue())
+              : !minimum && stats.hasMaxValue() ? decodeValue(type, stats.getMaxValue()) : null;
+      if (typed != null) {
+        return typed;
+      }
+      return decodeValue(type, minimum ? stats.getMin() : stats.getMax());
+    } catch (RuntimeException ignored) {
+      try {
+        return decodeValue(type, minimum ? stats.getMin() : stats.getMax());
+      } catch (RuntimeException legacyFailure) {
+        return null;
+      }
+    }
   }
 
   public static UpstreamStamp upstreamStamp(
@@ -386,13 +511,56 @@ public final class LogicalTypeProtoAdapter {
   }
 
   public static Object columnMin(ScalarStats cs) {
-    LogicalType t = columnLogicalType(cs);
-    return decodeValue(t, cs.getMin());
+    return columnMinValue(cs);
   }
 
   public static Object columnMax(ScalarStats cs) {
-    LogicalType t = columnLogicalType(cs);
-    return decodeValue(t, cs.getMax());
+    return columnMaxValue(cs);
+  }
+
+  private static long temporalUnits(long nanos, Integer precision) {
+    return nanos / temporalScale(precision);
+  }
+
+  private static long temporalNanos(long units, Integer precision) {
+    return Math.multiplyExact(units, temporalScale(precision));
+  }
+
+  private static long temporalScale(Integer precision) {
+    int p = precision == null ? LogicalType.DEFAULT_TEMPORAL_PRECISION : precision;
+    return switch (p) {
+      case 0 -> 1_000_000_000L;
+      case 1 -> 100_000_000L;
+      case 2 -> 10_000_000L;
+      case 3 -> 1_000_000L;
+      case 4 -> 100_000L;
+      case 5 -> 10_000L;
+      case 6 -> 1_000L;
+      case 7 -> 100L;
+      case 8 -> 10L;
+      case 9 -> 1L;
+      default -> throw new IllegalArgumentException("invalid temporal precision: " + p);
+    };
+  }
+
+  private static LocalTime temporalTime(long units, Integer precision) {
+    return LocalTime.ofNanoOfDay(temporalNanos(units, precision));
+  }
+
+  private static LocalDateTime temporalTimestamp(long units, Integer precision) {
+    long scale = temporalScale(precision);
+    long unitsPerSecond = 1_000_000_000L / scale;
+    long seconds = Math.floorDiv(units, unitsPerSecond);
+    int nano = (int) Math.multiplyExact(Math.floorMod(units, unitsPerSecond), scale);
+    return LocalDateTime.ofEpochSecond(seconds, nano, ZoneOffset.UTC);
+  }
+
+  private static Instant temporalInstant(long units, Integer precision) {
+    long scale = temporalScale(precision);
+    long unitsPerSecond = 1_000_000_000L / scale;
+    long seconds = Math.floorDiv(units, unitsPerSecond);
+    int nano = (int) Math.multiplyExact(Math.floorMod(units, unitsPerSecond), scale);
+    return Instant.ofEpochSecond(seconds, nano);
   }
 
   /**

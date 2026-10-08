@@ -25,6 +25,11 @@ import ai.floedb.floecat.connector.common.resolver.StatsProtoEmitter;
 import ai.floedb.floecat.connector.spi.ConnectorConfig;
 import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
+import ai.floedb.floecat.types.LogicalType;
+import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.rpc.ScalarValue;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -211,8 +216,8 @@ public final class DummyConnector implements FloecatConnector {
                     rowCount,
                     0L,
                     null,
-                    "f" + fileIndex + "_min_" + c.colId,
-                    "f" + fileIndex + "_max_" + c.colId,
+                    typedBound(c.logical, fileIndex + c.colId),
+                    typedBound(c.logical, fileIndex + c.colId + 10),
                     null,
                     null, // avgWidthBytes
                     Map.of()));
@@ -350,6 +355,17 @@ public final class DummyConnector implements FloecatConnector {
                 column ->
                     normalized.contains("#" + column.colId) || normalized.contains(column.name))
             .toList();
+  }
+
+  private static ScalarValue typedBound(String logical, long value) {
+    LogicalType type = LogicalTypeProtoAdapter.decodeLogicalType(logical);
+    return switch (type.kind()) {
+      case INT -> ScalarValue.newBuilder().setI64(value).build();
+      case TIMESTAMP ->
+          LogicalTypeProtoAdapter.encodeTypedValue(
+              type, LocalDateTime.ofEpochSecond(value, 0, ZoneOffset.UTC));
+      default -> ScalarValue.newBuilder().setS(Long.toString(value)).build();
+    };
   }
 
   @Override
