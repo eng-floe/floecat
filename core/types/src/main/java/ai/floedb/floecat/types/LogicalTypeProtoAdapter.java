@@ -168,7 +168,7 @@ public final class LogicalTypeProtoAdapter {
       case DECIMAL -> ScalarValue.newBuilder().setDec(((BigDecimal) value).toPlainString()).build();
       case BINARY ->
           ScalarValue.newBuilder()
-              .setBin(com.google.protobuf.ByteString.copyFrom((byte[]) value))
+              .setBin(com.google.protobuf.ByteString.copyFrom(binaryBytes(value)))
               .build();
       case INTERVAL -> ScalarValue.newBuilder().setInterval(value.toString()).build();
       case STRING, UUID, JSON -> ScalarValue.newBuilder().setS(value.toString()).build();
@@ -186,6 +186,17 @@ public final class LogicalTypeProtoAdapter {
     } catch (ArithmeticException overflow) {
       return Optional.empty();
     }
+  }
+
+  /** Returns the canonical binary bytes accepted by both connectors and stats comparators. */
+  private static byte[] binaryBytes(Object value) {
+    if (value instanceof byte[] bytes) {
+      return bytes;
+    }
+    if (value instanceof LogicalComparators.ByteArrayComparable comparable) {
+      return comparable.copy();
+    }
+    throw new IllegalArgumentException("BINARY value must be byte[] or ByteArrayComparable");
   }
 
   private static long temporalEpochUnits(long epochSecond, int nano, Integer precision) {
