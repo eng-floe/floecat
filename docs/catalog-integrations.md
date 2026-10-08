@@ -216,9 +216,13 @@ tenant-authored Catalog Integrations. They are disabled by default; enable them 
 deployment with `floecat.catalog-integrations.aws.default-credentials-enabled=true`.
 
 AssumeRole is always available as a Catalog Integration AWS SigV4 credential source; it has no
-deployment enablement switch. Configure
-`floecat.catalog-integrations.aws.service-principal-arn` with the IAM principal ARN used by the
-Floecat service so the trust-configuration RPC and CLI can produce customer onboarding material.
+deployment enablement switch. Floecat takes the service principal ARN from
+`FLOECAT_CATALOG_INTEGRATIONS_AWS_SERVICE_PRINCIPAL_ARN` when explicitly configured, otherwise it
+uses the `AWS_ROLE_ARN` injected into EKS pods using IRSA. Standalone deployments that use AWS
+AssumeRole must configure the explicit value. Standalone deployments without an AWS identity may
+leave both unset; Floecat still starts, but the trust-configuration RPC fails closed because it has
+no principal to advertise. The corresponding application property is
+`floecat.catalog-integrations.aws.service-principal-arn`.
 Select the account in the CLI and run `account aws-trust-configuration` to obtain that principal
 ARN, the stable Floecat-issued external ID for the account, and a sample AWS IAM trust policy. The
 customer configures that policy on the target role, then creates the Catalog Integration with
