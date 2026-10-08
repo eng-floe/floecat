@@ -75,6 +75,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
+import software.amazon.awssdk.awscore.exception.AwsServiceException;
 
 class SourceCatalogCredentialVendorTest {
 
@@ -337,6 +339,57 @@ class SourceCatalogCredentialVendorTest {
         ai.floedb.floecat.storage.errors.SourceCatalogVendingGrpcStatus.isSourceCatalogVendRefused(
             failure));
     verify(client).close();
+  }
+
+  @Test
+  void mapsAwsAuthenticationFailureWhileOpeningCatalogIntegration() {
+    when(access.open(integration))
+        .thenThrow(
+            AwsServiceException.builder()
+                .message("credential rejected")
+                .statusCode(403)
+                .awsErrorDetails(
+                    AwsErrorDetails.builder().errorCode("InvalidClientTokenId").build())
+                .build());
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                vendor.vendForTable(
+                    integrationTable(),
+                    "s3://warehouse/orders",
+                    SourceCatalogCredentialVendor.CredentialUse.RECONCILE));
+
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, failure.getStatus().getCode());
+    assertTrue(SourceCatalogVendingGrpcStatus.isSourceCatalogVendRefused(failure));
+  }
+
+  @Test
+  void catalogIntegrationRefreshabilityVerdictTakesPrecedenceOverNestedAwsFailure() {
+    when(access.open(integration))
+        .thenThrow(
+            new CatalogAccessException(
+                CatalogAccessException.Code.CREDENTIAL_EXPIRED,
+                "Catalog Integration credential expired",
+                AwsServiceException.builder()
+                    .message("token expired")
+                    .statusCode(403)
+                    .awsErrorDetails(AwsErrorDetails.builder().errorCode("ExpiredToken").build())
+                    .build()));
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                vendor.vendForTable(
+                    integrationTable(),
+                    "s3://warehouse/orders",
+                    SourceCatalogCredentialVendor.CredentialUse.RECONCILE));
+
+    assertEquals(io.grpc.Status.Code.UNAVAILABLE, failure.getStatus().getCode());
+    assertTrue(SourceCatalogVendingGrpcStatus.isSourceCatalogVendUnavailable(failure));
+    assertFalse(SourceCatalogVendingGrpcStatus.isSourceCatalogVendRefused(failure));
   }
 
   @Test
@@ -1048,6 +1101,64 @@ class SourceCatalogCredentialVendorTest {
             SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
 
     assertThat(status.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
+  }
+
+  @Test
+  void terminalAwsCredentialCodesBecomeStructuredVendingRefusals() {
+    for (String errorCode :
+        List.of(
+            "InvalidClientTokenId",
+            "InvalidToken",
+            "ExpiredToken",
+            "ExpiredTokenException",
+            "AccessDenied",
+            "AccessDeniedException")) {
+      AwsServiceException credentialFailure =
+          AwsServiceException.builder()
+              .message("credential rejected")
+              // Some AWS APIs report these typed auth errors as HTTP 400, so the error code has to
+              // carry the classification rather than relying on the HTTP status. Keep the staging
+              // failure's exact InvalidClientTokenId/403 shape in the matrix too.
+              .statusCode("InvalidClientTokenId".equals(errorCode) ? 403 : 400)
+              .awsErrorDetails(AwsErrorDetails.builder().errorCode(errorCode).build())
+              .build();
+
+      StatusRuntimeException status =
+          SourceCatalogCredentialVendor.catalogFailureStatus(
+              credentialFailure,
+              CONNECTOR,
+              "cat.schema",
+              "orders",
+              SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
+
+      assertThat(status.getStatus().getCode())
+          .as(errorCode)
+          .isEqualTo(Status.Code.PERMISSION_DENIED);
+      assertThat(SourceCatalogVendingGrpcStatus.isSourceCatalogVendRefused(status))
+          .as(errorCode)
+          .isTrue();
+    }
+  }
+
+  @Test
+  void temporaryAwsCredentialFailureRemainsRetryable() {
+    AwsServiceException throttled =
+        AwsServiceException.builder()
+            .message("try again")
+            .statusCode(429)
+            .awsErrorDetails(AwsErrorDetails.builder().errorCode("ThrottlingException").build())
+            .build();
+
+    StatusRuntimeException status =
+        SourceCatalogCredentialVendor.catalogFailureStatus(
+            throttled,
+            CONNECTOR,
+            "cat.schema",
+            "orders",
+            SourceCatalogCredentialVendor.CredentialUse.RECONCILE);
+
+    assertThat(status.getStatus().getCode()).isEqualTo(Status.Code.INTERNAL);
+    assertThat(SourceCatalogVendingGrpcStatus.isSourceCatalogVendRefused(status)).isFalse();
   }
 
   @Test

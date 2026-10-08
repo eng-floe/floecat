@@ -83,6 +83,25 @@ class ReconcileFailureClassifierTest {
   }
 
   @Test
+  void serializedVendingRefusalIsTerminalAfterTheGrpcBoundary() throws Exception {
+    StatusRuntimeException serverFailure =
+        SourceCatalogVendingGrpcStatus.sourceCatalogVendRefused("catalog credentials rejected");
+    assertEquals(Status.Code.FAILED_PRECONDITION, serverFailure.getStatus().getCode());
+    com.google.rpc.Status wireStatus = StatusProto.fromThrowable(serverFailure);
+    StatusRuntimeException clientFailure =
+        StatusProto.toStatusRuntimeException(
+            com.google.rpc.Status.parseFrom(wireStatus.toByteArray()));
+
+    ReconcileFailureException classified =
+        assertInstanceOf(
+            ReconcileFailureException.class,
+            ReconcileFailureClassifier.terminalAuthFailure(clientFailure));
+
+    assertEquals(
+        ReconcileExecutor.ExecutionResult.RetryDisposition.TERMINAL, classified.retryDisposition());
+  }
+
+  @Test
   void aForeignDomainOrReasonOnTheSameStatusIsNotTerminal() {
     // What a lease-precondition failure looks like: same code, no vending reason. Retryable.
     assertNull(

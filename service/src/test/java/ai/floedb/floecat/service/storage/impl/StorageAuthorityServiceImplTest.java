@@ -77,6 +77,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
+import software.amazon.awssdk.awscore.exception.AwsServiceException;
 
 class StorageAuthorityServiceImplTest {
   private static final ResourceId AUTHORITY_ID =
@@ -326,6 +328,29 @@ class StorageAuthorityServiceImplTest {
     verify(repo).list(eq("acct"), anyInt(), any(), any());
     verify(tableRepo).getById(TABLE_ID);
     assertEquals(AUTHORITY_ID, response.getAuthorityId());
+  }
+
+  @Test
+  void permanentStorageAuthorityAwsAuthenticationFailureCrossesGrpcAsTerminalAuth() {
+    service.resolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolveStorageAuthorityResponse buildResponse(
+              StorageAuthority authority, String accountId, boolean serverSide) {
+            throw AwsServiceException.builder()
+                .message("credential rejected")
+                .statusCode(403)
+                .awsErrorDetails(
+                    AwsErrorDetails.builder().errorCode("InvalidClientTokenId").build())
+                .build();
+          }
+        };
+
+    StatusRuntimeException failure =
+        assertThrows(StatusRuntimeException.class, () -> vendServerCredentialsForTable(TABLE_ID));
+
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, failure.getStatus().getCode());
+    assertTrue(io.grpc.protobuf.StatusProto.fromThrowable(failure).getDetailsCount() > 0);
   }
 
   @Test
