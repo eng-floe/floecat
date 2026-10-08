@@ -26,6 +26,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.integration.rpc.AwsAssumeRoleAuthentication;
 import ai.floedb.floecat.integration.rpc.AwsDefaultAuthentication;
 import ai.floedb.floecat.integration.rpc.AwsSigV4Authentication;
@@ -39,6 +40,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
@@ -189,6 +191,61 @@ class CatalogIntegrationAwsCredentialResolverTest {
     assertEquals("secret", resolved.secretAccessKey());
     assertEquals("session", resolved.sessionToken());
     assertNull(resolved.expiresAt());
+  }
+
+  @Test
+  void boundsTheAmbientAwsChainForDefaultCredentials() {
+    var resolver = newResolver(2, Duration.ofMillis(20));
+    CountDownLatch release = new CountDownLatch(1);
+    resolver.defaultCredentials =
+        () -> {
+          await(release);
+          return AwsSessionCredentials.create("access", "secret", "session");
+        };
+    var authentication =
+        AwsSigV4Authentication.newBuilder()
+            .setAwsDefault(AwsDefaultAuthentication.getDefaultInstance())
+            .setRegion("us-east-1")
+            .build();
+
+    try {
+      assertThrows(
+          CatalogIntegrationAwsCredentialResolver.CredentialSourceTimeoutException.class,
+          () -> resolver.resolve("account", authentication));
+    } finally {
+      release.countDown();
+    }
+  }
+
+  @Test
+  void activeBudgetBoundsTheAmbientAwsChainBeforeTheStandaloneTimeout() {
+    var resolver = newResolver(2, Duration.ofSeconds(5));
+    CountDownLatch release = new CountDownLatch(1);
+    resolver.defaultCredentials =
+        () -> {
+          await(release);
+          return AwsSessionCredentials.create("access", "secret", "session");
+        };
+    var authentication =
+        AwsSigV4Authentication.newBuilder()
+            .setAwsDefault(AwsDefaultAuthentication.getDefaultInstance())
+            .setRegion("us-east-1")
+            .build();
+    AtomicLong budgetClock = new AtomicLong();
+
+    try {
+      assertThrows(
+          CatalogIntegrationAwsCredentialResolver.CredentialSourceTimeoutException.class,
+          () ->
+              CatalogUpstreamBudget.start(Duration.ofSeconds(1), budgetClock::get)
+                  .call(
+                      () -> {
+                        budgetClock.set(Duration.ofMillis(950).toNanos());
+                        return resolver.resolve("account", authentication);
+                      }));
+    } finally {
+      release.countDown();
+    }
   }
 
   @Test
@@ -433,6 +490,36 @@ class CatalogIntegrationAwsCredentialResolverTest {
     assertThrows(ApiCallTimeoutException.class, () -> resolver.resolve("account", authentication));
 
     assertEquals(2, calls.get());
+  }
+
+  @Test
+  void doesNotCacheAnExpiredRequestBudget() {
+    var resolver = newResolver();
+    Instant now = Instant.parse("2026-10-07T14:00:00Z");
+    resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
+    AtomicInteger calls = new AtomicInteger();
+    resolver.assumeRole =
+        (region, configured, deadline) -> {
+          calls.incrementAndGet();
+          return credentials("access", now.plus(Duration.ofHours(1)));
+        };
+    AwsSigV4Authentication authentication = assumeRoleAuthentication("catalog");
+    AtomicLong budgetClock = new AtomicLong();
+
+    CatalogAccessException failure =
+        assertThrows(
+            CatalogAccessException.class,
+            () ->
+                CatalogUpstreamBudget.start(Duration.ofSeconds(1), budgetClock::get)
+                    .call(
+                        () -> {
+                          budgetClock.set(Duration.ofSeconds(2).toNanos());
+                          return resolver.resolve("account", authentication);
+                        }));
+    assertEquals(CatalogAccessException.Code.TIMEOUT, failure.code());
+
+    assertEquals("access", resolver.resolve("account", authentication).accessKeyId());
+    assertEquals(1, calls.get());
   }
 
   @Test

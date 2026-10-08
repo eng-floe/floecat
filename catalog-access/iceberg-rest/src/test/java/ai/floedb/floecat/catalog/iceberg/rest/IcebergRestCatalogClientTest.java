@@ -55,6 +55,7 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.catalog.ViewCatalog;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.exceptions.NoSuchViewException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.StorageCredential;
@@ -159,6 +160,21 @@ class IcebergRestCatalogClientTest {
     assertEquals(Map.of("owner", "finance"), loaded.properties());
     assertTrue(client.capabilities().supports(CatalogCapability.LIST_VIEWS));
     assertTrue(client.capabilities().supports(CatalogCapability.LOAD_VIEW));
+  }
+
+  @Test
+  void translatesMissingViewLoadsToNotFound() {
+    Namespace namespace = Namespace.of("production", "sales");
+    TableIdentifier identifier = TableIdentifier.of(namespace, "monthly_sales");
+    CatalogObjectName name =
+        new CatalogObjectName(NamespacePath.of("production", "sales"), "monthly_sales");
+    when(views.loadView(identifier)).thenThrow(new NoSuchViewException("view disappeared"));
+
+    CatalogAccessException error =
+        assertThrows(CatalogAccessException.class, () -> client().loadView(name));
+
+    assertEquals(CatalogAccessException.Code.NOT_FOUND, error.code());
+    assertTrue(error.getCause() instanceof NoSuchViewException);
   }
 
   @Test

@@ -16,6 +16,7 @@
 
 package ai.floedb.floecat.service.integration;
 
+import ai.floedb.floecat.catalog.access.CatalogAccessException;
 import ai.floedb.floecat.integration.rpc.AwsSigV4Authentication;
 import ai.floedb.floecat.service.account.impl.AccountAwsExternalIdProvider;
 import jakarta.annotation.PreDestroy;
@@ -107,7 +108,10 @@ class CatalogIntegrationAwsCredentialResolver {
 
   ResolvedAwsCredentials resolve(String accountId, AwsSigV4Authentication authentication) {
     return switch (authentication.getCredentialsCase()) {
-      case AWS_DEFAULT -> fromDefault(defaultCredentials.get());
+      case AWS_DEFAULT ->
+          fromDefault(
+              resolveDefaultCredentialsWithin(
+                  Duration.ofNanos(remainingNanos(credentialResolutionDeadline()))));
       case AWS_ASSUME_ROLE -> cachedAssumeRole(accountId, authentication);
       case AWS_ACCESS_KEY, CREDENTIALS_NOT_SET ->
           throw new IllegalArgumentException("AWS credential source is not renewable");
@@ -381,7 +385,9 @@ class CatalogIntegrationAwsCredentialResolver {
     for (Throwable current = failure; current != null; current = current.getCause()) {
       if (current instanceof ApiCallTimeoutException
           || current instanceof CredentialWaitTimeoutException
-          || current instanceof CredentialSourceTimeoutException) return false;
+          || current instanceof CredentialSourceTimeoutException
+          || (current instanceof CatalogAccessException access
+              && access.code() == CatalogAccessException.Code.TIMEOUT)) return false;
     }
     return true;
   }

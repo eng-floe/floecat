@@ -42,7 +42,6 @@ import ai.floedb.floecat.catalog.access.CatalogViewDefinition;
 import ai.floedb.floecat.catalog.access.ExternalObjectIdentity;
 import ai.floedb.floecat.catalog.access.NamespacePath;
 import ai.floedb.floecat.catalog.access.VendedStorageCredentials;
-import ai.floedb.floecat.catalog.iceberg.rest.IcebergRestCatalogClientTestFactory;
 import ai.floedb.floecat.catalog.rpc.Catalog;
 import ai.floedb.floecat.catalog.rpc.Namespace;
 import ai.floedb.floecat.common.rpc.MutationMeta;
@@ -382,6 +381,7 @@ class CatalogOverlayReconcilerTest {
     client.unloadableTables.add(orders);
     var result = reconcile();
 
+    assertEquals(1, result.objectsSkipped());
     assertEquals(0, result.tablesDeleted(), "a failed load is not evidence the table is gone");
     assertTrue(
         tables
@@ -390,36 +390,34 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
-  void aNonIcebergObjectFromTheIcebergRestClientIsSkippedWithoutUnsafeRetirement() {
+  void aNotFoundViewLoadIsSkippedWithoutUnsafeRetirement() {
     NamespacePath sales = NamespacePath.of("sales");
-    CatalogObjectName callCenter = new CatalogObjectName(sales, "call_center");
+    CatalogObjectName report = new CatalogObjectName(sales, "report");
     client.children.put(NamespacePath.root(), List.of(sales));
     client.children.put(sales, List.of());
-    client.tables.put(callCenter, catalogTable(callCenter, "call-center-uuid"));
+    client.views.put(report, catalogView(report, "report-uuid"));
 
     reconcile();
     var namespace = namespaces.getByPath("acct", "catalog", List.of("sales")).orElseThrow();
     assertTrue(
-        tables
-            .getByName("acct", "catalog", namespace.getResourceId().getId(), "call_center")
+        views
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "report")
             .isPresent());
 
-    CatalogClient icebergRestClient =
-        IcebergRestCatalogClientTestFactory.catalogWithNonIcebergTable(sales, callCenter);
-    when(access.open(integration)).thenReturn(icebergRestClient);
+    client.unloadableViews.add(report);
 
     var result = reconcile();
 
     assertEquals(1, result.objectsSkipped());
-    assertEquals(0, result.tablesDeleted());
+    assertEquals(0, result.viewsDeleted());
     assertTrue(
-        tables
-            .getByName("acct", "catalog", namespace.getResourceId().getId(), "call_center")
+        views
+            .getByName("acct", "catalog", namespace.getResourceId().getId(), "report")
             .isPresent());
   }
 
   @Test
-  void anExactIncludeToleratesUnsupportedChildTraversalAfterReconcilingItsTables() {
+  void anExactIncludeToleratesInvalidChildTraversalAfterReconcilingItsTables() {
     NamespacePath database = NamespacePath.of("yb_customer_workloads_zurich_sf10000");
     CatalogObjectName orders = new CatalogObjectName(database, "orders");
     client.children.put(NamespacePath.root(), List.of(database));
@@ -445,6 +443,55 @@ class CatalogOverlayReconcilerTest {
         tables
             .getByName("acct", "catalog", namespace.getResourceId().getId(), "orders")
             .isPresent());
+  }
+
+  @Test
+  void anExactIncludeDoesNotTolerateDeniedChildTraversal() {
+    NamespacePath database = NamespacePath.of("glue_database");
+    client.children.put(NamespacePath.root(), List.of(database));
+    client.deniedNamespaceListings.add(database);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("glue_database"))
+            .build();
+
+    var error =
+        assertThrows(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.class,
+            () -> reconcileWith(included));
+
+    assertEquals(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.Code.PERMISSION_DENIED,
+        error.code());
+  }
+
+  @Test
+  void anExactIncludeDoesNotHideADeeperIncludeWhenChildTraversalIsInvalid() {
+    NamespacePath main = NamespacePath.of("main");
+    client.children.put(NamespacePath.root(), List.of(main));
+    client.invalidNamespaceListings.add(main);
+    var included =
+        overlay.toBuilder()
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder().addSegments("main"))
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("main")
+                    .addSegments("sub"))
+            .build();
+
+    var error =
+        assertThrows(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.class,
+            () -> reconcileWith(included));
+
+    assertEquals(
+        ai.floedb.floecat.catalog.access.CatalogAccessException.Code.INVALID_CONFIGURATION,
+        error.code());
   }
 
   @Test
@@ -1522,6 +1569,9 @@ class CatalogOverlayReconcilerTest {
     /** Namespaces whose view listing the principal cannot read. */
     final java.util.Set<NamespacePath> deniedViewListings = new java.util.HashSet<>();
 
+    /** Views that list but disappear before their detail load. */
+    final java.util.Set<CatalogObjectName> unloadableViews = new java.util.HashSet<>();
+
     @Override
     public List<CatalogObjectName> listViews(NamespacePath namespace) {
       if (deniedViewListings.contains(namespace)) {
@@ -1534,6 +1584,11 @@ class CatalogOverlayReconcilerTest {
 
     @Override
     public CatalogView loadView(CatalogObjectName view) {
+      if (unloadableViews.contains(view)) {
+        throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+            ai.floedb.floecat.catalog.access.CatalogAccessException.Code.NOT_FOUND,
+            "view vanished between listing and load: " + view);
+      }
       return views.get(view);
     }
 

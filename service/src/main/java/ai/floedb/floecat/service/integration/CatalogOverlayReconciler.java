@@ -1113,6 +1113,13 @@ public class CatalogOverlayReconciler {
     if (overlay.getIncludeNamespacesCount() == 0) {
       return true;
     }
+    // Some flat catalogs expose a selected namespace's relations but cannot enumerate children.
+    // Preserve that compatibility only for provider capability/configuration failures. A denial on
+    // an explicitly named namespace is authoritative and must still fail the reconcile.
+    if (descending && namedExactly(overlay, path) && !mustDescendToReachASelection(overlay, path)) {
+      return failure.code() == CatalogAccessException.Code.INVALID_CONFIGURATION
+          || failure.code() == CatalogAccessException.Code.UNSUPPORTED;
+    }
     // Named, not merely covered. Reusing selected() here conflated "the operator named an ancestor
     // of this branch" with "the operator named this branch", and since both non-descending call
     // sites already sit inside selected(), the test could never tolerate anything once filters
