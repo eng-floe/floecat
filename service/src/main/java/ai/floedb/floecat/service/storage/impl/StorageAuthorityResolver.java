@@ -20,6 +20,7 @@ import ai.floedb.floecat.aws.RefreshingAwsClient;
 import ai.floedb.floecat.connector.common.auth.CredentialResolverSupport;
 import ai.floedb.floecat.connector.common.auth.ResolvedStorageCredentials;
 import ai.floedb.floecat.connector.rpc.AuthCredentials;
+import ai.floedb.floecat.service.account.impl.AccountAwsExternalIdProvider;
 import ai.floedb.floecat.storage.rpc.ResolveStorageAuthorityResponse;
 import ai.floedb.floecat.storage.rpc.StorageAuthority;
 import ai.floedb.floecat.storage.rpc.VendedStorageCredential;
@@ -41,6 +42,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -53,6 +55,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sts.StsClient;
 import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.services.sts.model.Credentials;
+import software.amazon.awssdk.services.sts.model.StsException;
 
 @ApplicationScoped
 public class StorageAuthorityResolver {
@@ -69,6 +72,9 @@ public class StorageAuthorityResolver {
   private final int assumeRoleCacheMaxEntries;
 
   @Inject SecretsManager secretsManager;
+  @Inject AccountAwsExternalIdProvider awsExternalIds;
+
+  Function<String, String> externalIdForAccount = this::externalIdForAccount;
 
   public StorageAuthorityResolver() {
     this(DEFAULT_ASSUME_ROLE_CACHE_MAX_ENTRIES);
@@ -369,10 +375,36 @@ public class StorageAuthorityResolver {
 
   private ResolvedStorageCredentials assumeRole(
       StorageAuthority authority, Supplier<AwsCredentialsProvider> providerFactory) {
+    String accountExternalId = externalIdForAccount.apply(authority.getResourceId().getAccountId());
+    String legacyExternalId =
+        authority.hasAssumeRoleExternalId()
+            ? firstNonBlank(authority.getAssumeRoleExternalId(), null)
+            : null;
+    try {
+      return assumeRole(authority, providerFactory, accountExternalId);
+    } catch (RuntimeException failure) {
+      if (legacyExternalId == null
+          || legacyExternalId.equals(accountExternalId)
+          || !isAccessDenied(failure)) {
+        throw failure;
+      }
+      LOG.log(
+          Level.WARNING,
+          "Account external ID was denied; retrying Storage Authority with its legacy external ID"
+              + " authorityId={0}",
+          authority.getResourceId().getId());
+      return assumeRole(authority, providerFactory, legacyExternalId);
+    }
+  }
+
+  private ResolvedStorageCredentials assumeRole(
+      StorageAuthority authority,
+      Supplier<AwsCredentialsProvider> providerFactory,
+      String externalId) {
     RuntimeException lastFailure = null;
     for (int attempt = 1; attempt <= ASSUME_ROLE_MAX_ATTEMPTS; attempt++) {
       try {
-        return assumeRoleOnce(authority, providerFactory);
+        return assumeRoleOnce(authority, providerFactory, externalId);
       } catch (RuntimeException error) {
         if (!retryableAssumeRoleFailure(error) || attempt == ASSUME_ROLE_MAX_ATTEMPTS) {
           if (retryableAssumeRoleFailure(error)) {
@@ -392,7 +424,9 @@ public class StorageAuthorityResolver {
   }
 
   private ResolvedStorageCredentials assumeRoleOnce(
-      StorageAuthority authority, Supplier<AwsCredentialsProvider> providerFactory) {
+      StorageAuthority authority,
+      Supplier<AwsCredentialsProvider> providerFactory,
+      String externalId) {
     Integer duration = authority.hasDurationSeconds() ? authority.getDurationSeconds() : null;
     AssumeRoleRequest request =
         AssumeRoleRequest.builder()
@@ -403,8 +437,7 @@ public class StorageAuthorityResolver {
                         ? authority.getAssumeRoleSessionName()
                         : null,
                     "floecat-storage-authority"))
-            .externalId(
-                authority.hasAssumeRoleExternalId() ? authority.getAssumeRoleExternalId() : null)
+            .externalId(externalId)
             .policy(scopedSessionPolicy(authority.getLocationPrefix()))
             .durationSeconds(duration != null && duration > 0 ? duration : null)
             .build();
@@ -450,6 +483,20 @@ public class StorageAuthorityResolver {
       }
     }
     return false;
+  }
+
+  private static boolean isAccessDenied(Throwable error) {
+    for (Throwable current = error; current != null; current = current.getCause()) {
+      if (current instanceof StsException sts) {
+        String errorCode = sts.awsErrorDetails() == null ? null : sts.awsErrorDetails().errorCode();
+        return "AccessDenied".equals(errorCode);
+      }
+    }
+    return false;
+  }
+
+  private String externalIdForAccount(String accountId) {
+    return awsExternalIds.getOrCreate(accountId);
   }
 
   StsClient buildStsClient(StorageAuthority authority, AwsCredentialsProvider provider) {

@@ -81,11 +81,17 @@ storage-authority create datalake-aws-prod \
   --location-prefix s3://my-datalake-prod-bucket/ \
   --type s3 \
   --region us-east-1 \
-  --assume-role-arn arn:aws:iam::123456789012:role/floecat-prod-s3-readonly \
-  --assume-role-external-id floecat-production
+  --assume-role-arn arn:aws:iam::123456789012:role/floecat-prod-s3-readonly
 ```
 
-`--assume-role-external-id` is optional unless the target role trust policy requires it.
+Use `account aws-trust-configuration` to obtain the account's Floecat-issued external ID and put it
+in the target role's trust policy. Floecat sends that account-owned value when assuming a Storage
+Authority role.
+
+During migration, an authority with `--assume-role-external-id` configured retries that legacy value
+only when AWS denies the account-owned value. This fallback keeps roles that still trust their old
+external ID working while their trust policies are updated. Do not configure the legacy flag on new
+authorities.
 
 This example configures Floecat to assume the target role for the given S3 prefix when a matching
 workflow needs storage access. That can include Iceberg REST delegated client access, but it is not
@@ -124,7 +130,8 @@ For a production bucket in another AWS account:
 
 - configure `--location-prefix` for the target bucket or prefix
 - configure `--assume-role-arn` for a role in that target account
-- optionally configure `--assume-role-external-id` if required by the trust policy
+- configure the role trust policy with the external ID printed by
+  `account aws-trust-configuration`
 
 The target role should trust the Floecat AWS identity and allow only the minimum S3 actions needed
 for the intended workload, whether that is a server-side Floecat flow, an Iceberg REST client, or
