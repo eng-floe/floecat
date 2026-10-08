@@ -17,8 +17,10 @@
 package ai.floedb.floecat.service.integration;
 
 import ai.floedb.floecat.integration.rpc.AwsSigV4Authentication;
+import ai.floedb.floecat.service.account.impl.AccountAwsExternalIdProvider;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -30,6 +32,7 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.BiFunction;
+import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import software.amazon.awssdk.auth.credentials.AwsCredentials;
@@ -66,10 +69,13 @@ class CatalogIntegrationAwsCredentialResolver {
   private final Duration cacheWaitTimeout;
   private volatile DefaultCredentialsProvider ambientProvider;
 
+  @Inject AccountAwsExternalIdProvider awsExternalIds;
+
   Supplier<DefaultCredentialsProvider> ambientProviderFactory =
       () -> DefaultCredentialsProvider.builder().build();
   Supplier<AwsCredentials> defaultCredentials = this::resolveDefaultCredentials;
   BiFunction<String, AssumeRoleRequest, Credentials> assumeRole = this::assumeRole;
+  Function<String, String> externalIdForAccount = this::externalIdForAccount;
   StsClientFactory stsClientFactory = this::buildStsClient;
   Clock clock = Clock.systemUTC();
   LongSupplier nanoTime = System::nanoTime;
@@ -99,8 +105,9 @@ class CatalogIntegrationAwsCredentialResolver {
       String accountId, AwsSigV4Authentication authentication) {
     String tenant = requireNonBlank(accountId, "account_id");
     String region = requireNonBlank(authentication.getRegion(), "region");
-    AssumeRoleRequest request = assumeRoleRequest(authentication.getAwsAssumeRole());
-    AssumeRoleCacheKey key = AssumeRoleCacheKey.of(tenant, region, request);
+    String roleArn = requireNonBlank(authentication.getAwsAssumeRole().getRoleArn(), "role_arn");
+    String sessionName = AccountAwsExternalIdProvider.roleSessionName(tenant);
+    AssumeRoleCacheKey key = new AssumeRoleCacheKey(tenant, region, roleArn, sessionName);
     for (; ; ) {
       CachedResolution existing;
       synchronized (cacheLock) {
@@ -154,8 +161,11 @@ class CatalogIntegrationAwsCredentialResolver {
         }
       }
       if (existing != null) continue;
-      if (!inserted) return assumeRoleOnce(region, request);
       try {
+        String externalId = externalIdForAccount.apply(tenant);
+        AssumeRoleRequest request =
+            assumeRoleRequest(authentication.getAwsAssumeRole(), externalId, sessionName);
+        if (!inserted) return assumeRoleOnce(region, request);
         ResolvedAwsCredentials credentials = assumeRoleOnce(region, request);
         created.future().complete(credentials);
         if (!isFresh(credentials)) remove(key, created);
@@ -217,19 +227,14 @@ class CatalogIntegrationAwsCredentialResolver {
   }
 
   static AssumeRoleRequest assumeRoleRequest(
-      ai.floedb.floecat.integration.rpc.AwsAssumeRoleAuthentication configured) {
+      ai.floedb.floecat.integration.rpc.AwsAssumeRoleAuthentication configured,
+      String externalId,
+      String sessionName) {
     String roleArn = requireNonBlank(configured.getRoleArn(), "role_arn");
-    String sessionName =
-        configured.hasRoleSessionName() && !configured.getRoleSessionName().isBlank()
-            ? configured.getRoleSessionName().trim()
-            : "floecat-catalog-integration";
     return AssumeRoleRequest.builder()
         .roleArn(roleArn)
-        .roleSessionName(sessionName)
-        .externalId(
-            configured.hasExternalId() && !configured.getExternalId().isBlank()
-                ? configured.getExternalId().trim()
-                : null)
+        .roleSessionName(requireNonBlank(sessionName, "role_session_name"))
+        .externalId(requireNonBlank(externalId, "external_id"))
         .build();
   }
 
@@ -242,6 +247,10 @@ class CatalogIntegrationAwsCredentialResolver {
       // reliably distinguish or repair the latter and would make a bad deployment look transient.
       throw new MissingAwsCredentialsException(failure);
     }
+  }
+
+  private String externalIdForAccount(String accountId) {
+    return awsExternalIds.getOrCreate(accountId);
   }
 
   private AwsCredentialsProvider ambientCredentialsProvider() {
@@ -359,13 +368,7 @@ class CatalogIntegrationAwsCredentialResolver {
   }
 
   private record AssumeRoleCacheKey(
-      String accountId, String region, String roleArn, String externalId, String roleSessionName) {
-    private static AssumeRoleCacheKey of(
-        String accountId, String region, AssumeRoleRequest request) {
-      return new AssumeRoleCacheKey(
-          accountId, region, request.roleArn(), request.externalId(), request.roleSessionName());
-    }
-  }
+      String accountId, String region, String roleArn, String roleSessionName) {}
 
   private static final class CachedResolution {
     private final CompletableFuture<ResolvedAwsCredentials> future;

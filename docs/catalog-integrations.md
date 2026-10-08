@@ -204,22 +204,40 @@ Authentication types and their properties are:
 | --- | --- | --- |
 | `oauth-client-credentials` | `client_id`; optional `token_uri`, `scopes` CSV | `client_secret` |
 | `bearer` | none | `token` |
-| `aws-assume-role` | `role_arn`; optional `external_id`, `role_session_name` | none |
 | `aws-access-key` | `access_key_id` | `secret_access_key`; optional `session_token` |
 | `aws-sigv4` | `region`, `credential_source`; optional `signing_name`, plus source fields | source-dependent |
 
-For SigV4, `credential_source` is `default`, `assume-role`, or `access-key`. Assume-role uses the
-role properties above. Access-key uses the access-key properties above. The CLI rejects unknown
-properties instead of silently dropping them.
+For SigV4, `credential_source` is `default`, `assume-role`, or `access-key`. Assume-role requires
+`role_arn`; access-key requires `access_key_id` plus its secret credential properties. The CLI
+rejects unknown properties instead of silently dropping them.
 
 Ambient credentials are deployment-gated because they expose the Floecat service's AWS identity to
 tenant-authored Catalog Integrations. They are disabled by default; enable them only in a trusted
-deployment with `floecat.catalog-integrations.aws.default-credentials-enabled=true`. Assume-role
-targets are customer-managed and are authorized by Floecat's `sts:AssumeRole` policy and the target
-role's trust policy. Cached assume-role credentials are scoped by Floecat account, but the tenant
-currently supplies `external_id`, so the target role's trust policy does not yet have a
-Floecat-enforced tenant boundary. A follow-up will replace this with a Floecat-issued external ID
-suitable for enforcing tenant isolation in the target role's trust policy.
+deployment with `floecat.catalog-integrations.aws.default-credentials-enabled=true`.
+
+AssumeRole is always available as a Catalog Integration AWS SigV4 credential source; it has no
+deployment enablement switch. Configure
+`floecat.catalog-integrations.aws.service-principal-arn` with the IAM principal ARN used by the
+Floecat service so the trust-configuration RPC and CLI can produce customer onboarding material.
+Select the account in the CLI and run `account aws-trust-configuration` to obtain that principal
+ARN, the stable Floecat-issued external ID for the account, and a sample AWS IAM trust policy. The
+customer configures that policy on the target role, then creates the Catalog Integration with
+`--auth-type aws-sigv4`, `credential_source=assume-role`, and `role_arn`; tenants cannot choose the
+external ID or complete role session name sent to STS. Existing accounts receive an external ID
+atomically on first trust-configuration request or first AssumeRole use. That first write advances
+the account resource version, so an account update holding the prior version must reload before
+retrying. Account records are the source of truth. A fresh credential-cache hit performs no account
+lookup; other reads use the normal repository cache, and only first-time initialization uses the raw
+mutation read. There is no separate external-ID cache. Consequently, deleting an account is
+observed when the cached credentials next require a refresh, rather than by re-reading the account
+on every Catalog Integration open.
+
+The trust-configuration RPC fails closed if `service-principal-arn` is absent or is not an IAM
+principal ARN. Top-level AWS AssumeRole authentication is not supported; configure AssumeRole as
+the credential source inside AWS SigV4.
+
+This behavior is specific to Catalog Integrations. Storage Authorities and Connectors retain their
+existing AssumeRole configuration and external-ID behavior pending separate migrations.
 
 `--props` supplies non-secret provider connection properties. For Iceberg REST catalogs such as
 Polaris, `warehouse=<catalog-name>` selects the upstream catalog without putting a query parameter in

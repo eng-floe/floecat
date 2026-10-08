@@ -58,7 +58,9 @@ import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
 import ai.floedb.floecat.storage.rpc.IdempotencyRecord;
 import ai.floedb.floecat.storage.secrets.SecretsManager;
 import ai.floedb.floecat.storage.spi.PointerStore;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.FieldMask;
+import com.google.protobuf.UnknownFieldSet;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import java.lang.reflect.Field;
@@ -637,53 +639,6 @@ class CatalogIntegrationsImplTest {
   }
 
   @Test
-  void createRejectsBlankTopLevelAssumeRoleExternalId() {
-    var error =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .createCatalogIntegration(
-                        createRequestWithAuthentication(
-                            CatalogAuthentication.newBuilder()
-                                .setAwsAssumeRole(
-                                    AwsAssumeRoleAuthentication.newBuilder()
-                                        .setRoleArn("arn:aws:iam::123456789012:role/test")
-                                        .setExternalId(" "))
-                                .build()))
-                    .await()
-                    .indefinitely());
-
-    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
-    verify(service.integrations, never()).createWithMeta(any());
-  }
-
-  @Test
-  void createRejectsBlankSigV4AssumeRoleExternalId() {
-    var error =
-        assertThrows(
-            StatusRuntimeException.class,
-            () ->
-                service
-                    .createCatalogIntegration(
-                        createRequestWithAuthentication(
-                            CatalogAuthentication.newBuilder()
-                                .setAwsSigv4(
-                                    AwsSigV4Authentication.newBuilder()
-                                        .setRegion("us-east-1")
-                                        .setAwsAssumeRole(
-                                            AwsAssumeRoleAuthentication.newBuilder()
-                                                .setRoleArn("arn:aws:iam::123456789012:role/test")
-                                                .setExternalId(" ")))
-                                .build()))
-                    .await()
-                    .indefinitely());
-
-    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
-    verify(service.integrations, never()).createWithMeta(any());
-  }
-
-  @Test
   void createRejectsAmbientAwsCredentialsWhenDisabledByDeploymentPolicy() {
     service.awsCredentialPolicy.defaultCredentialsEnabled = false;
 
@@ -700,6 +655,74 @@ class CatalogIntegrationsImplTest {
                                         .setRegion("us-east-1")
                                         .setAwsDefault(
                                             AwsDefaultAuthentication.getDefaultInstance()))
+                                .build()))
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.INVALID_ARGUMENT, error.getStatus().getCode());
+    verify(service.integrations, never()).createWithMeta(any());
+  }
+
+  @Test
+  void createScrubsLegacyTenantControlledAssumeRoleFields() {
+    var unknowns =
+        UnknownFieldSet.newBuilder()
+            .addField(
+                2,
+                UnknownFieldSet.Field.newBuilder()
+                    .addLengthDelimited(ByteString.copyFromUtf8("tenant-external-id"))
+                    .build())
+            .addField(
+                3,
+                UnknownFieldSet.Field.newBuilder()
+                    .addLengthDelimited(ByteString.copyFromUtf8("tenant-session"))
+                    .build())
+            .build();
+    var legacy =
+        AwsAssumeRoleAuthentication.newBuilder()
+            .setRoleArn("arn:aws:iam::123456789012:role/test")
+            .setUnknownFields(unknowns)
+            .build();
+
+    service
+        .createCatalogIntegration(
+            createRequestWithAuthentication(
+                CatalogAuthentication.newBuilder()
+                    .setAwsSigv4(
+                        AwsSigV4Authentication.newBuilder()
+                            .setRegion("us-east-1")
+                            .setAwsAssumeRole(legacy))
+                    .build()))
+        .await()
+        .indefinitely();
+
+    var persisted = ArgumentCaptor.forClass(CatalogIntegration.class);
+    verify(service.integrations).createWithMeta(persisted.capture());
+    assertTrue(
+        persisted
+            .getValue()
+            .getAuthentication()
+            .getAwsSigv4()
+            .getAwsAssumeRole()
+            .getUnknownFields()
+            .asMap()
+            .isEmpty());
+  }
+
+  @Test
+  void createRejectsTopLevelAssumeRoleThatRuntimeCannotUse() {
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .createCatalogIntegration(
+                        createRequestWithAuthentication(
+                            CatalogAuthentication.newBuilder()
+                                .setAwsAssumeRole(
+                                    AwsAssumeRoleAuthentication.newBuilder()
+                                        .setRoleArn(
+                                            "arn:aws:iam::123456789012:role/customer-catalog"))
                                 .build()))
                     .await()
                     .indefinitely());

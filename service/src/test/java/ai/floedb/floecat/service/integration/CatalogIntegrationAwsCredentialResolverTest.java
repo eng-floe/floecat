@@ -54,7 +54,7 @@ import software.amazon.awssdk.services.sts.model.Credentials;
 class CatalogIntegrationAwsCredentialResolverTest {
   @Test
   void resolvesTheAmbientAwsChainWithoutAnyCatalogFormatDependency() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     resolver.defaultCredentials = () -> AwsSessionCredentials.create("access", "secret", "session");
     var authentication =
         AwsSigV4Authentication.newBuilder()
@@ -72,7 +72,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void assumesTheConfiguredRoleUsingTheSigV4Region() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     AtomicReference<String> stsRegion = new AtomicReference<>();
     AtomicReference<AssumeRoleRequest> request = new AtomicReference<>();
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
@@ -93,9 +93,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
         AwsSigV4Authentication.newBuilder()
             .setAwsAssumeRole(
                 AwsAssumeRoleAuthentication.newBuilder()
-                    .setRoleArn("arn:aws:iam::123456789012:role/catalog")
-                    .setExternalId("external")
-                    .setRoleSessionName("catalog-session"))
+                    .setRoleArn("arn:aws:iam::123456789012:role/catalog"))
             .setRegion("us-east-1")
             .setSigningName("glue")
             .build();
@@ -104,8 +102,11 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
     assertEquals("us-east-1", stsRegion.get());
     assertEquals("arn:aws:iam::123456789012:role/catalog", request.get().roleArn());
-    assertEquals("external", request.get().externalId());
-    assertEquals("catalog-session", request.get().roleSessionName());
+    assertEquals("floecat-issued-account", request.get().externalId());
+    assertEquals(
+        ai.floedb.floecat.service.account.impl.AccountAwsExternalIdProvider.roleSessionName(
+            "account"),
+        request.get().roleSessionName());
     assertEquals("access", resolved.accessKeyId());
     assertEquals("session", resolved.sessionToken());
     assertEquals(expiration, resolved.expiresAt());
@@ -113,7 +114,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void usesTheSigV4RegionForStsWhenNoRoutingRegionIsConfigured() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     AtomicReference<String> stsRegion = new AtomicReference<>();
     resolver.assumeRole =
         (region, configured) -> {
@@ -139,10 +140,16 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void reusesFreshAssumeRoleCredentialsAcrossOpenPaths() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     AtomicInteger calls = new AtomicInteger();
+    AtomicInteger accountReads = new AtomicInteger();
+    resolver.externalIdForAccount =
+        accountId -> {
+          accountReads.incrementAndGet();
+          return "floecat-issued-" + accountId;
+        };
     resolver.assumeRole =
         (region, configured) -> {
           calls.incrementAndGet();
@@ -165,11 +172,12 @@ class CatalogIntegrationAwsCredentialResolverTest {
     resolver.resolve("account", authentication);
 
     assertEquals(1, calls.get());
+    assertEquals(1, accountReads.get());
   }
 
   @Test
   void refreshesCachedCredentialsBeforeTheyExpire() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     AtomicInteger calls = new AtomicInteger();
@@ -199,7 +207,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void doesNotStackRetriesAroundTheSdkClient() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     AtomicInteger calls = new AtomicInteger();
@@ -231,7 +239,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void configuresOneStandardSdkRetryLayerAndTheActiveCallTimeout() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     resolver.nanoTime = () -> 0L;
     resolver.defaultCredentials =
         () -> AwsSessionCredentials.create("source-access", "source-secret", "source-session");
@@ -265,7 +273,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void boundsAmbientCredentialResolutionBeforeCreatingTheStsClient() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver(2, Duration.ofMillis(20));
+    var resolver = newResolver(2, Duration.ofMillis(20));
     CountDownLatch release = new CountDownLatch(1);
     resolver.defaultCredentials =
         () -> {
@@ -291,7 +299,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void doesNotCacheCallerSpecificApiCallTimeouts() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     AtomicInteger calls = new AtomicInteger();
     resolver.assumeRole =
         (region, configured) -> {
@@ -307,8 +315,38 @@ class CatalogIntegrationAwsCredentialResolverTest {
   }
 
   @Test
+  void externalIdLookupFailureDoesNotStrandTheCredentialCacheEntry() {
+    var resolver = newResolver();
+    Instant now = Instant.parse("2026-10-07T14:00:00Z");
+    resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
+    AtomicInteger accountReads = new AtomicInteger();
+    AtomicInteger stsCalls = new AtomicInteger();
+    resolver.externalIdForAccount =
+        accountId -> {
+          if (accountReads.incrementAndGet() == 1) {
+            throw new RuntimeException("account repository unavailable");
+          }
+          return "floecat-issued-" + accountId;
+        };
+    resolver.assumeRole =
+        (region, configured) -> {
+          stsCalls.incrementAndGet();
+          return credentials("access", now.plus(Duration.ofHours(1)));
+        };
+    AwsSigV4Authentication authentication = assumeRoleAuthentication("catalog");
+
+    assertThrows(RuntimeException.class, () -> resolver.resolve("account", authentication));
+    resolver.clock = Clock.fixed(now.plusSeconds(5), ZoneOffset.UTC);
+    assertEquals("access", resolver.resolve("account", authentication).accessKeyId());
+
+    assertEquals(2, accountReads.get());
+    assertEquals(1, stsCalls.get());
+    assertEquals(1, resolver.cacheSize());
+  }
+
+  @Test
   void concurrentMissesCoalesceIntoOneStsCall() throws Exception {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     AtomicInteger calls = new AtomicInteger();
@@ -337,7 +375,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void waitersReceiveOwnerFailureAndNewOpensBackOffBeforeRetrying() throws Exception {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     AtomicInteger calls = new AtomicInteger();
@@ -385,7 +423,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void cacheRemainsBoundedWhenAllEntriesAreInFlight() throws Exception {
-    var resolver = new CatalogIntegrationAwsCredentialResolver(2, Duration.ofSeconds(2));
+    var resolver = newResolver(2, Duration.ofSeconds(2));
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     CountDownLatch entered = new CountDownLatch(3);
@@ -410,7 +448,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void waiterHonorsTimeoutWithoutRemovingOwnersEntry() throws Exception {
-    var resolver = new CatalogIntegrationAwsCredentialResolver(2, Duration.ofMillis(20));
+    var resolver = newResolver(2, Duration.ofMillis(20));
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     CountDownLatch entered = new CountDownLatch(1);
@@ -436,7 +474,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void missingSourceCredentialsAreNotRetried() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     AtomicInteger calls = new AtomicInteger();
     resolver.assumeRole =
         (region, configured) -> {
@@ -453,7 +491,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void interruptedOwnerStopsBeforeCallingSts() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     AtomicInteger calls = new AtomicInteger();
     resolver.assumeRole =
         (region, configured) -> {
@@ -475,7 +513,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void cancelledOwnerDoesNotCancelWaiterForTheSameRole() throws Exception {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     AtomicInteger calls = new AtomicInteger();
@@ -514,7 +552,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void waiterUsesTheActiveUpstreamBudgetInsteadOfTheStandaloneTimeout() throws Exception {
-    var resolver = new CatalogIntegrationAwsCredentialResolver(2, Duration.ofSeconds(5));
+    var resolver = newResolver(2, Duration.ofSeconds(5));
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     CountDownLatch entered = new CountDownLatch(1);
@@ -549,7 +587,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void reusesAndClosesTheAmbientProvider() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     var provider = mock(DefaultCredentialsProvider.class);
     AtomicInteger builds = new AtomicInteger();
     resolver.ambientProviderFactory =
@@ -575,7 +613,7 @@ class CatalogIntegrationAwsCredentialResolverTest {
 
   @Test
   void doesNotShareAssumeRoleCredentialsAcrossAccounts() {
-    var resolver = new CatalogIntegrationAwsCredentialResolver();
+    var resolver = newResolver();
     Instant now = Instant.parse("2026-10-07T14:00:00Z");
     resolver.clock = Clock.fixed(now, ZoneOffset.UTC);
     AtomicInteger calls = new AtomicInteger();
@@ -608,6 +646,22 @@ class CatalogIntegrationAwsCredentialResolverTest {
         .sessionToken("session")
         .expiration(expiration)
         .build();
+  }
+
+  private static CatalogIntegrationAwsCredentialResolver newResolver() {
+    return withExternalId(new CatalogIntegrationAwsCredentialResolver());
+  }
+
+  private static CatalogIntegrationAwsCredentialResolver newResolver(
+      int cacheMaxEntries, Duration cacheWaitTimeout) {
+    return withExternalId(
+        new CatalogIntegrationAwsCredentialResolver(cacheMaxEntries, cacheWaitTimeout));
+  }
+
+  private static CatalogIntegrationAwsCredentialResolver withExternalId(
+      CatalogIntegrationAwsCredentialResolver resolver) {
+    resolver.externalIdForAccount = accountId -> "floecat-issued-" + accountId;
+    return resolver;
   }
 
   private static CompletableFuture<ResolvedAwsCredentials> asyncResolve(

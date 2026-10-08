@@ -27,6 +27,7 @@ import ai.floedb.floecat.catalog.iceberg.rest.auth.TerminalCredentialRefreshExce
 import ai.floedb.floecat.integration.rpc.AwsSigV4Authentication;
 import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
+import ai.floedb.floecat.service.account.impl.AccountAwsExternalIdProvider;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.net.URI;
@@ -153,6 +154,11 @@ public class CatalogIntegrationAccess {
       throw new CatalogAccessException(
           CatalogAccessException.Code.TIMEOUT,
           "Timed out resolving AWS source credentials",
+          failure);
+    } catch (AccountAwsExternalIdProvider.AccountMissingException failure) {
+      throw new CatalogAccessException(
+          CatalogAccessException.Code.CREDENTIAL_CONFIGURATION_INVALID,
+          "The Floecat account for this Catalog Integration does not exist",
           failure);
     } catch (SdkClientException failure) {
       if (resolved == null) throw translateSdkClientFailure(failure);
@@ -352,6 +358,14 @@ public class CatalogIntegrationAccess {
 
   private static RuntimeException translateAwsFailure(RuntimeException failure) {
     for (Throwable current = failure; current != null; current = current.getCause()) {
+      if (current instanceof AccountAwsExternalIdProvider.AccountMissingException) {
+        return new CatalogAccessException(
+            CatalogAccessException.Code.CREDENTIAL_CONFIGURATION_INVALID,
+            "The Floecat account for this Catalog Integration no longer exists",
+            failure);
+      }
+    }
+    for (Throwable current = failure; current != null; current = current.getCause()) {
       if (current instanceof TerminalCredentialRefreshException) {
         return new CatalogAccessException(
             CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE,
@@ -406,6 +420,10 @@ public class CatalogIntegrationAccess {
   static RuntimeException terminalRefreshFailure(RuntimeException failure) {
     if (failure instanceof TerminalCredentialRefreshException) return failure;
     for (Throwable current = failure; current != null; current = current.getCause()) {
+      if (current instanceof AccountAwsExternalIdProvider.AccountMissingException) {
+        return new TerminalCredentialRefreshException(
+            "The Floecat account for this Catalog Integration no longer exists", failure);
+      }
       if (current instanceof StsException sts && isTerminalStsRefreshFailure(sts)) {
         return new TerminalCredentialRefreshException(
             "AWS STS rejected credential refresh", failure);

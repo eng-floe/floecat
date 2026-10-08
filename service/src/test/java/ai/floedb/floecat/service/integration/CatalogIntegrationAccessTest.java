@@ -39,6 +39,7 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegrationCredentials;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.OAuthClientCredentialsAuthentication;
 import ai.floedb.floecat.integration.rpc.SecretValue;
+import ai.floedb.floecat.service.account.impl.AccountAwsExternalIdProvider;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -355,9 +356,7 @@ class CatalogIntegrationAccessTest {
                 AwsSigV4Authentication.newBuilder()
                     .setAwsAssumeRole(
                         AwsAssumeRoleAuthentication.newBuilder()
-                            .setRoleArn("arn:aws:iam::123456789012:role/catalog")
-                            .setExternalId("external")
-                            .setRoleSessionName("catalog-session"))
+                            .setRoleArn("arn:aws:iam::123456789012:role/catalog"))
                     .setRegion("us-east-1")
                     .setSigningName("glue"))
             .build();
@@ -385,8 +384,6 @@ class CatalogIntegrationAccessTest {
 
     AwsAssumeRoleAuthentication assumed = resolvedAuthentication.get().getAwsAssumeRole();
     assertEquals("arn:aws:iam::123456789012:role/catalog", assumed.getRoleArn());
-    assertEquals("external", assumed.getExternalId());
-    assertEquals("catalog-session", assumed.getRoleSessionName());
     assertEquals("us-east-1", resolvedAuthentication.get().getRegion());
     client.close();
     assertTrue(closed.get());
@@ -633,6 +630,8 @@ class CatalogIntegrationAccessTest {
             .statusCode(403)
             .message("disabled")
             .build();
+    var missingAccount =
+        new AccountAwsExternalIdProvider.AccountMissingException("deleted-account");
 
     assertTrue(
         CatalogIntegrationAccess.terminalRefreshFailure(denied)
@@ -642,6 +641,9 @@ class CatalogIntegrationAccessTest {
     assertSame(missing, CatalogIntegrationAccess.terminalRefreshFailure(missing));
     assertTrue(
         CatalogIntegrationAccess.terminalRefreshFailure(disabledRegion)
+            instanceof TerminalCredentialRefreshException);
+    assertTrue(
+        CatalogIntegrationAccess.terminalRefreshFailure(missingAccount)
             instanceof TerminalCredentialRefreshException);
   }
 
@@ -690,6 +692,48 @@ class CatalogIntegrationAccessTest {
     assertEquals(CatalogAccessException.Code.CREDENTIAL_UNAVAILABLE, cached.code());
     assertFalse(
         ai.floedb.floecat.catalog.access.CatalogTraversalFailures.describesOneBranch(first));
+    assertEquals(2, resolutions.get());
+    client.close();
+  }
+
+  @Test
+  void missingAccountDuringRegistryRefreshBecomesPermanentCatalogWideFailure() {
+    var resolutions = new java.util.concurrent.atomic.AtomicInteger();
+    access.awsCredentialSourceResolver =
+        (accountId, configured) -> {
+          if (resolutions.incrementAndGet() == 1) {
+            return new ResolvedAwsCredentials(
+                "access", "secret", "session", java.time.Instant.now().minusSeconds(1));
+          }
+          throw new AccountAwsExternalIdProvider.AccountMissingException(accountId);
+        };
+    access.clientOpener =
+        (config, runtimeCredentials) -> {
+          String providerId =
+              runtimeCredentials
+                  .properties()
+                  .get(RefreshingAwsCredentialsRegistry.CATALOG_PROVIDER_ID);
+          var delegate = mock(ai.floedb.floecat.catalog.access.CatalogClient.class);
+          when(delegate.listNamespaces(any()))
+              .thenAnswer(
+                  ignored -> {
+                    RefreshingAwsCredentialsRegistry.resolve(
+                        providerId, AwsCredentialScope.CATALOG);
+                    return List.of();
+                  });
+          return delegate;
+        };
+    var client = access.open(integration(assumeRoleAuthentication()));
+
+    CatalogAccessException failure =
+        assertThrows(CatalogAccessException.class, () -> client.listNamespaces(null));
+    CatalogAccessException cached =
+        assertThrows(CatalogAccessException.class, () -> client.listNamespaces(null));
+
+    assertEquals(CatalogAccessException.Code.CREDENTIAL_CONFIGURATION_INVALID, failure.code());
+    assertEquals(CatalogAccessException.Code.CREDENTIAL_CONFIGURATION_INVALID, cached.code());
+    assertFalse(
+        ai.floedb.floecat.catalog.access.CatalogTraversalFailures.describesOneBranch(failure));
     assertEquals(2, resolutions.get());
     client.close();
   }

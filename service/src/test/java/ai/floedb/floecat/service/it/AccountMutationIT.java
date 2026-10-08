@@ -286,6 +286,8 @@ class AccountMutationIT {
             CreateAccountRequest.newBuilder().setSpec(spec).setIdempotency(key).build());
 
     assertEquals(r1.getAccount().getResourceId().getId(), r2.getAccount().getResourceId().getId());
+    assertFalse(r1.getAccount().getAwsExternalId().isBlank());
+    assertEquals(r1.getAccount().getAwsExternalId(), r2.getAccount().getAwsExternalId());
     assertEquals(r1.getMeta().getPointerKey(), r2.getMeta().getPointerKey());
     assertEquals(r1.getMeta().getPointerVersion(), r2.getMeta().getPointerVersion());
     assertEquals(r1.getMeta().getEtag(), r2.getMeta().getEtag());

@@ -27,6 +27,8 @@ public final class CatalogAccessException extends RuntimeException {
      * permanently fails work that would have succeeded.
      */
     CREDENTIAL_UNAVAILABLE,
+    /** Credential configuration is permanently unusable until an operator changes it. */
+    CREDENTIAL_CONFIGURATION_INVALID,
     CREDENTIAL_SCOPE_INVALID,
     UNSUPPORTED,
     INTERNAL

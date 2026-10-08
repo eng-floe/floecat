@@ -21,12 +21,15 @@ import static ai.floedb.floecat.service.error.impl.GeneratedErrorMessages.Messag
 import ai.floedb.floecat.account.rpc.Account;
 import ai.floedb.floecat.account.rpc.AccountService;
 import ai.floedb.floecat.account.rpc.AccountSpec;
+import ai.floedb.floecat.account.rpc.AwsTrustConfiguration;
 import ai.floedb.floecat.account.rpc.CreateAccountRequest;
 import ai.floedb.floecat.account.rpc.CreateAccountResponse;
 import ai.floedb.floecat.account.rpc.DeleteAccountRequest;
 import ai.floedb.floecat.account.rpc.DeleteAccountResponse;
 import ai.floedb.floecat.account.rpc.GetAccountRequest;
 import ai.floedb.floecat.account.rpc.GetAccountResponse;
+import ai.floedb.floecat.account.rpc.GetAwsTrustConfigurationRequest;
+import ai.floedb.floecat.account.rpc.GetAwsTrustConfigurationResponse;
 import ai.floedb.floecat.account.rpc.ListAccountsRequest;
 import ai.floedb.floecat.account.rpc.ListAccountsResponse;
 import ai.floedb.floecat.account.rpc.UpdateAccountRequest;
@@ -72,8 +75,11 @@ import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
+import software.amazon.awssdk.arns.Arn;
 
 @GrpcService
 public class AccountServiceImpl extends BaseServiceImpl implements AccountService {
@@ -91,6 +97,10 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   @Inject ObjectCache objects;
   @Inject HintCache hints;
   @Inject BlobCacheAccess blobs;
+  @Inject AccountAwsExternalIdProvider awsExternalIds;
+
+  @ConfigProperty(name = "floecat.catalog-integrations.aws.service-principal-arn")
+  Optional<String> awsServicePrincipalArn;
 
   private static final Set<String> ACCOUNT_MUTABLE_PATHS =
       Set.of("display_name", "description", "tags");
@@ -165,6 +175,62 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
   }
 
   @Override
+  public Uni<GetAwsTrustConfigurationResponse> getAwsTrustConfiguration(
+      GetAwsTrustConfigurationRequest request) {
+    var L = LogHelper.start(LOG, "GetAwsTrustConfiguration");
+    return mapFailures(
+            runWithRetry(
+                () -> {
+                  var pc = principal.get();
+                  var corr = pc.getCorrelationId();
+                  authz.require(pc, "account.read");
+                  String accountId = mustNonEmpty(pc.getAccountId(), "account_id", corr);
+                  String principalArn = requireIamPrincipalArn(corr);
+                  final String externalId;
+                  try {
+                    externalId = awsExternalIds.getOrCreate(accountId);
+                  } catch (AccountAwsExternalIdProvider.AccountMissingException missing) {
+                    throw GrpcErrors.notFound(corr, ACCOUNT, Map.of("id", accountId), missing);
+                  }
+                  return GetAwsTrustConfigurationResponse.newBuilder()
+                      .setConfiguration(
+                          AwsTrustConfiguration.newBuilder()
+                              .addServicePrincipalArns(principalArn)
+                              .setExternalId(externalId)
+                              .setRoleSessionName(
+                                  AccountAwsExternalIdProvider.roleSessionName(accountId)))
+                      .build();
+                }),
+            correlationId())
+        .onFailure()
+        .invoke(L::fail)
+        .onItem()
+        .invoke(L::ok);
+  }
+
+  private String requireIamPrincipalArn(String correlationId) {
+    String configured = awsServicePrincipalArn.orElse("").trim();
+    try {
+      Arn arn = Arn.fromString(configured);
+      String resource = arn.resourceAsString();
+      boolean validResource =
+          "root".equals(resource)
+              || (resource.startsWith("role/") && resource.length() > "role/".length())
+              || (resource.startsWith("user/") && resource.length() > "user/".length());
+      if (!"iam".equals(arn.service())
+          || arn.region().isPresent()
+          || arn.accountId().filter(id -> id.matches("[0-9]{12}")).isEmpty()
+          || !validResource) {
+        throw new IllegalArgumentException("not an IAM principal ARN");
+      }
+      return configured;
+    } catch (RuntimeException invalid) {
+      throw GrpcErrors.preconditionFailed(
+          correlationId, AWS_TRUST_CONFIGURATION_UNAVAILABLE, Map.of(), invalid);
+    }
+  }
+
+  @Override
   public Uni<CreateAccountResponse> createAccount(CreateAccountRequest request) {
     var L = LogHelper.start(LOG, "CreateAccount");
 
@@ -199,6 +265,7 @@ public class AccountServiceImpl extends BaseServiceImpl implements AccountServic
                           .setDisplayName(normName)
                           .setDescription(spec.getDescription())
                           .setCreatedAt(tsNow)
+                          .setAwsExternalId(AccountAwsExternalIdProvider.newExternalId())
                           .putAllTags(spec.getTagsMap())
                           .build();
 

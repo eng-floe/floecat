@@ -8,6 +8,7 @@ account <id|display_name>
 account list
 account get <id|display_name>
 account create <display_name> [--desc <text>]
+account aws-trust-configuration
 account delete <id|display_name>
 catalogs
 catalog use <catalog-name>

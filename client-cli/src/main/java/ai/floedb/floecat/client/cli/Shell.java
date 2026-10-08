@@ -519,6 +519,7 @@ public class Shell implements Runnable {
          account list
          account get <id|display_name>
          account create <display_name> [--desc <text>]
+         account aws-trust-configuration
          account delete <id> (or omit id to use current account)
          catalogs
          catalog use <catalog-name>

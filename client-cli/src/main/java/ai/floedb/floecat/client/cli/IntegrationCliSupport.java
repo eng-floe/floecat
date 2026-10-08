@@ -388,8 +388,6 @@ final class IntegrationCliSupport {
         secret.setBearerToken(
             SecretValue.newBuilder().setValue(require(credentials, "token", "--cred")));
       }
-      case "AWS_ASSUME_ROLE", "AWS-ASSUME-ROLE" ->
-          authentication.setAwsAssumeRole(assumeRole(auth));
       case "AWS_ACCESS_KEY", "AWS-ACCESS-KEY" -> {
         authentication.setAwsAccessKey(
             AwsAccessKeyAuthentication.newBuilder()
@@ -426,11 +424,7 @@ final class IntegrationCliSupport {
   }
 
   private static AwsAssumeRoleAuthentication.Builder assumeRole(Map<String, String> auth) {
-    var assumeRole =
-        AwsAssumeRoleAuthentication.newBuilder().setRoleArn(require(auth, "role_arn", "--auth"));
-    setOptional(auth, "external_id", assumeRole::setExternalId);
-    setOptional(auth, "role_session_name", assumeRole::setRoleSessionName);
-    return assumeRole;
+    return AwsAssumeRoleAuthentication.newBuilder().setRoleArn(require(auth, "role_arn", "--auth"));
   }
 
   private static AwsAccessKeySecret.Builder accessKeySecret(Map<String, String> credentials) {
