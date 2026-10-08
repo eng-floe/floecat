@@ -1987,8 +1987,9 @@ events and account for them in alerts on denied STS calls.</p>
 <p>The trust-configuration RPC fails closed if <code>service-principal-arn</code> is absent or is not an IAM
 principal ARN. Top-level AWS AssumeRole authentication is not supported; configure AssumeRole as
 the credential source inside AWS SigV4.</p>
-<p>This behavior is specific to Catalog Integrations. Storage Authorities and Connectors retain their
-existing AssumeRole configuration and external-ID behavior pending separate migrations.</p>
+<p>Storage Authorities also use the account-owned external ID. During migration they retry their
+stored per-authority external ID when AWS denies the account-owned value. Connectors retain their
+existing AssumeRole configuration and external-ID behavior pending a separate migration.</p>
 <p><code>--props</code> supplies non-secret provider connection properties. For Iceberg REST catalogs such as
 Polaris, <code>warehouse=&lt;catalog-name&gt;</code> selects the upstream catalog without putting a query parameter in
 the base URI. Iceberg REST integrations request <code>vended-credentials</code> by default. Set
