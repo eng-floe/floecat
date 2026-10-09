@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class InMemoryKvStore implements KvStore {
   private final Map<Key, Record> records = new ConcurrentHashMap<>();
@@ -56,6 +57,21 @@ public final class InMemoryKvStore implements KvStore {
                       return record;
                     })
                 == record);
+  }
+
+  @Override
+  public Uni<Boolean> setAttrsIfExists(Key key, Map<String, AttrValue> sets) {
+    MetadataAttrUpdates.validate(key, sets, Map.of());
+    var updated = new AtomicBoolean();
+    records.computeIfPresent(
+        key,
+        (ignored, existing) -> {
+          var attrs = new HashMap<>(existing.attrs());
+          attrs.putAll(sets);
+          updated.set(true);
+          return new Record(key, existing.kind(), existing.value(), attrs, existing.version());
+        });
+    return Uni.createFrom().item(updated.get());
   }
 
   @Override

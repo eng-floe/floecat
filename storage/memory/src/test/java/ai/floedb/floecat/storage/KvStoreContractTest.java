@@ -67,6 +67,30 @@ class KvStoreContractTest {
   }
 
   @Test
+  void sideband_touch_does_not_advance_context_version() {
+    var key = key("pk1", "session");
+    var initial =
+        new KvStore.Record(
+            key,
+            "Session",
+            "v1".getBytes(StandardCharsets.UTF_8),
+            Map.of("lastActivity", AttrValue.of(1L)),
+            1L);
+    assertTrue(kv.putCas(initial, 0L).await().indefinitely());
+    assertTrue(
+        kv.setAttrsIfExists(key, Map.of("lastActivity", AttrValue.of(2L))).await().indefinitely());
+    assertEquals(1L, kv.get(key).await().indefinitely().orElseThrow().version());
+
+    var stored = kv.get(key).await().indefinitely().orElseThrow();
+    assertEquals(1L, stored.version());
+    assertEquals(2L, stored.attrs().get("lastActivity").asLong());
+    assertFalse(
+        kv.setAttrsIfExists(key("pk1", "missing"), Map.of("lastActivity", AttrValue.of(3L)))
+            .await()
+            .indefinitely());
+  }
+
+  @Test
   void queryByPartitionKeyPrefix_pages_by_sort_key() {
     putSeries("pk1", "sk", 5);
 
