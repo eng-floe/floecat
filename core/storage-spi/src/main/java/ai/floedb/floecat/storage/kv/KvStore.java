@@ -24,8 +24,8 @@ import java.util.Optional;
 /**
  * Minimal KV surface area for entity storage.
  *
- * <p>This interface is intentionally CAS-only for writes: all puts and deletes are conditional on
- * an expected version.
+ * <p>Entity values use CAS writes. Side-band attributes may be updated independently of the entity
+ * version.
  */
 public interface KvStore {
 
@@ -111,6 +111,14 @@ public interface KvStore {
    * @throws IllegalArgumentException if the record's attrs break {@link AttrWriteRules}
    */
   Uni<Boolean> putCas(Record record, long expectedVersion);
+
+  /**
+   * Sets metadata attributes on an existing record without changing its value or version. Writes
+   * are last-write-wins; this method never creates a missing record.
+   */
+  default Uni<Boolean> setAttrsIfExists(Key key, Map<String, AttrValue> sets) {
+    throw new UnsupportedOperationException("setAttrsIfExists is not supported");
+  }
 
   /**
    * Conditional delete.
