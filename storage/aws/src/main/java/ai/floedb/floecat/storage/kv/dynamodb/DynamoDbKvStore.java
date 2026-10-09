@@ -365,6 +365,37 @@ public final class DynamoDbKvStore implements KvStore, KvAttributes {
   }
 
   @Override
+  public Uni<Boolean> setAttrsIfExists(Key key, Map<String, AttrValue> sets) {
+    MetadataAttrUpdates.validate(key, sets, Map.of());
+    var names = new HashMap<String, String>();
+    names.put("#pk", ATTR_PARTITION_KEY);
+    var values = new HashMap<String, AttributeValue>();
+    var terms = new ArrayList<String>(sets.size());
+    int index = 0;
+    for (var entry : sets.entrySet()) {
+      String name = "#attr" + index;
+      String value = ":attr" + index;
+      names.put(name, entry.getKey());
+      values.put(value, attrToAv(entry.getValue()));
+      terms.add(name + " = " + value);
+      index++;
+    }
+    var req =
+        UpdateItemRequest.builder()
+            .tableName(table)
+            .key(keyMap(key))
+            .updateExpression("SET " + String.join(", ", terms))
+            .conditionExpression("attribute_exists(#pk)")
+            .expressionAttributeNames(names)
+            .expressionAttributeValues(values)
+            .build();
+    return dynamo(client -> client.updateItem(req))
+        .replaceWith(true)
+        .onFailure(ConditionalCheckFailedException.class)
+        .recoverWithItem(false);
+  }
+
+  @Override
   public Uni<Boolean> deleteCas(Key key, long expectedVersion) {
     if (expectedVersion <= 0) {
       throw new IllegalArgumentException("expectedVersion must be > 0 for CAS delete");
