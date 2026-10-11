@@ -57,6 +57,8 @@ import ai.floedb.floecat.service.repo.util.GenericResourceRepository.PointerCond
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.util.Timestamps;
+import io.quarkus.runtime.Startup;
+import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Clock;
@@ -72,6 +74,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -87,6 +90,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /** Materializes one Catalog Overlay's selected upstream metadata into its target catalog. */
+@Startup
 @ApplicationScoped
 public class CatalogOverlayReconciler {
 
@@ -127,13 +131,22 @@ public class CatalogOverlayReconciler {
       defaultValue = "16")
   int maxParallelLoads = 16;
 
-  // One entry per active or waiting overlay. Reference counts change only under map.compute, and an
-  // entry is removed after its last owner unlocks, so distinct overlays never share a lock and idle
-  // overlay IDs do not accumulate indefinitely.
+  // One entry per active or waiting overlay. This is instance-local load control; the repository
+  // fences remain the correctness boundary when different service instances reconcile the same
+  // overlay. Reference counts change only under map.compute, and an entry is removed after its last
+  // owner unlocks, so distinct overlays never share a lock and idle overlay IDs do not accumulate.
   private final ConcurrentHashMap<ResourceId, ReconcileLock> reconcileLocks =
       new ConcurrentHashMap<>();
 
   Clock clock = Clock.systemUTC();
+
+  @PostConstruct
+  void validateConfiguration() {
+    if (maxParallelLoads < 1) {
+      throw new IllegalStateException(
+          "floecat.catalog-overlay.reconcile.max-parallel-loads must be positive");
+    }
+  }
 
   public Result reconcile(
       CatalogOverlay overlay,
@@ -153,13 +166,14 @@ public class CatalogOverlayReconciler {
     requireBinding(overlay, integration);
     PointerConditions fence = fence(overlay, overlayMeta, integration, integrationMeta);
     Discovery discovery;
-    try (CatalogClient client = access.open(integration)) {
+    try (CatalogClientSession session = new CatalogClientSession(access.open(integration))) {
+      CatalogClient client = session.client();
       cancellableCall(
           () -> {
             client.validate();
             return null;
           });
-      discovery = discover(client, overlay);
+      discovery = discover(session, overlay);
     }
 
     var result = new MutableResult();
@@ -233,7 +247,8 @@ public class CatalogOverlayReconciler {
     }
   }
 
-  private Discovery discover(CatalogClient client, CatalogOverlay overlay) {
+  private Discovery discover(CatalogClientSession session, CatalogOverlay overlay) {
+    CatalogClient client = session.client();
     var capabilities = client.capabilities();
     for (CatalogCapability required :
         List.of(
@@ -387,7 +402,7 @@ public class CatalogOverlayReconciler {
             // is the one place that decides it.
             tableNames = List.of();
           }
-          loadRelations(overlay, normalizedPath, tableNames, tableLoadPlan);
+          loadRelations(session, overlay, normalizedPath, tableNames, tableLoadPlan);
           if (listViews) {
             List<CatalogObjectName> viewNames;
             try {
@@ -411,7 +426,7 @@ public class CatalogOverlayReconciler {
               // is a rule that can drift from it.
               viewNames = List.of();
             }
-            loadRelations(overlay, normalizedPath, viewNames, viewLoadPlan);
+            loadRelations(session, overlay, normalizedPath, viewNames, viewLoadPlan);
           }
         }
         if (mayContainSelection(overlay, normalizedPath)) pending.addLast(path);
@@ -440,6 +455,7 @@ public class CatalogOverlayReconciler {
    * concurrent loads cannot change the serial reconciler's collision and failure semantics.
    */
   private <T> void loadRelations(
+      CatalogClientSession session,
       CatalogOverlay overlay,
       NamespacePath normalizedPath,
       List<CatalogObjectName> names,
@@ -448,6 +464,11 @@ public class CatalogOverlayReconciler {
     MetadataFanout fanout = MetadataFanout.concurrent(maxParallelLoads);
     Consumer<RelationLoad<T>> consume =
         outcome -> {
+          // Preserve the serial walk's collision semantics even when the detail read was skipped:
+          // the collision is established by the two successful listings, before either detail is
+          // interpreted. In particular, a view disappearing during load must not hide that the
+          // listing named it as both a table and a view.
+          plan.beforeInsert().accept(outcome.localName());
           CatalogAccessException failure = outcome.skippedFailure();
           if (failure != null) {
             if (plan.tracedSkipClasses().add(failure.code())) {
@@ -470,7 +491,6 @@ public class CatalogOverlayReconciler {
             plan.identityUnknownIn().add(normalizedPath);
             return;
           }
-          plan.beforeInsert().accept(outcome.localName());
           if (plan.discovered().putIfAbsent(outcome.localName(), outcome.relation()) != null) {
             throw new IllegalStateException(
                 "Upstream "
@@ -484,7 +504,7 @@ public class CatalogOverlayReconciler {
           CatalogObjectName localName =
               new CatalogObjectName(normalizedPath, normalizeName(name.name()));
           try {
-            T relation = plan.loader().apply(name);
+            T relation = session.detailLoad(() -> plan.loader().apply(name));
             CatalogObjectName actualName = plan.loadedName().apply(relation);
             if (!name.equals(actualName)) {
               throw new IllegalStateException(
@@ -721,15 +741,62 @@ public class CatalogOverlayReconciler {
         published.add(new PublishedDefinition(desired.getResourceId(), definitionMeta));
       }
       assertFence(overlay, overlayMeta, integration, integrationMeta);
-    } catch (BaseResourceRepository.AbortRetryableException lost) {
-      for (PublishedDefinition definition : published) {
+    } catch (RuntimeException failure) {
+      recoverPublishedDefinitionsAfterFailure(
+          overlay, overlayMeta, integration, integrationMeta, published, failure);
+      throw failure;
+    }
+  }
+
+  /**
+   * Checks and repairs publications outside the cancelled request that made the compensation
+   * necessary.
+   *
+   * <p>Repository reads normally poll the current request cancellation, and an interrupt also
+   * abandons their admission wait. Leaving either active here would make the fence probe and root
+   * repair cancel themselves immediately. The original signal and interrupt status are restored
+   * before the caller rethrows its original failure.
+   */
+  private void recoverPublishedDefinitionsAfterFailure(
+      CatalogOverlay overlay,
+      MutationMeta overlayMeta,
+      CatalogIntegration integration,
+      MutationMeta integrationMeta,
+      List<PublishedDefinition> published,
+      RuntimeException failure) {
+    boolean interruptedBeforeRecovery = Thread.interrupted();
+    try (var ignored = PropagatedContext.bindCancellation(() -> false)) {
+      boolean cleanPublished = failure instanceof BaseResourceRepository.AbortRetryableException;
+      if (!cleanPublished) {
         try {
-          removeStaleRootPublication(definition.tableId(), definition.meta());
-        } catch (RuntimeException cleanupFailure) {
-          lost.addSuppressed(cleanupFailure);
+          assertFence(overlay, overlayMeta, integration, integrationMeta);
+        } catch (BaseResourceRepository.AbortRetryableException lost) {
+          cleanPublished = true;
+          failure.addSuppressed(lost);
+        } catch (RuntimeException fenceCheckFailure) {
+          // A failed probe does not prove the fence was lost, so removing roots here could remove
+          // valid publications. Preserve the diagnostic while retaining the original failure.
+          failure.addSuppressed(fenceCheckFailure);
         }
       }
-      throw lost;
+      if (cleanPublished) cleanupPublishedDefinitions(published, failure);
+    } finally {
+      // Preserve both the interrupt that entered recovery and one delivered while it was running.
+      boolean interruptedDuringRecovery = Thread.interrupted();
+      if (interruptedBeforeRecovery || interruptedDuringRecovery) {
+        Thread.currentThread().interrupt();
+      }
+    }
+  }
+
+  private void cleanupPublishedDefinitions(
+      List<PublishedDefinition> published, RuntimeException failure) {
+    for (PublishedDefinition definition : published) {
+      try {
+        removeStaleRootPublication(definition.tableId(), definition.meta());
+      } catch (RuntimeException cleanupFailure) {
+        failure.addSuppressed(cleanupFailure);
+      }
     }
   }
 
@@ -1291,6 +1358,10 @@ public class CatalogOverlayReconciler {
         });
   }
 
+  int reconcileLockCount() {
+    return reconcileLocks.size();
+  }
+
   private static <T> T cancellableCall(Supplier<T> call) {
     throwIfCancelled();
     T value = call.get();
@@ -1399,6 +1470,92 @@ public class CatalogOverlayReconciler {
       Set<NamespacePath> identityUnknownIn,
       Set<CatalogAccessException.Code> tracedSkipClasses,
       Consumer<CatalogObjectName> beforeInsert) {}
+
+  /**
+   * Keeps the provider client alive until detail loads abandoned by cancellation have unwound.
+   *
+   * <p>{@link MetadataFanout} deliberately returns promptly after cancelling its futures; an SDK
+   * request may ignore interruption and continue on its virtual thread. Closing the SDK client on
+   * the caller thread at that point races the active request. This session defers the close to the
+   * last such request without delaying cancellation of the reconcile itself. Consequently an SDK
+   * request that never returns also retains its client indefinitely; provider timeouts are the
+   * boundary that prevents that leak.
+   */
+  private static final class CatalogClientSession implements AutoCloseable {
+    private final CatalogClient client;
+    private int activeDetailLoads;
+    private boolean closeRequested;
+    private boolean clientClosed;
+
+    private CatalogClientSession(CatalogClient client) {
+      this.client = Objects.requireNonNull(client, "client");
+    }
+
+    CatalogClient client() {
+      return client;
+    }
+
+    <T> T detailLoad(Supplier<T> load) {
+      beginDetailLoad();
+      try {
+        return load.get();
+      } finally {
+        endDetailLoad();
+      }
+    }
+
+    private synchronized void beginDetailLoad() {
+      if (closeRequested) {
+        // Only a task submitted before abandonment but starting after close can reach this. Its
+        // future is no longer observed, and refusing the call keeps the already-closing SDK safe.
+        throw new IllegalStateException("Catalog client is closing");
+      }
+      activeDetailLoads++;
+    }
+
+    private void endDetailLoad() {
+      CatalogClient deferredClose = null;
+      synchronized (this) {
+        if (activeDetailLoads < 1) {
+          throw new IllegalStateException("Catalog client detail-load lifecycle is corrupt");
+        }
+        activeDetailLoads--;
+        if (activeDetailLoads == 0 && closeRequested && !clientClosed) {
+          clientClosed = true;
+          deferredClose = client;
+        }
+      }
+      if (deferredClose != null) {
+        boolean interruptedBeforeClose = Thread.interrupted();
+        try {
+          deferredClose.close();
+        } catch (RuntimeException | Error closeFailure) {
+          // Cancellation has already returned to the caller, so no request remains to receive this
+          // failure. Keep it visible without turning an abandoned worker into an uncaught failure.
+          LOG.error("Deferred catalog client close failed", closeFailure);
+        } finally {
+          boolean interruptedDuringClose = Thread.interrupted();
+          if (interruptedBeforeClose || interruptedDuringClose) {
+            Thread.currentThread().interrupt();
+          }
+        }
+      }
+    }
+
+    @Override
+    public void close() {
+      CatalogClient immediateClose = null;
+      synchronized (this) {
+        if (closeRequested) return;
+        closeRequested = true;
+        if (activeDetailLoads == 0) {
+          clientClosed = true;
+          immediateClose = client;
+        }
+      }
+      if (immediateClose != null) immediateClose.close();
+    }
+  }
 
   private static final class ReconcileLock {
     private final ReentrantLock lock = new ReentrantLock();

@@ -25,8 +25,7 @@ import java.util.Optional;
  * <p>Implementations must permit concurrent {@link #loadTable} calls, concurrent {@link #loadView}
  * calls, and the two detail-loading methods to run concurrently with one another. Floecat bounds
  * that fan-out and does not invoke listing or credential methods concurrently on the same client.
- * After cancellation, {@link #close} may run while interrupted detail calls are still unwinding, so
- * closing must also be safe against those calls.
+ * After cancellation, Floecat defers {@link #close} until interrupted detail calls have unwound.
  */
 public interface CatalogClient extends AutoCloseable {
   CatalogCapabilities capabilities();
