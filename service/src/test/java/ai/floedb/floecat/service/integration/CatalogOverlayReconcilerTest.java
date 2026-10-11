@@ -52,6 +52,7 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogIntegrationType;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogRepository;
@@ -64,10 +65,18 @@ import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import java.util.AbstractList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -218,6 +227,173 @@ class CatalogOverlayReconcilerTest {
 
     reconciler.retireMaterializedResources(overlay);
     assertTrue(listLocalNamespaces().isEmpty());
+  }
+
+  @Test
+  void boundsParallelTableDetailLoads() throws Exception {
+    NamespacePath sales = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    for (int index = 0; index < 6; index++) {
+      CatalogObjectName name = new CatalogObjectName(sales, "table_" + index);
+      client.tables.put(name, catalogTable(name, "table-uuid-" + index));
+    }
+    reconciler.maxParallelLoads = 2;
+    CountDownLatch firstWave = new CountDownLatch(2);
+    CountDownLatch release = new CountDownLatch(1);
+    AtomicInteger active = new AtomicInteger();
+    AtomicInteger maximum = new AtomicInteger();
+    client.beforeTableLoad =
+        ignored -> {
+          int now = active.incrementAndGet();
+          maximum.accumulateAndGet(now, Math::max);
+          firstWave.countDown();
+          await(release);
+        };
+    client.afterTableLoad = ignored -> active.decrementAndGet();
+
+    CompletableFuture<CatalogOverlayReconciler.Result> result =
+        CompletableFuture.supplyAsync(this::reconcile);
+    assertTrue(firstWave.await(5, TimeUnit.SECONDS));
+    assertEquals(2, active.get());
+    assertEquals(2, client.tableLoads.get());
+    release.countDown();
+
+    assertEquals(6, result.get(5, TimeUnit.SECONDS).tablesCreated());
+    assertEquals(2, maximum.get());
+  }
+
+  @Test
+  void cancellationStopsSubmittingTableDetailLoads() throws Exception {
+    NamespacePath sales = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    for (int index = 0; index < 20; index++) {
+      CatalogObjectName name = new CatalogObjectName(sales, "table_" + index);
+      client.tables.put(name, catalogTable(name, "table-uuid-" + index));
+    }
+    reconciler.maxParallelLoads = 2;
+    CountDownLatch firstWave = new CountDownLatch(2);
+    CountDownLatch release = new CountDownLatch(1);
+    AtomicBoolean cancelled = new AtomicBoolean();
+    client.beforeTableLoad =
+        ignored -> {
+          firstWave.countDown();
+          await(release);
+        };
+    CompletableFuture<Void> cancel =
+        CompletableFuture.runAsync(
+            () -> {
+              await(firstWave);
+              cancelled.set(true);
+            });
+
+    try (var ignored = PropagatedContext.bindCancellation(cancelled::get)) {
+      assertThrows(CancellationException.class, this::reconcile);
+    } finally {
+      release.countDown();
+    }
+    cancel.get(5, TimeUnit.SECONDS);
+    assertTrue(client.tableLoads.get() < client.tables.size());
+  }
+
+  @Test
+  void cancellationStopsRelationNamePreparation() {
+    NamespacePath sales = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    AtomicBoolean cancelled = new AtomicBoolean();
+    AtomicInteger namesRead = new AtomicInteger();
+    client.tableListing =
+        new AbstractList<>() {
+          @Override
+          public CatalogObjectName get(int index) {
+            namesRead.incrementAndGet();
+            if (index == 10) cancelled.set(true);
+            return new CatalogObjectName(sales, "table_" + index);
+          }
+
+          @Override
+          public int size() {
+            return 10_000;
+          }
+        };
+
+    try (var ignored = PropagatedContext.bindCancellation(cancelled::get)) {
+      assertThrows(CancellationException.class, this::reconcile);
+    }
+
+    assertTrue(namesRead.get() < client.tableListing.size());
+    assertEquals(0, client.tableLoads.get());
+  }
+
+  @Test
+  void unrelatedOverlayWithFormerStripeCollisionReconcilesConcurrently() throws Exception {
+    NamespacePath sales = NamespacePath.of("sales");
+    NamespacePath inventory = NamespacePath.of("inventory");
+    CatalogObjectName salesTable = new CatalogObjectName(sales, "orders");
+    CatalogObjectName inventoryTable = new CatalogObjectName(inventory, "stock");
+    client.children.put(NamespacePath.root(), List.of(sales, inventory));
+    client.children.put(sales, List.of());
+    client.children.put(inventory, List.of());
+    client.tables.put(salesTable, catalogTable(salesTable, "orders-id"));
+    client.tables.put(inventoryTable, catalogTable(inventoryTable, "stock-id"));
+
+    int oldStripe = Math.floorMod(overlay.getResourceId().hashCode(), 256);
+    ResourceId secondOverlayId =
+        java.util.stream.IntStream.range(0, 100_000)
+            .mapToObj(index -> id("other-overlay-" + index, ResourceKind.RK_CATALOG_OVERLAY))
+            .filter(candidate -> Math.floorMod(candidate.hashCode(), 256) == oldStripe)
+            .findFirst()
+            .orElseThrow();
+    CatalogOverlay secondOverlay =
+        overlay.toBuilder()
+            .setResourceId(secondOverlayId)
+            .setDisplayName("inventory")
+            .clearIncludeNamespaces()
+            .addIncludeNamespaces(
+                ai.floedb.floecat.integration.rpc.NamespacePath.newBuilder()
+                    .addSegments("inventory"))
+            .build();
+    overlays.create(secondOverlay);
+
+    CountDownLatch salesStarted = new CountDownLatch(1);
+    CountDownLatch releaseSales = new CountDownLatch(1);
+    client.beforeTableLoad =
+        name -> {
+          if (name.equals(salesTable)) {
+            salesStarted.countDown();
+            await(releaseSales);
+          }
+        };
+
+    CompletableFuture<CatalogOverlayReconciler.Result> first =
+        CompletableFuture.supplyAsync(this::reconcile);
+    assertTrue(salesStarted.await(5, TimeUnit.SECONDS));
+    CompletableFuture<CatalogOverlayReconciler.Result> second =
+        CompletableFuture.supplyAsync(
+            () ->
+                reconciler.reconcile(
+                    secondOverlay,
+                    overlays.metaFor(secondOverlayId),
+                    integration,
+                    integrations.metaFor(integration.getResourceId())));
+
+    try {
+      assertEquals(1, second.get(5, TimeUnit.SECONDS).tablesCreated());
+    } finally {
+      releaseSales.countDown();
+    }
+    assertEquals(1, first.get(5, TimeUnit.SECONDS).tablesCreated());
+  }
+
+  private static void await(CountDownLatch latch) {
+    try {
+      latch.await();
+    } catch (InterruptedException interrupted) {
+      Thread.currentThread().interrupt();
+      throw new CancellationException("test load interrupted");
+    }
   }
 
   @Test
@@ -1396,6 +1572,49 @@ class CatalogOverlayReconcilerTest {
     verify(reconciler.tableRoots, never()).deleteWithPrecondition(any(), anyLong());
   }
 
+  @Test
+  void lostGenerationAttemptsEveryStaleTableRootCleanup() {
+    NamespacePath sales = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    for (String name : List.of("orders", "returns")) {
+      CatalogObjectName objectName = new CatalogObjectName(sales, name);
+      client.tables.put(objectName, catalogTable(objectName, name + "-id"));
+    }
+    List<ResourceId> published = new java.util.concurrent.CopyOnWriteArrayList<>();
+    doAnswer(
+            invocation -> {
+              published.add(invocation.getArgument(0));
+              if (published.size() == 2) {
+                published.forEach(tables::delete);
+                MutationMeta current = overlays.metaFor(overlay.getResourceId());
+                overlays.update(
+                    overlay.toBuilder().setDisplayName("changed").build(),
+                    current.getPointerVersion());
+              }
+              return null;
+            })
+        .when(reconciler.rootWriter)
+        .commitDefinition(any(), any());
+    AtomicInteger cleanups = new AtomicInteger();
+    doAnswer(
+            invocation -> {
+              if (cleanups.getAndIncrement() == 0) {
+                throw new IllegalStateException("first cleanup failed");
+              }
+              return null;
+            })
+        .when(reconciler.rootWriter)
+        .replaceDefinitionIfMatches(any(), any(), any());
+
+    var failure =
+        assertThrows(BaseResourceRepository.AbortRetryableException.class, this::reconcile);
+
+    assertEquals(2, cleanups.get());
+    assertEquals(1, failure.getSuppressed().length);
+    assertEquals("first cleanup failed", failure.getSuppressed()[0].getMessage());
+  }
+
   /**
    * A real MarkerStore over the given pointer store.
    *
@@ -1530,6 +1749,8 @@ class CatalogOverlayReconcilerTest {
     /** Namespaces whose table listing the principal cannot read. */
     final java.util.Set<NamespacePath> deniedTableListings = new java.util.HashSet<>();
 
+    List<CatalogObjectName> tableListing;
+
     @Override
     public List<CatalogObjectName> listTables(NamespacePath namespace) {
       if (deniedTableListings.contains(namespace)) {
@@ -1537,6 +1758,7 @@ class CatalogOverlayReconcilerTest {
             ai.floedb.floecat.catalog.access.CatalogAccessException.Code.PERMISSION_DENIED,
             "cannot list tables in " + namespace);
       }
+      if (tableListing != null) return tableListing;
       return tables.keySet().stream().filter(name -> name.namespace().equals(namespace)).toList();
     }
 
@@ -1553,17 +1775,27 @@ class CatalogOverlayReconcilerTest {
               "catalog credentials can no longer be refreshed");
         };
 
+    final AtomicInteger tableLoads = new AtomicInteger();
+    Consumer<CatalogObjectName> beforeTableLoad = ignored -> {};
+    Consumer<CatalogObjectName> afterTableLoad = ignored -> {};
+
     @Override
     public CatalogTable loadTable(CatalogObjectName table) {
-      if (credentialFailures.contains(table)) {
-        credentialRefresh.run();
+      tableLoads.incrementAndGet();
+      beforeTableLoad.accept(table);
+      try {
+        if (credentialFailures.contains(table)) {
+          credentialRefresh.run();
+        }
+        if (unloadableTables.contains(table)) {
+          throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
+              ai.floedb.floecat.catalog.access.CatalogAccessException.Code.NOT_FOUND,
+              "table vanished between listing and load: " + table);
+        }
+        return tables.get(table);
+      } finally {
+        afterTableLoad.accept(table);
       }
-      if (unloadableTables.contains(table)) {
-        throw new ai.floedb.floecat.catalog.access.CatalogAccessException(
-            ai.floedb.floecat.catalog.access.CatalogAccessException.Code.NOT_FOUND,
-            "table vanished between listing and load: " + table);
-      }
-      return tables.get(table);
     }
 
     /** Namespaces whose view listing the principal cannot read. */

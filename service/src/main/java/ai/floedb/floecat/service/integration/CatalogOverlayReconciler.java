@@ -43,6 +43,8 @@ import ai.floedb.floecat.integration.rpc.CatalogIntegration;
 import ai.floedb.floecat.integration.rpc.CatalogOverlay;
 import ai.floedb.floecat.service.catalog.impl.TableRootWriter;
 import ai.floedb.floecat.service.common.BaseServiceImpl;
+import ai.floedb.floecat.service.concurrent.MetadataFanout;
+import ai.floedb.floecat.service.context.PropagatedContext;
 import ai.floedb.floecat.service.repo.impl.CatalogIntegrationRepository;
 import ai.floedb.floecat.service.repo.impl.CatalogOverlayRepository;
 import ai.floedb.floecat.service.repo.impl.NamespaceRepository;
@@ -60,6 +62,8 @@ import jakarta.inject.Inject;
 import java.time.Clock;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -71,7 +75,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 
 /** Materializes one Catalog Overlay's selected upstream metadata into its target catalog. */
@@ -97,6 +109,7 @@ public class CatalogOverlayReconciler {
   static final String METADATA_LOCATION_PROPERTY = "metadata_location";
   static final String STORAGE_LOCATION_PROPERTY = "storage_location";
   private static final int MAX_NAMESPACES = 100_000;
+  private static final long RECONCILE_LOCK_POLL_MILLIS = 10L;
 
   @Inject CatalogIntegrationAccess access;
   @Inject CatalogIntegrationRepository integrations;
@@ -109,9 +122,30 @@ public class CatalogOverlayReconciler {
   @Inject TableRootWriter rootWriter;
   @Inject MarkerStore markerStore;
 
+  @ConfigProperty(
+      name = "floecat.catalog-overlay.reconcile.max-parallel-loads",
+      defaultValue = "16")
+  int maxParallelLoads = 16;
+
+  // One entry per active or waiting overlay. Reference counts change only under map.compute, and an
+  // entry is removed after its last owner unlocks, so distinct overlays never share a lock and idle
+  // overlay IDs do not accumulate indefinitely.
+  private final ConcurrentHashMap<ResourceId, ReconcileLock> reconcileLocks =
+      new ConcurrentHashMap<>();
+
   Clock clock = Clock.systemUTC();
 
   public Result reconcile(
+      CatalogOverlay overlay,
+      MutationMeta overlayMeta,
+      CatalogIntegration integration,
+      MutationMeta integrationMeta) {
+    try (ReconcileLockLease ignored = acquireReconcileLock(overlay.getResourceId())) {
+      return reconcileWhileLocked(overlay, overlayMeta, integration, integrationMeta);
+    }
+  }
+
+  private Result reconcileWhileLocked(
       CatalogOverlay overlay,
       MutationMeta overlayMeta,
       CatalogIntegration integration,
@@ -120,7 +154,11 @@ public class CatalogOverlayReconciler {
     PointerConditions fence = fence(overlay, overlayMeta, integration, integrationMeta);
     Discovery discovery;
     try (CatalogClient client = access.open(integration)) {
-      client.validate();
+      cancellableCall(
+          () -> {
+            client.validate();
+            return null;
+          });
       discovery = discover(client, overlay);
     }
 
@@ -128,6 +166,7 @@ public class CatalogOverlayReconciler {
     Map<NamespacePath, Namespace> localNamespaces =
         reconcileNamespaces(
             overlay, integration, fence, discovery.materializedNamespaces(), result);
+    LocalInventory localInventory = localInventory(overlay, localNamespaces);
     // Every path that made the pass partial, not just the branch ones. A cycle in which each
     // loadTable failed skippably populates only unobserved, and reporting zero there would be
     // indistinguishable from a clean no-op pass -- which is the confusion these counters exist to
@@ -135,13 +174,14 @@ public class CatalogOverlayReconciler {
     // Unioned, because all three sets are keyed by namespace: summing them counted a namespace
     // whose table and view listings both failed twice, which made the number neither a branch count
     // nor a failure count.
-    Set<NamespacePath> skippedBranches = new HashSet<>(discovery.skippedPrefixes());
-    skippedBranches.addAll(discovery.skippedTablePrefixes());
-    skippedBranches.addAll(discovery.skippedViewPrefixes());
+    Set<NamespacePath> skippedBranches = new HashSet<>();
+    addAllCancellable(skippedBranches, discovery.skippedPrefixes());
+    addAllCancellable(skippedBranches, discovery.skippedTablePrefixes());
+    addAllCancellable(skippedBranches, discovery.skippedViewPrefixes());
     result.branchesSkipped = skippedBranches.size();
     result.objectsSkipped =
         discovery.unobservedTables().size() + discovery.unobservedViews().size();
-    retireStaleRelations(overlay, fence, discovery, localNamespaces, result);
+    retireStaleRelations(overlay, fence, discovery, localInventory, result);
     reconcileTables(
         overlay,
         overlayMeta,
@@ -150,8 +190,10 @@ public class CatalogOverlayReconciler {
         fence,
         discovery.tables(),
         localNamespaces,
+        localInventory,
         result);
-    reconcileViews(overlay, integration, fence, discovery.views(), localNamespaces, result);
+    reconcileViews(
+        overlay, integration, fence, discovery.views(), localNamespaces, localInventory, result);
     retireNamespaces(overlay, fence, discovery, localNamespaces, result);
     assertFence(overlay, overlayMeta, integration, integrationMeta);
     return result.freeze();
@@ -160,12 +202,15 @@ public class CatalogOverlayReconciler {
   /** Removes every materialized descendant after the overlay deletion fence is installed. */
   public void retireMaterializedResources(CatalogOverlay overlay) {
     ResourceId catalogId = overlay.getCatalogId();
-    List<Namespace> catalogNamespaces = new ArrayList<>(listNamespaces(catalogId));
-    catalogNamespaces.sort(
-        Comparator.comparingInt((Namespace namespace) -> path(namespace).segments().size())
-            .reversed());
+    List<Namespace> catalogNamespaces =
+        sortedCancellable(
+            listNamespaces(catalogId),
+            Comparator.comparingInt((Namespace namespace) -> path(namespace).segments().size())
+                .reversed());
     for (Namespace namespace : catalogNamespaces) {
+      throwIfCancelled();
       for (Table table : listTables(namespace)) {
+        throwIfCancelled();
         if (!ownedBy(table.getPropertiesMap(), overlay)) continue;
         if (!tables.delete(table.getResourceId())
             && tables.getById(table.getResourceId()).isPresent()) {
@@ -175,6 +220,7 @@ public class CatalogOverlayReconciler {
         purgeTableState(table.getResourceId());
       }
       for (View view : listViews(namespace)) {
+        throwIfCancelled();
         if (!ownedBy(view.getPropertiesMap(), overlay)) continue;
         if (!views.delete(view.getResourceId())
             && views.getById(view.getResourceId()).isPresent()) {
@@ -247,10 +293,36 @@ public class CatalogOverlayReconciler {
     // propagating anywhere and accumulated with no bound.
     Set<NamespacePath> tableIdentityUnknownIn = new HashSet<>();
     Set<NamespacePath> viewIdentityUnknownIn = new HashSet<>();
+    RelationLoadPlan<CatalogTable> tableLoadPlan =
+        new RelationLoadPlan<>(
+            RelationKind.TABLE,
+            client::loadTable,
+            CatalogTable::name,
+            discoveredTables,
+            unobservedTables,
+            tableIdentityUnknownIn,
+            tracedSkipTableClasses,
+            ignored -> {});
+    RelationLoadPlan<CatalogView> viewLoadPlan =
+        new RelationLoadPlan<>(
+            RelationKind.VIEW,
+            client::loadView,
+            CatalogView::name,
+            discoveredViews,
+            unobservedViews,
+            viewIdentityUnknownIn,
+            tracedSkipViewClasses,
+            localName -> {
+              if (discoveredTables.containsKey(localName)) {
+                throw new IllegalStateException(
+                    "Upstream relation name is both table and view: " + localName);
+              }
+            });
     Set<NamespacePath> seen = new HashSet<>();
     var pending = new ArrayDeque<NamespacePath>();
     pending.add(NamespacePath.root());
     while (!pending.isEmpty()) {
+      throwIfCancelled();
       NamespacePath parent = pending.removeFirst();
       // Normalized before it reaches the include-filter comparison, as the sibling call below is.
       // The filters are written in normalized form, so an upstream namespace whose raw segments
@@ -259,7 +331,7 @@ public class CatalogOverlayReconciler {
       NamespacePath normalizedParent = normalizePath(parent);
       List<NamespacePath> children;
       try {
-        children = client.listNamespaces(parent);
+        children = cancellableCall(() -> client.listNamespaces(parent));
       } catch (CatalogAccessException failure) {
         // Tolerated only where the operator did not ask for this branch. An overlay with no
         // include filters selects the whole upstream tree -- the documented default -- and a Unity
@@ -283,7 +355,8 @@ public class CatalogOverlayReconciler {
         skippedPrefixes.add(normalizedParent);
         continue;
       }
-      for (NamespacePath path : children.stream().sorted().toList()) {
+      for (NamespacePath path : sortedCancellable(children, Comparator.naturalOrder())) {
+        throwIfCancelled();
         if (!seen.add(path)) continue;
         if (seen.size() > MAX_NAMESPACES) {
           throw new IllegalStateException("Catalog namespace inventory exceeds " + MAX_NAMESPACES);
@@ -294,7 +367,7 @@ public class CatalogOverlayReconciler {
           addAncestors(normalizedPath, materialized);
           List<CatalogObjectName> tableNames;
           try {
-            tableNames = client.listTables(path);
+            tableNames = cancellableCall(() -> client.listTables(path));
           } catch (CatalogAccessException failure) {
             if (!tolerateBranchFailure(overlay, normalizedPath, failure, false)) {
               throw failure;
@@ -314,64 +387,11 @@ public class CatalogOverlayReconciler {
             // is the one place that decides it.
             tableNames = List.of();
           }
-          for (CatalogObjectName name : tableNames.stream().sorted().toList()) {
-            CatalogObjectName localTableName =
-                new CatalogObjectName(normalizedPath, normalizeName(name.name()));
-            CatalogTable table;
-            try {
-              table = client.loadTable(name);
-            } catch (CatalogAccessException failure) {
-              // Same treatment as a view that will not load: a table dropped upstream between the
-              // listing and this read answers NOT_FOUND, which used to abort the cycle for every
-              // table and view in the overlay.
-              //
-              // Note what this does not cover. A columns array the strict decoder rejects arrives
-              // as INVALID_RESPONSE -> INTERNAL, which describesOneBranch deliberately excludes, so
-              // it still fails the reconcile. That is the intended reading: a proxy or version
-              // difference that reshapes columns reshapes them for every table, so it is a fault of
-              // the catalog rather than of one object, and walking the inventory to collect the
-              // same answer would bury it.
-              if (!CatalogTraversalFailures.describesOneBranch(failure)) {
-                throw failure;
-              }
-              if (tracedSkipTableClasses.add(failure.code())) {
-                LOG.warnf(
-                    failure,
-                    "overlay %s skipping table %s: %s",
-                    overlay.getResourceId().getId(),
-                    LogSafeText.bounded(String.valueOf(name), MAX_LOGGED_CHARS),
-                    LogSafeText.bounded(failure.getMessage(), MAX_LOGGED_CHARS));
-              } else {
-                LOG.debugf(
-                    "overlay %s skipping table %s (%s again)",
-                    overlay.getResourceId().getId(),
-                    LogSafeText.bounded(String.valueOf(name), MAX_LOGGED_CHARS),
-                    failure.code());
-              }
-              unobservedTables.add(localTableName);
-              tableIdentityUnknownIn.add(normalizedPath);
-              continue;
-            }
-            if (!name.equals(table.name())) {
-              throw new IllegalStateException(
-                  "Catalog provider returned table metadata for the wrong object: expected="
-                      + name
-                      + " actual="
-                      + table.name());
-            }
-            // The same value localTableName already holds. Two names for one expression made the
-            // invariant that matters -- the unobserved entry and the discoveredTables key must be
-            // the same key, or retirement misjudges the relation -- something a reader had to
-            // verify character by character.
-            if (discoveredTables.putIfAbsent(localTableName, table) != null) {
-              throw new IllegalStateException(
-                  "Upstream table names collide after normalization: " + localTableName);
-            }
-          }
+          loadRelations(overlay, normalizedPath, tableNames, tableLoadPlan);
           if (listViews) {
             List<CatalogObjectName> viewNames;
             try {
-              viewNames = client.listViews(path);
+              viewNames = cancellableCall(() -> client.listViews(path));
             } catch (CatalogAccessException failure) {
               // The same guard the table listing beside it carries. For Unity both listings share
               // one RPC so they rarely disagree, but this reconciler is provider-neutral and a
@@ -391,76 +411,107 @@ public class CatalogOverlayReconciler {
               // is a rule that can drift from it.
               viewNames = List.of();
             }
-            for (CatalogObjectName name : viewNames.stream().sorted().toList()) {
-              CatalogObjectName localName =
-                  new CatalogObjectName(normalizedPath, normalizeName(name.name()));
-              if (discoveredTables.containsKey(localName)) {
-                throw new IllegalStateException(
-                    "Upstream relation name is both table and view: " + localName);
-              }
-              CatalogView view;
-              try {
-                view = client.loadView(name);
-              } catch (CatalogAccessException failure) {
-                // One view cannot cost the overlay every table in it. A listing and a detail read
-                // can disagree -- the Unity /tables listing is parsed leniently, so a deployment
-                // that omits columns there passes a view whose output schema loadView then refuses
-                // by name -- and this call had no guard, so that view aborted reconcile and kept
-                // aborting it until someone dropped it upstream. Recorded as unobserved so
-                // retirement does not read the gap as "deleted upstream" and remove the local copy.
-                if (!CatalogTraversalFailures.describesOneBranch(failure)) {
-                  throw failure;
-                }
-                if (tracedSkipViewClasses.add(failure.code())) {
-                  LOG.warnf(
-                      failure,
-                      "overlay %s skipping view %s: %s",
-                      overlay.getResourceId().getId(),
-                      LogSafeText.bounded(String.valueOf(name), MAX_LOGGED_CHARS),
-                      LogSafeText.bounded(failure.getMessage(), MAX_LOGGED_CHARS));
-                } else {
-                  LOG.debugf(
-                      "overlay %s skipping view %s (%s again)",
-                      overlay.getResourceId().getId(),
-                      LogSafeText.bounded(String.valueOf(name), MAX_LOGGED_CHARS),
-                      failure.code());
-                }
-                unobservedViews.add(localName);
-                viewIdentityUnknownIn.add(normalizedPath);
-                continue;
-              }
-              if (!name.equals(view.name())) {
-                throw new IllegalStateException(
-                    "Catalog provider returned view metadata for the wrong object: expected="
-                        + name
-                        + " actual="
-                        + view.name());
-              }
-              if (discoveredViews.putIfAbsent(localName, view) != null) {
-                throw new IllegalStateException(
-                    "Upstream view names collide after normalization: " + localName);
-              }
-            }
+            loadRelations(overlay, normalizedPath, viewNames, viewLoadPlan);
           }
         }
         if (mayContainSelection(overlay, normalizedPath)) pending.addLast(path);
       }
     }
-    requireUniqueStableIdentities(
-        discoveredTables.values().stream().map(CatalogTable::identity).toList(), "table");
-    requireUniqueStableIdentities(
-        discoveredViews.values().stream().map(CatalogView::identity).toList(), "view");
+    requireUniqueStableIdentities(discoveredTables.values(), CatalogTable::identity, "table");
+    requireUniqueStableIdentities(discoveredViews.values(), CatalogView::identity, "view");
     return new Discovery(
-        Set.copyOf(materialized),
-        Map.copyOf(discoveredTables),
-        Map.copyOf(discoveredViews),
-        Set.copyOf(skippedPrefixes),
-        Set.copyOf(skippedTablePrefixes),
-        Set.copyOf(skippedViewPrefixes),
-        Set.copyOf(unobservedTables),
-        Set.copyOf(unobservedViews),
-        Set.copyOf(tableIdentityUnknownIn),
-        Set.copyOf(viewIdentityUnknownIn));
+        immutableSetCopyCancellable(materialized),
+        immutableMapCopyCancellable(discoveredTables),
+        immutableMapCopyCancellable(discoveredViews),
+        immutableSetCopyCancellable(skippedPrefixes),
+        immutableSetCopyCancellable(skippedTablePrefixes),
+        immutableSetCopyCancellable(skippedViewPrefixes),
+        immutableSetCopyCancellable(unobservedTables),
+        immutableSetCopyCancellable(unobservedViews),
+        immutableSetCopyCancellable(tableIdentityUnknownIn),
+        immutableSetCopyCancellable(viewIdentityUnknownIn));
+  }
+
+  /**
+   * Loads one namespace's relation details with a bounded, deterministic fan-out.
+   *
+   * <p>All supported catalog clients share this path. Tasks do only the independent upstream read;
+   * ordered result consumption owns every mutable discovery collection and all skip logging, so
+   * concurrent loads cannot change the serial reconciler's collision and failure semantics.
+   */
+  private <T> void loadRelations(
+      CatalogOverlay overlay,
+      NamespacePath normalizedPath,
+      List<CatalogObjectName> names,
+      RelationLoadPlan<T> plan) {
+    List<CatalogObjectName> orderedNames = sortedCancellable(names, Comparator.naturalOrder());
+    MetadataFanout fanout = MetadataFanout.concurrent(maxParallelLoads);
+    Consumer<RelationLoad<T>> consume =
+        outcome -> {
+          CatalogAccessException failure = outcome.skippedFailure();
+          if (failure != null) {
+            if (plan.tracedSkipClasses().add(failure.code())) {
+              LOG.warnf(
+                  failure,
+                  "overlay %s skipping %s %s: %s",
+                  overlay.getResourceId().getId(),
+                  plan.kind().label,
+                  LogSafeText.bounded(String.valueOf(outcome.listedName()), MAX_LOGGED_CHARS),
+                  LogSafeText.bounded(failure.getMessage(), MAX_LOGGED_CHARS));
+            } else {
+              LOG.debugf(
+                  "overlay %s skipping %s %s (%s again)",
+                  overlay.getResourceId().getId(),
+                  plan.kind().label,
+                  LogSafeText.bounded(String.valueOf(outcome.listedName()), MAX_LOGGED_CHARS),
+                  failure.code());
+            }
+            plan.unobserved().add(outcome.localName());
+            plan.identityUnknownIn().add(normalizedPath);
+            return;
+          }
+          plan.beforeInsert().accept(outcome.localName());
+          if (plan.discovered().putIfAbsent(outcome.localName(), outcome.relation()) != null) {
+            throw new IllegalStateException(
+                "Upstream "
+                    + plan.kind().label
+                    + " names collide after normalization: "
+                    + outcome.localName());
+          }
+        };
+    Function<CatalogObjectName, RelationLoad<T>> load =
+        name -> {
+          CatalogObjectName localName =
+              new CatalogObjectName(normalizedPath, normalizeName(name.name()));
+          try {
+            T relation = plan.loader().apply(name);
+            CatalogObjectName actualName = plan.loadedName().apply(relation);
+            if (!name.equals(actualName)) {
+              throw new IllegalStateException(
+                  "Catalog provider returned "
+                      + plan.kind().label
+                      + " metadata for the wrong object: expected="
+                      + name
+                      + " actual="
+                      + actualName);
+            }
+            return new RelationLoad<>(name, localName, relation, null);
+          } catch (CatalogAccessException failure) {
+            // An object can disappear between listing and detail loading. Provider-wide failures
+            // still fail the whole pass; only failures scoped to this relation are retained as an
+            // unobserved object so retirement cannot misread the gap as an upstream deletion.
+            if (!CatalogTraversalFailures.describesOneBranch(failure)) {
+              throw failure;
+            }
+            return new RelationLoad<>(name, localName, null, failure);
+          }
+        };
+    BooleanSupplier cancelled = PropagatedContext.currentCancellation();
+    if (cancelled == null) {
+      fanout.forEachOrdered(orderedNames, load, consume);
+    } else {
+      fanout.forEachOrdered(orderedNames, load, consume, cancelled);
+    }
   }
 
   private Map<NamespacePath, Namespace> reconcileNamespaces(
@@ -472,9 +523,11 @@ public class CatalogOverlayReconciler {
     ResourceId catalogId = overlay.getCatalogId();
     Map<NamespacePath, Namespace> current = new HashMap<>();
     for (Namespace namespace : listNamespaces(catalogId)) {
+      throwIfCancelled();
       current.put(path(namespace), namespace);
     }
-    for (NamespacePath path : targetPaths.stream().sorted().toList()) {
+    for (NamespacePath path : sortedCancellable(targetPaths, Comparator.naturalOrder())) {
+      throwIfCancelled();
       if (current.containsKey(path)) continue;
       List<String> segments = path.segments();
       Namespace created =
@@ -498,6 +551,36 @@ public class CatalogOverlayReconciler {
     return current;
   }
 
+  /** Reads the overlay-owned local relations once for retirement and reconciliation. */
+  private LocalInventory localInventory(
+      CatalogOverlay overlay, Map<NamespacePath, Namespace> localNamespaces) {
+    Map<String, Table> tablesByIdentity = new HashMap<>();
+    Map<CatalogObjectName, Table> tablesByName = new HashMap<>();
+    Map<String, View> viewsByIdentity = new HashMap<>();
+    Map<CatalogObjectName, View> viewsByName = new HashMap<>();
+    for (Namespace namespace : localNamespaces.values()) {
+      throwIfCancelled();
+      NamespacePath namespacePath = path(namespace);
+      for (Table table : listTables(namespace)) {
+        throwIfCancelled();
+        if (!ownedBy(table.getPropertiesMap(), overlay)) continue;
+        tablesByName.put(new CatalogObjectName(namespacePath, table.getDisplayName()), table);
+        stableIdentity(table.getPropertiesMap()).ifPresent(id -> tablesByIdentity.put(id, table));
+      }
+      for (View view : listViews(namespace)) {
+        throwIfCancelled();
+        if (!ownedBy(view.getPropertiesMap(), overlay)) continue;
+        viewsByName.put(new CatalogObjectName(namespacePath, view.getDisplayName()), view);
+        stableIdentity(view.getPropertiesMap()).ifPresent(id -> viewsByIdentity.put(id, view));
+      }
+    }
+    return new LocalInventory(
+        immutableMapCopyCancellable(tablesByIdentity),
+        immutableMapCopyCancellable(tablesByName),
+        immutableMapCopyCancellable(viewsByIdentity),
+        immutableMapCopyCancellable(viewsByName));
+  }
+
   /**
    * Deletes overlay-owned relations the upstream no longer has.
    *
@@ -511,48 +594,34 @@ public class CatalogOverlayReconciler {
       CatalogOverlay overlay,
       PointerConditions fence,
       Discovery discovery,
-      Map<NamespacePath, Namespace> localNamespaces,
+      LocalInventory inventory,
       MutableResult result) {
     Map<CatalogObjectName, CatalogTable> discoveredTables = discovery.tables();
     Map<CatalogObjectName, CatalogView> discoveredViews = discovery.views();
-    Map<String, Table> tablesByIdentity = new HashMap<>();
-    Map<CatalogObjectName, Table> tablesByName = new HashMap<>();
-    Map<String, View> viewsByIdentity = new HashMap<>();
-    Map<CatalogObjectName, View> viewsByName = new HashMap<>();
-    for (Namespace namespace : localNamespaces.values()) {
-      NamespacePath namespacePath = path(namespace);
-      for (Table table : listTables(namespace)) {
-        if (!ownedBy(table.getPropertiesMap(), overlay)) continue;
-        tablesByName.put(new CatalogObjectName(namespacePath, table.getDisplayName()), table);
-        stableIdentity(table.getPropertiesMap()).ifPresent(id -> tablesByIdentity.put(id, table));
-      }
-      for (View view : listViews(namespace)) {
-        if (!ownedBy(view.getPropertiesMap(), overlay)) continue;
-        viewsByName.put(new CatalogObjectName(namespacePath, view.getDisplayName()), view);
-        stableIdentity(view.getPropertiesMap()).ifPresent(id -> viewsByIdentity.put(id, view));
-      }
-    }
 
     Set<String> retainedTableIds = new HashSet<>();
     for (var entry : discoveredTables.entrySet()) {
+      throwIfCancelled();
       CatalogTable source = entry.getValue();
       Table current =
           source.identity().stable()
-              ? tablesByIdentity.get(source.identity().value())
-              : tablesByName.get(entry.getKey());
+              ? inventory.tablesByIdentity().get(source.identity().value())
+              : inventory.tablesByName().get(entry.getKey());
       if (current != null) retainedTableIds.add(current.getResourceId().getId());
     }
     Set<String> retainedViewIds = new HashSet<>();
     for (var entry : discoveredViews.entrySet()) {
+      throwIfCancelled();
       CatalogView source = entry.getValue();
       View current =
           source.identity().stable()
-              ? viewsByIdentity.get(source.identity().value())
-              : viewsByName.get(entry.getKey());
+              ? inventory.viewsByIdentity().get(source.identity().value())
+              : inventory.viewsByName().get(entry.getKey());
       if (current != null) retainedViewIds.add(current.getResourceId().getId());
     }
 
-    for (var staleEntry : tablesByName.entrySet()) {
+    for (var staleEntry : inventory.tablesByName().entrySet()) {
+      throwIfCancelled();
       Table stale = staleEntry.getValue();
       if (retainedTableIds.contains(stale.getResourceId().getId())) continue;
       if (!discovery.observedTable(staleEntry.getKey())) continue;
@@ -573,7 +642,8 @@ public class CatalogOverlayReconciler {
       purgeTableState(stale.getResourceId());
       result.tablesDeleted++;
     }
-    for (var staleEntry : viewsByName.entrySet()) {
+    for (var staleEntry : inventory.viewsByName().entrySet()) {
+      throwIfCancelled();
       View stale = staleEntry.getValue();
       if (retainedViewIds.contains(stale.getResourceId().getId())) continue;
       if (!discovery.observedView(staleEntry.getKey())) continue;
@@ -597,68 +667,69 @@ public class CatalogOverlayReconciler {
       PointerConditions fence,
       Map<CatalogObjectName, CatalogTable> discovered,
       Map<NamespacePath, Namespace> localNamespaces,
+      LocalInventory inventory,
       MutableResult result) {
-    Map<String, Table> existingByIdentity = new HashMap<>();
-    Map<CatalogObjectName, Table> existingByName = new HashMap<>();
-    for (Namespace namespace : localNamespaces.values()) {
-      for (Table table : listTables(namespace)) {
-        if (!ownedBy(table.getPropertiesMap(), overlay)) continue;
-        existingByName.put(new CatalogObjectName(path(namespace), table.getDisplayName()), table);
-        stableIdentity(table.getPropertiesMap()).ifPresent(id -> existingByIdentity.put(id, table));
+    List<PublishedDefinition> published = new ArrayList<>(discovered.size());
+    try {
+      for (var entry : discovered.entrySet()) {
+        throwIfCancelled();
+        CatalogObjectName name = entry.getKey();
+        CatalogTable source = entry.getValue();
+        Namespace namespace = requireNamespace(localNamespaces, name.namespace());
+        Table current =
+            source.identity().stable()
+                ? inventory.tablesByIdentity().get(source.identity().value())
+                : inventory.tablesByName().get(name);
+        Table desired = tableFor(overlay, integration, namespace, source, current);
+        MutationMeta definitionMeta;
+        if (current == null) {
+          definitionMeta =
+              tables
+                  .createWhilePointersMatch(
+                      desired,
+                      fence.and(
+                          orRetry(() -> markerStore.relationCreateFence(desired.getNamespaceId()))))
+                  .orElseThrow(CatalogOverlayReconciler::lostFence);
+          result.tablesCreated++;
+        } else if (!current.equals(desired)) {
+          MutationMeta meta = tables.metaFor(current.getResourceId());
+          // An update that moves the table adds a relation to the destination, so it has to pass
+          // the destination's relation fence exactly as a create does. Leaving the source only
+          // makes it emptier, so the source needs no fence.
+          definitionMeta =
+              tables
+                  .updateWhilePointersMatch(
+                      desired,
+                      meta.getPointerVersion(),
+                      fence.and(
+                          orRetry(
+                              () ->
+                                  markerStore.relationMoveFence(
+                                      current.getNamespaceId(),
+                                      desired.getNamespaceId(),
+                                      !current
+                                          .getCatalogId()
+                                          .getId()
+                                          .equals(desired.getCatalogId().getId())))))
+                  .orElseThrow(CatalogOverlayReconciler::lostFence);
+          result.tablesUpdated++;
+        } else {
+          definitionMeta = tables.metaFor(current.getResourceId());
+        }
+        // Still run on an unchanged table: this is the repair path for a missing/stale table root.
+        rootWriter.commitDefinition(desired.getResourceId(), definitionMeta);
+        published.add(new PublishedDefinition(desired.getResourceId(), definitionMeta));
       }
-    }
-
-    for (var entry : discovered.entrySet()) {
-      CatalogObjectName name = entry.getKey();
-      CatalogTable source = entry.getValue();
-      Namespace namespace = requireNamespace(localNamespaces, name.namespace());
-      Table current =
-          source.identity().stable()
-              ? existingByIdentity.get(source.identity().value())
-              : existingByName.get(name);
-      Table desired = tableFor(overlay, integration, namespace, source, current);
-      MutationMeta definitionMeta;
-      if (current == null) {
-        definitionMeta =
-            tables
-                .createWhilePointersMatch(
-                    desired,
-                    fence.and(
-                        orRetry(() -> markerStore.relationCreateFence(desired.getNamespaceId()))))
-                .orElseThrow(CatalogOverlayReconciler::lostFence);
-        result.tablesCreated++;
-      } else if (!current.equals(desired)) {
-        MutationMeta meta = tables.metaFor(current.getResourceId());
-        // An update that moves the table adds a relation to the destination, so it has to pass the
-        // destination's relation fence exactly as a create does. Leaving the source only makes it
-        // emptier, so the source needs no fence.
-        definitionMeta =
-            tables
-                .updateWhilePointersMatch(
-                    desired,
-                    meta.getPointerVersion(),
-                    fence.and(
-                        orRetry(
-                            () ->
-                                markerStore.relationMoveFence(
-                                    current.getNamespaceId(),
-                                    desired.getNamespaceId(),
-                                    !current
-                                        .getCatalogId()
-                                        .getId()
-                                        .equals(desired.getCatalogId().getId())))))
-                .orElseThrow(CatalogOverlayReconciler::lostFence);
-        result.tablesUpdated++;
-      } else {
-        definitionMeta = tables.metaFor(current.getResourceId());
+      assertFence(overlay, overlayMeta, integration, integrationMeta);
+    } catch (BaseResourceRepository.AbortRetryableException lost) {
+      for (PublishedDefinition definition : published) {
+        try {
+          removeStaleRootPublication(definition.tableId(), definition.meta());
+        } catch (RuntimeException cleanupFailure) {
+          lost.addSuppressed(cleanupFailure);
+        }
       }
-      commitDefinitionWhileFenced(
-          desired.getResourceId(),
-          definitionMeta,
-          overlay,
-          overlayMeta,
-          integration,
-          integrationMeta);
+      throw lost;
     }
   }
 
@@ -668,25 +739,17 @@ public class CatalogOverlayReconciler {
       PointerConditions fence,
       Map<CatalogObjectName, CatalogView> discovered,
       Map<NamespacePath, Namespace> localNamespaces,
+      LocalInventory inventory,
       MutableResult result) {
-    Map<String, View> existingByIdentity = new HashMap<>();
-    Map<CatalogObjectName, View> existingByName = new HashMap<>();
-    for (Namespace namespace : localNamespaces.values()) {
-      for (View view : listViews(namespace)) {
-        if (!ownedBy(view.getPropertiesMap(), overlay)) continue;
-        existingByName.put(new CatalogObjectName(path(namespace), view.getDisplayName()), view);
-        stableIdentity(view.getPropertiesMap()).ifPresent(id -> existingByIdentity.put(id, view));
-      }
-    }
-
     for (var entry : discovered.entrySet()) {
+      throwIfCancelled();
       CatalogObjectName name = entry.getKey();
       CatalogView source = entry.getValue();
       Namespace namespace = requireNamespace(localNamespaces, name.namespace());
       View current =
           source.identity().stable()
-              ? existingByIdentity.get(source.identity().value())
-              : existingByName.get(name);
+              ? inventory.viewsByIdentity().get(source.identity().value())
+              : inventory.viewsByName().get(name);
       View desired = viewFor(overlay, integration, namespace, source, current);
       if (current == null) {
         if (!views.createWhilePointersMatch(
@@ -732,14 +795,19 @@ public class CatalogOverlayReconciler {
       Map<NamespacePath, Namespace> localNamespaces,
       MutableResult result) {
     Set<NamespacePath> targetPaths = discovery.materializedNamespaces();
-    List<Map.Entry<NamespacePath, Namespace>> stale =
-        localNamespaces.entrySet().stream()
-            .filter(entry -> !targetPaths.contains(entry.getKey()))
-            .filter(entry -> discovery.observedNamespace(entry.getKey()))
-            .filter(entry -> ownedBy(entry.getValue().getPropertiesMap(), overlay))
-            .sorted(Map.Entry.<NamespacePath, Namespace>comparingByKey().reversed())
-            .toList();
+    List<Map.Entry<NamespacePath, Namespace>> stale = new ArrayList<>();
+    for (var entry : localNamespaces.entrySet()) {
+      throwIfCancelled();
+      if (!targetPaths.contains(entry.getKey())
+          && discovery.observedNamespace(entry.getKey())
+          && ownedBy(entry.getValue().getPropertiesMap(), overlay)) {
+        stale.add(entry);
+      }
+    }
+    stale =
+        sortedCancellable(stale, Map.Entry.<NamespacePath, Namespace>comparingByKey().reversed());
     for (var entry : stale) {
+      throwIfCancelled();
       Namespace namespace = entry.getValue();
       if (deleteNamespaceIfEmpty(namespace, fence)) {
         result.namespacesDeleted++;
@@ -849,22 +917,6 @@ public class CatalogOverlayReconciler {
     }
   }
 
-  private void commitDefinitionWhileFenced(
-      ResourceId tableId,
-      MutationMeta definitionMeta,
-      CatalogOverlay overlay,
-      MutationMeta overlayMeta,
-      CatalogIntegration integration,
-      MutationMeta integrationMeta) {
-    rootWriter.commitDefinition(tableId, definitionMeta);
-    try {
-      assertFence(overlay, overlayMeta, integration, integrationMeta);
-    } catch (BaseResourceRepository.AbortRetryableException lost) {
-      removeStaleRootPublication(tableId, definitionMeta);
-      throw lost;
-    }
-  }
-
   private void removeStaleRootPublication(ResourceId tableId, MutationMeta publishedDefinition) {
     MutationMeta currentDefinition = tables.metaForSafe(tableId);
     if (sameRevision(publishedDefinition, currentDefinition)) return;
@@ -923,10 +975,15 @@ public class CatalogOverlayReconciler {
     Set<String> seen = new HashSet<>();
     String token = "";
     while (true) {
+      throwIfCancelled();
       var next = new StringBuilder();
-      out.addAll(page.load(token, next));
+      for (T value : page.load(token, next)) {
+        throwIfCancelled();
+        out.add(value);
+      }
+      throwIfCancelled();
       token = next.toString();
-      if (token.isBlank()) return List.copyOf(out);
+      if (token.isBlank()) return immutableListCopyCancellable(out);
       if (!seen.add(token)) throw new IllegalStateException("Stagnant repository page token");
     }
   }
@@ -1037,10 +1094,12 @@ public class CatalogOverlayReconciler {
     return overlay.getResourceId().getId().equals(properties.get(OVERLAY_ID_PROPERTY));
   }
 
-  private static void requireUniqueStableIdentities(
-      List<ExternalObjectIdentity> identities, String objectKind) {
+  private static <T> void requireUniqueStableIdentities(
+      Collection<T> relations, Function<T, ExternalObjectIdentity> identityOf, String objectKind) {
     Set<String> seen = new HashSet<>();
-    for (ExternalObjectIdentity identity : identities) {
+    for (T relation : relations) {
+      throwIfCancelled();
+      ExternalObjectIdentity identity = identityOf.apply(relation);
       if (identity.stable() && !seen.add(identity.value())) {
         throw new IllegalStateException(
             "Catalog provider returned duplicate stable "
@@ -1193,10 +1252,185 @@ public class CatalogOverlayReconciler {
         .build();
   }
 
+  private ReconcileLockLease acquireReconcileLock(ResourceId overlayId) {
+    ReconcileLock entry =
+        reconcileLocks.compute(
+            overlayId,
+            (ignored, current) -> {
+              ReconcileLock acquired = current == null ? new ReconcileLock() : current;
+              acquired.references++;
+              return acquired;
+            });
+    try {
+      while (true) {
+        throwIfCancelled();
+        try {
+          if (entry.lock.tryLock(RECONCILE_LOCK_POLL_MILLIS, TimeUnit.MILLISECONDS)) {
+            return new ReconcileLockLease(overlayId, entry);
+          }
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw new CancellationException("catalog overlay reconciliation interrupted");
+        }
+      }
+    } catch (RuntimeException | Error failure) {
+      releaseReconcileReference(overlayId, entry);
+      throw failure;
+    }
+  }
+
+  private void releaseReconcileReference(ResourceId overlayId, ReconcileLock entry) {
+    reconcileLocks.compute(
+        overlayId,
+        (ignored, current) -> {
+          if (current != entry || entry.references < 1) {
+            throw new IllegalStateException("Catalog Overlay reconcile lock lifecycle is corrupt");
+          }
+          entry.references--;
+          return entry.references == 0 ? null : entry;
+        });
+  }
+
+  private static <T> T cancellableCall(Supplier<T> call) {
+    throwIfCancelled();
+    T value = call.get();
+    throwIfCancelled();
+    return value;
+  }
+
+  private static void throwIfCancelled() {
+    throwIfCancelled(PropagatedContext.currentCancellation());
+  }
+
+  private static void throwIfCancelled(BooleanSupplier cancelled) {
+    if ((cancelled != null && cancelled.getAsBoolean()) || Thread.currentThread().isInterrupted()) {
+      throw new CancellationException("catalog overlay reconciliation cancelled");
+    }
+  }
+
+  private static <T> List<T> sortedCancellable(
+      Collection<T> values, Comparator<? super T> comparator) {
+    BooleanSupplier cancelled = PropagatedContext.currentCancellation();
+    List<T> sorted = new ArrayList<>(values.size());
+    for (T value : values) {
+      throwIfCancelled(cancelled);
+      sorted.add(value);
+    }
+    int[] comparisons = {0};
+    sorted.sort(
+        (left, right) -> {
+          // Sorting performs many more comparisons than input reads. Poll in small chunks rather
+          // than paying the propagated-context lookup on every comparison.
+          if ((comparisons[0]++ & 255) == 0) {
+            throwIfCancelled(cancelled);
+          }
+          return comparator.compare(left, right);
+        });
+    throwIfCancelled(cancelled);
+    return Collections.unmodifiableList(sorted);
+  }
+
+  private static <T> List<T> immutableListCopyCancellable(Collection<T> values) {
+    BooleanSupplier cancelled = PropagatedContext.currentCancellation();
+    List<T> copy = new ArrayList<>(values.size());
+    for (T value : values) {
+      throwIfCancelled(cancelled);
+      copy.add(value);
+    }
+    return Collections.unmodifiableList(copy);
+  }
+
+  private static <T> Set<T> immutableSetCopyCancellable(Collection<T> values) {
+    BooleanSupplier cancelled = PropagatedContext.currentCancellation();
+    Set<T> copy = new LinkedHashSet<>();
+    for (T value : values) {
+      throwIfCancelled(cancelled);
+      copy.add(value);
+    }
+    return Collections.unmodifiableSet(copy);
+  }
+
+  private static <T> void addAllCancellable(Collection<T> target, Collection<T> values) {
+    BooleanSupplier cancelled = PropagatedContext.currentCancellation();
+    for (T value : values) {
+      throwIfCancelled(cancelled);
+      target.add(value);
+    }
+  }
+
+  private static <K, V> Map<K, V> immutableMapCopyCancellable(Map<K, V> values) {
+    BooleanSupplier cancelled = PropagatedContext.currentCancellation();
+    Map<K, V> copy = new LinkedHashMap<>();
+    for (var entry : values.entrySet()) {
+      throwIfCancelled(cancelled);
+      copy.put(entry.getKey(), entry.getValue());
+    }
+    return Collections.unmodifiableMap(copy);
+  }
+
   @FunctionalInterface
   private interface Page<T> {
     List<T> load(String token, StringBuilder next);
   }
+
+  private record RelationLoad<T>(
+      CatalogObjectName listedName,
+      CatalogObjectName localName,
+      T relation,
+      CatalogAccessException skippedFailure) {}
+
+  private enum RelationKind {
+    TABLE("table"),
+    VIEW("view");
+
+    private final String label;
+
+    RelationKind(String label) {
+      this.label = label;
+    }
+  }
+
+  private record RelationLoadPlan<T>(
+      RelationKind kind,
+      Function<CatalogObjectName, T> loader,
+      Function<T, CatalogObjectName> loadedName,
+      Map<CatalogObjectName, T> discovered,
+      Set<CatalogObjectName> unobserved,
+      Set<NamespacePath> identityUnknownIn,
+      Set<CatalogAccessException.Code> tracedSkipClasses,
+      Consumer<CatalogObjectName> beforeInsert) {}
+
+  private static final class ReconcileLock {
+    private final ReentrantLock lock = new ReentrantLock();
+    private int references;
+  }
+
+  private final class ReconcileLockLease implements AutoCloseable {
+    private final ResourceId overlayId;
+    private final ReconcileLock entry;
+    private boolean closed;
+
+    private ReconcileLockLease(ResourceId overlayId, ReconcileLock entry) {
+      this.overlayId = overlayId;
+      this.entry = entry;
+    }
+
+    @Override
+    public void close() {
+      if (closed) return;
+      closed = true;
+      entry.lock.unlock();
+      releaseReconcileReference(overlayId, entry);
+    }
+  }
+
+  private record LocalInventory(
+      Map<String, Table> tablesByIdentity,
+      Map<CatalogObjectName, Table> tablesByName,
+      Map<String, View> viewsByIdentity,
+      Map<CatalogObjectName, View> viewsByName) {}
+
+  private record PublishedDefinition(ResourceId tableId, MutationMeta meta) {}
 
   /**
    * One pass over the upstream catalog.

@@ -19,7 +19,15 @@ package ai.floedb.floecat.catalog.access;
 import java.util.List;
 import java.util.Optional;
 
-/** Discovery and metadata access to one upstream catalog connection. */
+/**
+ * Discovery and metadata access to one upstream catalog connection.
+ *
+ * <p>Implementations must permit concurrent {@link #loadTable} calls, concurrent {@link #loadView}
+ * calls, and the two detail-loading methods to run concurrently with one another. Floecat bounds
+ * that fan-out and does not invoke listing or credential methods concurrently on the same client.
+ * After cancellation, {@link #close} may run while interrupted detail calls are still unwinding, so
+ * closing must also be safe against those calls.
+ */
 public interface CatalogClient extends AutoCloseable {
   CatalogCapabilities capabilities();
 
