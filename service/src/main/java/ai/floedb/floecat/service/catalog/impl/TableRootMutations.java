@@ -172,17 +172,14 @@ public final class TableRootMutations {
    * selection (a rollback/set-ref to an older, not-yet-finalized snapshot). Re-deriving order here
    * instead would ignore that selection and let a newer snapshot's finalize steal currency the
    * commit never granted it. {@code null} (current pointer unreadable, e.g. mid-drop) falls back to
-   * the ordering rule, preserving prior behavior in that degenerate case. {@code
-   * snapshotEntryFound} reports the result of the final mutation attempt without requiring another
-   * manifest walk.
+   * the ordering rule, preserving prior behavior in that degenerate case.
    */
   public static TableRootCommitter.RootMutator setStatsGeneration(
       TableRootRepository roots,
       ResourceId tableId,
       long snapshotId,
       BlobRef generationRef,
-      Long committedCurrentSnapshotId,
-      java.util.function.Consumer<Boolean> snapshotEntryFound) {
+      Long committedCurrentSnapshotId) {
     return updateEntry(
         roots,
         tableId,
@@ -197,8 +194,7 @@ public final class TableRootMutations {
           return b.build();
         },
         generationRef != null,
-        committedCurrentSnapshotId,
-        snapshotEntryFound);
+        committedCurrentSnapshotId);
   }
 
   /** Sets the constraints ref on an existing snapshot's entry (constraints write). */
@@ -218,8 +214,7 @@ public final class TableRootMutations {
           return b.build();
         },
         false,
-        null,
-        ignored -> {});
+        null);
   }
 
   /**
@@ -347,21 +342,17 @@ public final class TableRootMutations {
       long snapshotId,
       java.util.function.UnaryOperator<SnapshotManifestEntry> change,
       boolean advanceOnChange,
-      Long committedCurrentSnapshotId,
-      java.util.function.Consumer<Boolean> snapshotEntryFound) {
+      Long committedCurrentSnapshotId) {
     return current -> {
       if (current.isEmpty()) {
-        snapshotEntryFound.accept(false);
         return null; // no root yet: nothing to attach the ref to
       }
       TableRoot base = current.get();
       SnapshotManifests.Chain chain = SnapshotManifests.chain(roots, tableId, manifestHead(base));
       Optional<SnapshotManifestEntry> existing = chain.findEntry(snapshotId);
       if (existing.isEmpty()) {
-        snapshotEntryFound.accept(false);
         return null; // snapshot unknown to the manifest: no-op
       }
-      snapshotEntryFound.accept(true);
       // The updater receives the complete existing entry, so an explicit clear remains a clear.
       SnapshotManifestEntry changed = change.apply(existing.get());
       boolean entryChanged = !changed.equals(existing.get());

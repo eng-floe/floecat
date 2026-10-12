@@ -20,9 +20,11 @@ import ai.floedb.floecat.catalog.rpc.BlobRef;
 import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry;
+import ai.floedb.floecat.catalog.rpc.TableRoot;
 import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.service.repo.impl.ConstraintRepository;
+import ai.floedb.floecat.service.repo.impl.SnapshotManifests;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.impl.TableRootRepository;
@@ -83,6 +85,15 @@ public class TableRootWriter {
    * through the pointer advance, which calls this — the single point keeping the manifest in step.
    */
   public void commitSnapshotEntry(ResourceId tableId, long snapshotId) {
+    commitSnapshotEntry(tableId, snapshotId, true);
+  }
+
+  void commitSnapshotEntryWithoutCurrencyAdvance(ResourceId tableId, long snapshotId) {
+    commitSnapshotEntry(tableId, snapshotId, false);
+  }
+
+  private void commitSnapshotEntry(
+      ResourceId tableId, long snapshotId, boolean advanceAtRegistration) {
     boolean committed = false;
     for (int attempt = 0; attempt < 8; attempt++) {
       MutationMeta observedMeta = snapshots.metaForSafe(tableId, snapshotId);
@@ -103,10 +114,6 @@ public class TableRootWriter {
       if (!sameSnapshotRevision(observedMeta, snapshots.metaForSafe(tableId, snapshotId))) {
         continue;
       }
-      // Root currency tracks the committed current-snapshot selection immediately. Query readers
-      // still require the selected manifest entry to carry a stats generation before selecting it,
-      // so logical Iceberg metadata can move current without exposing an unfinalized scan.
-      boolean advanceAtRegistration = true;
       committer.commit(
           tableId,
           "snapshot_upsert",
@@ -207,13 +214,21 @@ public class TableRootWriter {
    * convergence if the caller does not retry.
    */
   public StatsGenerationCommit commitStatsGeneration(ResourceId tableId, long snapshotId) {
+    return commitStatsGeneration(tableId, snapshotId, true);
+  }
+
+  StatsGenerationCommit commitStatsGenerationWithoutRepairMarker(
+      ResourceId tableId, long snapshotId) {
+    return commitStatsGeneration(tableId, snapshotId, false);
+  }
+
+  private StatsGenerationCommit commitStatsGeneration(
+      ResourceId tableId, long snapshotId, boolean enqueueRepairOnFailure) {
     if (!StatsVisibilityGate.gateOnFinalize(statsStore)) {
-      return new StatsGenerationCommit(Optional.empty(), false);
+      return new StatsGenerationCommit(Optional.empty());
     }
     java.util.concurrent.atomic.AtomicReference<String> committedGeneration =
         new java.util.concurrent.atomic.AtomicReference<>();
-    java.util.concurrent.atomic.AtomicBoolean snapshotEntryFound =
-        new java.util.concurrent.atomic.AtomicBoolean();
     try {
       committer.commit(
           tableId,
@@ -239,18 +254,15 @@ public class TableRootWriter {
                     .map(CurrentSnapshotPointer::getSnapshotId)
                     .orElse(null);
             return TableRootMutations.setStatsGeneration(
-                    roots,
-                    tableId,
-                    snapshotId,
-                    generationRef,
-                    committedCurrentSnapshotId,
-                    snapshotEntryFound::set)
+                    roots, tableId, snapshotId, generationRef, committedCurrentSnapshotId)
                 .apply(current);
           });
       return new StatsGenerationCommit(
-          Optional.ofNullable(committedGeneration.get()).filter(uri -> !uri.isBlank()),
-          snapshotEntryFound.get());
+          Optional.ofNullable(committedGeneration.get()).filter(uri -> !uri.isBlank()));
     } catch (RuntimeException publicationFailure) {
+      if (!enqueueRepairOnFailure) {
+        throw publicationFailure;
+      }
       try {
         rootResyncQueue.enqueue(tableId);
       } catch (RuntimeException markerFailure) {
@@ -265,7 +277,39 @@ public class TableRootWriter {
     }
   }
 
-  public record StatsGenerationCommit(Optional<String> generationUri, boolean snapshotEntryFound) {}
+  public record StatsGenerationCommit(Optional<String> generationUri) {}
+
+  /**
+   * Returns whether the live root already publishes the canonical snapshot revision and active
+   * stats generation. This is only a replay fast path: a mismatch falls back to the idempotent
+   * mutation path, which re-derives both values under the root commit CAS.
+   */
+  boolean snapshotGenerationPublished(ResourceId tableId, long snapshotId) {
+    MutationMeta snapshotMeta = snapshots.metaForSafeConsistent(tableId, snapshotId);
+    BlobRef snapshotRef = BlobRefs.refFrom(snapshotMeta);
+    Optional<String> generation = statsStore.activeStatsGenerationConsistent(tableId, snapshotId);
+    if (snapshotRef == null || generation.isEmpty()) {
+      return false;
+    }
+    MutationMeta rootMeta = roots.pointerMetaForSafeConsistent(tableId);
+    if (rootMeta.getBlobUri().isBlank()) {
+      return false;
+    }
+    Optional<TableRoot> root = roots.getByBlobUriLive(rootMeta.getBlobUri());
+    if (root.isEmpty() || !root.orElseThrow().hasSnapshotManifestRef()) {
+      return false;
+    }
+    // An absent entry costs two walks on this rare repair path: this exact precheck and then the
+    // idempotent upsert. The normal new-publication path does not perform this precheck.
+    return SnapshotManifests.chain(roots, tableId, root.orElseThrow().getSnapshotManifestRef())
+        .findEntry(snapshotId)
+        .filter(entry -> entry.getSnapshotRef().equals(snapshotRef))
+        .filter(
+            entry ->
+                entry.hasStatsGenerationRef()
+                    && entry.getStatsGenerationRef().getUri().equals(generation.orElseThrow()))
+        .isPresent();
+  }
 
   /**
    * Records the snapshot's constraints bundle on its manifest entry — called after any constraints

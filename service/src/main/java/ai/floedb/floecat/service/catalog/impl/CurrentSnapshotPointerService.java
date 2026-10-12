@@ -35,8 +35,7 @@ public class CurrentSnapshotPointerService {
 
   private enum GenerationReconcile {
     WHEN_POINTER_MOVES,
-    ALWAYS_AFTER_ENTRY,
-    NEVER
+    ALWAYS_AFTER_ENTRY
   }
 
   /**
@@ -54,32 +53,60 @@ public class CurrentSnapshotPointerService {
 
   @Inject SnapshotRepository snapshotRepo;
   @Inject TableRootWriter rootWriter;
+  @Inject RootResyncQueue rootResyncQueue;
 
   public void maybeAdvance(ResourceId tableId, long snapshotId, String corr) {
     maybeAdvance(tableId, loadCandidate(tableId, snapshotId, corr), corr);
   }
 
   /**
-   * Advances a snapshot whose stats generation was committed to the table root immediately before
-   * this call. The snapshot-entry upsert preserves that ref, so the defensive generation
-   * reconciliation used for arbitrary in-place snapshot updates would only repeat a root read and
-   * manifest lookup.
+   * Advances the canonical current pointer for a newly activated Owner publication, registers its
+   * root entry, then attaches the active generation regardless of whether the pointer moved. The
+   * latter is required for finalized AS_OF visibility of an out-of-order snapshot.
    */
-  public AdvanceTrace maybeAdvanceAfterStatsGenerationCommit(
-      ResourceId tableId, Snapshot candidate, String corr) {
-    return maybeAdvance(tableId, candidate, corr, GenerationReconcile.NEVER);
+  public AdvanceTrace advanceOwnerPublication(ResourceId tableId, Snapshot candidate, String corr) {
+    return withOwnerRepairMarker(
+        tableId,
+        () ->
+            maybeAdvance(tableId, candidate, corr, GenerationReconcile.ALWAYS_AFTER_ENTRY, false));
   }
 
   /**
-   * Advances a snapshot after a stats-generation commit found no table-root entry. This includes a
-   * newly created snapshot and a retried publication whose fence already created the snapshot in
-   * the snapshot store. Register the entry first, then attach the active generation regardless of
-   * whether the current pointer moves. The latter is required for finalized AS_OF visibility of an
-   * out-of-order snapshot.
+   * Repairs root visibility for an activated replay without changing current-snapshot selection.
    */
-  public AdvanceTrace maybeAdvanceAfterMissingRootEntry(
-      ResourceId tableId, Snapshot candidate, String corr) {
-    return maybeAdvance(tableId, candidate, corr, GenerationReconcile.ALWAYS_AFTER_ENTRY);
+  public AdvanceTrace repairOwnerPublicationRoot(ResourceId tableId, Snapshot candidate) {
+    return withOwnerRepairMarker(
+        tableId,
+        () -> {
+          if (rootWriter.snapshotGenerationPublished(tableId, candidate.getSnapshotId())) {
+            return new AdvanceTrace(null, 0L, 0L, 0L, false);
+          }
+          long entryStartedNanos = System.nanoTime();
+          rootWriter.commitSnapshotEntryWithoutCurrencyAdvance(tableId, candidate.getSnapshotId());
+          long entryNanos = System.nanoTime() - entryStartedNanos;
+          long generationStartedNanos = System.nanoTime();
+          rootWriter.commitStatsGenerationWithoutRepairMarker(tableId, candidate.getSnapshotId());
+          return new AdvanceTrace(
+              null, 0L, entryNanos, System.nanoTime() - generationStartedNanos, true);
+        });
+  }
+
+  private AdvanceTrace withOwnerRepairMarker(
+      ResourceId tableId, java.util.function.Supplier<AdvanceTrace> publication) {
+    try {
+      return publication.get();
+    } catch (RuntimeException publicationFailure) {
+      try {
+        rootResyncQueue.enqueue(tableId);
+      } catch (RuntimeException markerFailure) {
+        publicationFailure.addSuppressed(markerFailure);
+        LOG.errorf(
+            publicationFailure,
+            "Owner root publication for table %s failed AND its re-drive marker could not be recorded",
+            tableId.getId());
+      }
+      throw publicationFailure;
+    }
   }
 
   private Snapshot loadCandidate(ResourceId tableId, long snapshotId, String corr) {
@@ -111,6 +138,15 @@ public class CurrentSnapshotPointerService {
       Snapshot candidate,
       String corr,
       GenerationReconcile generationReconcile) {
+    return maybeAdvance(tableId, candidate, corr, generationReconcile, true);
+  }
+
+  private AdvanceTrace maybeAdvance(
+      ResourceId tableId,
+      Snapshot candidate,
+      String corr,
+      GenerationReconcile generationReconcile,
+      boolean generationOwnsRepairMarker) {
     long pointerStartedNanos = System.nanoTime();
     var result = snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate);
     long pointerNanos = System.nanoTime() - pointerStartedNanos;
@@ -143,7 +179,11 @@ public class CurrentSnapshotPointerService {
       // on the GC cadence. Removing the guard would close that window at the cost of an extra root
       // read and commit attempt for every snapshot write; keep that measurable trade separate.
       long generationStartedNanos = System.nanoTime();
-      rootWriter.commitStatsGeneration(tableId, candidate.getSnapshotId());
+      if (generationOwnsRepairMarker) {
+        rootWriter.commitStatsGeneration(tableId, candidate.getSnapshotId());
+      } else {
+        rootWriter.commitStatsGenerationWithoutRepairMarker(tableId, candidate.getSnapshotId());
+      }
       return new AdvanceTrace(
           result, pointerNanos, entryNanos, System.nanoTime() - generationStartedNanos, true);
     }

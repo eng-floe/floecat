@@ -360,12 +360,7 @@ class TableRootCommitterTest {
                   TABLE,
                   "test_setup",
                   TableRootMutations.setStatsGeneration(
-                      roots,
-                      TABLE,
-                      sid,
-                      ref("s3://t/stats/" + sid + "/gen.pb"),
-                      null,
-                      ignored -> {}));
+                      roots, TABLE, sid, ref("s3://t/stats/" + sid + "/gen.pb"), null));
             }
             return null;
           });

@@ -81,7 +81,7 @@ class TableRootMutationsTest {
       BlobRef generationRef,
       Long committedCurrentSnapshotId) {
     return TableRootMutations.setStatsGeneration(
-        roots, tableId, snapshotId, generationRef, committedCurrentSnapshotId, ignored -> {});
+        roots, tableId, snapshotId, generationRef, committedCurrentSnapshotId);
   }
 
   @Test

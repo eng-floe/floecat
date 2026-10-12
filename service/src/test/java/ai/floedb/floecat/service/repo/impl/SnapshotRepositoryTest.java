@@ -521,8 +521,7 @@ class SnapshotRepositoryTest {
             ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
                 .setUri("/stats/generation/1")
                 .build(),
-            2L,
-            ignored -> {}));
+            2L));
 
     StatsStore statsStore = mock(StatsStore.class);
     when(statsStore.tracksStatsGenerations()).thenReturn(true);

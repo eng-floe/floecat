@@ -386,6 +386,12 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
         && publicationAlreadyCommitted(
             tableId, snapshotId, generationId, snapshot, reuseManifestRef)) {
       trace.mark("read_progress");
+      CurrentSnapshotPointerService.AdvanceTrace repair =
+          currentSnapshots.repairOwnerPublicationRoot(tableId, snapshot);
+      trace.mark("repair_root");
+      trace.advance(repair);
+      reuseLeases.release(tableId, generationId);
+      trace.mark("release_lease");
       trace.outcome("already_committed");
       return completedResponse(manifest, manifestIdentity, progress, true, 0L);
     }
@@ -402,6 +408,12 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       if (publicationAlreadyCommitted(
           tableId, snapshotId, generationId, snapshot, reuseManifestRef)) {
         trace.mark("renew_lease");
+        CurrentSnapshotPointerService.AdvanceTrace repair =
+            currentSnapshots.repairOwnerPublicationRoot(tableId, snapshot);
+        trace.mark("repair_root");
+        trace.advance(repair);
+        reuseLeases.release(tableId, generationId);
+        trace.mark("release_lease");
         trace.outcome("already_committed");
         return completedResponse(manifest, manifestIdentity, progress, true, 0L);
       }
@@ -584,12 +596,10 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     StatsStore.StatsGenerationPredecessor predecessor =
         persistence.prepareStatsGenerationForPublication(tableId, snapshotId, generationId, false);
     trace.mark("prepare_generation");
-    var publicationResult =
-        persistence.publishPreparedStatsGeneration(
+    boolean activated =
+        persistence.activatePreparedStatsGeneration(
             tableId, snapshotId, generationId, List.of(), predecessor, publicationFence);
-    boolean activated = publicationResult.activated();
     trace.mark("publish_generation");
-    trace.field("root_entry_found", publicationResult.snapshotEntryFound());
     if (activated) {
       if (preparedIndexes != null) {
         indexes.completePreparedGenerationActivation(tableId, snapshotId, preparedIndexes);
@@ -597,16 +607,8 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       trace.mark("complete_indexes");
       persistence.clearPrewrittenArtifactProtections(tableId, snapshotId, generationId);
       trace.mark("clear_protections");
-      // Decide from the root mutation rather than snapshot-store state. A retried Complete can see
-      // a snapshot created by the first publication fence while its root entry is still absent.
-      // In that case register the entry first, then attach the generation even when the snapshot
-      // is out of order and does not become current.
       CurrentSnapshotPointerService.AdvanceTrace advance =
-          publicationResult.snapshotEntryFound()
-              ? currentSnapshots.maybeAdvanceAfterStatsGenerationCommit(
-                  tableId, publishedSnapshot, correlationId())
-              : currentSnapshots.maybeAdvanceAfterMissingRootEntry(
-                  tableId, publishedSnapshot, correlationId());
+          currentSnapshots.advanceOwnerPublication(tableId, publishedSnapshot, correlationId());
       trace.mark("advance_current");
       trace.advance(advance);
       reuseLeases.release(tableId, generationId);
@@ -672,7 +674,9 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       if (advance == null) {
         return;
       }
-      field("advance_pointer_result", advance.pointerResult());
+      if (advance.pointerResult() != null) {
+        field("advance_pointer_result", advance.pointerResult());
+      }
       field("advance_pointer_ms", formatMillis(advance.pointerNanos()));
       field("advance_entry_ms", formatMillis(advance.entryNanos()));
       field("advance_generation_committed", advance.generationCommitted());

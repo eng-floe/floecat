@@ -160,9 +160,34 @@ class TableRootWriterTest {
 
     var committed = writer.commitStatsGeneration(tableId, 7L);
     assertEquals(Optional.of("s3://t/stats/7/gen-1.pb"), committed.generationUri());
-    assertTrue(committed.snapshotEntryFound());
 
     assertEquals("s3://t/stats/7/gen-1.pb", entry(7).getStatsGenerationRef().getUri());
+  }
+
+  @Test
+  void snapshotGenerationPublishedRequiresTheCanonicalSnapshotAndActiveGeneration() {
+    when(snapshotRepo.metaForSafe(tableId, 7L)).thenReturn(snapMeta(7));
+    when(statsStore.activeStatsGeneration(tableId, 7L))
+        .thenReturn(Optional.of("s3://t/stats/7/gen-1.pb"));
+    writer.commitStatsGeneration(tableId, 7L);
+
+    assertTrue(writer.snapshotGenerationPublished(tableId, 7L));
+
+    when(statsStore.activeStatsGeneration(tableId, 7L))
+        .thenReturn(Optional.of("s3://t/stats/7/gen-2.pb"));
+    assertFalse(writer.snapshotGenerationPublished(tableId, 7L));
+  }
+
+  @Test
+  void replaySnapshotCommitDoesNotAdvanceRootCurrency() {
+    when(snapshotRepo.metaForSafe(tableId, 9L)).thenReturn(snapMeta(9));
+    when(snapshotRepo.getById(tableId, 9L))
+        .thenReturn(Optional.of(Snapshot.newBuilder().setSnapshotId(9L).build()));
+
+    writer.commitSnapshotEntryWithoutCurrencyAdvance(tableId, 9L);
+
+    assertEquals(7L, roots.get(tableId).orElseThrow().getCurrentSnapshotId());
+    assertEquals("s3://t/snap-9.pb", entry(9L).getSnapshotRef().getUri());
   }
 
   @Test
@@ -176,7 +201,6 @@ class TableRootWriterTest {
     when(statsStore.activeStatsGeneration(tableId, 7L)).thenReturn(Optional.empty());
     var cleared = writer.commitStatsGeneration(tableId, 7L);
     assertEquals(Optional.empty(), cleared.generationUri());
-    assertTrue(cleared.snapshotEntryFound());
 
     assertFalse(entry(7).hasStatsGenerationRef());
   }
@@ -244,10 +268,9 @@ class TableRootWriterTest {
         .thenReturn(Optional.of("s3://t/stats/99/gen-1.pb"));
     long versionBefore = roots.metaForSafe(tableId).getPointerVersion();
 
-    var generationCommit = writer.commitStatsGeneration(tableId, 99L);
+    writer.commitStatsGeneration(tableId, 99L);
     writer.commitConstraints(tableId, 99L);
 
-    assertFalse(generationCommit.snapshotEntryFound());
     assertEquals(versionBefore, roots.metaForSafe(tableId).getPointerVersion());
   }
 

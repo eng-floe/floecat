@@ -978,7 +978,7 @@ class SnapshotHelperTest {
     committer.commit(
         tableId,
         "test_setup",
-        TableRootMutations.setStatsGeneration(roots, tableId, 7, null, null, ignored -> {}));
+        TableRootMutations.setStatsGeneration(roots, tableId, 7, null, null));
 
     var root = roots.get(tableId).orElseThrow();
     org.junit.jupiter.api.Assertions.assertEquals(

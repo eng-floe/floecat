@@ -85,20 +85,39 @@ public class SnapshotFinalizePersistenceService {
       List<StatsStore.PrewrittenTargetStatsReference> finalReferences,
       StatsStore.StatsGenerationPredecessor predecessor,
       StatsStore.PublicationFence publicationFence) {
+    if (!activatePreparedStatsGeneration(
+        tableId, snapshotId, generationId, finalReferences, predecessor, publicationFence)) {
+      return new PreparedStatsGenerationPublication(false);
+    }
+    rootWriter.commitStatsGeneration(tableId, snapshotId);
+    return new PreparedStatsGenerationPublication(true);
+  }
+
+  /**
+   * Activates a prepared generation without publishing it to the table root. Owner publication uses
+   * this variant because it must register the snapshot entry before attaching the generation; the
+   * ordinary finalizer above retains its immediate root-publication contract.
+   */
+  public boolean activatePreparedStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsStore.PrewrittenTargetStatsReference> finalReferences,
+      StatsStore.StatsGenerationPredecessor predecessor,
+      StatsStore.PublicationFence publicationFence) {
     List<StatsStore.PrewrittenTargetStatsReference> stable =
         finalReferences == null
             ? List.of()
             : finalReferences.stream().filter(java.util.Objects::nonNull).toList();
     if (!statsStore.publishPreparedStatsGeneration(
         tableId, snapshotId, generationId, stable, predecessor, publicationFence)) {
-      return new PreparedStatsGenerationPublication(false, false);
+      return false;
     }
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-    var rootCommit = rootWriter.commitStatsGeneration(tableId, snapshotId);
-    return new PreparedStatsGenerationPublication(true, rootCommit.snapshotEntryFound());
+    return true;
   }
 
-  public record PreparedStatsGenerationPublication(boolean activated, boolean snapshotEntryFound) {}
+  public record PreparedStatsGenerationPublication(boolean activated) {}
 
   public StatsStore.StatsGenerationPredecessor prepareStatsGenerationForPublication(
       ResourceId tableId, long snapshotId, String generationId, boolean inheritMissingTargets) {

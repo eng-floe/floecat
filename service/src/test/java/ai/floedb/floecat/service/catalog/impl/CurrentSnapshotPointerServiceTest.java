@@ -54,6 +54,7 @@ class CurrentSnapshotPointerServiceTest {
             .build();
     service = new CurrentSnapshotPointerService();
     service.snapshotRepo = mock(SnapshotRepository.class);
+    service.rootResyncQueue = mock(RootResyncQueue.class);
   }
 
   @Test
@@ -112,30 +113,17 @@ class CurrentSnapshotPointerServiceTest {
   }
 
   @Test
-  void advanceAfterStatsGenerationCommitDoesNotCommitTheGenerationAgain() {
-    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
-    service.rootWriter = mock(TableRootWriter.class);
-    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
-        .thenReturn(CurrentSnapshotPointerUpdateResult.UPDATED);
-
-    service.maybeAdvanceAfterStatsGenerationCommit(tableId, candidate, "corr");
-
-    verify(service.rootWriter).commitSnapshotEntry(tableId, 7L);
-    verify(service.rootWriter, never()).commitStatsGeneration(any(), anyLong());
-  }
-
-  @Test
   void newSnapshotCommitsGenerationAfterRegisteringEntryWhenPointerMoves() {
     var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
     service.rootWriter = mock(TableRootWriter.class);
     when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
         .thenReturn(CurrentSnapshotPointerUpdateResult.UPDATED);
 
-    service.maybeAdvanceAfterMissingRootEntry(tableId, candidate, "corr");
+    service.advanceOwnerPublication(tableId, candidate, "corr");
 
     var order = org.mockito.Mockito.inOrder(service.rootWriter);
     order.verify(service.rootWriter).commitSnapshotEntry(tableId, 7L);
-    order.verify(service.rootWriter).commitStatsGeneration(tableId, 7L);
+    order.verify(service.rootWriter).commitStatsGenerationWithoutRepairMarker(tableId, 7L);
   }
 
   @Test
@@ -145,11 +133,64 @@ class CurrentSnapshotPointerServiceTest {
     when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
         .thenReturn(CurrentSnapshotPointerUpdateResult.UNCHANGED);
 
-    service.maybeAdvanceAfterMissingRootEntry(tableId, candidate, "corr");
+    service.advanceOwnerPublication(tableId, candidate, "corr");
 
     var order = org.mockito.Mockito.inOrder(service.rootWriter);
     order.verify(service.rootWriter).commitSnapshotEntry(tableId, 3L);
-    order.verify(service.rootWriter).commitStatsGeneration(tableId, 3L);
+    order.verify(service.rootWriter).commitStatsGenerationWithoutRepairMarker(tableId, 3L);
+  }
+
+  @Test
+  void ownerPointerConflictEnqueuesRootRepair() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.CONFLICT);
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () -> service.advanceOwnerPublication(tableId, candidate, "corr"));
+
+    verify(service.rootResyncQueue).enqueue(tableId);
+  }
+
+  @Test
+  void ownerReplaySkipsPointerAdvanceAndRootWritesWhenAlreadyPublished() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.rootWriter.snapshotGenerationPublished(tableId, 7L)).thenReturn(true);
+
+    service.repairOwnerPublicationRoot(tableId, candidate);
+
+    verify(service.snapshotRepo, never()).maybeAdvanceCurrentSnapshotPointer(any(), any());
+    verify(service.rootWriter, never()).commitSnapshotEntryWithoutCurrencyAdvance(any(), anyLong());
+    verify(service.rootWriter, never()).commitStatsGeneration(any(), anyLong());
+  }
+
+  @Test
+  void ownerReplayRepairsRootWithoutAdvancingPointer() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.rootWriter.snapshotGenerationPublished(tableId, 7L)).thenReturn(false);
+
+    service.repairOwnerPublicationRoot(tableId, candidate);
+
+    verify(service.snapshotRepo, never()).maybeAdvanceCurrentSnapshotPointer(any(), any());
+    var order = org.mockito.Mockito.inOrder(service.rootWriter);
+    order.verify(service.rootWriter).commitSnapshotEntryWithoutCurrencyAdvance(tableId, 7L);
+    order.verify(service.rootWriter).commitStatsGenerationWithoutRepairMarker(tableId, 7L);
+  }
+
+  @Test
+  void ownerReplayLookupFailureEnqueuesRootRepair() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.rootWriter.snapshotGenerationPublished(tableId, 7L))
+        .thenThrow(new IllegalStateException("store down"));
+
+    assertThrows(
+        IllegalStateException.class, () -> service.repairOwnerPublicationRoot(tableId, candidate));
+
+    verify(service.rootResyncQueue).enqueue(tableId);
   }
 
   @Test
@@ -201,7 +242,7 @@ class CurrentSnapshotPointerServiceTest {
             statsStore,
             mock(RootResyncQueue.class));
 
-    service.maybeAdvanceAfterMissingRootEntry(tableId, candidate, "corr");
+    service.advanceOwnerPublication(tableId, candidate, "corr");
 
     var root = roots.get(tableId).orElseThrow();
     var entry =
