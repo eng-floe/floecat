@@ -783,6 +783,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#reconciliation-concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reconciliation concurrency
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#lifecycle" class="md-nav__link">
     <span class="md-ellipsis">
       Lifecycle
@@ -1727,6 +1736,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#reconciliation-concurrency" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reconciliation concurrency
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#lifecycle" class="md-nav__link">
     <span class="md-ellipsis">
       Lifecycle
@@ -1846,6 +1864,16 @@ integration namespaces partner --parent acme_share
 integration objects partner acme_share.gold
 overlay reconcile partner-tables
 </code></pre></div>
+<h2 id="reconciliation-concurrency">Reconciliation concurrency<a class="headerlink" href="#reconciliation-concurrency" title="Permanent link">&para;</a></h2>
+<p>Table and view detail loads are fanned out within each namespace and relation kind. Set
+<code>FLOECAT_CATALOG_OVERLAY_RECONCILE_MAX_PARALLEL_LOADS</code> to control the maximum concurrent detail
+loads for one overlay reconciliation; the default is <code>16</code>. Listing calls remain serial on a
+provider client.</p>
+<p>Reconciliations for the same overlay are serialized within a service instance. A duplicate request
+waits up to <code>FLOECAT_CATALOG_OVERLAY_RECONCILE_LOCK_WAIT</code> (default <code>100ms</code>) before returning a
+retryable conflict; service-level retry policy may submit another attempt. Reconciliations for
+different overlays are independent, and repository fences remain the correctness boundary across
+service instances.</p>
 <p>Delta Sharing accepts bearer authentication only, because the protocol defines no other scheme. A
 table is usable where its provider offers directory access; one offering url access alone returns
 presigned per-file URLs rather than credentials, and is refused when the overlay reconciles rather
