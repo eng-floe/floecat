@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import ai.floedb.floecat.catalog.rpc.ScalarStats;
 import ai.floedb.floecat.types.rpc.ScalarValue;
 import java.time.Instant;
+import java.time.LocalDate;
 import org.junit.jupiter.api.Test;
 
 class LogicalTypeProtoAdapterTest {
@@ -117,6 +118,20 @@ class LogicalTypeProtoAdapterTest {
     ScalarValue encoded =
         LogicalTypeProtoAdapter.tryEncodeTypedValue(micros, sentinel).orElseThrow();
     assertEquals(sentinel, LogicalTypeProtoAdapter.decodeValue(micros, encoded));
+  }
+
+  @Test
+  void dateBoundsOutsideProtoRangeAreDroppedInsteadOfWrapped() {
+    LogicalType type = LogicalType.of(LogicalKind.DATE);
+
+    assertEquals(
+        java.util.Optional.empty(),
+        LogicalTypeProtoAdapter.tryEncodeTypedValue(type, LocalDate.MAX));
+
+    LocalDate supported = LocalDate.ofEpochDay(Integer.MAX_VALUE);
+    ScalarValue encoded =
+        LogicalTypeProtoAdapter.tryEncodeTypedValue(type, supported).orElseThrow();
+    assertEquals(supported, LogicalTypeProtoAdapter.decodeValue(type, encoded));
   }
 
   @Test

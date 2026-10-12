@@ -144,7 +144,10 @@ public final class LogicalTypeProtoAdapter {
       case BOOLEAN -> ScalarValue.newBuilder().setB((Boolean) value).build();
       case INT -> ScalarValue.newBuilder().setI64(((Number) value).longValue()).build();
       case FLOAT, DOUBLE -> ScalarValue.newBuilder().setF64(((Number) value).doubleValue()).build();
-      case DATE -> ScalarValue.newBuilder().setDate((int) ((LocalDate) value).toEpochDay()).build();
+      case DATE ->
+          ScalarValue.newBuilder()
+              .setDate(Math.toIntExact(((LocalDate) value).toEpochDay()))
+              .build();
       case TIME ->
           ScalarValue.newBuilder()
               .setTime(temporalUnits(((LocalTime) value).toNanoOfDay(), type.temporalPrecision()))

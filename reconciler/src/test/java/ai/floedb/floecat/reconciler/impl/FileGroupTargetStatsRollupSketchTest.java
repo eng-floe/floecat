@@ -184,6 +184,47 @@ class FileGroupTargetStatsRollupSketchTest {
   }
 
   @Test
+  void fileRecordRollup_comparesTypedTimestampBoundsAcrossPrecisionsRegardlessOfOrder() {
+    ScalarStats micros =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
+            .setLogicalType("TIMESTAMP")
+            .setType(LogicalType.newBuilder().setKind(LogicalType.Kind.TK_TIMESTAMP).build())
+            .setRowCount(10)
+            .setMinValue(ScalarValue.newBuilder().setTs(1_000_000).build())
+            .setMaxValue(ScalarValue.newBuilder().setTs(2_000_000).build())
+            .build();
+    ScalarStats nanos =
+        ScalarStats.newBuilder()
+            .setDisplayName("col")
+            .setLogicalType("TIMESTAMP(9)")
+            .setType(
+                LogicalType.newBuilder()
+                    .setKind(LogicalType.Kind.TK_TIMESTAMP)
+                    .setTemporalPrecision(9)
+                    .build())
+            .setRowCount(10)
+            .setMinValue(ScalarValue.newBuilder().setTs(999_999_999).build())
+            .setMaxValue(ScalarValue.newBuilder().setTs(2_000_000_001).build())
+            .build();
+
+    for (List<ScalarStats> order : List.of(List.of(micros, nanos), List.of(nanos, micros))) {
+      ScalarStats merged =
+          onlyScalar(
+              FileGroupTargetStatsRollup.completeSnapshotFromFileRecords(
+                  TABLE,
+                  1L,
+                  Set.of(FloecatConnector.StatsTargetKind.COLUMN),
+                  order.stream().map(scalar -> fileRecord(1L, scalar)).toList()));
+
+      assertTrue(merged.hasType());
+      assertEquals(9, merged.getType().getTemporalPrecision());
+      assertEquals(ScalarValue.newBuilder().setTs(999_999_999).build(), merged.getMinValue());
+      assertEquals(ScalarValue.newBuilder().setTs(2_000_000_001).build(), merged.getMaxValue());
+    }
+  }
+
+  @Test
   void fileRecordRollup_mergesScalarAndThetaOnly() {
     ScalarStats s1 =
         scalarWithSketches(
