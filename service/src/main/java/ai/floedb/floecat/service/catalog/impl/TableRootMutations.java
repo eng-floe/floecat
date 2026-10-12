@@ -172,14 +172,17 @@ public final class TableRootMutations {
    * selection (a rollback/set-ref to an older, not-yet-finalized snapshot). Re-deriving order here
    * instead would ignore that selection and let a newer snapshot's finalize steal currency the
    * commit never granted it. {@code null} (current pointer unreadable, e.g. mid-drop) falls back to
-   * the ordering rule, preserving prior behavior in that degenerate case.
+   * the ordering rule, preserving prior behavior in that degenerate case. {@code
+   * snapshotEntryFound} reports the result of the final mutation attempt without requiring another
+   * manifest walk.
    */
   public static TableRootCommitter.RootMutator setStatsGeneration(
       TableRootRepository roots,
       ResourceId tableId,
       long snapshotId,
       BlobRef generationRef,
-      Long committedCurrentSnapshotId) {
+      Long committedCurrentSnapshotId,
+      java.util.function.Consumer<Boolean> snapshotEntryFound) {
     return updateEntry(
         roots,
         tableId,
@@ -194,7 +197,8 @@ public final class TableRootMutations {
           return b.build();
         },
         generationRef != null,
-        committedCurrentSnapshotId);
+        committedCurrentSnapshotId,
+        snapshotEntryFound);
   }
 
   /** Sets the constraints ref on an existing snapshot's entry (constraints write). */
@@ -214,7 +218,8 @@ public final class TableRootMutations {
           return b.build();
         },
         false,
-        null);
+        null,
+        ignored -> {});
   }
 
   /**
@@ -342,17 +347,21 @@ public final class TableRootMutations {
       long snapshotId,
       java.util.function.UnaryOperator<SnapshotManifestEntry> change,
       boolean advanceOnChange,
-      Long committedCurrentSnapshotId) {
+      Long committedCurrentSnapshotId,
+      java.util.function.Consumer<Boolean> snapshotEntryFound) {
     return current -> {
       if (current.isEmpty()) {
+        snapshotEntryFound.accept(false);
         return null; // no root yet: nothing to attach the ref to
       }
       TableRoot base = current.get();
       SnapshotManifests.Chain chain = SnapshotManifests.chain(roots, tableId, manifestHead(base));
       Optional<SnapshotManifestEntry> existing = chain.findEntry(snapshotId);
       if (existing.isEmpty()) {
+        snapshotEntryFound.accept(false);
         return null; // snapshot unknown to the manifest: no-op
       }
+      snapshotEntryFound.accept(true);
       // The updater receives the complete existing entry, so an explicit clear remains a clear.
       SnapshotManifestEntry changed = change.apply(existing.get());
       boolean entryChanged = !changed.equals(existing.get());
@@ -373,7 +382,12 @@ public final class TableRootMutations {
       if (advanceNow) {
         next.setCurrentSnapshotId(changed.getSnapshotId());
       }
-      if (advanceOnChange) {
+      // A stats-generation ref does not participate in reusable-candidate selection; only
+      // reuse_stats_generation_ref and the current-snapshot boundary do. Rebuilding the bounded
+      // candidate index for an ordinary generation update therefore walks the entire snapshot
+      // history for no change. Currency movement does change that boundary and still requires a
+      // refresh.
+      if (currencyMoves) {
         BlobRef nextHead = entryChanged ? next.getSnapshotManifestRef() : manifestHead(base);
         refreshReusableSnapshotCandidates(next, chain.withHead(nextHead));
       }

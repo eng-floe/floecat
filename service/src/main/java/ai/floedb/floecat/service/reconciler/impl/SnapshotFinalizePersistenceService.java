@@ -78,7 +78,7 @@ public class SnapshotFinalizePersistenceService {
     return stable.size();
   }
 
-  public boolean publishPreparedStatsGeneration(
+  public PreparedStatsGenerationPublication publishPreparedStatsGeneration(
       ResourceId tableId,
       long snapshotId,
       String generationId,
@@ -91,12 +91,14 @@ public class SnapshotFinalizePersistenceService {
             : finalReferences.stream().filter(java.util.Objects::nonNull).toList();
     if (!statsStore.publishPreparedStatsGeneration(
         tableId, snapshotId, generationId, stable, predecessor, publicationFence)) {
-      return false;
+      return new PreparedStatsGenerationPublication(false, false);
     }
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-    commitGenerationToRoot(tableId, snapshotId);
-    return true;
+    var rootCommit = rootWriter.commitStatsGeneration(tableId, snapshotId);
+    return new PreparedStatsGenerationPublication(true, rootCommit.snapshotEntryFound());
   }
+
+  public record PreparedStatsGenerationPublication(boolean activated, boolean snapshotEntryFound) {}
 
   public StatsStore.StatsGenerationPredecessor prepareStatsGenerationForPublication(
       ResourceId tableId, long snapshotId, String generationId, boolean inheritMissingTargets) {
@@ -162,7 +164,7 @@ public class SnapshotFinalizePersistenceService {
     if (rootWriter == null) {
       return "";
     }
-    return rootWriter.commitStatsGeneration(tableId, snapshotId).orElse("");
+    return rootWriter.commitStatsGeneration(tableId, snapshotId).generationUri().orElse("");
   }
 
   public long persistEmptySnapshotCompletionMarker(

@@ -177,7 +177,9 @@ class SnapshotExpiryTest {
       }
       committer()
           .commit(
-              TABLE, TableRootMutations.upsertSnapshot(roots, TABLE, entry.build(), null, true));
+              TABLE,
+              "test_setup",
+              TableRootMutations.upsertSnapshot(roots, TABLE, entry.build(), null, true));
     }
   }
 

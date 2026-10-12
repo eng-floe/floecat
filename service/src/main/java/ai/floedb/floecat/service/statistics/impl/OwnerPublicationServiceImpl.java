@@ -121,6 +121,9 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       defaultValue = "10000")
   int registrationBatchTargets;
 
+  @ConfigProperty(name = "floecat.owner-publication.slow-log-ms", defaultValue = "250")
+  long slowPublicationLogMs;
+
   @Override
   public Uni<BeginOwnerPublicationResponse> beginOwnerPublication(
       BeginOwnerPublicationRequest request) {
@@ -270,8 +273,23 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
   }
 
   private CompleteOwnerPublicationResponse complete(CompleteOwnerPublicationRequest request) {
+    CompletionTrace trace = new CompletionTrace();
+    try {
+      return complete(request, trace);
+    } catch (RuntimeException error) {
+      trace.failed(error);
+      throw error;
+    } finally {
+      logCompletion(trace);
+    }
+  }
+
+  private CompleteOwnerPublicationResponse complete(
+      CompleteOwnerPublicationRequest request, CompletionTrace trace) {
     ResourceId tableId = authorizedTable(request.getTableId());
     long snapshotId = requireSnapshotId(request.getSnapshotId());
+    trace.field("table_id", tableId.getId());
+    trace.field("snapshot_id", snapshotId);
     new CatalogSurfaceWritePolicy(graphView, catalogContext())
         .requireWritableTable(tableId, correlationId());
     Snapshot snapshot = publicationSnapshot(request, tableId, snapshotId);
@@ -352,6 +370,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                     tableId.getAccountId(), tableId.getId(), snapshotId, generationId))
             .build();
     snapshot = snapshot.toBuilder().setReuseManifestRef(reuseManifestRef).build();
+    trace.mark("load_manifest");
     if (manifest.getOwnerAggregateStatsRecordCount() == 0L) {
       throw invalidManifest();
     }
@@ -366,8 +385,11 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     if (progress.equals(OwnerReuseLeaseRepository.RegistrationProgress.initial())
         && publicationAlreadyCommitted(
             tableId, snapshotId, generationId, snapshot, reuseManifestRef)) {
+      trace.mark("read_progress");
+      trace.outcome("already_committed");
       return completedResponse(manifest, manifestIdentity, progress, true, 0L);
     }
+    trace.mark("read_progress");
     validateCompletionCursor(request.getCompletionCursor(), manifestIdentity, progress);
     // Replace the source-generation lease with the completed generation's manifest before any
     // reusable objects are registered. The manifest roots each coverage-addressed file-stat and
@@ -379,6 +401,8 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     } catch (OwnerReuseLeaseRepository.LeaseContinuityException error) {
       if (publicationAlreadyCommitted(
           tableId, snapshotId, generationId, snapshot, reuseManifestRef)) {
+        trace.mark("renew_lease");
+        trace.outcome("already_committed");
         return completedResponse(manifest, manifestIdentity, progress, true, 0L);
       }
       throw GrpcErrors.preconditionFailed(
@@ -386,6 +410,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
           GeneratedErrorMessages.MessageKey.PUBLICATION_NOT_BEGUN,
           Map.of("publication_id", generationId));
     }
+    trace.mark("renew_lease");
     if (progress.registrationChunk() < registration.getCommitmentIndex().getChunkCount()) {
       OwnerArtifactRegistrationManifest.Batch batch;
       ExternalManifestCommitmentIndex commitments;
@@ -417,6 +442,13 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       } catch (IllegalArgumentException error) {
         throw invalidManifest();
       }
+      trace.mark("read_registration_chunk");
+      trace.field(
+          "registration_chunk",
+          (progress.registrationChunk() + 1L)
+              + "/"
+              + registration.getCommitmentIndex().getChunkCount());
+      trace.field("registration_objects", batch.objectCount());
       OwnerReuseLeaseRepository.RegistrationProgress nextProgress;
       try {
         nextProgress =
@@ -437,9 +469,12 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       }
       registerOwnerArtifactBatch(
           tableId, snapshotId, generationId, publishesIndexes, batch.objects());
+      trace.mark("register_artifacts");
       reuseLeases.advanceProgress(tableId, generationId, manifestIdentity, progress, nextProgress);
+      trace.mark("registration_advance_progress");
       if (nextProgress.registrationChunk() < registration.getCommitmentIndex().getChunkCount()
           || coverage.getCommitmentIndex().getChunkCount() > 0L) {
+        trace.outcome("pending_registration");
         return pendingCompletion(manifest, manifestIdentity, nextProgress, leaseExpiresAt);
       }
       progress = nextProgress;
@@ -464,6 +499,11 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       } catch (IllegalArgumentException error) {
         throw invalidManifest();
       }
+      trace.mark("read_coverage_chunk");
+      trace.field(
+          "coverage_chunk",
+          (progress.coverageChunk() + 1L) + "/" + coverage.getCommitmentIndex().getChunkCount());
+      trace.field("coverage_entries", batch.coverageEntryCount());
       OwnerReuseLeaseRepository.RegistrationProgress nextProgress;
       try {
         nextProgress =
@@ -482,6 +522,8 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
         requireCoverageTotals(coverage, nextProgress);
       }
       reuseLeases.advanceProgress(tableId, generationId, manifestIdentity, progress, nextProgress);
+      trace.mark("coverage_advance_progress");
+      trace.outcome("pending_coverage");
       return pendingCompletion(manifest, manifestIdentity, nextProgress, leaseExpiresAt);
     }
 
@@ -491,6 +533,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     requireCoverageTotals(coverage, progress);
 
     statsStore.validatePreparedStatsGenerationRetry(tableId, snapshotId, generationId, List.of());
+    trace.mark("validate_generation");
 
     IndexArtifactRepository.PreparedActivation preparedIndexes = null;
     if (publishesIndexes) {
@@ -500,6 +543,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
           indexes.prepareGenerationActivation(
               tableId, snapshotId, generationId, manifestBytes, predecessor, false);
     }
+    trace.mark("prepare_indexes");
 
     List<StatsStore.PublicationPointerUpdate> publicationUpdates = new ArrayList<>();
     // A null fence means the index generation is already active at this exact capture manifest —
@@ -535,24 +579,119 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     }
     StatsStore.PublicationFence publicationFence =
         publicationUpdates.isEmpty() ? null : new StatsStore.PublicationFence(publicationUpdates);
+    trace.mark("prepare_snapshot_fence");
 
     StatsStore.StatsGenerationPredecessor predecessor =
         persistence.prepareStatsGenerationForPublication(tableId, snapshotId, generationId, false);
-    boolean activated =
+    trace.mark("prepare_generation");
+    var publicationResult =
         persistence.publishPreparedStatsGeneration(
             tableId, snapshotId, generationId, List.of(), predecessor, publicationFence);
+    boolean activated = publicationResult.activated();
+    trace.mark("publish_generation");
+    trace.field("root_entry_found", publicationResult.snapshotEntryFound());
     if (activated) {
       if (preparedIndexes != null) {
         indexes.completePreparedGenerationActivation(tableId, snapshotId, preparedIndexes);
       }
+      trace.mark("complete_indexes");
       persistence.clearPrewrittenArtifactProtections(tableId, snapshotId, generationId);
-      // The publication fence committed both a new snapshot and an existing snapshot's reuse-root
-      // update atomically with stats/index activation. maybeAdvance re-commits the activated
-      // generation when the current-snapshot pointer moves onto this snapshot.
-      currentSnapshots.maybeAdvance(tableId, publishedSnapshot, correlationId());
+      trace.mark("clear_protections");
+      // Decide from the root mutation rather than snapshot-store state. A retried Complete can see
+      // a snapshot created by the first publication fence while its root entry is still absent.
+      // In that case register the entry first, then attach the generation even when the snapshot
+      // is out of order and does not become current.
+      CurrentSnapshotPointerService.AdvanceTrace advance =
+          publicationResult.snapshotEntryFound()
+              ? currentSnapshots.maybeAdvanceAfterStatsGenerationCommit(
+                  tableId, publishedSnapshot, correlationId())
+              : currentSnapshots.maybeAdvanceAfterMissingRootEntry(
+                  tableId, publishedSnapshot, correlationId());
+      trace.mark("advance_current");
+      trace.advance(advance);
       reuseLeases.release(tableId, generationId);
+      trace.mark("release_lease");
     }
+    trace.outcome(activated ? "activated" : "fence_lost");
     return completedResponse(manifest, manifestIdentity, progress, activated, leaseExpiresAt);
+  }
+
+  private void logCompletion(CompletionTrace trace) {
+    long totalNanos = trace.totalNanos();
+    if (!trace.isFailed() && totalNanos < Math.max(0L, slowPublicationLogMs) * 1_000_000L) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug(trace.message(totalNanos));
+      }
+      return;
+    }
+    LOG.info(trace.message(totalNanos));
+  }
+
+  private static String formatMillis(long nanos) {
+    return String.format(java.util.Locale.ROOT, "%.1f", nanos / 1_000_000.0);
+  }
+
+  /**
+   * One diagnostic line per Complete call, whatever its outcome: a pending registration or coverage
+   * chunk, an already-committed replay, an activation, a lost fence, or a failure. Phase fields are
+   * the elapsed time since the previous mark, so they sum to roughly {@code total_ms}.
+   */
+  private static final class CompletionTrace {
+    private final long startedNanos = System.nanoTime();
+    private long previousNanos = startedNanos;
+    private final Map<String, String> fields = new LinkedHashMap<>();
+    private String outcome = "unknown";
+    private boolean failed;
+
+    void mark(String phase) {
+      long now = System.nanoTime();
+      fields.put(phase + "_ms", formatMillis(now - previousNanos));
+      previousNanos = now;
+    }
+
+    void field(String name, Object value) {
+      fields.put(name, String.valueOf(value));
+    }
+
+    void outcome(String value) {
+      outcome = value;
+    }
+
+    void failed(RuntimeException error) {
+      failed = true;
+      outcome = "failed";
+      field("error", error.getClass().getSimpleName());
+    }
+
+    boolean isFailed() {
+      return failed;
+    }
+
+    /** Splits the current-pointer advance into its pointer, root-entry, and generation commits. */
+    void advance(CurrentSnapshotPointerService.AdvanceTrace advance) {
+      if (advance == null) {
+        return;
+      }
+      field("advance_pointer_result", advance.pointerResult());
+      field("advance_pointer_ms", formatMillis(advance.pointerNanos()));
+      field("advance_entry_ms", formatMillis(advance.entryNanos()));
+      field("advance_generation_committed", advance.generationCommitted());
+      field("advance_generation_ms", formatMillis(advance.generationNanos()));
+    }
+
+    long totalNanos() {
+      return System.nanoTime() - startedNanos;
+    }
+
+    String message(long totalNanos) {
+      StringBuilder message =
+          new StringBuilder("owner_publication_complete outcome=")
+              .append(outcome)
+              .append(" total_ms=")
+              .append(formatMillis(totalNanos));
+      fields.forEach((name, value) -> message.append(' ').append(name).append('=').append(value));
+      return message.toString();
+    }
   }
 
   private CompleteOwnerPublicationResponse pendingCompletion(

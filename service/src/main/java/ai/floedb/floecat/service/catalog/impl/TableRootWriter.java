@@ -109,6 +109,7 @@ public class TableRootWriter {
       boolean advanceAtRegistration = true;
       committer.commit(
           tableId,
+          "snapshot_upsert",
           TableRootMutations.upsertSnapshot(
               roots,
               tableId,
@@ -159,7 +160,10 @@ public class TableRootWriter {
 
   /** Removes several snapshots' entries from the root manifest in one commit. */
   public void removeSnapshots(ResourceId tableId, java.util.Set<Long> snapshotIds) {
-    committer.commit(tableId, TableRootMutations.removeSnapshots(roots, tableId, snapshotIds));
+    committer.commit(
+        tableId,
+        "snapshot_remove",
+        TableRootMutations.removeSnapshots(roots, tableId, snapshotIds));
   }
 
   /** Records the table's (possibly new) immutable definition blob on the root. */
@@ -168,7 +172,8 @@ public class TableRootWriter {
     if (definitionRef == null) {
       return;
     }
-    committer.commit(tableId, TableRootMutations.setDefinition(tableId, definitionRef));
+    committer.commit(
+        tableId, "definition_set", TableRootMutations.setDefinition(tableId, definitionRef));
   }
 
   /** Restores the current table definition only when the root still publishes a stale revision. */
@@ -180,6 +185,7 @@ public class TableRootWriter {
     }
     committer.commit(
         tableId,
+        "definition_replace",
         TableRootMutations.replaceDefinitionIfMatches(
             staleRef, BlobRefs.refFrom(currentDefinition)));
   }
@@ -200,15 +206,18 @@ public class TableRootWriter {
    * rethrown: acknowledgement still follows visibility, while the marker guarantees eventual
    * convergence if the caller does not retry.
    */
-  public Optional<String> commitStatsGeneration(ResourceId tableId, long snapshotId) {
+  public StatsGenerationCommit commitStatsGeneration(ResourceId tableId, long snapshotId) {
     if (!StatsVisibilityGate.gateOnFinalize(statsStore)) {
-      return Optional.empty();
+      return new StatsGenerationCommit(Optional.empty(), false);
     }
     java.util.concurrent.atomic.AtomicReference<String> committedGeneration =
         new java.util.concurrent.atomic.AtomicReference<>();
+    java.util.concurrent.atomic.AtomicBoolean snapshotEntryFound =
+        new java.util.concurrent.atomic.AtomicBoolean();
     try {
       committer.commit(
           tableId,
+          "stats_generation_set",
           current -> {
             // Read the active generation INSIDE the mutator: concurrent activations race, and a
             // ref captured before a lost CAS could land last, leaving the root referencing a
@@ -230,10 +239,17 @@ public class TableRootWriter {
                     .map(CurrentSnapshotPointer::getSnapshotId)
                     .orElse(null);
             return TableRootMutations.setStatsGeneration(
-                    roots, tableId, snapshotId, generationRef, committedCurrentSnapshotId)
+                    roots,
+                    tableId,
+                    snapshotId,
+                    generationRef,
+                    committedCurrentSnapshotId,
+                    snapshotEntryFound::set)
                 .apply(current);
           });
-      return Optional.ofNullable(committedGeneration.get()).filter(uri -> !uri.isBlank());
+      return new StatsGenerationCommit(
+          Optional.ofNullable(committedGeneration.get()).filter(uri -> !uri.isBlank()),
+          snapshotEntryFound.get());
     } catch (RuntimeException publicationFailure) {
       try {
         rootResyncQueue.enqueue(tableId);
@@ -249,6 +265,8 @@ public class TableRootWriter {
     }
   }
 
+  public record StatsGenerationCommit(Optional<String> generationUri, boolean snapshotEntryFound) {}
+
   /**
    * Records the snapshot's constraints bundle on its manifest entry — called after any constraints
    * write. The ref is read back from the constraints family, so a delete clears it.
@@ -256,6 +274,7 @@ public class TableRootWriter {
   public void commitConstraints(ResourceId tableId, long snapshotId) {
     committer.commit(
         tableId,
+        "constraints_set",
         TableRootMutations.setConstraints(
             roots,
             tableId,
@@ -306,6 +325,7 @@ public class TableRootWriter {
           boolean[] converged = {true};
           committer.commit(
               tableId,
+              "root_resync",
               current -> {
                 // The committed families are re-read INSIDE the mutator: resync FORCES currency,
                 // so a lost CAS must not re-apply state captured before the winner's commit — it

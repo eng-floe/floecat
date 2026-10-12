@@ -368,7 +368,8 @@ class OwnerPublicationServiceImplTest {
             .map(StatsStore.PrewrittenTargetStatsReference::targetStorageId)
             .toList());
     verify(service.persistence).clearPrewrittenArtifactProtections(any(), anyLong(), anyString());
-    verify(service.currentSnapshots).maybeAdvance(any(), any(Snapshot.class), anyString());
+    verify(service.currentSnapshots)
+        .maybeAdvanceAfterMissingRootEntry(any(), any(Snapshot.class), anyString());
     var publishedSnapshot = ArgumentCaptor.<Snapshot>captor();
     verify(service.snapshots).prepareCreatePublicationUpdates(publishedSnapshot.capture());
     SnapshotReuseManifestRef reuseManifest = publishedSnapshot.getValue().getReuseManifestRef();
@@ -383,7 +384,7 @@ class OwnerPublicationServiceImplTest {
         org.mockito.Mockito.inOrder(service.currentSnapshots, service.reuseLeases);
     publicationOrder
         .verify(service.currentSnapshots)
-        .maybeAdvance(any(), any(Snapshot.class), anyString());
+        .maybeAdvanceAfterMissingRootEntry(any(), any(Snapshot.class), anyString());
     publicationOrder
         .verify(service.reuseLeases)
         .release(tableId(), OwnerPublicationServiceImpl.generationId(begin(), CALLER_SUBJECT));
@@ -672,6 +673,10 @@ class OwnerPublicationServiceImplTest {
             .setSchemaJson("{}")
             .build();
     when(service.snapshots.getByIdConsistent(tableId(), SNAPSHOT)).thenReturn(Optional.of(stored));
+    when(service.persistence.publishPreparedStatsGeneration(
+            any(), anyLong(), anyString(), any(), any(), any()))
+        .thenReturn(
+            new SnapshotFinalizePersistenceService.PreparedStatsGenerationPublication(true, true));
     var snapshotUpdate =
         new StatsStore.PublicationPointerUpdate(
             "/snapshots/by-id/42", 7L, Pointer.getDefaultInstance());
@@ -694,6 +699,10 @@ class OwnerPublicationServiceImplTest {
             any(), anyLong(), anyString(), any(), any(), fence.capture());
     assertTrue(fence.getValue().pointerUpdates().contains(snapshotUpdate));
     verify(service.snapshots, never()).recordReuseManifest(any(), anyLong(), any());
+    verify(service.currentSnapshots)
+        .maybeAdvanceAfterStatsGenerationCommit(any(), any(Snapshot.class), anyString());
+    verify(service.currentSnapshots, never())
+        .maybeAdvanceAfterMissingRootEntry(any(), any(Snapshot.class), anyString());
   }
 
   @Test
@@ -701,7 +710,9 @@ class OwnerPublicationServiceImplTest {
     var service = service();
     when(service.persistence.publishPreparedStatsGeneration(
             any(), anyLong(), anyString(), any(), any(), any()))
-        .thenReturn(false);
+        .thenReturn(
+            new SnapshotFinalizePersistenceService.PreparedStatsGenerationPublication(
+                false, false));
 
     var response = service.completeOwnerPublication(complete(service)).await().indefinitely();
 
@@ -710,7 +721,110 @@ class OwnerPublicationServiceImplTest {
         .publishPreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
     verify(service.persistence, never())
         .clearPrewrittenArtifactProtections(any(), anyLong(), anyString());
-    verify(service.currentSnapshots, never()).maybeAdvance(any(), any(Snapshot.class), anyString());
+    verify(service.currentSnapshots, never())
+        .maybeAdvanceAfterMissingRootEntry(any(), any(Snapshot.class), anyString());
+  }
+
+  @Test
+  void retriedCompleteRepairsGenerationWhenFenceCreatedSnapshotWithoutRootEntry() {
+    var service = service();
+    var request = complete(service);
+    var storedSnapshot = new java.util.concurrent.atomic.AtomicReference<Snapshot>();
+    var roots =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(
+            new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
+            new ai.floedb.floecat.storage.memory.InMemoryBlobStore());
+    var rootWriter =
+        new ai.floedb.floecat.service.catalog.impl.TableRootWriter(
+            roots,
+            new ai.floedb.floecat.service.catalog.impl.TableRootCommitter(
+                roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard()),
+            service.tables,
+            service.snapshots,
+            null,
+            service.statsStore,
+            org.mockito.Mockito.mock(ai.floedb.floecat.service.catalog.impl.RootResyncQueue.class));
+    when(service.statsStore.tracksStatsGenerations()).thenReturn(true);
+    when(service.statsStore.activeStatsGeneration(tableId(), SNAPSHOT))
+        .thenReturn(Optional.of("s3://t/stats/42/owner-generation.pb"));
+    when(service.statsStore.publishPreparedStatsGeneration(
+            any(), anyLong(), anyString(), any(), any(), any()))
+        .thenReturn(true);
+    when(service.statsStore.prepareStatsGenerationForPublication(
+            any(), anyLong(), anyString(), anyBoolean()))
+        .thenReturn(new StatsStore.StatsGenerationPredecessor("", 0L));
+    when(service.persistence.publishPreparedStatsGeneration(
+            any(), anyLong(), anyString(), any(), any(), any()))
+        .thenAnswer(
+            invocation -> {
+              var rootCommit = rootWriter.commitStatsGeneration(tableId(), SNAPSHOT);
+              return new SnapshotFinalizePersistenceService.PreparedStatsGenerationPublication(
+                  true, rootCommit.snapshotEntryFound());
+            });
+    when(service.tables.metaForSafe(tableId()))
+        .thenReturn(ai.floedb.floecat.common.rpc.MutationMeta.getDefaultInstance());
+    when(service.snapshots.prepareCreatePublicationUpdates(any()))
+        .thenAnswer(
+            invocation -> {
+              storedSnapshot.set(invocation.getArgument(0, Snapshot.class));
+              return java.util.List.of(
+                  new StatsStore.PublicationPointerUpdate(
+                      "/snapshots/by-id/42", 0, Pointer.getDefaultInstance()));
+            });
+    when(service.snapshots.getByIdConsistent(tableId(), SNAPSHOT))
+        .thenAnswer(ignored -> Optional.ofNullable(storedSnapshot.get()));
+    when(service.snapshots.getById(tableId(), SNAPSHOT))
+        .thenAnswer(ignored -> Optional.ofNullable(storedSnapshot.get()));
+    when(service.snapshots.metaForSafe(tableId(), SNAPSHOT))
+        .thenReturn(
+            ai.floedb.floecat.common.rpc.MutationMeta.newBuilder()
+                .setBlobUri("s3://t/snap-42.pb")
+                .setEtag("snapshot-v1")
+                .build());
+    when(service.snapshots.latestRegisteredSnapshotPointer(tableId()))
+        .thenReturn(
+            Optional.of(
+                ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer.newBuilder()
+                    .setTableId(tableId())
+                    .setSnapshotId(SNAPSHOT)
+                    .build()));
+    when(service.snapshots.prepareReuseManifestPublication(any(), anyLong(), any()))
+        .thenAnswer(
+            ignored ->
+                new SnapshotRepository.PreparedReuseManifestPublication(
+                    storedSnapshot.get(), java.util.List.of()));
+    doAnswer(
+            invocation -> {
+              throw new ai.floedb.floecat.service.repo.util.BaseResourceRepository
+                  .AbortRetryableException("root entry commit failed");
+            })
+        .doAnswer(
+            invocation -> {
+              Snapshot candidate = invocation.getArgument(1, Snapshot.class);
+              rootWriter.commitSnapshotEntry(tableId(), candidate.getSnapshotId());
+              rootWriter.commitStatsGeneration(tableId(), candidate.getSnapshotId());
+              return null;
+            })
+        .when(service.currentSnapshots)
+        .maybeAdvanceAfterMissingRootEntry(any(), any(Snapshot.class), anyString());
+
+    assertThrows(
+        RuntimeException.class,
+        () -> service.completeOwnerPublication(request).await().indefinitely());
+
+    var retry = service.completeOwnerPublication(request).await().indefinitely();
+
+    assertTrue(retry.getActivated());
+    var root = roots.get(tableId()).orElseThrow();
+    var entry =
+        ai.floedb.floecat.service.repo.impl.SnapshotManifests.findEntry(
+                roots, root.getSnapshotManifestRef(), SNAPSHOT)
+            .orElseThrow();
+    assertEquals("s3://t/stats/42/owner-generation.pb", entry.getStatsGenerationRef().getUri());
+    verify(service.currentSnapshots, times(2))
+        .maybeAdvanceAfterMissingRootEntry(any(), any(Snapshot.class), anyString());
+    verify(service.currentSnapshots, never())
+        .maybeAdvanceAfterStatsGenerationCommit(any(), any(Snapshot.class), anyString());
   }
 
   @Test
@@ -1605,7 +1719,8 @@ class OwnerPublicationServiceImplTest {
         .thenReturn(new StatsStore.StatsGenerationPredecessor("", 0));
     when(service.persistence.publishPreparedStatsGeneration(
             any(), anyLong(), anyString(), any(), any(), any()))
-        .thenReturn(true);
+        .thenReturn(
+            new SnapshotFinalizePersistenceService.PreparedStatsGenerationPublication(true, false));
     return service;
   }
 }

@@ -513,6 +513,7 @@ class SnapshotRepositoryTest {
             roots, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     committer.commit(
         tableRid,
+        "test_setup",
         ai.floedb.floecat.service.catalog.impl.TableRootMutations.setStatsGeneration(
             roots,
             tableRid,
@@ -520,7 +521,8 @@ class SnapshotRepositoryTest {
             ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder()
                 .setUri("/stats/generation/1")
                 .build(),
-            2L));
+            2L,
+            ignored -> {}));
 
     StatsStore statsStore = mock(StatsStore.class);
     when(statsStore.tracksStatsGenerations()).thenReturn(true);
@@ -682,6 +684,7 @@ class SnapshotRepositoryTest {
             rootsRepo, new ai.floedb.floecat.service.repo.util.TableBlobReachabilityGuard());
     committer.commit(
         tableRid,
+        "test_setup",
         ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
             rootsRepo,
             tableRid,
@@ -694,7 +697,9 @@ class SnapshotRepositoryTest {
             null,
             false));
     committer.commit(
-        tableRid, current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(9L).build());
+        tableRid,
+        "test_setup",
+        current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(9L).build());
 
     var served = snapshotRepo.getCurrentSnapshot(tableRid).orElseThrow();
     assertEquals(
@@ -814,6 +819,7 @@ class SnapshotRepositoryTest {
       }
       committer.commit(
           tableRid,
+          "test_setup",
           ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
               roots, tableRid, entry.build(), null, false));
     }
@@ -823,6 +829,7 @@ class SnapshotRepositoryTest {
             .orElseThrow();
     committer.commit(
         tableRid,
+        "test_setup",
         ai.floedb.floecat.service.catalog.impl.TableRootMutations.resync(
             roots, tableRid, null, currentEntry, java.util.Set.of(1L, 2L, 3L), null));
 
@@ -931,6 +938,7 @@ class SnapshotRepositoryTest {
     for (Snapshot snap : snapshotRepo.list(tableId, 100, "", new StringBuilder())) {
       committer.commit(
           tableId,
+          "test_setup",
           ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
               roots,
               tableId,
@@ -948,6 +956,7 @@ class SnapshotRepositoryTest {
     if (currentSnapshotId != null) {
       committer.commit(
           tableId,
+          "test_setup",
           current ->
               current.orElseThrow().toBuilder().setCurrentSnapshotId(currentSnapshotId).build());
     }

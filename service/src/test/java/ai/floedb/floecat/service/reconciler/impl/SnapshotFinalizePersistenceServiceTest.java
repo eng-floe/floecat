@@ -86,6 +86,7 @@ class SnapshotFinalizePersistenceServiceTest {
 
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
@@ -186,9 +187,13 @@ class SnapshotFinalizePersistenceServiceTest {
             tableId, 5L, generationId, List.of(), predecessor, null))
         .thenReturn(true);
 
-    persistence.publishPreparedStatsGeneration(
-        tableId, 5L, generationId, List.of(), predecessor, null);
+    var result =
+        persistence.publishPreparedStatsGeneration(
+            tableId, 5L, generationId, List.of(), predecessor, null);
 
+    assertEquals(
+        new SnapshotFinalizePersistenceService.PreparedStatsGenerationPublication(true, true),
+        result);
     verify(persistence.statsStore)
         .publishPreparedStatsGeneration(tableId, 5L, generationId, List.of(), predecessor, null);
   }

@@ -550,6 +550,7 @@ class UserGraphTest {
       ResourceId tableId, long snapshotId, long upstreamSeconds, String tableBlobUri) {
     rootCommitter.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             tableRootRepository,
             tableId,

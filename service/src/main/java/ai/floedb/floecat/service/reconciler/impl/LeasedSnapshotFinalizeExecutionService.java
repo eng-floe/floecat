@@ -832,13 +832,15 @@ public class LeasedSnapshotFinalizeExecutionService extends BaseServiceImpl {
           persistence.prepareStatsGenerationForPublication(
               tableId, snapshotTask.snapshotId(), generationId, inheritPriorStats);
       published =
-          persistence.publishPreparedStatsGeneration(
-              tableId,
-              snapshotTask.snapshotId(),
-              generationId,
-              finalStats,
-              statsPredecessor,
-              publicationFence);
+          persistence
+              .publishPreparedStatsGeneration(
+                  tableId,
+                  snapshotTask.snapshotId(),
+                  generationId,
+                  finalStats,
+                  statsPredecessor,
+                  publicationFence)
+              .activated();
     }
     if (!published) {
       throw new StorageAbortRetryableException(

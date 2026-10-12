@@ -119,6 +119,7 @@ class SnapshotHelperTest {
   private void commitEntry(ResourceId tableId, long snapshotId, String createdAt) {
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
@@ -148,6 +149,7 @@ class SnapshotHelperTest {
       ResourceId tableId, long snapshotId, String createdAt, String statsGenUri) {
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
@@ -318,6 +320,7 @@ class SnapshotHelperTest {
     // A root exists (definition committed by DDL) but the table has no current snapshot yet.
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.setDefinition(
             tableId,
             BlobRef.newBuilder().setUri("s3://tbl/table.pb").setVersion("etag-t").build()));
@@ -339,7 +342,9 @@ class SnapshotHelperTest {
     // Force a broken root: currency names a snapshot the manifest does not carry. Removal clears
     // currency in the same commit, so this state is a violated invariant, never a client state.
     committer.commit(
-        tableId, current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(999).build());
+        tableId,
+        "test_setup",
+        current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(999).build());
 
     assertThatThrownBy(() -> helper.resolvedSnapshotFor("corr", tableId, null, Optional.empty()))
         .isInstanceOf(StatusRuntimeException.class)
@@ -367,6 +372,7 @@ class SnapshotHelperTest {
                 .build());
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
@@ -394,6 +400,7 @@ class SnapshotHelperTest {
     seedSnapshot(tableId, 142, "2024-05-01T00:00:00Z");
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
@@ -446,6 +453,7 @@ class SnapshotHelperTest {
       }
       committer.commit(
           tableId,
+          "test_setup",
           TableRootMutations.upsertSnapshot(
               roots,
               tableId,
@@ -658,6 +666,7 @@ class SnapshotHelperTest {
     seedSnapshot(tableId, 7, "2024-05-01T00:00:00Z");
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
@@ -708,6 +717,7 @@ class SnapshotHelperTest {
     seedSnapshot(tableId, 9, "2024-01-01T00:00:00Z");
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
@@ -749,6 +759,7 @@ class SnapshotHelperTest {
     commitFinalizedEntry(tableId, 11, "2024-02-01T00:00:00Z", "s3://tbl/stats/11/gen.pb");
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
@@ -782,6 +793,7 @@ class SnapshotHelperTest {
     commitFinalizedEntry(tableId, 11, "2024-02-01T00:00:00Z", "s3://tbl/stats/11/gen.pb");
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
@@ -864,6 +876,7 @@ class SnapshotHelperTest {
     var flakyCommitter = new TableRootCommitter(flakyRoots, new TableBlobReachabilityGuard());
     flakyCommitter.commit(
         table,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             flakyRoots,
             table,
@@ -903,6 +916,7 @@ class SnapshotHelperTest {
     var deadCommitter = new TableRootCommitter(deadRoots, new TableBlobReachabilityGuard());
     deadCommitter.commit(
         table,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             deadRoots,
             table,
@@ -930,6 +944,7 @@ class SnapshotHelperTest {
     var localCommitter = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
     localCommitter.commit(
         table,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             table,
@@ -960,7 +975,10 @@ class SnapshotHelperTest {
     seedSnapshot(tableId, 7, "2024-02-01T00:00:00Z");
     // Finalize 7 (generation ref present -> becomes current), then remove its generation.
     commitFinalizedEntry(tableId, 7, "2024-02-01T00:00:00Z", "s3://tbl/stats/7/gen.pb");
-    committer.commit(tableId, TableRootMutations.setStatsGeneration(roots, tableId, 7, null, null));
+    committer.commit(
+        tableId,
+        "test_setup",
+        TableRootMutations.setStatsGeneration(roots, tableId, 7, null, null, ignored -> {}));
 
     var root = roots.get(tableId).orElseThrow();
     org.junit.jupiter.api.Assertions.assertEquals(
