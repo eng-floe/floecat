@@ -109,6 +109,33 @@ public class KvStoreContractTest {
   }
 
   @Test
+  void sideband_touch_does_not_advance_context_version() {
+    var key = key("pk1", "session");
+    var initial =
+        new KvStore.Record(
+            key,
+            "Session",
+            "v1".getBytes(StandardCharsets.UTF_8),
+            Map.of("lastActivity", AttrValue.of(1L)),
+            1L);
+    assertTrue(kv.putCas(initial, 0L).await().indefinitely());
+    assertTrue(
+        kv.setAttrsIfExists(key, Map.of("lastActivity", AttrValue.of(2L))).await().indefinitely());
+
+    var stored = kv.get(key).await().indefinitely().orElseThrow();
+    assertEquals(1L, stored.version());
+    assertEquals("v1", new String(stored.value(), StandardCharsets.UTF_8));
+    assertEquals(2L, stored.attrs().get("lastActivity").asLong());
+
+    var missing = key("pk1", "missing");
+    assertFalse(
+        kv.setAttrsIfExists(missing, Map.of("lastActivity", AttrValue.of(3L)))
+            .await()
+            .indefinitely());
+    assertTrue(kv.get(missing).await().indefinitely().isEmpty());
+  }
+
+  @Test
   void deleteCas_expectedVersion_mismatch_returns_false() {
     KvStore.Record rec1 = record("pk1", "sk1", 1L, "v1");
     assertTrue(kv.putCas(rec1, 0L).await().indefinitely());
