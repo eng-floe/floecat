@@ -79,10 +79,10 @@ class KvStoreContractTest {
     assertTrue(kv.putCas(initial, 0L).await().indefinitely());
     assertTrue(
         kv.setAttrsIfExists(key, Map.of("lastActivity", AttrValue.of(2L))).await().indefinitely());
-    assertEquals(1L, kv.get(key).await().indefinitely().orElseThrow().version());
 
     var stored = kv.get(key).await().indefinitely().orElseThrow();
     assertEquals(1L, stored.version());
+    assertEquals("v1", new String(stored.value(), StandardCharsets.UTF_8));
     assertEquals(2L, stored.attrs().get("lastActivity").asLong());
     assertFalse(
         kv.setAttrsIfExists(key("pk1", "missing"), Map.of("lastActivity", AttrValue.of(3L)))
