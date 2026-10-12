@@ -33,11 +33,80 @@ import org.jboss.logging.Logger;
 public class CurrentSnapshotPointerService {
   private static final Logger LOG = Logger.getLogger(CurrentSnapshotPointerService.class);
 
+  private enum GenerationReconcile {
+    WHEN_POINTER_MOVES,
+    ALWAYS_AFTER_ENTRY
+  }
+
+  /**
+   * Phase timings of one advance, for publication diagnostics. {@code pointerResult} is the
+   * current-pointer outcome ({@code null} when the repository declined to evaluate the candidate),
+   * {@code entryNanos} covers snapshot reads plus the root entry commit, and {@code
+   * generationNanos} is zero when the generation commit was skipped.
+   */
+  public record AdvanceTrace(
+      SnapshotRepository.CurrentSnapshotPointerUpdateResult pointerResult,
+      long pointerNanos,
+      long entryNanos,
+      long generationNanos,
+      boolean generationCommitted) {}
+
   @Inject SnapshotRepository snapshotRepo;
   @Inject TableRootWriter rootWriter;
+  @Inject RootResyncQueue rootResyncQueue;
 
   public void maybeAdvance(ResourceId tableId, long snapshotId, String corr) {
     maybeAdvance(tableId, loadCandidate(tableId, snapshotId, corr), corr);
+  }
+
+  /**
+   * Advances the canonical current pointer for a newly activated Owner publication, registers its
+   * root entry, then attaches the active generation regardless of whether the pointer moved. The
+   * latter is required for finalized AS_OF visibility of an out-of-order snapshot.
+   */
+  public AdvanceTrace advanceOwnerPublication(ResourceId tableId, Snapshot candidate, String corr) {
+    return withOwnerRepairMarker(
+        tableId,
+        () ->
+            maybeAdvance(tableId, candidate, corr, GenerationReconcile.ALWAYS_AFTER_ENTRY, false));
+  }
+
+  /**
+   * Repairs root visibility for an activated replay without changing current-snapshot selection.
+   */
+  public AdvanceTrace repairOwnerPublicationRoot(ResourceId tableId, Snapshot candidate) {
+    return withOwnerRepairMarker(
+        tableId,
+        () -> {
+          if (rootWriter.snapshotGenerationPublished(tableId, candidate.getSnapshotId())) {
+            return new AdvanceTrace(null, 0L, 0L, 0L, false);
+          }
+          long entryStartedNanos = System.nanoTime();
+          rootWriter.commitSnapshotEntryWithoutCurrencyAdvance(tableId, candidate.getSnapshotId());
+          long entryNanos = System.nanoTime() - entryStartedNanos;
+          long generationStartedNanos = System.nanoTime();
+          rootWriter.commitStatsGenerationWithoutRepairMarker(tableId, candidate.getSnapshotId());
+          return new AdvanceTrace(
+              null, 0L, entryNanos, System.nanoTime() - generationStartedNanos, true);
+        });
+  }
+
+  private AdvanceTrace withOwnerRepairMarker(
+      ResourceId tableId, java.util.function.Supplier<AdvanceTrace> publication) {
+    try {
+      return publication.get();
+    } catch (RuntimeException publicationFailure) {
+      try {
+        rootResyncQueue.enqueue(tableId);
+      } catch (RuntimeException markerFailure) {
+        publicationFailure.addSuppressed(markerFailure);
+        LOG.errorf(
+            publicationFailure,
+            "Owner root publication for table %s failed AND its re-drive marker could not be recorded",
+            tableId.getId());
+      }
+      throw publicationFailure;
+    }
   }
 
   private Snapshot loadCandidate(ResourceId tableId, long snapshotId, String corr) {
@@ -61,9 +130,28 @@ public class CurrentSnapshotPointerService {
    * refreshes the pinned identity with no separate republish step.
    */
   public void maybeAdvance(ResourceId tableId, Snapshot candidate, String corr) {
+    maybeAdvance(tableId, candidate, corr, GenerationReconcile.WHEN_POINTER_MOVES);
+  }
+
+  private AdvanceTrace maybeAdvance(
+      ResourceId tableId,
+      Snapshot candidate,
+      String corr,
+      GenerationReconcile generationReconcile) {
+    return maybeAdvance(tableId, candidate, corr, generationReconcile, true);
+  }
+
+  private AdvanceTrace maybeAdvance(
+      ResourceId tableId,
+      Snapshot candidate,
+      String corr,
+      GenerationReconcile generationReconcile,
+      boolean generationOwnsRepairMarker) {
+    long pointerStartedNanos = System.nanoTime();
     var result = snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate);
+    long pointerNanos = System.nanoTime() - pointerStartedNanos;
     if (result == null) {
-      return;
+      return new AdvanceTrace(null, pointerNanos, 0L, 0L, false);
     }
     switch (result) {
       case TABLE_MISSING -> throw GrpcErrors.notFound(corr, TABLE, Map.of("id", tableId.getId()));
@@ -72,8 +160,12 @@ public class CurrentSnapshotPointerService {
               "current snapshot pointer changed for table " + tableId.getId());
       default -> {}
     }
+    long entryStartedNanos = System.nanoTime();
     rootWriter.commitSnapshotEntry(tableId, candidate.getSnapshotId());
-    if (result == SnapshotRepository.CurrentSnapshotPointerUpdateResult.UPDATED) {
+    long entryNanos = System.nanoTime() - entryStartedNanos;
+    if (generationReconcile == GenerationReconcile.ALWAYS_AFTER_ENTRY
+        || (generationReconcile == GenerationReconcile.WHEN_POINTER_MOVES
+            && result == SnapshotRepository.CurrentSnapshotPointerUpdateResult.UPDATED)) {
       // The committed current pointer just moved onto `candidate`. commitSnapshotEntry advances the
       // root's current_snapshot_id at registration; what the finalize gate defers is query-time
       // VISIBILITY (an entry without a stats_generation_ref is not pinnable). An in-place update of
@@ -86,7 +178,15 @@ public class CurrentSnapshotPointerService {
       // now observes UNCHANGED still skips this synchronous publication, so visibility may converge
       // on the GC cadence. Removing the guard would close that window at the cost of an extra root
       // read and commit attempt for every snapshot write; keep that measurable trade separate.
-      rootWriter.commitStatsGeneration(tableId, candidate.getSnapshotId());
+      long generationStartedNanos = System.nanoTime();
+      if (generationOwnsRepairMarker) {
+        rootWriter.commitStatsGeneration(tableId, candidate.getSnapshotId());
+      } else {
+        rootWriter.commitStatsGenerationWithoutRepairMarker(tableId, candidate.getSnapshotId());
+      }
+      return new AdvanceTrace(
+          result, pointerNanos, entryNanos, System.nanoTime() - generationStartedNanos, true);
     }
+    return new AdvanceTrace(result, pointerNanos, entryNanos, 0L, false);
   }
 }

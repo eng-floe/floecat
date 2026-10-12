@@ -78,7 +78,27 @@ public class SnapshotFinalizePersistenceService {
     return stable.size();
   }
 
-  public boolean publishPreparedStatsGeneration(
+  public PreparedStatsGenerationPublication publishPreparedStatsGeneration(
+      ResourceId tableId,
+      long snapshotId,
+      String generationId,
+      List<StatsStore.PrewrittenTargetStatsReference> finalReferences,
+      StatsStore.StatsGenerationPredecessor predecessor,
+      StatsStore.PublicationFence publicationFence) {
+    if (!activatePreparedStatsGeneration(
+        tableId, snapshotId, generationId, finalReferences, predecessor, publicationFence)) {
+      return new PreparedStatsGenerationPublication(false);
+    }
+    rootWriter.commitStatsGeneration(tableId, snapshotId);
+    return new PreparedStatsGenerationPublication(true);
+  }
+
+  /**
+   * Activates a prepared generation without publishing it to the table root. Owner publication uses
+   * this variant because it must register the snapshot entry before attaching the generation; the
+   * ordinary finalizer above retains its immediate root-publication contract.
+   */
+  public boolean activatePreparedStatsGeneration(
       ResourceId tableId,
       long snapshotId,
       String generationId,
@@ -94,9 +114,10 @@ public class SnapshotFinalizePersistenceService {
       return false;
     }
     statsOrchestrator.invalidateStatsCache(tableId, snapshotId);
-    commitGenerationToRoot(tableId, snapshotId);
     return true;
   }
+
+  public record PreparedStatsGenerationPublication(boolean activated) {}
 
   public StatsStore.StatsGenerationPredecessor prepareStatsGenerationForPublication(
       ResourceId tableId, long snapshotId, String generationId, boolean inheritMissingTargets) {
@@ -162,7 +183,7 @@ public class SnapshotFinalizePersistenceService {
     if (rootWriter == null) {
       return "";
     }
-    return rootWriter.commitStatsGeneration(tableId, snapshotId).orElse("");
+    return rootWriter.commitStatsGeneration(tableId, snapshotId).generationUri().orElse("");
   }
 
   public long persistEmptySnapshotCompletionMarker(

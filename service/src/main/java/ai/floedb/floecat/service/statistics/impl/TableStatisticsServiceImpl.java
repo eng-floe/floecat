@@ -300,9 +300,8 @@ public class TableStatisticsServiceImpl extends BaseServiceImpl implements Table
                       if (rootWriter != null
                           && upserted.get() > 0
                           && finalState.tableId() != null) {
-                        Optional<String> committed =
-                            rootWriter.commitStatsGeneration(
-                                finalState.tableId(), finalState.snapshotId());
+                        rootWriter.commitStatsGeneration(
+                            finalState.tableId(), finalState.snapshotId());
                       }
                     })
                 .replaceWith(

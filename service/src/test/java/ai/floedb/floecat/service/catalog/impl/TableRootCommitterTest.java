@@ -76,7 +76,8 @@ class TableRootCommitterTest {
   }
 
   private void commitDefinition(String uri) {
-    committer.commit(TABLE, current -> TableRoot.newBuilder().setDefinitionRef(ref(uri)).build());
+    committer.commit(
+        TABLE, "test_setup", current -> TableRoot.newBuilder().setDefinitionRef(ref(uri)).build());
   }
 
   @Test
@@ -85,6 +86,7 @@ class TableRootCommitterTest {
         committer
             .commit(
                 TABLE,
+                "test_setup",
                 current ->
                     TableRoot.newBuilder().setDefinitionRef(ref("s3://tbl/def-1.pb")).build())
             .orElseThrow();
@@ -113,6 +115,7 @@ class TableRootCommitterTest {
         () ->
             committer.commit(
                 TABLE,
+                "test_setup",
                 current ->
                     TableRoot.newBuilder().setDefinitionRef(ref("s3://tbl/def.pb")).build()));
   }
@@ -125,6 +128,7 @@ class TableRootCommitterTest {
             () ->
                 committer.commit(
                     TABLE,
+                    "test_setup",
                     current ->
                         TableRoot.newBuilder()
                             .setSnapshotManifestRef(
@@ -142,6 +146,7 @@ class TableRootCommitterTest {
         () ->
             committer.commit(
                 TABLE,
+                "test_setup",
                 current ->
                     TableRoot.newBuilder()
                         .setSnapshotManifestRef(
@@ -159,6 +164,7 @@ class TableRootCommitterTest {
         committer
             .commit(
                 TABLE,
+                "test_setup",
                 current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(7L).build())
             .orElseThrow();
 
@@ -179,10 +185,13 @@ class TableRootCommitterTest {
         committer
             .commit(
                 TABLE,
+                "test_setup",
                 current -> {
                   if (calls.incrementAndGet() == 1) {
                     committer.commit(
-                        TABLE, c -> c.orElseThrow().toBuilder().setCurrentSnapshotId(42L).build());
+                        TABLE,
+                        "test_setup",
+                        c -> c.orElseThrow().toBuilder().setCurrentSnapshotId(42L).build());
                   }
                   return current.orElseThrow().toBuilder()
                       .setDefinitionRef(ref("s3://tbl/def-2.pb"))
@@ -201,7 +210,7 @@ class TableRootCommitterTest {
     commitDefinition("s3://tbl/def-1.pb");
     long versionBefore = roots.metaForSafe(TABLE).getPointerVersion();
 
-    Optional<TableRoot> result = committer.commit(TABLE, current -> null);
+    Optional<TableRoot> result = committer.commit(TABLE, "test_setup", current -> null);
 
     assertEquals(1L, result.orElseThrow().getRootSeq());
     assertEquals(versionBefore, roots.metaForSafe(TABLE).getPointerVersion());
@@ -212,7 +221,7 @@ class TableRootCommitterTest {
     commitDefinition("s3://tbl/def-1.pb");
     long versionBefore = roots.metaForSafe(TABLE).getPointerVersion();
 
-    committer.commit(TABLE, current -> current.orElseThrow());
+    committer.commit(TABLE, "test_setup", current -> current.orElseThrow());
 
     assertEquals(versionBefore, roots.metaForSafe(TABLE).getPointerVersion());
   }
@@ -236,6 +245,7 @@ class TableRootCommitterTest {
         () ->
             failingCommitter.commit(
                 TABLE,
+                "test_setup",
                 current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
   }
 
@@ -257,6 +267,7 @@ class TableRootCommitterTest {
         () ->
             contendedCommitter.commit(
                 TABLE,
+                "test_setup",
                 current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
   }
 
@@ -289,6 +300,7 @@ class TableRootCommitterTest {
             () ->
                 contendedCommitter.commit(
                     TABLE,
+                    "test_setup",
                     current -> current.orElseThrow().toBuilder().setCurrentSnapshotId(1L).build()));
     try {
       assertTrue(firstCasLost.await(1, TimeUnit.SECONDS));
@@ -297,6 +309,7 @@ class TableRootCommitterTest {
               () ->
                   contendedCommitter.commit(
                       TABLE,
+                      "test_setup",
                       current ->
                           current.orElseThrow().toBuilder().setCurrentSnapshotId(2L).build()));
 
@@ -329,6 +342,7 @@ class TableRootCommitterTest {
               long sid = wi * 100L + i;
               committer.commit(
                   TABLE,
+                  "test_setup",
                   TableRootMutations.upsertSnapshot(
                       roots,
                       TABLE,
@@ -344,6 +358,7 @@ class TableRootCommitterTest {
               // fallback, so currency still converges on the newest across concurrent finalizes.
               committer.commit(
                   TABLE,
+                  "test_setup",
                   TableRootMutations.setStatsGeneration(
                       roots, TABLE, sid, ref("s3://t/stats/" + sid + "/gen.pb"), null));
             }
@@ -355,7 +370,9 @@ class TableRootCommitterTest {
           start.await();
           for (int i = 0; i < 8; i++) {
             committer.commit(
-                TABLE, TableRootMutations.setDefinition(TABLE, ref("s3://t/def-" + i + ".pb")));
+                TABLE,
+                "test_setup",
+                TableRootMutations.setDefinition(TABLE, ref("s3://t/def-" + i + ".pb")));
           }
           return null;
         });

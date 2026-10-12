@@ -373,7 +373,12 @@ public final class TableRootMutations {
       if (advanceNow) {
         next.setCurrentSnapshotId(changed.getSnapshotId());
       }
-      if (advanceOnChange) {
+      // A stats-generation ref does not participate in reusable-candidate selection; only
+      // reuse_stats_generation_ref and the current-snapshot boundary do. Rebuilding the bounded
+      // candidate index for an ordinary generation update therefore walks the entire snapshot
+      // history for no change. Currency movement does change that boundary and still requires a
+      // refresh.
+      if (currencyMoves) {
         BlobRef nextHead = entryChanged ? next.getSnapshotManifestRef() : manifestHead(base);
         refreshReusableSnapshotCandidates(next, chain.withHead(nextHead));
       }

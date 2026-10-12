@@ -24,7 +24,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ai.floedb.floecat.catalog.rpc.CurrentSnapshotPointer;
 import ai.floedb.floecat.catalog.rpc.Snapshot;
+import ai.floedb.floecat.common.rpc.MutationMeta;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
@@ -52,6 +54,7 @@ class CurrentSnapshotPointerServiceTest {
             .build();
     service = new CurrentSnapshotPointerService();
     service.snapshotRepo = mock(SnapshotRepository.class);
+    service.rootResyncQueue = mock(RootResyncQueue.class);
   }
 
   @Test
@@ -107,6 +110,147 @@ class CurrentSnapshotPointerServiceTest {
 
     verify(service.rootWriter).commitSnapshotEntry(tableId, 7L);
     verify(service.rootWriter).commitStatsGeneration(tableId, 7L);
+  }
+
+  @Test
+  void newSnapshotCommitsGenerationAfterRegisteringEntryWhenPointerMoves() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.UPDATED);
+
+    service.advanceOwnerPublication(tableId, candidate, "corr");
+
+    var order = org.mockito.Mockito.inOrder(service.rootWriter);
+    order.verify(service.rootWriter).commitSnapshotEntry(tableId, 7L);
+    order.verify(service.rootWriter).commitStatsGenerationWithoutRepairMarker(tableId, 7L);
+  }
+
+  @Test
+  void newOutOfOrderSnapshotCommitsGenerationWhenPointerDoesNotMove() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(3L).build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.UNCHANGED);
+
+    service.advanceOwnerPublication(tableId, candidate, "corr");
+
+    var order = org.mockito.Mockito.inOrder(service.rootWriter);
+    order.verify(service.rootWriter).commitSnapshotEntry(tableId, 3L);
+    order.verify(service.rootWriter).commitStatsGenerationWithoutRepairMarker(tableId, 3L);
+  }
+
+  @Test
+  void ownerPointerConflictEnqueuesRootRepair() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.CONFLICT);
+
+    assertThrows(
+        BaseResourceRepository.AbortRetryableException.class,
+        () -> service.advanceOwnerPublication(tableId, candidate, "corr"));
+
+    verify(service.rootResyncQueue).enqueue(tableId);
+  }
+
+  @Test
+  void ownerReplaySkipsPointerAdvanceAndRootWritesWhenAlreadyPublished() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.rootWriter.snapshotGenerationPublished(tableId, 7L)).thenReturn(true);
+
+    service.repairOwnerPublicationRoot(tableId, candidate);
+
+    verify(service.snapshotRepo, never()).maybeAdvanceCurrentSnapshotPointer(any(), any());
+    verify(service.rootWriter, never()).commitSnapshotEntryWithoutCurrencyAdvance(any(), anyLong());
+    verify(service.rootWriter, never()).commitStatsGeneration(any(), anyLong());
+  }
+
+  @Test
+  void ownerReplayRepairsRootWithoutAdvancingPointer() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.rootWriter.snapshotGenerationPublished(tableId, 7L)).thenReturn(false);
+
+    service.repairOwnerPublicationRoot(tableId, candidate);
+
+    verify(service.snapshotRepo, never()).maybeAdvanceCurrentSnapshotPointer(any(), any());
+    var order = org.mockito.Mockito.inOrder(service.rootWriter);
+    order.verify(service.rootWriter).commitSnapshotEntryWithoutCurrencyAdvance(tableId, 7L);
+    order.verify(service.rootWriter).commitStatsGenerationWithoutRepairMarker(tableId, 7L);
+  }
+
+  @Test
+  void ownerReplayLookupFailureEnqueuesRootRepair() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(7L).build();
+    service.rootWriter = mock(TableRootWriter.class);
+    when(service.rootWriter.snapshotGenerationPublished(tableId, 7L))
+        .thenThrow(new IllegalStateException("store down"));
+
+    assertThrows(
+        IllegalStateException.class, () -> service.repairOwnerPublicationRoot(tableId, candidate));
+
+    verify(service.rootResyncQueue).enqueue(tableId);
+  }
+
+  @Test
+  void newOwnerSnapshotBecomesFinalizedInRootWhenPointerDoesNotMove() {
+    var candidate = Snapshot.newBuilder().setTableId(tableId).setSnapshotId(3L).build();
+    var roots =
+        new ai.floedb.floecat.service.repo.impl.TableRootRepository(
+            new ai.floedb.floecat.storage.memory.InMemoryPointerStore(),
+            new ai.floedb.floecat.storage.memory.InMemoryBlobStore());
+    var committer = new TableRootCommitter(roots, new TableBlobReachabilityGuard());
+    committer.commit(
+        tableId,
+        "test_seed",
+        TableRootMutations.upsertSnapshot(
+            roots,
+            tableId,
+            ai.floedb.floecat.catalog.rpc.SnapshotManifestEntry.newBuilder()
+                .setSnapshotId(7L)
+                .setSnapshotRef(
+                    ai.floedb.floecat.catalog.rpc.BlobRef.newBuilder().setUri("s3://tbl/snap-7.pb"))
+                .setUpstreamCreatedAt(com.google.protobuf.util.Timestamps.fromMillis(7_000L))
+                .build(),
+            null,
+            true));
+    var tableRepo = mock(ai.floedb.floecat.service.repo.impl.TableRepository.class);
+    var statsStore = mock(ai.floedb.floecat.stats.spi.StatsStore.class);
+    when(statsStore.tracksStatsGenerations()).thenReturn(true);
+    when(statsStore.activeStatsGeneration(tableId, 3L))
+        .thenReturn(Optional.of("s3://tbl/stats/3/owner-generation.pb"));
+    when(service.snapshotRepo.maybeAdvanceCurrentSnapshotPointer(tableId, candidate))
+        .thenReturn(CurrentSnapshotPointerUpdateResult.UNCHANGED);
+    when(service.snapshotRepo.getById(tableId, 3L)).thenReturn(Optional.of(candidate));
+    when(service.snapshotRepo.metaForSafe(tableId, 3L))
+        .thenReturn(
+            MutationMeta.newBuilder()
+                .setPointerVersion(1L)
+                .setBlobUri("s3://tbl/snap-3.pb")
+                .setEtag("etag-s3")
+                .build());
+    when(service.snapshotRepo.latestRegisteredSnapshotPointer(tableId))
+        .thenReturn(Optional.of(CurrentSnapshotPointer.newBuilder().setSnapshotId(7L).build()));
+    service.rootWriter =
+        new TableRootWriter(
+            roots,
+            committer,
+            tableRepo,
+            service.snapshotRepo,
+            null,
+            statsStore,
+            mock(RootResyncQueue.class));
+
+    service.advanceOwnerPublication(tableId, candidate, "corr");
+
+    var root = roots.get(tableId).orElseThrow();
+    var entry =
+        ai.floedb.floecat.service.repo.impl.SnapshotManifests.findEntry(
+                roots, root.getSnapshotManifestRef(), 3L)
+            .orElseThrow();
+    assertEquals("s3://tbl/stats/3/owner-generation.pb", entry.getStatsGenerationRef().getUri());
+    assertEquals(7L, root.getCurrentSnapshotId(), "out-of-order publication stays non-current");
   }
 
   @Test

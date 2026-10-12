@@ -184,6 +184,14 @@ The synchronous Catalog Overlay reconciliation RPC uses the same Integration ada
 selected namespaces, table definitions, and views as ordinary Floecat resources. Durable scheduling
 and snapshot/file capture remain separate changes.
 
+Catalog Overlay reconciliation may invoke `loadTable` and `loadView` concurrently on the same
+`CatalogClient`, including the two methods concurrently with one another. Implementations must make
+those detail-loading methods thread-safe. Floecat does not invoke namespace, table, or view listing
+or credential-vending methods concurrently on one client, and it defers `close` after cancellation
+until any interrupted detail loads have returned. Fan-out is bounded per namespace and relation
+kind by the service configuration described in
+[Catalog Integrations and Overlays](catalog-integrations.md#reconciliation-concurrency).
+
 The legacy Connector remains operational and unchanged until its explicit migration/removal change.
 The Integration adapter and discovery implementation do not import, call, or fall back to it.
 

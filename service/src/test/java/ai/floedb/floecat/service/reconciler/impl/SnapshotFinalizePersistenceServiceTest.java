@@ -17,6 +17,7 @@ package ai.floedb.floecat.service.reconciler.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
@@ -86,6 +87,7 @@ class SnapshotFinalizePersistenceServiceTest {
 
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
@@ -186,10 +188,32 @@ class SnapshotFinalizePersistenceServiceTest {
             tableId, 5L, generationId, List.of(), predecessor, null))
         .thenReturn(true);
 
-    persistence.publishPreparedStatsGeneration(
-        tableId, 5L, generationId, List.of(), predecessor, null);
+    var result =
+        persistence.publishPreparedStatsGeneration(
+            tableId, 5L, generationId, List.of(), predecessor, null);
 
+    assertEquals(
+        new SnapshotFinalizePersistenceService.PreparedStatsGenerationPublication(true), result);
     verify(persistence.statsStore)
         .publishPreparedStatsGeneration(tableId, 5L, generationId, List.of(), predecessor, null);
+  }
+
+  @Test
+  void ownerActivationDoesNotPublishTheGenerationToTheRoot() {
+    String generationId = "gen-owner";
+    StatsStore.StatsGenerationPredecessor predecessor =
+        new StatsStore.StatsGenerationPredecessor(generationId, 1L);
+    when(persistence.statsStore.publishPreparedStatsGeneration(
+            tableId, 5L, generationId, List.of(), predecessor, null))
+        .thenReturn(true);
+    long rootVersion = roots.metaForSafe(tableId).getPointerVersion();
+
+    assertTrue(
+        persistence.activatePreparedStatsGeneration(
+            tableId, 5L, generationId, List.of(), predecessor, null));
+
+    assertEquals(rootVersion, roots.metaForSafe(tableId).getPointerVersion());
+    assertFalse(entry().hasStatsGenerationRef());
+    verify(persistence.statsOrchestrator).invalidateStatsCache(tableId, 5L);
   }
 }

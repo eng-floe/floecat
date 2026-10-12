@@ -384,7 +384,8 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .thenReturn(new StatsStore.StatsGenerationPredecessor("", 0L));
     when(persistence.publishPreparedStatsGeneration(
             any(), anyLong(), anyString(), any(), any(), any()))
-        .thenReturn(true);
+        .thenReturn(
+            new SnapshotFinalizePersistenceService.PreparedStatsGenerationPublication(true));
     when(jobs.getCompactLeaseView(FINALIZE_JOB_ID)).thenReturn(Optional.of(finalizeJobView()));
     when(jobs.getCompletionLeaseView(FINALIZE_JOB_ID, LEASE_EPOCH, true))
         .thenAnswer(
@@ -1092,7 +1093,9 @@ class LeasedSnapshotFinalizeExecutionServiceTest {
         .thenReturn(first, second);
     when(persistence.publishPreparedStatsGeneration(
             any(), anyLong(), anyString(), any(), any(), any()))
-        .thenReturn(false, true);
+        .thenReturn(
+            new SnapshotFinalizePersistenceService.PreparedStatsGenerationPublication(false),
+            new SnapshotFinalizePersistenceService.PreparedStatsGenerationPublication(true));
 
     persistAndPublish(
         principal,

@@ -70,7 +70,10 @@ message TableRoot {
   /**
    * The newest two reusable snapshots at or before current_snapshot_id, ordered newest first.
    * GetLatestFinalizedSnapshot reads this bounded root-published index directly; two entries are
-   * retained because a replay may exclude the newest snapshot and request its predecessor.
+   * retained because a replay may exclude the newest snapshot and request its predecessor. Only
+   * snapshot_id, snapshot_ref, and reuse_stats_generation_ref are authoritative in these copies;
+   * other SnapshotManifestEntry fields may lag the manifest chain until candidate selection is
+   * rebuilt.
    */
   repeated SnapshotManifestEntry reusable_snapshot_candidates = 7;
 

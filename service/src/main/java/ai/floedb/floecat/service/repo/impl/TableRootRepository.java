@@ -54,6 +54,9 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
   private final BlobStore blobStore;
   // Serialized-content cache for immutable root blobs and manifest pages.
   private final BlobCacheAccess blobCache;
+  // Monotonic per-thread diagnostic counter. Root commits sample deltas around their mutator and
+  // validation phases, avoiding request-global mutable state while preserving concurrent commits.
+  private final ThreadLocal<Long> liveManifestPageReads = ThreadLocal.withInitial(() -> 0L);
 
   public TableRootRepository(PointerStore pointerStore, BlobStore blobStore) {
     this(pointerStore, pointerStore, blobStore, BlobCacheAccess.disabled());
@@ -151,7 +154,13 @@ public class TableRootRepository extends TableScopedPointerRepository<TableRoot>
     if (ref == null || ref.getUri().isEmpty()) {
       return Optional.empty();
     }
+    liveManifestPageReads.set(liveManifestPageReads.get() + 1L);
     return loadManifestPage(ref.getUri());
+  }
+
+  /** Monotonic counter used to attribute cache-bypassing manifest GETs to root-commit phases. */
+  public long liveManifestPageReadCount() {
+    return liveManifestPageReads.get();
   }
 
   /**

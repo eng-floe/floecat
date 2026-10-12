@@ -109,6 +109,7 @@ class TableRootWriterTest {
             .build();
     committer.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(
             roots,
             tableId,
@@ -157,19 +158,49 @@ class TableRootWriterTest {
     when(statsStore.activeStatsGeneration(tableId, 7L))
         .thenReturn(Optional.of("s3://t/stats/7/gen-1.pb"));
 
-    assertEquals(Optional.of("s3://t/stats/7/gen-1.pb"), writer.commitStatsGeneration(tableId, 7L));
+    var committed = writer.commitStatsGeneration(tableId, 7L);
+    assertEquals(Optional.of("s3://t/stats/7/gen-1.pb"), committed.generationUri());
 
     assertEquals("s3://t/stats/7/gen-1.pb", entry(7).getStatsGenerationRef().getUri());
+  }
+
+  @Test
+  void snapshotGenerationPublishedRequiresTheCanonicalSnapshotAndActiveGeneration() {
+    when(snapshotRepo.metaForSafe(tableId, 7L)).thenReturn(snapMeta(7));
+    when(statsStore.activeStatsGeneration(tableId, 7L))
+        .thenReturn(Optional.of("s3://t/stats/7/gen-1.pb"));
+    writer.commitStatsGeneration(tableId, 7L);
+
+    assertTrue(writer.snapshotGenerationPublished(tableId, 7L));
+
+    when(statsStore.activeStatsGeneration(tableId, 7L))
+        .thenReturn(Optional.of("s3://t/stats/7/gen-2.pb"));
+    assertFalse(writer.snapshotGenerationPublished(tableId, 7L));
+  }
+
+  @Test
+  void replaySnapshotCommitDoesNotAdvanceRootCurrency() {
+    when(snapshotRepo.metaForSafe(tableId, 9L)).thenReturn(snapMeta(9));
+    when(snapshotRepo.getById(tableId, 9L))
+        .thenReturn(Optional.of(Snapshot.newBuilder().setSnapshotId(9L).build()));
+
+    writer.commitSnapshotEntryWithoutCurrencyAdvance(tableId, 9L);
+
+    assertEquals(7L, roots.get(tableId).orElseThrow().getCurrentSnapshotId());
+    assertEquals("s3://t/snap-9.pb", entry(9L).getSnapshotRef().getUri());
   }
 
   @Test
   void commitStatsGenerationClearsTheRefWhenTheGenerationIsGone() {
     when(statsStore.activeStatsGeneration(tableId, 7L))
         .thenReturn(Optional.of("s3://t/stats/7/gen-1.pb"));
-    assertEquals(Optional.of("s3://t/stats/7/gen-1.pb"), writer.commitStatsGeneration(tableId, 7L));
+    assertEquals(
+        Optional.of("s3://t/stats/7/gen-1.pb"),
+        writer.commitStatsGeneration(tableId, 7L).generationUri());
 
     when(statsStore.activeStatsGeneration(tableId, 7L)).thenReturn(Optional.empty());
-    assertEquals(Optional.empty(), writer.commitStatsGeneration(tableId, 7L));
+    var cleared = writer.commitStatsGeneration(tableId, 7L);
+    assertEquals(Optional.empty(), cleared.generationUri());
 
     assertFalse(entry(7).hasStatsGenerationRef());
   }
@@ -181,7 +212,7 @@ class TableRootWriterTest {
     when(statsStore.tracksStatsGenerations()).thenReturn(false);
     long versionBefore = roots.metaForSafe(tableId).getPointerVersion();
 
-    assertEquals(Optional.empty(), writer.commitStatsGeneration(tableId, 7L));
+    assertEquals(Optional.empty(), writer.commitStatsGeneration(tableId, 7L).generationUri());
 
     assertEquals(versionBefore, roots.metaForSafe(tableId).getPointerVersion());
   }
@@ -249,7 +280,9 @@ class TableRootWriterTest {
     // OLDER — but finalized — snapshot: the resync must follow it, not re-apply the advance rule.
     // (An unfinalized target would be gated; see the gated-resync mutation test.)
     committer.commit(
-        tableId, TableRootMutations.upsertSnapshot(roots, tableId, finalizedEntry(3), null, true));
+        tableId,
+        "test_setup",
+        TableRootMutations.upsertSnapshot(roots, tableId, finalizedEntry(3), null, true));
     when(tableRepo.metaForSafe(tableId)).thenReturn(tableMeta());
     when(snapshotRepo.latestRegisteredSnapshotPointer(tableId)).thenReturn(Optional.of(pointer(3)));
     when(snapshotRepo.metaForSafe(tableId, 3L)).thenReturn(snapMeta(3));
@@ -267,9 +300,13 @@ class TableRootWriterTest {
     // Root holds entries 3 and 7. A transaction expired snapshot 3 (cleared its pointers by raw
     // CAS, never through removeSnapshot); only 7 is still registered. The resync must drop 3.
     committer.commit(
-        tableId, TableRootMutations.upsertSnapshot(roots, tableId, finalizedEntry(3), null, true));
+        tableId,
+        "test_setup",
+        TableRootMutations.upsertSnapshot(roots, tableId, finalizedEntry(3), null, true));
     committer.commit(
-        tableId, TableRootMutations.upsertSnapshot(roots, tableId, finalizedEntry(7), null, true));
+        tableId,
+        "test_setup",
+        TableRootMutations.upsertSnapshot(roots, tableId, finalizedEntry(7), null, true));
 
     when(tableRepo.metaForSafe(tableId)).thenReturn(tableMeta());
     when(snapshotRepo.latestRegisteredSnapshotPointer(tableId)).thenReturn(Optional.of(pointer(7)));
@@ -418,7 +455,9 @@ class TableRootWriterTest {
             statsStore,
             rootResyncQueue);
     cCommitter.commit(
-        tableId, TableRootMutations.upsertSnapshot(cRoots, tableId, finalizedEntry(7), null, true));
+        tableId,
+        "test_setup",
+        TableRootMutations.upsertSnapshot(cRoots, tableId, finalizedEntry(7), null, true));
     updateFailures[0] = 1;
 
     when(tableRepo.metaForSafe(tableId)).thenReturn(tableMeta());
@@ -456,7 +495,9 @@ class TableRootWriterTest {
             statsStore,
             rootResyncQueue);
     cCommitter.commit(
-        tableId, TableRootMutations.upsertSnapshot(cRoots, tableId, finalizedEntry(7), null, true));
+        tableId,
+        "test_setup",
+        TableRootMutations.upsertSnapshot(cRoots, tableId, finalizedEntry(7), null, true));
     updateFailures[0] = 1;
 
     when(statsStore.activeStatsGeneration(tableId, 7L))
@@ -499,6 +540,7 @@ class TableRootWriterTest {
             rootResyncQueue);
     stubbornCommitter.commit(
         tableId,
+        "test_setup",
         TableRootMutations.upsertSnapshot(stubbornRoots, tableId, finalizedEntry(7), null, true));
     when(tableRepo.metaForSafe(tableId)).thenReturn(MutationMeta.getDefaultInstance());
 

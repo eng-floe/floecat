@@ -2964,6 +2964,7 @@ class CasBlobGcTest {
             gc.tableRootRepo, gc.reachabilityGuard);
     committer.commit(
         tableId,
+        "test_setup",
         ai.floedb.floecat.service.catalog.impl.TableRootMutations.upsertSnapshot(
             gc.tableRootRepo,
             tableId,
