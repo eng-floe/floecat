@@ -108,6 +108,19 @@ integration objects partner acme_share.gold
 overlay reconcile partner-tables
 ```
 
+## Reconciliation concurrency
+
+Table and view detail loads are fanned out within each namespace and relation kind. Set
+`FLOECAT_CATALOG_OVERLAY_RECONCILE_MAX_PARALLEL_LOADS` to control the maximum concurrent detail
+loads for one overlay reconciliation; the default is `16`. Listing calls remain serial on a
+provider client.
+
+Reconciliations for the same overlay are serialized within a service instance. A duplicate request
+waits up to `FLOECAT_CATALOG_OVERLAY_RECONCILE_LOCK_WAIT` (default `100ms`) before returning a
+retryable conflict; service-level retry policy may submit another attempt. Reconciliations for
+different overlays are independent, and repository fences remain the correctness boundary across
+service instances.
+
 Delta Sharing accepts bearer authentication only, because the protocol defines no other scheme. A
 table is usable where its provider offers directory access; one offering url access alone returns
 presigned per-file URLs rather than credentials, and is refused when the overlay reconciles rather

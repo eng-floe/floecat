@@ -68,6 +68,7 @@ import ai.floedb.floecat.service.repo.util.MarkerStore;
 import ai.floedb.floecat.service.repo.util.MetadataRepositoryFactory;
 import ai.floedb.floecat.storage.memory.InMemoryBlobStore;
 import ai.floedb.floecat.storage.memory.InMemoryPointerStore;
+import java.time.Duration;
 import java.util.AbstractList;
 import java.util.HashMap;
 import java.util.List;
@@ -240,6 +241,15 @@ class CatalogOverlayReconcilerTest {
     var failure = assertThrows(IllegalStateException.class, reconciler::validateConfiguration);
 
     assertTrue(failure.getMessage().contains("max-parallel-loads must be positive"));
+  }
+
+  @Test
+  void rejectsNonPositiveReconcileLockWaitAtStartup() {
+    reconciler.reconcileLockWait = Duration.ZERO;
+
+    var failure = assertThrows(IllegalStateException.class, reconciler::validateConfiguration);
+
+    assertTrue(failure.getMessage().contains("lock-wait must be positive"));
   }
 
   @Test
@@ -442,7 +452,7 @@ class CatalogOverlayReconcilerTest {
   }
 
   @Test
-  void sameOverlayReconcilesSeriallyAndEvictsItsLock() throws Exception {
+  void duplicateSameOverlayReconcileFailsRetryablyAndEvictsItsLockReference() throws Exception {
     NamespacePath sales = NamespacePath.of("sales");
     CatalogObjectName orders = new CatalogObjectName(sales, "orders");
     client.children.put(NamespacePath.root(), List.of(sales));
@@ -450,6 +460,7 @@ class CatalogOverlayReconcilerTest {
     client.tables.put(orders, catalogTable(orders, "orders-id"));
     CountDownLatch firstLoadStarted = new CountDownLatch(1);
     CountDownLatch releaseFirst = new CountDownLatch(1);
+    reconciler.reconcileLockWait = Duration.ofMillis(50);
     client.beforeTableLoad =
         ignored -> {
           if (client.tableLoads.get() == 1) {
@@ -469,27 +480,19 @@ class CatalogOverlayReconcilerTest {
     CompletableFuture<CatalogOverlayReconciler.Result> first =
         CompletableFuture.supplyAsync(this::reconcile);
     assertTrue(firstLoadStarted.await(5, TimeUnit.SECONDS));
-    CountDownLatch secondStarted = new CountDownLatch(1);
-    CompletableFuture<CatalogOverlayReconciler.Result> second =
-        CompletableFuture.supplyAsync(
-            () -> {
-              secondStarted.countDown();
-              return reconcile();
-            });
-    assertTrue(secondStarted.await(5, TimeUnit.SECONDS));
 
     try {
-      assertFalse(
-          secondOpen.await(200, TimeUnit.MILLISECONDS),
-          "the second reconcile must not open its client while the first holds the overlay lock");
+      var failure =
+          assertThrows(BaseResourceRepository.AbortRetryableException.class, this::reconcile);
+      assertEquals("Catalog Overlay reconciliation already in progress", failure.getMessage());
+      assertFalse(secondOpen.await(100, TimeUnit.MILLISECONDS));
+      assertEquals(1, opens.get(), "a lock waiter must not open an upstream client");
       assertEquals(1, reconciler.reconcileLockCount());
     } finally {
       releaseFirst.countDown();
     }
 
     assertEquals(1, first.get(5, TimeUnit.SECONDS).tablesCreated());
-    assertEquals(0, second.get(5, TimeUnit.SECONDS).tablesCreated());
-    assertTrue(secondOpen.await(5, TimeUnit.SECONDS));
     assertEquals(0, reconciler.reconcileLockCount());
   }
 
@@ -720,6 +723,22 @@ class CatalogOverlayReconcilerTest {
     client.tables.put(report, catalogTable(report, "table-id"));
     client.views.put(report, catalogView(report, "view-id"));
     client.unloadableViews.add(report);
+
+    var failure = assertThrows(IllegalStateException.class, this::reconcile);
+
+    assertEquals(
+        "Upstream relation name is both table and view: sales.report", failure.getMessage());
+  }
+
+  @Test
+  void tableAndViewNameConflictIsReportedEvenWhenTheTableDetailLoadIsSkipped() {
+    NamespacePath sales = NamespacePath.of("sales");
+    CatalogObjectName report = new CatalogObjectName(sales, "report");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    client.tables.put(report, catalogTable(report, "table-id"));
+    client.views.put(report, catalogView(report, "view-id"));
+    client.unloadableTables.add(report);
 
     var failure = assertThrows(IllegalStateException.class, this::reconcile);
 
@@ -1748,6 +1767,39 @@ class CatalogOverlayReconcilerTest {
     assertEquals(2, cleanups.get());
     assertEquals(1, failure.getSuppressed().length);
     assertEquals("first cleanup failed", failure.getSuppressed()[0].getMessage());
+  }
+
+  @Test
+  void lostGenerationCleansOnlyTheUnconfirmedPublicationBatch() {
+    NamespacePath sales = NamespacePath.of("sales");
+    client.children.put(NamespacePath.root(), List.of(sales));
+    client.children.put(sales, List.of());
+    for (int index = 0; index < 18; index++) {
+      CatalogObjectName objectName = new CatalogObjectName(sales, "table_" + index);
+      client.tables.put(objectName, catalogTable(objectName, "table-id-" + index));
+    }
+    tables = spy(tables);
+    reconciler.tables = tables;
+    AtomicInteger publications = new AtomicInteger();
+    doAnswer(
+            invocation -> {
+              if (publications.incrementAndGet() == 17) {
+                ResourceId tableId = invocation.getArgument(0);
+                tables.delete(tableId);
+                MutationMeta current = overlays.metaFor(overlay.getResourceId());
+                overlays.update(
+                    overlay.toBuilder().setDisplayName("changed").build(),
+                    current.getPointerVersion());
+              }
+              return null;
+            })
+        .when(reconciler.rootWriter)
+        .commitDefinition(any(), any());
+
+    assertThrows(BaseResourceRepository.AbortRetryableException.class, this::reconcile);
+
+    assertEquals(17, publications.get());
+    verify(tables).metaForSafe(any());
   }
 
   @Test

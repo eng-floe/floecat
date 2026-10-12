@@ -62,6 +62,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -114,6 +115,7 @@ public class CatalogOverlayReconciler {
   static final String STORAGE_LOCATION_PROPERTY = "storage_location";
   private static final int MAX_NAMESPACES = 100_000;
   private static final long RECONCILE_LOCK_POLL_MILLIS = 10L;
+  private static final int MAX_UNCONFIRMED_PUBLICATIONS = 16;
 
   @Inject CatalogIntegrationAccess access;
   @Inject CatalogIntegrationRepository integrations;
@@ -131,6 +133,9 @@ public class CatalogOverlayReconciler {
       defaultValue = "16")
   int maxParallelLoads = 16;
 
+  @ConfigProperty(name = "floecat.catalog-overlay.reconcile.lock-wait", defaultValue = "100ms")
+  Duration reconcileLockWait = Duration.ofMillis(100);
+
   // One entry per active or waiting overlay. This is instance-local load control; the repository
   // fences remain the correctness boundary when different service instances reconcile the same
   // overlay. Reference counts change only under map.compute, and an entry is removed after its last
@@ -145,6 +150,10 @@ public class CatalogOverlayReconciler {
     if (maxParallelLoads < 1) {
       throw new IllegalStateException(
           "floecat.catalog-overlay.reconcile.max-parallel-loads must be positive");
+    }
+    if (reconcileLockWait.isNegative() || reconcileLockWait.isZero()) {
+      throw new IllegalStateException(
+          "floecat.catalog-overlay.reconcile.lock-wait must be positive");
     }
   }
 
@@ -308,6 +317,10 @@ public class CatalogOverlayReconciler {
     // propagating anywhere and accumulated with no bound.
     Set<NamespacePath> tableIdentityUnknownIn = new HashSet<>();
     Set<NamespacePath> viewIdentityUnknownIn = new HashSet<>();
+    // Listing establishes the relation-name claims. Keep those claims independently of detail
+    // loading so a skippable load cannot hide a table/view conflict (or a normalized collision).
+    Set<CatalogObjectName> listedTables = new HashSet<>();
+    Set<CatalogObjectName> listedViews = new HashSet<>();
     RelationLoadPlan<CatalogTable> tableLoadPlan =
         new RelationLoadPlan<>(
             RelationKind.TABLE,
@@ -317,7 +330,7 @@ public class CatalogOverlayReconciler {
             unobservedTables,
             tableIdentityUnknownIn,
             tracedSkipTableClasses,
-            ignored -> {});
+            localName -> recordListedName(listedTables, localName, RelationKind.TABLE));
     RelationLoadPlan<CatalogView> viewLoadPlan =
         new RelationLoadPlan<>(
             RelationKind.VIEW,
@@ -328,7 +341,8 @@ public class CatalogOverlayReconciler {
             viewIdentityUnknownIn,
             tracedSkipViewClasses,
             localName -> {
-              if (discoveredTables.containsKey(localName)) {
+              recordListedName(listedViews, localName, RelationKind.VIEW);
+              if (listedTables.contains(localName)) {
                 throw new IllegalStateException(
                     "Upstream relation name is both table and view: " + localName);
               }
@@ -450,9 +464,10 @@ public class CatalogOverlayReconciler {
   /**
    * Loads one namespace's relation details with a bounded, deterministic fan-out.
    *
-   * <p>All supported catalog clients share this path. Tasks do only the independent upstream read;
-   * ordered result consumption owns every mutable discovery collection and all skip logging, so
-   * concurrent loads cannot change the serial reconciler's collision and failure semantics.
+   * <p>All supported catalog clients share this path. Normalized listing claims are recorded before
+   * any task is submitted, so detail failures cannot hide collisions. Tasks then do only the
+   * independent upstream read; ordered result consumption owns detail-derived discovery state and
+   * skip logging, so concurrent loads cannot change the serial reconciler's failure semantics.
    */
   private <T> void loadRelations(
       CatalogClientSession session,
@@ -461,14 +476,13 @@ public class CatalogOverlayReconciler {
       List<CatalogObjectName> names,
       RelationLoadPlan<T> plan) {
     List<CatalogObjectName> orderedNames = sortedCancellable(names, Comparator.naturalOrder());
+    for (CatalogObjectName name : orderedNames) {
+      throwIfCancelled();
+      plan.recordListed().accept(new CatalogObjectName(normalizedPath, normalizeName(name.name())));
+    }
     MetadataFanout fanout = MetadataFanout.concurrent(maxParallelLoads);
     Consumer<RelationLoad<T>> consume =
         outcome -> {
-          // Preserve the serial walk's collision semantics even when the detail read was skipped:
-          // the collision is established by the two successful listings, before either detail is
-          // interpreted. In particular, a view disappearing during load must not hide that the
-          // listing named it as both a table and a view.
-          plan.beforeInsert().accept(outcome.localName());
           CatalogAccessException failure = outcome.skippedFailure();
           if (failure != null) {
             if (plan.tracedSkipClasses().add(failure.code())) {
@@ -531,6 +545,14 @@ public class CatalogOverlayReconciler {
       fanout.forEachOrdered(orderedNames, load, consume);
     } else {
       fanout.forEachOrdered(orderedNames, load, consume, cancelled);
+    }
+  }
+
+  private static void recordListedName(
+      Set<CatalogObjectName> listed, CatalogObjectName localName, RelationKind kind) {
+    if (!listed.add(localName)) {
+      throw new IllegalStateException(
+          "Upstream " + kind.label + " names collide after normalization: " + localName);
     }
   }
 
@@ -689,7 +711,10 @@ public class CatalogOverlayReconciler {
       Map<NamespacePath, Namespace> localNamespaces,
       LocalInventory inventory,
       MutableResult result) {
-    List<PublishedDefinition> published = new ArrayList<>(discovered.size());
+    // Only publications since the last successful fence assertion can need compensation. Keeping
+    // this as a bounded batch prevents lost-fence recovery from turning into an uncancellable scan
+    // of the entire catalog.
+    List<PublishedDefinition> published = new ArrayList<>(MAX_UNCONFIRMED_PUBLICATIONS);
     try {
       for (var entry : discovered.entrySet()) {
         throwIfCancelled();
@@ -739,6 +764,10 @@ public class CatalogOverlayReconciler {
         // Still run on an unchanged table: this is the repair path for a missing/stale table root.
         rootWriter.commitDefinition(desired.getResourceId(), definitionMeta);
         published.add(new PublishedDefinition(desired.getResourceId(), definitionMeta));
+        if (published.size() == MAX_UNCONFIRMED_PUBLICATIONS) {
+          assertFence(overlay, overlayMeta, integration, integrationMeta);
+          published.clear();
+        }
       }
       assertFence(overlay, overlayMeta, integration, integrationMeta);
     } catch (RuntimeException failure) {
@@ -1329,10 +1358,24 @@ public class CatalogOverlayReconciler {
               return acquired;
             });
     try {
+      throwIfCancelled();
+      if (entry.lock.tryLock()) {
+        return new ReconcileLockLease(overlayId, entry);
+      }
+      long waitNanos = reconcileLockWait.toNanos();
+      long started = System.nanoTime();
       while (true) {
         throwIfCancelled();
         try {
-          if (entry.lock.tryLock(RECONCILE_LOCK_POLL_MILLIS, TimeUnit.MILLISECONDS)) {
+          long elapsed = System.nanoTime() - started;
+          long remaining = waitNanos - elapsed;
+          if (remaining <= 0) {
+            throw new BaseResourceRepository.AbortRetryableException(
+                "Catalog Overlay reconciliation already in progress");
+          }
+          long pollNanos =
+              Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(RECONCILE_LOCK_POLL_MILLIS));
+          if (entry.lock.tryLock(pollNanos, TimeUnit.NANOSECONDS)) {
             return new ReconcileLockLease(overlayId, entry);
           }
         } catch (InterruptedException interrupted) {
@@ -1469,7 +1512,7 @@ public class CatalogOverlayReconciler {
       Set<CatalogObjectName> unobserved,
       Set<NamespacePath> identityUnknownIn,
       Set<CatalogAccessException.Code> tracedSkipClasses,
-      Consumer<CatalogObjectName> beforeInsert) {}
+      Consumer<CatalogObjectName> recordListed) {}
 
   /**
    * Keeps the provider client alive until detail loads abandoned by cancellation have unwound.
