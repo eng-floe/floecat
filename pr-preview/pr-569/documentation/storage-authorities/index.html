@@ -1872,10 +1872,15 @@ temporary session credentials.</p>
 <span class="w">  </span>--location-prefix<span class="w"> </span>s3://my-datalake-prod-bucket/<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--type<span class="w"> </span>s3<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--region<span class="w"> </span>us-east-1<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--assume-role-arn<span class="w"> </span>arn:aws:iam::123456789012:role/floecat-prod-s3-readonly<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--assume-role-external-id<span class="w"> </span>floecat-production
+<span class="w">  </span>--assume-role-arn<span class="w"> </span>arn:aws:iam::123456789012:role/floecat-prod-s3-readonly
 </code></pre></div>
-<p><code>--assume-role-external-id</code> is optional unless the target role trust policy requires it.</p>
+<p>Use <code>account aws-trust-configuration</code> to obtain the account's Floecat-issued external ID and put it
+in the target role's trust policy. Floecat sends that account-owned value when assuming a Storage
+Authority role.</p>
+<p>During migration, an authority with <code>--assume-role-external-id</code> configured retries that legacy value
+only when AWS denies the account-owned value. This fallback keeps roles that still trust their old
+external ID working while their trust policies are updated. Do not configure the legacy flag on new
+authorities.</p>
 <p>This example configures Floecat to assume the target role for the given S3 prefix when a matching
 workflow needs storage access. That can include Iceberg REST delegated client access, but it is not
 limited to that case.</p>
@@ -1903,7 +1908,8 @@ workloads within one bucket must not share the same vended credential scope.</p>
 <ul>
 <li>configure <code>--location-prefix</code> for the target bucket or prefix</li>
 <li>configure <code>--assume-role-arn</code> for a role in that target account</li>
-<li>optionally configure <code>--assume-role-external-id</code> if required by the trust policy</li>
+<li>configure the role trust policy with the external ID printed by
+  <code>account aws-trust-configuration</code></li>
 </ul>
 <p>The target role should trust the Floecat AWS identity and allow only the minimum S3 actions needed
 for the intended workload, whether that is a server-side Floecat flow, an Iceberg REST client, or
