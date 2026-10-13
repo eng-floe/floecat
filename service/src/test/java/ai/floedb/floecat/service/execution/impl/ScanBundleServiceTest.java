@@ -31,6 +31,8 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -179,6 +181,33 @@ class ScanBundleServiceTest {
     assertTrue(init.tableInfo().hasResolvedStorage());
     assertEquals(storage, init.tableInfo().getResolvedStorage());
     assertFalse(init.tableInfo().getPropertiesMap().containsKey("metadata-location"));
+  }
+
+  @Test
+  void initScanPreservesDeltaFormatWhenOnlyUpstreamDeclaresIt() {
+    var table =
+        Table.newBuilder()
+            .setResourceId(TABLE_ID)
+            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA))
+            .setSchemaJson(
+                """
+                {"type":"struct","fields":[
+                  {"name":"time_unix_nano","type":"long","nullable":true,"metadata":{}}
+                ]}
+                """)
+            .build();
+    when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
+    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI))
+        .thenReturn(
+            Optional.of(Snapshot.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build()));
+    when(resolver.applyToTablePropertiesWithStorage(table, null, table.getPropertiesMap()))
+        .thenReturn(new ResolvedTableProperties(Map.of("s3.region", "eu-central-1"), null));
+
+    var info = service.initScan("corr", PIN).tableInfo();
+
+    assertEquals("DELTA", info.getPropertiesMap().get("data_source_format"));
+    assertEquals("eu-central-1", info.getPropertiesMap().get("s3.region"));
+    assertFalse(info.getPropertiesMap().containsKey("schema.name-mapping.default"));
   }
 
   @Test

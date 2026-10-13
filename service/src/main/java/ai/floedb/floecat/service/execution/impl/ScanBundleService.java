@@ -532,14 +532,17 @@ public class ScanBundleService {
         fileIoPropertiesResolver.applyToTablePropertiesWithStorage(
             table, null, table.getPropertiesMap());
     Map<String, String> tableProperties = resolvedTableProperties.properties();
-    if (deltaTable
-        && rawSchemaJson != null
-        && !rawSchemaJson.isBlank()
-        && !tableProperties.containsKey(DeltaSchemaNormalizer.DEFAULT_NAME_MAPPING_PROPERTY)) {
-      String nameMappingJson = DeltaSchemaNormalizer.defaultNameMappingJson(rawSchemaJson);
-      if (nameMappingJson != null && !nameMappingJson.isBlank()) {
-        tableProperties = new LinkedHashMap<>(tableProperties);
-        tableProperties.put(DeltaSchemaNormalizer.DEFAULT_NAME_MAPPING_PROPERTY, nameMappingJson);
+    if (deltaTable) {
+      tableProperties = new LinkedHashMap<>(tableProperties);
+      // TableInfo has no upstream format; readers need this to resolve unmapped Delta field IDs.
+      tableProperties.put("data_source_format", "DELTA");
+      if (rawSchemaJson != null
+          && !rawSchemaJson.isBlank()
+          && !tableProperties.containsKey(DeltaSchemaNormalizer.DEFAULT_NAME_MAPPING_PROPERTY)) {
+        String nameMappingJson = DeltaSchemaNormalizer.defaultNameMappingJson(rawSchemaJson);
+        if (nameMappingJson != null && !nameMappingJson.isBlank()) {
+          tableProperties.put(DeltaSchemaNormalizer.DEFAULT_NAME_MAPPING_PROPERTY, nameMappingJson);
+        }
       }
     }
     if (!tableProperties.isEmpty()) {
