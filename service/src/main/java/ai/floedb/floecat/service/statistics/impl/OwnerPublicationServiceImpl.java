@@ -136,6 +136,17 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                   new CatalogSurfaceWritePolicy(graphView, catalogContext())
                       .requireWritableTable(tableId, correlationId());
                   String generationId = generationId(request, requireCallerSubject());
+                  if (request.getReplaceExistingPublication()
+                      && statsStore.statsGenerationPublished(tableId, snapshotId, generationId)) {
+                    throw GrpcErrors.preconditionFailed(
+                        correlationId(),
+                        GeneratedErrorMessages.MessageKey.PUBLICATION_GENERATION_PUBLISHED,
+                        Map.of(
+                            "owner_generation_id",
+                            request.getOwnerGenerationId(),
+                            "publication_id",
+                            generationId));
+                  }
                   SnapshotReuseManifestRef replacementBase = null;
                   if (request.getReplaceExistingPublication()) {
                     replacementBase =

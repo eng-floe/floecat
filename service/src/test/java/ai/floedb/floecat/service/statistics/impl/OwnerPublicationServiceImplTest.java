@@ -130,6 +130,34 @@ class OwnerPublicationServiceImplTest {
   }
 
   @Test
+  void replacementBeginRejectsAnAlreadyPublishedGeneration() {
+    var service = service();
+    var request =
+        begin().toBuilder()
+            .setOwnerGenerationId("already-published-owner-generation")
+            .setReplaceExistingPublication(true)
+            .build();
+    String publicationId = OwnerPublicationServiceImpl.generationId(request, CALLER_SUBJECT);
+    when(service.statsStore.statsGenerationPublished(tableId(), SNAPSHOT, publicationId))
+        .thenReturn(true);
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () -> service.beginOwnerPublication(request).await().indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    assertTrue(error.getStatus().getDescription().contains("already-published-owner-generation"));
+    assertTrue(error.getStatus().getDescription().contains(publicationId));
+    verify(service.snapshots, never()).getByIdConsistent(any(), anyLong());
+    verify(service.reuseLeases, never())
+        .acquireWithCandidates(any(), anyString(), anyString(), any(), anyBoolean(), any(), any());
+    verify(service.statsStore, never()).beginStatsGeneration(any(), anyLong(), anyString());
+    verify(service.statsStore, never())
+        .prepareStatsGenerationManifest(any(), anyLong(), anyString());
+  }
+
+  @Test
   void beginLeasesTheSelectedReuseManifest() {
     var service = service();
     var sourceRef =

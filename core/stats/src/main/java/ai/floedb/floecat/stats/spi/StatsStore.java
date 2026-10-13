@@ -300,6 +300,12 @@ public interface StatsStore {
     return false;
   }
 
+  /** Returns whether this generation has already been published and is immutable. */
+  default boolean statsGenerationPublished(
+      ResourceId tableId, long snapshotId, String generationId) {
+    return false;
+  }
+
   /** Writes the small Floecat-owned generation manifest required before pointer activation. */
   default void prepareStatsGenerationManifest(
       ResourceId tableId, long snapshotId, String generationId) {

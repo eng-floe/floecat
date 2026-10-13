@@ -3378,12 +3378,15 @@ class StatsRepositoryTargetStorageTest {
     StatsRepository repository = new StatsRepository(pointerStore, new InMemoryBlobStore());
 
     assertThat(repository.statsGenerationExists(TABLE_ID, snapshotId, generationId)).isFalse();
+    assertThat(repository.statsGenerationPublished(TABLE_ID, snapshotId, generationId)).isFalse();
 
     repository.beginStatsGeneration(TABLE_ID, snapshotId, generationId);
     assertThat(repository.statsGenerationExists(TABLE_ID, snapshotId, generationId)).isTrue();
+    assertThat(repository.statsGenerationPublished(TABLE_ID, snapshotId, generationId)).isFalse();
 
     repository.publishPrewrittenStatsGeneration(TABLE_ID, snapshotId, generationId, List.of());
     assertThat(repository.statsGenerationExists(TABLE_ID, snapshotId, generationId)).isTrue();
+    assertThat(repository.statsGenerationPublished(TABLE_ID, snapshotId, generationId)).isTrue();
   }
 
   @Test
