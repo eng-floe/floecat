@@ -9,6 +9,7 @@ import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestKind;
 import ai.floedb.floecat.catalog.rpc.SnapshotReuseManifestRef;
 import ai.floedb.floecat.common.rpc.Pointer;
 import ai.floedb.floecat.common.rpc.ResourceId;
+import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
 import ai.floedb.floecat.service.repo.model.PointerReferences;
 import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
@@ -24,6 +25,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicReference;
@@ -53,6 +55,9 @@ public class OwnerReuseLeaseRepository {
 
   public record AcquireResult(
       long expiresAtEpochMs, List<SnapshotReuseManifestRef> inProgressManifests) {}
+
+  public record RenewResult(
+      long expiresAtEpochMs, Optional<SnapshotReuseManifestRef> replacementBase) {}
 
   public record RegistrationProgress(
       long registrationChunk,
@@ -104,6 +109,8 @@ public class OwnerReuseLeaseRepository {
         null,
         false,
         null,
+        null,
+        null,
         false,
         java.util.Objects.requireNonNull(initializePublication, "initializePublication"));
   }
@@ -113,6 +120,7 @@ public class OwnerReuseLeaseRepository {
       String publicationId,
       String captureManifestPrefix,
       SnapshotReuseManifestRef source,
+      SnapshotReuseManifestRef replacementBase,
       Runnable initializePublication) {
     AtomicReference<List<SnapshotReuseManifestRef>> candidates = new AtomicReference<>(List.of());
     long expiresAt =
@@ -124,18 +132,36 @@ public class OwnerReuseLeaseRepository {
             null,
             true,
             candidates,
+            replacementBase,
+            null,
             false,
             java.util.Objects.requireNonNull(initializePublication, "initializePublication"));
     return new AcquireResult(expiresAt, candidates.get());
   }
 
-  public long renew(ResourceId tableId, String publicationId, SnapshotReuseManifestRef successor) {
-    return updateLease(tableId, publicationId, null, successor, null, false, null, true, () -> {});
+  public RenewResult renew(
+      ResourceId tableId, String publicationId, SnapshotReuseManifestRef successor) {
+    AtomicReference<SnapshotReuseManifestRef> replacementBase = new AtomicReference<>();
+    long expiresAt =
+        updateLease(
+            tableId,
+            publicationId,
+            null,
+            successor,
+            null,
+            false,
+            null,
+            null,
+            replacementBase,
+            true,
+            () -> {});
+    return new RenewResult(expiresAt, Optional.ofNullable(replacementBase.get()));
   }
 
   public long publishInProgressManifest(
       ResourceId tableId, String publicationId, SnapshotReuseManifestRef manifest) {
-    return updateLease(tableId, publicationId, null, null, manifest, false, null, true, () -> {});
+    return updateLease(
+        tableId, publicationId, null, null, manifest, false, null, null, null, true, () -> {});
   }
 
   private long updateLease(
@@ -146,6 +172,8 @@ public class OwnerReuseLeaseRepository {
       SnapshotReuseManifestRef inProgressManifest,
       boolean discoverCandidates,
       AtomicReference<List<SnapshotReuseManifestRef>> candidatesOut,
+      SnapshotReuseManifestRef replacementBase,
+      AtomicReference<SnapshotReuseManifestRef> replacementBaseOut,
       boolean requireContinuousLease,
       Runnable initializePublication) {
     if (leaseTtlMs <= 0L) {
@@ -168,6 +196,9 @@ public class OwnerReuseLeaseRepository {
     }
     if (inProgressManifest != null && !isValidPartialManifest(tableId, inProgressManifest)) {
       throw new IllegalArgumentException("partial Owner reuse manifest metadata is required");
+    }
+    if (replacementBase != null && !SnapshotRepository.isCompleteReuseManifest(replacementBase)) {
+      throw new IllegalArgumentException("complete replacement-base manifest metadata is required");
     }
     if (!requireContinuousLease
         && (captureManifestPrefix == null
@@ -197,6 +228,7 @@ public class OwnerReuseLeaseRepository {
             String currentReuseSourceManifestUri = "";
             SnapshotReuseManifestRef currentInProgressManifest = null;
             long currentInProgressManifestUpdatedAt = 0L;
+            SnapshotReuseManifestRef currentReplacementBase = replacementBase;
             if (current == null && requireContinuousLease) {
               throw new LeaseContinuityException(
                   "Owner reuse lease is missing; publication protection was lost");
@@ -229,6 +261,15 @@ public class OwnerReuseLeaseRepository {
                 discoveredManifestPrefixes.addAll(
                     currentLease.getDiscoveredCaptureManifestPrefixesList());
                 currentReuseSourceManifestUri = currentLease.getReuseSourceCaptureManifestUri();
+                currentReplacementBase =
+                    currentLease.hasReplacementBaseReuseManifestRef()
+                        ? currentLease.getReplacementBaseReuseManifestRef()
+                        : null;
+                if (!requireContinuousLease
+                    && !java.util.Objects.equals(currentReplacementBase, replacementBase)) {
+                  throw new LeaseContinuityException(
+                      "Owner publication replacement fence changed during Begin retry");
+                }
                 if (currentLease.hasInProgressReuseManifestRef()) {
                   currentInProgressManifest = currentLease.getInProgressReuseManifestRef();
                   currentInProgressManifestUpdatedAt =
@@ -269,6 +310,9 @@ public class OwnerReuseLeaseRepository {
               currentInProgressManifest = inProgressManifest;
               currentInProgressManifestUpdatedAt = now;
             }
+            if (replacementBaseOut != null) {
+              replacementBaseOut.set(currentReplacementBase);
+            }
             OwnerPublicationLease.Builder leaseBuilder =
                 OwnerPublicationLease.newBuilder()
                     .setFormatVersion(1)
@@ -282,6 +326,9 @@ public class OwnerReuseLeaseRepository {
                     .addAllProtectedCaptureManifestPrefixes(protectedManifestPrefixes)
                     .addAllDiscoveredCaptureManifestPrefixes(discoveredManifestPrefixes)
                     .setExpiresAtEpochMs(expiresAt);
+            if (currentReplacementBase != null) {
+              leaseBuilder.setReplacementBaseReuseManifestRef(currentReplacementBase);
+            }
             if (!currentReuseSourceManifestUri.isBlank()) {
               leaseBuilder.setReuseSourceCaptureManifestUri(currentReuseSourceManifestUri);
             }
@@ -453,6 +500,9 @@ public class OwnerReuseLeaseRepository {
                     .getProtectedCaptureManifestPrefixesList()
                     .contains(
                         partialManifestPrefix(tableId, lease.getInProgressReuseManifestRef()))))
+        || (lease.hasReplacementBaseReuseManifestRef()
+            && !SnapshotRepository.isCompleteReuseManifest(
+                lease.getReplacementBaseReuseManifestRef()))
         || !new HashSet<>(lease.getProtectedCaptureManifestPrefixesList())
             .containsAll(lease.getDiscoveredCaptureManifestPrefixesList())
         || (!lease.getReuseSourceCaptureManifestUri().isBlank()

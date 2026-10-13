@@ -136,6 +136,15 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                   new CatalogSurfaceWritePolicy(graphView, catalogContext())
                       .requireWritableTable(tableId, correlationId());
                   String generationId = generationId(request, requireCallerSubject());
+                  SnapshotReuseManifestRef replacementBase = null;
+                  if (request.getReplaceExistingPublication()) {
+                    replacementBase =
+                        snapshots
+                            .getByIdConsistent(tableId, snapshotId)
+                            .filter(Snapshot::hasReuseManifestRef)
+                            .map(Snapshot::getReuseManifestRef)
+                            .orElse(null);
+                  }
                   boolean reuseSourceLeased = false;
                   SnapshotReuseManifestRef source = null;
                   if (request.hasReuseSourceSnapshotId()) {
@@ -156,26 +165,31 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                   // prefixes. A reuse source additionally roots its exact capture manifest.
                   OwnerReuseLeaseRepository.AcquireResult lease;
                   try {
+                    String captureManifestPrefix =
+                        Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
+                            tableId.getAccountId(), tableId.getId(), snapshotId);
+                    Runnable initializePublication =
+                        () -> {
+                          if (!statsStore.statsGenerationExists(
+                              tableId, snapshotId, generationId)) {
+                            statsStore.beginStatsGeneration(tableId, snapshotId, generationId);
+                          }
+                          // This marker is tiny and Floecat-owned. Requiring the Owner to
+                          // manufacture it would add an upload while also making the existing
+                          // prepared-generation API fail every publication that did not know
+                          // about this repository detail. This also repairs a Begin retry
+                          // interrupted after reserving the generation.
+                          statsStore.prepareStatsGenerationManifest(
+                              tableId, snapshotId, generationId);
+                        };
                     lease =
                         reuseLeases.acquireWithCandidates(
                             tableId,
                             generationId,
-                            Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
-                                tableId.getAccountId(), tableId.getId(), snapshotId),
+                            captureManifestPrefix,
                             source,
-                            () -> {
-                              if (!statsStore.statsGenerationExists(
-                                  tableId, snapshotId, generationId)) {
-                                statsStore.beginStatsGeneration(tableId, snapshotId, generationId);
-                              }
-                              // This marker is tiny and Floecat-owned. Requiring the Owner to
-                              // manufacture it would add an upload while also making the existing
-                              // prepared-generation API fail every publication that did not know
-                              // about this repository detail. This also repairs a Begin retry
-                              // interrupted after reserving the generation.
-                              statsStore.prepareStatsGenerationManifest(
-                                  tableId, snapshotId, generationId);
-                            });
+                            replacementBase,
+                            initializePublication);
                   } catch (OwnerReuseLeaseRepository.LeaseContinuityException error) {
                     throw GrpcErrors.preconditionFailed(
                         correlationId(),
@@ -301,6 +315,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
             request.getOwnerGenerationId(),
             publication.publishFileStats(),
             publication.publishIndexes(),
+            publication.replaceExistingPublication(),
             requireCallerSubject());
     if (!MessageDigest.isEqual(
         generationId.getBytes(java.nio.charset.StandardCharsets.UTF_8),
@@ -401,9 +416,9 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     // reusable objects are registered. The manifest roots each coverage-addressed file-stat and
     // sidecar object as one unit, avoiding one transient protection pointer per source file while
     // still closing the upload-to-activation GC window.
-    long leaseExpiresAt;
+    OwnerReuseLeaseRepository.RenewResult renewal;
     try {
-      leaseExpiresAt = reuseLeases.renew(tableId, generationId, reuseManifestRef);
+      renewal = reuseLeases.renew(tableId, generationId, reuseManifestRef);
     } catch (OwnerReuseLeaseRepository.LeaseContinuityException error) {
       if (publicationAlreadyCommitted(
           tableId, snapshotId, generationId, snapshot, reuseManifestRef)) {
@@ -423,6 +438,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
           Map.of("publication_id", generationId));
     }
     trace.mark("renew_lease");
+    long leaseExpiresAt = renewal.expiresAtEpochMs();
     if (progress.registrationChunk() < registration.getCommitmentIndex().getChunkCount()) {
       OwnerArtifactRegistrationManifest.Batch batch;
       ExternalManifestCommitmentIndex commitments;
@@ -567,9 +583,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     Snapshot publishedSnapshot = snapshot;
     var existingSnapshot = snapshots.getByIdConsistent(tableId, snapshotId);
     if (existingSnapshot.isPresent()) {
-      if (!sameOwnerSnapshot(existingSnapshot.get(), snapshot)
-          || (existingSnapshot.get().hasReuseManifestRef()
-              && !existingSnapshot.get().getReuseManifestRef().equals(reuseManifestRef))) {
+      if (!sameOwnerSnapshot(existingSnapshot.get(), snapshot)) {
         throw GrpcErrors.preconditionFailed(
             correlationId(),
             GeneratedErrorMessages.MessageKey.PUBLICATION_SNAPSHOT_CONFLICT,
@@ -577,7 +591,10 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       }
       try {
         var preparedSnapshot =
-            snapshots.prepareReuseManifestPublication(tableId, snapshotId, reuseManifestRef);
+            publication.replaceExistingPublication()
+                ? snapshots.prepareReuseManifestReplacement(
+                    tableId, snapshotId, renewal.replacementBase(), reuseManifestRef)
+                : snapshots.prepareReuseManifestPublication(tableId, snapshotId, reuseManifestRef);
         publishedSnapshot = preparedSnapshot.snapshot();
         publicationUpdates.addAll(preparedSnapshot.pointerUpdates());
       } catch (BaseResourceRepository.NameConflictException error) {
@@ -587,6 +604,12 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
             Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
       }
     } else {
+      if (publication.replaceExistingPublication() && renewal.replacementBase().isPresent()) {
+        throw GrpcErrors.preconditionFailed(
+            correlationId(),
+            GeneratedErrorMessages.MessageKey.PUBLICATION_SNAPSHOT_CONFLICT,
+            Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
+      }
       publicationUpdates.addAll(snapshots.prepareCreatePublicationUpdates(snapshot));
     }
     StatsStore.PublicationFence publicationFence =
@@ -1226,6 +1249,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
         request.getOwnerGenerationId(),
         request.getPublishFileStats(),
         request.getPublishIndexes(),
+        request.getReplaceExistingPublication(),
         callerSubject);
   }
 
@@ -1234,6 +1258,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       String ownerGenerationId,
       boolean publishFileStats,
       boolean publishIndexes,
+      boolean replaceExistingPublication,
       String callerSubject) {
     if (ownerId.isBlank() || ownerGenerationId.isBlank() || callerSubject.isBlank()) {
       throw new IllegalArgumentException("owner identity is required");
@@ -1247,10 +1272,13 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
             + '\0'
             + publishFileStats
             + '\0'
-            + publishIndexes;
+            + publishIndexes
+            + '\0'
+            + replaceExistingPublication;
     return OWNER_GENERATION_PREFIX
         + (publishFileStats ? '1' : '0')
         + (publishIndexes ? '1' : '0')
+        + (replaceExistingPublication ? '1' : '0')
         + '-'
         + Hashing.sha256Hex(identity);
   }
@@ -1266,18 +1294,21 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
   private PublicationId requirePublicationId(String publicationId) {
     if (publicationId == null
         || !publicationId.startsWith(OWNER_GENERATION_PREFIX)
-        || publicationId.length() != OWNER_GENERATION_PREFIX.length() + 3 + 64
+        || publicationId.length() != OWNER_GENERATION_PREFIX.length() + 4 + 64
         || (publicationId.charAt(OWNER_GENERATION_PREFIX.length()) != '0'
             && publicationId.charAt(OWNER_GENERATION_PREFIX.length()) != '1')
         || (publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 1) != '0'
             && publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 1) != '1')
-        || publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 2) != '-') {
+        || (publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 2) != '0'
+            && publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 2) != '1')
+        || publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 3) != '-') {
       throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "publication_id"));
     }
     return new PublicationId(
         publicationId,
         publicationId.charAt(OWNER_GENERATION_PREFIX.length()) == '1',
-        publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 1) == '1');
+        publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 1) == '1',
+        publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 2) == '1');
   }
 
   private String requirePublicationCapability(
@@ -1293,6 +1324,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
             ownerGenerationId,
             publication.publishFileStats(),
             publication.publishIndexes(),
+            publication.replaceExistingPublication(),
             requireCallerSubject());
     if (!MessageDigest.isEqual(
         publication.value().getBytes(StandardCharsets.UTF_8),
@@ -1331,7 +1363,11 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     }
   }
 
-  private record PublicationId(String value, boolean publishFileStats, boolean publishIndexes) {}
+  private record PublicationId(
+      String value,
+      boolean publishFileStats,
+      boolean publishIndexes,
+      boolean replaceExistingPublication) {}
 
   private String generationPrefix(ResourceId tableId, long snapshotId, String generationId) {
     return Keys.snapshotTargetStatsGenerationBlobPrefix(

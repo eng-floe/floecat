@@ -51,6 +51,7 @@ import ai.floedb.floecat.service.repo.impl.IndexArtifactRepository;
 import ai.floedb.floecat.service.repo.impl.SnapshotRepository;
 import ai.floedb.floecat.service.repo.impl.TableRepository;
 import ai.floedb.floecat.service.repo.model.Keys;
+import ai.floedb.floecat.service.repo.util.BaseResourceRepository;
 import ai.floedb.floecat.service.security.impl.Authorizer;
 import ai.floedb.floecat.service.security.impl.PrincipalProvider;
 import ai.floedb.floecat.service.testsupport.TestNodes;
@@ -150,6 +151,35 @@ class OwnerPublicationServiceImplTest {
                 Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
                     tableId().getAccountId(), tableId().getId(), SNAPSHOT)),
             eq(sourceRef),
+            eq(null),
+            any());
+  }
+
+  @Test
+  void replacementBeginCapturesTheCurrentTargetManifest() {
+    var service = service();
+    SnapshotReuseManifestRef previous = finalizedManifest("/capture/previous.pb", (byte) 1);
+    when(service.snapshots.getByIdConsistent(tableId(), SNAPSHOT))
+        .thenReturn(
+            Optional.of(
+                Snapshot.newBuilder()
+                    .setTableId(tableId())
+                    .setSnapshotId(SNAPSHOT)
+                    .setReuseManifestRef(previous)
+                    .build()));
+    var request = begin().toBuilder().setReplaceExistingPublication(true).build();
+
+    var response = service.beginOwnerPublication(request).await().indefinitely();
+
+    verify(service.reuseLeases)
+        .acquireWithCandidates(
+            eq(tableId()),
+            eq(response.getGenerationId()),
+            eq(
+                Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
+                    tableId().getAccountId(), tableId().getId(), SNAPSHOT)),
+            eq(null),
+            eq(previous),
             any());
   }
 
@@ -188,6 +218,7 @@ class OwnerPublicationServiceImplTest {
                 Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
                     tableId().getAccountId(), tableId().getId(), SNAPSHOT)),
             org.mockito.ArgumentMatchers.isNull(),
+            org.mockito.ArgumentMatchers.isNull(),
             any());
   }
 
@@ -197,12 +228,12 @@ class OwnerPublicationServiceImplTest {
     var candidate = partialManifest("/candidate.pb", (byte) 5);
     doAnswer(
             invocation -> {
-              invocation.getArgument(4, Runnable.class).run();
+              invocation.getArgument(5, Runnable.class).run();
               return new OwnerReuseLeaseRepository.AcquireResult(
                   Long.MAX_VALUE, java.util.List.of(candidate));
             })
         .when(service.reuseLeases)
-        .acquireWithCandidates(any(), anyString(), anyString(), any(), any());
+        .acquireWithCandidates(any(), anyString(), anyString(), any(), any(), any());
 
     var response = service.beginOwnerPublication(begin()).await().indefinitely();
 
@@ -700,6 +731,95 @@ class OwnerPublicationServiceImplTest {
     verify(service.snapshots, never()).recordReuseManifest(any(), anyLong(), any());
     verify(service.currentSnapshots)
         .advanceOwnerPublication(any(), any(Snapshot.class), anyString());
+  }
+
+  @Test
+  void forceRebuildReplacesTheBeginTimeReuseRootInThePublicationFence() {
+    var service = service();
+    var publication = begin().toBuilder().setReplaceExistingPublication(true).build();
+    SnapshotReuseManifestRef previous = finalizedManifest("/capture/previous.pb", (byte) 1);
+    Snapshot stored =
+        Snapshot.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT)
+            .setUpstreamCreatedAt(com.google.protobuf.Timestamp.newBuilder().setSeconds(1))
+            .setIngestedAt(com.google.protobuf.Timestamp.newBuilder().setSeconds(2))
+            .setSchemaJson("{}")
+            .setReuseManifestRef(previous)
+            .build();
+    when(service.snapshots.getByIdConsistent(tableId(), SNAPSHOT)).thenReturn(Optional.of(stored));
+    when(service.reuseLeases.renew(any(), anyString(), any()))
+        .thenReturn(
+            new OwnerReuseLeaseRepository.RenewResult(Long.MAX_VALUE, Optional.of(previous)));
+    var snapshotUpdate =
+        new StatsStore.PublicationPointerUpdate(
+            "/snapshots/by-id/42", 7L, Pointer.getDefaultInstance());
+    when(service.snapshots.prepareReuseManifestReplacement(
+            eq(tableId()), eq(SNAPSHOT), eq(Optional.of(previous)), any()))
+        .thenAnswer(
+            invocation ->
+                new SnapshotRepository.PreparedReuseManifestPublication(
+                    stored.toBuilder()
+                        .setReuseManifestRef(
+                            invocation.getArgument(3, SnapshotReuseManifestRef.class))
+                        .build(),
+                    java.util.List.of(snapshotUpdate)));
+    var fence = ArgumentCaptor.<StatsStore.PublicationFence>captor();
+    var manifest =
+        baseManifest(OwnerPublicationServiceImpl.generationId(publication, CALLER_SUBJECT)).build();
+
+    var response =
+        service
+            .completeOwnerPublication(complete(service, publication, manifest))
+            .await()
+            .indefinitely();
+
+    assertTrue(response.getActivated());
+    verify(service.persistence)
+        .activatePreparedStatsGeneration(
+            any(), anyLong(), anyString(), any(), any(), fence.capture());
+    assertTrue(fence.getValue().pointerUpdates().contains(snapshotUpdate));
+    verify(service.snapshots, never()).prepareReuseManifestPublication(any(), anyLong(), any());
+  }
+
+  @Test
+  void forceRebuildCannotReplaceAPublicationThatChangedAfterBegin() {
+    var service = service();
+    var publication = begin().toBuilder().setReplaceExistingPublication(true).build();
+    SnapshotReuseManifestRef previous = finalizedManifest("/capture/previous.pb", (byte) 1);
+    SnapshotReuseManifestRef newer = finalizedManifest("/capture/newer.pb", (byte) 2);
+    Snapshot stored =
+        Snapshot.newBuilder()
+            .setTableId(tableId())
+            .setSnapshotId(SNAPSHOT)
+            .setUpstreamCreatedAt(com.google.protobuf.Timestamp.newBuilder().setSeconds(1))
+            .setIngestedAt(com.google.protobuf.Timestamp.newBuilder().setSeconds(2))
+            .setSchemaJson("{}")
+            .setReuseManifestRef(newer)
+            .build();
+    when(service.snapshots.getByIdConsistent(tableId(), SNAPSHOT)).thenReturn(Optional.of(stored));
+    when(service.reuseLeases.renew(any(), anyString(), any()))
+        .thenReturn(
+            new OwnerReuseLeaseRepository.RenewResult(Long.MAX_VALUE, Optional.of(previous)));
+    when(service.snapshots.prepareReuseManifestReplacement(
+            eq(tableId()), eq(SNAPSHOT), eq(Optional.of(previous)), any()))
+        .thenThrow(new BaseResourceRepository.NameConflictException("stale predecessor"));
+    var manifest =
+        baseManifest(OwnerPublicationServiceImpl.generationId(publication, CALLER_SUBJECT)).build();
+
+    var error =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service
+                    .completeOwnerPublication(complete(service, publication, manifest))
+                    .await()
+                    .indefinitely());
+
+    assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
+    verify(service.snapshots).prepareReuseManifestReplacement(any(), anyLong(), any(), any());
+    verify(service.persistence, never())
+        .activatePreparedStatsGeneration(any(), anyLong(), anyString(), any(), any(), any());
   }
 
   @Test
@@ -1665,6 +1785,19 @@ class OwnerPublicationServiceImplTest {
         .build();
   }
 
+  private static SnapshotReuseManifestRef finalizedManifest(String uri, byte fill) {
+    byte[] digest = new byte[32];
+    java.util.Arrays.fill(digest, fill);
+    return SnapshotReuseManifestRef.newBuilder()
+        .setFormatVersion(1)
+        .setKind(SnapshotReuseManifestKind.SRMK_OWNER_V2)
+        .setUri(uri)
+        .setPayloadBytes(10)
+        .setPayloadSha256(ByteString.copyFrom(digest))
+        .setStatsGenerationManifestUri(uri + ".stats")
+        .build();
+  }
+
   private static OwnerPublicationServiceImpl service() {
     var service = new OwnerPublicationServiceImpl();
     service.statsStore = org.mockito.Mockito.mock(StatsStore.class);
@@ -1677,14 +1810,16 @@ class OwnerPublicationServiceImplTest {
     service.blobStore = org.mockito.Mockito.mock(BlobStore.class);
     service.manifestCommitments = ExternalManifestCommitmentCache.forTesting();
     service.reuseLeases = org.mockito.Mockito.mock(OwnerReuseLeaseRepository.class);
-    when(service.reuseLeases.acquireWithCandidates(any(), anyString(), anyString(), any(), any()))
+    when(service.reuseLeases.acquireWithCandidates(
+            any(), anyString(), anyString(), any(), any(), any()))
         .thenAnswer(
             invocation -> {
-              invocation.getArgument(4, Runnable.class).run();
+              invocation.getArgument(5, Runnable.class).run();
               return new OwnerReuseLeaseRepository.AcquireResult(
                   Long.MAX_VALUE, java.util.List.of());
             });
-    when(service.reuseLeases.renew(any(), anyString(), any())).thenReturn(Long.MAX_VALUE);
+    when(service.reuseLeases.renew(any(), anyString(), any()))
+        .thenReturn(new OwnerReuseLeaseRepository.RenewResult(Long.MAX_VALUE, Optional.empty()));
     when(service.reuseLeases.progress(any(), anyString(), anyString()))
         .thenReturn(OwnerReuseLeaseRepository.RegistrationProgress.initial());
     service.principal = org.mockito.Mockito.mock(PrincipalProvider.class);
