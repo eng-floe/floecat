@@ -188,8 +188,14 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
                             generationId,
                             captureManifestPrefix,
                             source,
+                            request.getReplaceExistingPublication(),
                             replacementBase,
                             initializePublication);
+                  } catch (OwnerReuseLeaseRepository.ReplacementFenceException error) {
+                    throw GrpcErrors.preconditionFailed(
+                        correlationId(),
+                        GeneratedErrorMessages.MessageKey.PUBLICATION_REPLACEMENT_CONFLICT,
+                        Map.of("publication_id", generationId));
                   } catch (OwnerReuseLeaseRepository.LeaseContinuityException error) {
                     throw GrpcErrors.preconditionFailed(
                         correlationId(),
@@ -315,7 +321,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
             request.getOwnerGenerationId(),
             publication.publishFileStats(),
             publication.publishIndexes(),
-            publication.replaceExistingPublication(),
             requireCallerSubject());
     if (!MessageDigest.isEqual(
         generationId.getBytes(java.nio.charset.StandardCharsets.UTF_8),
@@ -591,7 +596,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       }
       try {
         var preparedSnapshot =
-            publication.replaceExistingPublication()
+            renewal.replaceExistingPublication()
                 ? snapshots.prepareReuseManifestReplacement(
                     tableId, snapshotId, renewal.replacementBase(), reuseManifestRef)
                 : snapshots.prepareReuseManifestPublication(tableId, snapshotId, reuseManifestRef);
@@ -600,15 +605,19 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       } catch (BaseResourceRepository.NameConflictException error) {
         throw GrpcErrors.preconditionFailed(
             correlationId(),
-            GeneratedErrorMessages.MessageKey.PUBLICATION_SNAPSHOT_CONFLICT,
-            Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
+            renewal.replaceExistingPublication()
+                ? GeneratedErrorMessages.MessageKey.PUBLICATION_REPLACEMENT_CONFLICT
+                : GeneratedErrorMessages.MessageKey.PUBLICATION_SNAPSHOT_CONFLICT,
+            renewal.replaceExistingPublication()
+                ? Map.of("publication_id", generationId)
+                : Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
       }
     } else {
-      if (publication.replaceExistingPublication() && renewal.replacementBase().isPresent()) {
+      if (renewal.replaceExistingPublication() && renewal.replacementBase().isPresent()) {
         throw GrpcErrors.preconditionFailed(
             correlationId(),
-            GeneratedErrorMessages.MessageKey.PUBLICATION_SNAPSHOT_CONFLICT,
-            Map.of("table_id", tableId.getId(), "snapshot_id", Long.toString(snapshotId)));
+            GeneratedErrorMessages.MessageKey.PUBLICATION_REPLACEMENT_CONFLICT,
+            Map.of("publication_id", generationId));
       }
       publicationUpdates.addAll(snapshots.prepareCreatePublicationUpdates(snapshot));
     }
@@ -1249,7 +1258,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
         request.getOwnerGenerationId(),
         request.getPublishFileStats(),
         request.getPublishIndexes(),
-        request.getReplaceExistingPublication(),
         callerSubject);
   }
 
@@ -1258,7 +1266,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
       String ownerGenerationId,
       boolean publishFileStats,
       boolean publishIndexes,
-      boolean replaceExistingPublication,
       String callerSubject) {
     if (ownerId.isBlank() || ownerGenerationId.isBlank() || callerSubject.isBlank()) {
       throw new IllegalArgumentException("owner identity is required");
@@ -1272,13 +1279,10 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
             + '\0'
             + publishFileStats
             + '\0'
-            + publishIndexes
-            + '\0'
-            + replaceExistingPublication;
+            + publishIndexes;
     return OWNER_GENERATION_PREFIX
         + (publishFileStats ? '1' : '0')
         + (publishIndexes ? '1' : '0')
-        + (replaceExistingPublication ? '1' : '0')
         + '-'
         + Hashing.sha256Hex(identity);
   }
@@ -1294,21 +1298,18 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
   private PublicationId requirePublicationId(String publicationId) {
     if (publicationId == null
         || !publicationId.startsWith(OWNER_GENERATION_PREFIX)
-        || publicationId.length() != OWNER_GENERATION_PREFIX.length() + 4 + 64
+        || publicationId.length() != OWNER_GENERATION_PREFIX.length() + 3 + 64
         || (publicationId.charAt(OWNER_GENERATION_PREFIX.length()) != '0'
             && publicationId.charAt(OWNER_GENERATION_PREFIX.length()) != '1')
         || (publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 1) != '0'
             && publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 1) != '1')
-        || (publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 2) != '0'
-            && publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 2) != '1')
-        || publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 3) != '-') {
+        || publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 2) != '-') {
       throw GrpcErrors.invalidArgument(correlationId(), null, Map.of("field", "publication_id"));
     }
     return new PublicationId(
         publicationId,
         publicationId.charAt(OWNER_GENERATION_PREFIX.length()) == '1',
-        publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 1) == '1',
-        publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 2) == '1');
+        publicationId.charAt(OWNER_GENERATION_PREFIX.length() + 1) == '1');
   }
 
   private String requirePublicationCapability(
@@ -1324,7 +1325,6 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
             ownerGenerationId,
             publication.publishFileStats(),
             publication.publishIndexes(),
-            publication.replaceExistingPublication(),
             requireCallerSubject());
     if (!MessageDigest.isEqual(
         publication.value().getBytes(StandardCharsets.UTF_8),
@@ -1363,11 +1363,7 @@ public class OwnerPublicationServiceImpl extends BaseServiceImpl
     }
   }
 
-  private record PublicationId(
-      String value,
-      boolean publishFileStats,
-      boolean publishIndexes,
-      boolean replaceExistingPublication) {}
+  private record PublicationId(String value, boolean publishFileStats, boolean publishIndexes) {}
 
   private String generationPrefix(ResourceId tableId, long snapshotId, String generationId) {
     return Keys.snapshotTargetStatsGenerationBlobPrefix(

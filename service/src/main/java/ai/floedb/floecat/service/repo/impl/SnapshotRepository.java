@@ -432,18 +432,14 @@ public class SnapshotRepository {
         "could not record reuse manifest after concurrent snapshot updates: " + snapshotId);
   }
 
-  public static boolean isCompleteReuseManifest(SnapshotReuseManifestRef reuseManifestRef) {
-    return reuseManifestRef != null
-        && reuseManifestRef.getFormatVersion()
-            == ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest.FORMAT_VERSION
-        && !reuseManifestRef.getUri().isBlank()
-        && reuseManifestRef.getPayloadBytes() > 0L
-        && reuseManifestRef.getPayloadSha256().size() == 32
-        && !reuseManifestRef.getStatsGenerationManifestUri().isBlank();
-  }
-
   private static void requireReuseManifest(SnapshotReuseManifestRef reuseManifestRef) {
-    if (!isCompleteReuseManifest(reuseManifestRef)) {
+    if (reuseManifestRef == null
+        || reuseManifestRef.getFormatVersion()
+            != ai.floedb.floecat.reconciler.jobs.ReusableArtifactManifest.FORMAT_VERSION
+        || reuseManifestRef.getUri().isBlank()
+        || reuseManifestRef.getPayloadBytes() <= 0L
+        || reuseManifestRef.getPayloadSha256().size() != 32
+        || reuseManifestRef.getStatsGenerationManifestUri().isBlank()) {
       throw new IllegalArgumentException("complete reuse manifest metadata is required");
     }
   }

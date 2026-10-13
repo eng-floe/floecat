@@ -120,6 +120,16 @@ class OwnerPublicationServiceImplTest {
   }
 
   @Test
+  void replacementIntentDoesNotChangeThePublicationIdFormat() {
+    var normal = begin();
+    var replacement = normal.toBuilder().setReplaceExistingPublication(true).build();
+
+    assertEquals(
+        OwnerPublicationServiceImpl.generationId(normal, CALLER_SUBJECT),
+        OwnerPublicationServiceImpl.generationId(replacement, CALLER_SUBJECT));
+  }
+
+  @Test
   void beginLeasesTheSelectedReuseManifest() {
     var service = service();
     var sourceRef =
@@ -151,6 +161,7 @@ class OwnerPublicationServiceImplTest {
                 Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
                     tableId().getAccountId(), tableId().getId(), SNAPSHOT)),
             eq(sourceRef),
+            eq(false),
             eq(null),
             any());
   }
@@ -179,6 +190,7 @@ class OwnerPublicationServiceImplTest {
                 Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
                     tableId().getAccountId(), tableId().getId(), SNAPSHOT)),
             eq(null),
+            eq(true),
             eq(previous),
             any());
   }
@@ -218,6 +230,7 @@ class OwnerPublicationServiceImplTest {
                 Keys.snapshotIndexArtifactCaptureManifestBlobPrefix(
                     tableId().getAccountId(), tableId().getId(), SNAPSHOT)),
             org.mockito.ArgumentMatchers.isNull(),
+            eq(false),
             org.mockito.ArgumentMatchers.isNull(),
             any());
   }
@@ -228,12 +241,12 @@ class OwnerPublicationServiceImplTest {
     var candidate = partialManifest("/candidate.pb", (byte) 5);
     doAnswer(
             invocation -> {
-              invocation.getArgument(5, Runnable.class).run();
+              invocation.getArgument(6, Runnable.class).run();
               return new OwnerReuseLeaseRepository.AcquireResult(
                   Long.MAX_VALUE, java.util.List.of(candidate));
             })
         .when(service.reuseLeases)
-        .acquireWithCandidates(any(), anyString(), anyString(), any(), any(), any());
+        .acquireWithCandidates(any(), anyString(), anyString(), any(), anyBoolean(), any(), any());
 
     var response = service.beginOwnerPublication(begin()).await().indefinitely();
 
@@ -750,7 +763,7 @@ class OwnerPublicationServiceImplTest {
     when(service.snapshots.getByIdConsistent(tableId(), SNAPSHOT)).thenReturn(Optional.of(stored));
     when(service.reuseLeases.renew(any(), anyString(), any()))
         .thenReturn(
-            new OwnerReuseLeaseRepository.RenewResult(Long.MAX_VALUE, Optional.of(previous)));
+            new OwnerReuseLeaseRepository.RenewResult(Long.MAX_VALUE, true, Optional.of(previous)));
     var snapshotUpdate =
         new StatsStore.PublicationPointerUpdate(
             "/snapshots/by-id/42", 7L, Pointer.getDefaultInstance());
@@ -800,7 +813,7 @@ class OwnerPublicationServiceImplTest {
     when(service.snapshots.getByIdConsistent(tableId(), SNAPSHOT)).thenReturn(Optional.of(stored));
     when(service.reuseLeases.renew(any(), anyString(), any()))
         .thenReturn(
-            new OwnerReuseLeaseRepository.RenewResult(Long.MAX_VALUE, Optional.of(previous)));
+            new OwnerReuseLeaseRepository.RenewResult(Long.MAX_VALUE, true, Optional.of(previous)));
     when(service.snapshots.prepareReuseManifestReplacement(
             eq(tableId()), eq(SNAPSHOT), eq(Optional.of(previous)), any()))
         .thenThrow(new BaseResourceRepository.NameConflictException("stale predecessor"));
@@ -1811,15 +1824,16 @@ class OwnerPublicationServiceImplTest {
     service.manifestCommitments = ExternalManifestCommitmentCache.forTesting();
     service.reuseLeases = org.mockito.Mockito.mock(OwnerReuseLeaseRepository.class);
     when(service.reuseLeases.acquireWithCandidates(
-            any(), anyString(), anyString(), any(), any(), any()))
+            any(), anyString(), anyString(), any(), anyBoolean(), any(), any()))
         .thenAnswer(
             invocation -> {
-              invocation.getArgument(5, Runnable.class).run();
+              invocation.getArgument(6, Runnable.class).run();
               return new OwnerReuseLeaseRepository.AcquireResult(
                   Long.MAX_VALUE, java.util.List.of());
             });
     when(service.reuseLeases.renew(any(), anyString(), any()))
-        .thenReturn(new OwnerReuseLeaseRepository.RenewResult(Long.MAX_VALUE, Optional.empty()));
+        .thenReturn(
+            new OwnerReuseLeaseRepository.RenewResult(Long.MAX_VALUE, false, Optional.empty()));
     when(service.reuseLeases.progress(any(), anyString(), anyString()))
         .thenReturn(OwnerReuseLeaseRepository.RegistrationProgress.initial());
     service.principal = org.mockito.Mockito.mock(PrincipalProvider.class);

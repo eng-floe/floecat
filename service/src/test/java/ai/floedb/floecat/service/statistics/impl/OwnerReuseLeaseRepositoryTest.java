@@ -125,9 +125,11 @@ class OwnerReuseLeaseRepositoryTest {
             .setStatsGenerationManifestUri("/stats/base.pb")
             .build();
 
-    repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, base, () -> {});
+    repository.acquireWithCandidates(
+        TABLE, PUBLICATION, CAPTURE_PREFIX, null, true, base, () -> {});
     var renewal = repository.renew(TABLE, PUBLICATION, base);
 
+    assertThat(renewal.replaceExistingPublication()).isTrue();
     assertThat(renewal.replacementBase()).contains(base);
     assertThatThrownBy(
             () ->
@@ -136,9 +138,32 @@ class OwnerReuseLeaseRepositoryTest {
                     PUBLICATION,
                     CAPTURE_PREFIX,
                     null,
+                    true,
                     base.toBuilder().setUri("/capture/newer.pb").build(),
                     () -> {}))
-        .isInstanceOf(OwnerReuseLeaseRepository.LeaseContinuityException.class);
+        .isInstanceOf(OwnerReuseLeaseRepository.ReplacementFenceException.class);
+  }
+
+  @Test
+  void replacementBaseIsAnOpaqueCasValueThatMayUseLegacyFormat() {
+    var legacyBase =
+        SnapshotReuseManifestRef.newBuilder()
+            .setUri("/capture/legacy.pb")
+            .setPayloadBytes(10)
+            .setPayloadSha256(ByteString.copyFrom(new byte[32]))
+            .build();
+    var successor =
+        legacyBase.toBuilder()
+            .setFormatVersion(1)
+            .setKind(SnapshotReuseManifestKind.SRMK_OWNER_V2)
+            .setStatsGenerationManifestUri("/stats/successor.pb")
+            .build();
+
+    repository.acquireWithCandidates(
+        TABLE, PUBLICATION, CAPTURE_PREFIX, null, true, legacyBase, () -> {});
+
+    assertThat(repository.renew(TABLE, PUBLICATION, successor).replacementBase())
+        .contains(legacyBase);
   }
 
   @Test
@@ -158,7 +183,7 @@ class OwnerReuseLeaseRepositoryTest {
     now.set(1_002L);
     var acquired =
         repository.acquireWithCandidates(
-            TABLE, "publication-c", CAPTURE_PREFIX, null, null, () -> {});
+            TABLE, "publication-c", CAPTURE_PREFIX, null, false, null, () -> {});
 
     assertThat(acquired.inProgressManifests()).containsExactly(newer, older);
     assertThat(currentLease("publication-c").getProtectedCaptureManifestUrisList()).isEmpty();
@@ -173,7 +198,8 @@ class OwnerReuseLeaseRepositoryTest {
     repository.publishInProgressManifest(TABLE, PUBLICATION, partial);
 
     var reacquired =
-        repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, null, () -> {});
+        repository.acquireWithCandidates(
+            TABLE, PUBLICATION, CAPTURE_PREFIX, null, false, null, () -> {});
 
     assertThat(reacquired.inProgressManifests()).containsExactly(partial);
     assertThat(currentLease().getInProgressReuseManifestRef()).isEqualTo(partial);
@@ -213,7 +239,8 @@ class OwnerReuseLeaseRepositoryTest {
 
     now.incrementAndGet();
     var reacquired =
-        repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, null, () -> {});
+        repository.acquireWithCandidates(
+            TABLE, PUBLICATION, CAPTURE_PREFIX, null, false, null, () -> {});
 
     assertThat(reacquired.inProgressManifests()).hasSize(16).contains(own);
   }
@@ -229,7 +256,7 @@ class OwnerReuseLeaseRepositoryTest {
 
     var acquired =
         repository.acquireWithCandidates(
-            TABLE, "publication-b", CAPTURE_PREFIX, null, null, () -> {});
+            TABLE, "publication-b", CAPTURE_PREFIX, null, false, null, () -> {});
 
     assertThat(acquired.inProgressManifests()).isEmpty();
   }
@@ -246,7 +273,7 @@ class OwnerReuseLeaseRepositoryTest {
 
     var acquired =
         repository.acquireWithCandidates(
-            TABLE, "publication-b", CAPTURE_PREFIX, null, null, () -> {});
+            TABLE, "publication-b", CAPTURE_PREFIX, null, false, null, () -> {});
 
     assertThat(acquired.inProgressManifests()).isEmpty();
     assertThat(currentLease("publication-b").getPublicationId()).isEqualTo("publication-b");
@@ -257,7 +284,8 @@ class OwnerReuseLeaseRepositoryTest {
     repository.acquire(TABLE, "old-producer", capturePrefix(40L), null);
     var oldCandidate = partialManifest(40L, (byte) 6);
     repository.publishInProgressManifest(TABLE, "old-producer", oldCandidate);
-    repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, null, () -> {});
+    repository.acquireWithCandidates(
+        TABLE, PUBLICATION, CAPTURE_PREFIX, null, false, null, () -> {});
     assertThat(currentLease().getProtectedCaptureManifestPrefixesList())
         .contains(capturePrefix(40L));
 
@@ -265,7 +293,8 @@ class OwnerReuseLeaseRepositoryTest {
     repository.acquire(TABLE, "new-producer", capturePrefix(41L), null);
     var newCandidate = partialManifest(41L, (byte) 7);
     repository.publishInProgressManifest(TABLE, "new-producer", newCandidate);
-    repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, null, () -> {});
+    repository.acquireWithCandidates(
+        TABLE, PUBLICATION, CAPTURE_PREFIX, null, false, null, () -> {});
 
     assertThat(currentLease().getProtectedCaptureManifestPrefixesList())
         .contains(CAPTURE_PREFIX, capturePrefix(41L))
@@ -276,16 +305,19 @@ class OwnerReuseLeaseRepositoryTest {
 
   @Test
   void discoveredCandidateDoesNotReclassifyAnOwnedCaptureNamespace() throws Exception {
-    repository.acquireWithCandidates(TABLE, PUBLICATION, capturePrefix(40L), null, null, () -> {});
+    repository.acquireWithCandidates(
+        TABLE, PUBLICATION, capturePrefix(40L), null, false, null, () -> {});
     repository.acquire(TABLE, "producer", capturePrefix(40L), null);
     repository.publishInProgressManifest(TABLE, "producer", partialManifest(40L, (byte) 6));
 
-    repository.acquireWithCandidates(TABLE, PUBLICATION, capturePrefix(41L), null, null, () -> {});
+    repository.acquireWithCandidates(
+        TABLE, PUBLICATION, capturePrefix(41L), null, false, null, () -> {});
     assertThat(currentLease().getDiscoveredCaptureManifestPrefixesList())
         .doesNotContain(capturePrefix(40L));
 
     repository.release(TABLE, "producer");
-    repository.acquireWithCandidates(TABLE, PUBLICATION, capturePrefix(41L), null, null, () -> {});
+    repository.acquireWithCandidates(
+        TABLE, PUBLICATION, capturePrefix(41L), null, false, null, () -> {});
 
     assertThat(currentLease().getProtectedCaptureManifestPrefixesList())
         .contains(capturePrefix(40L), capturePrefix(41L));
@@ -298,12 +330,14 @@ class OwnerReuseLeaseRepositoryTest {
     repository.publishInProgressManifest(TABLE, "producer", oldCandidate);
 
     var first =
-        repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, null, () -> {});
+        repository.acquireWithCandidates(
+            TABLE, PUBLICATION, CAPTURE_PREFIX, null, false, null, () -> {});
 
     var newCandidate = partialManifest(40L, (byte) 7);
     repository.publishInProgressManifest(TABLE, "producer", newCandidate);
     var second =
-        repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, null, () -> {});
+        repository.acquireWithCandidates(
+            TABLE, PUBLICATION, CAPTURE_PREFIX, null, false, null, () -> {});
 
     assertThat(first.inProgressManifests()).contains(oldCandidate);
     assertThat(second.inProgressManifests()).contains(newCandidate).doesNotContain(oldCandidate);
@@ -336,7 +370,8 @@ class OwnerReuseLeaseRepositoryTest {
         .isTrue();
 
     var acquired =
-        repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, null, () -> {});
+        repository.acquireWithCandidates(
+            TABLE, PUBLICATION, CAPTURE_PREFIX, null, false, null, () -> {});
 
     assertThat(acquired.inProgressManifests()).isEmpty();
   }
@@ -354,13 +389,15 @@ class OwnerReuseLeaseRepositoryTest {
     repository.acquire(TABLE, "old-producer", capturePrefix(40L), null);
     var oldCandidate = partialManifest(40L, (byte) 6);
     repository.publishInProgressManifest(TABLE, "old-producer", oldCandidate);
-    repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, source, null, () -> {});
+    repository.acquireWithCandidates(
+        TABLE, PUBLICATION, CAPTURE_PREFIX, source, false, null, () -> {});
 
     repository.release(TABLE, "old-producer");
     repository.acquire(TABLE, "new-producer", capturePrefix(41L), null);
     var newCandidate = partialManifest(41L, (byte) 7);
     repository.publishInProgressManifest(TABLE, "new-producer", newCandidate);
-    repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, null, () -> {});
+    repository.acquireWithCandidates(
+        TABLE, PUBLICATION, CAPTURE_PREFIX, null, false, null, () -> {});
 
     assertThat(currentLease().getProtectedCaptureManifestUrisList())
         .containsExactly(source.getUri());
@@ -381,7 +418,8 @@ class OwnerReuseLeaseRepositoryTest {
         .listPointersByPrefix(anyString(), anyInt(), anyString(), any(StringBuilder.class));
     repository.pointers = repeatingPointers;
 
-    repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, null, () -> {});
+    repository.acquireWithCandidates(
+        TABLE, PUBLICATION, CAPTURE_PREFIX, null, false, null, () -> {});
 
     verify(repeatingPointers, times(2))
         .listPointersByPrefix(anyString(), anyInt(), anyString(), any(StringBuilder.class));
@@ -403,7 +441,8 @@ class OwnerReuseLeaseRepositoryTest {
         .listPointersByPrefix(anyString(), anyInt(), anyString(), any(StringBuilder.class));
     repository.pointers = freshTokenPointers;
 
-    repository.acquireWithCandidates(TABLE, PUBLICATION, CAPTURE_PREFIX, null, null, () -> {});
+    repository.acquireWithCandidates(
+        TABLE, PUBLICATION, CAPTURE_PREFIX, null, false, null, () -> {});
 
     verify(freshTokenPointers, times(OwnerReuseLeaseRepository.LEASE_SCAN_PAGE_LIMIT))
         .listPointersByPrefix(anyString(), anyInt(), anyString(), any(StringBuilder.class));

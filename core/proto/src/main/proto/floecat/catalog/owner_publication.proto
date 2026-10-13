@@ -51,8 +51,12 @@ message OwnerPublicationLease {
   string reuse_source_capture_manifest_uri = 12;
   // Finalized manifest observed when a replacement publication was reserved. Complete may
   // replace only this exact predecessor, preventing an older rebuild from overwriting a
-  // publication that completed after it began. Replacement intent is bound into publication_id.
-  optional SnapshotReuseManifestRef replacement_base_reuse_manifest_ref = 13;
+  // publication that completed after it began.
+  SnapshotReuseManifestRef replacement_base_reuse_manifest_ref = 13;
+  // Whether Begin reserved this lease to replace an existing finalized publication. This is
+  // stored independently from the publication ID so existing publication capabilities retain
+  // their wire format.
+  bool replace_existing_publication = 14;
 }
 
 message BeginOwnerPublicationRequest {
@@ -145,7 +149,6 @@ message CompleteOwnerPublicationRequest {
   // preceding cursor is safe after a lost response. The cursor detects out-of-order callers;
   // concurrent completion is serialized server-side using durable progress.
   string completion_cursor = 8;
-  reserved 9;
 }
 
 message CompleteOwnerPublicationResponse {

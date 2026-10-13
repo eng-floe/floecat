@@ -805,6 +805,30 @@ class SnapshotRepositoryTest {
   }
 
   @Test
+  void prepareReuseManifestReplacementAcceptsALegacyPredecessorAsAnOpaqueFence() {
+    var tableRid = newSeededTable();
+    SnapshotReuseManifestRef previous =
+        reuseManifest("/reuse/legacy.pb", (byte) 1).toBuilder()
+            .clearFormatVersion()
+            .clearKind()
+            .build();
+    SnapshotReuseManifestRef replacement = reuseManifest("/reuse/replacement.pb", (byte) 2);
+    snapshotRepo.create(
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(42L)
+            .setReuseManifestRef(previous)
+            .build());
+
+    var prepared =
+        snapshotRepo.prepareReuseManifestReplacement(
+            tableRid, 42L, Optional.of(previous), replacement);
+
+    assertEquals(replacement, prepared.snapshot().getReuseManifestRef());
+    assertFalse(prepared.pointerUpdates().isEmpty());
+  }
+
+  @Test
   void prepareReuseManifestReplacementReplaysAfterTheReplacementCommitted() {
     var tableRid = newSeededTable();
     SnapshotReuseManifestRef previous = reuseManifest("/reuse/previous.pb", (byte) 1);
