@@ -534,8 +534,8 @@ public class ScanBundleService {
     Map<String, String> tableProperties = resolvedTableProperties.properties();
     if (deltaTable) {
       tableProperties = new LinkedHashMap<>(tableProperties);
-      // TableInfo has no upstream format; readers need this to resolve unmapped Delta field IDs.
-      tableProperties.put("data_source_format", "DELTA");
+      // Keep the advertised format consistent with the Delta schema, even if a property is stale.
+      tableProperties.put(DeltaSchemaNormalizer.DATA_SOURCE_FORMAT_PROPERTY, "DELTA");
       if (rawSchemaJson != null
           && !rawSchemaJson.isBlank()
           && !tableProperties.containsKey(DeltaSchemaNormalizer.DEFAULT_NAME_MAPPING_PROPERTY)) {
