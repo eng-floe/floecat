@@ -318,6 +318,13 @@ public class StatsRepository implements StatsStore {
   }
 
   @Override
+  public boolean statsGenerationPublished(
+      ResourceId tableId, long snapshotId, String generationId) {
+    return GENERATION_PUBLISHED.equals(
+        generationLifecycleState(tableId, snapshotId, requireGenerationId(generationId)));
+  }
+
+  @Override
   public void prepareStatsGenerationManifest(
       ResourceId tableId, long snapshotId, String generationId) {
     String effectiveGenerationId = requireGenerationId(generationId);

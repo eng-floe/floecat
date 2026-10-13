@@ -49,6 +49,14 @@ message OwnerPublicationLease {
   // Finalized reuse source selected by Begin. A retry without a source preserves this root; an
   // explicitly different source replaces it rather than accumulating a full manifest walk.
   string reuse_source_capture_manifest_uri = 12;
+  // Finalized manifest observed when a replacement publication was reserved. Complete may
+  // replace only this exact predecessor, preventing an older rebuild from overwriting a
+  // publication that completed after it began.
+  SnapshotReuseManifestRef replacement_base_reuse_manifest_ref = 13;
+  // Whether Begin reserved this lease to replace an existing finalized publication. This is
+  // stored independently from the publication ID so existing publication capabilities retain
+  // their wire format.
+  bool replace_existing_publication = 14;
 }
 
 message BeginOwnerPublicationRequest {
@@ -63,6 +71,10 @@ message BeginOwnerPublicationRequest {
   // activation, Floecat leases both the table's reusable-object namespace and the exact source or
   // successor capture manifest so concurrent GC cannot retire inputs or in-flight uploads.
   optional int64 reuse_source_snapshot_id = 8;
+  // Permit this generation to replace the target snapshot's finalized Owner publication. The
+  // predecessor observed by Begin is retained in the durable publication lease and fenced at
+  // activation.
+  bool replace_existing_publication = 9;
 }
 
 message BeginOwnerPublicationResponse {

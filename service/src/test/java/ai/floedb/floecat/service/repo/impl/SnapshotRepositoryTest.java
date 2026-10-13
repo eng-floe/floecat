@@ -45,6 +45,7 @@ import ai.floedb.floecat.storage.spi.PointerStore;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.util.Timestamps;
 import java.time.Clock;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -778,6 +779,76 @@ class SnapshotRepositoryTest {
   }
 
   @Test
+  void prepareReuseManifestReplacementRequiresTheBeginTimePredecessor() {
+    var tableRid = newSeededTable();
+    SnapshotReuseManifestRef previous = reuseManifest("/reuse/previous.pb", (byte) 1);
+    SnapshotReuseManifestRef stale = reuseManifest("/reuse/stale.pb", (byte) 2);
+    SnapshotReuseManifestRef replacement = reuseManifest("/reuse/replacement.pb", (byte) 3);
+    snapshotRepo.create(
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(42L)
+            .setReuseManifestRef(previous)
+            .build());
+
+    assertThrows(
+        BaseResourceRepository.NameConflictException.class,
+        () ->
+            snapshotRepo.prepareReuseManifestReplacement(
+                tableRid, 42L, Optional.of(stale), replacement));
+
+    var prepared =
+        snapshotRepo.prepareReuseManifestReplacement(
+            tableRid, 42L, Optional.of(previous), replacement);
+    assertEquals(replacement, prepared.snapshot().getReuseManifestRef());
+    assertFalse(prepared.pointerUpdates().isEmpty());
+  }
+
+  @Test
+  void prepareReuseManifestReplacementAcceptsALegacyPredecessorAsAnOpaqueFence() {
+    var tableRid = newSeededTable();
+    SnapshotReuseManifestRef previous =
+        reuseManifest("/reuse/legacy.pb", (byte) 1).toBuilder()
+            .clearFormatVersion()
+            .clearKind()
+            .build();
+    SnapshotReuseManifestRef replacement = reuseManifest("/reuse/replacement.pb", (byte) 2);
+    snapshotRepo.create(
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(42L)
+            .setReuseManifestRef(previous)
+            .build());
+
+    var prepared =
+        snapshotRepo.prepareReuseManifestReplacement(
+            tableRid, 42L, Optional.of(previous), replacement);
+
+    assertEquals(replacement, prepared.snapshot().getReuseManifestRef());
+    assertFalse(prepared.pointerUpdates().isEmpty());
+  }
+
+  @Test
+  void prepareReuseManifestReplacementReplaysAfterTheReplacementCommitted() {
+    var tableRid = newSeededTable();
+    SnapshotReuseManifestRef previous = reuseManifest("/reuse/previous.pb", (byte) 1);
+    SnapshotReuseManifestRef replacement = reuseManifest("/reuse/replacement.pb", (byte) 2);
+    snapshotRepo.create(
+        Snapshot.newBuilder()
+            .setTableId(tableRid)
+            .setSnapshotId(42L)
+            .setReuseManifestRef(replacement)
+            .build());
+
+    var prepared =
+        snapshotRepo.prepareReuseManifestReplacement(
+            tableRid, 42L, Optional.of(previous), replacement);
+
+    assertEquals(replacement, prepared.snapshot().getReuseManifestRef());
+    assertTrue(prepared.pointerUpdates().isEmpty());
+  }
+
+  @Test
   void latestFinalizedSnapshotForReuseIgnoresTheUnfinalizedCommittedCurrent() {
     var tableRid = newSeededTable();
     long now = clock.millis();
@@ -1073,6 +1144,18 @@ class SnapshotRepositoryTest {
   private static boolean isExpectedRepoAbort(Throwable t) {
     return t instanceof BaseResourceRepository.AbortRetryableException
         && t.getMessage().contains("blob write verification failed");
+  }
+
+  private static SnapshotReuseManifestRef reuseManifest(String uri, byte fill) {
+    byte[] digest = new byte[32];
+    java.util.Arrays.fill(digest, fill);
+    return SnapshotReuseManifestRef.newBuilder()
+        .setFormatVersion(1)
+        .setUri(uri)
+        .setPayloadBytes(123L)
+        .setPayloadSha256(ByteString.copyFrom(digest))
+        .setStatsGenerationManifestUri(uri + ".stats")
+        .build();
   }
 
   @Test

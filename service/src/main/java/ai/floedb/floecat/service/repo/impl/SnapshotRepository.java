@@ -49,6 +49,7 @@ import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -217,6 +218,38 @@ public class SnapshotRepository {
    */
   public PreparedReuseManifestPublication prepareReuseManifestPublication(
       ResourceId tableId, long snapshotId, SnapshotReuseManifestRef reuseManifestRef) {
+    return prepareReuseManifestUpdate(
+        tableId,
+        snapshotId,
+        reuseManifestRef,
+        Optional::isEmpty,
+        "snapshot already has a different reuse manifest: ");
+  }
+
+  /**
+   * Prepares a fenced replacement of an existing snapshot's reuse root. The expected predecessor is
+   * the value captured when the publication began; matching it here prevents an older rebuild from
+   * replacing a newer publication.
+   */
+  public PreparedReuseManifestPublication prepareReuseManifestReplacement(
+      ResourceId tableId,
+      long snapshotId,
+      Optional<SnapshotReuseManifestRef> expectedReuseManifestRef,
+      SnapshotReuseManifestRef reuseManifestRef) {
+    return prepareReuseManifestUpdate(
+        tableId,
+        snapshotId,
+        reuseManifestRef,
+        actual -> actual.equals(expectedReuseManifestRef),
+        "snapshot reuse manifest changed after publication began: ");
+  }
+
+  private PreparedReuseManifestPublication prepareReuseManifestUpdate(
+      ResourceId tableId,
+      long snapshotId,
+      SnapshotReuseManifestRef reuseManifestRef,
+      Predicate<Optional<SnapshotReuseManifestRef>> mayReplace,
+      String conflictMessage) {
     requireReuseManifest(reuseManifestRef);
     SnapshotKey key = new SnapshotKey(tableId.getAccountId(), tableId.getId(), snapshotId);
     var current =
@@ -225,15 +258,17 @@ public class SnapshotRepository {
                 () ->
                     new BaseResourceRepository.NotFoundException(
                         "snapshot disappeared before reuse manifest publication: " + snapshotId));
-    if (current.value().hasReuseManifestRef()
-        && !current.value().getReuseManifestRef().equals(reuseManifestRef)) {
-      throw new BaseResourceRepository.NameConflictException(
-          "snapshot already has a different reuse manifest: " + snapshotId);
+    Optional<SnapshotReuseManifestRef> actual =
+        current.value().hasReuseManifestRef()
+            ? Optional.of(current.value().getReuseManifestRef())
+            : Optional.empty();
+    if (actual.filter(reuseManifestRef::equals).isPresent()) {
+      return new PreparedReuseManifestPublication(current.value(), List.of());
+    }
+    if (!mayReplace.test(actual)) {
+      throw new BaseResourceRepository.NameConflictException(conflictMessage + snapshotId);
     }
     Snapshot next = current.value().toBuilder().setReuseManifestRef(reuseManifestRef).build();
-    if (next.equals(current.value())) {
-      return new PreparedReuseManifestPublication(next, List.of());
-    }
     return new PreparedReuseManifestPublication(
         next, publicationUpdates(repo.prepareUpdateOps(next, current.meta().getPointerVersion())));
   }
