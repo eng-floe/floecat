@@ -2087,7 +2087,7 @@ CLI, and reconciler.</p>
 <tr>
 <td><code>OwnerPublicationService</code></td>
 <td><code>BeginOwnerPublication</code>, <code>PublishOwnerReuseManifest</code>, <code>CompleteOwnerPublication</code></td>
-<td>Reserves an Owner generation, publishes trusted partial reuse-manifest references, and activates the generation through sequential, bounded completion calls. External registration and coverage manifests remain format v1 but are split into independently hashed, record-aligned chunks committed by a small content-addressed index. <code>Complete</code> accepts and returns an opaque phase/chunk cursor and verifies at most one committed chunk per call.</td>
+<td>Reserves an Owner generation, publishes trusted partial reuse-manifest references, and activates the generation through sequential, bounded completion calls. Explicit replacement publications retain the target snapshot's Begin-time reuse-manifest reference and may atomically swap it only while that predecessor is still current. External registration and coverage manifests remain format v1 but are split into independently hashed, record-aligned chunks committed by a small content-addressed index. <code>Complete</code> accepts and returns an opaque phase/chunk cursor and verifies at most one committed chunk per call.</td>
 </tr>
 <tr>
 <td><code>TableConstraintsService</code></td>
