@@ -32,6 +32,7 @@ import java.util.Set;
 public final class DeltaSchemaNormalizer {
   private static final ObjectMapper JSON = new ObjectMapper();
   public static final String DEFAULT_NAME_MAPPING_PROPERTY = "schema.name-mapping.default";
+  public static final String DATA_SOURCE_FORMAT_PROPERTY = "data_source_format";
   private static final String COLUMN_MAPPING_PHYSICAL_NAME_KEY = "delta.columnMapping.physicalName";
 
   private DeltaSchemaNormalizer() {}
@@ -46,7 +47,8 @@ public final class DeltaSchemaNormalizer {
       return false;
     }
     String source =
-        firstNonBlank(properties.get("data_source_format"), properties.get("upstream.format"));
+        firstNonBlank(
+            properties.get(DATA_SOURCE_FORMAT_PROPERTY), properties.get("upstream.format"));
     if (source == null) {
       source = properties.get("format");
     }

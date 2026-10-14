@@ -31,6 +31,8 @@ import static org.mockito.Mockito.when;
 
 import ai.floedb.floecat.catalog.rpc.Snapshot;
 import ai.floedb.floecat.catalog.rpc.Table;
+import ai.floedb.floecat.catalog.rpc.TableFormat;
+import ai.floedb.floecat.catalog.rpc.UpstreamRef;
 import ai.floedb.floecat.common.rpc.ErrorCode;
 import ai.floedb.floecat.common.rpc.ResourceId;
 import ai.floedb.floecat.common.rpc.ResourceKind;
@@ -179,6 +181,97 @@ class ScanBundleServiceTest {
     assertTrue(init.tableInfo().hasResolvedStorage());
     assertEquals(storage, init.tableInfo().getResolvedStorage());
     assertFalse(init.tableInfo().getPropertiesMap().containsKey("metadata-location"));
+  }
+
+  @Test
+  void initScanPreservesDeltaFormatWhenOnlyUpstreamDeclaresIt() {
+    var table =
+        Table.newBuilder()
+            .setResourceId(TABLE_ID)
+            .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA))
+            .setSchemaJson(
+                """
+                {"type":"struct","fields":[
+                  {"name":"time_unix_nano","type":"long","nullable":true,"metadata":{}}
+                ]}
+                """)
+            .build();
+    when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
+    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI))
+        .thenReturn(
+            Optional.of(Snapshot.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build()));
+    when(resolver.applyToTablePropertiesWithStorage(table, null, table.getPropertiesMap()))
+        .thenReturn(new ResolvedTableProperties(Map.of("s3.region", "eu-central-1"), null));
+
+    var info = service.initScan("corr", PIN).tableInfo();
+
+    assertEquals("DELTA", info.getPropertiesMap().get("data_source_format"));
+    assertEquals("eu-central-1", info.getPropertiesMap().get("s3.region"));
+    assertFalse(info.getPropertiesMap().containsKey("schema.name-mapping.default"));
+  }
+
+  @Test
+  void initScanCanonicalizesExistingDeltaFormatWithoutChangingMappingOrStoredProperties() {
+    String nameMapping =
+        """
+        [{"field-id":2,"names":["time_unix_nano","col_time"]}]
+        """;
+    for (String existingFormat : new String[] {"DELTA", "delta", "", " ", "ICEBERG"}) {
+      var table =
+          Table.newBuilder()
+              .setResourceId(TABLE_ID)
+              .setUpstream(UpstreamRef.newBuilder().setFormat(TableFormat.TF_DELTA))
+              .putProperties("data_source_format", existingFormat)
+              .putProperties("schema.name-mapping.default", nameMapping)
+              .setSchemaJson(
+                  """
+                  {"type":"struct","fields":[
+                    {"name":"time_unix_nano","type":"long","nullable":true,
+                     "metadata":{"delta.columnMapping.id":2,
+                                 "delta.columnMapping.physicalName":"col_time"}}
+                  ]}
+                  """)
+              .build();
+      var resolvedProperties =
+          Map.of(
+              "data_source_format", existingFormat,
+              "schema.name-mapping.default", nameMapping,
+              "s3.region", "eu-central-1");
+      when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
+      when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI))
+          .thenReturn(
+              Optional.of(Snapshot.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build()));
+      when(resolver.applyToTablePropertiesWithStorage(table, null, table.getPropertiesMap()))
+          .thenReturn(new ResolvedTableProperties(resolvedProperties, null));
+
+      var info = service.initScan("corr", PIN).tableInfo();
+
+      assertEquals("DELTA", info.getPropertiesMap().get("data_source_format"), existingFormat);
+      assertEquals(nameMapping, info.getPropertiesMap().get("schema.name-mapping.default"));
+      assertEquals("eu-central-1", info.getPropertiesMap().get("s3.region"));
+      assertEquals(existingFormat, table.getPropertiesMap().get("data_source_format"));
+      assertEquals(existingFormat, resolvedProperties.get("data_source_format"));
+    }
+  }
+
+  @Test
+  void initScanPreservesExistingNonDeltaFormat() {
+    var table =
+        Table.newBuilder()
+            .setResourceId(TABLE_ID)
+            .putProperties("data_source_format", "ICEBERG")
+            .setSchemaJson("{\"type\":\"struct\",\"fields\":[]}")
+            .build();
+    when(tableRepo.getByBlobUri(TABLE_BLOB_URI)).thenReturn(Optional.of(table));
+    when(snapshotRepo.getByBlobUri(SNAPSHOT_BLOB_URI))
+        .thenReturn(
+            Optional.of(Snapshot.newBuilder().setTableId(TABLE_ID).setSnapshotId(42L).build()));
+    when(resolver.applyToTablePropertiesWithStorage(table, null, table.getPropertiesMap()))
+        .thenReturn(new ResolvedTableProperties(table.getPropertiesMap(), null));
+
+    assertEquals(
+        "ICEBERG",
+        service.initScan("corr", PIN).tableInfo().getPropertiesMap().get("data_source_format"));
   }
 
   @Test
