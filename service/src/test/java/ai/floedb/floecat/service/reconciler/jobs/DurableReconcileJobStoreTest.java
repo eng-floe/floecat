@@ -1692,6 +1692,81 @@ class DurableReconcileJobStoreTest {
   }
 
   @Test
+  void terminalChildFailureFailsTheChildAndItsWaitingRootWithoutMoreAttempts() {
+    String connectorJobId =
+        store.enqueue(
+            ACCOUNT_ID,
+            CONNECTOR_ID,
+            false,
+            CaptureMode.METADATA_AND_CAPTURE,
+            ReconcileScope.empty());
+    var connectorLease = leaseJob(connectorJobId);
+    store.markRunning(connectorJobId, connectorLease.leaseEpoch, 100L, "executor-connector");
+
+    assertTrue(
+        store.bulkEnqueueAndApplyLeaseOutcome(
+            List.of(
+                ReconcileJobStore.BulkEnqueueSpec.of(
+                    ACCOUNT_ID,
+                    CONNECTOR_ID,
+                    false,
+                    CaptureMode.METADATA_AND_CAPTURE,
+                    ReconcileScope.of(List.of(), "table-1"),
+                    ReconcileJobKind.PLAN_TABLE,
+                    ReconcileTableTask.of("db", "dim_finc_clr_rsn", "table-1", "table-1"),
+                    ReconcileViewTask.empty(),
+                    ReconcileSnapshotTask.empty(),
+                    ReconcileFileGroupTask.empty(),
+                    ReconcileExecutionPolicy.defaults(),
+                    connectorJobId,
+                    "")),
+            connectorJobId,
+            connectorLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.SUCCEEDED_WAITING,
+            200L,
+            "Planned 1 table job(s)",
+            1L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L,
+            0L));
+
+    ReconcileJobStore.ReconcileJob child = store.childJobs(ACCOUNT_ID, connectorJobId).getFirst();
+    ReconcileJobStore.LeasedJob childLease = leaseJob(child.jobId);
+    store.markRunning(child.jobId, childLease.leaseEpoch, 300L, "executor-table");
+
+    assertTrue(
+        store.applyLeaseOutcome(
+            child.jobId,
+            childLease.leaseEpoch,
+            ReconcileJobStore.CompletionKind.FAILED_TERMINAL,
+            400L,
+            "source catalog credential vending refused",
+            0L,
+            0L,
+            0L,
+            0L,
+            1L,
+            0L,
+            0L));
+
+    // Child completion marks its parent dirty; the normal projection-maintenance pass performs
+    // the durable ancestor rollup.
+    runProjectionMaintenance();
+
+    StoredReconcileJob failedChild =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, child.jobId));
+    StoredReconcileJob failedRoot =
+        readStoredRecord(Keys.reconcileJobPointerById(ACCOUNT_ID, connectorJobId));
+    assertEquals("JS_FAILED", failedChild.state);
+    assertEquals(1, failedChild.attempt);
+    assertEquals(0L, failedChild.nextAttemptAtMs);
+    assertEquals("JS_FAILED", failedRoot.state);
+  }
+
+  @Test
   void bulkEnqueueAndApplyLeaseOutcomeCommitsParentBeforeChunkRetryDedupesChildren() {
     InMemoryPointerStore pointerStore = new InMemoryPointerStore();
     MemoryReconcileJobIndexBackend delegateBackend = new MemoryReconcileJobIndexBackend();

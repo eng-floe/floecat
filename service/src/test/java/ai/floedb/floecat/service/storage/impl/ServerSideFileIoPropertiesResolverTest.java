@@ -46,6 +46,8 @@ import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.awscore.exception.AwsErrorDetails;
+import software.amazon.awssdk.awscore.exception.AwsServiceException;
 
 class ServerSideFileIoPropertiesResolverTest {
   private ServerSideFileIoPropertiesResolver service;
@@ -97,6 +99,36 @@ class ServerSideFileIoPropertiesResolverTest {
 
     assertEquals("akid", props.get("s3.access-key-id"));
     assertTrue(props.get("s3.region").equals("us-west-2"));
+  }
+
+  @Test
+  void scanAuthorityAuthenticationFailureKeepsItsGrpcAuthVerdict() {
+    when(repo.list(eq("acct"), anyInt(), eq(""), any())).thenReturn(List.of(databricksAuthority()));
+    service.resolver =
+        new StorageAuthorityResolver() {
+          @Override
+          ResolveStorageAuthorityResponse buildResponse(
+              StorageAuthority authority, String accountId, boolean serverSide) {
+            throw AwsServiceException.builder()
+                .message("credential rejected")
+                .statusCode(403)
+                .awsErrorDetails(
+                    AwsErrorDetails.builder().errorCode("InvalidClientTokenId").build())
+                .build();
+          }
+        };
+
+    StatusRuntimeException failure =
+        assertThrows(
+            StatusRuntimeException.class,
+            () ->
+                service.resolveWithStorage(
+                    table(),
+                    "s3://floedb-databricks-metastore-367509577365/metastore/table/data.parquet"));
+
+    assertEquals(io.grpc.Status.Code.PERMISSION_DENIED, failure.getStatus().getCode());
+    assertTrue(failure.getStatus().getDescription().contains(table().getResourceId().getId()));
+    assertTrue(failure.getStatus().getDescription().contains("floedb-databricks-metastore"));
   }
 
   @Test
