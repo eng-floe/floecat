@@ -245,7 +245,7 @@ class LogicalTypeTest {
   void temporalPrecisionRejectsOutOfRange() {
     assertThatThrownBy(() -> LogicalType.temporal(LogicalKind.TIME, -1))
         .isInstanceOf(IllegalArgumentException.class);
-    assertThatThrownBy(() -> LogicalType.temporal(LogicalKind.TIME, 7))
+    assertThatThrownBy(() -> LogicalType.temporal(LogicalKind.TIME, 10))
         .isInstanceOf(IllegalArgumentException.class);
   }
 

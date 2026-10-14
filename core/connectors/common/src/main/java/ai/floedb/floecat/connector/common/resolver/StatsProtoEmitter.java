@@ -38,7 +38,9 @@ import ai.floedb.floecat.connector.spi.ConnectorFormat;
 import ai.floedb.floecat.connector.spi.FloecatConnector;
 import ai.floedb.floecat.query.rpc.SchemaColumn;
 import ai.floedb.floecat.query.rpc.SchemaDescriptor;
+import ai.floedb.floecat.types.LogicalType;
 import ai.floedb.floecat.types.LogicalTypeProtoAdapter;
+import ai.floedb.floecat.types.rpc.ScalarValue;
 import com.google.protobuf.util.Timestamps;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -469,8 +471,10 @@ public final class StatsProtoEmitter {
             .setLogicalType(logicalType)
             .setRowCount(view.rowCount())
             .putAllProperties(view.properties() == null ? Map.of() : view.properties());
-    if (!logicalType.isBlank()) {
-      scalar.setType(LogicalTypeProtoAdapter.parseToProto(logicalType));
+    LogicalType parsedType =
+        logicalType.isBlank() ? null : LogicalTypeProtoAdapter.decodeLogicalType(logicalType);
+    if (parsedType != null) {
+      scalar.setType(LogicalTypeProtoAdapter.toProto(parsedType));
     }
     if (upstreamOrNull != null) {
       scalar.setUpstream(upstreamOrNull);
@@ -482,10 +486,16 @@ public final class StatsProtoEmitter {
       scalar.setNanCount(view.nanCount());
     }
     if (view.min() != null) {
-      scalar.setMin(view.min());
+      scalar.setMinValue(view.min());
+      if (parsedType != null) {
+        setLegacyBound(scalar, true, parsedType, view.min());
+      }
     }
     if (view.max() != null) {
-      scalar.setMax(view.max());
+      scalar.setMaxValue(view.max());
+      if (parsedType != null) {
+        setLegacyBound(scalar, false, parsedType, view.max());
+      }
     }
     if (view.ndv() != null) {
       scalar.setNdv(view.ndv());
@@ -494,6 +504,24 @@ public final class StatsProtoEmitter {
       scalar.setAvgWidthBytes(view.avgWidthBytes());
     }
     return scalar.build();
+  }
+
+  private static void setLegacyBound(
+      ScalarStats.Builder scalar, boolean minimum, LogicalType type, ScalarValue encoded) {
+    try {
+      Object value = LogicalTypeProtoAdapter.decodeValue(type, encoded);
+      if (value != null) {
+        String legacy = LogicalTypeProtoAdapter.encodeValue(type, value);
+        if (minimum) {
+          scalar.setMin(legacy);
+        } else {
+          scalar.setMax(legacy);
+        }
+      }
+    } catch (RuntimeException ignored) {
+      // Typed bounds remain authoritative; omit the compatibility field when they cannot be
+      // decoded into the legacy spelling.
+    }
   }
 
   /** Helper to convert ConnectorFormat to TableFormat proto. */

@@ -260,6 +260,9 @@ message ScalarStats {
   // Typed sketch payloads for planner consumption. Each entry is identified by its role;
   // at most one payload per role is expected. Absent when no sketches have been captured.
   repeated SketchPayload sketches = 11;
+  // Typed bounds. New writers populate these; readers must fall back to min/max for older data.
+  optional ai.floedb.floecat.types.ScalarValue min_value = 13;
+  optional ai.floedb.floecat.types.ScalarValue max_value = 14;
   // Connector-specific extension metadata. Core planner semantics should use
   // typed fields above; properties are for producer-specific details only.
   map<string, string> properties = 99;
